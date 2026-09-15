@@ -1,0 +1,136 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET status=$4,result=$5,last_error=$6,run_after=COALESCE($7,run_after),\n         locked_by=NULL,locked_at=NULL,claim_token=NULL,updated_at=now()\n         WHERE id=$1 AND status='running' AND locked_by=$2 AND claim_token=$3\n         RETURNING id,kind,document_id,account_id,scope_key,dedupe_key,payload,status,\n                   priority,attempts,max_attempts,run_after,locked_by,locked_at,claim_token,\n                   last_error,result,created_at,updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "scope_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "dedupe_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "priority",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 9,
+        "name": "attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "max_attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "run_after",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "locked_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "locked_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "claim_token",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 15,
+        "name": "last_error",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "result",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 17,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 18,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "65efbecac951974128a464853102e14bd7675df561948cc90f2e984b8ec89689"
+}

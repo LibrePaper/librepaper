@@ -8,7 +8,13 @@ import { diagnosticContext } from "../../src/lib/assistant-review.js";
 import { createReaderBoot } from "../../src/lib/reader/boot.js";
 import { createPendingChat } from "../../src/lib/reader/chat.js";
 import { createReaderCollaboration } from "../../src/lib/reader/collaboration.js";
+import { createPreviewRenderer } from "../../src/lib/reader/preview-render.js";
+import { createRenderCoordinator } from "../../src/lib/reader/render-coordinator.js";
+import { loadRunes } from "../helpers/runes.mjs";
 import { needsSourceRefresh } from "../../src/lib/reader/source-events.js";
+
+const { createBuildSettings } = await loadRunes(new URL("../../src/lib/reader/build-settings.svelte.js", import.meta.url));
+const { createTimeline } = await loadRunes(new URL("../../src/lib/reader/timeline.svelte.js", import.meta.url));
 
 const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
 const body = (start, end) => {
@@ -19,48 +25,9 @@ const body = (start, end) => {
   return reader.slice(from, to);
 };
 
-const showCheckpoint = body("  async function showCheckpoint(sha)", "  async function nameCheckpoint");
-// A ready frame must not replace an in-flight historical URL/navigation with
-// an automatic captured-current comparison.
-for (const [arrived, navigating, expected] of [["old", 0, 0], ["", 1, 0], ["", 0, 1]]) {
-  let comparisons = 0;
-  vm.runInNewContext(body('        if (panel === "history" && historyBaseline', '        if (first && !publishedMode)'), {
-    panel: "history", historyBaseline: { sha: "old" }, historyComparePoint: null, viewing: null,
-    ARRIVED_AT: arrived, checkpointNavigationPending: navigating,
-    computeHistoryChanges: () => comparisons++,
-  });
-  assert.equal(comparisons, expected, "historical navigation owns frame readiness");
-}
-const backToNow = body("  function backToNow()", "  async function nameCheckpoint");
-for (const stale of [false, true]) {
-  let finish;
-  const pending = new Promise((resolve) => { finish = resolve; });
-  const delivered = [];
-  const ctx = vm.createContext({
-    historyController: { capturedCurrent: { sha: "captured", main: "main.md", texts: { "main.md": "frozen" } } },
-    navigationGeneration: 0, issued: 0, readerDisposed: false, viewing: null,
-    renderingStore: { invalidate: () => {} }, dropHeldRendering: () => {}, showMobileView: () => {},
-    passages: { renderTree: () => pending }, SLUG: "doc", KEY: "", keyHeaders: () => ({}),
-    framePreview: { publish: (value) => delivered.push(value) },
-    paintPreview: () => { throw new Error("captured targets must not depend on the live preview queue"); },
-  });
-  vm.runInContext(body("  async function showCapturedCurrent()", "  let restoring"), ctx);
-  const showing = ctx.showCapturedCurrent();
-  if (stale) ctx.navigationGeneration++;
-  finish({ html: "<p>frozen</p>" });
-  await showing;
-  assert.equal(delivered.length, stale ? 0 : 1);
-  if (!stale) assert.equal(delivered[0].sha, "captured");
-}
-// `paintPreview` delegates its staleness guard and its figure fetch to two
-// helpers defined next to it. They are sliced in with it so the five contexts
-// below exercise the real guard rather than a stand-in -- which is the whole
-// point of the coalescing and invalidation cases further down.
-const previewHelpers = body("  function superseded(mine", "  // Outline reads the same live text");
 // `updatePreviewTarget` points the local app at this document through a small
 // helper now, so that helper is sliced in wherever the function is exercised.
-const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which of Quarto's own live preview");
-const paintPreview = `${previewHelpers}\n${body("  async function paintPreview()", "  // A source that is not actively")}`;
+const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which engine draws each format");
 
 // Initial Quarto setup must configure the companion as active for an editor.
 // If permission is assigned afterwards, editable onboarding examples remain
@@ -80,9 +47,11 @@ function fakeSession(joinOptions) {
   const observers = new Set();
   return {
     joined: false,
-    awareness: { on: (_name, fn) => observers.add(fn), off: (_name, fn) => observers.delete(fn) },
+    // EphemeralStore returns the unsubscribe function rather than taking the
+    // handler back later, so the fake returns one too.
+    ephemeral: { subscribe: (fn) => { observers.add(fn); return () => observers.delete(fn); } },
     watchSource: () => {}, onSwap: () => {}, onFiles: () => () => {},
-    open: () => ({ type: "y-open" }), disconnected() { this.joined = false; },
+    open: () => ({ type: "doc-open" }), disconnected() { this.joined = false; },
     leave() { this.left = true; observers.clear(); },
     joinOptions,
   };
@@ -141,114 +110,203 @@ const deferred = () => {
   assert.equal(callbacks, 0);
 }
 
-const context = (values) => vm.createContext({
-  clearTimeout,
-  setTimeout,
-  queueMicrotask,
-  Promise,
-  Uint8Array,
-  ArrayBuffer,
-  readerDisposed: false,
-  mayEdit: true,
-  publishedPublication: null,
-  editing: true,
-  latexOutput: "pdf",
-  outlineRevision: 0,
-  sourceFormat: "",
-  typstOutput: "pdf",
-  previewMain: "",
-  previewFile: "",
-  session: null,
-  viewing: null,
-  historyController: { noteLiveChange: () => {} },
-  checkpointNavigationPending: 0,
-  diagnosticContext,
-  snapshotDigest: async () => "test-render-digest",
-  historyDiffGeneration: 0,
-  historyComparePoint: null,
-  historyChanges: null,
-  write: () => {},
-  ...values,
-});
-
-// Selecting A and then B must leave B selected if A's history response is late.
+// A failed metadata request can open an explicitly prepared local project;
+// an ordinary cache miss still follows the normal error path.
 {
-  const a = deferred();
-  const b = deferred();
-  const ctx = context({
-    navigationGeneration: 0, renderingRequest: 0, issued: 0, viewing: null,
-    historyController: { invalidateChanges: () => {} },
-    renderingStore: { invalidate: () => {}, cancelPoll: () => {}, reset: () => {}, schedulePoll: () => {} },
-    historyProblem: "", frameShowsCheckpoint: false,
-    SLUG: "doc", KEY: "key", keyHeaders: () => ({}), dropHeldRendering: () => {},
-    paintPreview: () => Promise.resolve(),
-    history: { checkpoint: (_slug, sha) => (sha === "A" ? a.promise : b.promise) },
+  const documents = [];
+  const errors = [];
+  const boot = createReaderBoot({
+    slug: "offline",
+    fetcher: async () => { throw new Error("network down"); },
+    whoami: async () => ({}),
+    findLocal: async () => ({ document: { title: "Local paper", role: "editor" } }),
+    onDocument: (value) => documents.push(value),
+    onError: (error) => errors.push(error.message),
   });
-  vm.runInContext(`${showCheckpoint}\n${backToNow}`, ctx);
-  const pa = vm.runInContext("showCheckpoint('A')", ctx);
-  const pb = vm.runInContext("showCheckpoint('B')", ctx);
-  b.resolve({ sha: "B" });
-  await pb;
-  a.resolve({ sha: "A" });
-  await pa;
-  assert.equal(ctx.viewing.sha, "B");
+  await boot.start();
+  assert.equal(documents[0].title, "Local paper");
+  assert.equal(documents[0].offline_prepared, true);
+  assert.deepEqual(errors, []);
 }
 
-// Back-to-now invalidates an in-flight checkpoint before its response arrives.
-{
-  const a = deferred();
-  const ctx = context({
-    navigationGeneration: 0, renderingRequest: 0, issued: 0, viewing: null,
-    historyController: { invalidateChanges: () => {} },
-    renderingStore: { invalidate: () => {}, cancelPoll: () => {}, reset: () => {}, schedulePoll: () => {} },
-    historyProblem: "", frameShowsCheckpoint: false, editing: false,
-    sourceFormat: "html", framedSource: "live",
-    SLUG: "doc", KEY: "key", keyHeaders: () => ({}), dropHeldRendering: () => {},
-    paintPreview: () => Promise.resolve(), navigateFrame: () => {},
-    history: { checkpoint: () => a.promise },
+const context = (values) => {
+  const ctx = vm.createContext({
+    clearTimeout,
+    setTimeout,
+    queueMicrotask,
+    Promise,
+    Uint8Array,
+    ArrayBuffer,
+    readerDisposed: false,
+    mayEdit: true,
+    publishedPublication: null,
+    editing: true,
+    latexOutput: "pdf",
+    outlineRevision: 0,
+    sourceFormat: "",
+    typstOutput: "pdf",
+    previewMain: "",
+    previewFile: "",
+    SLUG: "doc",
+    buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
+    session: null,
+    diagnosticContext,
+    snapshotDigest: async () => "test-render-digest",
+    write: () => {},
+    ...values,
   });
-  vm.runInContext(`${showCheckpoint}\n${backToNow}`, ctx);
-  const pending = vm.runInContext("showCheckpoint('A')", ctx);
-  vm.runInContext("backToNow()", ctx);
-  a.resolve({ sha: "A" });
-  await pending;
-  assert.equal(ctx.viewing, null);
-}
+  ctx.renderCoordinator = createRenderCoordinator({
+    navigation: () => ctx.navigationGeneration,
+    source: () => ctx.sourceGeneration,
+    main: () => ctx.treeNow?.().main || "",
+    render: (ticket) => ctx.renderPreview(ticket),
+  });
+  ctx.renderState = {
+    compiling: false, lastCompile: 0, failure: false, failureReason: "",
+    lastLatexResult: null, provenance: null, docxArtifact: null,
+  };
+  ctx.renderStatus = {
+    begin: ({ clearFailure = false } = {}) => {
+      ctx.renderState.compiling = true;
+      if (clearFailure) ctx.renderState.failure = false;
+    },
+    finish: () => { ctx.renderState.compiling = false; },
+    succeeded: () => { ctx.renderState.failure = false; ctx.renderState.failureReason = ""; },
+    failed: (reason) => { ctx.renderState.failure = true; ctx.renderState.failureReason = String(reason || "could not render"); },
+    resetFailure: () => { ctx.renderState.failure = false; ctx.renderState.failureReason = ""; },
+    recordDuration: (seconds) => { if (seconds) ctx.renderState.lastCompile = seconds; },
+    recordLatex: (result) => { ctx.renderState.lastLatexResult = result; },
+    recordProvenance: (value) => { ctx.renderState.provenance = value; },
+    recordDocx: (value) => { ctx.renderState.docxArtifact = value; },
+    clearDocx: () => { ctx.renderState.docxArtifact = null; },
+  };
+  return ctx;
+};
+
+// A render, with the page's answers to "what is true now" as a plain object
+// the check can move under it. The renderer and the coordinator are the real
+// ones; what used to be a VM realm full of free variables is `facts`.
+const preview = (values = {}) => {
+  const facts = {
+    disposed: false,
+    navigation: 0,
+    source: 0,
+    everPainted: false,
+    editing: true,
+    format: "",
+    hasSession: true,
+    paintsTheFrame: true,
+    latexOutput: "pdf",
+    typstOutput: "pdf",
+    buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
+    localExecution: true,
+    livePreviewOwnsPane: false,
+    ...values.facts,
+  };
+  const state = {
+    compiling: false, lastCompile: 0, failure: false, failureReason: "",
+    lastLatexResult: null, provenance: null, docxArtifact: null,
+  };
+  const status = {
+    begin: ({ clearFailure = false } = {}) => {
+      state.compiling = true;
+      if (clearFailure) state.failure = false;
+    },
+    finish: () => { state.compiling = false; },
+    succeeded: () => { state.failure = false; state.failureReason = ""; },
+    failed: (reason) => { state.failure = true; state.failureReason = String(reason || "could not render"); },
+    resetFailure: () => { state.failure = false; state.failureReason = ""; },
+    recordDuration: (seconds) => { if (seconds) state.lastCompile = seconds; },
+    recordLatex: (result) => { state.lastLatexResult = result; },
+    recordProvenance: (value) => { state.provenance = value; },
+    recordDocx: (value) => { state.docxArtifact = value; },
+    clearDocx: () => { state.docxArtifact = null; },
+  };
+  const harness = {
+    facts,
+    state,
+    published: [],
+    diagnostics: [],
+    sent: [],
+    synctex: [],
+    refreshed: 0,
+    tree: values.tree || (() => ({ main: "main.md", texts: { "main.md": "x" }, digests: {} })),
+  };
+  harness.coordinator = createRenderCoordinator({
+    navigation: () => facts.navigation,
+    source: () => facts.source,
+    main: () => harness.tree().main,
+    render: (ticket) => harness.render(ticket),
+  });
+  harness.render = createPreviewRenderer({
+    slug: "doc",
+    coordinator: harness.coordinator,
+    status,
+    framePreview: { publish: (payload) => harness.published.push(payload) },
+    diagnostics: { rendered: (value) => harness.diagnostics.push(value) },
+    renderers: values.renderers,
+    snapshotDigest: values.snapshotDigest || (async () => "test-render-digest"),
+    diagnosticContext,
+    parseSynctex: values.parseSynctex,
+    facts: () => facts,
+    tree: () => harness.tree(),
+    gather: values.gather || (async () => ({ held: { assets: {}, urls: {} }, missing: [] })),
+    heading: values.heading || (async () => "Title"),
+    takeManual: values.takeManual,
+    onsynctex: (parsed) => harness.synctex.push(parsed),
+    send: (message) => harness.sent.push(message),
+    refreshFrame: () => harness.refreshed++,
+  });
+  harness.paint = () => harness.coordinator.request();
+  return harness;
+};
 
 // A compiler result with neither html nor pdf leaves the existing preview up.
 {
   const rendered = deferred();
-  const sent = [];
-  const old = { kind: "html", html: "<p>last good page</p>" };
-  const ctx = context({
-    displayedFormat: "latex", pdfOutput: true, compilesHere: true, paintsTheFrame: true,
-    issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
-    sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
-    compiling: false, everPainted: true, latestPreview: old,
-    sourceFormat: "latex", previewTimer: null, rendering: null,
-    treeNow: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
-    snapshotDigest: async () => "digest-A", headingOf: async () => "",
-    figures: { gather: async () => ({ assets: {}, urls: {} }) },
+  const harness = preview({
+    facts: { format: "latex", everPainted: true },
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
+    snapshotDigest: async () => "digest-A",
+    heading: async () => "",
     renderers: {
       formatOf: () => "latex", render: () => rendered.promise,
       producesPdf: () => true,
       failurePage: async () => "<p>failure</p>",
     },
-    SHELL_HEADERS: {}, KEY: "key", SLUG: "doc", keyHeaders: () => {},
-    framePreview: { publish: () => {}, clear: () => {} },
-    renderingStore: { cancelPoll: () => {} }, holdRendering: () => {},
-    diagnosticPainter: { rendered: () => {} }, tell: (message) => sent.push(message),
-    say: () => {},
   });
-  vm.runInContext(paintPreview, ctx);
-  const pending = vm.runInContext("paintPreview()", ctx);
-  // Disabling editing while the compiler is active must release its latch.
-  ctx.compilesHere = false;
+  const pending = harness.paint();
   rendered.resolve({ pdf: null, diagnostics: [{ severity: "error" }] });
   await pending;
-  assert.equal(ctx.latestPreview, old);
-  assert.equal(sent.length, 0);
-  assert.equal(ctx.previewPaintBusy, false);
+  assert.deepEqual(harness.published, [], "the page that was up stays up");
+  assert.deepEqual(harness.sent, [], "and nothing replaces it in the frame");
+  // The compile is over even though it produced nothing, so the next one is
+  // free to start: a failure must not leave the latch held.
+  assert.equal(harness.coordinator.running, false);
+  assert.equal(harness.state.compiling, false);
+}
+
+// A live preview owns the pane: this browser's own compile stays out of it.
+{
+  const harness = preview({
+    facts: { format: "quarto", livePreviewOwnsPane: true },
+    renderers: { formatOf: () => assert.fail("a live preview must not be compiled over"), producesPdf: () => false },
+  });
+  await harness.paint();
+  assert.deepEqual(harness.published, []);
+  assert.equal(harness.refreshed, 0);
+}
+
+// A frame showing something this render does not own is refreshed rather than
+// painted over.
+{
+  const harness = preview({
+    facts: { paintsTheFrame: false },
+    renderers: { formatOf: () => assert.fail("nothing is compiled for a frame this render does not own"), producesPdf: () => false },
+  });
+  await harness.paint();
+  assert.equal(harness.refreshed, 1);
+  assert.deepEqual(harness.published, []);
 }
 
 console.log("reader-races: all checks passed");
@@ -257,33 +315,32 @@ console.log("reader-races: all checks passed");
 {
   let refreshes = 0;
   let changes = 0;
-  const files = {};
-  const mainText = {};
+  // Containers are named by id, so the fakes are ids rather than objects.
+  const files = { id: "cid:root-files:Map" };
+  const mainText = { id: "cid:1@1:Text" };
   const active = { files, text: mainText };
-  const seenTransactions = new WeakSet();
-  const ctx = context({ session: active, needsSourceRefresh, handledFileTransactions: seenTransactions, refreshFiles: () => refreshes++, sourceChanged: () => changes++ });
+  const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++ });
   vm.runInContext(body("  function filesChanged(events, active = session)", "  function refreshPeers()"), ctx);
-  ctx.events = [{ target: {} }];
+  ctx.events = [{ target: "cid:2@1:Text" }];
   vm.runInContext("filesChanged(events)", ctx);
-  assert.equal(refreshes, 0);
-  assert.equal(changes, 1);
-  ctx.events = [{ target: mainText }];
+  assert.equal(refreshes, 0, "an edit inside a file does not rebuild the directory");
+  assert.equal(changes, 1, "but it does repaint the preview");
+  ctx.events = [{ target: mainText.id }];
   vm.runInContext("filesChanged(events)", ctx);
   assert.equal(changes, 1, "the source watcher owns main-text edits");
-  ctx.events = [{ target: files }];
+  ctx.events = [{ target: files.id }];
   vm.runInContext("filesChanged(events)", ctx);
   vm.runInContext("filesChanged({})", ctx);
-  assert.equal(refreshes, 2);
+  assert.equal(refreshes, 2, "a change to the directory rebuilds it");
   assert.equal(changes, 3);
-  const transaction = {};
-  ctx.events = [{ target: {}, transaction }];
+  // One commit is one batch, so a batch that touches both an included file and
+  // the directory rebuilds the list once and repaints once.
+  ctx.events = [{ target: "cid:2@1:Text" }, { target: files.id }];
   vm.runInContext("filesChanged(events)", ctx);
-  ctx.events = [{ target: files, transaction }];
-  vm.runInContext("filesChanged(events)", ctx);
-  assert.equal(changes, 4, "one mixed Yjs transaction schedules one repaint");
-  assert.equal(refreshes, 3);
-  const other = { files: {}, text: {} };
-  ctx.events = [{ target: {} }];
+  assert.equal(changes, 4, "one batch schedules one repaint");
+  assert.equal(refreshes, 3, "and one rebuild");
+  const other = { files: { id: "cid:root-files:Map" }, text: { id: "cid:9@9:Text" } };
+  ctx.events = [{ target: "cid:2@1:Text" }];
   ctx.other = other;
   vm.runInContext("filesChanged(events, other)", ctx);
   assert.equal(changes, 4, "stale session events are ignored");
@@ -298,29 +355,33 @@ console.log("reader-races: all checks passed");
       files: {}, list: () => [], folders: () => [], mainId: () => "main",
       mainPath: () => "paper.tex", latexSettings: () => ({ engine: "auto" }),
     },
-    files: [], folders: [], openFile: "", previewMain: "", sourceFormat: "markdown", shownFigure: null,
-    viewing: null, tick: async () => {}, paintPreview: () => {},
-    mayEdit: true, previousFigure: null, ARRIVED_FILE: "", arrivedFileOpened: false,
-    navigationGeneration: 0, renderingRequest: 0, issued: 0, rendering: null,
-    renderingChecked: false, latestPreview: null, renderedSha: null,
-    frameShowsCheckpoint: false, everPainted: false, everPaintedShown: false,
-    docsOrigin: null, dropHeldRendering: () => {}, navigateFrame: () => {},
+    // The directory itself belongs to the workspace, which is driven on its
+    // own in tests/unit/workspace.mjs. What is checked here is the other half
+    // of that read: re-pointing the preview at the file the session now calls
+    // its main one, which is a rendering question rather than a directory one.
+    files: [], previewFile: "", previewMain: "", sourceFormat: "markdown",
+    tick: async () => ({ then: () => {} }), paintPreview: () => {},
+    navigationGeneration: 0, everPainted: false, everPaintedShown: false,
+    docsOrigin: null, navigateFrame: () => {}, readerDisposed: false,
     framePreview: { clear: () => {} },
-    renderingStore: { reset: () => {} },
+    renderCoordinator: { invalidate: () => {} },
+    renderStatus: { resetFailure: () => {} },
     renderers: { formatOf: () => "latex", warm: () => {} },
-    configureLatex: () => configured++, sourceChanged: () => {},
+    pairLocalQuarto: () => {},
+    configureLatex: () => configured++,
   });
-  vm.runInContext(body("  function refreshFiles()", "  // A file added"), ctx);
-  vm.runInContext("refreshFiles()", ctx);
+  vm.runInContext(body("  function updatePreviewTarget()", "  function previewThisFile()"), ctx);
+  vm.runInContext("updatePreviewTarget()", ctx);
   assert.equal(configured, 1);
+  assert.equal(ctx.previewMain, "paper.tex");
+  assert.equal(ctx.sourceFormat, "latex");
 }
 
-// LaTeX configuration follows format/session lifetime. Shared settings reach
-// the compiler once, and session changes do not trigger a release pin.
+// LaTeX configuration follows format/session lifetime. Build settings are
+// browser-local and no longer observe collaborative metadata.
 {
   const releases = [];
   const configurations = [];
-  const updates = [];
   let paints = 0;
   const makeSession = () => {
     const observers = new Set();
@@ -337,47 +398,112 @@ console.log("reader-races: all checks passed");
     };
   };
   const first = makeSession();
-  const ctx = context({
-    session: first, mayEdit: true, sourceFormat: "latex", SLUG: "project",
-    renderers: { available: () => true }, paintPreview: () => paints++,
+  const settings = createBuildSettings({
+    slug: "project",
+    origin: "https://app.example",
+    read: () => ({ selection: "automatic", backend: "auto", engine: "auto" }),
+    renderers: { available: () => true },
+    paint: () => paints++,
     latex: {
-      configure: (value) => configurations.push(value), cancel: () => {},
-      setSettings: (value) => updates.push(value),
+      configure: (value) => configurations.push(value), cancel: () => {}, setSettings: () => {},
       // Compiler releases are mirror-global. Reader setup must not fetch a
       // release list or write an automatic project pin.
       releases: () => { throw new Error("reader must not load compiler releases"); },
     },
   });
-  vm.runInContext(body("  let latexObservedSession = null;", "  // The most recent LaTeX compile result"), ctx);
-  vm.runInContext('configureLatex("latex"); configureLatex("latex")', ctx);
-  assert.equal(configurations.length, 1);
+  settings.configureLatex("latex", first, "anonymous");
+  settings.configureLatex("latex", first, "anonymous");
+  assert.equal(configurations.length, 1, "one session is configured once");
   assert.equal(configurations[0].project, "project");
   assert.equal(configurations[0].mayCompile, true);
-  assert.equal(first.observers.size, 1);
-  first.change({ engine: "xelatex" });
-  assert.equal(updates[0].engine, "xelatex");
-  assert.equal(paints, 1);
-  vm.runInContext('configureLatex("markdown")', ctx);
   assert.equal(first.observers.size, 0);
-  vm.runInContext('configureLatex("latex")', ctx);
-  assert.equal(first.observers.size, 1);
+  assert.equal(paints, 0);
+  settings.configureLatex("markdown", first, "anonymous");
+  settings.configureLatex("latex", first, "anonymous");
+  assert.equal(first.observers.size, 0);
   assert.equal(first.writes.length, 0);
   const second = makeSession();
-  ctx.session = second;
-  vm.runInContext('configureLatex("latex")', ctx);
+  settings.configureLatex("latex", second, "anonymous");
   assert.equal(first.observers.size, 0);
-  assert.equal(second.observers.size, 1);
+  assert.equal(second.observers.size, 0);
   assert.equal(first.writes.length, 0);
   assert.equal(second.writes.length, 0);
   assert.equal(releases.length, 0, "readers must not load or pin a compiler release");
-  vm.runInContext('stopLatex()', ctx);
+  settings.stopLatex();
   assert.equal(second.observers.size, 0);
-  ctx.session = makeSession();
-  ctx.mayEdit = false;
-  vm.runInContext('configureLatex("latex")', ctx);
+  // A cold reader has no edit permission and still compiles from source.
+  settings.configureLatex("latex", makeSession(), "anonymous");
   assert.equal(configurations.at(-1).mayCompile, true, "cold readers compile from source without edit permission");
   assert.equal(releases.length, 0, "readers must not pin the default release");
-  vm.runInContext('stopLatex()', ctx);
+  settings.stopLatex();
+}
+
+// A build preference belongs to one reader on one browser. Signing in is a
+// different reader, so what the last one had running is interrupted; loading
+// the same reader's preference again is not, because source hydration and
+// later source changes own the rendering.
+{
+  const interrupted = [];
+  const build = (read) => createBuildSettings({
+    slug: "project",
+    origin: "https://app.example",
+    read,
+    renderers: { available: () => true },
+    latex: { configure: () => {}, cancel: () => {}, setSettings: () => {} },
+    interrupt: (next) => interrupted.push(next),
+  });
+  const settings = build((scope, format) =>
+    ({ selection: "tool", backend: "local", tool: "calepin", output: "pdf", user: scope.user, format }));
+  settings.follow({ format: "typst", user: "anonymous" });
+  assert.deepEqual(interrupted, [], "the first load interrupts nothing");
+  settings.follow({ format: "typst", user: "anonymous" });
+  assert.deepEqual(interrupted, [], "the same reader's preference, again, interrupts nothing");
+  settings.follow({ format: "typst", user: "google:ada" });
+  assert.deepEqual(interrupted, [null], "signing in is a different reader");
+  assert.equal(settings.state.preferences.user, "google:ada", "and their preference is the one loaded");
+
+  // A preference chosen by hand interrupts with the choice itself, so a local
+  // preview that the choice keeps using can survive it.
+  settings.choose({ selection: "tool", backend: "local", tool: "calepin" }, "typst");
+  assert.deepEqual(interrupted.at(-1), { selection: "tool", backend: "local", tool: "calepin" });
+}
+
+// What a preference says about the outputs and the preview modes, and the one
+// way the two paths differ: a preference *loaded* for a format speaks for that
+// format whether or not the document is in it -- the Typst mode is read when a
+// Typst file is opened later -- while one *chosen* by hand speaks only for the
+// document the reader was looking at when they chose it.
+{
+  const calepin = { selection: "tool", backend: "local", tool: "calepin", output: "pdf" };
+  const settings = createBuildSettings({
+    slug: "project", origin: "https://app.example",
+    read: () => calepin,
+    renderers: { available: () => true },
+    latex: { configure: () => {}, cancel: () => {}, setSettings: () => {} },
+  });
+
+  // Loading a Typst preference while a Markdown document is on screen still
+  // says what Typst will do.
+  settings.follow({ format: "markdown", user: "anonymous" });
+  assert.equal(settings.state.typstPreviewMode, "calepin", "a loaded preference speaks for its format");
+  assert.equal(settings.state.quartoPreviewMode, "markdown", "and for Quarto, when a tool was chosen");
+
+  // Choosing one while a Markdown document is on screen says nothing about
+  // Typst, because that is not what the reader was looking at.
+  settings.state.typstPreviewMode = "typst";
+  settings.choose(calepin, "markdown");
+  assert.equal(settings.state.typstPreviewMode, "typst", "a chosen preference speaks only for the document on screen");
+  settings.choose(calepin, "typst");
+  assert.equal(settings.state.typstPreviewMode, "calepin");
+
+  // The output each format produces follows the preference it was loaded or
+  // chosen with, and anything that is not HTML is a PDF.
+  settings.choose({ ...calepin, output: "html" }, "typst");
+  assert.equal(settings.state.typstOutput, "html");
+  settings.choose({ ...calepin, output: "docx" }, "typst");
+  assert.equal(settings.state.typstOutput, "pdf", "an output this format cannot page is still paged");
+  settings.choose({ selection: "tool", backend: "browser", tool: "tex", output: "html" }, "latex");
+  assert.equal(settings.state.latexOutput, "html");
 }
 
 // A worker result still advances the preview after a keystroke. Requests made
@@ -390,13 +516,9 @@ for (const invalidate of [null, "navigation", "main"]) {
   const diagnostics = [];
   let text = "first";
   let main = "main.md";
-  const ctx = context({
-    displayedFormat: "markdown", pdfOutput: false, compilesHere: false, paintsTheFrame: true,
-    issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
-    sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
-    previewTimer: null, everPainted: true, latestPreview: null,
-    treeNow: () => ({ main, texts: { [main]: text }, digests: {} }),
-    headingOf: async () => "Title",
+  const harness = preview({
+    facts: { format: "markdown", everPainted: true },
+    tree: () => ({ main, texts: { [main]: text }, digests: {} }),
     renderers: {
       formatOf: () => "markdown",
       producesPdf: () => false,
@@ -405,56 +527,54 @@ for (const invalidate of [null, "navigation", "main"]) {
         return calls.length === 1 ? first.promise : second.promise;
       },
     },
-    framePreview: { publish: (payload) => delivered.push(payload.html), clear: () => {} },
-    renderingStore: { cancelPoll: () => {} },
-    diagnosticPainter: { rendered: (value) => diagnostics.push(value) },
-    say: (message) => assert.fail(message),
   });
-  vm.runInContext(paintPreview, ctx);
-  const pending = vm.runInContext("paintPreview()", ctx);
+  const pending = harness.paint();
   await Promise.resolve();
   text = "intermediate";
-  ctx.sourceGeneration++;
-  await vm.runInContext("paintPreview()", ctx);
+  harness.facts.source++;
+  await harness.paint();
   text = "latest";
-  ctx.sourceGeneration++;
-  if (invalidate === "navigation") ctx.navigationGeneration++;
+  harness.facts.source++;
+  if (invalidate === "navigation") harness.facts.navigation++;
   if (invalidate === "main") main = "other.md";
-  await vm.runInContext("paintPreview()", ctx);
+  await harness.paint();
   assert.equal(calls.length, 1, "only one compile can be in flight");
   first.resolve({ html: "first", diagnostics: [] });
   await pending;
   await new Promise(setImmediate);
+  delivered.push(...harness.published.map((payload) => payload.html));
+  diagnostics.push(...harness.diagnostics);
   assert.deepEqual(delivered, invalidate ? [] : ["first"]);
   assert.equal(diagnostics.length, 0, "outdated diagnostics stay hidden");
   assert.equal(calls.length, 2);
   assert.equal(calls[1].texts[main], "latest");
   second.resolve({ html: "latest", diagnostics: [] });
   await new Promise(setImmediate);
-  assert.equal(delivered.at(-1), "latest");
-  assert.equal(ctx.previewPaintBusy, false);
+  assert.equal(harness.published.at(-1).html, "latest");
+  assert.equal(harness.coordinator.running, false);
 }
 
-// Peer updates notify history without repainting the frozen preview.
+// A peer's edit advances the source generation the history panel reads, so a
+// comparison against "current" knows it was taken before that edit.
 {
-  let notified = 0;
   const ctx = context({
-    sourceGeneration: 0, viewing: { sha: "old" }, mayEdit: true, publishedPublication: null,
-    outlineRevision: 0,
-    historyController: { noteLiveChange: () => notified++ },
-    diagnosticPainter: { typed: () => assert.fail("historical preview must remain stable") },
+    sourceGeneration: 0, historyLiveVersion: 0, mayEdit: true, publishedPublication: null,
+    outlineRevision: 0, sourceFormat: "", editing: false,
+    previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
+    setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
+    diagnosticPainter: { typed: () => {} },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
-  assert.equal(notified, 1);
   assert.equal(ctx.sourceGeneration, 1);
+  assert.equal(ctx.historyLiveVersion, 1);
 }
 
 // Further keystrokes must not postpone an editor's already scheduled preview.
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedPublication: null,
+    sourceGeneration: 0, historyLiveVersion: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedPublication: null,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
@@ -473,7 +593,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
+    sourceGeneration: 0, historyLiveVersion: 0, editing: true, sourceFormat: "typst", pdfOutput: true, compilesHere: true,
     previewTimer: null, diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
       assert.ok(ms <= 50, "Typst starts rendering within 50 ms of an edit");
@@ -493,7 +613,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   let inEditorUpdate = true;
   let paintedDiagnostics = 0;
   const ctx = context({
-    sourceGeneration: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
+    sourceGeneration: 0, historyLiveVersion: 0, quartoFreshnessSerial: 0, sourceFormat: "quarto", quartoView: "draft",
     session: {
       mainPath: () => "main.qmd", mainId: () => "main", textOf: () => ({ toString: () => "# Draft\n" }),
       text: { toString: () => "# Draft\n" },
@@ -518,76 +638,28 @@ for (const invalidate of [null, "navigation", "main"]) {
 // like any other draft format -- nothing rendered is ever uploaded, so there
 // is no saved bundle left to prefer over it.
 {
-  let compiled = 0;
-  const published = [];
-  const ctx = context({
-    sourceFormat: "quarto", session: {}, paintsTheFrame: true, pdfOutput: false, compilesHere: false,
-    issued: 0, painted: 0, viewing: null, navigationGeneration: 0, sourceGeneration: 0,
-    previewPaintBusy: false, previewPaintQueued: false, previewTimer: null, everPainted: true,
-    treeNow: () => ({ main: "main.qmd", texts: { "main.qmd": "source" }, digests: {} }),
-    headingOf: async () => "Title",
+  const builds = [];
+  const harness = preview({
+    facts: { format: "quarto", everPainted: true },
+    tree: () => ({ main: "main.qmd", texts: { "main.qmd": "source" }, digests: {} }),
     renderers: {
       formatOf: () => "quarto", producesPdf: () => false,
-      render: async () => { compiled++; return { html: "<p>draft</p>", diagnostics: [] }; },
-    },
-    framePreview: { publish: (value) => published.push(value), clear: () => {} },
-    renderingStore: { cancelPoll: () => {} },
-    diagnosticPainter: { rendered: () => {} }, say: () => {},
-  });
-  vm.runInContext(paintPreview, ctx);
-  await vm.runInContext("paintPreview()", ctx);
-  assert.equal(compiled, 1, "a Quarto document with no live preview compiles its own draft");
-  assert.equal(published[0].kind, "html");
-  assert.equal(published[0].html, "<p>draft</p>");
-}
-
-// A historical endpoint uses the contemporary HTML renderer with its captured
-// tree, never the editor's ordinary renderer/PDF path. Settings and captured
-// asset bytes must reach that endpoint unchanged.
-{
-  const sourceAsset = Uint8Array.of(4, 5, 6);
-  const sourceTree = {
-    main: "paper.typ",
-    texts: { "paper.typ": "= Historical" },
-    digests: { "figure.png": "digest-history" },
-    settings: { release: "r1", engine: "typst" },
-  };
-  let renderedTree = null;
-  let ordinaryRendererCalls = 0;
-  const ctx = context({
-    displayedFormat: "typst", sourceFormat: "typst", pdfOutput: false,
-    compilesHere: false, paintsTheFrame: true, editing: false,
-    issued: 0, painted: 0, viewing: { sha: "checkpoint" },
-    navigationGeneration: 0, sourceGeneration: 0,
-    previewPaintBusy: false, previewPaintQueued: false, previewTimer: null,
-    everPainted: true, latestPreview: null,
-    SLUG: "history-doc", KEY: "", authHeaders: () => ({}),
-    keyHeaders: () => ({}),
-    treeNow: () => sourceTree,
-    headingOf: async () => "Historical",
-    figures: {
-      gather: async () => ({ assets: { "figure.png": sourceAsset.slice() }, urls: { "figure.png": "blob:history" } }),
-    },
-    passages: {
-      renderTree: async (_slug, tree) => {
-        renderedTree = tree;
-        return { html: "<p>historical</p>", diagnostics: [] };
+      render: async (_tree, _title, options) => {
+        builds.push(options.buildPreferences);
+        return { html: "<p>draft</p>", diagnostics: [] };
       },
     },
-    renderers: {
-      formatOf: () => "typst", producesPdf: () => true,
-      render: () => { ordinaryRendererCalls += 1; return { pdf: Uint8Array.of(9), diagnostics: [] }; },
-    },
-    framePreview: { publish: (payload) => { ctx.published = payload; }, clear: () => {} },
-    renderingStore: { cancelPoll: () => {} },
-    diagnosticPainter: { rendered: () => {} }, say: () => {},
   });
-  vm.runInContext(paintPreview, ctx);
-  await vm.runInContext("paintPreview()", ctx);
-  assert.equal(ordinaryRendererCalls, 0, "historical preview bypasses the ordinary compiler");
-  assert.equal(renderedTree.settings.release, "r1");
-  assert.deepEqual([...renderedTree.assets["figure.png"]], [4, 5, 6]);
-  assert.equal(ctx.published.html, "<p>historical</p>");
+  await harness.paint();
+  assert.equal(builds.length, 1, "a Quarto document with no live preview compiles its own draft");
+  assert.equal(harness.published[0].kind, "html");
+  assert.equal(harness.published[0].html, "<p>draft</p>");
+
+  // And a reader who has not approved execution gets the Markdown it is,
+  // rather than code this browser was never given permission to run.
+  harness.facts.localExecution = false;
+  await harness.paint();
+  assert.deepEqual(builds.at(-1), { selection: "tool", backend: "browser", tool: "markdown", output: "html" });
 }
 
 // Typst follows the PDF lifecycle too: one compile in flight, latest request
@@ -600,15 +672,10 @@ for (const invalidate of [null, "navigation", "main"]) {
   const held = [];
   const diagnostics = [];
   let text = "first";
-  const ctx = context({
-    displayedFormat: "typst", pdfOutput: true, compilesHere: true, paintsTheFrame: true,
-    issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
-    sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
-    previewTimer: null, everPainted: false, latestPreview: null,
-    paintRendering: async () => {},
-    treeNow: () => ({ main: "main.typ", texts: { "main.typ": text }, digests: {} }),
-    headingOf: async () => "Title", snapshotDigest: async () => "digest-typst",
-    figures: { gather: async () => ({ assets: {}, urls: {} }) },
+  const harness = preview({
+    facts: { format: "typst" },
+    tree: () => ({ main: "main.typ", texts: { "main.typ": text }, digests: {} }),
+    snapshotDigest: async () => "digest-typst",
     renderers: {
       formatOf: () => "typst",
       producesPdf: () => true,
@@ -617,18 +684,12 @@ for (const invalidate of [null, "navigation", "main"]) {
         return calls.length === 1 ? first.promise : second.promise;
       },
     },
-    framePreview: { publish: (payload) => delivered.push(payload.bytes[0]), clear: () => {} },
-    renderingStore: { cancelPoll: () => {} },
-    holdRendering: (...args) => held.push(args),
-    diagnosticPainter: { rendered: (value) => diagnostics.push(value) },
-    tell: () => {}, say: (message) => assert.fail(message),
   });
-  vm.runInContext(paintPreview, ctx);
-  const pending = vm.runInContext("paintPreview()", ctx);
+  const pending = harness.paint();
   await new Promise(setImmediate);
   text = "latest";
-  ctx.sourceGeneration++;
-  await vm.runInContext("paintPreview()", ctx);
+  harness.facts.source++;
+  await harness.paint();
   assert.equal(calls.length, 1, "Typst keeps one PDF compile active");
   first.resolve({ pdf: Uint8Array.of(1), diagnostics: [] });
   await pending;
@@ -636,6 +697,9 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(calls.length, 2, "Typst queues the latest source snapshot");
   second.resolve({ pdf: Uint8Array.of(2), diagnostics: [] });
   await new Promise(setImmediate);
+  delivered.push(...harness.published.map((payload) => payload.bytes[0]));
+  diagnostics.push(...harness.diagnostics);
+  held.push(...harness.sent);
   assert.deepEqual(delivered, [1, 2], "Typst may show an intermediate PDF, then the latest one");
   assert.equal(held.length, 0, "Typst output is transient and is never retained");
   assert.equal(diagnostics.length, 1, "an intermediate Typst PDF cannot clear newer diagnostics");
@@ -644,65 +708,55 @@ for (const invalidate of [null, "navigation", "main"]) {
 // A first Typst compile that returns structured diagnostics must leave the
 // reader in its explicit PDF failure state instead of a blank frame.
 {
-  const ctx = context({
-    displayedFormat: "typst", pdfOutput: true, compilesHere: true, paintsTheFrame: true,
-    issued: 0, painted: 0, viewing: null, navigationGeneration: 0, sourceGeneration: 0,
-    previewPaintBusy: false, previewPaintQueued: false, previewTimer: null,
-    everPainted: false, everPaintedShown: false, latestPreview: null, pdfFailure: false,
-    sourceFormat: "typst", treeNow: () => ({ main: "main.typ", texts: { "main.typ": "bad" }, digests: {} }),
-    headingOf: async () => "Title", snapshotDigest: async () => "digest-typst",
-    paintRendering: async () => {},
-    figures: { gather: async () => ({ assets: {}, urls: {} }) },
-    renderers: {
-      formatOf: () => "typst", producesPdf: () => true,
-      render: async () => ({ pdf: null, diagnostics: [{ severity: "error", message: "broken" }] }),
-      failurePage: async () => null,
-    },
-    framePreview: {
-      publish: () => assert.fail("a failed first Typst compile must not deliver a PDF"),
-      clear: () => {},
-    },
-    renderingStore: { cancelPoll: () => {} },
-    holdRendering: () => assert.fail("a failed first Typst compile must not store a PDF"),
-    diagnosticPainter: { rendered: () => {} }, tell: () => {}, say: (message) => assert.fail(message),
+  const renderers = {
+    formatOf: () => "typst", producesPdf: () => true,
+    render: async () => ({ pdf: null, diagnostics: [{ severity: "error", message: "broken" }] }),
+    failurePage: async () => null,
+  };
+  let tree = () => ({ main: "main.typ", texts: { "main.typ": "bad" }, digests: {} });
+  const harness = preview({
+    facts: { format: "typst" },
+    tree: () => tree(),
+    snapshotDigest: async () => "digest-typst",
+    renderers,
   });
-  vm.runInContext(paintPreview, ctx);
-  await vm.runInContext("paintPreview()", ctx);
-  assert.equal(ctx.pdfFailure, true, "structured Typst diagnostics set the PDF failure state");
-  assert.equal(ctx.latestPreview, null, "a failed first Typst compile leaves no blank success preview");
+  harness.tree = () => tree();
+  await harness.paint();
+  assert.equal(harness.state.failure, true, "structured Typst diagnostics set the PDF failure state");
+  assert.deepEqual(
+    harness.published, [],
+    "a failed first Typst compile leaves no blank success preview",
+  );
 
   // A compiler setup failure has neither a TeX log nor source diagnostics.
   // Its structured reason must reach the failure pane.
-  ctx.sourceFormat = "latex";
-  ctx.displayedFormat = "latex";
-  ctx.treeNow = () => ({ main: "main.tex", texts: { "main.tex": "source" }, digests: {} });
-  ctx.renderers.formatOf = () => "latex";
-  ctx.renderers.render = async () => ({ pdf: null, log: "", diagnostics: [], failure: { message: "The mirror has no engine release" } });
-  await vm.runInContext("paintPreview()", ctx);
-  assert.equal(ctx.pdfFailureReason, "The mirror has no engine release");
+  harness.facts.format = "latex";
+  tree = () => ({ main: "main.tex", texts: { "main.tex": "source" }, digests: {} });
+  renderers.formatOf = () => "latex";
+  renderers.render = async () => ({ pdf: null, log: "", diagnostics: [], failure: { message: "The mirror has no engine release" } });
+  await harness.paint();
+  assert.equal(harness.state.failureReason, "The mirror has no engine release");
 
   // HTML conversion errors belong to the source snapshot that caused them.
   const pendingHtml = deferred();
-  ctx.latexOutput = "html";
-  ctx.pdfOutput = false;
-  ctx.pdfFailure = false;
-  ctx.pdfFailureReason = "";
-  ctx.renderers.render = (_tree, _title, options) => {
+  harness.facts.latexOutput = "html";
+  harness.state.failure = false;
+  harness.state.failureReason = "";
+  renderers.render = (_tree, _title, options) => {
     assert.equal(options.format, "html");
     return pendingHtml.promise;
   };
-  const htmlPaint = vm.runInContext("paintPreview()", ctx);
+  const htmlPaint = harness.paint();
   await new Promise(setImmediate);
-  ctx.sourceGeneration++;
+  harness.facts.source++;
   pendingHtml.reject(new Error("old conversion failed"));
   await htmlPaint;
-  assert.equal(ctx.pdfFailure, false, "an old HTML error cannot mark a newer edit failed");
-  assert.equal(ctx.pdfFailureReason, "");
+  assert.equal(harness.state.failure, false, "an old HTML error cannot mark a newer edit failed");
+  assert.equal(harness.state.failureReason, "");
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
-// Ctrl-S says "saved on the server" only when that is true: never while
-// updates are pending, never while the connection is down.
+// Ctrl-S distinguishes server durability from an offline device save.
 {
   const said = [];
   const ctx = context({
@@ -717,7 +771,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   assert.deepEqual(said, ["saved on the server"]);
   ctx.connected = false;
   vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, ["saved on the server"]);
+  assert.deepEqual(said, ["saved on the server", "saved on this device"]);
 }
 
 // Reconnect metadata is checked before the old session can send its CRDT.
@@ -742,7 +796,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   });
   collaboration.start({ created_at: "first", role: "editor" });
   const active = fake.session;
-  active.joinOptions.send({ type: "y-update", update: "held" });
+  active.joinOptions.send({ type: "doc-update", update: "held" });
   assert.equal(sent.length, 1, "the initial y-open is sent");
   rooms[0].onConnected(false);
   const stale = rooms[0].onConnected(true);
@@ -751,7 +805,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   await current;
   first.resolve({ ok: true, json: async () => ({ created_at: "first", role: "editor" }) });
   await stale;
-  assert.equal(sent.filter((message) => message.type === "y-open").length, 2, "only the current reconnect re-opens");
+  assert.equal(sent.filter((message) => message.type === "doc-open").length, 2, "only the current reconnect re-opens");
   collaboration.close();
   assert.equal(active.left, true);
 }
@@ -781,7 +835,7 @@ for (const latest of [
   await roomOptions.onConnected(true);
   collaboration.close();
   assert.equal(changed, 1, "changed metadata invalidates the old session");
-  assert.equal(sent.filter((message) => message.type === "y-open").length, 1);
+  assert.equal(sent.filter((message) => message.type === "doc-open").length, 1);
 }
 
 // A metadata retry and a pending chat timeout are both cancelled by teardown.
@@ -878,20 +932,6 @@ for (const latest of [
 }
 console.log('reader-races: explicit preview selection, auxiliary files, rename and deletion passed');
 
-// Initial live-file discovery must not cancel a historical link being fetched.
-{
-  const ctx = context({
-    session: { mainPath: () => 'main.md' }, files: [],
-    previewMain: '', sourceFormat: 'markdown', navigationGeneration: 7,
-    checkpointNavigationPending: 7, mayEdit: false,
-    renderers: { formatOf: () => 'markdown', warm: () => {} }, configureLatex: () => {},
-  });
-  vm.runInContext(`${pairLocalQuarto}\n${body('  function updatePreviewTarget()', '  function previewThisFile()')}`, ctx);
-  vm.runInContext('updatePreviewTarget()', ctx);
-  assert.equal(ctx.previewMain, 'main.md');
-  assert.equal(ctx.navigationGeneration, 7, 'pending checkpoint navigation retains ownership');
-}
-
 // Main and secondary previews never expose the retired rendering store.
 assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//);
 
@@ -900,23 +940,70 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   const commands = [];
   const ctx = context({
     previewThisFile: () => commands.push('file'),
-    setQuartoPreviewMode: mode => commands.push(mode),
-    setTypstPreviewMode: mode => commands.push(mode),
+    toggleLocalExecution: () => commands.push('local-execution'),
     setLatexOutput: mode => commands.push(`latex-${mode}`),
     chose: value => commands.push(value),
     FILE_COMMANDS: [], chooseToolCommand: () => { throw Error('preview dispatched to Tools'); },
   });
   vm.runInContext(body('  function chooseViewCommand(value)', '  // The File menu.'), ctx);
   vm.runInContext(body('  function chooseCompactCommand(value)', '  /* ------------------------------------------------------------------- boot */'), ctx);
-  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("preview-quarto"); chooseCompactCommand("preview-markdown"); chooseCompactCommand("preview-typst"); chooseCompactCommand("preview-calepin"); chooseViewCommand("layout-split")', ctx);
-  assert.deepEqual(commands, ['file','quarto','markdown','typst','calepin','layout-split']);
+  vm.runInContext('chooseViewCommand("preview-file"); chooseViewCommand("local-execution"); chooseCompactCommand("local-execution"); chooseViewCommand("layout-split")', ctx);
+  assert.deepEqual(commands, ['file','local-execution','local-execution','layout-split']);
   vm.runInContext('chooseViewCommand("preview-latex-html"); chooseCompactCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
   const view = body('{#snippet viewItems()}', '{#snippet toolItems()}');
   const tools = body('{#snippet toolItems()}', '<Nav {me} documentation={false}>');
   assert.match(view, /Preview this file/);
   assert.match(view, /@render previewItems\(\)/);
+  // Local execution is its own section of the View menu, not another engine.
+  assert.match(view, /menu-section-label">Local execution<\/div>/);
+  assert.match(view, /value="local-execution"/);
+  assert.doesNotMatch(reader, /preview-quarto|preview-calepin|preview-markdown|preview-typst"/);
   assert.doesNotMatch(tools, /preview-/);
   assert.match(reader, /icon="eye" label="Preview this file"/);
 }
 console.log('reader-races: View and compact menus expose the same explicit preview controls');
+
+// Restoring replaces every file in the project, so what it discards has to be
+// what the reader was shown. A write that lands while the dialog is open --
+// a collaborator's edit, or this reader in another tab -- must be confirmed
+// again rather than quietly thrown away.
+{
+  // Reader reads the signature and hands it over, so the check drives the
+  // timeline the same way: what a confirmation is worth depends on the
+  // project it was given, not on what a session says a moment later.
+  const posted = [];
+  const timeline = createTimeline({
+    slug: "doc",
+    key: "",
+    history: { loadWithStatus: async () => ({ checkpoints: [], durability: null }) },
+    fetcher: async (url, options) => {
+      posted.push({ url, body: options.body });
+      return { ok: true, json: async () => ({}) };
+    },
+    problem: (message) => assert.fail(message),
+  });
+  timeline.state.canEdit = true;
+  const asShown = JSON.stringify({ main: "main.md", texts: { "main.md": "as confirmed" }, files: {} });
+  const moved = JSON.stringify({ main: "main.md", texts: { "main.md": "somebody else typed" }, files: {} });
+
+  timeline.ask("sha-one", asShown);
+  assert.equal(timeline.state.restoring, true);
+  await timeline.confirm(moved);
+  assert.equal(posted.length, 0, "a project that moved is not restored over without a second look");
+  assert.equal(timeline.state.restoreMoved, true, "and the dialog says so");
+  assert.equal(timeline.state.restoring, true, "and stays open");
+
+  await timeline.confirm(moved);
+  assert.equal(posted.length, 1, "confirming against what is now on the screen restores");
+  assert.equal(JSON.parse(posted[0].body).sha, "sha-one");
+  assert.equal(timeline.state.restoring, false);
+  assert.equal(timeline.state.restoreMoved, false);
+
+  // A reader who cannot edit cannot restore, whatever reaches the action.
+  const readOnly = createTimeline({ slug: "doc", fetcher: () => assert.fail("a reader must not restore") });
+  readOnly.ask("sha-one", asShown);
+  assert.equal(readOnly.state.restoring, false);
+  await readOnly.confirm(asShown);
+}
+console.log('reader-races: a restore is confirmed against the project it will replace');

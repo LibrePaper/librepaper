@@ -26,10 +26,13 @@ pub struct Arrival {
 }
 
 impl Arrival {
-    /// Forwarded TLS metadata is trusted only from a local proxy peer.
-    pub fn from_peer(headers: &HeaderMap, peer: std::net::IpAddr) -> Arrival {
+    /// Forwarded TLS metadata is trusted only from a configured proxy peer.
+    pub fn from_peer(headers: &HeaderMap, peer: std::net::IpAddr, trusted: &[String]) -> Arrival {
         let mut arrival = Self::from_headers(headers);
-        if !super::local_peer(peer) {
+        if !trusted
+            .iter()
+            .any(|network| super::network_contains(network, peer))
+        {
             arrival.scheme = "http";
         }
         arrival
@@ -146,7 +149,8 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("host", "reader.example".parse().unwrap());
         headers.insert("x-forwarded-proto", "https".parse().unwrap());
-        assert!(!Arrival::from_peer(&headers, "203.0.113.1".parse().unwrap()).is_https());
-        assert!(Arrival::from_peer(&headers, "127.0.0.1".parse().unwrap()).is_https());
+        let trusted = vec!["127.0.0.1/32".to_string()];
+        assert!(!Arrival::from_peer(&headers, "203.0.113.1".parse().unwrap(), &trusted).is_https());
+        assert!(Arrival::from_peer(&headers, "127.0.0.1".parse().unwrap(), &trusted).is_https());
     }
 }

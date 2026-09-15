@@ -110,16 +110,6 @@ pub(crate) struct Session {
     pub project: String,
     pub binding: String,
     pub root: PathBuf,
-    /// Project-relative path to the watched document. The log pump's own
-    /// `SessionWatch` holds a copy it uses to locate and validate renders;
-    /// this copy is kept on `Session` too so a future reader of the struct
-    /// (a status field, a diagnostic) does not have to thread it back out.
-    #[allow(dead_code)]
-    pub entrypoint: String,
-    /// No managed web server runs any more: kept only for wire
-    /// compatibility with clients that still read `url` off the response.
-    /// Always empty.
-    pub url: String,
     pub started: Instant,
     /// The last `PREVIEW_LOG_CAP_BYTES` of combined stdout+stderr from the
     /// watching process.
@@ -129,6 +119,7 @@ pub(crate) struct Session {
     /// Set while a render is in flight, cleared whether or not that
     /// render's output passed `looks_complete`.
     pub rendering: Arc<AtomicBool>,
+    watch: Arc<SessionWatch>,
     child: Child,
 }
 
@@ -369,7 +360,7 @@ impl Previews {
         &mut self,
         request: &PreviewRequest,
         bindings: &BindingStore,
-    ) -> Result<(String, String), String> {
+    ) -> Result<String, String> {
         let engine = if request.engine.is_empty() {
             "quarto"
         } else {
@@ -380,6 +371,10 @@ impl Previews {
             "calepin" => calepin::plan(&self.0, request, bindings)?,
             other => return Err(format!("unsupported preview engine: {other}")),
         };
+        // A retry or a reloaded browser replaces its own document watcher.
+        // Planning has already validated the replacement, so an invalid
+        // request cannot tear down a working preview.
+        self.stop_scope(&request.origin, &request.project).await;
         let mut command = plan.command;
         command
             .stdin(Stdio::null())
@@ -406,15 +401,17 @@ impl Previews {
         let stdout = child.stdout.take().ok_or("preview process has no stdout")?;
         let stderr = child.stderr.take().ok_or("preview process has no stderr")?;
         tokio::spawn(pump(stdout, watch.clone()));
-        tokio::spawn(pump(stderr, watch));
+        tokio::spawn(pump(stderr, watch.clone()));
         // Do not expose a dead session when the process rejects its
         // arguments or exits during initial startup. Longer initial renders
         // remain pending.
         tokio::time::sleep(Duration::from_millis(250)).await;
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             crate::local::quarto::terminate_process_group(&mut child).await;
+            let output = log.lock().await.clone();
             return Err(format!(
-                "preview process exited during startup ({status}); check the project locally"
+                "preview process exited during startup ({status}): {}",
+                output.trim()
             ));
         }
         let id = crate::util::new_id();
@@ -427,16 +424,31 @@ impl Previews {
                 project: request.project.clone(),
                 binding: plan.binding_id,
                 root: plan.root,
-                entrypoint: plan.entrypoint,
-                url: String::new(),
                 started: Instant::now(),
                 log,
                 latest,
                 rendering,
+                watch,
                 child,
             },
         );
-        Ok((id, String::new()))
+        Ok(id)
+    }
+
+    /// Recover the first completed artifact from disk if an engine version
+    /// did not emit the exact completion line its adapter recognizes. The
+    /// browser polls this endpoint already, so this is bounded to sessions
+    /// that have not published anything yet and adds no steady-state reads.
+    pub async fn recover_first_artifact(session: &Session) {
+        if session.latest.lock().await.is_none()
+            && session
+                .watch
+                .adapter
+                .output_path(&session.watch.root)
+                .is_some()
+        {
+            finish_render(&session.watch).await;
+        }
     }
 
     pub async fn stop(&mut self, id: &str) {

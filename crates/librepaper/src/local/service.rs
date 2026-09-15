@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -36,8 +36,8 @@ use tokio::sync::{mpsc, watch, Mutex, Notify};
 use crate::local::pairing::{self, PairingStore};
 use crate::local::preview;
 use crate::local::protocol::{
-    self, Capabilities, JobOutcome, JobRequest, JobStatus, ManifestEntry, PreviewRequest,
-    Workspace, BASE_PATH, MAX_FILES, MAX_JSON_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_UPLOAD_BYTES,
+    self, Capabilities, JobOptions, JobOutcome, JobRequest, JobStatus, ManifestEntry, Workspace,
+    BASE_PATH, MAX_FILES, MAX_JSON_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_UPLOAD_BYTES,
     PROTOCOL_VERSIONS,
 };
 
@@ -158,16 +158,6 @@ impl Default for FakeRunner {
 }
 
 #[cfg(test)]
-impl FakeRunner {
-    pub fn with_delay(delay: Duration) -> Self {
-        FakeRunner {
-            delay: std::sync::Mutex::new(delay),
-            ..FakeRunner::default()
-        }
-    }
-}
-
-#[cfg(test)]
 #[async_trait::async_trait]
 impl Runner for FakeRunner {
     async fn run(
@@ -241,7 +231,7 @@ impl Runner for FakeRunner {
                 generation: request.generation,
                 log_tail: "fake compile ok".to_string(),
                 outputs,
-                provenance: protocol::Provenance {
+                provenance: protocol::BuildProvenance {
                     backend: "local".to_string(),
                     engine: request.engine,
                     confinement: "none".to_string(),
@@ -262,6 +252,24 @@ fn hex_sha256(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex::encode(hasher.finalize())
+}
+
+fn manifest_tree_digest(manifest: &[ManifestEntry], uploads: &[(String, Vec<u8>)]) -> String {
+    let mut digest = Sha256::new();
+    for entry in manifest {
+        digest.update(entry.path.as_bytes());
+        digest.update(entry.size.to_le_bytes());
+        if let Some((_, bytes)) = uploads.iter().find(|(path, _)| path == &entry.path) {
+            digest.update(bytes);
+        }
+    }
+    hex::encode(digest.finalize())
+}
+
+fn input_manifest_digest(manifest: &[ManifestEntry]) -> String {
+    let mut entries = manifest.to_vec();
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    hex_sha256(&serde_json::to_vec(&entries).expect("manifest entries serialize"))
 }
 
 /// One job's live state: what `GET jobs/<id>` answers with, plus everything
@@ -343,23 +351,6 @@ impl LocalService {
     /// for bounded retry/recovery; interrupted and unknown workspaces are
     /// removed here and are never resumed.
     ///
-    /// A service with no hosted workspaces, which only the tests build now:
-    /// both `librepaper local start` and the one inside `serve` use
-    /// `with_hosted_workspaces_and_code`.
-    #[allow(dead_code)]
-    pub fn new(
-        port: u16,
-        instance: String,
-        state_home: &std::path::Path,
-        cache_home: &std::path::Path,
-        runner: Arc<dyn Runner>,
-        fixed_code: Option<String>,
-    ) -> Self {
-        Self::build(
-            port, instance, state_home, cache_home, runner, fixed_code, None,
-        )
-    }
-
     /// The same service, additionally admitting the hosted binding for every
     /// document and executing it in a workspace under `base`. The runner
     /// handed in must have been built with the same base. `fixed_code` is
@@ -438,7 +429,10 @@ impl LocalService {
     }
 }
 
-fn read_bounded_file(path: &std::path::Path, limit: usize) -> std::io::Result<Vec<u8>> {
+pub(crate) fn read_bounded_public(
+    path: &std::path::Path,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
     let file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
@@ -488,7 +482,7 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
             let _ = std::fs::remove_dir_all(&path);
             continue;
         }
-        let valid = read_bounded_file(&record_path, 4 * 1024 * 1024)
+        let valid = read_bounded_public(&record_path, 4 * 1024 * 1024)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<DurableQuartoJob>(&bytes).ok())
             .filter(|record| {
@@ -571,7 +565,7 @@ fn recover_quarto_jobs(jobs_root: &std::path::Path) -> HashMap<String, JobEntry>
                 file_error = true;
                 break;
             }
-            let Ok(bytes) = read_bounded_file(&file_path, MAX_UPLOAD_BYTES) else {
+            let Ok(bytes) = read_bounded_public(&file_path, MAX_UPLOAD_BYTES) else {
                 file_error = true;
                 break;
             };
@@ -900,6 +894,12 @@ async fn dispatch(
         ["capabilities", "rescan"] if *method == Method::POST => {
             handle_capabilities(inner, headers, origin, true).await
         }
+        ["zotero", "search"] if *method == Method::GET => {
+            handle_zotero_search(inner, headers, origin, request).await
+        }
+        ["zotero", "items", key] if *method == Method::GET => {
+            handle_zotero_item(inner, headers, origin, key).await
+        }
         ["previews"] if *method == Method::POST => {
             handle_preview(inner, headers, origin, None, request).await
         }
@@ -933,6 +933,56 @@ async fn dispatch(
             handle_cancel(inner, headers, origin, id).await
         }
         _ => plain(404, "not found"),
+    }
+}
+
+/* -------------------------------------------------------------- Zotero */
+
+async fn handle_zotero_search(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let query = request
+        .uri()
+        .query()
+        .and_then(|query| {
+            url::form_urlencoded::parse(query.as_bytes()).find(|(name, _)| name == "q")
+        })
+        .map(|(_, value)| value.into_owned())
+        .unwrap_or_default();
+    if query.len() > 500 {
+        return plain(400, "Zotero search query is too long");
+    }
+    match crate::local::zotero::Client::local()
+        .search(&query, 50)
+        .await
+    {
+        Ok(results) => write_json(200, &json!({ "entries": results })),
+        Err(error) => write_json(503, &json!({ "error": error.to_string() })),
+    }
+}
+
+async fn handle_zotero_item(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    key: &str,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    match crate::local::zotero::Client::local().item(key).await {
+        Ok(item) => {
+            let citation_key = crate::local::zotero::base_key(&item.data);
+            let bib = crate::local::zotero::bibliography(&[item], &BTreeMap::new());
+            write_json(200, &json!({ "citation_key": citation_key, "bibtex": bib }))
+        }
+        Err(error) => write_json(503, &json!({ "error": error.to_string() })),
     }
 }
 
@@ -1047,7 +1097,7 @@ async fn handle_binding_folder(
             &json!({"error": "project does not match the connected token"}),
         );
     }
-    if let Err(error) = crate::local::quarto::validate_main(&body.entrypoint) {
+    if let Err(error) = crate::local::quarto::validate_binding_entrypoint(&body.entrypoint) {
         return write_json(400, &json!({"error": error}));
     }
     let Ok(_dialog) = inner.folder_dialog.try_lock() else {
@@ -1080,7 +1130,7 @@ async fn handle_binding_folder(
         Err(_) => {
             return write_json(
                 400,
-                &json!({"error": "The selected folder must contain the named Quarto entrypoint. Check the filename and choose its project folder again."}),
+                &json!({"error": "The selected folder must contain the named project entrypoint. Check the filename and choose its project folder again."}),
             )
         }
     };
@@ -1319,12 +1369,14 @@ fn handle_pair_page(request: &Request<Body>) -> Reply {
 <h1>Use this computer's tools?</h1>\
 <p><span class=\"site\">{site}</span> wants to render the document <code>{name}</code> \
 with the Quarto and TeX tools installed on this computer.</p>\
-<p>Allowing runs that document's code here whenever an editor of it asks. \
-Only allow sites you trust.</p>\
+<p><strong>Warning:</strong> Quarto documents can execute arbitrary code on this computer, \
+with your user account's access to files, installed packages, and the network. Pair only \
+with a site and document you trust. Pairing alone does not run the document; LibrePaper \
+will ask you to start Quarto separately.</p>\
 <form method=\"post\" action=\"{BASE_PATH}/pair\">\
 <input type=\"hidden\" name=\"origin\" value=\"{origin_attr}\">\
 <input type=\"hidden\" name=\"project\" value=\"{project_attr}\">{request_fields}\
-<div class=\"row\"><button type=\"submit\" class=\"allow\" autofocus>Allow</button>\
+<div class=\"row\"><button type=\"submit\" class=\"allow\">Allow local code execution</button>\
 <button type=\"button\" onclick=\"window.close()\">Cancel</button></div></form>\
 </body></html>"
     );
@@ -1497,10 +1549,120 @@ async fn handle_capabilities(
         return response;
     }
     let capabilities = inner.runner.capabilities(refresh).await;
-    write_json(
-        200,
-        &serde_json::to_value(capabilities).unwrap_or(Value::Null),
-    )
+    let mut response = serde_json::to_value(capabilities).unwrap_or(Value::Null);
+    let store = super::presets::PresetStore::new(&inner.state_home);
+    let presets: Vec<_> = store
+        .list()
+        .into_iter()
+        .map(|summary| {
+            let schema = store
+                .get(&summary.id)
+                .map(|preset| preset.option_schema)
+                .unwrap_or_default();
+            let mut entry = serde_json::to_value(summary).unwrap_or(Value::Null);
+            entry["option_schema"] = json!(schema);
+            entry
+        })
+        .collect();
+    response["presets"] = json!(presets);
+    write_json(200, &response)
+}
+
+struct MultipartUpload {
+    metadata: String,
+    files: Vec<(String, Vec<u8>)>,
+}
+
+fn stage_uploads(root: &Path, uploads: &[(String, Vec<u8>)]) -> Result<(), String> {
+    for (path, bytes) in uploads {
+        let destination = root.join(path);
+        destination
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| {
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                let mut file = options.open(&destination)?;
+                use std::io::Write;
+                file.write_all(bytes)
+            })
+            .map_err(|_| format!("could not stage {path}"))?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+async fn read_multipart_upload(
+    request: Request<Body>,
+    metadata_name: &str,
+    metadata_part_error: &str,
+    metadata_size_error: &str,
+    metadata_missing_error: &str,
+) -> Result<MultipartUpload, Reply> {
+    let content_type = header_str(request.headers(), "content-type").unwrap_or_default();
+    if !content_type.contains("multipart/form-data") {
+        return Err(write_json(
+            400,
+            &json!({"error": "expected a multipart upload"}),
+        ));
+    }
+    let ceiling = MAX_UPLOAD_BYTES + MAX_JSON_BYTES + 64 * 1024;
+    let (parts, body) = request.into_parts();
+    let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
+    let mut multipart = Multipart::from_request(limited, &())
+        .await
+        .map_err(|_| write_json(400, &json!({"error": "bad upload"})))?;
+    let mut metadata = None;
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(error) => {
+                return Err(if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                    write_json(413, &json!({"error": "that upload is too large"}))
+                } else {
+                    write_json(400, &json!({"error": "bad upload"}))
+                })
+            }
+        };
+        match field.name().unwrap_or_default() {
+            name if name == metadata_name => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|_| write_json(400, &json!({"error": metadata_part_error})))?;
+                if text.len() > MAX_JSON_BYTES {
+                    return Err(write_json(413, &json!({"error": metadata_size_error})));
+                }
+                metadata = Some(text);
+            }
+            "file" => {
+                let name = field.file_name().unwrap_or_default().to_string();
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|_| write_json(400, &json!({"error": "bad upload"})))?;
+                total = total.saturating_add(bytes.len() as u64);
+                if total > MAX_UPLOAD_BYTES as u64 {
+                    return Err(write_json(
+                        413,
+                        &json!({"error": "that upload is too large"}),
+                    ));
+                }
+                if files.len() >= MAX_FILES {
+                    return Err(write_json(413, &json!({"error": "too many files"})));
+                }
+                files.push((name, bytes.to_vec()));
+            }
+            _ => {}
+        }
+    }
+    let Some(metadata) = metadata else {
+        return Err(write_json(400, &json!({"error": metadata_missing_error})));
+    };
+    Ok(MultipartUpload { metadata, files })
 }
 
 /* ---------------------------------------------------------------- jobs */
@@ -1524,74 +1686,26 @@ async fn handle_workspace_put(
     };
     let origin = origin.unwrap_or_default().to_string();
 
-    let content_type = header_str(headers, "content-type").unwrap_or_default();
-    if !content_type.contains("multipart/form-data") {
-        return write_json(400, &json!({"error": "expected a multipart upload"}));
-    }
-
-    let ceiling = MAX_UPLOAD_BYTES + MAX_JSON_BYTES + 64 * 1024;
-    let (parts, body) = request.into_parts();
-    let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
-    let mut multipart = match Multipart::from_request(limited, &()).await {
-        Ok(multipart) => multipart,
-        Err(_) => return write_json(400, &json!({"error": "bad upload"})),
+    let upload = match read_multipart_upload(
+        request,
+        "manifest",
+        "bad manifest part",
+        "manifest is too large",
+        "missing the manifest part",
+    )
+    .await
+    {
+        Ok(upload) => upload,
+        Err(response) => return response,
     };
-
-    let mut manifest_text: Option<String> = None;
-    let mut uploads: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut total: u64 = 0;
-
-    loop {
-        let field = match multipart.next_field().await {
-            Ok(Some(field)) => field,
-            Ok(None) => break,
-            Err(err) => {
-                return if err.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                    write_json(413, &json!({"error": "that upload is too large"}))
-                } else {
-                    write_json(400, &json!({"error": "bad upload"}))
-                };
-            }
-        };
-        match field.name().unwrap_or_default() {
-            "manifest" => {
-                let text = match field.text().await {
-                    Ok(text) => text,
-                    Err(_) => return write_json(400, &json!({"error": "bad manifest part"})),
-                };
-                if text.len() > MAX_JSON_BYTES {
-                    return write_json(413, &json!({"error": "manifest is too large"}));
-                }
-                manifest_text = Some(text);
-            }
-            "file" => {
-                let name = field.file_name().unwrap_or_default().to_string();
-                let bytes = match field.bytes().await {
-                    Ok(bytes) => bytes,
-                    Err(_) => return write_json(400, &json!({"error": "bad upload"})),
-                };
-                total += bytes.len() as u64;
-                if total > MAX_UPLOAD_BYTES as u64 {
-                    return write_json(413, &json!({"error": "that upload is too large"}));
-                }
-                if uploads.len() >= MAX_FILES {
-                    return write_json(413, &json!({"error": "too many files"}));
-                }
-                uploads.push((name, bytes.to_vec()));
-            }
-            _ => {}
-        }
-    }
-
-    let Some(manifest_text) = manifest_text else {
-        return write_json(400, &json!({"error": "missing the manifest part"}));
-    };
+    let uploads = upload.files;
+    let manifest_text = upload.metadata;
     let manifest: Vec<ManifestEntry> = match serde_json::from_str(&manifest_text) {
         Ok(manifest) => manifest,
         Err(_) => return write_json(400, &json!({"error": "bad manifest"})),
     };
-    if manifest.len() > MAX_FILES {
-        return write_json(413, &json!({"error": "too many files"}));
+    if let Err(response) = validate_manifest_shape(&manifest) {
+        return response;
     }
     if let Err(response) = validate_manifest(&manifest, &uploads) {
         return response;
@@ -1611,23 +1725,8 @@ async fn handle_workspace_put(
         Ok(dir) => dir,
         Err(_) => return write_json(500, &json!({"error": "could not create a workspace"})),
     };
-    for (path, bytes) in &uploads {
-        let dest = staged.path().join(path);
-        // Same `create_new` staging as `jobs`: a path colliding with one
-        // already staged fails here instead of quietly following it.
-        let write = dest
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| {
-                let mut options = std::fs::OpenOptions::new();
-                options.write(true).create_new(true);
-                let mut file = options.open(&dest)?;
-                use std::io::Write;
-                file.write_all(bytes)
-            });
-        if write.is_err() {
-            return write_json(400, &json!({"error": format!("could not stage {path}")}));
-        }
+    if let Err(error) = stage_uploads(staged.path(), &uploads) {
+        return write_json(400, &json!({"error": error}));
     }
 
     match sync_hosted_workspace(staged.path(), &binding.root, &manifest) {
@@ -1648,74 +1747,300 @@ async fn handle_jobs_post(
     };
     let origin = origin.unwrap_or_default().to_string();
 
-    let content_type = header_str(headers, "content-type").unwrap_or_default();
-    if !content_type.contains("multipart/form-data") {
-        return write_json(400, &json!({"error": "expected a multipart upload"}));
-    }
-
-    let ceiling = MAX_UPLOAD_BYTES + MAX_JSON_BYTES + 64 * 1024;
-    let (parts, body) = request.into_parts();
-    let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
-    let mut multipart = match Multipart::from_request(limited, &()).await {
-        Ok(multipart) => multipart,
-        Err(_) => return write_json(400, &json!({"error": "bad upload"})),
+    let upload = match read_multipart_upload(
+        request,
+        "job",
+        "bad job part",
+        "job description is too large",
+        "missing the job part",
+    )
+    .await
+    {
+        Ok(upload) => upload,
+        Err(response) => return response,
     };
-
-    let mut job_text: Option<String> = None;
-    let mut uploads: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut total: u64 = 0;
-
-    loop {
-        let field = match multipart.next_field().await {
-            Ok(Some(field)) => field,
-            Ok(None) => break,
-            Err(err) => {
-                return if err.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                    write_json(413, &json!({"error": "that upload is too large"}))
-                } else {
-                    write_json(400, &json!({"error": "bad upload"}))
-                };
-            }
-        };
-        match field.name().unwrap_or_default() {
-            "job" => {
-                let text = match field.text().await {
-                    Ok(text) => text,
-                    Err(_) => return write_json(400, &json!({"error": "bad job part"})),
-                };
-                if text.len() > MAX_JSON_BYTES {
-                    return write_json(413, &json!({"error": "job description is too large"}));
-                }
-                job_text = Some(text);
-            }
-            "file" => {
-                let name = field.file_name().unwrap_or_default().to_string();
-                let bytes = match field.bytes().await {
-                    Ok(bytes) => bytes,
-                    Err(_) => return write_json(400, &json!({"error": "bad upload"})),
-                };
-                total += bytes.len() as u64;
-                if total > MAX_UPLOAD_BYTES as u64 {
-                    return write_json(413, &json!({"error": "that upload is too large"}));
-                }
-                if uploads.len() >= MAX_FILES {
-                    return write_json(413, &json!({"error": "too many files"}));
-                }
-                uploads.push((name, bytes.to_vec()));
-            }
-            _ => {}
-        }
-    }
-
-    let Some(job_text) = job_text else {
-        return write_json(400, &json!({"error": "missing the job part"}));
-    };
-    let job: JobRequest = match serde_json::from_str(&job_text) {
+    let mut uploads = upload.files;
+    let job_text = upload.metadata;
+    let raw_job: Value = match serde_json::from_str(&job_text) {
         Ok(job) => job,
         Err(_) => return write_json(400, &json!({"error": "bad job description"})),
     };
+    let protocol = raw_job.get("protocol").and_then(Value::as_u64).unwrap_or(0);
+    let mut job: JobRequest = if protocol == 2 {
+        let request: protocol::BuildRequestV2 = match serde_json::from_value(raw_job) {
+            Ok(request) => request,
+            Err(error) => {
+                return write_json(
+                    400,
+                    &json!({"error": format!("bad protocol 2 job description: {error}")}),
+                )
+            }
+        };
+        if let Err(error) = request.validate_shape() {
+            return write_json(400, &json!({"error": error}));
+        }
+        let engine = request
+            .options
+            .get("engine")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let is_quarto = request.builder == "quarto";
+        if request.builder == "calepin"
+            && !matches!(
+                request.workspace,
+                protocol::WorkspaceRequest::Snapshot {
+                    binding_id: Some(_)
+                }
+            )
+        {
+            return write_json(
+                400,
+                &json!({"error": "Calepin builds require a scoped snapshot binding"}),
+            );
+        }
+        let quarto = if is_quarto {
+            let binding_id = match &request.workspace {
+                protocol::WorkspaceRequest::Snapshot {
+                    binding_id: Some(id),
+                } => id.clone(),
+                _ => {
+                    return write_json(
+                        400,
+                        &json!({"error": "Quarto builds require a scoped snapshot binding"}),
+                    )
+                }
+            };
+            Some(protocol::QuartoJobOptions {
+                binding_id,
+                main: request.entrypoint.clone(),
+                format: request.output.clone(),
+                execution_mode: protocol::QuartoExecutionMode::IsolatedSnapshot,
+                profile: request
+                    .options
+                    .get("profile")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+                parameters: request
+                    .options
+                    .get("parameters")
+                    .and_then(Value::as_object)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                policy: request
+                    .options
+                    .get("policy")
+                    .map(|value| serde_json::from_value(value.clone()))
+                    .transpose()
+                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                data_inputs: request
+                    .options
+                    .get("data_inputs")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                shared_inventory_complete: true,
+                shared_tree_sha256: Some(manifest_tree_digest(&request.manifest, &uploads)),
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+        let mut builder_options = request.options;
+        if request.preset.is_none() {
+            builder_options.remove("engine");
+        }
+        JobRequest {
+            protocol: 2,
+            kind: if is_quarto {
+                "quarto".into()
+            } else {
+                "build".into()
+            },
+            project: request.project,
+            origin: request.origin,
+            snapshot: request.snapshot,
+            generation: request.generation,
+            engine,
+            main: request.entrypoint.clone(),
+            stem: String::new(),
+            quarto,
+            manifest: request.manifest,
+            source: request.source,
+            options: JobOptions {
+                deadline_seconds: request
+                    .deadline_seconds
+                    .unwrap_or(protocol::DEFAULT_DEADLINE_SECONDS),
+                max_passes: request.max_passes.unwrap_or(protocol::DEFAULT_MAX_PASSES),
+            },
+            builder: Some(request.builder),
+            workspace: Some(request.workspace),
+            entrypoint: Some(request.entrypoint),
+            output: Some(request.output),
+            builder_options: Some(builder_options),
+            preset: request.preset,
+        }
+    } else {
+        match serde_json::from_value(raw_job) {
+            Ok(job) => job,
+            Err(error) => {
+                return write_json(
+                    400,
+                    &json!({"error": format!("bad job description: {error}")}),
+                )
+            }
+        }
+    };
     if !PROTOCOL_VERSIONS.contains(&job.protocol) {
         return write_json(400, &json!({"error": "unsupported protocol version"}));
+    }
+    // Bound local reads must follow authentication and inventory limits.
+    if job.project != project
+        || pairing::normalize_origin(&job.origin) != pairing::normalize_origin(&origin)
+    {
+        return write_json(
+            403,
+            &json!({"error": "job scope does not match the connected token"}),
+        );
+    }
+    if let Err(response) = validate_manifest_shape(&job.manifest) {
+        return response;
+    }
+    if let Some(source) = &job.source {
+        if let Err(error) = source.validate() {
+            return write_json(400, &json!({"error": error}));
+        }
+        let main = job.entrypoint.as_deref().unwrap_or(&job.main);
+        if source.tree_sha256 != job.snapshot || source.main_path != main {
+            return write_json(
+                400,
+                &json!({"error": "source snapshot identity does not match the build request"}),
+            );
+        }
+        if source.manifest_sha256 != input_manifest_digest(&job.manifest) {
+            return write_json(
+                400,
+                &json!({"error": "source manifest digest does not match the materialized inputs"}),
+            );
+        }
+    }
+    if job.protocol == 2 {
+        let (Some(builder), Some(workspace), Some(entrypoint), Some(output)) = (
+            job.builder.as_deref(),
+            job.workspace.as_ref(),
+            job.entrypoint.as_deref(),
+            job.output.as_deref(),
+        ) else {
+            return write_json(
+                400,
+                &json!({"error": "protocol 2 jobs require builder, workspace, entrypoint, and output"}),
+            );
+        };
+        if builder.is_empty() || builder.len() > 128 || !protocol::safe_relative_path(entrypoint) {
+            return write_json(
+                400,
+                &json!({"error": "invalid protocol 2 builder or entrypoint"}),
+            );
+        }
+        if output.is_empty()
+            || output.len() > 64
+            || !output
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+        {
+            return write_json(400, &json!({"error": "invalid protocol 2 output"}));
+        }
+        if let Err(error) = workspace.validate() {
+            return write_json(400, &json!({"error": error}));
+        }
+        // Builds always run in service-owned temporary workspaces. Bound
+        // directories are a preview surface; a snapshot may name a binding
+        // solely to authorize copying selected inputs into its temp workspace.
+        if matches!(workspace, protocol::WorkspaceRequest::Bound { .. }) {
+            return write_json(
+                400,
+                &json!({"error": "bound workspace is only available for managed previews"}),
+            );
+        }
+        if let protocol::WorkspaceRequest::Snapshot {
+            binding_id: Some(binding_id),
+        } = workspace
+        {
+            let Some(binding) = inner
+                .quarto_bindings
+                .get_scoped(binding_id, &origin, &project)
+            else {
+                return write_json(
+                    403,
+                    &json!({"error": "workspace binding is not granted for this origin and project"}),
+                );
+            };
+            if binding.entrypoint != entrypoint {
+                return write_json(
+                    403,
+                    &json!({"error": "entrypoint does not match the scoped binding"}),
+                );
+            }
+            let authorized_root = match std::fs::canonicalize(&binding.root) {
+                Ok(root) if root.is_dir() && root == binding.root => root,
+                _ => {
+                    return write_json(403, &json!({"error": "scoped binding root is unavailable"}))
+                }
+            };
+            // A bound snapshot contributes only files explicitly named by
+            // the manifest. Copying happens into this request's fresh job
+            // workspace below; the binding root itself is never executed.
+            for entry in &job.manifest {
+                if uploads.iter().any(|(name, _)| name == &entry.path) {
+                    continue;
+                }
+                let source = binding.root.join(&entry.path);
+                let source = match std::fs::canonicalize(&source) {
+                    Ok(source) if source.starts_with(&authorized_root) && source.is_file() => {
+                        source
+                    }
+                    _ => {
+                        return write_json(
+                            400,
+                            &json!({"error": format!("bound input is outside the authorized folder: {}", entry.path)}),
+                        )
+                    }
+                };
+                let bytes = match read_bounded_public(&source, MAX_UPLOAD_BYTES) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        return write_json(
+                            400,
+                            &json!({"error": format!("bound input is unavailable: {}", entry.path)}),
+                        )
+                    }
+                };
+                if bytes.len() as u64 != entry.size || hex_sha256(&bytes) != entry.sha256 {
+                    return write_json(
+                        400,
+                        &json!({"error": format!("bound input digest mismatch: {}", entry.path)}),
+                    );
+                }
+                uploads.push((entry.path.clone(), bytes));
+            }
+        }
+        if builder != "quarto" {
+            job.kind = "build".into();
+            job.main = entrypoint.to_string();
+        }
     }
     if job.project != project {
         return write_json(
@@ -1729,8 +2054,13 @@ async fn handle_jobs_post(
             &json!({"error": "origin does not match the connected token"}),
         );
     }
-    if let Err(error) = crate::local::engine_adapter::select(&job) {
-        return write_json(400, &json!({"error": error}));
+    if let Err(response) = validate_manifest_shape(&job.manifest) {
+        return response;
+    }
+    if job.protocol != 2 {
+        if let Err(error) = crate::local::engine_adapter::select(&job) {
+            return write_json(400, &json!({"error": error}));
+        }
     }
     let previews = inner.previews.lock().await;
     if job.kind == "quarto" {
@@ -1775,6 +2105,11 @@ async fn handle_jobs_post(
     if let Err(response) = validate_manifest(&job.manifest, &uploads) {
         return response;
     }
+    if job.protocol == 2 {
+        if let Some(options) = job.quarto.as_mut() {
+            options.shared_tree_sha256 = Some(manifest_tree_digest(&job.manifest, &uploads));
+        }
+    }
 
     // A lost browser response must be retryable without rerunning user code.
     // Reusing a key with a different request is rejected so a stale retry
@@ -1814,26 +2149,9 @@ async fn handle_jobs_post(
     if std::fs::create_dir_all(&project_dir).is_err() {
         return write_json(500, &json!({"error": "could not create a workspace"}));
     }
-    for (path, bytes) in &uploads {
-        let dest = project_dir.join(path);
-        let staged = dest
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| {
-                // `create_new` refuses to write through a name that already
-                // exists -- file, directory or symlink -- so a path that
-                // tried to reuse or hijack an entry another part just staged
-                // fails here instead of quietly following it.
-                let mut options = std::fs::OpenOptions::new();
-                options.write(true).create_new(true);
-                let mut file = options.open(&dest)?;
-                use std::io::Write;
-                file.write_all(bytes)
-            });
-        if staged.is_err() {
-            let _ = std::fs::remove_dir_all(&root);
-            return write_json(400, &json!({"error": format!("could not stage {path}")}));
-        }
+    if let Err(error) = stage_uploads(&project_dir, &uploads) {
+        let _ = std::fs::remove_dir_all(&root);
+        return write_json(400, &json!({"error": error}));
     }
 
     let workspace = Workspace { root: root.clone() };
@@ -1955,10 +2273,33 @@ async fn handle_jobs_post(
     write_json(202, &json!({"id": id, "status": "queued"}))
 }
 
-/// Every manifest entry is a safe path, listed once, uploaded exactly once,
-/// and matches the bytes actually sent; every uploaded part is on the
-/// manifest. Any mismatch refuses the whole job -- nothing is staged from a
-/// request this returns an error for.
+/// Every manifest entry has a bounded count, safe path, and total size.
+#[allow(clippy::result_large_err)]
+fn validate_manifest_shape(manifest: &[ManifestEntry]) -> Result<(), Reply> {
+    if manifest.len() > MAX_FILES {
+        return Err(write_json(
+            413,
+            &json!({"error": "too many manifest entries"}),
+        ));
+    }
+    if manifest
+        .iter()
+        .any(|entry| !protocol::safe_relative_path(&entry.path))
+    {
+        return Err(write_json(400, &json!({"error": "unsafe manifest path"})));
+    }
+    let total = manifest
+        .iter()
+        .try_fold(0u64, |total, entry| total.checked_add(entry.size));
+    if total.is_none_or(|total| total > MAX_UPLOAD_BYTES as u64) {
+        return Err(write_json(
+            413,
+            &json!({"error": "manifest exceeds upload limits"}),
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::result_large_err)] // as `server.rs`'s `read_upload`: the error is a response
 fn validate_manifest(
     manifest: &[ManifestEntry],
@@ -2070,7 +2411,16 @@ async fn handle_job_file(
         return plain(404, "not found");
     };
     let mut response = Response::new(Body::from(bytes.clone()));
-    set(&mut response, "content-type", "application/octet-stream");
+    let mime = match name {
+        "pdf" => "application/pdf",
+        "html" => "text/html; charset=utf-8",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "log" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    };
+    set(&mut response, "content-type", mime);
+    set(&mut response, "x-content-type-options", "nosniff");
+    set(&mut response, "content-security-policy", "sandbox");
     response
 }
 
@@ -2318,7 +2668,6 @@ async fn handle_preview(
                 200,
                 &json!({
                     "id": id,
-                    "url": preview.url,
                     "state": state,
                     "engine": preview.engine,
                     "kind": preview.kind.as_str(),
@@ -2331,8 +2680,11 @@ async fn handle_preview(
         previews.stop(id).await;
         return write_json(200, &json!({"stopped":true}));
     }
-    let job = match read_json_body::<PreviewRequest>(request).await {
-        Ok(job) => job,
+    let job = match read_json_body::<Value>(request).await {
+        Ok(raw) => match protocol::decode_preview(raw) {
+            Ok(job) => job,
+            Err(error) => return write_json(400, &json!({"error": error})),
+        },
         Err(e) => return e,
     };
     if pairing::normalize_origin(&job.origin) != origin || job.project != project {
@@ -2340,11 +2692,56 @@ async fn handle_preview(
     }
     let mut job = job;
     job.origin = origin.clone();
+    if job.protocol == 2 {
+        let Some(builder) = job.builder.as_deref() else {
+            return plain(400, "protocol 2 preview requires a builder");
+        };
+        if !matches!(
+            job.workspace,
+            Some(protocol::WorkspaceRequest::Bound { .. })
+        ) {
+            return plain(400, "managed previews require a bound workspace");
+        }
+        if !matches!(builder, "quarto" | "calepin") {
+            return plain(400, "builder does not support managed preview");
+        }
+        job.kind = "quarto".into();
+        job.engine = builder.into();
+        if builder == "quarto" && job.quarto.is_none() {
+            if let Some(protocol::WorkspaceRequest::Bound { binding_id }) = &job.workspace {
+                job.quarto = Some(protocol::QuartoJobOptions {
+                    binding_id: binding_id.clone(),
+                    main: job.entrypoint.clone().unwrap_or_else(|| "index.qmd".into()),
+                    format: job.output.clone().unwrap_or_else(|| "html".into()),
+                    ..Default::default()
+                });
+            }
+        }
+        if builder == "calepin" && job.calepin.is_none() {
+            if let Some(protocol::WorkspaceRequest::Bound { binding_id }) = &job.workspace {
+                job.calepin = Some(protocol::CalepinJobOptions {
+                    binding_id: binding_id.clone(),
+                    main: job.entrypoint.clone().unwrap_or_else(|| "index.typ".into()),
+                    format: job.output.clone().unwrap_or_else(|| "html".into()),
+                });
+            }
+        }
+    }
     if !PROTOCOL_VERSIONS.contains(&job.protocol)
-        || job.kind != "quarto"
+        || !matches!(job.kind.as_str(), "quarto" | "calepin")
         || job.manifest.len() > MAX_FILES
     {
         return plain(400, "invalid preview request");
+    }
+    if let Some(source) = &job.source {
+        let main = job.entrypoint.as_deref().unwrap_or(&source.main_path);
+        if source.validate().is_err()
+            || source.tree_sha256 != job.snapshot
+            || source.main_path != main
+            || source.manifest_sha256 != input_manifest_digest(&job.manifest)
+        {
+            return plain(400, "preview source snapshot does not match its inputs");
+        }
     }
     let mut previews = inner.previews.lock().await;
     let active_pairings = inner.pairing.active_pairings();
@@ -2371,10 +2768,7 @@ async fn handle_preview(
         return plain(409, "Wait for the render job before starting preview");
     }
     match previews.start(&job, &inner.quarto_bindings).await {
-        Ok((id, url)) => write_json(
-            201,
-            &json!({"id":id,"url":url,"state":"starting","expires_in":3600}),
-        ),
+        Ok(id) => write_json(201, &json!({"id":id,"state":"starting","expires_in":3600})),
         Err(error) => write_json(400, &json!({"error":error})),
     }
 }
@@ -2405,6 +2799,7 @@ async fn handle_preview_page(
     else {
         return plain(404, "preview not found");
     };
+    preview::Previews::recover_first_artifact(preview).await;
     let rendering = preview.rendering.load(std::sync::atomic::Ordering::SeqCst);
     let rendering_header = if rendering { "true" } else { "false" };
     let latest = preview.latest.lock().await;
@@ -2438,7 +2833,8 @@ async fn handle_preview_page(
 
 #[cfg(test)]
 mod recovery_tests {
-    use super::recovered_finished_at;
+    use super::{input_manifest_digest, recovered_finished_at};
+    use crate::local::protocol::ManifestEntry;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -2448,5 +2844,18 @@ mod recovery_tests {
         let now = Instant::now();
         assert!(started <= finished && finished <= now);
         assert!(now.duration_since(finished) <= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn materialized_manifest_digest_matches_the_client_contract() {
+        let entry = ManifestEntry {
+            path: "paper.tex".into(),
+            sha256: "c".repeat(64),
+            size: 3,
+        };
+        assert_eq!(
+            input_manifest_digest(&[entry]),
+            "f2345adfd5a4ed686a4fe787ce78ff6a1edc3c180ccd246395f7b4ebc1c13d8d"
+        );
     }
 }

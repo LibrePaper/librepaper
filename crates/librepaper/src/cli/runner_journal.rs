@@ -106,23 +106,12 @@ pub(crate) fn set_execution_epoch(path: &Path, epoch: Option<&str>) -> Result<()
     match epoch.filter(|value| !value.is_empty() && value.len() <= 256) {
         Some(epoch) => {
             let temporary = temporary_path(target, "epoch");
-            fs::write(&temporary, epoch.as_bytes())
-                .map_err(|error| format!("could not write runner execution epoch: {error}"))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
-                    .map_err(|error| error.to_string())?;
-            }
-            File::open(&temporary)
-                .and_then(|file| file.sync_all())
-                .map_err(|error| {
-                    format!("could not durable-sync runner execution epoch: {error}")
-                })?;
-            fs::rename(&temporary, target)
-                .map_err(|error| format!("could not publish runner execution epoch: {error}"))?;
-            #[cfg(unix)]
-            sync_parent(target, "runner execution epoch")?;
+            publish_durable_private(
+                &temporary,
+                target,
+                epoch.as_bytes(),
+                "runner execution epoch",
+            )?;
         }
         None => {
             if fs::remove_file(target).is_ok() {
@@ -169,21 +158,7 @@ pub(crate) fn set_active_task(path: &Path, task_id: Option<&str>) -> Result<(), 
     match task_id {
         Some(task_id) if !task_id.is_empty() && task_id.len() <= 128 => {
             let temporary = temporary_path(&active, "task");
-            fs::write(&temporary, task_id.as_bytes())
-                .map_err(|error| format!("could not write active runner task: {error}"))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
-                    .map_err(|error| error.to_string())?;
-            }
-            File::open(&temporary)
-                .and_then(|file| file.sync_all())
-                .map_err(|error| format!("could not durable-sync active runner task: {error}"))?;
-            fs::rename(&temporary, &active)
-                .map_err(|error| format!("could not publish active runner task: {error}"))?;
-            #[cfg(unix)]
-            sync_parent(&active, "active task")?;
+            publish_durable_private(&temporary, &active, task_id.as_bytes(), "active task")?;
         }
         _ => {
             if fs::remove_file(&active).is_ok() {
@@ -238,21 +213,29 @@ fn write(path: &Path, disk: &Disk) -> Result<(), String> {
         return Err("runner journal exceeds its size limit".into());
     }
     let temporary = temporary_path(path, "journal");
-    fs::write(&temporary, bytes)
-        .map_err(|error| format!("could not write runner journal: {error}"))?;
+    publish_durable_private(&temporary, path, &bytes, "runner journal")?;
+    Ok(())
+}
+
+fn publish_durable_private(
+    temporary: &Path,
+    target: &Path,
+    bytes: &[u8],
+    what: &str,
+) -> Result<(), String> {
+    fs::write(temporary, bytes).map_err(|error| format!("could not write {what}: {error}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
+        fs::set_permissions(temporary, fs::Permissions::from_mode(0o600))
             .map_err(|error| error.to_string())?;
     }
-    File::open(&temporary)
+    File::open(temporary)
         .and_then(|file| file.sync_all())
-        .map_err(|error| format!("could not durable-sync runner journal: {error}"))?;
-    fs::rename(&temporary, path)
-        .map_err(|error| format!("could not publish runner journal: {error}"))?;
+        .map_err(|error| format!("could not durable-sync {what}: {error}"))?;
+    fs::rename(temporary, target).map_err(|error| format!("could not publish {what}: {error}"))?;
     #[cfg(unix)]
-    sync_parent(path, "runner journal")?;
+    sync_parent(target, what)?;
     Ok(())
 }
 

@@ -54,16 +54,15 @@ impl Server {
         if ws_origin_refused(request.headers(), arrival) {
             return plain(403, "cross-site request refused");
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
-            Err(response) => return response,
-        };
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let who = self
-            .viewer(&entry, &headers, arrival, query.as_deref())
-            .await;
+        let (entry, who) = match self
+            .entry_viewer(slug, &headers, arrival, query.as_deref())
+            .await
+        {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
         if who.auth_failed {
             return plain(401, "authentication expired or was revoked");
         }
@@ -71,6 +70,9 @@ impl Server {
             return plain(404, "not found");
         }
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
+        let link_expires = entry
+            .live_link(&who.link, crate::util::now_unix())
+            .and_then(|link| crate::util::parse_timestamp(&link.until));
         let connection = Connection {
             slug: slug.into(),
             network: client_network(&address),
@@ -81,7 +83,9 @@ impl Server {
             may_edit: who.at_least(Role::Editor),
             can_comment: who.at_least(Role::Commenter),
             link: who.link,
+            link_expires,
             comment_budget: who.comment_budget,
+            authorized_at: tokio::time::Instant::now(),
             chat: Some(id.into()),
             tx: Sender::channel(1, 64 * 1024, None, None).0,
         };
@@ -125,6 +129,7 @@ impl Server {
                 network: connection.network.clone(),
                 principal: connection.principal.clone(),
                 document: slug.clone(),
+                role: None,
             },
         ) {
             Ok(permit) => permit,
@@ -146,7 +151,7 @@ impl Server {
         } else {
             None
         };
-        let mut ready = match self
+        let ready = match self
             .chat
             .attach(&slug, &id, &join.token, &join.role, socket_id, tx.clone())
             .await
@@ -162,33 +167,6 @@ impl Server {
                 .await;
                 return;
             }
-        };
-        let execution_epoch = if join.role == "agent" {
-            let Some(catalog) = &self.store.catalog else {
-                self.connections.lock().await.remove(&socket_id);
-                self.chat.detach(&id, socket_id).await;
-                return;
-            };
-            let slug_for_lease = slug.clone();
-            let conversation_for_lease = id.clone();
-            match catalog
-                .execute_catalog(256, move |catalog| {
-                    catalog.issue_agent_execution_lease(&slug_for_lease, &conversation_for_lease)
-                })
-                .await
-            {
-                Ok(epoch) => {
-                    ready["execution_epoch"] = json!(epoch.clone());
-                    Some(epoch)
-                }
-                Err(_) => {
-                    self.connections.lock().await.remove(&socket_id);
-                    self.chat.detach(&id, socket_id).await;
-                    return;
-                }
-            }
-        } else {
-            None
         };
         drop(lease_admission);
         self.reauthorize_connection(&slug, socket_id).await;
@@ -223,25 +201,16 @@ impl Server {
                     let durability = queued.durability();
                     let (outgoing, _queue_reservation) = queued.into_parts();
                     if !self.cost.socket_bytes(outgoing.bytes(), durability) { break; }
-                    let (frame, close) = match outgoing { Outgoing::Text(text) => (WsMessage::Text(text.into()), false), Outgoing::Close(reason) => (WsMessage::Close(Some(axum::extract::ws::CloseFrame { code: 1000, reason: reason.into() })), true) };
+                    let (frame, close) = match outgoing {
+                        Outgoing::Text(text) => (WsMessage::Text(text.into()), false),
+                        Outgoing::SharedText(text) => (WsMessage::Text(text), false),
+                        Outgoing::Close(reason) => (WsMessage::Close(Some(axum::extract::ws::CloseFrame { code: 1000, reason: reason.into() })), true),
+                    };
                     let sent = matches!(tokio::time::timeout(Duration::from_secs(5), socket.send(frame)).await, Ok(Ok(())));
                     if !sent || close { break; }
                 }
                 _ = housekeeping.tick() => {
                     if !self.chat.attached(&id, socket_id).await || last_frame.elapsed() > Duration::from_secs(self.socket_budget.policy.idle_seconds) { break; }
-                    if let Some(epoch) = &execution_epoch {
-                        if let Some(catalog) = &self.store.catalog {
-                            let slug_for_lease = slug.clone();
-                            let conversation_for_lease = id.clone();
-                            let epoch_for_lease = epoch.clone();
-                            let renewed = catalog.execute_catalog(256, move |catalog| {
-                                catalog.renew_agent_execution_lease(&slug_for_lease, &conversation_for_lease, &epoch_for_lease)
-                            }).await;
-                            if !matches!(renewed, Ok(true)) {
-                                break;
-                            }
-                        }
-                    }
                     if last_ping.elapsed() >= Duration::from_secs(10) {
                         if !matches!(tokio::time::timeout(Duration::from_secs(5), socket.send(WsMessage::Ping(Vec::new().into()))).await, Ok(Ok(()))) { break; }
                         last_ping = tokio::time::Instant::now();
@@ -250,21 +219,6 @@ impl Server {
             }
         }
         self.connections.lock().await.remove(&socket_id);
-        if let Some(epoch) = execution_epoch {
-            if let Some(catalog) = &self.store.catalog {
-                let slug_for_lease = slug.clone();
-                let conversation_for_lease = id.clone();
-                let _ = catalog
-                    .execute_catalog(256, move |catalog| {
-                        catalog.revoke_agent_execution_lease(
-                            &slug_for_lease,
-                            &conversation_for_lease,
-                            &epoch,
-                        )
-                    })
-                    .await;
-            }
-        }
         self.chat.detach(&id, socket_id).await;
     }
 
@@ -289,14 +243,13 @@ impl Server {
         }
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return write_json(404, &json!({"error":"not found"})),
+        let (entry, who) = match self
+            .entry_viewer(slug, &headers, arrival, query.as_deref())
+            .await
+        {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self
-            .viewer(&entry, &headers, arrival, query.as_deref())
-            .await;
         if who.auth_failed {
             return write_json(
                 401,
@@ -449,6 +402,9 @@ struct Channel {
     touched_at: i64,
     browser: Option<Peer>,
     agent: Option<Peer>,
+    /// Capability issued to the currently attached runner. A replacement
+    /// runner receives a fresh value, fencing HTTP work from the old one.
+    agent_epoch: Option<String>,
     requests: VecDeque<(String, String)>,
     events: VecDeque<i64>,
     render_waiters: HashMap<String, oneshot::Sender<Value>>,
@@ -478,9 +434,9 @@ impl Channel {
         json!({"type":"presence","browser":self.browser.is_some(),"agent":self.agent.is_some()})
     }
     fn announce(&self) {
-        let text = self.presence().to_string();
+        let text = Outgoing::shared_text(self.presence().to_string());
         for peer in [&self.browser, &self.agent].into_iter().flatten() {
-            let _ = peer.tx.try_send(Outgoing::Text(text.clone()));
+            let _ = peer.tx.try_send(text.clone());
         }
     }
 }
@@ -509,6 +465,7 @@ impl Hub {
                 touched_at: current,
                 browser: None,
                 agent: None,
+                agent_epoch: None,
                 requests: VecDeque::new(),
                 events: VecDeque::new(),
                 render_waiters: HashMap::new(),
@@ -547,8 +504,14 @@ impl Hub {
             return Err((409, "participant is already connected"));
         }
         *participant = Some(Peer { socket, tx });
+        if role == "agent" {
+            channel.agent_epoch = Some(random());
+        }
         channel.touched_at = now();
-        let ready = json!({"type":"ready","browser":channel.browser.is_some(),"agent":channel.agent.is_some()});
+        let mut ready = json!({"type":"ready","browser":channel.browser.is_some(),"agent":channel.agent.is_some()});
+        if role == "agent" {
+            ready["execution_epoch"] = json!(channel.agent_epoch);
+        }
         channel.announce();
         Ok(ready)
     }
@@ -557,6 +520,18 @@ impl Hub {
             [&channel.browser, &channel.agent]
                 .iter()
                 .any(|peer| peer.as_ref().is_some_and(|peer| peer.socket == socket))
+        })
+    }
+
+    pub async fn valid_agent_lease(&self, slug: &str, id: &str, epoch: &str) -> bool {
+        if id.is_empty() || epoch.is_empty() {
+            return false;
+        }
+        self.channels.lock().await.get(id).is_some_and(|channel| {
+            channel.slug == slug
+                && channel.agent.is_some()
+                && channel.agent_epoch.as_deref() == Some(epoch)
+                && !channel.expired(now())
         })
     }
 
@@ -1016,11 +991,11 @@ impl Hub {
                 channel.task_sequences.insert(task_id.to_string(), sequence);
             }
         }
-        let text = frame.to_string();
-        if recipient_tx.try_send(Outgoing::Text(text.clone())).is_err() {
+        let text = Outgoing::shared_text(frame.to_string());
+        if recipient_tx.try_send(text.clone()).is_err() {
             return Err((409, "recipient cannot receive events"));
         }
-        if sender_tx.try_send(Outgoing::Text(text)).is_err() {
+        if sender_tx.try_send(text).is_err() {
             return Err((409, "sender cannot receive events"));
         }
         channel.requests.push_back((key, digest));
@@ -1076,6 +1051,27 @@ mod tests {
             .attach("paper", &id, &token, "user", 3, mpsc::channel(4).0)
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn replacement_agent_epoch_fences_the_detached_runner() {
+        let (hub, id, token) = channel().await;
+        let first = hub
+            .attach("paper", &id, &token, "agent", 1, mpsc::channel(4).0)
+            .await
+            .unwrap();
+        let first_epoch = first["execution_epoch"].as_str().unwrap().to_owned();
+        assert!(hub.valid_agent_lease("paper", &id, &first_epoch).await);
+        hub.detach(&id, 1).await;
+        assert!(!hub.valid_agent_lease("paper", &id, &first_epoch).await);
+        let second = hub
+            .attach("paper", &id, &token, "agent", 2, mpsc::channel(4).0)
+            .await
+            .unwrap();
+        let second_epoch = second["execution_epoch"].as_str().unwrap();
+        assert_ne!(second_epoch, first_epoch);
+        assert!(!hub.valid_agent_lease("paper", &id, &first_epoch).await);
+        assert!(hub.valid_agent_lease("paper", &id, second_epoch).await);
     }
 
     #[tokio::test]

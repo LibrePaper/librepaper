@@ -152,7 +152,6 @@ function tree(main, text, assets = {}) {
 // Explicit "checked and unavailable" overrides -- see `_testing.inject`'s
 // doc comment in `src/lib/latex.js` for why `null` here differs from leaving
 // the field out.
-const noLocal = null;
 
 let projectCounter = 0;
 function nextProject() {
@@ -171,7 +170,7 @@ function nextProject() {
   });
   let pass = 0;
 
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   const treeA = tree("main.tex", "A");
@@ -221,7 +220,7 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   const auxWithA = () => enc.encode("\\bibdata{refs}\n\\citation{a}\n");
@@ -271,132 +270,11 @@ function nextProject() {
 }
 
 // ============================================================================
-// 6. Biber -> local (reachable) -> browser continuation.
-// ============================================================================
-{
-  const project = nextProject();
-  const bcf = () => enc.encode('<bcf:controlfile><bcf:datasource type="file">refs.bib</bcf:datasource></bcf:controlfile>');
-  const localReachable = {
-    async runBiber(request) {
-      assert.equal(request.job.project, project);
-      assert.ok(request.bcf, "the bcf bytes were forwarded to local Biber");
-      return { ok: true, bbl: enc.encode("BBL-local"), blg: "biber ran locally", exit: 0, tool: { name: "biber", version: "2.21", backend: "local" } };
-    },
-    async capabilities() {
-      return { tools: {} };
-    },
-  };
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localReachable });
-  latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
-
-  worker().texReplies = [
-    { status: 0, pdf: PDF, synctex: null, log: "Package biblatex Warning: Please (re)run Biber on the file: main\n", outputs: { "main.aux": enc.encode("\\relax\n"), "main.bcf": bcf() } },
-    { status: 0, pdf: PDF, synctex: null, log: "", outputs: { "main.aux": enc.encode("\\relax\n") } },
-  ];
-
-  const result = await latex.compile(tree("main.tex", "\\cite{a}", { "refs.bib": enc.encode("@book{a,}") }));
-  assert.equal(result.ok, true);
-  assert.equal(result.provenance.bibliography, "local-biber");
-  assert.equal(result.provenance.backend, "browser");
-  assert.ok(result.attempts.some((a) => a.stage === "local-biber" && a.backend === "local" && a.ok));
-}
-
-// ============================================================================
-// 8. Browser TeX failure -> native once; a second failure of the same
-// snapshot does not retry native.
-// ============================================================================
-{
-  const project = nextProject();
-  let nativeCalls = 0;
-  const localWithFailingNative = {
-    async capabilities() {
-      return { tools: { pdflatex: { available: true, version: "1.40.27", note: "" } } };
-    },
-    async runTex() {
-      nativeCalls += 1;
-      return { ok: false, error: "pdflatex exited 1", log: "! Emergency stop.\n", diagnostics: [] };
-    },
-  };
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localWithFailingNative });
-  latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
-
-  const failing = tree("main.tex", "\\bogus");
-  worker().texReplies = [{ status: 1, pdf: null, synctex: null, log: "! Undefined control sequence.\nl.1 \\bogus\n", outputs: {} }];
-  const first = await latex.compile(failing);
-  assert.equal(first.ok, false);
-  assert.equal(first.failure.kind, "native");
-  assert.equal(nativeCalls, 1);
-  assert.ok(first.attempts.some((a) => a.stage === "native" && a.ok === false));
-
-  // Same tree, same engine, same release -> same snapshot. Native must not
-  // be retried automatically a second time.
-  worker().texReplies = [{ status: 1, pdf: null, synctex: null, log: "! Undefined control sequence.\nl.1 \\bogus\n", outputs: {} }];
-  const second = await latex.compile(failing);
-  assert.equal(second.ok, false);
-  assert.equal(nativeCalls, 1, "no second automatic native attempt for the same snapshot");
-  assert.equal(second.failure.kind, "tex");
-}
-
-// ============================================================================
-// 9. A successful native fallback switches the session to the native route
-// until `tryBrowser()`.
-// ============================================================================
-{
-  const project = nextProject();
-  let nativeCalls = 0;
-  const localWithNative = {
-    async capabilities() {
-      return { tools: { pdflatex: { available: true, version: "1.40.27", note: "" } } };
-    },
-    async runTex({ engine }) {
-      nativeCalls += 1;
-      return {
-        ok: true,
-        pdf: enc.encode("NATIVE-PDF"),
-        synctex: null,
-        log: "native ok",
-        diagnostics: [],
-        exit: 0,
-        provenance: { backend: "local", bibliography: null, engine, release: null, tools: { tex: "pdfTeX 1.40.27" } },
-      };
-    },
-  };
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: localWithNative });
-  latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
-
-  worker().texReplies = [{ status: 1, pdf: null, synctex: null, log: "! Emergency stop.\n", outputs: {} }];
-  const first = await latex.compile(tree("main.tex", "\\bogus"));
-  assert.equal(first.ok, true);
-  assert.equal(first.provenance.backend, "local");
-  assert.equal(latex.status().route, "native");
-
-  const texCallsBefore = worker().messages.filter((m) => m.cmd === "tex").length;
-  const second = await latex.compile(tree("main.tex", "anything at all"));
-  assert.equal(second.provenance.backend, "local");
-  assert.equal(nativeCalls, 2);
-  assert.equal(
-    worker().messages.filter((m) => m.cmd === "tex").length,
-    texCallsBefore,
-    "the session-native route skipped the browser worker entirely",
-  );
-
-  latex.tryBrowser();
-  assert.equal(latex.status().route, "browser");
-  worker().texReplies = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: {} }];
-  const third = await latex.compile(tree("main.tex", "back to browser"));
-  assert.equal(third.provenance.backend, "browser");
-  assert.ok(
-    worker().messages.filter((m) => m.cmd === "tex").length > texCallsBefore,
-    "tryBrowser() sent the next compile back through the worker",
-  );
-}
-
-// ============================================================================
 // 10. Cancel/supersede.
 // ============================================================================
 {
   const project = nextProject();
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   let release;
@@ -433,7 +311,7 @@ function nextProject() {
   // pass -- reports the budget already spent.
   let calls = 0;
   const fakeNow = () => (calls++ < 2 ? 0 : latex.DEADLINE_MS + 1000);
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal, now: fakeNow });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, now: fakeNow });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   // Always asks for a rerun, so the loop's next-iteration deadline check --
@@ -461,7 +339,7 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   let releaseStale;
@@ -498,7 +376,7 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   const aux = enc.encode("\\bibdata{refs}\n\\citation{a}\n");
@@ -533,7 +411,7 @@ function nextProject() {
 // ============================================================================
 {
   const project = nextProject();
-  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch, local: noLocal });
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
   latex.configure({ project, settings: { engine: "pdflatex", release: "r1" } });
 
   // The project's release is unchanged from the previous scenario, so
@@ -564,7 +442,7 @@ function nextProject() {
 // A legacy mirror is an operator error, not a request for release "undefined".
 {
   latex.at("/legacy-mirror/");
-  latex._testing.inject({ worker: FakeWorker, fetch: async () => new Response(JSON.stringify({ version: 1, distributions: {} })), local: noLocal });
+  latex._testing.inject({ worker: FakeWorker, fetch: async () => new Response(JSON.stringify({ version: 1, distributions: {} })) });
   latex.configure({ project: nextProject(), settings: { engine: "pdflatex", release: null } });
   const result = await latex.compile(tree("main.tex", "source"));
   assert.equal(result.ok, false);
@@ -599,11 +477,13 @@ function nextProject() {
   const BASE = "https://mirror.example/mirror/";
   const bundlesIndexBytes = enc.encode(JSON.stringify({ bundles: {}, files: {} }));
   const workerBytes = enc.encode("var Module = self.Module = {}; ");
+  const resolverEvidenceBytes = enc.encode("self.__resolverEvidenceLoaded = true;");
 
   const files = {
     "bundles/bundles.json": { url: "engines/rel1/bundles/bundles.json", sha256: await sha256Hex(bundlesIndexBytes), size: bundlesIndexBytes.length },
     "xetex.fmt.gz": { url: "engines/rel1/xetex.fmt.gz", sha256: await sha256Hex(fmtGz), size: fmtGz.length },
     "icudt68l.dat.gz": { url: "engines/rel1/icudt68l.dat.gz", sha256: await sha256Hex(icuGz), size: icuGz.length },
+    "xetex-resolver-evidence.js": { url: "engines/rel1/xetex-resolver-evidence.js", sha256: await sha256Hex(resolverEvidenceBytes), size: resolverEvidenceBytes.length },
   };
   for (const name of ["xetex.worker.js", "dvipdfm.worker.js", "bibtex.worker.js", "pdftex.worker.js"]) {
     files[name] = { url: `engines/rel1/${name}`, sha256: await sha256Hex(workerBytes), size: workerBytes.length };
@@ -675,6 +555,7 @@ function nextProject() {
     if (key === new URL(release.bundles.index, BASE).href) return new Response(bundlesIndexBytes, { status: 200 });
     if (key === new URL(files["xetex.fmt.gz"].url, BASE).href) return new Response(fmtGz, { status: 200 });
     if (key === new URL(files["icudt68l.dat.gz"].url, BASE).href) return new Response(icuGz, { status: 200 });
+    if (key === new URL(files["xetex-resolver-evidence.js"].url, BASE).href) return new Response(resolverEvidenceBytes, { status: 200 });
     const workerFile = Object.values(files).find((file) => file.url && new URL(file.url, BASE).href === key);
     if (workerFile) return new Response(workerBytes, { status: 200 });
     return new Response(null, { status: 404 });
@@ -811,15 +692,17 @@ function nextProject() {
 latex._testing.reset();
 console.log("latex controller: queue, bibliography reuse, routing and lifecycle checks passed");
 
-// Unshipped LuaLaTeX must report the release limitation even if a local
-// compiler is available, without downloading any engine.
+// An explicitly chosen LuaLaTeX says the compiler does not include LuaTeX --
+// not that "this release" does not, which would imply a later one might --
+// and downloads no engine to find out.
 {
-  latex._testing.inject({ worker: FakeWorker, fetch: async () => jsonResponse(MANIFEST),
-    local: { capabilities() { throw new Error('must not probe local'); }, runTex() { throw new Error('must not compile locally'); } } });
+  latex._testing.inject({ worker: FakeWorker, fetch: async () => jsonResponse(MANIFEST) });
   latex.configure({ project: nextProject(), settings: { engine: 'lualatex', release: 'r1' } });
   const result = await latex.compile(tree('main.tex', 'LuaLaTeX selection'));
   assert.equal(result.ok, false);
-  assert.match(result.failure.message, /not available in this release/);
+  assert.equal(result.failure.kind, 'unsupported');
+  assert.match(result.failure.message, /does not include LuaTeX/);
+  assert.match(result.failure.message, /pdfLaTeX or XeLaTeX/);
   assert.equal(result.attempts.length, 0);
   latex._testing.reset();
 }
@@ -839,7 +722,6 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
   const fetch = async url => { fetched.push(String(url)); return jsonResponse(browserManifest); };
   latex._testing.reset();
   latex._testing.inject({ worker: FakeWorker, fetch, biber: browserBiber,
-    local: { runBiber() { throw new Error('must not invoke local'); } },
   });
   latex.configure({ project: nextProject(), settings: { engine: 'pdflatex', release: 'r1' } });
   const bcf = enc.encode('<bcf:controlfile version="3.11"><bcf:datasource>refs.bib</bcf:datasource></bcf:controlfile>');
@@ -890,4 +772,37 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
   assert.equal(aborted, true);
   latex._testing.reset();
   console.log('latex controller: release-provided Biber, cache reuse, provenance, and cancellation checked');
+}
+
+// A document that needs LuaTeX is now compiled with pdflatex, so it fails on
+// an undefined control sequence. The reader is told what the document needs,
+// not which macro the wrong engine choked on.
+{
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
+  latex.configure({ project: nextProject(), settings: { engine: 'auto', release: 'r1' } });
+  worker().texReplies = [
+    { status: 1, pdf: null, synctex: null, log: '! Undefined control sequence.\nl.3 \\directlua\n', outputs: {} },
+  ];
+  const result = await latex.compile(tree('main.tex', '\\directlua{tex.print(1)}'));
+  assert.equal(result.ok, false);
+  assert.equal(result.failure.kind, 'unsupported');
+  assert.match(result.failure.message, /needs LuaTeX/);
+  // The engine's own log and diagnostics survive; only the headline changes.
+  assert.match(result.log, /Undefined control sequence/);
+  latex._testing.reset();
+}
+
+// Shell-escape is named as the reason, with the packages that need it.
+{
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
+  latex.configure({ project: nextProject(), settings: { engine: 'pdflatex', release: 'r1' } });
+  worker().texReplies = [
+    { status: 1, pdf: null, synctex: null, log: '! Package minted Error: You must invoke LaTeX with the -shell-escape flag.\n', outputs: {} },
+  ];
+  const result = await latex.compile(tree('main.tex', '\\usepackage{minted}'));
+  assert.equal(result.ok, false);
+  assert.equal(result.failure.kind, 'unsupported');
+  assert.match(result.failure.message, /run another program \(shell-escape\)/);
+  assert.match(result.failure.message, /minted/);
+  latex._testing.reset();
 }

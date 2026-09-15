@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO document_assets\n             (id,document_id,storage_key,digest,byte_length,media_type,original_name)\n             SELECT input.id,$1,input.storage_key,input.digest,input.byte_length,input.media_type,input.original_name\n             FROM unnest($2::uuid[],$3::text[],$4::bytea[],$5::bigint[],$6::text[],$7::text[])\n               AS input(id,storage_key,digest,byte_length,media_type,original_name)\n             ON CONFLICT (document_id,digest,byte_length) DO NOTHING\n             RETURNING id,document_id,storage_key,digest,byte_length,media_type,original_name,\n                       created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "storage_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "digest",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "byte_length",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "media_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "original_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "TextArray",
+        "ByteaArray",
+        "Int8Array",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "14da65ea687c149350763e57a3350074106cd07dbc9b7e1949e96ea0ec83fc9c"
+}

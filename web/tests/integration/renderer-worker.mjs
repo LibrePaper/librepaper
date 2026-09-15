@@ -44,8 +44,15 @@ workers[1].reply(workers[1].messages[0], { pdf: Uint8Array.of(1), diagnostics: [
 const recovered = await retry;
 assert.equal(recovered.html, null);
 assert.deepEqual(recovered.pdf, Uint8Array.of(1));
-const html = await renderers.render({ main: "main.html", texts: { "main.html": "<p>HTML</p>" } }, "Title");
-assert.equal(html.html, "<p>HTML</p>");
+const html = await renderers.render({
+  main: "pages/main.html",
+  texts: {
+    "pages/main.html": '<p>HTML</p><img src="../figures/icon.png"><iframe src="notes.html" title="Notes"></iframe>',
+    "pages/notes.html": '<p class="note">Nested HTML</p>',
+  },
+  urls: { "figures/icon.png": "blob:https://example.org/icon#librepaper-asset=abc" },
+}, "Title");
+assert.equal(html.html, '<p>HTML</p><img src="blob:https://example.org/icon#librepaper-asset=abc"><iframe srcdoc="&lt;p class=&quot;note&quot;&gt;Nested HTML&lt;/p&gt;" title="Notes"></iframe>');
 assert.equal(workers.length, 2);
 console.log("renderer-worker: cloning, reply routing, errors, recovery and HTML passed");
 

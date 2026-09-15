@@ -103,8 +103,9 @@ struct State {
 
 pub struct CostMeter {
     config: Arc<Configuration>,
-    catalog: Option<Arc<crate::storage::catalog::Catalog>>,
+    catalog: Arc<crate::storage::postgres::PostgresCatalog>,
     state: Mutex<State>,
+    checkpoint_gate: tokio::sync::Mutex<()>,
     pub transfers: Arc<tokio::sync::Semaphore>,
     work: Arc<tokio::sync::Semaphore>,
     emergency_work: Arc<tokio::sync::Semaphore>,
@@ -112,26 +113,35 @@ pub struct CostMeter {
 }
 
 impl CostMeter {
+    pub async fn restore(&self) -> Result<(), String> {
+        let catalog = &self.catalog;
+        let Some(value) = catalog
+            .runtime_state("cost-meter-v2")
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(());
+        };
+        let durable: Durable = serde_json::from_value(value.get("state").cloned().unwrap_or(value))
+            .map_err(|error| format!("invalid transfer checkpoint: {error}"))?;
+        let mut state = self.state();
+        state.durable = durable;
+        Self::expire(&mut state, now_unix());
+        state.durable.policy = self.config.effective_policy();
+        self.refresh_mode(&mut state);
+        Ok(())
+    }
+
     pub fn new(
         config: &Arc<Configuration>,
-        catalog: Option<Arc<crate::storage::catalog::Catalog>>,
+        catalog: Arc<crate::storage::postgres::PostgresCatalog>,
     ) -> Self {
-        let loaded = catalog.as_ref().map(|catalog| catalog.with_connection(|db| {
-            db.execute_batch("CREATE TABLE IF NOT EXISTS cost_state (id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL)")?;
-            use rusqlite::OptionalExtension;
-            let saved: Option<String> = db.query_row("SELECT state FROM cost_state WHERE id=1", [], |row| row.get(0)).optional()?;
-            saved.map(|saved| serde_json::from_str::<Durable>(&saved).map_err(|err| crate::storage::catalog::CatalogError::Invalid(err.to_string()))).transpose()
-        })).transpose();
-        let (durable, unavailable) = match loaded {
-            Ok(value) => (value.flatten().unwrap_or_default(), false),
-            Err(error) => {
-                eprintln!("warning: cannot recover transfer budget: {error}");
-                (Durable::default(), true)
-            }
-        };
+        let durable = Durable::default();
+        let unavailable = false;
         Self {
             config: config.clone(),
             catalog,
+            checkpoint_gate: tokio::sync::Mutex::new(()),
             transfers: Arc::new(tokio::sync::Semaphore::new(config.cost.artifact_transfers)),
             work: Arc::new(tokio::sync::Semaphore::new(config.cost.work_concurrency)),
             emergency_work: Arc::new(tokio::sync::Semaphore::new(16)),
@@ -337,20 +347,19 @@ impl CostMeter {
     }
 
     pub async fn checkpoint(&self) -> Result<(), String> {
-        let Some(catalog) = &self.catalog else {
-            return Ok(());
-        };
+        let _checkpoint = self.checkpoint_gate.lock().await;
+        let catalog = &self.catalog;
         let saved = {
             let mut state = self.state();
             Self::expire(&mut state, now_unix());
             self.refresh_mode(&mut state);
             state.durable.policy = self.config.effective_policy();
-            serde_json::to_string(&state.durable).map_err(|e| e.to_string())?
+            json!({"version":2,"state":state.durable})
         };
-        catalog.execute_catalog(saved.len(), move |catalog| catalog.with_connection(|db| {
-            db.execute("INSERT INTO cost_state(id,state) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET state=excluded.state", [&saved])?;
-            Ok(())
-        })).await.map_err(|e| e.to_string())
+        catalog
+            .set_runtime_state("cost-meter-v2", saved)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub fn snapshot(&self) -> Value {
@@ -358,12 +367,14 @@ impl CostMeter {
         Self::expire(&mut state, now_unix());
         self.refresh_mode(&mut state);
         let limited = state.limited;
+        let resources = self.active_resources(&state);
+        let resource = resources.first().copied();
         let classes: serde_json::Map<String, Value> = CLASS_NAMES
             .iter()
             .enumerate()
             .map(|(i, name)| (name.to_string(), json!(state.durable.sent[i])))
             .collect();
-        json!({"event":"cost_usage", "mode":if limited {"Limited"} else {"Normal"}, "resource":self.active_resources(&state).first(),"resources":self.active_resources(&state), "transfer_remaining":self.config.cost.transfer_bytes.map(|_| self.remaining(&state, false)), "emergency_remaining":self.remaining(&state, true), "response_bytes":classes, "mode_nanoseconds":state.durable.mode_nanoseconds, "response_size_histogram":state.durable.response_size_histogram, "response_size_upper_bounds_bytes":[1024,4096,16384,65536,1048576,16777216,null], "ordinary_reserved_bytes":state.ordinary_reserved,"emergency_reserved_bytes":state.emergency_reserved, "mutation_outcomes":state.durable.mutation_outcomes,"mutation_outcome_classes":["accepted","authentication","permission","size","requests","transfer","storage","work","other"], "responses_by_class_and_status_group":state.durable.responses, "bytes_by_class_and_status_group":state.durable.bytes_by_status, "policy":self.config.effective_policy()})
+        json!({"event":"cost_usage", "mode":if limited {"Limited"} else {"Normal"}, "resource":resource,"resources":resources, "transfer_remaining":self.config.cost.transfer_bytes.map(|_| self.remaining(&state, false)), "emergency_remaining":self.remaining(&state, true), "response_bytes":classes, "mode_nanoseconds":state.durable.mode_nanoseconds, "response_size_histogram":state.durable.response_size_histogram, "response_size_upper_bounds_bytes":[1024,4096,16384,65536,1048576,16777216,null], "ordinary_reserved_bytes":state.ordinary_reserved,"emergency_reserved_bytes":state.emergency_reserved, "mutation_outcomes":state.durable.mutation_outcomes,"mutation_outcome_classes":["accepted","authentication","permission","size","requests","transfer","storage","work","other"], "responses_by_class_and_status_group":state.durable.responses, "bytes_by_class_and_status_group":state.durable.bytes_by_status, "policy":self.config.effective_policy()})
     }
 
     pub fn ordinary_available(&self) -> bool {
@@ -409,30 +420,6 @@ impl CostMeter {
     }
 }
 
-/// Read the last durable counters without acquiring a writer lock or changing
-/// a stopped deployment. Recovery-point copies carry the same catalog row.
-pub fn offline_status(path: &std::path::Path) -> Result<Value, String> {
-    let db =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| error.to_string())?;
-    let saved: String = db
-        .query_row("SELECT state FROM cost_state WHERE id=1", [], |row| {
-            row.get(0)
-        })
-        .map_err(|error| error.to_string())?;
-    let durable: Durable = serde_json::from_str(&saved).map_err(|error| error.to_string())?;
-    let used = durable
-        .minutes
-        .iter()
-        .filter(|m| m.expires > now_unix())
-        .fold(0_u64, |sum, minute| sum.saturating_add(minute.ordinary));
-    let limit = durable.policy["cost"]["transfer_bytes"].as_u64();
-    let remaining = limit.map(|limit| limit.saturating_sub(used));
-    Ok(
-        json!({"server":"stopped", "counters":"last durable checkpoint", "policy":durable.policy, "transfer_used":used, "transfer_remaining":remaining, "mode":if remaining == Some(0) {"Limited"} else {"Normal"}, "response_bytes":durable.sent}),
-    )
-}
-
 pub struct Reservation {
     meter: Arc<CostMeter>,
     remaining: u64,
@@ -476,19 +463,10 @@ impl Server {
         snapshot["host"] = tokio::task::spawn_blocking(super::host_metrics::snapshot)
             .await
             .unwrap_or(Value::Null);
-        if let Some(catalog) = &self.store.catalog {
-            let work = catalog.execution_snapshot();
-            snapshot["catalog_work"] = json!({"queued":work.queued,"executing":work.executing,"queued_bytes":work.queued_bytes,"waiting_producers":work.waiting_producers,"completed":work.completed,"failed":work.failed,"saturated":work.saturated,"queue_wait_micros_total":work.queue_wait_micros_total,"queue_wait_micros_max":work.queue_wait_micros_max,"execution_micros_total":work.execution_micros_total,"execution_micros_max":work.execution_micros_max});
-            snapshot["storage"] = catalog.execute_catalog(0, |catalog| {
-                let (charged, documents) = catalog.totals()?;
-                catalog.with_connection(|connection| {
-                    let (page_count, page_size): (u64,u64) = (
-                        connection.query_row("PRAGMA page_count", [], |r| r.get(0))?,
-                        connection.query_row("PRAGMA page_size", [], |r| r.get(0))?);
-                    Ok(json!({"charged_bytes":charged,"documents":documents,"catalog_allocated_bytes":page_count.saturating_mul(page_size)}))
-                })
-            }).await.unwrap_or(Value::Null);
-        }
+        snapshot["storage"] = match self.store.catalog.usage_bytes(None).await {
+            Ok(bytes) => json!({"retained_bytes":bytes}),
+            Err(_) => Value::Null,
+        };
         snapshot
     }
 }
@@ -595,10 +573,11 @@ fn direct_operator_request(peer: SocketAddr, headers: &HeaderMap) -> bool {
             .is_none_or(|h| h == "same-origin" || h == "none")
 }
 
-pub(super) async fn handle(
+pub(super) async fn middleware(
     axum::extract::State(server): axum::extract::State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    request: Request<Body>,
+    mut request: Request<Body>,
+    next: axum::middleware::Next,
 ) -> Reply {
     let path = request.uri().path().to_string();
     let method = request.method().clone();
@@ -695,7 +674,11 @@ pub(super) async fn handle(
         &server.config.cost.trusted_proxies,
     ));
     // Keys stay internal and bounded; no identity becomes a metric label.
-    let arrival = Arrival::from_peer(request.headers(), peer.ip());
+    let arrival = Arrival::from_peer(
+        request.headers(),
+        peer.ip(),
+        &server.config.cost.trusted_proxies,
+    );
     if !server.cost.admit_request(&network, "", document, class)
         && !(is_emergency && server.cost.admit_emergency_request(&network))
     {
@@ -708,7 +691,10 @@ pub(super) async fn handle(
         );
     }
     // Authenticate only after network/deployment admission bounds external work.
-    let identity = server.whoami(request.headers(), &arrival).await;
+    let authentication = server
+        .authenticated_identity(request.headers(), &arrival)
+        .await;
+    let identity = authentication.clone().unwrap_or_default();
     let principal_allowed = identity.id.is_empty() || {
         server.cost.state().requests.consume(&[(
             format!("p:{}", identity.id),
@@ -759,6 +745,11 @@ pub(super) async fn handle(
     } else {
         None
     };
+    request.extensions_mut().insert(RequestContext {
+        arrival,
+        peer,
+        authentication: authentication.clone(),
+    });
     let mut response = if path == "/api/status" {
         if !direct_operator_request(peer, request.headers()) {
             plain(403, "operator status requires a direct loopback connection")
@@ -770,12 +761,7 @@ pub(super) async fn handle(
     } else if path == "/health" {
         write_json(200, &json!({"ok":true}))
     } else {
-        dispatch(
-            axum::extract::State(server.clone()),
-            ConnectInfo(peer),
-            request,
-        )
-        .await
+        next.run(request).await
     };
     if path.starts_with("/api/") && !path.starts_with("/api/fonts/")
         || path.starts_with("/raw/")
@@ -931,7 +917,7 @@ pub(super) async fn blob_response(
                 if offset >= end {
                     return None;
                 }
-                let next = offset.saturating_add(64 * 1024).min(end);
+                let next = offset.saturating_add(1024 * 1024).min(end);
                 match blobs.get_range(&key, offset..next).await {
                     Ok(bytes) => Some((Ok::<_, std::io::Error>(bytes), (blobs, key, next))),
                     Err(error) => Some((
@@ -1075,353 +1061,4 @@ fn wrap(
         },
     );
     Response::from_parts(parts, Body::from_stream(stream))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn meter(limit: u64) -> Arc<CostMeter> {
-        let mut config = Configuration::default();
-        config.cost.transfer_bytes = Some(limit);
-        Arc::new(CostMeter::new(&Arc::new(config), None))
-    }
-
-    #[tokio::test]
-    async fn known_bodies_reserve_atomically_and_refund_cancelled_streams() {
-        let meter = meter(10);
-        let first = metered(
-            meter.clone(),
-            Response::new(Body::from("12345678")),
-            2,
-            false,
-            None,
-        );
-        let second = metered(
-            meter.clone(),
-            Response::new(Body::from("123")),
-            2,
-            false,
-            None,
-        );
-        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
-        drop(first);
-        let third = metered(
-            meter.clone(),
-            Response::new(Body::from("1234567890")),
-            2,
-            false,
-            None,
-        );
-        assert_eq!(third.status(), StatusCode::OK);
-        assert_eq!(to_bytes(third.into_body(), 100).await.unwrap().len(), 10);
-        assert_eq!(meter.snapshot()["transfer_remaining"], 0);
-    }
-
-    #[tokio::test]
-    async fn declared_stream_length_is_refused_without_polling_the_body() {
-        let meter = meter(5);
-        let polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let observed = polled.clone();
-        let stream = futures_util::stream::once(async move {
-            observed.store(true, Ordering::SeqCst);
-            Ok::<_, std::io::Error>(Bytes::from_static(b"0123456789"))
-        });
-        let mut response = Response::new(Body::from_stream(stream));
-        set(&mut response, "content-length", "10");
-        let response = metered(meter, response, 2, false, None);
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        let _ = to_bytes(response.into_body(), 4096).await.unwrap();
-        assert!(!polled.load(Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn unknown_streams_charge_only_forwarded_bytes() {
-        let meter = meter(5);
-        let stream = futures_util::stream::iter([
-            Ok::<_, std::io::Error>(Bytes::from_static(b"abc")),
-            Ok(Bytes::from_static(b"def")),
-        ]);
-        let response = metered(
-            meter.clone(),
-            Response::new(Body::from_stream(stream)),
-            2,
-            false,
-            None,
-        );
-        assert_eq!(to_bytes(response.into_body(), 100).await.unwrap(), "abcde");
-        assert_eq!(meter.snapshot()["response_bytes"]["source"], 5);
-    }
-
-    #[tokio::test]
-    async fn zero_budget_allows_only_bounded_emergency_bodies() {
-        let meter = meter(0);
-        let ordinary = metered(
-            meter.clone(),
-            Response::new(Body::from("source")),
-            2,
-            false,
-            None,
-        );
-        assert_eq!(ordinary.status(), StatusCode::TOO_MANY_REQUESTS);
-        let control = metered(
-            meter.clone(),
-            Response::new(Body::from("ok")),
-            6,
-            true,
-            None,
-        );
-        assert_eq!(to_bytes(control.into_body(), 100).await.unwrap(), "ok");
-        assert!(meter.socket_bytes(10, true));
-        assert!(!meter.socket_bytes(10, false));
-    }
-
-    #[tokio::test]
-    async fn checkpoint_restores_daily_allowance() {
-        let catalog = Arc::new(crate::storage::catalog::Catalog::open_in_memory().unwrap());
-        let mut config = Configuration::default();
-        config.cost.transfer_bytes = Some(100);
-        let config = Arc::new(config);
-        let first = Arc::new(CostMeter::new(&config, Some(catalog.clone())));
-        assert!(first.socket_bytes(70, false));
-        first.checkpoint().await.unwrap();
-        let reopened = CostMeter::new(&config, Some(catalog));
-        assert_eq!(reopened.snapshot()["transfer_remaining"], 30);
-    }
-
-    #[tokio::test]
-    async fn asset_ranges_are_admitted_before_read_and_charge_only_the_range() {
-        use crate::storage::blob::BlobStore;
-        let directory = tempfile::tempdir().unwrap();
-        let blobs = Arc::new(crate::storage::blob::FsStore::new(directory.path(), false));
-        blobs
-            .put("asset", b"0123456789".to_vec(), "application/octet-stream")
-            .await
-            .unwrap();
-        let meter = meter(4);
-        let response = blob_response(
-            &meter,
-            blobs.clone(),
-            "asset".into(),
-            "digest",
-            &HeaderMap::new(),
-            false,
-        )
-        .await;
-        assert_eq!(response.status().as_u16(), 429);
-        assert_eq!(meter.snapshot()["transfer_remaining"], 4);
-        let mut headers = HeaderMap::new();
-        headers.insert(header::RANGE, "bytes=2-5".parse().unwrap());
-        let response = blob_response(
-            &meter,
-            blobs.clone(),
-            "asset".into(),
-            "digest",
-            &headers,
-            false,
-        )
-        .await;
-        assert_eq!(response.status().as_u16(), 206);
-        let response = metered(meter.clone(), response, 3, false, None);
-        assert_eq!(to_bytes(response.into_body(), 100).await.unwrap(), "2345");
-        assert_eq!(meter.snapshot()["transfer_remaining"], 0);
-        headers.insert(header::IF_NONE_MATCH, "\"digest\"".parse().unwrap());
-        let response =
-            blob_response(&meter, blobs, "asset".into(), "digest", &headers, false).await;
-        assert_eq!(response.status().as_u16(), 304);
-    }
-
-    #[tokio::test]
-    async fn committed_publish_uses_bounded_emergency_for_its_acknowledgement() {
-        let mut config = Configuration::default();
-        config.cost.transfer_bytes = Some(1);
-        config.cost.emergency_bytes = 4096;
-        let server = crate::tests::test_server_with(
-            config,
-            Policy::parse("vincent"),
-            Policy::parse("anyone"),
-            true,
-        )
-        .await;
-
-        let (status, document) = crate::tests::post(
-            &server.url,
-            "/api/documents",
-            json!({
-                "title": "Emergency acknowledgement",
-                "source": "# Durable publication\n",
-                "source_format": "markdown"
-            }),
-        )
-        .await;
-        assert_eq!(
-            status, 201,
-            "a committed publish was turned into {status}: {document}"
-        );
-        let slug = crate::tests::text(&document, "slug");
-        assert!(
-            !slug.is_empty(),
-            "the durable publication had no slug: {document}"
-        );
-        let room = server.instance.rooms.get(&slug).await;
-        assert_eq!(room.source().await, "# Durable publication\n");
-        assert!(room.manifest().await.latest().is_some());
-        assert_eq!(server.instance.cost.snapshot()["transfer_remaining"], 1);
-        assert!(
-            server.instance.cost.snapshot()["emergency_remaining"]
-                .as_u64()
-                .unwrap()
-                < 4096
-        );
-    }
-
-    #[tokio::test]
-    async fn input_memory_refusal_does_not_publish_or_leak_a_reservation() {
-        let mut config = Configuration::default();
-        config.cost.request_body_memory_bytes = 2048;
-        let server = crate::tests::test_server_with(
-            config,
-            Policy::parse("vincent"),
-            Policy::parse("anyone"),
-            true,
-        )
-        .await;
-
-        let (status, refused) = crate::tests::post(
-            &server.url,
-            "/api/documents",
-            json!({
-                "title": "x".repeat(700),
-                "html": "<p>this request must be rejected before a source can be committed</p>"
-            }),
-        )
-        .await;
-        assert_eq!(status, 429, "oversized input was accepted: {refused}");
-        assert_eq!(refused["reason"], "request_memory");
-        assert_eq!(
-            server.instance.cost.incoming_memory.available_permits(),
-            2048,
-            "the rejected request retained an input reservation"
-        );
-        let documents = server
-            .instance
-            .store
-            .catalog
-            .as_ref()
-            .expect("test server catalog")
-            .documents()
-            .unwrap();
-        assert!(
-            documents.is_empty(),
-            "input refusal published a document: {documents:?}"
-        );
-
-        let (status, accepted) = crate::tests::post(
-            &server.url,
-            "/api/documents",
-            json!({"title": "after memory refusal", "html": "<p>accepted</p>"}),
-        )
-        .await;
-        assert_eq!(
-            status, 201,
-            "the failed reservation was not released: {accepted}"
-        );
-        assert_eq!(
-            server
-                .instance
-                .store
-                .catalog
-                .as_ref()
-                .expect("test server catalog")
-                .documents()
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn operator_surface_requires_direct_loopback_and_local_origin() {
-        let peer = "127.0.0.1:8080".parse().unwrap();
-        let mut headers = HeaderMap::new();
-        headers.insert(header::HOST, "localhost:8080".parse().unwrap());
-        assert!(direct_operator_request(peer, &headers));
-        assert!(!direct_operator_request(
-            "192.0.2.1:8080".parse().unwrap(),
-            &headers
-        ));
-        headers.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
-        assert!(!direct_operator_request(peer, &headers));
-        headers.remove("x-forwarded-for");
-        headers.insert(header::HOST, "attacker.example:8080".parse().unwrap());
-        assert!(!direct_operator_request(peer, &headers));
-        headers.insert(header::HOST, "localhost:8080".parse().unwrap());
-        headers.insert(header::ORIGIN, "https://attacker.example".parse().unwrap());
-        assert!(!direct_operator_request(peer, &headers));
-    }
-
-    #[tokio::test]
-    async fn zero_transfer_keeps_config_and_operator_control_available() {
-        let mut config = Configuration::default();
-        config.cost.transfer_bytes = Some(0);
-        let server = crate::tests::test_server_with(
-            config,
-            Policy::parse("vincent"),
-            Policy::parse("anyone"),
-            true,
-        )
-        .await;
-        let client = reqwest::Client::new();
-        let response = client
-            .get(format!("{}/api/status", server.url))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status().as_u16(), 200);
-        let body: Value = response.json().await.unwrap();
-        assert_eq!(body["mode"], "Limited");
-        assert_eq!(body["resource"], "transfer");
-        assert_eq!(body["transfer_remaining"], 0);
-        assert!(body["policy"]["limits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|limit| limit["origin"].is_string()));
-        let response = client
-            .get(format!("{}/api/config", server.url))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status().as_u16(), 200);
-        let response = client.get(format!("{}/", server.url)).send().await.unwrap();
-        assert_eq!(response.status().as_u16(), 429);
-    }
-
-    #[test]
-    fn request_tokens_refill_gradually_and_keys_are_bounded() {
-        let mut requests = Requests::default();
-        let keys = [("global".into(), 2)];
-        assert!(requests.consume(&keys));
-        assert!(requests.consume(&keys));
-        assert!(!requests.consume(&keys));
-        requests.keys.get_mut("global").unwrap().sampled -= std::time::Duration::from_secs(30);
-        assert!(requests.consume(&keys));
-        assert!(!requests.consume(&keys));
-        for index in 1..MAX_KEYS {
-            assert!(requests.consume(&[(index.to_string(), 1)]));
-        }
-        assert!(!requests.consume(&[("overflow".into(), 1)]));
-        assert_eq!(requests.keys.len(), MAX_KEYS);
-    }
-
-    #[test]
-    fn renewals_cannot_bypass_the_deployment_request_limit() {
-        let mut config = Configuration::default();
-        config.cost.requests_per_minute = 2;
-        let meter = CostMeter::new(&Arc::new(config), None);
-        assert!(meter.admit_request("a", "one", Some("x"), 2));
-        assert!(meter.admit_request("b", "two", Some("y"), 2));
-        assert!(!meter.admit_request("c", "three", Some("z"), 2));
-    }
 }

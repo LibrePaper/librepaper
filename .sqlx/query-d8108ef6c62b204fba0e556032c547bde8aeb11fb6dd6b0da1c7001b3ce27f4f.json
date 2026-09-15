@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.owner_id,\n                (SELECT role FROM grants g WHERE g.document_id=d.id AND g.account_id=$2\n                   AND (g.source_link_hash IS NULL OR EXISTS (\n                     SELECT 1 FROM share_links gl WHERE gl.document_id=d.id\n                       AND gl.token_hash=g.source_link_hash AND gl.revoked_at IS NULL\n                       AND (gl.expires_at IS NULL OR gl.expires_at>$4)))) AS \"grant_role?\",\n                (SELECT role FROM share_links l WHERE l.document_id=d.id AND l.token_hash=$3\n                    AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>$4)) AS \"link_role?\"\n             FROM documents d WHERE d.id=$1 AND d.status='active'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "owner_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "grant_role?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "link_role?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "d8108ef6c62b204fba0e556032c547bde8aeb11fb6dd6b0da1c7001b3ce27f4f"
+}

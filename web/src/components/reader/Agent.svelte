@@ -97,8 +97,8 @@
     if (!connection.id || !connection.token || !validDocumentLink()) return "";
     const documentLink = agentLink || link;
     return [
-      "Reuse recent LibrePaper CLI/version checks from this session when the installation has not changed; connecting another document does not require checking for a newer release. Otherwise check: librepaper --version && librepaper skills list && librepaper agent connect --help. If missing or these commands are unavailable, install or upgrade from https://github.com/LibrePaper/librepaper#install before continuing.",
-      "Reuse LibrePaper skills already in context for the installed version. Load only missing skills with librepaper skills show librepaper-pair; librepaper skills show librepaper-document; librepaper skills show librepaper-write. Read references only as needed with librepaper skills show <name> --file references/<file>. Refresh affected instructions after an upgrade or a command/version mismatch. No separate skill installation is needed.",
+      "Reuse recent LibrePaper CLI/version checks from this session when the installation has not changed; connecting another document does not require checking for a newer release. Otherwise check: librepaper --version && librepaper agent connect --help. If missing or this command is unavailable, install or upgrade from https://github.com/LibrePaper/librepaper#install before continuing.",
+      "The LibrePaper runner supplies its bundled document and writing instructions to the agent. Reuse those instructions for the installed version and refresh the runner after an upgrade or command/version mismatch. No separate skill installation is needed.",
       "Run each command below as written. Each is self-contained and can run in a separate shell.",
       `LIBREPAPER_CHAT_TOKEN=${shell(connection.token)} librepaper agent connect ${shell(documentLink)} ${shell(connection.id)} --background`,
       mode === "tracked"
@@ -373,9 +373,9 @@
   <PanelHeader title="Agent" />
   <Tabs class="agent-tabs-root" value={tab} onValueChange={({ value }) => tab = value}
         ids={{ trigger: value => `agent-tab-${value}`, content: value => `agent-pane-${value}` }}>
-    <Tabs.List class="agent-tabs" aria-label="Agent">
+    <Tabs.List class="panel-tabs agent-tabs" aria-label="Agent">
       {#each [{id:"connection",label:"Connection"},{id:"chat",label:"Chat"},{id:"tasks",label:"Tasks"}] as item}
-        <Tabs.Trigger class="agent-tab" value={item.id}>{item.label}</Tabs.Trigger>
+        <Tabs.Trigger class="agent-tab" value={item.id} title={item.label}>{item.label}</Tabs.Trigger>
       {/each}
       <Tabs.Indicator class="agent-tab-indicator" />
     </Tabs.List>
@@ -384,14 +384,14 @@
     <p class="panel-muted">Click a button below to copy connection instructions to your clipboard. Paste them into a new message in your local coding agent (Codex, Claude, Pi, etc.) and send it to connect the agent to this document. Choose <strong>Reader</strong> to let it read, <strong>Commenter</strong> to let it read, comment, and suggest changes, <strong>Edit with track changes</strong> to require suggestions you can accept or reject, or <strong>Edit directly</strong> to allow source edits.</p>
     <div class="access-buttons" role="group" aria-label="Copy setup prompt with access">
       {#each roles as role}
-        <button class="btn btn-sm preset-tonal-surface" disabled={busy || starting || !connection.id || (!canShare && currentRole !== (role.role || role.id))} data-access={role.id} title={role.help} onclick={() => void copyInstructions(role.id)}>{role.label}</button>
+        <button class="btn btn-sm preset-outlined-surface-300-700" disabled={busy || starting || !connection.id || (!canShare && currentRole !== (role.role || role.id))} data-access={role.id} title={role.help} onclick={() => void copyInstructions(role.id)}>{role.label}</button>
       {/each}
     </div>
     {#if copyFallback}<textarea class="input setup-prompt" readonly rows="6" aria-label="Setup prompt to copy" value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>{/if}
   </div>
   {#if !connection.id}<button class="btn preset-filled-primary-500" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Retry connection"}</button>{/if}
   {#if connection.id && !connection.connected}
-    <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm preset-tonal-surface" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
+    <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm preset-outlined-surface-300-700" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
   {/if}
 
   </Tabs.Content>
@@ -410,7 +410,7 @@
   {/if}
 
   {#each uncertainTasks() as item (item.id)}
-    <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm preset-tonal-surface" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
+    <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm preset-outlined-surface-300-700" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
   {/each}
   <ChatTranscript messages={connection.messages} empty={connection.runnerConnected ? "No messages yet." : "Connect your agent in the Connection tab to begin."} roleLabel={(message) => message.role === "user" ? "You" : "Agent"} onresult={chooseResult} />
 
@@ -463,7 +463,7 @@
         {#each comments.filter(comment => !comment.resolved) as comment (comment.id)}
           <div>
             <p class="panel-muted">{comment.body || comment.exact || "Suggestion"}</p>
-            <button class="btn btn-sm preset-tonal-surface" disabled={!caps.can_comment} onclick={() => oncommenttask(comment)}>{comment.motivation === "editing" ? "Refine suggestion" : "Address comment"}</button>
+            <button class="btn btn-sm preset-outlined-surface-300-700" disabled={!caps.can_comment} onclick={() => oncommenttask(comment)}>{comment.motivation === "editing" ? "Refine suggestion" : "Address comment"}</button>
           </div>
         {/each}
       </div>
@@ -474,7 +474,7 @@
         {#each diagnostics as item}
           <div>
             <p class="panel-muted">{item.message}</p>
-            <button class="btn btn-sm preset-tonal-surface" disabled={!caps.can_comment} onclick={() => ondiagnostictask(item)}>Fix diagnostic</button>
+            <button class="btn btn-sm preset-outlined-surface-300-700" disabled={!caps.can_comment} onclick={() => ondiagnostictask(item)}>Fix diagnostic</button>
           </div>
         {/each}
       </div>
@@ -491,8 +491,8 @@
   .agent-panel { display:flex; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 3); overflow:hidden; }
   .agent-panel > :global(*) { flex-shrink:0; }
   .agent-panel :global(.agent-tabs-root) { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 3); }
-  .agent-panel :global(.agent-tabs) { position:relative; display:flex; flex-shrink:0; border-bottom:1px solid var(--color-surface-300-700); }
-  .agent-panel :global(.agent-tab) { flex:1; min-width:0; padding:calc(var(--spacing) * 2) var(--spacing); cursor:pointer; color:var(--color-surface-500-500); }
+  /* Layout, truncation and the narrow-panel step live on .panel-tabs. */
+  .agent-panel :global(.agent-tab) { color:var(--color-surface-500-500); }
   .agent-panel :global(.agent-tab[data-selected]) { color:var(--color-primary-700-300); font-weight:700; background:color-mix(in srgb, var(--color-primary-500) 18%, transparent); box-shadow:inset 0 -3px 0 var(--color-primary-500); }
   .agent-panel :global(.agent-tab-indicator) { height:3px; bottom:0; background:var(--color-primary-500); }
   .agent-panel :global([role="tabpanel"]) { flex:1 1 0; min-height:0; overflow-y:auto; }

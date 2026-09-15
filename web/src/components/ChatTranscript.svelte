@@ -64,14 +64,14 @@
           {#if starts}<strong class="chat-author">{name}</strong>{/if}
           <p>{message.text}</p>
           {#if message.context?.results && (message.context.results.suggestions?.length || message.context.results.pass)}
-            <button class="btn btn-sm preset-tonal-surface" onclick={() => onresult?.(message.context.results)}>Review changes</button>
+            <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => onresult?.(message.context.results)}>Review changes</button>
           {/if}
         </div>
       </article>
     {/each}
     {#if !messages.length}<p class="panel-muted">{empty}</p>{/if}
   </div>
-  {#if unread}<button class="btn btn-sm preset-tonal-surface new-messages" onclick={() => { following = true; void follow(); }}>New messages ↓</button>{/if}
+  {#if unread}<button class="btn btn-sm preset-outlined-surface-300-700 new-messages" onclick={() => { following = true; void follow(); }}>New messages ↓</button>{/if}
 </div>
 
 <style>

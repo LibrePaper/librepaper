@@ -24,12 +24,29 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 /// everything this module put into the body, which is the same number the
 /// agent's own table arrives at because marks add no text.
 let pageStarts = [];
+let renderScale = 1;
 
 export function pageForOffset(offset) {
   if (!pageStarts.length) return -1;
   let page = 0;
   while (page + 1 < pageStarts.length && pageStarts[page + 1] <= offset) page += 1;
   return page;
+}
+
+export function pointFromClient(clientX, clientY) {
+  const element = document.elementFromPoint(clientX, clientY)?.closest?.(".page[data-page]");
+  if (!element || !renderScale) return null;
+  const rect = element.getBoundingClientRect();
+  return { page: Number(element.dataset.page), x: (clientX - rect.left) / renderScale,
+    y: (clientY - rect.top) / renderScale };
+}
+
+export function locatePoint(page, x, y) {
+  const element = document.querySelector(`.page[data-page="${Number(page)}"]`);
+  if (!element || !renderScale) return false;
+  const rect = element.getBoundingClientRect();
+  scrollTo({ top: scrollY + rect.top + Number(y) * renderScale - innerHeight / 3, behavior: "smooth" });
+  return true;
 }
 
 let generation = 0;
@@ -106,8 +123,11 @@ export async function render(bytes, root, mode = "auto") {
     const first = await document_.getPage(1);
     if (mine !== generation) return 0;
     const size = first.getViewport({ scale: 1 });
+    // The frame is all page now: the controls moved out to the preview
+    // header, so nothing is subtracted for a bar inside it.
     const scale = viewerScale(mode, document.documentElement.clientWidth,
-      document.documentElement.clientHeight - 40, size.width, size.height);
+      document.documentElement.clientHeight, size.width, size.height);
+    renderScale = scale;
     staging.dataset.scale = String(scale / (96 / 72));
     first.cleanup();
 
@@ -269,4 +289,3 @@ function gap(text) {
   return span;
 }
 
-export { createToolbar } from "./toolbar.js";

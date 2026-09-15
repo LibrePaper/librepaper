@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// The protocol versions this binary speaks.
-pub const PROTOCOL_VERSIONS: &[u32] = &[1];
+/// The protocol versions this binary speaks. Version 1 carried the TeX and
+/// Biber jobs of the old browser fallback and is no longer spoken.
+pub const PROTOCOL_VERSIONS: &[u32] = &[2];
 
 /// The default loopback port. Configurable with `librepaper local start
 /// --port`.
@@ -115,21 +116,13 @@ pub struct Tool {
 /// Which engines and helpers the app found.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Tools {
-    pub pdflatex: Tool,
-    pub xelatex: Tool,
-    pub lualatex: Tool,
-    pub bibtex: Tool,
-    pub bibtex8: Tool,
-    pub biber: Tool,
-    pub makeindex: Tool,
     /// The Quarto CLI itself. Its path is deliberately never exposed.
     #[serde(default)]
     pub quarto: Tool,
 }
 
-/// A capability reported by a local Quarto installation. Keeping this
-/// separate from `Tools` makes older clients able to ignore the additive
-/// fields while still showing a useful TeX capability response.
+/// A capability reported by a local Quarto installation, kept separate from
+/// `Tools` so its richer shape does not have to fit the flat tool record.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct QuartoCapabilities {
     #[serde(default)]
@@ -148,7 +141,7 @@ pub struct QuartoCapabilities {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Confinement {
     pub available: bool,
-    /// `bwrap`, `sandbox-exec`, or `none`.
+    /// Retained for wire compatibility; trusted local execution reports `none`.
     pub kind: String,
     #[serde(default)]
     pub reason: String,
@@ -176,6 +169,46 @@ pub struct Capabilities {
     /// Calepin exists on this surface only as a managed-preview adapter.
     #[serde(default)]
     pub calepin: Tool,
+    /// Zotero desktop's read-only local API. No Zotero account or API key is
+    /// involved; `note` distinguishes disabled, absent, and incompatible.
+    #[serde(default)]
+    pub zotero: Tool,
+    /// Adapter-oriented capability records introduced by protocol v2. The
+    /// legacy `tools` fields remain populated for v1 clients.
+    #[serde(default)]
+    pub builders: Vec<BuilderCapability>,
+}
+
+/// A stable operation/workspace pair advertised by a local adapter.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BuilderOperation {
+    pub kind: String,
+    #[serde(default)]
+    pub workspace_modes: Vec<String>,
+}
+
+/// Browser-facing description of one built-in or companion-local builder.
+/// Paths and executable details are intentionally absent.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct BuilderCapability {
+    pub id: String,
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub source_formats: Vec<String>,
+    #[serde(default)]
+    pub outputs: Vec<String>,
+    #[serde(default)]
+    pub engines: Vec<String>,
+    #[serde(default)]
+    pub operations: Vec<BuilderOperation>,
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default)]
+    pub presets: bool,
+    #[serde(default)]
+    pub note: String,
 }
 
 /// One input file the browser says it is sending.
@@ -184,6 +217,34 @@ pub struct ManifestEntry {
     pub path: String,
     pub sha256: String,
     pub size: u64,
+}
+
+/// Identity of the immutable project snapshot handed to a runner. The tree
+/// digest identifies collaborative source; the manifest digest identifies the
+/// exact bytes materialized in the runner workspace.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SourceSnapshot {
+    pub tree_sha256: String,
+    pub main_path: String,
+    pub manifest_sha256: String,
+}
+
+impl SourceSnapshot {
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("source tree digest", &self.tree_sha256),
+            ("source manifest digest", &self.manifest_sha256),
+        ] {
+            if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(format!("{name} must be a SHA-256 digest"));
+            }
+        }
+        if !safe_relative_path(&self.main_path) {
+            return Err("source main path must be a safe project-relative path".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -236,8 +297,212 @@ pub struct JobRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quarto: Option<QuartoJobOptions>,
     pub manifest: Vec<ManifestEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceSnapshot>,
     #[serde(default)]
     pub options: JobOptions,
+    /// Protocol v2 stable builder identifier; absent on v1 requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder_options: Option<BTreeMap<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+}
+
+/// The only workspace forms protocol v2 accepts. A path is never represented
+/// on the wire. One-shot bound inputs are copied into a fresh service-owned
+/// temporary workspace by the adapter; managed previews may watch the bound
+/// working folder.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
+pub enum WorkspaceRequest {
+    Snapshot {
+        #[serde(default)]
+        binding_id: Option<String>,
+    },
+    Bound {
+        binding_id: String,
+    },
+}
+
+impl Default for WorkspaceRequest {
+    fn default() -> Self {
+        Self::Snapshot { binding_id: None }
+    }
+}
+
+impl WorkspaceRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Snapshot { binding_id } => {
+                if binding_id
+                    .as_deref()
+                    .is_some_and(|id| id.is_empty() || id.len() > 256)
+                {
+                    Err("binding_id must be at most 256 bytes".into())
+                } else {
+                    Ok(())
+                }
+            }
+            Self::Bound { binding_id } if !binding_id.is_empty() && binding_id.len() <= 256 => {
+                Ok(())
+            }
+            Self::Bound { .. } => {
+                Err("binding_id is required and must be at most 256 bytes".into())
+            }
+        }
+    }
+}
+
+/// Version 2 structured build request. It is deliberately separate from
+/// `JobRequest` so the v1 wire shape and its existing callers remain stable
+/// during migration.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BuildRequestV2 {
+    pub protocol: u32,
+    pub kind: String,
+    pub project: String,
+    pub origin: String,
+    pub snapshot: String,
+    pub generation: u64,
+    pub builder: String,
+    pub workspace: WorkspaceRequest,
+    pub entrypoint: String,
+    pub output: String,
+    #[serde(default)]
+    pub options: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub deadline_seconds: Option<u64>,
+    #[serde(default)]
+    pub max_passes: Option<u32>,
+    #[serde(default)]
+    pub manifest: Vec<ManifestEntry>,
+    #[serde(default)]
+    pub source: Option<SourceSnapshot>,
+}
+
+impl BuildRequestV2 {
+    pub fn validate_shape(&self) -> Result<(), String> {
+        if self.protocol != 2 {
+            return Err("unsupported protocol version".into());
+        }
+        if self.kind != "build" {
+            return Err("protocol 2 job kind must be build".into());
+        }
+        if self.builder.is_empty() || self.builder.len() > 128 {
+            return Err("builder is required and must be at most 128 bytes".into());
+        }
+        if !safe_relative_path(&self.entrypoint) {
+            return Err("entrypoint must be a safe project-relative path".into());
+        }
+        if self.output.is_empty()
+            || self.output.len() > 64
+            || !self
+                .output
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+        {
+            return Err("output must be a valid stable identifier".into());
+        }
+        self.workspace.validate()?;
+        if let Some(source) = &self.source {
+            source.validate()?;
+            if source.tree_sha256 != self.snapshot {
+                return Err("source tree digest does not match the job snapshot".into());
+            }
+            if source.main_path != self.entrypoint {
+                return Err("source main path does not match the job entrypoint".into());
+            }
+        }
+        if self.options.len() > 128 {
+            return Err("too many builder options".into());
+        }
+        if self.options.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                "executable"
+                    | "command"
+                    | "args"
+                    | "environment"
+                    | "env"
+                    | "shell"
+                    | "target"
+                    | "make_target"
+            )
+        }) {
+            return Err(
+                "builder options cannot select commands, arguments, environment, or targets".into(),
+            );
+        }
+        if self
+            .preset
+            .as_deref()
+            .is_some_and(|id| id.is_empty() || id.len() > 256)
+        {
+            return Err("preset must be at most 256 bytes".into());
+        }
+        if self
+            .deadline_seconds
+            .is_some_and(|seconds| seconds == 0 || seconds > 3600)
+            || self
+                .max_passes
+                .is_some_and(|passes| passes == 0 || passes > 20)
+        {
+            return Err("build limits are outside the supported range".into());
+        }
+        let (outputs, allowed): (&[&str], &[&str]) = match self.builder.as_str() {
+            "tex" | "latexmk" => (&["pdf"], &["engine", "synctex"]),
+            "tectonic" => (&["pdf"], &["synctex"]),
+            "typst" => (&["pdf"], &[]),
+            "pandoc" => (&["html", "docx"], &[]),
+            "calepin" => (&["html", "pdf"], &[]),
+            "quarto" => (
+                &["html", "pdf", "docx", "revealjs"],
+                &["profile", "parameters", "policy", "data_inputs"],
+            ),
+            _ => return Err("unknown builder".into()),
+        };
+        if !outputs.contains(&self.output.as_str()) {
+            return Err("unsupported builder output".into());
+        }
+        if self.preset.is_none() {
+            for (name, value) in &self.options {
+                if !allowed.contains(&name.as_str()) {
+                    return Err(format!("unknown {} option: {name}", self.builder));
+                }
+                let valid = match name.as_str() {
+                    "engine" => matches!(value.as_str(), Some("pdflatex" | "xelatex" | "lualatex")),
+                    "synctex" => value.is_boolean(),
+                    "profile" => value.is_string(),
+                    "parameters" => value.is_object(),
+                    "policy" => matches!(
+                        value.as_str(),
+                        Some("project-defaults" | "refresh-computations" | "frozen")
+                    ),
+                    "data_inputs" => value.as_array().is_some_and(|items| {
+                        items
+                            .iter()
+                            .all(|item| item.as_str().is_some_and(safe_relative_path))
+                    }),
+                    _ => false,
+                };
+                if !valid {
+                    return Err(format!("invalid typed option: {name}"));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The `POST previews` (and `GET`/`DELETE previews/{id}`) request body: a
@@ -266,6 +531,80 @@ pub struct PreviewRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calepin: Option<CalepinJobOptions>,
     pub manifest: Vec<ManifestEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceSnapshot>,
+    /// Protocol v2 preview declaration. Managed previews require a bound
+    /// workspace; snapshot previews are intentionally rejected.
+    #[serde(default)]
+    pub workspace: Option<WorkspaceRequest>,
+    #[serde(default)]
+    pub builder: Option<String>,
+    #[serde(default)]
+    pub output: Option<String>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+}
+
+/// Strict v2 wire decoding; old nested tool envelopes cannot override the
+/// declared workspace, builder, or entrypoint.
+pub fn decode_preview(mut raw: serde_json::Value) -> Result<PreviewRequest, String> {
+    if raw.get("protocol").and_then(serde_json::Value::as_u64) != Some(2) {
+        return serde_json::from_value(raw).map_err(|error| error.to_string());
+    }
+    if raw.get("kind").and_then(serde_json::Value::as_str) != Some("preview") {
+        return Err("protocol 2 preview kind must be preview".into());
+    }
+    raw["kind"] = serde_json::json!("build");
+    let request: BuildRequestV2 = serde_json::from_value(raw).map_err(|error| error.to_string())?;
+    request.validate_shape()?;
+    if request.preset.is_some() {
+        return Err("presets support snapshot builds only".into());
+    }
+    let WorkspaceRequest::Bound { binding_id } = &request.workspace else {
+        return Err("managed previews require bound workspace".into());
+    };
+    let (quarto, calepin) = match request.builder.as_str() {
+        "quarto" => {
+            let mut options = serde_json::to_value(QuartoJobOptions::default())
+                .map_err(|error| error.to_string())?;
+            for (key, value) in &request.options {
+                options[key] = value.clone();
+            }
+            options["binding_id"] = serde_json::json!(binding_id);
+            options["main"] = serde_json::json!(request.entrypoint);
+            options["format"] = serde_json::json!(request.output);
+            let options: QuartoJobOptions =
+                serde_json::from_value(options).map_err(|error| error.to_string())?;
+            options.validate()?;
+            (Some(options), None)
+        }
+        "calepin" => (
+            None,
+            Some(CalepinJobOptions {
+                binding_id: binding_id.clone(),
+                main: request.entrypoint.clone(),
+                format: request.output.clone(),
+            }),
+        ),
+        _ => return Err("builder does not support managed previews".into()),
+    };
+    Ok(PreviewRequest {
+        protocol: 2,
+        kind: "quarto".into(),
+        project: request.project,
+        origin: request.origin,
+        snapshot: request.snapshot,
+        generation: request.generation,
+        engine: request.builder.clone(),
+        quarto,
+        calepin,
+        manifest: request.manifest,
+        source: request.source,
+        workspace: Some(request.workspace),
+        builder: Some(request.builder),
+        output: Some(request.output),
+        entrypoint: Some(request.entrypoint),
+    })
 }
 
 /// Options accepted by the local Quarto adapter. Every value is validated
@@ -292,15 +631,20 @@ pub struct QuartoJobOptions {
     #[serde(default)]
     pub shared_tree_sha256: Option<String>,
     /// Where the adapter may read inputs.
+    #[serde(default)]
     pub execution_mode: QuartoExecutionMode,
-    /// Render one bound document or the complete Quarto project.
+    /// Render one bound document. Project scope is retained in the wire enum
+    /// only so older clients receive an explicit validation error.
+    #[serde(default)]
     pub render_scope: QuartoRenderScope,
     /// Local files required by the document in addition to the shared
     /// manifest.  Snapshot mode copies these only after checking their
     /// declared, project-relative paths.
+    #[serde(default)]
     pub data_inputs: Vec<String>,
     /// Snapshot mode requires the caller to attest that `manifest` is the
     /// complete shared inventory.  This is intentionally opt-in.
+    #[serde(default)]
     pub shared_inventory_complete: bool,
 }
 
@@ -361,24 +705,18 @@ pub enum QuartoRenderScope {
 
 impl QuartoJobOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if self.binding_id.is_empty() || self.binding_id.len() > 256 {
-            return Err("quarto binding_id is required and must be at most 256 bytes".into());
-        }
-        if !safe_relative_path(&self.main) || !self.main.ends_with(".qmd") {
-            return Err("quarto main must be a safe project-relative .qmd path".into());
-        }
-        if !matches!(self.format.as_str(), "html" | "pdf" | "docx" | "revealjs") {
-            return Err(format!("unsupported quarto output format: {}", self.format));
-        }
-        if self.render_scope == QuartoRenderScope::Project
-            && !matches!(self.format.as_str(), "html" | "revealjs")
-        {
-            return Err("Quarto project renders support only html or revealjs output".into());
-        }
-        if self.render_scope == QuartoRenderScope::Project
-            && self.policy == QuartoRenderPolicy::Frozen
-        {
-            return Err("frozen Quarto rendering does not support project scope".into());
+        validate_binding_id(&self.binding_id, "quarto")?;
+        validate_entrypoint(
+            &self.main,
+            &[".qmd", ".md"],
+            "quarto main must be a safe project-relative .qmd or .md path",
+        )?;
+        validate_output_format(&self.format, &["html", "pdf", "docx", "revealjs"], "quarto")?;
+        if self.render_scope == QuartoRenderScope::Project {
+            return Err(
+                "Quarto website and book project renders are not supported; render one document instead"
+                    .into(),
+            );
         }
         if let Some(profile) = &self.profile {
             if profile.is_empty()
@@ -498,18 +836,13 @@ impl Default for CalepinJobOptions {
 
 impl CalepinJobOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if self.binding_id.is_empty() || self.binding_id.len() > 256 {
-            return Err("calepin binding_id is required and must be at most 256 bytes".into());
-        }
-        if !safe_relative_path(&self.main) || !self.main.ends_with(".typ") {
-            return Err("entrypoint must be a safe project-relative .typ path".into());
-        }
-        if !matches!(self.format.as_str(), "html" | "pdf") {
-            return Err(format!(
-                "unsupported calepin output format: {}",
-                self.format
-            ));
-        }
+        validate_binding_id(&self.binding_id, "calepin")?;
+        validate_entrypoint(
+            &self.main,
+            &[".typ"],
+            "entrypoint must be a safe project-relative .typ path",
+        )?;
+        validate_output_format(&self.format, &["html", "pdf"], "calepin")?;
         Ok(())
     }
 }
@@ -561,13 +894,25 @@ pub struct ToolVersions {
 
 /// Who and what produced a result. `backend` is always `local` here.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct Provenance {
+pub struct BuildProvenance {
     pub backend: String,
+    #[serde(default)]
+    pub builder: String,
+    #[serde(default)]
+    pub version: String,
     #[serde(default)]
     pub engine: String,
     #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub snapshot: String,
+    #[serde(default)]
+    pub main_path: String,
+    #[serde(default)]
+    pub input_manifest_sha256: String,
+    #[serde(default)]
     pub tools: ToolVersions,
-    /// `bwrap`, `sandbox-exec` or `none`.
+    /// Retained for wire compatibility; trusted local execution reports `none`.
     #[serde(default)]
     pub confinement: String,
 }
@@ -597,7 +942,7 @@ pub struct JobStatus {
     #[serde(default)]
     pub diagnostics: Vec<Diagnostic>,
     #[serde(default)]
-    pub provenance: Provenance,
+    pub provenance: BuildProvenance,
     /// Biber found a control-file version it does not speak.
     #[serde(default)]
     pub incompatible: bool,
@@ -674,6 +1019,33 @@ pub fn safe_relative_path(path: &str) -> bool {
         .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
+fn validate_binding_id(value: &str, engine: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 256 {
+        return Err(format!(
+            "{engine} binding_id is required and must be at most 256 bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_entrypoint(value: &str, extensions: &[&str], message: &str) -> Result<(), String> {
+    if !safe_relative_path(value)
+        || !extensions
+            .iter()
+            .any(|extension| value.ends_with(extension))
+    {
+        return Err(message.into());
+    }
+    Ok(())
+}
+
+fn validate_output_format(value: &str, allowed: &[&str], engine: &str) -> Result<(), String> {
+    if !allowed.contains(&value) {
+        return Err(format!("unsupported {engine} output format: {value}"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -710,7 +1082,29 @@ mod tests {
     }
 
     #[test]
-    fn quarto_options_have_an_explicit_current_schema_and_gate_snapshots() {
+    fn source_snapshot_distinguishes_tree_and_materialized_input_identity() {
+        let source = SourceSnapshot {
+            tree_sha256: "a".repeat(64),
+            main_path: "chapters/paper.qmd".into(),
+            manifest_sha256: "b".repeat(64),
+        };
+        source.validate().expect("valid source snapshot");
+        assert!(SourceSnapshot {
+            manifest_sha256: "not-a-digest".into(),
+            ..source.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(SourceSnapshot {
+            main_path: "../paper.qmd".into(),
+            ..source
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn quarto_options_encode_the_current_schema_decode_legacy_and_gate_snapshots() {
         let options = QuartoJobOptions {
             binding_id: "binding".into(),
             ..Default::default()
@@ -723,10 +1117,23 @@ mod tests {
         let decoded: QuartoJobOptions = serde_json::from_value(encoded).expect("decode");
         assert_eq!(decoded.execution_mode, QuartoExecutionMode::WorkingTree);
 
-        let missing = serde_json::json!({
-            "binding_id": "binding", "main": "index.qmd", "format": "html"
-        });
-        assert!(serde_json::from_value::<QuartoJobOptions>(missing).is_err());
+        let legacy: QuartoJobOptions = serde_json::from_value(serde_json::json!({
+            "binding_id": "binding",
+            "main": "paper.qmd",
+            "format": "html"
+        }))
+        .expect("the pre-snapshot Quarto request remains valid");
+        assert_eq!(legacy.execution_mode, QuartoExecutionMode::WorkingTree);
+        assert_eq!(legacy.render_scope, QuartoRenderScope::Document);
+        assert!(legacy.data_inputs.is_empty());
+        assert!(!legacy.shared_inventory_complete);
+
+        let mut project_scope = decoded.clone();
+        project_scope.render_scope = QuartoRenderScope::Project;
+        assert!(project_scope
+            .validate()
+            .unwrap_err()
+            .contains("website and book project renders are not supported"));
 
         let mut snapshot = options;
         snapshot.execution_mode = QuartoExecutionMode::IsolatedSnapshot;
@@ -734,5 +1141,30 @@ mod tests {
         snapshot.shared_inventory_complete = true;
         snapshot.shared_tree_sha256 = Some("0".repeat(64));
         assert!(snapshot.validate().is_ok());
+    }
+
+    #[test]
+    fn v2_build_rejects_command_selection_options() {
+        let value = serde_json::json!({
+            "protocol": 2, "kind": "build", "project": "p", "origin": "https://x",
+            "snapshot": "s", "generation": 1, "builder": "pandoc",
+            "workspace": {"mode": "snapshot"}, "entrypoint": "index.md", "output": "html",
+            "options": {"command": "rm -rf /"}
+        });
+        let request: BuildRequestV2 = serde_json::from_value(value).expect("decode");
+        assert!(request.validate_shape().is_err());
+    }
+
+    #[test]
+    fn v2_preview_workspace_round_trips_only_bound_binding() {
+        let request = WorkspaceRequest::Bound {
+            binding_id: "grant-1".into(),
+        };
+        let encoded = serde_json::to_value(&request).expect("encode");
+        let decoded: WorkspaceRequest = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, request);
+        assert!(WorkspaceRequest::Snapshot { binding_id: None }
+            .validate()
+            .is_ok());
     }
 }

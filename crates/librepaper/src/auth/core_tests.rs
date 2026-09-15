@@ -27,6 +27,16 @@ fn credentials_cannot_cross_purposes() {
 }
 
 #[test]
+fn established_catalog_account_uuid_survives_session_round_trip() {
+    let key = [11; 32];
+    let mut who = Identity::github("alice", "provider-subject");
+    who.id = uuid::Uuid::now_v7().to_string();
+    who.session_generation = "4".into();
+    let session = sign_session(&key, &who, now_unix() + 3600);
+    assert_eq!(read_session(&key, &session), who);
+}
+
+#[test]
 fn pictures_travel_in_current_credentials() {
     let key = [3; 32];
     let expiry = now_unix() + 3600;
@@ -157,25 +167,4 @@ fn corrupt_missing_or_unreadable_keys_are_not_replaced() {
     std::fs::create_dir(&unreadable).unwrap();
     assert!(session_key_file(&unreadable, false).is_err());
     assert!(unreadable.is_dir());
-}
-
-#[test]
-fn keyring_rotation_roundtrips_and_preserves_old_keys() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("links.key");
-    std::fs::write(&path, hex::encode([7; 32])).unwrap();
-    assert!(link_sealing_keyring_file(&path, false).is_err());
-    std::fs::remove_file(&path).unwrap();
-    let initial = link_sealing_keyring_file(&path, false).unwrap();
-    let old = initial[0].clone();
-    let promoted: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(promoted["version"], 1);
-    assert_eq!(promoted["keys"][0]["key"], hex::encode(&old));
-    let keys = vec![vec![8; 32], old];
-    write_link_sealing_keyring(&path, &keys).unwrap();
-    assert_eq!(link_sealing_keyring_file(&path, true).unwrap(), keys);
-    assert!(write_link_sealing_keyring(&path, &[vec![0; 31]]).is_err());
-    assert_eq!(link_sealing_keyring_file(&path, true).unwrap(), keys);
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }

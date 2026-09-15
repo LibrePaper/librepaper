@@ -30,6 +30,13 @@ use super::service::{LocalService, NativeRunner};
 pub struct Embedded {
     /// `http://127.0.0.1:<port>/`.
     pub address: String,
+    service: LocalService,
+}
+
+impl Embedded {
+    pub async fn stop(&self) {
+        self.service.stop_previews().await;
+    }
 }
 
 /// Start the service. `base` is a private directory of the deployment
@@ -89,5 +96,6 @@ pub async fn start(base: &Path, tex_path: Vec<PathBuf>) -> Result<Arc<Embedded>,
 
     Ok(Arc::new(Embedded {
         address: format!("http://127.0.0.1:{port}/"),
+        service,
     }))
 }

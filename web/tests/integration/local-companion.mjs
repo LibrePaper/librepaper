@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import * as local from "../../src/lib/latex/local.js";
+import * as local from "../../src/lib/companion/client.js";
 
 const response = (status, body) => ({ status, ok: status >= 200 && status < 300,
   json: async () => body, clone() { return response(status, body); } });
@@ -18,7 +18,7 @@ function setup(claim) {
     wait: async () => { now += 700; },
     fetch: async (url, init) => {
       if (url.includes("connect/claim")) { claimBody = JSON.parse(init.body); return claim(++attempts); }
-      if (url.includes("health")) return response(200, { service: "librepaper-local", protocol: [1], instance: "restart" });
+      if (url.includes("health")) return response(200, { service: "librepaper-local", protocol: [2], instance: "restart" });
       if (url.includes("capabilities")) return response(200, { tools: {} });
       throw new Error(`Unexpected request ${url}`);
     },

@@ -279,24 +279,6 @@ async fn resolve_identifier_with(
     match_identifier(identifier, &documents, status == 200)
 }
 
-pub async fn open_document(
-    identifier: &str,
-    server: Option<String>,
-    token: Option<String>,
-    key: String,
-) {
-    let server = server_or_die(server);
-    let key = link_key(&key);
-    let slug = resolve_identifier(identifier, &server, &key, token.as_deref()).await;
-    // The key goes back where a browser expects it, in the fragment, so the
-    // page opened is the link exactly as it was shared.
-    if key.is_empty() {
-        open_url(&format!("{server}/docs/{slug}"));
-    } else {
-        open_url(&format!("{server}/docs/{slug}#k={key}"));
-    }
-}
-
 /// What `--key` takes: the key itself, or the whole link it came in, since a
 /// link is what a person actually has in their clipboard. A URL with no key
 /// in its fragment is an empty key, which is what a plain document URL
@@ -320,19 +302,6 @@ pub fn link_key(flag: &str) -> String {
                 .unwrap_or_default()
         })
         .unwrap_or_default()
-}
-
-pub fn open_url(target: &str) {
-    let (command, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
-        ("open", vec![target])
-    } else if cfg!(target_os = "windows") {
-        ("rundll32", vec!["url.dll,FileProtocolHandler", target])
-    } else {
-        ("xdg-open", vec![target])
-    };
-    if let Err(err) = std::process::Command::new(command).args(args).spawn() {
-        die(format!("could not open {target}: {err}"));
-    }
 }
 
 #[cfg(test)]

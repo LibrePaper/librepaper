@@ -26,8 +26,11 @@ const entries = (await readFile(lock, "utf8"))
   .map((line) => line.replace(/#.*$/, "").trim())
   .filter(Boolean)
   .map((line) => {
-    const [module, repo, tag, sha256] = line.split(/\s+/);
-    return { module, repo, tag, sha256 };
+    const [module, repo, tag, sha256, brotliSha256, ...extra] = line.split(/\s+/);
+    if (extra.length || !/^[a-f0-9]{64}$/.test(sha256 || "") || !/^[a-f0-9]{64}$/.test(brotliSha256 || "")) {
+      throw new Error(`${module || "lock entry"}: expected module repo tag sha256 brotli_sha256`);
+    }
+    return { module, repo, tag, sha256, brotliSha256 };
   });
 
 const expected = new Map([
@@ -43,33 +46,38 @@ if (entries.length !== expected.size || new Set(entries.map(({ module }) => modu
 await mkdir(out, { recursive: true });
 let fetched = 0;
 
-for (const { module, repo, tag, sha256 } of entries) {
+for (const { module, repo, tag, sha256, brotliSha256 } of entries) {
   if (only && only !== module) continue;
-  const target = join(out, module);
-  if (existsSync(target) && digest(await readFile(target)) === sha256) {
+  const representations = [
+    { name: module, sha256 },
+    { name: `${module}.br`, sha256: brotliSha256 },
+  ];
+  if ((await Promise.all(representations.map(async ({ name, sha256 }) => {
+    const target = join(out, name);
+    return existsSync(target) && digest(await readFile(target)) === sha256;
+  }))).every(Boolean)) {
     console.log(`${module.padEnd(20)} ok`);
     continue;
   }
-  const url = `https://github.com/LibrePaper/${repo}/releases/download/${tag}/${module}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    console.error(`${module}: ${url} -> ${response.status} ${response.statusText}`);
-    process.exit(1);
+  const fetchedRepresentations = [];
+  for (const representation of representations) {
+    const url = `https://github.com/LibrePaper/${repo}/releases/download/${tag}/${representation.name}`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${representation.name}: ${url} -> ${response.status} ${response.statusText}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const got = digest(bytes);
+    if (got !== representation.sha256) {
+      throw new Error(`${representation.name}: the bytes at ${url} are not what wasm-modules.lock pins.\n  expected ${representation.sha256}\n  received ${got}\nNothing was written. Either the release moved, or the lock is stale.`);
+    }
+    fetchedRepresentations.push({ ...representation, bytes });
   }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  const got = digest(bytes);
-  if (got !== sha256) {
-    console.error(
-      `${module}: the bytes at ${url} are not what wasm-modules.lock pins.\n` +
-        `  expected ${sha256}\n  received ${got}\n` +
-        `Nothing was written. Either the release moved, or the lock is stale.`,
-    );
-    process.exit(1);
+  for (const { name, bytes } of fetchedRepresentations) {
+    const target = join(out, name);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, bytes);
   }
-  await mkdir(dirname(target), { recursive: true });
-  await writeFile(target, bytes);
   fetched += 1;
-  console.log(`${module.padEnd(20)} ${(bytes.length / 1024).toFixed(0)} KiB  ${tag}`);
+  console.log(`${module.padEnd(20)} ${(fetchedRepresentations[0].bytes.length / 1024).toFixed(0)} KiB raw, ${(fetchedRepresentations[1].bytes.length / 1024).toFixed(0)} KiB br  ${tag}`);
 }
 
 if (fetched === 0 && !only) console.log("every pinned module was already in place");

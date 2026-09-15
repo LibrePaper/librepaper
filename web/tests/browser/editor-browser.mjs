@@ -23,14 +23,31 @@ const entry = join(temporary, "entry.js");
 const port = 19000 + Math.floor(Math.random() * 1000);
 
 const source = `
-import * as Y from ${JSON.stringify(join(root, "web/node_modules/yjs/dist/yjs.mjs"))};
+import { LoroDoc } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
-import { undoDepth } from ${JSON.stringify(join(root, "web/node_modules/y-codemirror.next/src/y-undomanager.js"))};
+import { undoManagerStateField } from ${JSON.stringify(join(root, "web/node_modules/loro-codemirror/dist/undo.js"))};
+// The binding offers whether an undo is available, not how many are stacked
+// up. What these checks are really about is whether the history survived, so
+// they ask that instead.
+// A change from somebody else, arriving the way one actually does: made on a
+// separate document and imported. Editing this browser's own document instead
+// would be a local change, which the binding rightly ignores -- the old Yjs
+// version could label a local transaction "remote", and Loro has no such
+// pretence.
+const fromAPeer = (target, edit) => {
+  const peer = new LoroDoc();
+  peer.import(target.export({ mode: "update" }));
+  edit(peer);
+  peer.commit();
+  target.import(peer.export({ mode: "update", from: target.oplogVersion() }));
+};
+const undoDepth = (state) => Boolean(state.field(undoManagerStateField, false)?.canUndo());
 import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEditor.svelte"))};
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
+import { prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
 const session = joinSession({ send: () => {}, mayEdit: true });
@@ -61,7 +78,7 @@ window.editorCheck = async () => {
   const secondText = EditorView.findFromDOM(document.querySelector(".cm-editor")).state.doc.toString();
 
   // A peer changes A while this browser is looking at B.
-  session.doc.transact(() => session.textOf(firstFile).insert(0, "REMOTE "), "remote");
+  fromAPeer(session.doc, (peer) => peer.getMap("files").get(firstFile).insert(0, "REMOTE "));
   component.$set({ file: firstFile });
   await tick();
   await tick();
@@ -89,8 +106,7 @@ window.remoteUndoCheck = async () => {
   });
   await tick();
   const view = EditorView.findFromDOM(document.querySelectorAll(".cm-editor")[1]);
-  const remoteOrigin = {};
-  value.doc.transact(() => text.insert(0, "REMOTE "), remoteOrigin);
+  fromAPeer(value.doc, (peer) => peer.getMap("files").get(textId).insert(0, "REMOTE "));
   await tick();
   view.focus();
   const press = (key, options = {}) => view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
@@ -171,7 +187,7 @@ window.mergeUndoCheck = async () => {
   const host = document.createElement("section");
   document.body.append(host);
   const mergeComponent = createClassComponent({ component: MergeEditor, target: host,
-    props: { oldText: "alpha", newText: "alpha", liveText: text, awareness: value.awareness, editable: true },
+    props: { oldText: "alpha", newText: "alpha", liveText: text, loroDoc: value.doc, ephemeral: value.ephemeral, editable: true },
   });
   await tick();
   const views = [...host.querySelectorAll(".cm-editor")].map((el) => EditorView.findFromDOM(el));
@@ -186,7 +202,7 @@ window.mergeUndoCheck = async () => {
   const errors = [];
   const onError = (event) => errors.push(event.message);
   window.addEventListener("error", onError);
-  value.doc.transact(() => text.insert(0, "REMOTE "), "remote");
+  fromAPeer(value.doc, (peer) => peer.getMap("files").get(id).insert(0, "REMOTE "));
   press(views[0], "z");
   press(views[1], "z");
   const remoteOnly = text.toString();
@@ -213,7 +229,10 @@ window.collabCacheCheck = async () => {
     sessions.push(value);
     return value;
   };
-  const snapshot = (value) => ({ update: btoa(String.fromCharCode(...Y.encodeStateAsUpdate(value.doc))) });
+  const snapshot = (value) => {
+    const update = value.doc.export({ mode: "update" });
+    return { update: btoa(String.fromCharCode(...new Uint8Array(update))) };
+  };
   const cached = async (createdAt) => {
     let ready;
     const local = new Promise((resolve) => { ready = resolve; });
@@ -228,7 +247,12 @@ window.collabCacheCheck = async () => {
     const opened = await cached("first-creation");
     await opened.start(snapshot(server));
     opened.text.insert(0, "new offline ");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await opened.persist();
+    await prepareOfflineProject({
+      server: location.origin, slug, created_at: "first-creation",
+      title: "Cached paper", source_format: "markdown", role: "owner",
+    });
+    const manifest = await preparedProject({ server: location.origin, slug });
     opened.leave();
     const reopened = await cached("first-creation");
     await reopened.start(snapshot(server));
@@ -242,6 +266,7 @@ window.collabCacheCheck = async () => {
     recreated.text.insert(0, "edited ");
     const result = {
       recovered,
+      prepared: manifest?.document?.title,
       files: recreated.list().length,
       main: recreated.mainId() === newMain,
       preview: recreated.tree().texts["main.md"],
@@ -404,8 +429,8 @@ try {
   const result = await evaluate("editorCheck()");
   assert.equal(result.sameView, true);
   assert.equal(result.secondText, "beta");
-  assert.equal(result.before.undo, 1);
-  assert.equal(result.after.undo, 1);
+  assert.equal(result.before.undo, true);
+  assert.equal(result.after.undo, true, "the undo history did not survive switching files");
   assert.equal(result.before.caret + 7, result.after.caret);
   assert.equal(result.after.text, "REMOTE LOCAL alpha");
   console.log("editor-browser: file state, undo, caret, and inactive remote text preserved");
@@ -449,6 +474,7 @@ try {
   console.log("editor-browser: diagnostics, hints, source links and empty state passed");
   const cache = await evaluate("collabCacheCheck()");
   assert.equal(cache.recovered, "new offline server");
+  assert.equal(cache.prepared, "Cached paper");
   assert.equal(cache.files, 1);
   assert.equal(cache.main, true);
   assert.equal(cache.preview, "edited reseeded");

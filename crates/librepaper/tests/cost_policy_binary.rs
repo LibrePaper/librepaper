@@ -64,6 +64,9 @@ fn removed_environment_settings_are_rejected_even_when_empty() {
 
 #[tokio::test]
 async fn startup_reports_transfer_zero_and_asset_limit_origins() {
+    let Ok(database_url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
+        return;
+    };
     let data = tempfile::tempdir().expect("server data directory");
     let fonts = tempfile::tempdir().expect("font directory");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_librepaper"))
@@ -90,6 +93,7 @@ async fn startup_reports_transfer_zero_and_asset_limit_origins() {
         ])
         .env("LIBREPAPER_GITHUB_CLIENT_ID", "test-client")
         .env("LIBREPAPER_GITHUB_CLIENT_SECRET", "test-secret")
+        .env("LIBREPAPER_DATABASE_URL", database_url)
         .env_remove("LIBREPAPER_MAX_ASSETS")
         .env_remove("LIBREPAPER_LATEX")
         .env_remove("LIBREPAPER_FONTS")
@@ -135,6 +139,9 @@ async fn startup_reports_transfer_zero_and_asset_limit_origins() {
 
 #[tokio::test]
 async fn startup_reports_builtin_asset_default_and_environment_origin() {
+    let Ok(database_url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
+        return;
+    };
     let data = tempfile::tempdir().expect("server data directory");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_librepaper"))
         .args([
@@ -152,6 +159,7 @@ async fn startup_reports_builtin_asset_default_and_environment_origin() {
         ])
         .env("LIBREPAPER_GITHUB_CLIENT_ID", "test-client")
         .env("LIBREPAPER_GITHUB_CLIENT_SECRET", "test-secret")
+        .env("LIBREPAPER_DATABASE_URL", database_url)
         .env("LIBREPAPER_BUDGET_DOCUMENT_ASSETS", "16")
         .env_remove("LIBREPAPER_MAX_ASSETS")
         .env_remove("LIBREPAPER_LATEX")

@@ -3,7 +3,6 @@ use super::*;
 use crate::agent_query::{QueryBudget, QuerySnapshot};
 use hmac::{Hmac, Mac};
 use serde::Serialize;
-use std::io::{Read, Write};
 
 mod cancel;
 mod comments;
@@ -13,6 +12,7 @@ mod schema;
 
 const PROTOCOL: &str = "2026-07-28";
 const MAX_MESSAGE: usize = 64 * 1024;
+const MAX_AGENT_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
 pub(super) fn runner_execution_epoch(headers: &HeaderMap) -> String {
     headers
@@ -244,12 +244,10 @@ impl Server {
                 Value::Null,
             );
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+            Ok(result) => result,
             Err(reply) => return reply,
         };
-        let who = self.viewer(&entry, &headers, arrival, None).await;
         if who.auth_failed {
             return plain(401, "authentication expired or revoked");
         }
@@ -330,97 +328,132 @@ impl Server {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn mcp_store<T: Serialize>(
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         id: &str,
         kind: &str,
         object: &T,
         expiry: i64,
     ) -> Result<(), Failure> {
-        let raw =
-            serde_json::to_vec(object).map_err(|e| Failure::new("internal", e.to_string()))?;
-        if raw.len() > 32 * 1024 * 1024 {
+        if id.is_empty() || id.len() > 256 || kind.is_empty() || kind.len() > 128 {
             return Err(Failure::new(
-                "budget_exceeded",
-                "retained object exceeds its decoded size limit",
+                "invalid_params",
+                "agent object identity is invalid",
             ));
         }
-        let bytes = tokio::task::spawn_blocking(move || {
-            let mut encoder =
-                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-            encoder.write_all(&raw)?;
-            encoder.finish()
-        })
-        .await
-        .map_err(|e| Failure::new("unavailable", e.to_string()))?
-        .map_err(|e| Failure::new("internal", e.to_string()))?;
-        let Some(catalog) = &self.store.catalog else {
+        if expiry <= now_unix() || expiry > now_unix() + 3600 {
             return Err(Failure::new(
-                "unavailable",
-                "durable catalog required for MCP",
+                "expired_epoch",
+                "agent object expiry is invalid",
             ));
-        };
-        let (slug, actor, id, kind) = (
-            slug.to_string(),
-            actor.to_string(),
-            id.to_string(),
-            kind.to_string(),
+        }
+        if who.id.id.is_empty() && who.link.is_empty() {
+            return Err(Failure::new(
+                "permission_changed",
+                "a live account or link is required",
+            ));
+        }
+        let payload = serde_json::to_value(object)
+            .map_err(|e| Failure::new("budget_exceeded", e.to_string()))?;
+        let envelope = json!({"version":1,"slug":slug,"actor":actor,"kind":kind,"expires":expiry,"payload":payload});
+        let bytes = serde_json::to_vec(&envelope)
+            .map_err(|e| Failure::new("budget_exceeded", e.to_string()))?;
+        if bytes.len() > MAX_AGENT_PAYLOAD_BYTES {
+            return Err(Failure::new(
+                "budget_exceeded",
+                "agent payload is too large",
+            ));
+        }
+        let key = format!(
+            "temporary/agent/{}/{}",
+            hex::encode(Sha256::digest(
+                format!("{slug}\0{actor}\0{kind}").as_bytes()
+            )),
+            hex::encode(Sha256::digest(id.as_bytes()))
         );
-        catalog
-            .execute_catalog(bytes.len() + 256, move |c| {
-                c.put_agent_object(&slug, &actor, &id, &kind, &bytes, expiry)
-            })
+        match self
+            .store
+            .blobs
+            .put_new(&key, bytes.clone(), "application/json")
             .await
-            .map_err(|e| Failure::new("budget_exceeded", e.to_string()))
+        {
+            Ok(()) => Ok(()),
+            Err(crate::storage::blob::BlobError::Conflict) => {
+                let old = self
+                    .store
+                    .blobs
+                    .get(&key)
+                    .await
+                    .map_err(|e| Failure::new("unavailable", e.to_string()))?;
+                if old == bytes {
+                    Ok(())
+                } else {
+                    Err(Failure::new(
+                        "operation_key_reused",
+                        "agent object identity was reused",
+                    ))
+                }
+            }
+            Err(e) => Err(Failure::new("unavailable", e.to_string())),
+        }
     }
 
     async fn mcp_load<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         id: &str,
         kind: &str,
     ) -> Result<T, Failure> {
-        let Some(catalog) = &self.store.catalog else {
+        if who.id.id.is_empty() && who.link.is_empty() {
             return Err(Failure::new(
-                "unavailable",
-                "durable catalog required for MCP",
+                "permission_changed",
+                "a live account or link is required",
             ));
-        };
-        let (slug, actor, id, kind) = (
-            slug.to_string(),
-            actor.to_string(),
-            id.to_string(),
-            kind.to_string(),
+        }
+        let key = format!(
+            "temporary/agent/{}/{}",
+            hex::encode(Sha256::digest(
+                format!("{slug}\0{actor}\0{kind}").as_bytes()
+            )),
+            hex::encode(Sha256::digest(id.as_bytes()))
         );
-        let raw = catalog
-            .execute_catalog(256, move |c| c.agent_object(&slug, &actor, &id, &kind))
-            .await
-            .map_err(|e| Failure::new("unavailable", e.to_string()))?
-            .ok_or_else(|| {
-                Failure::new(
-                    "view_expired",
-                    "object is unavailable; capture a fresh view",
-                )
-            })?;
-        tokio::task::spawn_blocking(move || {
-            let mut decoder =
-                flate2::read::ZlibDecoder::new(raw.as_slice()).take(32 * 1024 * 1024 + 1);
-            let mut decoded = Vec::new();
-            decoder
-                .read_to_end(&mut decoded)
-                .map_err(|e| Failure::new("internal", e.to_string()))?;
-            if decoded.len() > 32 * 1024 * 1024 {
-                return Err(Failure::new("budget_exceeded", "object decode limit"));
-            }
-            serde_json::from_slice(&decoded).map_err(|e| Failure::new("internal", e.to_string()))
-        })
-        .await
-        .map_err(|e| Failure::new("unavailable", e.to_string()))?
+        let bytes = self.store.blobs.get(&key).await.map_err(|e| match e {
+            crate::storage::blob::BlobError::NotFound => Failure::new(
+                "view_expired",
+                "object is unavailable; capture a fresh view",
+            ),
+            _ => Failure::new("unavailable", e.to_string()),
+        })?;
+        if bytes.len() > MAX_AGENT_PAYLOAD_BYTES {
+            return Err(Failure::new(
+                "budget_exceeded",
+                "stored agent payload is too large",
+            ));
+        }
+        let value: Value =
+            serde_json::from_slice(&bytes).map_err(|e| Failure::new("internal", e.to_string()))?;
+        if value["slug"] != slug
+            || value["actor"] != actor
+            || value["kind"] != kind
+            || value["expires"].as_i64().unwrap_or(0) <= now_unix()
+        {
+            return Err(Failure::new(
+                "view_expired",
+                "object is unavailable; capture a fresh view",
+            ));
+        }
+        serde_json::from_value(value["payload"].clone())
+            .map_err(|e| Failure::new("internal", e.to_string()))
     }
 
+    // Keep the wire identity, authority, and expiry explicit at this storage boundary.
+    #[allow(clippy::too_many_arguments)]
     async fn mcp_recheck(
         &self,
         slug: &str,
@@ -465,39 +498,22 @@ impl Server {
                 "runner conversation is missing",
             ));
         }
+        let epoch = runner_execution_epoch(headers);
+        if epoch.is_empty() {
+            return Err(Failure::new(
+                "permission_changed",
+                "runner execution lease is missing",
+            ));
+        }
+        if !self
+            .chat
+            .valid_agent_lease(slug, conversation, &epoch)
+            .await
         {
-            let epoch = runner_execution_epoch(headers);
-            if epoch.is_empty() {
-                return Err(Failure::new(
-                    "permission_changed",
-                    "runner execution lease is missing",
-                ));
-            }
-            let Some(catalog) = &self.store.catalog else {
-                return Err(Failure::new(
-                    "permission_changed",
-                    "runner execution lease unavailable",
-                ));
-            };
-            let slug_owned = slug.to_owned();
-            let conversation_owned = conversation.to_owned();
-            let epoch_owned = epoch.clone();
-            let live = catalog
-                .execute_catalog(256, move |catalog| {
-                    catalog.agent_execution_lease_active(
-                        &slug_owned,
-                        &conversation_owned,
-                        &epoch_owned,
-                    )
-                })
-                .await
-                .map_err(|_| Failure::new("unavailable", "runner execution lease lookup failed"))?;
-            if !live {
-                return Err(Failure::new(
-                    "permission_changed",
-                    "runner execution lease expired",
-                ));
-            }
+            return Err(Failure::new(
+                "permission_changed",
+                "runner execution lease has expired",
+            ));
         }
         Ok(who)
     }
@@ -514,7 +530,7 @@ impl Server {
         let (view_id, view) = if let Some(id) = args["snapshot"]["view_id"].as_str() {
             (
                 id.to_string(),
-                self.mcp_load::<View>(slug, actor, id, "view").await?,
+                self.mcp_load::<View>(slug, actor, who, id, "view").await?,
             )
         } else {
             let room = self
@@ -530,7 +546,7 @@ impl Server {
             let bytes = serde_json::to_vec(&snapshot)
                 .map_err(|e| Failure::new("internal", e.to_string()))?;
             let id = format!("view_{}", hex::encode(Sha256::digest(&bytes)));
-            match self.mcp_load::<View>(slug, actor, &id, "view").await {
+            match self.mcp_load::<View>(slug, actor, who, &id, "view").await {
                 Ok(view) => (id, view),
                 Err(error) if error.code == "view_expired" => {
                     let expiry = now_unix() + 3600;
@@ -542,22 +558,24 @@ impl Server {
                         operation_epoch: epoch,
                     };
                     match self
-                        .mcp_store(slug, actor, &id, "view", &view, expiry)
+                        .mcp_store(slug, actor, who, &id, "view", &view, expiry)
                         .await
                     {
                         Ok(()) => (id, view),
-                        Err(error) => match self.mcp_load::<View>(slug, actor, &id, "view").await {
-                            // A concurrent capture may have stored this same
-                            // immutable snapshot with its own epoch first.
-                            Ok(existing) => (id, existing),
-                            Err(_) => return Err(error),
-                        },
+                        Err(error) => {
+                            match self.mcp_load::<View>(slug, actor, who, &id, "view").await {
+                                // A concurrent capture may have stored this same
+                                // immutable snapshot with its own epoch first.
+                                Ok(existing) => (id, existing),
+                                Err(_) => return Err(error),
+                            }
+                        }
                     }
                 }
                 Err(error) => return Err(error),
             }
         };
-        self.mcp_read_existing(slug, actor, headers, arrival, args, &view_id, view)
+        self.mcp_read_existing(slug, actor, who, headers, arrival, args, &view_id, view)
             .await
     }
 
@@ -566,6 +584,7 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
         args: &Value,
@@ -661,7 +680,7 @@ impl Server {
                 let id = query["id"].as_str().ok_or_else(|| {
                     Failure::new("invalid_query", "render queries require the candidate id")
                 })?;
-                let receipt = self.load_render_receipt(slug, actor, id).await?;
+                let receipt = self.load_render_receipt(slug, actor, who, id).await?;
                 if query["revision"]
                     .as_str()
                     .is_some_and(|revision| revision != receipt.source_revision)
@@ -684,7 +703,9 @@ impl Server {
                         "changes requires a previous view_id in revision",
                     )
                 })?;
-                let before = self.mcp_load::<View>(slug, actor, previous, "view").await?;
+                let before = self
+                    .mcp_load::<View>(slug, actor, who, previous, "view")
+                    .await?;
                 let old = before.snapshot.tree["files"]
                     .as_object()
                     .ok_or_else(|| Failure::new("internal", "missing prior manifest"))?;

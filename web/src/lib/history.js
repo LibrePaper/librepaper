@@ -19,19 +19,29 @@ const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
 /// The endpoint keeps this metadata beside `checkpoints` so old consumers can
 /// continue treating the response as a list through `load` below.
 export async function loadWithStatus(slug, headers = {}) {
-  const response = await fetch(`/api/documents/${slug}/history`, {
-    headers: asked(headers),
-    // History is private and labels can change. Never let the browser answer
-    // from an HTTP cache after a link has been rotated or revoked.
-    cache: "no-store",
-  });
-  if (!response.ok) throw new Error("this document's history is not readable");
-  const payload = await response.json();
+  const points = new Map();
+  let cursor = null;
+  let durability = null;
+  do {
+    const response = await fetch(`/api/documents/${slug}/history${cursor === null ? "" : `?after=${encodeURIComponent(cursor)}`}`, {
+      headers: asked(headers),
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("this document's history is not readable");
+    const payload = await response.json();
+    if (cursor === null) durability = payload.durability || null;
+    for (const point of payload.checkpoints || []) points.set(point.sha, point);
+    const next = payload.next_cursor ?? null;
+    if (next !== null && (!Number.isSafeInteger(next) || next <= 0 || (cursor !== null && next >= cursor))) {
+      throw new Error("The history server returned an invalid page cursor.");
+    }
+    cursor = next;
+  } while (cursor !== null);
   return {
-    checkpoints: Array.isArray(payload.checkpoints) ? payload.checkpoints : [],
-    durability: payload.durability && typeof payload.durability === "object"
-      ? payload.durability
-      : null,
+    // Controllers and provenance read oldest first. The paged endpoint reads
+    // newest first; normalize once at the boundary, including timestamp ties.
+    checkpoints: [...points.values()].sort(checkpointOrder),
+    durability: durability && typeof durability === "object" ? durability : null,
   };
 }
 
@@ -116,53 +126,6 @@ export function hunks(oldText, newText, edits = [], context = 6) {
   });
 }
 
-/// Hunks that belong to one passage, read as one change. The word diff
-/// reports "not" -> "Survived" and "shown" -> "the Auditions" as two edits;
-/// a person reading a heading that was rewritten sees one. Two hunks are one
-/// change when the second begins inside the first's trailing context -- that
-/// is, within a few words -- and the unchanged words between them are then
-/// known, because the window holds them.
-///
-/// Each group carries the pieces to draw it as a line of prose: `before`, the
-/// `parts` (an alternating list of `{ keep }` and `{ old, insert }`), and
-/// `after`, plus the `position` and `length` of the whole span in the new
-/// text, which is where the frame is asked to scroll. The hunks are expected
-/// in text order with `position` stamped on each, as `Reader` stamps them.
-export function coalesce(hunks = []) {
-  const groups = [];
-  for (const hunk of hunks) {
-    const position = Number(hunk.position) || 0;
-    const insert = hunk.insert || "";
-    const window = hunk.currentAfter || hunk.suffix || "";
-    const last = groups[groups.length - 1];
-    if (last) {
-      const gap = position - last.end;
-      if (gap >= 0 && gap <= last.window.length) {
-        if (gap > 0) last.parts.push({ keep: last.window.slice(0, gap) });
-        last.parts.push({ old: hunk.old || "", insert });
-        last.hunks.push(hunk);
-        last.end = position + insert.length;
-        last.window = window;
-        last.after = window;
-        last.length = last.end - last.position;
-        continue;
-      }
-    }
-    groups.push({
-      path: hunk.path,
-      position,
-      end: position + insert.length,
-      length: insert.length,
-      before: hunk.currentBefore || hunk.prefix || "",
-      after: window,
-      window,
-      parts: [{ old: hunk.old || "", insert }],
-      hunks: [hunk],
-    });
-  }
-  return groups.map(({ window, end, ...group }) => group);
-}
-
 // The new-text offset of an edit is its old offset plus all prior insertions
 // and deletions. Edits from librepaper-text are sorted and non-overlapping.
 function newOffset(edits, edit) {
@@ -231,39 +194,15 @@ export function sizeDelta(point, checkpoints) {
 /// the way every other date in the app is written -- see `dates.js`.
 const dayOf = isoDay;
 
-/// How many unlabelled marks by one person in a row are shown before the
-/// middle of the run is folded away. Two is not a run; three is the smallest
-/// number where folding hides anything at all.
-const RUN = 3;
-/// A long pause starts a new editing session, even when the same person
-/// returns later on the same day. This is presentation only: no checkpoints
-/// are removed from the manifest.
-export const SESSION_GAP_MS = 15 * 60 * 1000;
-
-/// Publication and restoration are milestones in the timeline. The server has
-/// used both `cli` and `publish` for publication over time, so retain both
-/// spellings at the presentation boundary.
-export const MILESTONE_REASONS = new Set(["cli", "publish", "restore", "restored"]);
-
-export function isMilestone(point) {
-  return MILESTONE_REASONS.has(point?.why);
-}
-
-/// The manifest as a list somebody reads: newest first, grouped by day, and
-/// with runs of unlabelled checkpoints by one person folded to their first and
-/// last. A run is also split by a fifteen-minute gap or a milestone.
+/// The newest-first manifest as a list somebody reads, grouped by day.
 ///
-/// The folding is the whole point. A working afternoon is thirty quiet
-/// checkpoints by one author, and thirty rows of the same name and the same
-/// reason say less than three do. A labelled checkpoint never folds, because a
-/// label is somebody saying this moment matters; nor does a run of two, since
-/// folding one row saves nothing and costs a click.
+/// One row per version, in one project-wide timeline: a history is read as
+/// "what happened, when", and a row that stands for several moments is a row
+/// the reader has to open before it says anything at all.
 ///
-/// Returns `[{ day, rows }]`, where a row is either `{ kind: "point", point }`
-/// or `{ kind: "folded", first, last, hidden }` -- `hidden` being the
-/// checkpoints between them, which the panel offers to open.
+/// Returns `[{ day, points }]`, newest day first, each day newest first.
 export function timeline(checkpoints, timeZone) {
-  const newest = [...(checkpoints || [])].reverse();
+  const newest = [...(checkpoints || [])].sort((left, right) => checkpointOrder(right, left));
   const days = [];
   for (const point of newest) {
     const day = dayOf(point.at, timeZone);
@@ -271,47 +210,11 @@ export function timeline(checkpoints, timeZone) {
     if (last && last.day === day) last.points.push(point);
     else days.push({ day, points: [point] });
   }
-  return days.map(({ day, points }) => ({ day, rows: fold(points) }));
+  return days;
 }
 
-function fold(points) {
-  const rows = [];
-  let at = 0;
-  while (at < points.length) {
-    const point = points[at];
-    if (point.label || isMilestone(point)) {
-      rows.push({ kind: "point", point });
-      at += 1;
-      continue;
-    }
-    let end = at;
-    while (
-      end + 1 < points.length &&
-      !points[end + 1].label &&
-      !isMilestone(points[end + 1]) &&
-      points[end + 1].by === point.by &&
-      !startsSession(points[end].at, points[end + 1].at)
-    ) {
-      end += 1;
-    }
-    const run = points.slice(at, end + 1);
-    if (run.length < RUN) {
-      for (const one of run) rows.push({ kind: "point", point: one });
-    } else {
-      rows.push({
-        kind: "folded",
-        first: run[0],
-        last: run[run.length - 1],
-        hidden: run.slice(1, -1),
-      });
-    }
-    at = end + 1;
-  }
-  return rows;
+function checkpointOrder(left, right) {
+  if (left.seq > 0 && right.seq > 0 && left.seq !== right.seq) return left.seq - right.seq;
+  return (Date.parse(left.at) || 0) - (Date.parse(right.at) || 0) || String(left.sha).localeCompare(String(right.sha));
 }
 
-function startsSession(previous, next) {
-  const before = new Date(previous).getTime();
-  const after = new Date(next).getTime();
-  return Number.isFinite(before) && Number.isFinite(after) && Math.abs(after - before) >= SESSION_GAP_MS;
-}

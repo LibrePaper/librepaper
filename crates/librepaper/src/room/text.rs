@@ -75,16 +75,8 @@ pub(crate) fn utf16_slice(text: &str, start: usize, end: usize) -> String {
     String::from_utf16(&units[start..end]).unwrap_or_default()
 }
 
-/// Applies one `wasm_helpers::text::Edit` to a plain string, for the merge base a
-/// suggestion's proposal is rehearsed against -- everywhere else an edit
-/// lands on a `Y.Text`, but the base of a three-way merge is never one.
-/// `edit.at` and `edit.at + edit.delete` are clamped to the text's length
-/// rather than checked: this rehearsal's input can be stale by the time it
-/// runs, and clamping lets it produce its best approximation instead of
-/// aborting, unlike `document::session::apply_text_edits`, which lands
-/// directly on the live document and must reject a batch it cannot apply
-/// exactly.
-pub(super) fn apply_edit_str(text: &str, edit: &wasm_helpers::text::Edit) -> String {
+#[cfg(test)]
+fn apply_edit_str(text: &str, edit: &wasm_helpers::text::Edit) -> String {
     let units: Vec<u16> = text.encode_utf16().collect();
     let at = edit.at.min(units.len());
     let end = (edit.at + edit.delete).min(units.len());

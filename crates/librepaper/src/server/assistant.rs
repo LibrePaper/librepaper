@@ -131,6 +131,14 @@ impl Server {
                     budget: current_who.comment_budget,
                     creator: &creator,
                 },
+                crate::document::store::MutationActor {
+                    account_id: current_who.id.id.clone(),
+                    owner_key: author.clone(),
+                    session_generation: current_who.id.session_generation.clone(),
+                    link_hash: current_who.link.clone(),
+                    policy_editor: self.publishers.allows(&current_who.id.handle),
+                    unowned_publisher: false,
+                },
             )
             .await
         {

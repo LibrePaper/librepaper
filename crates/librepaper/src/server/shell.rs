@@ -27,12 +27,6 @@ const MODULES: &[(&str, &str)] = &[
     ("typst", "wasm/typst.wasm"),
 ];
 
-/// The in-frame half of the reader, which the server writes into every
-/// document it serves. It is built on its own and keeps a fixed name, because
-/// that name is what goes into those documents.
-#[allow(dead_code)]
-pub const AGENT_ROUTE: &str = "/agent.js";
-
 pub fn content_type(name: &str) -> &'static str {
     match name.rsplit('.').next() {
         Some("html") => "text/html; charset=utf-8",
@@ -58,20 +52,17 @@ pub fn content_type(name: &str) -> &'static str {
 pub struct ShellFile {
     pub kind: &'static str,
     pub body: axum::body::Bytes,
+    /// A precompressed HTTP representation of `body`, when the build supplied
+    /// one. Renderer releases carry these so serving a large module costs no
+    /// compression work per request.
+    pub brotli: Option<axum::body::Bytes>,
     /// A file whose bytes never change under this name, so it can be cached
     /// for a year rather than five minutes. Everything the bundler names for
     /// its own contents is one, and so are the renderers.
     pub immutable: bool,
 }
 
-impl ShellFile {
-    /// The file as text, for the pages that are text and the tests that read
-    /// them.
-    #[allow(dead_code)]
-    pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.body).to_string()
-    }
-}
+impl ShellFile {}
 
 fn file(name: &str) -> Option<&'static [u8]> {
     SHELL.get_file(name).map(File::contents)
@@ -82,14 +73,6 @@ fn file(name: &str) -> Option<&'static [u8]> {
 fn module_route(name: &str, body: &[u8]) -> String {
     let digest = hex::encode(Sha256::digest(body));
     format!("/wasm/{name}.{}.wasm", &digest[..16])
-}
-
-/// Where this build serves its renderers, for the tests that fetch one and
-/// for the page that loads them.
-#[allow(dead_code)]
-pub fn module_url(name: &str) -> Option<String> {
-    let path = MODULES.iter().find(|(known, _)| *known == name)?.1;
-    Some(module_route(name, file(path)?))
 }
 
 /// The Typst module embedded by the build.
@@ -120,6 +103,9 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
     let mut modules = serde_json::Map::new();
     for (name, path) in MODULES {
         let Some(body) = file(path) else { continue };
+        let brotli_path = format!("{path}.br");
+        let brotli = file(&brotli_path)
+            .ok_or_else(|| format!("missing {brotli_path} in the shell: run make wasm"))?;
         let route = module_route(name, body);
         modules.insert(name.to_string(), serde_json::Value::String(route.clone()));
         shell.insert(
@@ -127,6 +113,7 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
             ShellFile {
                 kind: "application/wasm",
                 body: axum::body::Bytes::from_static(body),
+                brotli: Some(axum::body::Bytes::from_static(brotli)),
                 immutable: true,
             },
         );
@@ -163,6 +150,7 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
             ShellFile {
                 kind,
                 body,
+                brotli: None,
                 immutable,
             },
         );

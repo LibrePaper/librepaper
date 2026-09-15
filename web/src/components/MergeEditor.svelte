@@ -6,7 +6,8 @@
   import { EditorView, lineNumbers, keymap } from "@codemirror/view";
   import { defaultKeymap, indentWithTab } from "@codemirror/commands";
   import { MergeView } from "@codemirror/merge";
-  import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
+  import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "loro-codemirror";
+  import { UndoManager } from "loro-crdt";
   import IconButton from "./IconButton.svelte";
 
   let {
@@ -14,8 +15,11 @@
     oldText = "",
     newText = "",
     liveText = null,
-    awareness = null,
+    ephemeral = null,
+    loroDoc = null,
     editable = false,
+    diff = true,
+    baselineLabel = "checkpoint",
     targetLabel = "Live document",
     // A stale suggestion opens this editor with an explanation of why: the
     // passage it named no longer matches, so the header carries that reason
@@ -28,11 +32,23 @@
   let host = $state(null);
   let merge = null;
 
-  function extensions(readOnly = false, collaborative = false) {
+  // `side` names the pane a screen reader has landed in: CodeMirror's editable
+  // is a textbox, and two unnamed textboxes side by side are two of "edit
+  // text" with nothing to tell them apart.
+  function extensions(readOnly = false, collaborative = false, side = "", loroDoc = null, loroText = null, undoManager = null) {
+    const keyboardExtensions = collaborative && loroDoc && loroText && undoManager
+      ? [{ key: "Mod-z", run: undoCommand, preventDefault: true },
+         { key: "Mod-Shift-z", run: redoCommand, preventDefault: true }]
+      : [];
+    const collaborativeExtensions = collaborative && loroDoc && loroText && undoManager
+      ? [LoroExtensions(loroDoc, undefined, undoManager, () => loroText)]
+      : [];
     return [
+      EditorView.contentAttributes.of({ "aria-label": side || "Source" }),
       lineNumbers(),
-      keymap.of([indentWithTab, ...defaultKeymap, ...(collaborative ? yUndoManagerKeymap : [])]),
+      keymap.of([indentWithTab, ...defaultKeymap, ...keyboardExtensions]),
       EditorView.lineWrapping,
+      ...collaborativeExtensions,
       ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
     ];
   }
@@ -43,25 +59,25 @@
     // the permission and no stale revert control remains actionable.
     void editable;
     if (!host) return;
-    merge = new MergeView({
-      a: { doc: String(oldText || ""), extensions: extensions(true) },
-      b: {
-        doc: liveText?.toString() ?? String(newText || ""),
-        extensions: [
-          ...extensions(!editable, Boolean(editable && liveText)),
-          // Binding the editable side to the live Y.Text means a revert
-          // button inserts only its hunk and preserves a coauthor's update
-          // that landed while this view was open.
-          ...(editable && liveText ? [yCollab(liveText, awareness)] : []),
-        ],
-      },
-      orientation: "a-b",
-      ...(editable ? { revertControls: "a-to-b" } : {}),
-      highlightChanges: true,
-      gutter: true,
-      collapseUnchanged: { margin: 3, minSize: 4 },
-      parent: host,
-    });
+    const undoManager = editable && liveText && loroDoc ? new UndoManager(liveText) : null;
+    merge = diff
+      ? new MergeView({
+        a: { doc: String(oldText || ""), extensions: extensions(true, false, baselineLabel) },
+        b: {
+          doc: liveText?.toString() ?? String(newText || ""),
+          extensions: extensions(!editable, Boolean(editable && liveText), targetLabel, editable && liveText ? loroDoc : null, editable && liveText ? liveText : null, undoManager),
+        },
+        orientation: "a-b",
+        ...(editable ? { revertControls: "a-to-b" } : {}),
+        highlightChanges: true,
+        gutter: true,
+        collapseUnchanged: { margin: 3, minSize: 4 },
+        parent: host,
+      })
+      : new EditorView({
+        state: EditorState.create({ doc: String(oldText || ""), extensions: extensions(true, false, baselineLabel) }),
+        parent: host,
+      });
     return () => {
       merge?.destroy();
       merge = null;
@@ -69,14 +85,14 @@
   });
 </script>
 
-<section class="merge-editor flex h-full flex-col" aria-label="Compare checkpoint with live document">
+<section class="merge-editor flex h-full flex-col" aria-label={diff ? `Compare ${baselineLabel} with ${targetLabel}` : "Checkpoint source"}>
   <header class="merge-toolbar flex items-center justify-between gap-2 border-surface-200-800 border-b p-2">
     <div class="truncate text-sm">
-      <strong>{path || "document"}</strong><span class="panel-muted"> · checkpoint on the left, {targetLabel} on the right</span>
+      <strong>{path || "document"}</strong><span class="panel-muted">{diff ? ` · ${baselineLabel} on the left, ${targetLabel} on the right` : ` · ${baselineLabel} source`}</span>
       {#if note}<span class="panel-muted"> — {note}</span>{/if}
     </div>
     {#if onlive}<button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onlive()}>Compare with live to restore passages</button>{/if}
-    <IconButton icon="x" label="Close diff" tone="plain" onclick={() => onclose?.()} />
+    {#if onclose}<IconButton icon="x" label="Close diff" tone="plain" onclick={() => onclose()} />{/if}
   </header>
   <div class="merge-host min-h-0 flex-1" bind:this={host}></div>
 </section>

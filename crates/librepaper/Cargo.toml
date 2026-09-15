@@ -57,27 +57,28 @@ url = "2"
 percent-encoding = "2"
 # What a browser shows of a document, for anchoring seeded annotations.
 html-escape = "0.2"
-yrs = "0.27"
+# The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in
+# web/package.json are one pin: see tools/check-loro-pin.sh.
+loro = "1.16.0"
 unicode-normalization = "0.1.25"
-# Native source-history encoding. These versions are pinned because changing
-# FastCDC's boundary implementation would change the writer profile.
-fastcdc = "=5.0.0"
+# Source versions are deterministic tar streams stored as zstd blobs.
 zstd = "0.13"
+tar = "0.4"
 # `sync` is a WebSocket client, and axum's socket type is the server half of
 # the same library. This is the tungstenite axum already builds, over the
 # rustls reqwest already builds, so what it adds to the binary is the client
 # handshake and nothing else.
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-# Watching for a save. The one thing `sync` cannot do by polling without
-# either missing a save or spinning: inotify, FSEvents and
-# ReadDirectoryChangesW behind one interface.
-notify = "8"
 fs2 = "0.4"
 chacha20poly1305 = "0.10"
-# The authoritative local catalogue.  Bundling keeps local deployments and
-# file-backed tests independent of the host's SQLite installation.
-rusqlite = { version = "0.32", features = ["bundled"] }
+# PostgreSQL is the production catalogue. SQLx supplies the async pool and
+# compile-independent migrations; queries are exercised against PostgreSQL in
+# integration tests against the production database engine.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "json", "migrate", "macros"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+log = "0.4"
 tempfile = "3"
+object_store = { version = "0.14", features = ["aws", "fs"] }
 
 [dev-dependencies]
 # A font file for the tests to put in a library.

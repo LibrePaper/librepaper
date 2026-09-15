@@ -154,5 +154,3 @@ export function suggestionDisplay(suggestion, anchor = null, {
     syntheticInsertion: true,
   };
 }
-
-export const suggestionRedline = suggestionDisplay;

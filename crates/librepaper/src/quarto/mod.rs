@@ -431,16 +431,6 @@ pub fn computation_fingerprint_for_format(
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum AssociationState {
-    Mapped,
-    Ambiguous,
-    Unmapped,
-    Hidden,
-    Deleted,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
 pub enum Freshness {
     MatchesRecordedInputs,
     SourceCompatible,

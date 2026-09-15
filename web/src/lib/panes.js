@@ -14,17 +14,46 @@
 // is resized or the column opens, which a pixel width cannot do. A comment
 // card wants a readable width whatever the screen is, so the column is
 // pixels. Both are remembered per reader, not per document.
+//
+// Every limit below is written in rem, and `px` resolves one against the root
+// font size the browser is actually using. What these limits size is text -- a
+// comment card, a line of source, a column of icons -- so a reader at twice
+// the text size wants a column twice as wide, not the same column with half as
+// much in it. A limit written once as a pixel count is a column that clips the
+// moment the text is turned up. The widths a reader drags to stay in pixels:
+// that is a size chosen by hand, on the screen in front of them.
 
 import { read, write } from "./storage.js";
 
+// One rem, in pixels. Measured rather than assumed, so the arithmetic here and
+// the stylesheet it feeds agree about what a rem is.
+let unit = 16;
+
+/// Take the root font size again, which is what a zoom or a change of text
+/// size moves. Returns it, so a caller can hold it and recompute what depends
+/// on it.
+export function measure() {
+  if (typeof document === "undefined") return unit;
+  const size = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+  if (size > 0) unit = size;
+  return unit;
+}
+
+/// A limit, in the pixels the layout does its arithmetic in. `at` is the rem
+/// to resolve against: the measurement itself, for a caller holding it as
+/// state, since a component only redraws what it can be seen to have read.
+export const px = (rem, at = unit) => Math.round(rem * at);
+
 // What the document keeps beside a source dragged as wide as it will go.
-export const DOCUMENT_MIN = 360;
+export const DOCUMENT_MIN = 22.5; // rem
 
 // The width of a separator, which is room neither pane has.
-export const GRIP = 6;
+export const GRIP = 0.375; // rem
 
-// The activity icons remain available when the sidebar content is closed.
-export const ACTIVITY_WIDTH = 48;
+// The rail of icons, which stays whether the panel beside it is open or not.
+// It is not part of what a reader drags: the width they set is the panel, the
+// part with the words in, and the rail is added to it.
+export const ACTIVITY_WIDTH = 3; // rem
 
 export const LAYOUTS = ["split", "source", "document"];
 
@@ -46,22 +75,26 @@ export const PANES = {
     // A share of what the source and the document have between them.
     fraction: true,
     reset: 1 / 2,
-    min: 320, // px, about the narrowest a line of source reads at
+    min: 20, // rem, about the narrowest a line of source reads at
     max: 0.7,
   },
   sidebar: {
     name: "sidebar",
     key: "librepaper-sidebar",
     fraction: false,
-    reset: 360, // px, a comfortable comment card
-    min: 240, // px, about the narrowest a comment card reads at
+    reset: 22.5, // rem, a comfortable comment card
+    min: 15, // rem, about the narrowest a comment card reads at
     max: 0.6, // of the window, so what it sits beside always keeps 40%
     // And on a narrow window, less: see `shareOf`.
     narrow: 0.38,
   },
 };
 
-export const stored = (pane) => Number(read(pane.key, 0)) || pane.reset;
+/// Where a pane starts out, in the unit that pane is kept in: a fraction stays
+/// a fraction, a width becomes the pixels this reader's text size makes of it.
+export const reset = (pane) => (pane.fraction ? pane.reset : px(pane.reset));
+
+export const stored = (pane) => Number(read(pane.key, 0)) || reset(pane);
 export const remember = (pane, size) => write(pane.key, size);
 
 /// What is on the screen, given the arrangement and whether the column is
@@ -80,14 +113,20 @@ export function showing({ layout, comments, editing }) {
 /// The room the separators take, which is neither pane's to use.
 export function separators(state) {
   const shown = showing(state);
-  return (shown.source && shown.document ? GRIP : 0) + (shown.comments ? GRIP : 0);
+  return px((shown.source && shown.document ? GRIP : 0) + (shown.comments ? GRIP : 0));
+}
+
+/// The whole left column: the rail of icons, and the panel beside it when one
+/// is open. The rail is there either way, which is why it is added here rather
+/// than taken out of the width the reader set.
+export function column(state) {
+  return px(ACTIVITY_WIDTH) + (showing(state).comments ? clamp(PANES.sidebar, state) : 0);
 }
 
 /// What the source and the document have between them: the window, less the
 /// column and every separator in it.
 export function surface(state) {
-  const shown = showing(state);
-  return state.width - separators(state) - (shown.comments ? clamp(PANES.sidebar, state) : ACTIVITY_WIDTH);
+  return state.width - separators(state) - column(state);
 }
 
 /// The column, in pixels, within what the rest of the window can
@@ -100,13 +139,15 @@ function clampSidebar(width, state) {
   const spare =
     state.width -
     separators(state) -
-    (shown.source ? PANES.editor.min : 0) -
-    (shown.document ? DOCUMENT_MIN : 0);
+    px(ACTIVITY_WIDTH) -
+    (shown.source ? px(PANES.editor.min) : 0) -
+    (shown.document ? px(DOCUMENT_MIN) : 0);
+  const floor = px(PANES.sidebar.min);
   const ceiling = Math.max(
-    PANES.sidebar.min,
-    Math.min(state.width * shareOf(state.width), spare),
+    floor,
+    Math.min(state.width * shareOf(state.width) - px(ACTIVITY_WIDTH), spare),
   );
-  return Math.round(Math.max(PANES.sidebar.min, Math.min(width, ceiling)));
+  return Math.round(Math.max(floor, Math.min(width, ceiling)));
 }
 
 /// The most of the window the column may take, which is not one number.
@@ -129,8 +170,8 @@ const NARROW = 1000;
 function clampShare(share, state) {
   const room = surface(state);
   if (room <= 0) return share;
-  const floor = PANES.editor.min / room;
-  const ceiling = Math.min(PANES.editor.max, (room - DOCUMENT_MIN) / room);
+  const floor = px(PANES.editor.min) / room;
+  const ceiling = Math.min(PANES.editor.max, (room - px(DOCUMENT_MIN)) / room);
   // On a surface too narrow for both of them the ceiling is under the floor,
   // and the source is what gives: this is a place for reading a document, and
   // the source has an arrangement of its own one click away.
@@ -154,7 +195,9 @@ export function pixels(pane, state) {
 /// it is measured from depends on where the pane sits: the column is always
 /// first, and the source is on whichever side the reader put it.
 export function sizeAt(pane, x, state) {
-  if (!pane.fraction) return x;
+  // The column's rail sits to the left of the panel and is not part of what
+  // the reader is setting, so the pointer measures the panel from its own edge.
+  if (!pane.fraction) return x - px(ACTIVITY_WIDTH);
   const room = surface(state);
   const width = state.sourceSide === "left" ? x - leftEdge(state) : state.width - x;
   return snap(width / room, room);
@@ -178,15 +221,26 @@ export function snapped(pane, size) {
 /// Where this pane's separator sits, for the line that follows the pointer
 /// while it is dragged.
 export function edgeAt(pane, size, state) {
-  if (!pane.fraction) return clampSidebar(size, state);
+  if (!pane.fraction) return px(ACTIVITY_WIDTH) + clampSidebar(size, state);
   const width = clampShare(size, state) * surface(state);
   return state.sourceSide === "left" ? leftEdge(state) + width : state.width - width;
+}
+
+/// The ends of a pane's travel, in the pane's own unit, so the separator can
+/// say what its value means: an arrow key that stops moving should be a
+/// separator that says it has reached its limit, not one that says 240 of 1920.
+export function range(pane, state) {
+  if (!pane.fraction) {
+    const widest = clampSidebar(Number.POSITIVE_INFINITY, state);
+    return { min: Math.min(px(PANES.sidebar.min), widest), max: widest };
+  }
+  return { min: clampShare(0, state), max: clampShare(1, state) };
 }
 
 /// A step of an arrow key, in the pane's own unit: about the same distance on
 /// the screen either way.
 export function step(pane, state, forward) {
-  const by = pane.fraction ? 24 / Math.max(surface(state), 1) : 24;
+  const by = pane.fraction ? px(1.5) / Math.max(surface(state), 1) : px(1.5);
   return clamp(pane, state, state.sizes[pane.key] + (forward ? by : -by));
 }
 
@@ -200,6 +254,5 @@ export function grows(pane, state) {
 // Where the source and the document begin: after the column and the separator
 // beside it, when the column is open.
 function leftEdge(state) {
-  const shown = showing(state);
-  return shown.comments ? clamp(PANES.sidebar, state) + GRIP : ACTIVITY_WIDTH;
+  return column(state) + (showing(state).comments ? px(GRIP) : 0);
 }

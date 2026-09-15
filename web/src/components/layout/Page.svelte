@@ -10,6 +10,6 @@
   };
 </script>
 
-<main class="mx-auto w-full {WIDTHS[width]} px-4 py-8">
+<main id="main" tabindex="-1" class="mx-auto w-full {WIDTHS[width]} px-4 py-8">
   {@render children()}
 </main>

@@ -227,7 +227,9 @@
             },
             "id": {
               "type": "string",
-              "maxLength": 128
+              "maxLength": 128,
+              "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
+              "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
             }
           },
           "required": [
@@ -337,7 +339,9 @@
             },
             "id": {
               "type": "string",
-              "maxLength": 128
+              "maxLength": 128,
+              "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
+              "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
             }
           },
           "required": [
@@ -397,7 +401,9 @@
             },
             "id": {
               "type": "string",
-              "maxLength": 128
+              "maxLength": 128,
+              "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
+              "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
             }
           },
           "required": [
@@ -478,7 +484,9 @@
             },
             "id": {
               "type": "string",
-              "maxLength": 128
+              "maxLength": 128,
+              "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
+              "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
             }
           },
           "required": [
@@ -515,7 +523,9 @@
             },
             "id": {
               "type": "string",
-              "maxLength": 128
+              "maxLength": 128,
+              "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
+              "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
             }
           },
           "required": [

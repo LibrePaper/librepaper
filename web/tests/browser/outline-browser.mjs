@@ -1,7 +1,7 @@
 // Browser acceptance for the document outline.
 //
 // The Reader is real. Only its room and HTTP shell are local test doubles: the
-// room is backed by Yjs, so file changes take the same path as a collaborator's
+// room is backed by Loro, so file changes take the same path as a collaborator's
 // update. Keeping the main file HTML lets this check exercise Markdown,
 // Quarto, Typst and LaTeX source files without requiring five compilers.
 import assert from "node:assert/strict";
@@ -20,14 +20,13 @@ const temp = mkdtempSync(join(tmpdir(), "librepaper-outline-browser-"));
 const entry = join(temp, "entry.js");
 const room = join(temp, "room.js");
 const out = join(temp, "build");
-const yjs = join(root, "web/node_modules/yjs/dist/yjs.mjs");
 
 // A deliberately long preamble makes a jump observable in both the editor's
 // caret line and its own scroll container. Each syntax has a top-level heading,
 // a child heading, and a later top-level heading to exercise active-heading
 // resets as well as parsing.
 writeFileSync(room, `
-import * as Y from ${JSON.stringify(yjs)};
+import { LoroDoc, LoroText } from "loro-crdt";
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 const decode = text => Uint8Array.from(atob(text), c => c.charCodeAt(0));
 const rooms = new Map();
@@ -43,17 +42,19 @@ const initial = {
 };
 
 function makeRoom(slug) {
-  const doc = new Y.Doc();
+  const doc = new LoroDoc();
   const files = doc.getMap("files");
   const paths = doc.getMap("paths");
   const meta = doc.getMap("meta");
   for (const [path, value] of Object.entries(initial)) {
     const id = path === "main.html" ? "main" : path;
-    const text = new Y.Text(value);
-    files.set(id, text);
+    const text = new LoroText();
+    text.insert(0, value);
+    files.setContainer(id, text);
     paths.set(id, path);
   }
   meta.set("main", "main");
+  doc.commit();
   return { doc, files, paths, meta };
 }
 
@@ -75,32 +76,32 @@ export function openRoom(slug, {onMessage, onConnected}) {
     remoteAppend(path, value) {
       const id = [...room.paths.entries()].find(([, name]) => name === path)?.[0];
       const text = id && room.files.get(id);
-      if (!(text instanceof Y.Text)) throw new Error("missing room file " + path);
-      room.doc.transact(() => text.insert(text.length, "\\n\\n" + value), "remote-peer");
+      if (text?.kind?.() !== "Text") throw new Error("missing room file " + path);
+      text.insert(text.length, "\\n\\n" + value);
+      room.doc.commit();
     },
     snapshot(path) {
       const id = [...room.paths.entries()].find(([, name]) => name === path)?.[0];
       return id ? room.files.get(id)?.toString() || "" : "";
     },
   };
-  const listener = (update, origin) => {
-    if (origin === "remote-peer") room.callback?.({type: "y-update", update: encode(update)});
-  };
-  room.doc.on("update", listener);
+  const updateSub = room.doc.subscribeLocalUpdates((update) => {
+    room.callback?.({type: "doc-update", update: encode(update)});
+  });
   queueMicrotask(() => onConnected(true));
   return {
     send(message) {
       window.roomSent.push(message);
-      if (message.type === "y-open") {
-        queueMicrotask(() => onMessage({type: "y-state", update: encode(Y.encodeStateAsUpdate(room.doc)), count: 2}));
-      } else if (message.type === "y-update") {
-        Y.applyUpdate(room.doc, bytes(decode(message.update)), "browser");
-        queueMicrotask(() => onMessage({type: "y-ack", seq: message.seq}));
+      if (message.type === "doc-open") {
+        queueMicrotask(() => onMessage({type: "doc-state", update: encode(room.doc.export({ mode: "update" })), count: 2}));
+      } else if (message.type === "doc-update") {
+        room.doc.import(bytes(decode(message.update)));
+        queueMicrotask(() => onMessage({type: "doc-ack", seq: message.seq}));
       }
       return {ok: true};
     },
     sendLive(message) { window.roomSent.push(message); return {ok: true}; },
-    close() { room.doc.off("update", listener); },
+    close() { updateSub?.(); },
   };
 }
 `);
@@ -225,8 +226,15 @@ try {
       const active = document.querySelector('.cm-activeLine');
       return selected?.textContent.trim().includes(${JSON.stringify(title)}) && active?.textContent.includes(${JSON.stringify(title)});
     })()`), 5000);
-    const after = await tab.evaluate("document.querySelector('.cm-scroller')?.scrollTop || 0");
-    assert.ok(after > before || after > 20, `heading ${title} scrolls the source`);
+    // The active line lights up before the editor has finished scrolling to
+    // it: CodeMirror applies the scroll on its next measure cycle, which on a
+    // busy machine is a few frames after the line is marked. So the position
+    // is waited for rather than read the instant the line appears -- read
+    // once, this passed on an idle machine and failed on a loaded one.
+    await until(`heading ${title} scrolls the source`, async () => {
+      const after = await tab.evaluate("document.querySelector('.cm-scroller')?.scrollTop || 0");
+      return after > before || after > 20;
+    }, 5000);
     assert.equal(await tab.evaluate("document.activeElement?.closest('.cm-editor') !== null"), true, `heading ${title} focuses source`);
   };
 

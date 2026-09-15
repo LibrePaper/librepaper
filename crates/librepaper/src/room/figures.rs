@@ -38,34 +38,7 @@ impl Drop for AssetUpload<'_> {
 }
 
 impl Room {
-    /// Names a figure in the document, at a path. The bytes are already in the
-    /// store; this is what makes them a figure of this document.
-    pub async fn name_asset(&self, path: &str, sha: &str) -> Result<(), WriteError> {
-        let _publication_writer = self.publication_write.lock().await;
-        let _assets_writer = self.assets_write.lock().await;
-        if self.read_only() {
-            // Another server owns this room; naming a figure in our copy
-            // would only diverge from the one being persisted (R23).
-            return Err(self.fenced());
-        }
-        let mut state = self.state.lock().await;
-        if self.read_only() {
-            return Err(self.fenced());
-        }
-        session::put_asset(&state.session.doc, path, sha);
-        state.session.mark_dirty(now_unix());
-        state.session.generation += 1;
-        state.session.updated_at = now_unix();
-        Ok(())
-    }
-
     /* ------------------------------------------------------------- assets */
-
-    /// What this document's figures come to, which is what `max_assets` bounds
-    /// and what the owner's quota is charged for.
-    pub async fn assets_bytes(&self) -> i64 {
-        self.state.lock().await.session.asset_sizes.values().sum()
-    }
 
     /// Stores a figure and answers with its digest. The name is the client's
     /// to give -- it sets `assets[path]` in the shared document afterwards --
@@ -73,21 +46,23 @@ impl Room {
     ///
     /// Bytes the document already has are not written again: the same figure
     /// uploaded twice is one object, and the second upload costs a hash.
-    pub async fn put_asset(
+    pub(crate) async fn put_asset_authorized(
         &self,
         body: Vec<u8>,
         ceilings: (i64, i64),
+        actor: &crate::document::store::MutationActor,
     ) -> Result<(String, i64), WriteError> {
-        self.put_asset_unlocked(body, ceilings).await
+        self.put_asset_inner(body, ceilings, actor).await
     }
 
     /// Asset staging used by a publication that already owns the mutation
     /// gate.  The public route wrapper above keeps standalone asset writes
     /// serialized with publications without deadlocking the replacement path.
-    pub(crate) async fn put_asset_unlocked(
+    async fn put_asset_inner(
         &self,
         body: Vec<u8>,
         ceilings: (i64, i64),
+        actor: &crate::document::store::MutationActor,
     ) -> Result<(String, i64), WriteError> {
         let (max_asset, max_assets) = ceilings;
         let size = body.len() as i64;
@@ -111,17 +86,14 @@ impl Room {
         let mut upload = {
             let _assets_writer = self.assets_write.lock().await;
             let state = self.state.lock().await;
-            if let Some(known) = state.session.asset_sizes.get(&sha) {
-                // Already here. Nothing is written and nothing is charged: the
-                // same bytes under the same name are the same object.
-                return Ok((sha, *known));
-            }
-
             let mut uploads = self
                 .asset_uploads
                 .lock()
                 .map_err(|_| WriteError::Storage("asset admission is unavailable".into()))?;
-            if let Some((reserved_size, count)) = uploads.get_mut(&sha) {
+            let known = state.session.asset_sizes.contains_key(&sha);
+            if known {
+                // SQL still rechecks authority and physical availability for a reuse.
+            } else if let Some((reserved_size, count)) = uploads.get_mut(&sha) {
                 debug_assert_eq!(*reserved_size, size);
                 *count = count.saturating_add(1);
             } else {
@@ -137,21 +109,49 @@ impl Room {
             AssetUpload {
                 room: self,
                 sha: sha.clone(),
-                active: true,
+                active: !known,
             }
         };
-        if let Err(err) = self
-            .blobs
-            .put(
-                &crate::storage::blob::asset_key(&self.storage_id, &sha),
-                body,
-                "application/octet-stream",
-            )
-            .await
         {
-            return Err(WriteError::Storage(err.to_string()));
+            let _ = actor;
+            let catalog = self
+                .catalog
+                .get()
+                .ok_or_else(|| WriteError::Storage("PostgreSQL catalog is required".into()))?;
+            let document_id = uuid::Uuid::parse_str(&self.storage_id)
+                .map_err(|_| WriteError::Storage("invalid document id".into()))?;
+            let digest: [u8; 32] = sha2::Sha256::digest(&body).into();
+            let key = format!("documents/{document_id}/assets/{}", uuid::Uuid::now_v7());
+            self.blobs
+                .put_new(&key, body, "application/octet-stream")
+                .await
+                .map_err(|e| WriteError::Storage(e.to_string()))?;
+            let stored = self
+                .blobs
+                .get(&key)
+                .await
+                .map_err(|e| WriteError::Storage(e.to_string()))?;
+            if stored.len() as i64 != size || sha2::Sha256::digest(&stored).as_slice() != digest {
+                return Err(WriteError::Storage(
+                    "asset failed immutable verification".into(),
+                ));
+            }
+            catalog
+                .complete_asset_with_limit(
+                    crate::storage::postgres::NewAsset {
+                        document_id,
+                        storage_key: key,
+                        digest,
+                        byte_length: size,
+                        media_type: "application/octet-stream".into(),
+                        original_name: None,
+                    },
+                    max_assets,
+                )
+                .await
+                .map_err(WriteError::from)?;
         }
-        let (format, main) = {
+        {
             let _assets_writer = self.assets_write.lock().await;
             let mut state = self.state.lock().await;
             if let Some(known) = state.session.asset_sizes.get(&sha) {
@@ -159,134 +159,8 @@ impl Room {
                 return Ok((sha, *known));
             }
             state.session.asset_sizes.insert(sha.clone(), size);
-            state
-                .session
-                .asset_written_at
-                .insert(sha.clone(), now_unix());
-            (
-                state.session.format.clone(),
-                session::main_path(&state.session.doc),
-            )
-        };
+        }
         upload.release();
-        // What the document costs has changed, and the index is what the
-        // quota is decided from.
-        self.record_size_now(None, &format, &main).await;
         Ok((sha, size))
-    }
-
-    /// A figure's bytes, for whoever may read the document.
-    #[cfg(test)]
-    pub async fn read_asset(&self, sha: &str) -> Option<Vec<u8>> {
-        self.blobs
-            .get(&crate::storage::blob::asset_key(&self.storage_id, sha))
-            .await
-            .ok()
-    }
-
-    /// Drops the figures nothing refers to any more: neither the live document
-    /// nor any checkpoint the manifest still holds.
-    ///
-    /// Run after the new tree and manifest are written, never before, so that
-    /// a crash leaves an object nothing names -- which costs storage and loses
-    /// nothing -- rather than a tree naming an object that is gone.
-    ///
-    /// An object younger than the grace period is kept whatever the document
-    /// says about it, because uploading a figure and naming it are two
-    /// requests and pruning between them would delete what somebody had just
-    /// uploaded.
-    ///
-    /// A retained tree this pass cannot read is not proof its assets are
-    /// unreferenced -- only that this attempt could not tell -- so nothing at
-    /// all is deleted on a pass where that happens: the sweep aborts and
-    /// tries again next time, rather than risk a figure a restore still
-    /// needs (R15).
-    pub(super) async fn prune_assets(&self, references: &retention::RetainedReferences) {
-        let now = now_unix();
-        let grace = self.config.asset_grace;
-        let (mut kept, written_at) = {
-            let state = self.state.lock().await;
-            (
-                session::assets_of(&state.session.doc)
-                    .into_values()
-                    .collect::<HashSet<_>>(),
-                state.session.asset_written_at.clone(),
-            )
-        };
-        kept.extend(references.assets.iter().cloned());
-        let Ok(found) = self
-            .blobs
-            .list(&crate::storage::blob::asset_prefix(&self.storage_id))
-            .await
-        else {
-            return;
-        };
-        let mut gone = Vec::new();
-        for object in found {
-            let Some(sha) = object.key.rsplit('/').next() else {
-                continue;
-            };
-            if kept.contains(sha) {
-                continue;
-            }
-            if written_at.get(sha).is_some_and(|at| now - at < grace) {
-                continue;
-            }
-            gone.push((object.key.clone(), sha.to_string(), object.size));
-        }
-        if gone.is_empty() {
-            return;
-        }
-        // Recheck the live document immediately before deletion.  Do not hold
-        // this gate during the history/tree scans above: it is only the final
-        // short section that must exclude an upload, naming update, restore,
-        // or generic Yjs update from racing the delete.
-        let _assets_writer = self.assets_write.lock().await;
-        let delete_now = now_unix();
-        {
-            let state = self.state.lock().await;
-            let uploads = self.asset_uploads.lock().ok();
-            let live: std::collections::HashSet<String> = session::assets_of(&state.session.doc)
-                .into_values()
-                .collect();
-            gone.retain(|(_, sha, _)| {
-                !live.contains(sha)
-                    && !uploads
-                        .as_ref()
-                        .is_some_and(|uploads| uploads.contains_key(sha))
-                    && !state
-                        .session
-                        .asset_written_at
-                        .get(sha)
-                        .is_some_and(|at| delete_now - at < grace)
-            });
-        }
-        if gone.is_empty() {
-            return;
-        }
-        if let Some(catalog) = self.catalog.get() {
-            // Active catalogue rooms use the durable deletion worker.  It
-            // repeats the source-history graph/lease checks immediately
-            // before physical deletion; removing an asset directly here
-            // would let a restore lose a still-needed figure.
-            let now = now_unix();
-            for (key, _, bytes) in &gone {
-                if let Err(error) =
-                    crate::room::catalog::queue_object_delete(catalog, &self.slug, key, *bytes, now)
-                        .await
-                {
-                    eprintln!("warning: could not queue obsolete asset {}: {error}", key);
-                }
-            }
-            return;
-        }
-        let keys: Vec<String> = gone.iter().map(|(key, _, _)| key.clone()).collect();
-        if self.blobs.delete(&keys).await.is_ok() {
-            let mut state = self.state.lock().await;
-            for (_, sha, _) in gone {
-                state.session.asset_sizes.remove(&sha);
-                state.session.asset_written_at.remove(&sha);
-            }
-        }
     }
 }

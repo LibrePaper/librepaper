@@ -1,12 +1,20 @@
 // The local bridge client, against a fake local LibrePaper.
 //
-// `local.js` never touches `fetch` or `localStorage` directly -- everything
+// The companion client never touches `fetch` or `localStorage` directly -- everything
 // ambient goes through its `_testing.inject`-able `deps` -- so this check
 // drives the exact production module under Node with a small fake HTTP
 // service and an in-memory store, and controls the wall clock so the
 // negative-cache backoff does not actually take ten minutes to check.
 
-import * as local from "../../src/lib/latex/local.js";
+import { createHash } from "node:crypto";
+
+import * as local from "../../src/lib/companion/client.js";
+
+// The client verifies every build output against the digest the job status
+// announced, so the fake service has to announce real ones.
+async function sha256hex(bytes) {
+  return createHash("sha256").update(Buffer.from(bytes)).digest("hex");
+}
 
 let failures = 0;
 function check(what, condition, detail = "") {
@@ -60,7 +68,7 @@ function bytesResponse(status, bytes) {
   };
 }
 
-const HEALTH_OK = { service: "librepaper-local", protocol: [1], version: "0.1.0", instance: "abc123" };
+const HEALTH_OK = { service: "librepaper-local", protocol: [2], version: "0.1.0", instance: "abc123" };
 
 function setup({ storage = fakeStorage(), now = clock(), fetchImpl } = {}) {
   local._testing.reset();
@@ -104,9 +112,9 @@ async function testProbeDenied() {
 }
 
 async function testProbeIncompatible() {
-  setup({ fetchImpl: async () => jsonResponse(200, { service: "librepaper-local", protocol: [2], version: "9.0", instance: "x" }) });
+  setup({ fetchImpl: async () => jsonResponse(200, { service: "librepaper-local", protocol: [1], version: "0.0.1", instance: "x" }) });
   const status = await local.probe();
-  check("a protocol without 1 classifies as incompatible", status.state === "incompatible", status.state);
+  check("a protocol without 2 classifies as incompatible", status.state === "incompatible", status.state);
 }
 
 async function testProbeUnauthorizedThenConnected() {
@@ -210,39 +218,47 @@ async function testDisconnectRemovesPairing() {
 
 /* --------------------------------------------------------- multipart bodies */
 
-async function testMultipartBiberBody() {
+async function testMultipartBuildBody() {
   const storage = fakeStorage();
   local.configure({ project: "proj1", origin: "https://app.example" });
   storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://app.example|proj1": { token: "tok", expires: 0, instance: "x" } }));
   const nonUtf8 = new Uint8Array([0xff, 0xfe, 0x00, 0x80, 0x81, 0x41, 0x42]);
+  const pdf = new TextEncoder().encode("%PDF-fake");
+  const log = new TextEncoder().encode("typst log");
   let capturedForm = null;
   setup({ storage, fetchImpl: async (url, init) => {
     if (url.endsWith("/jobs") && init.method === "POST") { capturedForm = init.body; return jsonResponse(202, { id: "job1", status: "queued" }); }
-    if (url.endsWith("/jobs/job1")) return jsonResponse(200, { id: "job1", status: "done", exit: 0, outputs: { bbl: { size: 1 }, blg: { size: 1 } }, provenance: { tools: { biber: "2.21" } } });
-    if (url.endsWith("/files/bbl")) return bytesResponse(200, new TextEncoder().encode("bbl-bytes"));
-    if (url.endsWith("/files/blg")) return bytesResponse(200, new TextEncoder().encode("blg-bytes"));
+    if (url.endsWith("/jobs/job1")) return jsonResponse(200, { id: "job1", status: "done", exit: 0, outputs: {
+      pdf: { size: pdf.byteLength, sha256: await sha256hex(pdf) },
+      log: { size: log.byteLength, sha256: await sha256hex(log) },
+    }, provenance: { tools: { typst: "0.13" } } });
+    if (url.endsWith("/files/pdf")) return bytesResponse(200, pdf);
+    if (url.endsWith("/files/log")) return bytesResponse(200, log);
     throw new Error(`unexpected ${url}`);
   } });
   local.configure({ project: "proj1", origin: "https://app.example" });
-  const result = await local.runBiber({
+  const result = await local.runBuild({
     job: { snapshot: "snap1", generation: 1 },
-    stem: "main",
-    bcf: new TextEncoder().encode("<bcf/>"),
-    files: { "refs.bib": new TextEncoder().encode("@article{x,}"), "assets/weird.bin": nonUtf8 },
-    identity: "id1",
+    tree: {
+      main: "main.typ",
+      texts: { "main.typ": "= Title" },
+      assets: { "assets/weird.bin": nonUtf8 },
+    },
+    builder: "typst",
+    output: "pdf",
   });
-  check("runBiber resolves ok on a clean done job", result.ok === true, JSON.stringify(result));
-  check("the tool version comes from provenance", result.tool.version === "2.21");
+  check("runBuild resolves ok on a clean done job", result.ok === true, JSON.stringify({ ok: result.ok, error: result.error }));
+  check("the builder is carried into provenance", result.provenance.builder === "typst", JSON.stringify(result.provenance));
   check("the body is a FormData", capturedForm instanceof FormData);
   const jobPart = capturedForm.get("job");
   check("the job part is present", jobPart != null);
   const jobJson = JSON.parse(await jobPart.text());
-  check("the job part parses to a JobRequest", jobJson.kind === "biber" && jobJson.stem === "main", JSON.stringify(jobJson));
-  check("the BCF is named <stem>.bcf in the manifest", jobJson.manifest.some((m) => m.path === "main.bcf"));
+  check("the job part parses to a protocol 2 build request", jobJson.protocol === 2 && jobJson.kind === "build" && jobJson.builder === "typst", JSON.stringify(jobJson));
+  check("the entrypoint is the tree's main file", jobJson.entrypoint === "main.typ", jobJson.entrypoint);
+  check("a snapshot workspace is requested", jobJson.workspace?.mode === "snapshot", JSON.stringify(jobJson.workspace));
+  check("every input is named in the manifest", jobJson.manifest.some((m) => m.path === "main.typ") && jobJson.manifest.some((m) => m.path === "assets/weird.bin"), JSON.stringify(jobJson.manifest));
   const fileParts = capturedForm.getAll("file");
-  check("every input became a file part", fileParts.length === 3, `got ${fileParts.length}`);
-  const bcfPart = fileParts.find((f) => f.name === "main.bcf");
-  check("the bcf part carries its filename", bcfPart != null);
+  check("every input became a file part", fileParts.length === 2, `got ${fileParts.length}`);
   const weirdPart = fileParts.find((f) => f.name === "assets/weird.bin");
   check("a nested path survives as the file part's name", weirdPart != null);
   const weirdBytes = new Uint8Array(await weirdPart.arrayBuffer());
@@ -250,6 +266,30 @@ async function testMultipartBiberBody() {
     "non-UTF-8 bytes survive the multipart round trip exactly",
     weirdBytes.length === nonUtf8.length && weirdBytes.every((b, i) => b === nonUtf8[i]),
     `${[...weirdBytes]}`,
+  );
+}
+
+// A build output that does not match the digest the job status announced is
+// refused rather than handed to the reader as a page.
+async function testOutputDigestIsVerified() {
+  const storage = fakeStorage();
+  local.configure({ project: "proj1", origin: "https://app.example" });
+  storage.setItem("librepaper-local-pairings", JSON.stringify({ "https://app.example|proj1": { token: "tok", expires: 0, instance: "x" } }));
+  const announced = new TextEncoder().encode("%PDF-real");
+  const served = new TextEncoder().encode("%PDF-fake");
+  setup({ storage, fetchImpl: async (url, init) => {
+    if (url.endsWith("/jobs") && init.method === "POST") return jsonResponse(202, { id: "job2", status: "queued" });
+    if (url.endsWith("/jobs/job2")) return jsonResponse(200, { id: "job2", status: "done", exit: 0, outputs: {
+      pdf: { size: served.byteLength, sha256: await sha256hex(announced) },
+    }, provenance: {} });
+    if (url.endsWith("/files/pdf")) return bytesResponse(200, served);
+    throw new Error(`unexpected ${url}`);
+  } });
+  local.configure({ project: "proj1", origin: "https://app.example" });
+  await rejects(
+    local.runBuild({ job: { snapshot: "s", generation: 1 }, tree: { main: "main.typ", texts: { "main.typ": "x" } }, builder: "typst", output: "pdf" }),
+    "Refused",
+    "a mismatched output digest is refused",
   );
 }
 
@@ -279,7 +319,7 @@ async function testPollingIntervals() {
       };
     })(),
   });
-  await local.runBiber({ job: { snapshot: "s", generation: 1 }, stem: "main", bcf: new Uint8Array([1]), files: {}, identity: "i" });
+  await local.runBuild({ job: { snapshot: "s", generation: 1 }, tree: { main: "main.typ", texts: { "main.typ": "x" } }, builder: "typst", output: "pdf" });
   check("polling starts at 500ms", waits[0] === 500, `${waits[0]}`);
   check("polling switches to 1000ms after 10s elapsed", waits.some((w) => w === 1000), JSON.stringify(waits));
 }
@@ -302,7 +342,7 @@ async function testCancelViaAbort() {
     },
   });
   await rejects(
-    local.runBiber({ job: { snapshot: "s", generation: 1 }, stem: "main", bcf: new Uint8Array([1]), files: {}, identity: "i" }, { signal: controller.signal }),
+    local.runBuild({ job: { snapshot: "s", generation: 1 }, tree: { main: "main.typ", texts: { "main.typ": "x" } }, builder: "typst", output: "pdf" }, { signal: controller.signal }),
     "Canceled",
     "an aborted signal cancels the job and rejects",
   );
@@ -347,7 +387,8 @@ const tests = [
   testRetryAndConnectClearBackoff,
   testConnectStoresPairing,
   testDisconnectRemovesPairing,
-  testMultipartBiberBody,
+  testMultipartBuildBody,
+  testOutputDigestIsVerified,
   testPollingIntervals,
   testCancelViaAbort,
   testRefusedUnreachableUnauthorized,

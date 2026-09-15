@@ -8,26 +8,54 @@ export const typstLanguage = {
   name: "typst",
 
   startState() {
-    return { math: false };
+    return { math: false, mathDelimiter: "", blockComment: false };
   },
 
   token(stream, state) {
+    if (state.blockComment) {
+      if (stream.skipTo("*/")) {
+        stream.advance(2);
+        state.blockComment = false;
+      } else stream.skipToEnd();
+      return "comment";
+    }
     if (stream.sol() && stream.match(/^\s*=+\s/)) {
       stream.skipToEnd();
       return "heading";
     }
+    if (stream.match(/^\/\/.*/)) return "comment";
+    if (stream.match(/^\/\*/)) {
+      state.blockComment = true;
+      if (stream.skipTo("*/")) {
+        stream.advance(2);
+        state.blockComment = false;
+      } else stream.skipToEnd();
+      return "comment";
+    }
+    if (stream.match("\\$")) return "string";
+    if (stream.match("$$")) {
+      if (state.math && state.mathDelimiter === "$$") {
+        state.math = false;
+        state.mathDelimiter = "";
+      } else if (!state.math) {
+        state.math = true;
+        state.mathDelimiter = "$$";
+      }
+      return "keyword";
+    }
     if (stream.match("$")) {
-      state.math = !state.math;
+      if (state.math && state.mathDelimiter === "$") {
+        state.math = false;
+        state.mathDelimiter = "";
+      } else if (!state.math) {
+        state.math = true;
+        state.mathDelimiter = "$";
+      }
       return "keyword";
     }
     if (state.math) {
       stream.next();
       return "keyword";
-    }
-    if (stream.match(/^\/\/.*/)) return "comment";
-    if (stream.match(/^\/\*/)) {
-      stream.skipToEnd();
-      return "comment";
     }
     // A function call, a binding, an import: everything typst spells with a
     // leading hash.

@@ -60,6 +60,9 @@ export function createFramePreview({
 
   function deliver(payload = latest) {
     const payloadKind = payload?.kind === "html" ? "raw" : payload?.kind;
+    try {
+      if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: deliver", payloadKind, kind, readyEpoch, epoch, Boolean(payload));
+    } catch { /* diagnostics are optional */ }
     if (disposed || !payload || readyEpoch !== epoch || payloadKind !== kind) return false;
     if (payload.kind === "pdf") {
       const buffer = payload.bytes.slice().buffer;

@@ -2,34 +2,25 @@
 // The dialog draws its navigation from this and searches it; what a category
 // shows is a component beside this file.
 //
-// Most settings belong to this browser alone. The two that do not say so in
-// their `note`, shown under the category's title: the LaTeX compiler choice
-// is shared with everyone editing the document, and the local app is the one
-// running on this computer.
+// Build preferences belong to this browser and user. The local app category
+// manages the companion running on this computer.
 
 // `offered` answers with the document's format and whether this browser may
 // edit it. `terms` are the words somebody might type when looking for a row
 // and not finding its title.
-const everyone = () => true;
 const editor = ({ mayEdit }) => mayEdit;
+const build = ({ format, mayEdit }) => ["latex", "typst", "markdown", "quarto"].includes(format) && mayEdit;
 const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
 const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
-const local = ({ format, mayEdit }) => (format === "latex" || format === "quarto") && mayEdit;
+const local = ({ format, mayEdit }) => ["typst", "markdown", "quarto"].includes(format) && mayEdit;
+// The account is the deployment's, not the document's: whoever is signed in
+// is offered it whatever they happen to have open.
+const account = ({ signedIn }) => Boolean(signedIn);
 
 export const CATEGORIES = [
   {
     id: "editor", says: "Editor", offered: editor,
     entries: [{ id: "editor-keys", says: "Keys", terms: "vim emacs keymap keyboard bindings modal source standard" }],
-  },
-  {
-    id: "dictation", says: "Dictation", offered: everyone,
-    entries: [
-      { id: "dictation-backend", says: "Speech recognition", terms: "backend browser device whisper privacy audio" },
-      { id: "dictation-model", says: "Model", terms: "whisper parakeet download size" },
-      { id: "dictation-language", says: "Language", terms: "detect automatically" },
-      { id: "dictation-status", says: "Loaded model", terms: "webgpu cpu wasm device running" },
-      { id: "dictation-downloads", says: "Downloaded models", terms: "storage cache clear remove free space whisper" },
-    ],
   },
   {
     id: "storage", says: "Storage", offered: latex,
@@ -38,10 +29,11 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "compiler", says: "Compiler", offered: latex,
-    note: "Shared with everyone who edits this document.",
+    id: "build", says: "Build", offered: build,
+    note: "Only this browser and user.",
     entries: [
-      { id: "compiler-engine", says: "PDF compiler", terms: "engine pdflatex xelatex lualatex automatic" },
+      { id: "build-tool", says: "Build tool", terms: "compiler engine browser local companion automatic latex typst markdown quarto" },
+      { id: "build-engine", says: "Engine", terms: "pdflatex xelatex lualatex" },
     ],
   },
   {
@@ -62,6 +54,15 @@ export const CATEGORIES = [
       { id: "local-binding", says: "Binding ID", terms: "quarto hosted", offered: quarto },
       { id: "local-tools", says: "Available tools", terms: "versions latex quarto biber" },
       { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
+    ],
+  },
+  {
+    id: "account", says: "Account", offered: account,
+    note: "This account on this deployment, not this document.",
+    entries: [
+      { id: "account-identity", says: "Signed in as", terms: "github google handle email name provider identity" },
+      { id: "account-privacy", says: "Privacy", terms: "privacy data retention gdpr notice cookies storage" },
+      { id: "account-erase", says: "Erase this account", terms: "erase delete account remove close gdpr right erasure forget" },
     ],
   },
 ];

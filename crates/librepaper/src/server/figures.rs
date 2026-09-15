@@ -83,12 +83,13 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (_entry, who) = match self
+            .entry_viewer(slug, request.headers(), arrival, None)
+            .await
+        {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, request.headers(), arrival, None).await;
         if who.auth_failed {
             return write_json(
                 401,
@@ -106,6 +107,7 @@ impl Server {
         {
             let hour = crate::util::now_unix() / 3600;
             let mut counts = self.asset_uploads.lock().await;
+            counts.retain(|_, (seen_hour, _)| *seen_hour == hour);
             let seen = counts.entry(who.key.clone()).or_insert((hour, 0));
             if seen.0 != hour {
                 *seen = (hour, 0);
@@ -122,12 +124,10 @@ impl Server {
         let Ok(body) = to_bytes(request.into_body(), ceiling).await else {
             return write_json(413, &json!({"error": "that figure is too large"}));
         };
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (_entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, &headers, arrival, None).await;
         if who.auth_failed {
             return write_json(
                 401,
@@ -137,18 +137,8 @@ impl Server {
         if !who.at_least(Role::Editor) {
             return write_json(403, &json!({"error": "edit access changed"}));
         }
-        let size = body.len() as i64;
-        // The owner's quota and the deployment's, which a figure counts
-        // against exactly as a text does. `room_for` is what this document may
-        // occupy in all; what it already occupies is its entry's size.
-        if let Some(room) = self.store.room_for(slug).await {
-            if entry.size + size > room {
-                return write_json(
-                    507,
-                    &json!({"error": "your storage quota is used up; delete a document first"}),
-                );
-            }
-        }
+        // Atomic object admission accounts for physical bytes and recognizes
+        // deduplicated uploads even when the owner's quota is full.
         let room = match self.rooms.try_get(slug).await {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
@@ -159,40 +149,15 @@ impl Server {
             session_generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             policy_editor: self.publishers.allows(&who.id.handle),
-            automation: who.automation,
             unowned_publisher: false,
         };
-        if let Err(error) = self
-            .store
-            .reserve_object_bytes(slug, size, Some(&mutation_actor))
-            .await
-        {
-            return match error {
-                PutError::Quota { status, message }
-                | PutError::Authorization { status, message } => {
-                    write_json(status, &json!({"error": message}))
-                }
-                PutError::Storage(message) => {
-                    eprintln!("could not reserve figure bytes for {slug}: {message}");
-                    write_json(503, &json!({"error": "storage temporarily unavailable"}))
-                }
-            };
-        }
         let stored = room
-            .put_asset(
+            .put_asset_authorized(
                 body.to_vec(),
                 (self.config.max_asset, self.config.max_assets),
+                &mutation_actor,
             )
             .await;
-        if let Err(error) = &stored {
-            // Whether the room refused before writing anything or storage
-            // failed part-way, this request's byte reservation is not ours to
-            // hold: an object that did land is the object ledger's to
-            // reconcile, and keeping the reservation as well would charge the
-            // owner twice for it.
-            self.store.release_object_bytes(slug, size).await;
-            debug_assert!(error.refused() || error.log_context().is_some());
-        }
         match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),
             Err(error) => refused(&format!("could not store a figure for {slug}"), &error),
@@ -222,29 +187,34 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, None).await;
-        // This legacy path addresses the editable project's input-asset
-        // namespace. Public display assets are served only through the
-        // publication manifest route below; a guessed source digest must not
-        // grant a reader access to it.
+        // The catalogue repeats the live editor check inside the lease
+        // transaction.  Route-level Viewer state is only an early rejection;
+        // it is never permission to construct a mutable storage key.
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
-        let storage_id = if entry.storage_id.is_empty() {
-            slug
-        } else {
-            entry.storage_id.as_str()
+        let catalog = self.store.catalog.clone();
+        let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {
+            return plain(404, "not found");
         };
-        let key = crate::storage::blob::asset_key(storage_id, sha);
+        let assets = match catalog
+            .assets_by_digests(document_id, &[sha.to_owned()])
+            .await
+        {
+            Ok(assets) => assets,
+            Err(_) => return plain(503, "catalogue temporarily unavailable"),
+        };
+        let Some(asset) = assets.first() else {
+            return plain(404, "not found");
+        };
         crate::server::cost::blob_response(
             &self.cost,
             self.store.blobs.clone(),
-            key,
+            asset.storage_key.clone(),
             sha,
             headers,
             false,

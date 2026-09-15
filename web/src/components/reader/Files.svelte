@@ -269,12 +269,23 @@
   </div>
 </div>
 
+<!-- A row is the same shape whether it opens or not, but a folder's chevron
+     and name are Skeleton's parts rather than ours: the chevron reads
+     `data-state` off the machine instead of off a second copy of the
+     expansion kept here, which could disagree with it. There is no exposed
+     part for a leaf's text, so a file's name stays a span. -->
 {#snippet row(node)}
-  <span class="explorer-chevron" aria-hidden="true">{#if node.kind === "folder"}<Icon name={expanded.includes(node.id) ? "chevron-down" : "chevron-right"} />{/if}</span>
+  {#if node.kind === "folder"}
+    <TreeView.BranchIndicator class="explorer-chevron"><Icon name="chevron-right" /></TreeView.BranchIndicator>
+  {:else}
+    <span class="explorer-chevron" aria-hidden="true"></span>
+  {/if}
   <Icon name={node.kind === "folder" ? "folder" : node.kind === "asset" ? "image" : "file-text"} />
   {#if editing?.type === "rename" && editing.entry.path === node.path}
     <input class="name" aria-label="Rename {node.path}" bind:value={draft} use:focusName onkeydown={namingKey} onclick={(event) => event.stopPropagation()} />
     <span onclick={(event) => event.stopPropagation()} role="presentation"><IconButton icon="check" label="Save name" onclick={commit} /><IconButton icon="x" label="Cancel rename" onclick={reset} /></span>
+  {:else if node.kind === "folder"}
+    <TreeView.BranchText class="explorer-name">{node.name}</TreeView.BranchText>
   {:else}
     <span class="explorer-name">{node.name}</span>
   {/if}
@@ -316,6 +327,10 @@
           {@render nodeMenu(node)}
         </Menu>
         <TreeView.BranchContent>
+          <!-- The line down the side of an open folder. Zag gives it the
+               depth it is at, so it lands under that folder's chevron
+               without this having to count the nesting again. -->
+          <TreeView.BranchIndentGuide class="explorer-guide" />
           {#each node.children as child, index (child.id)}{@render branch(child, [...indexPath, index])}{/each}
         </TreeView.BranchContent>
       </TreeView.Branch>

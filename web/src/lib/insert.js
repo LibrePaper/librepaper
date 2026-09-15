@@ -1,6 +1,28 @@
 // Semantic actions shared by the navbar and the source-format adapters.
+/**
+ * @typedef {(id: string, options: InsertOptions, context: any) => string | InsertionResult} BuildFormatter
+ */
 import { buildLatex } from './insert-latex.js';
 import { buildTypst } from './insert-typst.js';
+
+/**
+ * @typedef InsertItem
+ * @type {object}
+ * @property {string} id
+ * @property {string} label
+ * @property {string} group
+ * @property {string|null} [dialog]
+ * @property {string} [keywords]
+ */
+
+/**
+ * @param {string} id
+ * @param {string} label
+ * @param {string} group
+ * @param {string|null} [dialog]
+ * @param {string} [keywords='']
+ * @returns {InsertItem}
+ */
 const item = (id, label, group, dialog, keywords = '') => ({ id, label, group, dialog, keywords });
 export const INSERT_ACTIONS = [
   item('heading', 'Heading / section', 'Structure', 'heading', 'subsection subsubsection'),
@@ -20,6 +42,55 @@ export const INSERT_ACTIONS = [
 ];
 const formats = new Set(['latex', 'typst', 'markdown', 'quarto']);
 const scholarly = new Set(['theorem','lemma','proposition','definition','proof','example','remark']);
+
+/**
+ * @typedef {{from: number; to: number; text: string}} Selection
+ */
+
+/**
+ * @typedef InsertContext
+ * @type {object}
+ * @property {string} [text='']
+ * @property {string} [format]
+ * @property {string} [path]
+ * @property {string} [mainText]
+ * @property {string} [mainPath]
+ * @property {Selection} [selection]
+ * @property {{path: string; text: string}[]} [files]
+ */
+
+/**
+ * @typedef InsertOptions
+ * @type {object}
+ * @property {string} [title]
+ * @property {number} [level]
+ * @property {number} [rows]
+ * @property {number} [columns]
+ * @property {string} [src]
+ * @property {string} [caption]
+ * @property {string} [width]
+ * @property {string} [label]
+ * @property {string} [gap]
+ * @property {string} [language]
+ * @property {string} [alignment]
+ * @property {boolean} [numbered]
+ * @property {boolean} [header]
+ * @property {string[]} [keys]
+ * @property {string} [style]
+ * @property {string} [locator]
+ * @property {string} [file]
+ * @property {string} [target]
+ * @property {string} [url]
+ * @property {string} [environment]
+ * @property {string} [brackets]
+ * @property {boolean} [inMath]
+ */
+
+/**
+ * @param {string} path
+ * @param {string} [base]
+ * @returns {string}
+ */
 function relativePath(path, base) {
   if (/^(?:[a-z]+:|\/)/i.test(path)) return path;
   const from=(base || '').split('/').slice(0,-1),to=path.split('/');
@@ -27,12 +98,46 @@ function relativePath(path, base) {
   return [...from.map(()=>'..'),...to].join('/');
 }
 const inline = new Set(['inline-math','citation','cross-reference','label','footnote','link']);
+
+/**
+ * @param {any} value
+ * @returns {string}
+ */
 const plain = value => String(value ?? '');
+
+/**
+ * @param {any} value
+ * @returns {string}
+ */
 const markdown = value => plain(value).replace(/[\\`*_{}\[\]<>]/g, '\\$&');
+
+/**
+ * @param {any} value
+ * @returns {string}
+ */
 const html = value => plain(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/**
+ * @param {any} value
+ * @returns {string}
+ */
 const slug = value => plain(value).trim().replace(/[^\p{L}\p{N}_.:-]+/gu, '-').replace(/^-|-$/g, '') || 'item';
+
+/**
+ * @param {any} value
+ * @returns {string}
+ */
 const url = value => { const s=plain(value).trim(); if (/^(?:javascript|data|vbscript):/i.test(s)) throw Error('Use a project path or an http, https, or mailto link.'); return s.replace(/[\s<>"()]/g,c=>encodeURIComponent(c)); };
+
+/**
+ * @param {InsertContext} [c={}]
+ * @returns {InsertContext & {text: string; selection: Selection; files: {path: string; text: string}[]}}
+ */
 function context(c = {}) { const text=plain(c.text); const selection=c.selection || {from:text.length,to:text.length,text:''}; return {...c, text, selection, files:c.files || []}; }
+/**
+ * @param {InsertContext} [input={}]
+ * @returns {'code'|'comment'|'metadata'|'math'|'markup'}
+ */
 export function insertSyntaxContext(input) {
   const c=context(input), before=c.text.slice(0,c.selection.from), format=c.format;
   if (format === 'markdown' || format === 'quarto' || format === 'typst') {
@@ -68,6 +173,11 @@ export function insertSyntaxContext(input) {
   let delimiter=null; for(const d of dollars){if(!delimiter)delimiter=d;else if(d===delimiter)delimiter=null;}
   return delimiter?'math':'markup';
 }
+/**
+ * @param {string} id
+ * @param {InsertContext} [input={}]
+ * @returns {{enabled: boolean; reason?: string}}
+ */
 export function insertionAvailability(id, input = {}) {
   const c=context(input);
   if(!INSERT_ACTIONS.some(a=>a.id===id))return {enabled:false,reason:'Unknown insertion.'};
@@ -80,12 +190,29 @@ export function insertionAvailability(id, input = {}) {
   if(id==='cross-reference' && !gatherInsertTargets(c).length)return {enabled:false,reason:'Add a heading or a labelled element first.'};
   return {enabled:true};
 }
+/**
+ * @param {InsertContext} [input={}]
+ * @returns {string[]}
+ */
 export function gatherInsertEnvironments(input = {}) {
   const c=context(input), text=[c.text,c.mainText,...c.files.map(f=>f.text)].filter(Boolean).join('\n'), names=new Set();
   const regex=c.format==='latex'?/\\(?:newenvironment|renewenvironment|newtheorem)\*?\s*\{([^}]+)\}/g:/#let\s+([A-Za-z][\w-]*)\s*\([^)]*\bbody\b[^)]*\)/g;
   for(const m of text.matchAll(regex))names.add(m[1]);
   return [...names].sort();
 }
+/**
+ * @typedef InsertField
+ * @type {object}
+ * @property {string} label
+ * @property {string} defaultValue
+ * @property {boolean} optional
+ */
+
+/**
+ * @param {string} name
+ * @param {InsertContext} [input={}]
+ * @returns {InsertField[]}
+ */
 export function insertEnvironmentFields(name,input={}) {
   if(!/^[A-Za-z][\w-]*$/.test(name||''))return [];
   const c=context(input),source=[c.text,c.mainText,...c.files.map(f=>f.text)].filter(Boolean).join('\n');
@@ -99,6 +226,19 @@ export function insertEnvironmentFields(name,input={}) {
   }
   return [];
 }
+/**
+ * @typedef InsertTarget
+ * @type {object}
+ * @property {string} id
+ * @property {string} label
+ * @property {'label'|'heading'} kind
+ * @property {string} [path]
+ */
+
+/**
+ * @param {InsertContext} [input={}]
+ * @returns {InsertTarget[]}
+ */
 export function gatherInsertTargets(input = {}) {
   const c=context(input), found=[], seen=new Set();
   const sources=[{path:c.path,text:c.text},...c.files.filter(f=>f.path!==c.path && typeof f.text==='string')];
@@ -123,13 +263,33 @@ export function gatherInsertTargets(input = {}) {
   }
   return found;
 }
+/**
+ * @param {string} value
+ * @param {InsertContext} c
+ * @param {string} [prefix='']
+ * @returns {string}
+ */
 function uniqueLabel(value,c,prefix='') {
   let base=slug(value), used=new Set(gatherInsertTargets(c).map(x=>x.id));
   if(prefix && !base.startsWith(prefix+'-'))base=prefix+'-'+base;
   let result=base,n=2;while(used.has(result))result=base+'-'+n++;
   return result;
 }
+/**
+ * @typedef EditOperation
+ * @type {object}
+ * @property {number} from
+ * @property {number} to
+ * @property {string} insert
+ * @property {string} [path]
+ */
+
 // Metadata edits address the captured source, never a generated snippet.
+/**
+ * @param {InsertContext} c
+ * @param {Record<string, string>} additions
+ * @returns {EditOperation[]}
+ */
 function metadata(c, additions) {
   const source=c.text, match=source.match(/^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/);
   const edits=[],pending=[];
@@ -144,6 +304,12 @@ function metadata(c, additions) {
   if(pending.length){const insert=pending.join('\n')+'\n',at=match?source.indexOf('\n')+1:0;edits.push({from:at,to:at,insert:match?insert:'---\n'+insert+'---\n\n'});}
   return edits;
 }
+/**
+ * @param {string} id
+ * @param {InsertOptions} o
+ * @param {InsertContext} c
+ * @returns {{text: string; placeholder: string}}
+ */
 function markdownMath(id,o,c) {
   const body=c.selection.text||'x = y', rowCount=o.rows||2, columns=o.columns||2;
   let formula=body;
@@ -158,6 +324,21 @@ function markdownMath(id,o,c) {
   const text=insertSyntaxContext(c)==='math'?(c.format==='markdown'&&c.text.slice(0,c.selection.from).lastIndexOf('<span')>c.text.slice(0,c.selection.from).lastIndexOf('</span>')?html(formula):formula):id==='inline-math'?`$${formula}$`:`$$\n${formula}\n$$${c.format==='quarto' && o.numbered!==false && o.label?` {#${o.label}}`:''}`;
   return {text,placeholder:id==='matrix'?'0':id==='cases'?'1':body};
 }
+/**
+ * @typedef InsertionResult
+ * @type {object}
+ * @property {string} text
+ * @property {string} [placeholder]
+ * @property {EditOperation[]} [additionalEdits]
+ * @property {string[]} [notes]
+ */
+
+/**
+ * @param {string} id
+ * @param {InsertOptions} o
+ * @param {InsertContext} c
+ * @returns {InsertionResult}
+ */
 function buildMarkdown(id,o,c) {
   const q=c.format==='quarto', selected=c.selection.text||'', body=selected||'Content.', notes=[], additionalEdits=[];
   let text='',placeholder=body;
@@ -241,10 +422,29 @@ function buildMarkdown(id,o,c) {
   }
   return {text,placeholder,additionalEdits,notes};
 }
+/**
+ * @typedef FinalInsertion
+ * @type {InsertionResult & {selection: {anchor: number; head: number}}}
+ */
+
+/**
+ * @param {string} id
+ * @param {InsertOptions} [options={}]
+ * @param {InsertContext} [input={}]
+ * @returns {FinalInsertion}
+ */
 export function buildInsertion(id, options = {}, input = {}) {
   const c=context(input), available=insertionAvailability(id,c);if(!available.enabled)throw Error(available.reason);
   const o={...options, inMath: insertSyntaxContext(c)==='math'};
-  for(const [key,max] of [['rows',100],['columns',30],['level',6]])if(o[key]!=null){const n=Number(o[key]);if(!Number.isInteger(n)||n<1||n>max)throw Error(`${key[0].toUpperCase()+key.slice(1)} must be between 1 and ${max}.`);o[key]=n;}
+  /** @type {[string, number][]} */
+  const numericValidations = [['rows',100],['columns',30],['level',6]];
+  for(const [key,max] of numericValidations) {
+    if(o[key]!=null) {
+      const n=Number(o[key]);
+      if(!Number.isInteger(n)||n<1||n>max) throw Error(`${key[0].toUpperCase()+key.slice(1)} must be between 1 and ${max}.`);
+      o[key]=n;
+    }
+  }
   if(o.width && !/^\d+(?:\.\d+)?(?:%|cm|mm|in|pt|px|em)$/.test(o.width) && !(c.format==='latex' && /^(?:\d*\.?\d+)?\\(?:line|text)width$/.test(o.width)))throw Error('Use a width such as 80%, 8cm, or 200pt.');
   if(o.gap && !/^\d+(?:\.\d+)?(?:cm|mm|in|pt|px|em)$/.test(o.gap))throw Error('Use spacing such as 1em or 12pt.');
   if(c.format==='latex'&&o.level>5)throw Error('LaTeX section levels range from 1 to 5.');
@@ -272,19 +472,21 @@ export function buildInsertion(id, options = {}, input = {}) {
   }
   let result=c.format==='latex'?buildLatex(id,o,c):c.format==='typst'?buildTypst(id,o,c):buildMarkdown(id,o,c);
   if(typeof result==='string')result={text:result};
-  let text=result.text||((result.additionalEdits?.length && c.selection.text) || ''),prefix='',suffix='';
+  /** @type {InsertionResult} */
+  const resultObj = result;
+  let text=resultObj.text||((resultObj.additionalEdits?.length && c.selection.text) || ''),prefix='',suffix='';
   if(text && !inline.has(id) && insertSyntaxContext(c)!=='math'){
     const before=c.text.slice(0,c.selection.from),after=c.text.slice(c.selection.to);
     prefix=before && !before.endsWith('\n\n')?(before.endsWith('\n')?'\n':'\n\n'):'';
     suffix=after && !after.startsWith('\n\n')?(after.startsWith('\n')?'\n':'\n\n'):'';
   }
-  const needle=result.placeholder || c.selection.text;
+  const needle=resultObj.placeholder || c.selection.text;
   const at=needle?text.indexOf(needle):-1;
   const selection=at>=0?{anchor:prefix.length+at,head:prefix.length+at+needle.length}:{anchor:prefix.length+text.length,head:prefix.length+text.length};
   const additionalEdits=[];
-  for(const edit of result.additionalEdits||[]){
+  for(const edit of resultObj.additionalEdits||[]){
     const previous=additionalEdits.find(e=>e.path===edit.path&&e.from===edit.from&&e.to===edit.to&&e.from===e.to);
     if(previous)previous.insert+=edit.insert;else additionalEdits.push({...edit});
   }
-  return {...result,text:prefix+text+suffix,selection,notes:[...(result.notes||[]),...(id==='appendix'&&['typst','latex'].includes(c.format)?['This starts appendix numbering for the following sections.']:[])],additionalEdits};
+  return {...resultObj,text:prefix+text+suffix,selection,notes:[...(resultObj.notes||[]),...(id==='appendix'&&['typst','latex'].includes(c.format)?['This starts appendix numbering for the following sections.']:[])],additionalEdits};
 }

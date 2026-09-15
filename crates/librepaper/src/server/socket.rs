@@ -59,7 +59,7 @@ impl UpdateAssembly {
     ) -> Result<Option<Vec<u8>>, &'static str> {
         const INVALID: &str = "invalid multipart document update";
         match message.kind.as_str() {
-            "y-update-start" => {
+            "doc-update-start" => {
                 if self.pending.is_some()
                     || message.size == 0
                     || message.size > ceiling
@@ -72,7 +72,7 @@ impl UpdateAssembly {
                 self.pending = Some((message.seq, message.size, message.chunks, 0, Vec::new()));
                 Ok(None)
             }
-            "y-update-chunk" => {
+            "doc-update-chunk" => {
                 let Some((seq, size, chunks, next, bytes)) = self.pending.as_mut() else {
                     return Err(INVALID);
                 };
@@ -87,7 +87,7 @@ impl UpdateAssembly {
                 *next += 1;
                 Ok(None)
             }
-            "y-update-end" => {
+            "doc-update-end" => {
                 let Some((seq, size, chunks, next, bytes)) = self.pending.take() else {
                     return Err(INVALID);
                 };
@@ -118,7 +118,9 @@ pub(super) struct Connection {
     pub(super) can_comment: bool,
     pub(super) chat: Option<String>,
     pub(super) link: String,
+    pub(super) link_expires: Option<i64>,
     pub(super) comment_budget: Option<i64>,
+    pub(super) authorized_at: tokio::time::Instant,
     pub(super) tx: Sender,
 }
 
@@ -139,7 +141,7 @@ impl Server {
         // A room belongs to a document. Without this, any invented slug would
         // conjure one, and since the rate limiter counts per room, a new slug
         // per comment would also mean no rate limit at all.
-        let entry = if self.store.catalog.is_some() {
+        let entry = {
             match self.store.get_checked(slug).await {
                 Ok(Some(entry)) => entry,
                 Ok(None) => return plain(404, "not found"),
@@ -148,13 +150,6 @@ impl Server {
                     return plain(503, "catalogue temporarily unavailable");
                 }
             }
-        } else {
-            let entry = match self.checked_entry(slug).await {
-                Ok(Some(entry)) => entry,
-                Ok(None) => return plain(404, "not found"),
-                Err(response) => return response,
-            };
-            entry
         };
         let headers = request.headers().clone();
         // A browser cannot set a header on a socket handshake, so the link key
@@ -182,11 +177,21 @@ impl Server {
         // What this caller may do here, asked once: the `y-*` gate and the
         // moderation of anyone else's comment are both the editor rung.
         let may_edit = who.at_least(Role::Editor);
+        let link_expires = entry
+            .live_link(&who.link, crate::util::now_unix())
+            .and_then(|link| crate::util::parse_timestamp(&link.until));
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
         let identity = crate::server::socket_budget::SocketIdentity {
             network: client_network(&address),
             principal: who.id.id.clone(),
             document: slug.to_string(),
+            role: Some(if may_edit {
+                super::socket_budget::SocketRole::Editor
+            } else if who.at_least(Role::Commenter) {
+                super::socket_budget::SocketRole::Commenter
+            } else {
+                super::socket_budget::SocketRole::Reader
+            }),
         };
         let socket_id = self.sockets.fetch_add(1, Ordering::Relaxed);
         let socket_permit = match self.socket_budget.admit(socket_id, identity) {
@@ -224,6 +229,7 @@ impl Server {
                         headers,
                         arrival,
                         query,
+                        link_expires,
                         socket_permit,
                     )
                     .await;
@@ -243,6 +249,7 @@ impl Server {
         headers: HeaderMap,
         arrival: Arrival,
         query: Option<String>,
+        link_expires: Option<i64>,
         _socket_permit: crate::server::socket_budget::SocketPermit,
     ) {
         let socket_id = _socket_permit.id();
@@ -271,7 +278,9 @@ impl Server {
                 can_comment: who.at_least(Role::Commenter),
                 chat: None,
                 link: who.link.clone(),
+                link_expires,
                 comment_budget: who.comment_budget,
+                authorized_at: tokio::time::Instant::now(),
                 tx: tx.clone(),
             },
         );
@@ -297,6 +306,12 @@ impl Server {
                     .await
                     .map_err(|_| ())
                     .and_then(|result| result.map_err(|_| ())),
+                    Outgoing::SharedText(text) => {
+                        tokio::time::timeout(SOCKET_WRITE_TIMEOUT, sink.send(WsMessage::Text(text)))
+                            .await
+                            .map_err(|_| ())
+                            .and_then(|result| result.map_err(|_| ()))
+                    }
                     Outgoing::Close(reason) => {
                         let _ = tokio::time::timeout(
                             SOCKET_WRITE_TIMEOUT,
@@ -325,7 +340,7 @@ impl Server {
             let _ = writer.await;
             self.connections.lock().await.remove(&socket_id);
             room.detach(socket_id).await;
-            room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
+            room.broadcast(&json!({"type": "doc-peers", "count": room.editors().await}))
                 .await;
             return;
         }
@@ -432,7 +447,7 @@ impl Server {
 
                     if matches!(
                         incoming.kind.as_str(),
-                        "y-update-start" | "y-update-chunk" | "y-update-end"
+                        "doc-update-start" | "doc-update-chunk" | "doc-update-end"
                     ) {
                         if !may_edit {
                             let _ = tx
@@ -452,7 +467,7 @@ impl Server {
                         match assembly.receive(&incoming, update_ceiling) {
                             Ok(None) => continue 'reader,
                             Ok(Some(update)) => {
-                                incoming.kind = "y-update".to_string();
+                                incoming.kind = "doc-update".to_string();
                                 incoming.update = encode_update(&update);
                             }
                             Err(reason) => {
@@ -468,10 +483,10 @@ impl Server {
                     // the document -- that is how a reader renders the
                     // current text -- and writing it is the editor rung, the
                     // same gate the source has always been under.
-                    if incoming.kind.starts_with("y-") {
+                    if incoming.kind.starts_with("doc-") {
                         match incoming.kind.as_str() {
                             // What the socket already has, or nothing on a cold join.
-                            "y-open" | "y-sync" => {
+                            "doc-open" | "doc-sync" => {
                                 if !may_edit {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
                                         json!({
@@ -502,16 +517,16 @@ impl Server {
                                     // same-origin URL to fetch it from, and
                                     // catches up on whatever arrived during
                                     // the fetch by sending its state vector
-                                    // back as `y-sync`.
+                                    // back as `doc-sync`.
                                     json!({
-                                        "type": "y-state",
+                                        "type": "doc-state",
                                         "ref": self.state_reference(&room.slug),
                                         "vector": encode_update(&server_vector),
                                         "count": count,
                                     })
                                 } else {
                                     json!({
-                                        "type": "y-state",
+                                        "type": "doc-state",
                                         "update": encode_update(&update),
                                         "vector": encode_update(&server_vector),
                                         "count": count,
@@ -526,24 +541,45 @@ impl Server {
                                 if send_outgoing(&tx, Outgoing::Text(payload_text)).await.is_err() {
                                     break 'reader;
                                 }
-                                room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
+                                room.broadcast(&json!({"type": "doc-peers", "count": room.editors().await}))
                                     .await;
+                                // Whoever has just joined needs to know what is
+                                // awaiting review, not only what the text says.
+                                // Pushing it here rather than waiting to be asked
+                                // saves a round trip on every join, and a client
+                                // that renders proposals cannot draw anything
+                                // useful until it has them anyway.
+                                if let Ok(open) = room.open_proposals().await {
+                                    if !open.is_empty() {
+                                        let _ = send_outgoing(
+                                            &tx,
+                                            Outgoing::Text(
+                                                json!({
+                                                    "type": "proposal-list", "proposals": open,
+                                                    "version": 1, "protocol": "librepaper.room.v1",
+                                                })
+                                                .to_string(),
+                                            ),
+                                        )
+                                        .await;
+                                    }
+                                }
                             }
                             // Where everyone's caret is, and what they are called.
                             // Relayed and not remembered: it describes who is here
                             // now, so it is worth nothing to whoever arrives next, and
                             // a session that kept it would be keeping a list of ghosts.
-                            "y-awareness" => {
+                            "doc-presence" => {
                                 if !may_edit || incoming.update.is_empty() {
                                     continue 'reader;
                                 }
                                 room.broadcast_editors_except(
                                     Some(socket_id),
-                                    &json!({"type": "y-awareness", "update": incoming.update}),
+                                    &json!({"type": "doc-presence", "update": incoming.update}),
                                 )
                                 .await;
                             }
-                            "y-update" => {
+                            "doc-update" => {
                                 if !may_edit {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
                                             json!({
@@ -596,14 +632,14 @@ impl Server {
                                 // storage has it, that it is durable.
                                 room.broadcast_editors_except(
                                     Some(socket_id),
-                                    &json!({"type": "y-update", "update": incoming.update}),
+                                    &json!({"type": "doc-update", "update": incoming.update}),
                                 )
                                 .await;
                             }
                             // A deliberate act by the author, and so a mark in the
                             // timeline. The requester is told which checkpoint it
-                            // became, which is how `librepaper sync` knows what to print.
-                            "y-checkpoint" => {
+                            // became, so peers can report the accepted revision.
+                            "doc-checkpoint" => {
                                 if !may_edit {
                                     let payload = json!({
                                         "type": "error",
@@ -629,7 +665,7 @@ impl Server {
                                 };
                                 let payload = match result {
                                     Ok(Some(sha)) => json!({
-                                        "type": "y-checkpoint", "sha": sha,
+                                        "type": "doc-checkpoint", "sha": sha,
                                         "request_id": incoming.request_id,
                                         "durable": true,
                                         "version": 1,
@@ -637,7 +673,7 @@ impl Server {
                                     }),
                                     Ok(None) if !immediate => continue 'reader,
                                     Ok(None) => json!({
-                                        "type": "y-checkpoint", "noop": true,
+                                        "type": "doc-checkpoint", "noop": true,
                                         "request_id": incoming.request_id,
                                         "durable": true,
                                         "version": 1,
@@ -658,6 +694,190 @@ impl Server {
                                 }
                             }
                             _ => {}
+                        }
+                        continue 'reader;
+                    }
+
+                    // A proposal is a branch (SPEC-loro.md §3.3). What crosses
+                    // this boundary is the branch's operations and a decision
+                    // naming one of its hunks by index -- never a delta run and
+                    // never an offset, because the server counts text in code
+                    // points where the browser counts UTF-16 (§5.2).
+                    if incoming.kind.starts_with("proposal-") {
+                        if !may_edit {
+                            let _ = send_outgoing(&tx, Outgoing::Text(
+                                json!({
+                                    "type": "error",
+                                    "message": "proposing and reviewing changes is restricted to editors",
+                                    "request_id": incoming.request_id,
+                                    "version": 1,
+                                    "protocol": "librepaper.room.v1",
+                                }).to_string(),
+                            )).await;
+                            continue 'reader;
+                        }
+                        let by = who.attribution();
+                        let by = by.display().to_string();
+                        let refuse = |error: crate::room::proposals::ProposalError| {
+                            json!({
+                                "type": "error",
+                                "message": error.to_string(),
+                                "stale": matches!(error, crate::room::proposals::ProposalError::Stale),
+                                "proposal_id": incoming.proposal_id,
+                                "request_id": incoming.request_id,
+                                "version": 1,
+                                "protocol": "librepaper.room.v1",
+                            })
+                        };
+                        let payload = match incoming.kind.as_str() {
+                            // Somebody proposes different words for a passage.
+                            // The passage is named the way a comment names one
+                            // -- by quoting it -- and what comes back is a
+                            // proposal id, because a suggested change is a
+                            // branch like any other from here on (§1.2).
+                            "proposal-suggest" => {
+                                let Some(anchor) = incoming.source.as_ref() else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"a suggestion has to say which passage it is about","request_id":incoming.request_id}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                let proposed = incoming.proposed.clone().unwrap_or_default();
+                                // Where the passage currently is. Found by
+                                // reading the file, so a suggestion made
+                                // against text that has since moved is refused
+                                // rather than placed somewhere plausible.
+                                let placed = {
+                                    let state = room.state.lock().await;
+                                    crate::document::session::texts_of(&state.session.doc)
+                                        .get(&anchor.path)
+                                        .and_then(|body| {
+                                            crate::room::comments::locate_anchor(body, anchor)
+                                        })
+                                };
+                                let Some(at) = placed else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","stale":true,"message":"that passage is not where it was","request_id":incoming.request_id}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                match room
+                                    .open_suggestion(&by, &anchor.path, at, &anchor.exact, &proposed)
+                                    .await
+                                {
+                                    Ok(id) => json!({
+                                        "type": "proposal-opened", "proposal_id": id,
+                                        "suggested": true,
+                                        "request_id": incoming.request_id,
+                                        "version": 1, "protocol": "librepaper.room.v1",
+                                    }),
+                                    Err(error) => refuse(error),
+                                }
+                            }
+                            "proposal-open" => match room.open_proposal(&by).await {
+                                Ok(id) => json!({
+                                    "type": "proposal-opened", "proposal_id": id,
+                                    "request_id": incoming.request_id,
+                                    "version": 1, "protocol": "librepaper.room.v1",
+                                }),
+                                Err(error) => refuse(error),
+                            },
+                            "proposal-update" => {
+                                let (Some(branch), Some(tip)) = (
+                                    crate::room::decode_update(&incoming.update),
+                                    crate::room::decode_update(&incoming.tip),
+                                ) else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"that proposal update could not be read","request_id":incoming.request_id}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                match room.update_proposal(&incoming.proposal_id, &tip, &branch).await {
+                                    Ok(()) => json!({
+                                        "type": "proposal-updated",
+                                        "proposal_id": incoming.proposal_id,
+                                        "request_id": incoming.request_id,
+                                        "version": 1, "protocol": "librepaper.room.v1",
+                                    }),
+                                    Err(error) => refuse(error),
+                                }
+                            }
+                            "proposal-decide" => {
+                                let Some(against) = crate::room::decode_update(&incoming.tip) else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"a decision must say which version it was made against","request_id":incoming.request_id}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                let note = (!incoming.note.is_empty()).then(|| incoming.note.clone());
+                                match room
+                                    .decide_hunk(
+                                        &incoming.proposal_id,
+                                        crate::room::proposals::Decision {
+                                            hunk: incoming.hunk,
+                                            accepted: incoming.accepted,
+                                            by: &by,
+                                            against: &against,
+                                            note,
+                                            reviewer: socket_id,
+                                        },
+                                    )
+                                    .await
+                                {
+                                    // The proposal is now wholly decided, so its
+                                    // accepted hunks have reached the document.
+                                    // One update carries the merge and the
+                                    // reverts together: between them the document
+                                    // holds the declined text, and §3.4 is that
+                                    // no peer ever sees that state.
+                                    Ok(Some(update)) => {
+                                        room.broadcast_editors_except(
+                                            None,
+                                            &json!({"type": "doc-update", "update": crate::room::encode_update(&update)}),
+                                        )
+                                        .await;
+                                        json!({
+                                            "type": "proposal-decided",
+                                            "proposal_id": incoming.proposal_id,
+                                            "hunk": incoming.hunk,
+                                            "accepted": incoming.accepted,
+                                            "resolved": true,
+                                            "request_id": incoming.request_id,
+                                            "version": 1, "protocol": "librepaper.room.v1",
+                                        })
+                                    }
+                                    // Recorded, but the proposal still has hunks
+                                    // nobody has answered for, so the document
+                                    // has not moved (§5.1a).
+                                    Ok(None) => json!({
+                                        "type": "proposal-decided",
+                                        "proposal_id": incoming.proposal_id,
+                                        "hunk": incoming.hunk,
+                                        "accepted": incoming.accepted,
+                                        "resolved": false,
+                                        "request_id": incoming.request_id,
+                                        "version": 1, "protocol": "librepaper.room.v1",
+                                    }),
+                                    Err(error) => refuse(error),
+                                }
+                            }
+                            "proposal-list" => match room.open_proposals().await {
+                                Ok(open) => json!({
+                                    "type": "proposal-list", "proposals": open,
+                                    "request_id": incoming.request_id,
+                                    "version": 1, "protocol": "librepaper.room.v1",
+                                }),
+                                Err(error) => refuse(error),
+                            },
+                            _ => continue 'reader,
+                        };
+                        // Everyone reviewing needs to know a decision was made,
+                        // not just whoever made it.
+                        if payload["type"] == "proposal-decided" {
+                            room.broadcast_editors_except(Some(socket_id), &payload).await;
+                        }
+                        if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
+                            break 'reader;
                         }
                         continue 'reader;
                     }
@@ -719,29 +939,7 @@ impl Server {
                         }
                     }
                     let _publication_guard = room.publication_write.lock().await;
-                    if incoming.kind == "revision-decide" {
-                        let result = room
-                            .decide_revision(
-                                &incoming.revision_id,
-                                &incoming.action,
-                                &author,
-                                may_edit,
-                                &incoming.request_id,
-                            )
-                            .await;
-                        if send_outgoing(&tx, Outgoing::Text(result.to_string())).await.is_err() {
-                            break 'reader;
-                        }
-                        continue 'reader;
-                    }
-                    let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
-                        let by = who.attribution();
-                        self.decide_suggestion(&room, &incoming, may_edit, &by, &who.id.id, &who.id.session_generation)
-                            .await
-                    } else {
-                        self.apply_from(&room, incoming, &address, &who, &author)
-                            .await
-                    };
+                    let (result, ok) = self.apply_from(&room, incoming, &address, &who, &author).await;
                     if !ok {
                         if send_outgoing(&tx, Outgoing::Text(result.to_string())).await.is_err() {
                             break 'reader;
@@ -797,9 +995,14 @@ impl Server {
                     room.slug
                 );
             }
-            let _ = room.checkpoint("left", who.attributed_as(&author)).await;
+            // Only if there is something to mark. A visit that read the
+            // document and closed the tab wrote nothing, and a version of
+            // nothing is a row a reader opens to find the document unchanged.
+            if room.history_durability().await.checkpoint_pending {
+                let _ = room.checkpoint("left", who.attributed_as(&author)).await;
+            }
         }
-        room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
+        room.broadcast(&json!({"type": "doc-peers", "count": room.editors().await}))
             .await;
         if !writer_done {
             if send_outgoing(&tx, Outgoing::Close("".into()))
@@ -837,8 +1040,17 @@ impl Server {
 
     /// Rechecks one live socket against the current catalogue entry.  Inbound
     /// frames use this sender-specific path so an expensive catalogue lookup
-    /// cannot make every other socket pay the same SQLite cost.
+    /// cannot make every other socket pay the same PostgreSQL query cost.
     pub async fn reauthorize_connection(&self, slug: &str, socket_id: u64) -> bool {
+        let cached = {
+            let connections = self.connections.lock().await;
+            connections.get(&socket_id).cloned()
+        };
+        if cached.as_ref().is_some_and(|connection| {
+            connection.slug == slug && connection.authorized_at.elapsed() < Duration::from_secs(1)
+        }) {
+            return true;
+        }
         let entry = match self.store.get_result(slug).await {
             Ok(entry) => entry,
             Err(error) => {
@@ -881,6 +1093,8 @@ impl Server {
         };
         if !allowed {
             self.disconnect_connection(slug, socket_id).await;
+        } else if let Some(connection) = self.connections.lock().await.get_mut(&socket_id) {
+            connection.authorized_at = tokio::time::Instant::now();
         }
         allowed
     }
@@ -1002,6 +1216,24 @@ impl Server {
             self.reauthorize(&slug).await;
         }
     }
+
+    /// Recheck only sockets whose presented link has reached its known
+    /// expiry. Sharing mutations and ownership changes already invoke the
+    /// targeted `reauthorize` path immediately.
+    pub async fn reauthorize_expired_links(&self) {
+        let now = crate::util::now_unix();
+        let slugs: std::collections::HashSet<String> = {
+            let connections = self.connections.lock().await;
+            connections
+                .values()
+                .filter(|connection| connection.link_expires.is_some_and(|until| until <= now))
+                .map(|connection| connection.slug.clone())
+                .collect()
+        };
+        for slug in slugs {
+            self.reauthorize(&slug).await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1012,25 +1244,25 @@ mod multipart_update_tests {
     }
     #[test]
     fn multipart_updates_reject_unbounded_incomplete_and_reordered_input() {
-        let start = message(json!({"type":"y-update-start","seq":7,"size":4,"chunks":2}));
+        let start = message(json!({"type":"doc-update-start","seq":7,"size":4,"chunks":2}));
         let mut assembly = UpdateAssembly::default();
         assert!(assembly.receive(&start, 3).is_err());
         assert!(assembly.receive(&start, 4).unwrap().is_none());
         assert!(assembly
             .receive(
-                &message(json!({"type":"y-update-chunk","seq":7,"index":1,"update":"YWI="})),
+                &message(json!({"type":"doc-update-chunk","seq":7,"index":1,"update":"YWI="})),
                 4
             )
             .is_err());
         assert!(assembly
-            .receive(&message(json!({"type":"y-update-end","seq":7})), 4)
+            .receive(&message(json!({"type":"doc-update-end","seq":7})), 4)
             .is_err());
         assembly.receive(&start, 4).unwrap();
         for index in 0..2 {
             assembly
                 .receive(
                     &message(
-                        json!({"type":"y-update-chunk","seq":7,"index":index,"update":"YWI="}),
+                        json!({"type":"doc-update-chunk","seq":7,"index":index,"update":"YWI="}),
                     ),
                     4,
                 )
@@ -1038,7 +1270,7 @@ mod multipart_update_tests {
         }
         assert_eq!(
             assembly
-                .receive(&message(json!({"type":"y-update-end","seq":7})), 4)
+                .receive(&message(json!({"type":"doc-update-end","seq":7})), 4)
                 .unwrap(),
             Some(b"abab".to_vec())
         );

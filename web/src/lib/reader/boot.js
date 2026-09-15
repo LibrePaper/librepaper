@@ -1,6 +1,8 @@
 // The reader's initial metadata load. It owns the two requests it starts and
 // invalidates their callbacks when the reader is torn down or restarted.
 import { keyHeaders, me as defaultWhoami } from "../api.js";
+import { preparedProject } from "../offline-projects.js";
+import { createGeneration } from "./generation.js";
 
 
 export function createReaderBoot({
@@ -8,15 +10,16 @@ export function createReaderBoot({
   key = "",
   fetcher = globalThis.fetch,
   whoami = defaultWhoami,
+  findLocal = preparedProject,
   onIdentity = () => {},
   onDocument = () => {},
   onError = () => {},
 }) {
-  let generation = 0;
+  const attempts = createGeneration();
   let disposed = false;
   const controllers = new Set();
 
-  async function requestDocument(current) {
+  async function requestDocument(stale) {
     const controller = new AbortController();
     controllers.add(controller);
     try {
@@ -26,9 +29,17 @@ export function createReaderBoot({
       });
       if (!response.ok) throw new Error("not found");
       const document_ = await response.json();
-      if (!disposed && current === generation) onDocument(document_);
+      if (!disposed && !stale()) onDocument(document_);
     } catch (error) {
-      if (error?.name !== "AbortError" && !disposed && current === generation) onError(error);
+      if (error?.name === "AbortError" || disposed || stale()) return;
+      try {
+        const cached = await findLocal({ server: globalThis.location?.origin, slug });
+        if (cached && !disposed && !stale()) {
+          onDocument({ ...cached.document, offline_prepared: true });
+          return;
+        }
+      } catch { /* unavailable local storage falls through to the normal error */ }
+      if (!disposed && !stale()) onError(error);
     } finally {
       controllers.delete(controller);
     }
@@ -36,21 +47,21 @@ export function createReaderBoot({
 
   async function start() {
     if (disposed) return;
-    const current = ++generation;
+    const stale = attempts.begin();
     // Identity is deliberately independent of document access. A failed
     // identity endpoint still leaves the document request useful, while a
     // late identity response can never rename a replaced reader session.
     Promise.resolve().then(() => whoami()).then((who) => {
-      if (!disposed && current === generation) onIdentity(who || {});
+      if (!disposed && !stale()) onIdentity(who || {});
     }).catch(() => {
-      if (!disposed && current === generation) onIdentity({});
+      if (!disposed && !stale()) onIdentity({});
     });
-    return requestDocument(current);
+    return requestDocument(stale);
   }
 
   function dispose() {
     disposed = true;
-    generation += 1;
+    attempts.cancel();
     for (const controller of controllers) controller.abort();
     controllers.clear();
   }

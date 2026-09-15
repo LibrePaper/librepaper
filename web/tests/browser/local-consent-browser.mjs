@@ -42,7 +42,7 @@ let pagePort = 0;
 const appAddress = `http://127.0.0.1:${appPort}/`;
 
 writeFileSync(entry, `
-import * as local from ${JSON.stringify(join(root, "web/src/lib/latex/local.js"))};
+import * as local from ${JSON.stringify(join(root, "web/src/lib/companion/client.js"))};
 window.local = local;
 window.errors = [];
 addEventListener("error", (event) => window.errors.push(String(event.message)));
@@ -109,6 +109,8 @@ try {
   const shown = await b.popupEvaluate(PAIR, "document.body.innerText");
   assert.match(shown, /localhost:\d+/, "the page names the site asking");
   assert.match(shown, /paper-check/, "the page names the document");
+  assert.match(shown, /execute arbitrary code/, "the page warns about native Quarto execution");
+  assert.match(shown, /Pairing alone does not run/, "the page distinguishes pairing from execution");
   await b.popupEvaluate(PAIR, "document.querySelector('button.allow').click()");
 
   // Wait on the client's status rather than the pairing promise, so a

@@ -80,7 +80,7 @@ impl Server {
         let accepts_html = header_of(headers, "accept").is_some_and(|a| a.contains("text/html"));
         match self.shell.get("/signin.html") {
             Some(asset) if accepts_html => {
-                let mut response = write_asset(asset);
+                let mut response = write_asset(asset, headers);
                 // The page is the same for everybody, but the answer it leads
                 // to is not, and a shared cache holding it would be answering
                 // for this deployment's configuration long after it changed.
@@ -97,44 +97,29 @@ impl Server {
         }
     }
 
-    /// The end of either flow: adopt what this browser published before it
-    /// signed in, set the session cookie, drop the state cookie, and go back
+    /// The end of either flow: set the session cookie, drop the state cookie, and go back
     /// where the person started. Both providers finish here, so a session
     /// cookie is set in exactly one place.
-    pub(super) async fn sign_in(
-        &self,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-        who: &Identity,
-        next: &str,
-    ) -> Reply {
+    pub(super) async fn sign_in(&self, arrival: &Arrival, who: &Identity, next: &str) -> Reply {
         let https = arrival.is_https();
         let mut signed_who = who.clone();
-        if let Some(catalog) = &self.store.catalog {
-            let now = crate::util::timestamp();
-            let profile = crate::storage::catalog::Account {
-                id: who.id.clone(),
-                provider: who.provider.clone(),
+        {
+            let catalog = &self.store.catalog;
+            let profile = crate::storage::postgres::NewAccount {
+                kind: "registered".into(),
+                provider: Some(who.provider.clone()),
+                provider_subject: Some(who.id.clone()),
                 handle: who.handle.clone(),
-                name: who.name.clone(),
-                email: if who.handle.contains('@') {
-                    who.handle.clone()
-                } else {
-                    String::new()
-                },
-                first_seen: now.clone(),
-                last_seen: now,
-                plan: "default".into(),
-                status: "active".into(),
-                session_generation: random_token(),
-                erasure_cursor: None,
+                display_name: who.name.clone(),
+                email: who.handle.contains('@').then(|| who.handle.clone()),
             };
             match crate::server::upsert_account_job(catalog, profile).await {
                 Ok(account) if account.status == "active" => {
-                    signed_who.session_generation = account.session_generation;
+                    signed_who.id = account.id.to_string();
+                    signed_who.session_generation = account.session_generation.to_string();
                 }
                 Ok(_) => return plain(403, "this account is not active"),
-                Err(crate::storage::catalog::CatalogError::Conflict(_)) => {
+                Err(crate::storage::postgres::Error::Conflict(_)) => {
                     return plain(403, "this account is not active")
                 }
                 Err(err) => return plain(503, &format!("could not establish account: {err}")),
@@ -146,25 +131,6 @@ impl Server {
                 503,
                 "Could not prepare your example documents. Please try signing in again.",
             );
-        }
-        // What this browser uploaded before it signed in is now this account's:
-        // the publisher is rewritten and the quota moves with it. This is the
-        // answer to "I cleared my cookies and my documents are gone", which the
-        // README could only warn about. A document with no publisher at all is
-        // nobody's and is left alone. A failure here is not a reason to refuse
-        // the sign-in: the documents are still readable at their links, and the
-        // next sign-in adopts them.
-        let visitor = self.owner(headers, arrival, &Identity::anonymous());
-        if !visitor.is_empty() {
-            match self
-                .store
-                .adopt(&visitor, &who.handle, &who.id, &who.name)
-                .await
-            {
-                Ok(0) => {}
-                Ok(moved) => println!("adopted {moved} document(s) for {}", who.name),
-                Err(err) => eprintln!("could not adopt {}'s documents: {err}", who.name),
-            }
         }
         let mut response = redirect(&local_path(next));
         let session = sign_session(
@@ -293,7 +259,7 @@ impl Server {
                     Ok(who) => who,
                     Err(_) => return Some(plain(502, "github would not say who you are")),
                 };
-                Some(self.sign_in(headers, arrival, &who, &next).await)
+                Some(self.sign_in(arrival, &who, &next).await)
             }
             "/auth/callback/google" => {
                 if !self.google.configured() {
@@ -335,7 +301,7 @@ impl Server {
                     }
                     Err(_) => return Some(plain(502, "google would not say who you are")),
                 };
-                Some(self.sign_in(headers, arrival, &who, &next).await)
+                Some(self.sign_in(arrival, &who, &next).await)
             }
             "/auth/logout" => {
                 // A GET here would be a plain link or a browser prefetch either
@@ -487,7 +453,7 @@ impl Server {
         let accepts_html = header_of(headers, "accept").is_some_and(|a| a.contains("text/html"));
         match self.shell.get("/device.html") {
             Some(asset) if accepts_html => {
-                let mut response = write_asset(asset);
+                let mut response = write_asset(asset, headers);
                 // It names the code and the account, so it is nobody's to keep
                 // but this browser's, and not for long.
                 set(&mut response, "cache-control", "no-store");

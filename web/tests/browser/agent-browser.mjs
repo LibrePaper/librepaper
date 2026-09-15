@@ -87,12 +87,10 @@ try {
   await build({ configFile:false, root, plugins:[svelte(),tailwindcss()], logLevel:"error",
     build:{ outDir:join(temporary,"build"), lib:{entry,formats:["es"],fileName:()=>"panel.js"} } });
   // Beyond the entry chunk and its stylesheet, a component reachable from
-  // the panel can carry its own dynamic import -- dictation/service.js
-  // reaches the toast store that way, so it never has to load Skeleton's
-  // components for a check that never triggers a toast -- and that import
-  // lands as its own file next to panel.js. Anything under the build
-  // directory is served by name rather than special-cased one file at a
-  // time, so a new chunk here does not mean a new line in this server.
+  // the panel can carry its own dynamic import, and that import lands as its
+  // own file next to panel.js. Anything under the build directory is served
+  // by name rather than special-cased one file at a time, so a new chunk
+  // here does not mean a new line in this server.
   const CONTENT_TYPES = { ".js": "text/javascript", ".css": "text/css", ".map": "application/json" };
   server=createServer((request,response)=>{
     const path = join(temporary, "build", decodeURIComponent(request.url.split("?")[0]));

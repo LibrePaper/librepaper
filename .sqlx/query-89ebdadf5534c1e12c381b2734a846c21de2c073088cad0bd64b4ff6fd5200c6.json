@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT document_id,update_sequence,update_bytes,created_at\n             FROM document_updates WHERE document_id=$1 AND update_sequence>$2\n             ORDER BY update_sequence LIMIT $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "update_sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "update_bytes",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "89ebdadf5534c1e12c381b2734a846c21de2c073088cad0bd64b4ff6fd5200c6"
+}

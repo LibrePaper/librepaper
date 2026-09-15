@@ -55,21 +55,7 @@ impl Server {
                 &json!({"error":"source changed or edits have not synchronized"}),
             );
         }
-        let actor = crate::storage::catalog::MutationAuthority {
-            account_id: who.id.id.as_str(),
-            owner_key: who.key.as_str(),
-            generation: who.id.session_generation.as_str(),
-            link_hash: who.link.as_str(),
-            policy_editor: self.publishers.allows(&who.id.handle),
-            automation: who.automation,
-            unowned_publisher: false,
-            execution_epoch: "",
-            agent_checkpoint: None,
-        };
-        let revision = match room
-            .checkpoint_now_with_authority("render", who.attribution(), actor)
-            .await
-        {
+        let revision = match room.checkpoint_now("render", who.attribution()).await {
             Ok(Some(revision)) => revision,
             Ok(None) => {
                 return write_json(

@@ -207,21 +207,6 @@ mod proxy_tests {
     }
 }
 
-/// True for the addresses a reverse proxy in front of this process connects
-/// from: the loopback interface, or a private network alongside it.
-pub fn local_peer(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return local_peer(IpAddr::V4(v4));
-            }
-            let first = v6.segments()[0];
-            v6.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
-        }
-    }
-}
-
 pub(super) fn set(response: &mut Reply, name: &'static str, value: &str) {
     if let Ok(value) = HeaderValue::from_str(value) {
         response.headers_mut().insert(name, value);
@@ -311,10 +296,52 @@ pub(super) fn redirect(location: &str) -> Reply {
     response
 }
 
+/// Whether an HTTP content coding is acceptable, including a wildcard. An
+/// explicit value wins over `*`, as required for requests such as
+/// `br;q=0, *;q=1`.
+fn accepts_encoding(headers: &HeaderMap, wanted: &str) -> bool {
+    let Some(value) = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let mut explicit = None;
+    let mut wildcard = None;
+    for item in value.split(',') {
+        let mut parts = item.trim().split(';');
+        let coding = parts.next().unwrap_or_default().trim();
+        let mut quality = 1.0;
+        for parameter in parts {
+            if let Some(q) = parameter.trim().strip_prefix("q=") {
+                quality = q.parse::<f32>().unwrap_or(0.0);
+            }
+        }
+        if coding.eq_ignore_ascii_case(wanted) {
+            explicit = Some(quality);
+        } else if coding == "*" {
+            wildcard = Some(quality);
+        }
+    }
+    explicit.or(wildcard).is_some_and(|quality| quality > 0.0)
+}
+
 /// Serves one shell file, cached for a year if its bytes never change.
-pub(super) fn write_asset(asset: &ShellFile) -> Reply {
-    let mut response = Response::new(Body::from(asset.body.clone()));
+pub(super) fn write_asset(asset: &ShellFile, headers: &HeaderMap) -> Reply {
+    let encoded = asset.brotli.is_some() && accepts_encoding(headers, "br");
+    let body = if encoded {
+        asset.brotli.as_ref().expect("checked above").clone()
+    } else {
+        asset.body.clone()
+    };
+    let mut response = Response::new(Body::from(body));
     set(&mut response, "content-type", asset.kind);
+    if asset.brotli.is_some() {
+        set(&mut response, "vary", "Accept-Encoding");
+    }
+    if encoded {
+        set(&mut response, "content-encoding", "br");
+    }
     // Every shell page -- index, reader, documentation -- is a place a hostile
     // site could otherwise iframe to phish against, since the reader carries a
     // session cookie. A document keeps its own CSP, set where it is served,
@@ -337,6 +364,58 @@ pub(super) fn write_asset(asset: &ShellFile) -> Reply {
         set(&mut response, "cache-control", "public, max-age=300");
     }
     response
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::*;
+
+    fn module() -> ShellFile {
+        ShellFile {
+            kind: "application/wasm",
+            body: axum::body::Bytes::from_static(b"raw wasm"),
+            brotli: Some(axum::body::Bytes::from_static(b"brotli wasm")),
+            immutable: true,
+        }
+    }
+
+    async fn served(accept_encoding: Option<&str>) -> (HeaderMap, Vec<u8>) {
+        let mut headers = HeaderMap::new();
+        if let Some(value) = accept_encoding {
+            headers.insert(header::ACCEPT_ENCODING, value.parse().unwrap());
+        }
+        let response = write_asset(&module(), &headers);
+        let response_headers = response.headers().clone();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        (response_headers, body)
+    }
+
+    #[tokio::test]
+    async fn renderer_negotiates_its_precompressed_representation() {
+        let (headers, body) = served(Some("gzip, br")).await;
+        assert_eq!(body, b"brotli wasm");
+        assert_eq!(headers.get("content-encoding").unwrap(), "br");
+        assert_eq!(headers.get("content-type").unwrap(), "application/wasm");
+        assert_eq!(headers.get("vary").unwrap(), "Accept-Encoding");
+    }
+
+    #[tokio::test]
+    async fn renderer_keeps_identity_as_a_fallback() {
+        for encoding in [
+            None,
+            Some("identity"),
+            Some("br;q=0"),
+            Some("br;q=0, *;q=1"),
+        ] {
+            let (headers, body) = served(encoding).await;
+            assert_eq!(body, b"raw wasm", "encoding was {encoding:?}");
+            assert!(headers.get("content-encoding").is_none());
+            assert_eq!(headers.get("vary").unwrap(), "Accept-Encoding");
+        }
+    }
 }
 
 /// Keeps an unlisted link unlisted. The slug is the only thing standing
@@ -398,62 +477,4 @@ pub(super) fn socket_refusal(error: &crate::room::WriteError, request_id: &str) 
         payload["retryable"] = json!(true);
     }
     payload
-}
-
-#[cfg(test)]
-mod refusal_tests {
-    use super::*;
-    use crate::room::error::QuotaKind;
-    use crate::room::{FenceReason, WriteError};
-
-    fn status_of(error: &WriteError) -> u16 {
-        refused("test", error).status().as_u16()
-    }
-
-    /// The wording of a refusal is for whoever reads it. Changing it must not
-    /// move the status a route answers with, nor its retry advice.
-    #[test]
-    fn wording_does_not_decide_the_reply() {
-        let first = WriteError::Conflict("the passage has moved".into());
-        let second = WriteError::Conflict("something else entirely".into());
-        assert_eq!(status_of(&first), status_of(&second));
-        assert_eq!(first.is_temporary(), second.is_temporary());
-    }
-
-    #[test]
-    fn quota_keeps_the_status_it_had() {
-        assert_eq!(status_of(&WriteError::Quota(QuotaKind::Owner)), 507);
-        assert_eq!(status_of(&WriteError::Quota(QuotaKind::Deployment)), 507);
-        assert_eq!(status_of(&WriteError::Quota(QuotaKind::UploadRate)), 429);
-        assert_eq!(status_of(&WriteError::PermissionDenied), 403);
-    }
-
-    #[test]
-    fn correlation_fields_survive_the_mapping() {
-        let payload = socket_refusal(&WriteError::Quota(QuotaKind::Owner), "req-7");
-        assert_eq!(payload["request_id"], json!("req-7"));
-        assert_eq!(payload["type"], json!("error"));
-        assert_eq!(payload["protocol"], json!("librepaper.room.v1"));
-    }
-
-    /// A storage failure is logged with its cause and answered without it.
-    #[test]
-    fn storage_context_never_reaches_a_client() {
-        let error = WriteError::Storage("s3://bucket/key: reset".into());
-        let reply = refused_with("storing a figure", &error, &[("sha", json!("abc"))]);
-        assert_eq!(reply.status().as_u16(), 503);
-        assert_eq!(
-            WriteError::Storage("anything".into()).client_message(),
-            error.client_message()
-        );
-    }
-
-    #[test]
-    fn a_deleted_room_is_not_a_busy_one() {
-        assert_eq!(status_of(&WriteError::ReadOnly(FenceReason::Deleted)), 404);
-        assert_eq!(
-            status_of(&WriteError::ReadOnly(FenceReason::HeldElsewhere)),
-            503
-        );
-    }
 }

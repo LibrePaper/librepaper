@@ -20,13 +20,17 @@ use tokio::sync::{mpsc, watch};
 
 use super::engine_adapter::{self, QuartoInvocationPlan};
 use super::protocol::{
-    self, JobOutcome, JobRequest, JobStatus, OutputEntry, Provenance, QuartoBundleSummary,
+    self, BuildProvenance, JobOutcome, JobRequest, JobStatus, OutputEntry, QuartoBundleSummary,
     QuartoCoverage, QuartoJobOptions, QuartoRenderPolicy, Tool, ToolVersions, Workspace,
-    MAX_LOG_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_QUARTO_OUTPUT_FILES, QUARTO_COLLECTOR_VERSION,
+    MAX_LOG_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_QUARTO_OUTPUT_FILES, MAX_UPLOAD_BYTES,
+    QUARTO_COLLECTOR_VERSION,
 };
 
-/// Compatibility name for the adapter-owned normalized inventory.
-pub use super::engine_adapter::SourceInventory;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceInventory {
+    pub tree_sha256: String,
+    pub files: Vec<String>,
+}
 
 pub const SUPPORTED_FORMATS: &[&str] = &["html", "pdf", "docx", "revealjs"];
 
@@ -69,6 +73,15 @@ pub struct BindingStore {
 }
 
 impl BindingStore {
+    pub(crate) fn preset_store(&self) -> super::presets::PresetStore {
+        super::presets::PresetStore::new(
+            self.path
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .expect("binding store has a state root"),
+        )
+    }
     pub fn new(config_home: &Path) -> Self {
         Self {
             path: config_home
@@ -112,7 +125,7 @@ impl BindingStore {
             root,
             // Decided by each job: the workspace holds whatever the document
             // holds, and the entrypoint the browser names has already been
-            // validated as a relative `.qmd` inside that tree.
+            // validated as a safe supported entrypoint inside that tree.
             entrypoint: String::new(),
             created_at: 0,
             execution_granted: true,
@@ -150,7 +163,7 @@ impl BindingStore {
         if !root.is_dir() {
             return Err("project root is not a directory".into());
         }
-        validate_main(entrypoint)?;
+        validate_binding_entrypoint(entrypoint)?;
         let entrypoint_path = root.join(entrypoint);
         let resolved_entrypoint = std::fs::canonicalize(&entrypoint_path)
             .map_err(|e| format!("project entrypoint: {e}"))?;
@@ -505,9 +518,16 @@ impl QuartoBundle {
     }
 }
 
-pub fn validate_main(main: &str) -> Result<(), String> {
-    if !protocol::safe_relative_path(main) || !main.ends_with(".qmd") {
-        return Err("entrypoint must be a safe project-relative .qmd path".into());
+/// Validate an entrypoint stored in a user-approved project binding. Bindings
+/// are shared by project-backed builders, while each builder still validates
+/// its own input before execution (for example, Quarto accepts Markdown only).
+pub fn validate_binding_entrypoint(entrypoint: &str) -> Result<(), String> {
+    if !protocol::safe_relative_path(entrypoint)
+        || !(entrypoint.ends_with(".qmd")
+            || entrypoint.ends_with(".md")
+            || entrypoint.ends_with(".typ"))
+    {
+        return Err("entrypoint must be a safe project-relative .qmd, .md, or .typ path".into());
     }
     Ok(())
 }
@@ -537,7 +557,7 @@ pub async fn discover() -> protocol::QuartoCapabilities {
         },
         collector_versions: vec![QUARTO_COLLECTOR_VERSION.into()],
         formats: SUPPORTED_FORMATS.iter().map(|s| (*s).into()).collect(),
-        policies: engine_adapter::quarto_supported_policies(version.as_deref()),
+        policies: supported_policies(version.as_deref()),
         runtime_checks: runtime_checks().await,
     }
 }
@@ -557,6 +577,25 @@ pub(crate) fn supported_policies(version: Option<&str>) -> Vec<String> {
         );
     }
     policies
+}
+
+pub(crate) fn computation_fingerprint(
+    source: &str,
+    entrypoint: &str,
+    format: &str,
+    profiles: &[String],
+    parameters_sha256: Option<&str>,
+    dependencies: &[String],
+) -> String {
+    let mut document = crate::quarto::parse_qmd(source, entrypoint);
+    document.dependencies = dependencies.to_vec();
+    crate::quarto::computation_fingerprint_for_format(
+        &document,
+        entrypoint,
+        format,
+        profiles,
+        parameters_sha256,
+    )
 }
 
 async fn runtime_checks() -> BTreeMap<String, Tool> {
@@ -682,20 +721,6 @@ async fn bounded_version_output(path: &Path) -> Option<(String, String)> {
     ))
 }
 
-/// Execute a typed Quarto request against the explicitly granted linked
-/// project. Uploaded files are treated as a hash inventory and are never
-/// written through into that project.
-#[allow(dead_code)]
-pub async fn run_job(
-    request: JobRequest,
-    workspace: Workspace,
-    cancel: watch::Receiver<bool>,
-    progress: mpsc::UnboundedSender<JobStatus>,
-) -> JobOutcome {
-    let store = BindingStore::new(&crate::cli::state_home());
-    run_job_with_bindings(request, workspace, cancel, progress, &store).await
-}
-
 pub async fn run_job_with_bindings(
     request: JobRequest,
     workspace: Workspace,
@@ -708,10 +733,10 @@ pub async fn run_job_with_bindings(
         .file_name()
         .map(|x| x.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let Some(options) = request.quarto.clone() else {
+    let Some(mut options) = request.quarto.clone() else {
         return failed(&request, &job_id, "quarto job is missing typed options");
     };
-    let invocation_plan = match QuartoInvocationPlan::from_options(&options) {
+    let mut invocation_plan = match QuartoInvocationPlan::from_options(&options) {
         Ok(plan) => plan,
         Err(error) => return failed(&request, &job_id, &error),
     };
@@ -719,6 +744,69 @@ pub async fn run_job_with_bindings(
         return failed(&request, &job_id, "Quarto is not installed or not on PATH");
     };
     let quarto_version = version_of(&quarto).await;
+    let Some(binding) =
+        binding_store.get_scoped(&options.binding_id, &request.origin, &request.project)
+    else {
+        return failed(
+            &request,
+            &job_id,
+            "quarto binding is missing, revoked, or outside its authorized root",
+        );
+    };
+    let preset = if let Some(preset_id) = request.preset.as_deref() {
+        let store = binding_store.preset_store();
+        let (_, preset) = match store.resolve_scoped(
+            &request.origin,
+            &request.project,
+            preset_id,
+            super::presets::WorkspaceMode::Snapshot,
+            super::presets::Operation::Build,
+            &options.main,
+        ) {
+            Ok(value) => value,
+            Err(error) => return failed(&request, &job_id, &error),
+        };
+        if preset.base_adapter != "quarto" {
+            return failed(&request, &job_id, "preset is not a Quarto preset");
+        }
+        let mut overrides = BTreeMap::new();
+        for (key, value) in request.builder_options.as_ref().into_iter().flatten() {
+            let value = match value {
+                serde_json::Value::String(value) => value.clone(),
+                _ => value.to_string(),
+            };
+            overrides.insert(key.clone(), value);
+        }
+        let effective = match super::presets::PresetStore::effective_options(&preset, &overrides) {
+            Ok(options) => options,
+            Err(error) => return failed(&request, &job_id, &error),
+        };
+        for (key, value) in effective {
+            match key.as_str() {
+                "profile" => options.profile = Some(value),
+                "policy" => {
+                    options.policy = match serde_json::from_value(serde_json::json!(value)) {
+                        Ok(value) => value,
+                        Err(_) => return failed(&request, &job_id, "invalid preset Quarto policy"),
+                    }
+                }
+                "parameters" => {
+                    options.parameters = match serde_json::from_str(&value) {
+                        Ok(value) => value,
+                        Err(_) => return failed(&request, &job_id, "invalid preset parameters"),
+                    }
+                }
+                _ => return failed(&request, &job_id, "unsupported Quarto preset option"),
+            }
+        }
+        invocation_plan = match QuartoInvocationPlan::from_options(&options) {
+            Ok(plan) => plan,
+            Err(error) => return failed(&request, &job_id, &error),
+        };
+        Some(preset)
+    } else {
+        None
+    };
     let policy = policy_name(options.policy);
     if !supported_policies(quarto_version.as_deref())
         .iter()
@@ -730,15 +818,6 @@ pub async fn run_job_with_bindings(
             &format!("installed Quarto does not support render policy: {policy}"),
         );
     }
-    let Some(binding) =
-        binding_store.get_scoped(&options.binding_id, &request.origin, &request.project)
-    else {
-        return failed(
-            &request,
-            &job_id,
-            "quarto binding is missing, revoked, or outside its authorized root",
-        );
-    };
     let hosted = BindingStore::is_hosted(&binding);
     if !hosted && options.main != binding.entrypoint {
         return failed(
@@ -966,7 +1045,17 @@ pub async fn run_job_with_bindings(
             )
         }
     };
-    let mut command = Command::new(quarto);
+    let mut command =
+        if let Some(wrapper) = preset.as_ref().and_then(|preset| preset.wrapper.as_ref()) {
+            if !Path::new(wrapper).is_absolute() || !Path::new(wrapper).is_file() {
+                return failed(&request, &job_id, "preset wrapper is unavailable");
+            }
+            let mut command = Command::new(wrapper);
+            command.arg(&quarto);
+            command
+        } else {
+            Command::new(&quarto)
+        };
     command.current_dir(&invocation_project);
     // Keep the entrypoint project-relative: Quarto's freezer/output-dir
     // handling treats an absolute source as a single-file render and rejects
@@ -980,6 +1069,11 @@ pub async fn run_job_with_bindings(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    if let Some(preset) = &preset {
+        for (key, value) in &preset.environment {
+            command.env(key, value);
+        }
+    }
     #[cfg(unix)]
     command.process_group(0);
     let started = Instant::now();
@@ -1003,6 +1097,34 @@ pub async fn run_job_with_bindings(
             &job_id,
             "bound project changed immediately before Quarto invocation",
         );
+    }
+    if let Some(preset) = preset.as_ref() {
+        if binding_store
+            .preset_store()
+            .resolve_scoped(
+                &request.origin,
+                &request.project,
+                &preset.id,
+                super::presets::WorkspaceMode::Snapshot,
+                super::presets::Operation::Build,
+                &options.main,
+            )
+            .map_or(true, |(_, current)| {
+                current.semantic_revision != preset.semantic_revision
+            })
+        {
+            return failed(
+                &request,
+                &job_id,
+                "preset changed or was revoked before execution",
+            );
+        }
+    }
+    if binding_store
+        .get_scoped(&options.binding_id, &request.origin, &request.project)
+        .is_none()
+    {
+        return failed(&request, &job_id, "binding revoked before execution");
     }
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -1249,7 +1371,7 @@ pub async fn run_job_with_bindings(
     if !source_matches {
         let parameters_sha256 = crate::results::parameters_sha256(&options.parameters);
         let profiles: Vec<String> = options.profile.iter().cloned().collect();
-        bundle.context.computation_sha256 = engine_adapter::quarto_computation_fingerprint(
+        bundle.context.computation_sha256 = computation_fingerprint(
             &source_before,
             &options.main,
             &options.format,
@@ -1325,18 +1447,32 @@ pub async fn run_job_with_bindings(
             status: "done".into(),
             stage: "finished".into(),
             exit: 0,
-            snapshot: request.snapshot,
+            snapshot: request.snapshot.clone(),
             generation: request.generation,
             log_tail: log,
             outputs,
-            provenance: Provenance {
+            provenance: BuildProvenance {
                 backend: "local".into(),
+                builder: "quarto".into(),
+                version: bundle.provenance.quarto_version.clone().unwrap_or_default(),
                 engine: bundle.provenance.quarto_version.clone().unwrap_or_default(),
                 tools: ToolVersions {
                     distribution: Some("quarto".into()),
                     ..Default::default()
                 },
                 confinement: "none".into(),
+                preset: request.preset.clone(),
+                snapshot: request.snapshot.clone(),
+                main_path: request
+                    .source
+                    .as_ref()
+                    .map(|source| source.main_path.clone())
+                    .unwrap_or_else(|| options.main.clone()),
+                input_manifest_sha256: request
+                    .source
+                    .as_ref()
+                    .map(|source| source.manifest_sha256.clone())
+                    .unwrap_or_default(),
             },
             bundle: Some(summary),
             ..Default::default()
@@ -1440,7 +1576,7 @@ fn output_entry(bytes: &[u8]) -> OutputEntry {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn collect_bundle(
     project: &Path,
     options: &QuartoJobOptions,
@@ -1600,7 +1736,7 @@ fn collect_bundle_with_dependencies(
     // Keep the durable computation identity sensitive to every shared input
     // supplied for this invocation. The path/hash records are public source
     // identity only; private linked-project files remain in provenance.
-    let computation_sha256 = engine_adapter::quarto_computation_fingerprint(
+    let computation_sha256 = computation_fingerprint(
         &source,
         &options.main,
         format_name,
@@ -1678,7 +1814,7 @@ fn collect_bundle_with_dependencies(
 /// Import an existing render without invoking Quarto. With no source bytes
 /// available, the full artifact remains useful but cell association and
 /// freshness are explicitly unknown.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn import_artifact(
     artifact_root: &Path,
     entrypoint: &str,
@@ -2198,6 +2334,33 @@ fn invalidate_hosted_preprocess_cache(root: &Path) -> Result<(), String> {
 /// previous sync wrote that is no longer in the inventory. Unchanged files
 /// are left untouched so their timestamps, and Quarto's caches keyed on
 /// them, survive.
+fn read_verified_manifest(
+    root: &Path,
+    manifest: &[protocol::ManifestEntry],
+    limit: usize,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut seen = BTreeSet::new();
+    let mut files = Vec::with_capacity(manifest.len());
+    for entry in manifest {
+        if !protocol::safe_relative_path(&entry.path) {
+            return Err(format!("unsafe manifest path: {}", entry.path));
+        }
+        if !seen.insert(entry.path.as_str()) {
+            return Err(format!("duplicate manifest path: {}", entry.path));
+        }
+        let bytes = read_file_bounded_to(
+            &root.join(&entry.path),
+            &format!("read {}", entry.path),
+            limit,
+        )?;
+        if bytes.len() as u64 != entry.size || sha256(&bytes) != entry.sha256 {
+            return Err(format!("manifest digest mismatch: {}", entry.path));
+        }
+        files.push((entry.path.clone(), bytes));
+    }
+    Ok(files)
+}
+
 pub(crate) fn sync_hosted_workspace(
     staged: &Path,
     root: &Path,
@@ -2205,19 +2368,15 @@ pub(crate) fn sync_hosted_workspace(
 ) -> Result<(), String> {
     let tracked_path = root.join(HOSTED_TRACKED);
     let previous = read_hosted_tracking(&tracked_path)?;
-    let mut uploads = Vec::with_capacity(manifest.len());
+    let files = read_verified_manifest(staged, manifest, MAX_UPLOAD_BYTES)?;
+    let mut uploads = Vec::with_capacity(files.len());
     let mut changed = false;
-    for entry in manifest {
-        if !protocol::safe_relative_path(&entry.path) {
-            return Err("quarto input inventory contains an unsafe path".into());
-        }
-        let bytes = std::fs::read(staged.join(&entry.path))
-            .map_err(|_| format!("hosted workspace is missing upload: {}", entry.path))?;
-        let target = root.join(&entry.path);
+    for (path, bytes) in files {
+        let target = root.join(&path);
         let current = read_hosted_input(&target);
         let same = current.as_deref().is_some_and(|current| current == bytes);
         changed |= !same;
-        uploads.push((entry.path.clone(), bytes, same));
+        uploads.push((path, bytes, same));
     }
     for stale in previous.files.iter().filter(|path| {
         !manifest
@@ -2466,12 +2625,8 @@ fn local_cell(cell: crate::results::CellRecord) -> QuartoCell {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn inventory_tree(root: &Path) -> Result<SourceInventory, String> {
-    engine_adapter::quarto_source_tree_inventory(root)
-}
-
-pub(crate) fn inventory_tree_impl(root: &Path) -> Result<SourceInventory, String> {
     let mut files = Vec::new();
     walk_files(root, root, &mut files)?;
     let mut hasher = Sha256::new();
@@ -2494,35 +2649,24 @@ pub(crate) fn inventory_tree_impl(root: &Path) -> Result<SourceInventory, String
     })
 }
 
-fn inventory_manifest(
-    root: &Path,
-    manifest: &[protocol::ManifestEntry],
-) -> Result<SourceInventory, String> {
-    engine_adapter::quarto_source_inventory(root, manifest)
-}
-
-pub(crate) fn inventory_manifest_impl(
+pub(crate) fn inventory_manifest(
     root: &Path,
     manifest: &[protocol::ManifestEntry],
 ) -> Result<SourceInventory, String> {
     let mut hasher = Sha256::new();
     let mut files = Vec::with_capacity(manifest.len());
     let mut total_bytes = 0usize;
-    for entry in manifest {
-        let bytes = read_file_bounded(&root.join(&entry.path), &format!("read {}", entry.path))?;
-        if bytes.len() as u64 != entry.size || sha256(&bytes) != entry.sha256 {
-            return Err(format!("bound shared input changed: {}", entry.path));
-        }
+    for (path, bytes) in read_verified_manifest(root, manifest, MAX_QUARTO_OUTPUT_BYTES)? {
         total_bytes = total_bytes
             .checked_add(bytes.len())
             .ok_or("Quarto input inventory is too large")?;
         if total_bytes > MAX_QUARTO_OUTPUT_BYTES {
             return Err("Quarto input inventory exceeds its aggregate size limit".into());
         }
-        hasher.update(entry.path.as_bytes());
+        hasher.update(path.as_bytes());
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
-        files.push(entry.path.clone());
+        files.push(path);
     }
     Ok(SourceInventory {
         tree_sha256: hex::encode(hasher.finalize()),
@@ -3243,7 +3387,7 @@ fn persist_frozen_cache_identity(
     }
     let profiles: Vec<String> = options.profile.iter().cloned().collect();
     let parameters_sha256 = crate::results::parameters_sha256(&options.parameters);
-    let computation_sha256 = engine_adapter::quarto_computation_fingerprint(
+    let computation_sha256 = computation_fingerprint(
         source,
         &options.main,
         &options.format,
@@ -3308,7 +3452,7 @@ fn verify_frozen_cache_identity(
         .ok_or("frozen Quarto cache has no explicit context identity")?;
     let profiles: Vec<String> = profile.cloned().into_iter().collect();
     let parameters_sha256 = crate::results::parameters_sha256(parameters);
-    let expected = engine_adapter::quarto_computation_fingerprint(
+    let expected = computation_fingerprint(
         source,
         main,
         format,
@@ -3373,12 +3517,16 @@ fn verify_frozen_cache_identity(
 }
 
 fn read_file_bounded(path: &Path, description: &str) -> Result<Vec<u8>, String> {
+    read_file_bounded_to(path, description, MAX_QUARTO_OUTPUT_BYTES)
+}
+
+fn read_file_bounded_to(path: &Path, description: &str, limit: usize) -> Result<Vec<u8>, String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|error| format!("{description}: {error}"))?;
     if !metadata.file_type().is_file() {
         return Err(format!("{description} is not a file"));
     }
-    if metadata.len() > MAX_QUARTO_OUTPUT_BYTES as u64 {
+    if metadata.len() > limit as u64 {
         return Err(format!("{description} exceeds its size limit"));
     }
     let file = File::open(path).map_err(|error| format!("{description}: {error}"))?;

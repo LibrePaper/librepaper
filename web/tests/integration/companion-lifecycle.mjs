@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
@@ -10,7 +11,12 @@ import { createServer } from "node:net";
 import { createHash, randomBytes } from "node:crypto";
 const exec = promisify(execFile);
 const root = await mkdtemp(join(tmpdir(), "librepaper-lifecycle-"));
-const binary = resolve(process.env.LIBREPAPER_TEST_BINARY || "target/debug/librepaper");
+const repository = resolve(import.meta.dirname, "../../..");
+const binary = resolve(process.env.LIBREPAPER_TEST_BINARY || join(repository, "target/debug/librepaper"));
+if (!existsSync(binary)) {
+  console.log("companion-lifecycle: no companion binary; skipping (run `cargo build`)");
+  process.exit(0);
+}
 const tools = join(root, "bin");
 await mkdir(tools);
 const opened = join(root, "opened-url");

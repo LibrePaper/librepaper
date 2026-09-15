@@ -20,49 +20,38 @@ use std::time::{Duration, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-use super::confine;
-use super::protocol::{Capabilities, Confinement, Distribution, Tool, Tools};
+use super::protocol::{
+    BuilderCapability, BuilderOperation, Capabilities, Confinement, Distribution, Tool, Tools,
+};
 
 /// The tool names this module discovers, in the order `Tools` lists them.
-const TOOL_NAMES: &[&str] = &[
-    "pdflatex",
-    "xelatex",
-    "lualatex",
-    "bibtex",
-    "bibtex8",
-    "biber",
-    "makeindex",
-];
+const TOOL_NAMES: &[&str] = &["typst", "pandoc", "calepin"];
 
 /// How long a `--version` probe is allowed to run. A hung or misbehaving
 /// binary must not hang discovery.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The resolved, absolute paths `native.rs` runs -- never sent to the
+/// The resolved, absolute paths the builders run -- never sent to the
 /// browser. Built from the same cache `discover` maintains.
 #[derive(Clone, Debug, Default)]
 pub struct ToolPaths {
     tools: BTreeMap<String, PathBuf>,
-    /// The directory `PATH` should put first for a spawned tool, so a
-    /// sibling binary (e.g. `biber` beside `pdflatex`) resolves the same
-    /// distribution rather than a stray one earlier on the real `PATH`.
-    bin_dir: Option<PathBuf>,
-    /// The distribution's TEXMF root, when discovery could find one, for
-    /// confinement's read-only bind list.
-    texmf_root: Option<PathBuf>,
+    versions: BTreeMap<String, String>,
 }
 
 impl ToolPaths {
-    pub fn get(&self, tool: &str) -> Option<&Path> {
-        self.tools.get(tool).map(PathBuf::as_path)
+    #[cfg(test)]
+    pub(crate) fn fixture(tools: BTreeMap<String, PathBuf>) -> Self {
+        Self {
+            tools,
+            ..Default::default()
+        }
     }
-
-    pub fn bin_dir(&self) -> Option<&Path> {
-        self.bin_dir.as_deref()
+    pub(crate) fn version(&self, tool: &str) -> String {
+        self.versions.get(tool).cloned().unwrap_or_default()
     }
-
-    pub fn texmf_root(&self) -> Option<&Path> {
-        self.texmf_root.as_deref()
+    pub(crate) fn all(&self) -> BTreeMap<String, PathBuf> {
+        self.tools.clone()
     }
 }
 
@@ -233,22 +222,30 @@ async fn probe_version(path: &Path, tool: &str) -> Option<String> {
         "--version"
     };
     let mut command = Command::new(path);
+    let directory = tempfile::tempdir().ok()?;
+    command.current_dir(directory.path());
+    if tool == "latexmk" {
+        command.arg("-norc");
+    }
     command
         .arg(arg)
         .env_clear()
-        .stdin(std::process::Stdio::null());
-    let child = command.output();
-    let output = tokio::time::timeout(PROBE_TIMEOUT, child)
-        .await
-        .ok()?
-        .ok()?;
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    if text.trim().is_empty() {
-        text = String::from_utf8_lossy(&output.stderr).into_owned();
-    } else {
-        text.push('\n');
-        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
+    let (_sender, mut cancel) = tokio::sync::watch::channel(false);
+    let (outcome, bytes) = super::native::run_confined_logged(
+        command,
+        &mut cancel,
+        std::time::Instant::now() + PROBE_TIMEOUT,
+    )
+    .await;
+    if !matches!(outcome, super::native::RunOutcome::Exited(_)) {
+        return None;
     }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     if text.trim().is_empty() {
         None
     } else {
@@ -258,6 +255,11 @@ async fn probe_version(path: &Path, tool: &str) -> Option<String> {
 
 /// The setup hint every missing tool carries.
 fn setup_hint(tool: &str) -> String {
+    if matches!(tool, "typst" | "pandoc" | "tectonic") {
+        return format!(
+            "{tool} not found: install it locally and ensure it is on the companion's PATH"
+        );
+    }
     format!(
         "{tool} not found: install TeX Live or TinyTeX, or point --tex-path at its bin directory"
     )
@@ -360,7 +362,7 @@ fn distribution_from(banner: &str, path: &Path) -> Option<Distribution> {
 }
 
 /// A TEXMF root, from `kpsewhich`, when one of the discovered tools can
-/// report it; used only for confinement's read-only bind list.
+/// report it; used when constructing native tool commands.
 async fn texmf_root_of(tool_path: &Path) -> Option<PathBuf> {
     let kpsewhich = tool_path.parent()?.join(exe_name("kpsewhich"));
     if !kpsewhich.is_file() {
@@ -385,7 +387,7 @@ fn platform_name() -> String {
 }
 
 /// Rebuilds the cache from scratch: searches, probes every tool, detects
-/// confinement, and writes the result.
+/// execution policy, and writes the result.
 async fn rediscover(configured: Vec<PathBuf>) -> Cache {
     let mut dirs = configured.clone();
     dirs.extend(fallback_search_dirs());
@@ -426,7 +428,11 @@ async fn rediscover(configured: Vec<PathBuf>) -> Cache {
     Cache {
         configured_paths: configured,
         tools,
-        confinement: confine::detect(),
+        confinement: Confinement {
+            available: false,
+            kind: "none".into(),
+            reason: "local execution is authorized by explicit user consent".into(),
+        },
         platform: platform_name(),
         distribution,
         bin_dir,
@@ -438,7 +444,11 @@ async fn rediscover(configured: Vec<PathBuf>) -> Cache {
 /// not changed, and every tool the cache found is still on disk with the
 /// same modification time.
 fn cache_is_stale(cache: &Cache, configured: &[PathBuf]) -> bool {
-    if cache.configured_paths != configured {
+    if cache.configured_paths != configured
+        || TOOL_NAMES
+            .iter()
+            .any(|name| !cache.tools.contains_key(*name))
+    {
         return true;
     }
     for cached in cache.tools.values() {
@@ -486,15 +496,43 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
             .map(|c| c.tool.clone())
             .unwrap_or_default()
     };
+    let available = |name: &str| get(name).available;
+    let version = |name: &str| get(name).version;
+    let snapshot = || vec!["snapshot".to_string()];
+    let builders = vec![
+        BuilderCapability {
+            id: "typst".into(),
+            available: available("typst"),
+            version: version("typst"),
+            source_formats: vec!["typst".into()],
+            outputs: vec!["pdf".into()],
+            engines: Vec::new(),
+            operations: vec![BuilderOperation {
+                kind: "build".into(),
+                workspace_modes: snapshot(),
+            }],
+            preview: false,
+            presets: true,
+            note: String::new(),
+        },
+        BuilderCapability {
+            id: "pandoc".into(),
+            available: available("pandoc"),
+            version: version("pandoc"),
+            source_formats: vec!["markdown".into()],
+            outputs: vec!["html".into(), "docx".into()],
+            engines: Vec::new(),
+            operations: vec![BuilderOperation {
+                kind: "build".into(),
+                workspace_modes: snapshot(),
+            }],
+            preview: false,
+            presets: true,
+            note: String::new(),
+        },
+    ];
     Capabilities {
         tools: Tools {
-            pdflatex: get("pdflatex"),
-            xelatex: get("xelatex"),
-            lualatex: get("lualatex"),
-            bibtex: get("bibtex"),
-            bibtex8: get("bibtex8"),
-            biber: get("biber"),
-            makeindex: get("makeindex"),
             quarto: Tool::default(),
         },
         confinement: cache.confinement.clone(),
@@ -502,20 +540,34 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
         distribution: cache.distribution.clone(),
         quarto: Default::default(),
         calepin: Default::default(),
+        zotero: Default::default(),
+        builders,
     }
 }
 
 fn tool_paths_from(cache: &Cache) -> ToolPaths {
     let mut tools = BTreeMap::new();
     for (name, cached) in &cache.tools {
+        if !cached.tool.available {
+            continue;
+        }
         if let Some(path) = &cached.path {
             tools.insert(name.clone(), path.clone());
         }
     }
     ToolPaths {
         tools,
-        bin_dir: cache.bin_dir.clone(),
-        texmf_root: cache.texmf_root.clone(),
+        versions: cache
+            .tools
+            .iter()
+            .filter_map(|(name, cached)| {
+                cached
+                    .tool
+                    .version
+                    .clone()
+                    .map(|version| (name.clone(), version))
+            })
+            .collect(),
     }
 }
 
@@ -528,6 +580,52 @@ pub async fn discover(refresh: bool, tex_path: &[PathBuf]) -> Capabilities {
     capabilities.quarto = crate::local::quarto::discover().await;
     capabilities.tools.quarto = capabilities.quarto.tool.clone();
     capabilities.calepin = crate::local::preview::calepin::discover().await;
+    if capabilities.quarto.tool.available {
+        capabilities.builders.push(BuilderCapability {
+            id: "quarto".into(),
+            available: true,
+            version: capabilities.quarto.tool.version.clone(),
+            source_formats: vec!["markdown".into(), "quarto".into()],
+            outputs: capabilities.quarto.formats.clone(),
+            engines: Vec::new(),
+            operations: vec![
+                BuilderOperation {
+                    kind: "build".into(),
+                    workspace_modes: vec!["snapshot".into()],
+                },
+                BuilderOperation {
+                    kind: "preview".into(),
+                    workspace_modes: vec!["bound".into()],
+                },
+            ],
+            preview: true,
+            presets: true,
+            note: String::new(),
+        });
+    }
+    if capabilities.calepin.available {
+        capabilities.builders.push(BuilderCapability {
+            id: "calepin".into(),
+            available: true,
+            version: capabilities.calepin.version.clone(),
+            source_formats: vec!["typst".into()],
+            outputs: vec!["html".into(), "pdf".into()],
+            engines: Vec::new(),
+            operations: vec![
+                BuilderOperation {
+                    kind: "build".into(),
+                    workspace_modes: vec!["snapshot".into()],
+                },
+                BuilderOperation {
+                    kind: "preview".into(),
+                    workspace_modes: vec!["bound".into()],
+                },
+            ],
+            preview: true,
+            presets: true,
+            note: String::new(),
+        });
+    }
     capabilities
 }
 

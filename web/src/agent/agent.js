@@ -12,13 +12,6 @@
 
 import { createMathTypesetter } from "../lib/math.js";
 import { sha256HexOfText } from "../lib/digest.js";
-import {
-  SEMANTIC_REDLINE_VERSION,
-  displayOffset,
-  reprojectTarget,
-  targetSemanticItems,
-  validateSemanticRedlinePayload,
-} from "./semantic-redlines.js";
 
 (() => {
   const READER = new URL(document.currentScript.src).searchParams.get("reader") || "*";
@@ -66,6 +59,10 @@ import {
       padding: 32px 40px;
       background: #fff;
     }
+    html.librepaper-preview.librepaper-flow img {
+      max-width: 100%;
+      height: auto;
+    }
     @media (max-width: 640px) {
       html.librepaper-preview.librepaper-flow body {
         padding: 24px 20px;
@@ -81,21 +78,18 @@ import {
   // written in at build time, beside the copy of KaTeX the build made.
   const typesetMath = createMathTypesetter({ base: __KATEX__, document, window });
 
-  // A pending suggestion's proposal is drawn after its passage by
-  // `::after`, which adds no text node -- the offset tables this file keeps
-  // stay true to what the document actually contains. Installed once, up
-  // front: unlike the document's own styles, nothing here ever needs to
-  // change, and it survives every body replacement `adoptStyles` does for a
-  // live preview.
-  const proposedStyle = document.createElement("style");
-  proposedStyle.dataset.librepaperProposed = "1";
-  proposedStyle.textContent = `
-    mark[data-proposed]::after {
-      content: attr(data-proposed);
-      text-decoration: underline;
-      color: var(--librepaper-proposed-color, inherit);
-      margin-inline-start: 0.2em;
-    }
+  // The marks this file draws that are not the document's: a point comment's
+  // bubble and the ring around whichever annotation the sidebar has singled
+  // out. Installed once, up front: unlike the document's own styles, nothing
+  // here ever needs to change, and it survives every body replacement
+  // `adoptStyles` does for a live preview.
+  //
+  // A proposal used to be generated content on the mark itself, so that it
+  // added no text node; it is a real span now -- the synthetic span below --
+  // kept out of the offset tables by the text walk instead.
+  const markStyle = document.createElement("style");
+  markStyle.dataset.librepaperMarks = "1";
+  markStyle.textContent = `
     .librepaper-point-bubble::before { content: "\\1F4AC"; }
     /* The annotation the sidebar has singled out: a ring around every piece
        of its passage, its figure box, or its point bubble, so that it stands
@@ -112,75 +106,20 @@ import {
       outline-offset: 2px;
     }
   `;
-  document.head.appendChild(proposedStyle);
+  document.head.appendChild(markStyle);
 
-  // Redlines: what changed since a history checkpoint, painted inline. An
-  // insertion is a mark wrapping the words themselves, same as a highlight;
-  // a deletion has no words left to wrap, so it is an empty mark whose
-  // `::before` draws the struck-through text CSS keeps, not the DOM --
-  // exactly the `data-proposed` trick above, so the offset tables below
-  // never see it as a character of real content.
-  const redlineStyle = document.createElement("style");
-  redlineStyle.dataset.librepaperRedlines = "1";
-  // A colour per author, the way Google Docs paints its own redlines: five
-  // hues, `mark[data-author="0..4"]`, matching -- but not sharing code with,
-  // this frame has no access to the sidebar's theme tokens -- the literal
-  // hex values `theme.css` gives `--color-primary-500`, `--color-warning-
-  // -500`, `--color-error-500`, `--color-tertiary-500` and `--color-surface-
-  // 500`. `Reader.svelte`'s `applyRedlines` assigns the index the same way
-  // `History.svelte`'s timeline dot does: first appearance in the manifest,
-  // oldest first, mod 5. An item with no author (attribution fell back to
-  // "several people" or nobody at all) keeps the plain default below.
-  const authorHues = ["#2b5748", "#b07d3a", "#a33f3f", "#9cb080", "#273338"];
-  const authorRules = authorHues.map((hue, index) => `
-    mark.librepaper-ins[data-author="${index}"] {
-      background: color-mix(in srgb, ${hue} 22%, white);
-      text-decoration-color: ${hue};
-    }
-    mark.librepaper-del[data-author="${index}"]::before {
-      background: color-mix(in srgb, ${hue} 16%, white);
-      color: ${hue};
-    }
-  `).join("\n");
-  redlineStyle.textContent = `
-    mark.librepaper-ins {
-      background: hsl(145 45% 88%);
-      color: inherit;
-      text-decoration: underline;
-      text-decoration-color: hsl(145 45% 32%);
-    }
-    mark.librepaper-del {
-      background: transparent;
-      padding: 0;
-    }
-    mark.librepaper-del::before {
-      content: attr(data-deleted);
-      background: hsl(0 45% 93%);
-      color: hsl(0 55% 40%);
-      text-decoration: line-through;
-    }
-    ${authorRules}
-    mark.librepaper-semantic-ins {
-      background: hsl(145 45% 88%);
-      color: inherit;
-      text-decoration: underline;
-      text-decoration-thickness: 2px;
-      text-decoration-color: hsl(145 45% 32%);
-      cursor: pointer;
-    }
-    mark.librepaper-semantic-del {
-      background: hsl(0 45% 93%);
-      color: hsl(0 55% 40%);
-      text-decoration: line-through;
-      cursor: pointer;
-    }
-    mark.librepaper-semantic-del::before {
-      content: attr(data-deleted);
-    }
-    .librepaper-semantic-synthetic::before {
-      content: attr(data-semantic-label);
-      text-decoration: underline;
-    }
+  // Suggestions painted inline: a proposed deletion is a mark over the words
+  // themselves, and a proposed insertion has no words in the document to wrap,
+  // so it is a span carrying the proposed text. `data-librepaper-synthetic`
+  // is what keeps it out of the walk below, so the offset tables never see it
+  // as a character of real content.
+  //
+  // A paged document draws this same span differently -- beside the passage
+  // rather than inline, in `pages/viewer.html` -- because a PDF page has no
+  // inline to give it and the text layer over the glyphs is transparent.
+  const suggestionStyle = document.createElement("style");
+  suggestionStyle.dataset.librepaperSuggestions = "1";
+  suggestionStyle.textContent = `
     mark.librepaper-suggestion-del {
       background: hsl(0 45% 93%);
       color: hsl(0 55% 40%);
@@ -192,19 +131,9 @@ import {
       text-decoration: underline;
       text-decoration-style: dotted;
     }
-    [data-librepaper-semantic-in] {
-      outline: 2px solid hsl(145 45% 38% / .45);
-      outline-offset: 1px;
-      text-decoration: underline;
-    }
-    [data-librepaper-semantic-selected] {
-      outline: 2px solid hsl(220 85% 50%);
-      outline-offset: 2px;
-      box-decoration-break: clone;
-      -webkit-box-decoration-break: clone;
-    }
   `;
-  document.head.appendChild(redlineStyle);
+  document.head.appendChild(suggestionStyle);
+
   function adoptStyles(parsed, presentation) {
     // Quarto's layout selectors depend on attributes of both root elements.
     // Keep the body itself (and its observer), copying only presentation
@@ -518,368 +447,6 @@ import {
     scan();
   }
 
-  // The redlines last asked for, remembered for the same reason `lastRanges`
-  // is: a document rebuild (a "preview" replacing the body, a fresh "ready")
-  // needs to put them back without waiting on a round trip to the sidebar.
-  let lastRedlineItems = [];
-
-  // Semantic redlines are deliberately a separate annotation class. They are
-  // keyed by token ranges, then rebound to this target DOM after validating a
-  // fresh projection. The old flat-offset painter remains for source-only
-  // comparisons and older callers; neither painter clears the other's marks.
-  let lastSemanticPayload = null;
-  let activeFrameGeneration = null;
-  let selectedSemanticId = "";
-
-  function clearSemanticMarks() {
-    quietly(() => {
-      document.querySelectorAll("mark.librepaper-semantic-ins").forEach((mark) => mark.replaceWith(...mark.childNodes));
-      document.querySelectorAll("mark.librepaper-semantic-del").forEach((mark) => mark.remove());
-      document.querySelectorAll("[data-librepaper-semantic-in], [data-librepaper-semantic-selected]")
-        .forEach((node) => {
-          delete node.dataset.librepaperSemanticIn;
-          delete node.dataset.librepaperSemanticSelected;
-        });
-      document.body.normalize();
-    });
-  }
-
-  function semanticPath(path) {
-    if (!Array.isArray(path) || !path.every((index) => Number.isInteger(index) && index >= 0)) return null;
-    let node = document.body;
-    for (const index of path) {
-      node = node?.childNodes?.[index];
-      if (!node) return null;
-    }
-    return node;
-  }
-
-  function semanticElement(location) {
-    if (!location) return null;
-    const key = typeof location.element === "string" ? location.element : "";
-    if (key) {
-      const escaped = CSS.escape(key);
-      const found = document.querySelector(
-        `[data-librepaper-element="${escaped}"], [data-source-key="${escaped}"], [data-structural-key="${escaped}"]`,
-      );
-      if (found) return found;
-    }
-    const node = semanticPath(location.path);
-    return node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
-  }
-
-  function semanticTokenLocation(projection, tokenIndex, rawCursor = 0) {
-    const token = projection?.tokens?.[tokenIndex];
-    const location = projection?.locations?.find((entry) => entry.token === tokenIndex);
-    if (!token || !location) return null;
-    if (!token.offset) return { token, location, element: semanticElement(location), pieces: [], next: rawCursor };
-    const pieces = [];
-    for (const part of location.parts || []) {
-      const node = semanticPath(part.path);
-      if (node?.nodeType !== Node.TEXT_NODE || part.sourceStart < 0 || part.sourceEnd > node.data.length
-        || part.sourceStart > part.sourceEnd) return { invalid: true };
-      pieces.push({ node, from: part.sourceStart, to: part.sourceEnd });
-    }
-    const element = semanticElement(location);
-    return { token, location, element, pieces, next: rawCursor, invalid: !pieces.length && !element };
-  }
-
-  function semanticSelected() {
-    document.querySelectorAll("[data-librepaper-semantic-selected]")
-      .forEach((node) => delete node.dataset.librepaperSemanticSelected);
-    if (!selectedSemanticId) return;
-    const id = CSS.escape(selectedSemanticId);
-    document.querySelectorAll(`mark[data-librepaper-semantic="${id}"], [data-librepaper-semantic-in="${id}"]`)
-      .forEach((node) => (node.dataset.librepaperSemanticSelected = ""));
-  }
-
-  function semanticMark(piece, item, deletion = false) {
-    const range = document.createRange();
-    range.setStart(piece.node, piece.from);
-    range.setEnd(piece.node, piece.to);
-    const mark = document.createElement("mark");
-    mark.className = deletion ? "librepaper-semantic-del" : "librepaper-semantic-ins";
-    mark.dataset.librepaperSemantic = item.id;
-    mark.setAttribute("aria-label", `${deletion ? "Deleted" : "Inserted"}: ${deletion ? item.text : piece.node.data.slice(piece.from, piece.to)}`);
-    if (item.author !== undefined && item.author !== null) mark.dataset.author = String(item.author);
-    if (item.who) mark.title = item.who;
-    mark.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      selectedSemanticId = item.id;
-      quietly(semanticSelected);
-      post({ type: "focus", id: item.id });
-    };
-    range.surroundContents(mark);
-  }
-
-  function semanticDeletion(item) {
-    if (item.at < 0 || item.at > text().length) return false;
-    if (!table.nodes.length) {
-      const mark = document.createElement("mark");
-      mark.className = "librepaper-semantic-del";
-      mark.dataset.librepaperSemantic = item.id;
-      mark.dataset.librepaperDeletion = "1";
-      mark.dataset.deleted = item.text || "Deleted content";
-      mark.setAttribute("aria-label", `Deleted: ${item.text || "content"}`);
-      document.body.appendChild(mark);
-      return true;
-    }
-    const at = item.at === text().length ? item.at : item.at;
-    const index = nodeAt(Math.max(0, Math.min(at, text().length - 1)));
-    const node = table.nodes[index];
-    if (!node) return false;
-    const range = document.createRange();
-    range.setStart(node, Math.max(0, Math.min(node.data.length, at - table.starts[index])));
-    range.collapse(true);
-    const mark = document.createElement("mark");
-    mark.className = "librepaper-semantic-del";
-    mark.dataset.librepaperSemantic = item.id;
-    mark.dataset.librepaperDeletion = "1";
-    mark.dataset.deleted = item.text || "Deleted content";
-    mark.setAttribute("aria-label", `Deleted: ${item.text || "content"}`);
-    if (item.author !== undefined && item.author !== null) mark.dataset.author = String(item.author);
-    if (item.who) mark.title = item.who;
-    mark.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      selectedSemanticId = item.id;
-      quietly(semanticSelected);
-      post({ type: "focus", id: item.id });
-    };
-    range.insertNode(mark);
-    return true;
-  }
-
-  function paintSemantic(payload) {
-    clearSemanticMarks();
-    const projection = payload.targetProjection || payload.projection;
-    const actual = reprojectTarget(document, projection);
-    if (!actual) return false;
-    const items = targetSemanticItems(payload);
-    if (!items) return false;
-    scan();
-    const inserts = [];
-    const deletes = [];
-    // Resolve every DOM path before making any mutation. Text pieces are then
-    // wrapped from right to left; deletion seams use live DOM Ranges, which
-    // track those splits without guessing at flattened text offsets.
-    for (const item of items) {
-      if (item.kind === "insert") {
-        for (let index = item.fromB; index < item.toB; index++) {
-          const mapped = semanticTokenLocation(actual, index);
-          if (!mapped || mapped.invalid) return false;
-          inserts.push({ item, mapped });
-        }
-      } else {
-        const range = document.createRange();
-        const mapped = item.fromB < actual.tokens.length ? semanticTokenLocation(actual, item.fromB) : null;
-        const piece = mapped?.pieces?.[0];
-        if (piece) range.setStart(piece.node, piece.from);
-        else if (mapped?.element && mapped.element !== document.body) range.setStartBefore(mapped.element);
-        else { range.selectNodeContents(document.body); range.collapse(false); }
-        range.collapse(true);
-        deletes.push({ item, range });
-      }
-    }
-    quietly(() => {
-      for (const { item, mapped } of inserts.reverse()) {
-        if (mapped.pieces.length) for (const piece of [...mapped.pieces].reverse()) semanticMark(piece, item);
-        else if (mapped.element) mapped.element.dataset.librepaperSemanticIn = item.id;
-      }
-      for (const { item, range } of deletes.reverse()) {
-        const mark = document.createElement("mark");
-        mark.className = "librepaper-semantic-del";
-        mark.dataset.librepaperSemantic = item.id;
-        mark.dataset.librepaperDeletion = "1";
-        mark.dataset.deleted = item.text || "Deleted content";
-        mark.setAttribute("aria-label", `Deleted: ${item.text || "content"}`);
-        if (item.who) mark.title = item.who;
-        mark.onclick = (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          selectedSemanticId = item.id;
-          quietly(semanticSelected);
-          post({ type: "focus", id: item.id });
-        };
-        range.insertNode(mark);
-      }
-    });
-    scan();
-    quietly(semanticSelected);
-    return true;
-  }
-
-  function paintSyntheticSuggestions(suggestions = []) {
-    if (!Array.isArray(suggestions)) return false;
-    for (const suggestion of suggestions) {
-      const id = String(suggestion.id || "");
-      const start = Number.isInteger(suggestion.targetStart) ? suggestion.targetStart : suggestion.start;
-      const end = Number.isInteger(suggestion.targetEnd) ? suggestion.targetEnd : suggestion.end;
-      const proposed = typeof suggestion.proposed === "string" ? suggestion.proposed : "";
-      if (!id || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start
-        || end > text().length || proposed.length > 100_000 || suggestion.overlap || suggestion.unlocatable) {
-        post({ type: "suggestion-review", id, reason: suggestion.overlap ? "overlap" : "unlocatable" });
-        continue;
-      }
-      const pieces = piecesFor(start, end);
-      if ((end > start && !pieces.length) || !table.nodes.length) {
-        post({ type: "suggestion-review", id, reason: "target-mapping" });
-        continue;
-      }
-      for (const piece of [...pieces].reverse()) {
-        const range = document.createRange();
-        range.setStart(piece.node, piece.from);
-        range.setEnd(piece.node, piece.to);
-        const mark = document.createElement("mark");
-        mark.className = "librepaper-suggestion-del";
-        mark.dataset.librepaperSuggestion = id;
-        mark.setAttribute("aria-label", `Suggested replacement, removed: ${piece.node.data.slice(piece.from, piece.to)}`);
-        range.surroundContents(mark);
-      }
-      if (!proposed) continue;
-      scan();
-      const at = end;
-      const index = nodeAt(Math.max(0, Math.min(at, text().length - 1)));
-      const node = table.nodes[index];
-      if (!node) { post({ type: "suggestion-review", id, reason: "target-mapping" }); continue; }
-      const range = document.createRange();
-      range.setStart(node, Math.max(0, Math.min(node.data.length, at - table.starts[index])));
-      range.collapse(true);
-      const synthetic = document.createElement("span");
-      synthetic.className = "librepaper-suggestion-synthetic";
-      synthetic.dataset.librepaperSuggestion = id;
-      synthetic.dataset.librepaperSynthetic = "1";
-      synthetic.setAttribute("aria-label", `Suggested insertion: ${proposed}`);
-      synthetic.appendChild(document.createTextNode(proposed));
-      range.insertNode(synthetic);
-    }
-    return true;
-  }
-
-  function semanticRedlines(payload) {
-    if (!validateSemanticRedlinePayload(payload)) {
-      lastSemanticPayload = null;
-      clearSemanticMarks();
-      post({ type: "semantic-redlines-rejected", generation: payload?.generation, reason: "invalid-payload" });
-      return;
-    }
-    if (activeFrameGeneration !== null && payload.frameGeneration !== activeFrameGeneration) {
-      lastSemanticPayload = null;
-      clearSemanticMarks();
-      post({ type: "semantic-redlines-rejected", generation: payload.generation, reason: "stale-generation" });
-      return;
-    }
-    if (!paintSemantic(payload)) {
-      lastSemanticPayload = null;
-      clearSemanticMarks();
-      post({ type: "semantic-redlines-rejected", generation: payload.generation, reason: "target-mapping" });
-      return;
-    }
-    paintSyntheticSuggestions(payload.suggestions || []);
-    lastSemanticPayload = payload;
-    post({ type: "semantic-redlines-painted", generation: payload.generation });
-  }
-
-  // Marks from a previous `redlines()` call, cleared without disturbing
-  // `highlight()`'s marks -- a different class, so the two coexist and
-  // either can be repainted without the other flickering. An insert mark
-  // wraps real text and is unwrapped the way a highlight mark is; a delete
-  // mark wraps nothing and is simply removed.
-  function clearRedlineMarks() {
-    quietly(() => {
-      document.querySelectorAll("mark.librepaper-ins").forEach((mark) => mark.replaceWith(...mark.childNodes));
-      document.querySelectorAll("mark.librepaper-del").forEach((mark) => mark.remove());
-      document.body.normalize();
-    });
-  }
-
-  // The redline equivalent of `shiftRanges`: a preview rebuild during typing
-  // moves everything after the edit point by however much the text grew or
-  // shrank, before the sidebar's own recomputed hunks arrive.
-  function shiftRedlineItems(items) {
-    const before = published || "";
-    scan();
-    const after = text();
-    let same = 0;
-    while (same < before.length && same < after.length && before[same] === after[same]) same++;
-    const delta = after.length - before.length;
-    if (!delta) return items;
-    return items.map((item) =>
-      item.kind === "insert"
-        ? item.start >= same ? { ...item, start: item.start + delta, end: item.end + delta } : item
-        : item.at >= same ? { ...item, at: item.at + delta } : item,
-    );
-  }
-
-  // Paint, from a list of `{start, end, kind:"insert", who}` and
-  // `{at, kind:"delete", text, who}` items the sidebar worked out from the
-  // history panel's word diff -- see `redlines.js`'s `itemsFor`. Deletes go
-  // in first, since they only ever insert an empty marker and never change
-  // any offset an insert range depends on; inserts then reuse `piecesFor`,
-  // the same segment machinery `highlight` paints with, so a passage that
-  // crosses element boundaries is still covered piece by piece.
-  function redlines(items) {
-    // Messages cross a hostile document boundary. Reject malformed payloads
-    // before they can influence Range offsets or create an unbounded
-    // attribute. Historical deletion text is always inserted as an attribute
-    // value, never as HTML.
-    const safeItems = (Array.isArray(items) ? items : []).filter((item) => {
-      if (!item || (item.kind !== "insert" && item.kind !== "delete")) return false;
-      if (item.kind === "delete") return Number.isInteger(item.at) && item.at >= 0
-        && typeof item.text === "string" && item.text.length <= 100_000;
-      return Number.isInteger(item.start) && Number.isInteger(item.end)
-        && item.start >= 0 && item.end >= item.start && item.end - item.start <= 100_000;
-    }).slice(0, 2_000);
-    lastRedlineItems = safeItems;
-    clearRedlineMarks();
-    scan();
-
-    const deletes = [...safeItems.filter((item) => item.kind === "delete")].sort((a, b) => b.at - a.at);
-    quietly(() => {
-      for (const item of deletes) {
-        const at = Number(item.at) || 0;
-        if (at < 0 || at > text().length || !table.nodes.length) continue;
-        const index = nodeAt(at);
-        const node = table.nodes[index];
-        if (!node) continue;
-        const range = document.createRange();
-        range.setStart(node, at - table.starts[index]);
-        range.collapse(true);
-        const mark = document.createElement("mark");
-        mark.className = "librepaper-del";
-        mark.dataset.deleted = item.text || "";
-        mark.setAttribute("aria-label", `Deleted: ${item.text || "content"}`);
-        if (item.author !== undefined && item.author !== null) mark.dataset.author = String(item.author);
-        mark.title = [item.who, item.text].filter(Boolean).join(": ");
-        range.insertNode(mark);
-      }
-    });
-    // The delete markers above split text nodes at their offsets; the table
-    // has to catch up before piecesFor, below, can trust it.
-    scan();
-
-    const inserts = safeItems.filter((item) => item.kind === "insert" && item.end > item.start);
-    quietly(() => {
-      for (const item of [...inserts].reverse()) {
-        for (const piece of piecesFor(item.start, item.end)) {
-          const range = document.createRange();
-          range.setStart(piece.node, piece.from);
-          range.setEnd(piece.node, piece.to);
-          const mark = document.createElement("mark");
-          mark.className = "librepaper-ins";
-          mark.setAttribute("aria-label", `Inserted: ${piece.node.data.slice(piece.from, piece.to)}`);
-          if (item.who) mark.title = item.who;
-          if (item.author !== undefined && item.author !== null) mark.dataset.author = String(item.author);
-          range.surroundContents(mark);
-        }
-      }
-    });
-    // Same reasoning as `highlight`'s closing rescan: surroundContents split
-    // nodes the table no longer describes.
-    scan();
-  }
-
   // A selection becomes a W3C TextQuoteSelector: the quoted text plus the
   // context each side, which is what the sidebar anchors with.
 
@@ -1174,13 +741,13 @@ import {
     if (event.source !== parent) return;
     const message = event.data;
     if (!message || message.librepaper !== true) return;
+    // The frame can finish loading and publish before Svelte has bound the
+    // iframe element used to authenticate its message source. The reader
+    // acknowledges its own load event so that readiness is never a one-shot
+    // race.
+    if (message.type === "reader-ready") publish(true);
     if (message.type === "highlight") highlight(message.ranges || []);
     if (message.type === "regions") paintRegions(message.regions || []);
-    if (message.type === "redlines") {
-      if (message.version === SEMANTIC_REDLINE_VERSION || message.targetProjection || message.projection) semanticRedlines(message);
-      else { lastSemanticPayload = null; clearSemanticMarks(); redlines(message.items || []); }
-    }
-    if (message.type === "semantic-redlines") semanticRedlines(message.payload || message);
     // The tool the sidebar is on: only "region" makes figures draggable, and
     // it also stops text selection fighting the drag.
     if (message.type === "tool") {
@@ -1202,7 +769,6 @@ import {
     //
     // innerHTML does not run scripts, so a preview never executes anything.
     if (message.type === "preview") {
-      if (Number.isInteger(message.frameGeneration)) activeFrameGeneration = message.frameGeneration;
       // A LaTeX document arrives as PDF bytes rather than as HTML, and the
       // page it arrives on -- the PDF viewer -- draws
       // it itself into a text layer of ordinary spans. Nothing below applies
@@ -1238,13 +804,6 @@ import {
       // was typed, which is a few characters for a few milliseconds, and then
       // the sidebar's own answer arrives and corrects them.
       if (lastRanges.length) highlight(shiftRanges(lastRanges));
-      if (lastRedlineItems.length) redlines(shiftRedlineItems(lastRedlineItems));
-      if (lastSemanticPayload) {
-        // A preview replaces the target DOM. Reprojection is mandatory here;
-        // semantic locations from the previous generation are never reused.
-        if (lastSemanticPayload.frameGeneration === activeFrameGeneration) paintSemantic(lastSemanticPayload);
-        else lastSemanticPayload = null;
-      }
       // Directly, not through the observer: the observer waits a quarter of a
       // second before republishing, and a preview should keep up with typing.
       publish(true);
@@ -1254,15 +813,6 @@ import {
     // text this frame published, which is the only thing both sides agree on:
     // the editor works out which offset a caret in the source corresponds to,
     // and this end knows which node holds it.
-    if (message.type === "semantic-locate") {
-      if (message.frameGeneration !== activeFrameGeneration || !lastSemanticPayload) return;
-      selectedSemanticId = String(message.id || "");
-      quietly(semanticSelected);
-      const id = CSS.escape(selectedSemanticId);
-      const node = document.querySelector(`mark[data-librepaper-semantic="${id}"], [data-librepaper-semantic-in="${id}"]`);
-      if (node) scrollTo({ top: scrollY + node.getBoundingClientRect().top - innerHeight / 3, behavior: "smooth" });
-      return;
-    }
     if (message.type === "locate") {
       const start = Number(message.start) || 0;
       const [piece] = piecesFor(start, start + Math.max(1, Number(message.length) || 1));
@@ -1274,6 +824,10 @@ import {
       // Scrolled to a third of the way down rather than to the very top: a
       // line pinned to the edge of the frame reads as cut off.
       scrollTo({ top: scrollY + box.top - innerHeight / 3, behavior: "smooth" });
+      return;
+    }
+    if (message.type === "synctex-locate") {
+      globalThis.librepaperViewer?.locatePoint?.(message.page, message.x, message.y);
       return;
     }
 
@@ -1303,12 +857,19 @@ import {
   // a click that lands on nothing textual says nothing.
   document.addEventListener("click", (event) => {
     if (tool === "point" && event.target.closest("a,button,input,textarea,select,mark[data-librepaper]")) return;
-    if (!table.nodes.length) return;
+    const pdf = globalThis.librepaperViewer?.pointFromClient?.(event.clientX, event.clientY) || null;
+    if (!table.nodes.length) {
+      if (pdf && tool !== "point") post({ type: "pdf-caret", pdf });
+      return;
+    }
     const caret = document.caretPositionFromPoint
       ? document.caretPositionFromPoint(event.clientX, event.clientY)
       : null;
     const node = caret?.offsetNode;
-    if (!node || node.nodeType !== Node.TEXT_NODE) return;
+    if (!node || node.nodeType !== Node.TEXT_NODE) {
+      if (pdf && tool !== "point") post({ type: "pdf-caret", pdf });
+      return;
+    }
     const index = table.index.get(node);
     if (index === undefined) return;
     const offset = table.starts[index] + (caret.offset || 0);
@@ -1328,7 +889,7 @@ import {
       });
       return;
     }
-    post({ type: "caret", offset });
+    post({ type: "caret", offset, pdf });
   });
 
   document.addEventListener("mouseup", () => scheduleSelection(0));
@@ -1368,6 +929,11 @@ import {
 
   function watch() {
     publish();
+    // The first publication runs in the child frame's load handler. The
+    // parent's iframe load handler, and therefore Svelte's authenticated
+    // frame binding, can settle just afterward. Repeat once on the next task;
+    // later publications remain mutation-driven.
+    setTimeout(() => publish(true), 0);
     observer = new MutationObserver(republish);
     observer.observe(document.body, {
       childList: true,

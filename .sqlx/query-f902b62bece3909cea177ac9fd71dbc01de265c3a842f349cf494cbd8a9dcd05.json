@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE storage_usage SET bytes = (\n               SELECT COALESCE(sum(bytes), 0)::bigint FROM (\n                 SELECT byte_length AS bytes FROM document_assets\n                 UNION ALL SELECT archive_bytes FROM (\n                   SELECT DISTINCT ON (archive_key) archive_bytes\n                   FROM document_versions ORDER BY archive_key, id\n                 ) distinct_archives\n                 UNION ALL SELECT byte_length FROM publication_files\n               ) held\n             )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "f902b62bece3909cea177ac9fd71dbc01de265c3a842f349cf494cbd8a9dcd05"
+}

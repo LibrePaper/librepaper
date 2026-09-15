@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! What a typst compile could not find, fetched: packages from the registry,
 //! and font families from the deployment's library, kept in a cache between
 //! runs. The browser does the same with the module's `needs` export, so a
@@ -63,13 +64,6 @@ impl Cache {
             root: root.into(),
             registry: REGISTRY.to_string(),
         }
-    }
-
-    /// The same cache, fetching packages from another registry. For tests.
-    #[cfg(test)]
-    pub fn with_registry(mut self, base: &str) -> Cache {
-        self.registry = base.to_string();
-        self
     }
 
     fn package_dir(&self, package: &Package) -> PathBuf {
@@ -181,26 +175,19 @@ impl Cache {
                 "fetching @{}/{}:{}",
                 package.namespace, package.name, package.version
             );
-            let response = client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|err| format!("could not fetch {url}: {err}"))?;
-            if response.status() == reqwest::StatusCode::NOT_FOUND {
+            let archive = fetch_bytes(client, &url, MAX_PACKAGE_BYTES as usize).await?;
+            let response_status = archive.status;
+            if response_status == reqwest::StatusCode::NOT_FOUND {
                 eprintln!(
                     "warning: the registry has no @{}/{}:{}",
                     package.namespace, package.name, package.version
                 );
                 continue;
             }
-            if !response.status().is_success() {
-                return Err(format!("could not fetch {url}: {}", response.status()));
+            if !response_status.is_success() {
+                return Err(format!("could not fetch {url}: {response_status}"));
             }
-            let archive = response
-                .bytes()
-                .await
-                .map_err(|err| format!("could not read {url}: {err}"))?;
-            let files = unpack(&archive)?;
+            let files = unpack(&archive.bytes)?;
             if !files.iter().any(|(name, _)| name == "typst.toml") {
                 return Err(format!(
                     "{url} is not a typst package: it has no typst.toml"
@@ -244,21 +231,7 @@ impl Cache {
                 let mut fetched = Vec::new();
                 for file in files.iter().filter_map(|file| file.as_str()) {
                     let url = format!("{base}/api/fonts/{file}");
-                    let response = client
-                        .get(&url)
-                        .send()
-                        .await
-                        .map_err(|err| format!("could not fetch {url}: {err}"))?;
-                    if !response.status().is_success() {
-                        return Err(format!("could not fetch {url}: {}", response.status()));
-                    }
-                    let bytes = response
-                        .bytes()
-                        .await
-                        .map_err(|err| format!("could not read {url}: {err}"))?;
-                    if bytes.len() > MAX_FONT_BYTES {
-                        return Err(format!("{url} is larger than a font file should be"));
-                    }
+                    let bytes = fetch_bytes(client, &url, MAX_FONT_BYTES).await?.bytes;
                     let name = file.rsplit('/').next().unwrap_or(file).to_string();
                     fetched.push((name, bytes.to_vec()));
                 }
@@ -306,6 +279,35 @@ impl Cache {
         std::fs::rename(&staging, &dir)
             .map_err(|err| format!("could not move the package into {}: {err}", dir.display()))
     }
+}
+
+struct FetchedBytes {
+    status: reqwest::StatusCode,
+    bytes: Vec<u8>,
+}
+
+async fn fetch_bytes(
+    client: &reqwest::Client,
+    url: &str,
+    limit: usize,
+) -> Result<FetchedBytes, String> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| format!("could not fetch {url}: {err}"))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| format!("could not read {url}: {err}"))?;
+    if bytes.len() > limit {
+        return Err(format!("{url} is larger than its allowed limit"));
+    }
+    Ok(FetchedBytes {
+        status,
+        bytes: bytes.to_vec(),
+    })
 }
 
 /// A family as a directory name: lowercase already, and anything a filesystem

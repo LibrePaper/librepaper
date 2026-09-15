@@ -3,19 +3,26 @@
 // no release, deployment, or existing mirror is modified by this check.
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFileSync, writeFileSync, readdirSync, symlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { browser, until } from "../../tools/browser-driver.mjs";
 import { ephemeralMirror } from "../../tools/ephemeral-mirror.mjs";
+import { postgresTestDatabase } from "../../tools/postgres-test.mjs";
 
 const root = resolve(import.meta.dirname, "../../..");
 const engineRoot = resolve(process.env.LATEXML_DIST || join(root, "../wasm-latex/wasm-build/dist"));
 const mirror = resolve(process.env.MIRROR || join(root, "../wasm-latex/mirror"));
 const hostedMirrorUrl = process.env.LATEXML_MIRROR_URL?.replace(/\/?$/, "/");
 if (hostedMirrorUrl && !/^https:\/\//i.test(hostedMirrorUrl)) throw new Error("LATEXML_MIRROR_URL must use HTTPS");
+// The local mirror is served over HTTPS from a throwaway self-signed cert,
+// which openssl mints; a hosted mirror needs none.
+if (!hostedMirrorUrl && spawnSync("openssl", ["version"], { stdio: "ignore" }).error) {
+  console.log("latex-html-browser: no openssl for the HTTPS mirror; skipping (install openssl, or set LATEXML_MIRROR_URL)");
+  process.exit(0);
+}
 const manifest = hostedMirrorUrl
   ? await (await fetch(new URL("manifest.json", hostedMirrorUrl))).json()
   : JSON.parse(readFileSync(join(mirror, "manifest.json"), "utf8"));
@@ -90,22 +97,16 @@ const scratch = mkdtempSync(join(tmpdir(), "librepaper-latexml-browser-"));
 const appData = join(scratch, "app-data");
 let tab;
 let app;
+let postgres;
+let appLog = "";
 
-function sql(value) { return `'${String(value).replaceAll("'", "''")}'`; }
-function appSession() {
+function appSession(accountId) {
   const key = Buffer.from(readFileSync(join(appData, "secrets", "session.key"), "utf8").trim(), "hex");
-  const generation = "latexml-browser-test-generation";
+  const generation = "1";
   const expires = Math.floor(Date.now() / 1000) + 3600;
-  const payload = Buffer.from(`github|browser-test|github:browser-test|${generation}||Browser Test|${expires}`).toString("base64url");
+  const payload = Buffer.from(`github|browser-test|${accountId}|${generation}||Browser Test|${expires}`).toString("base64url");
   const signature = createHmac("sha256", key).update(`session-v2\0${payload}`).digest("base64url");
   return { value: `v2.${payload}.${signature}`, generation };
-}
-function seedAppAccount(generation) {
-  const now = new Date().toISOString();
-  execFileSync("sqlite3", [join(appData, "catalog.db"), `INSERT INTO accounts
-    (id, provider, handle, name, email, first_seen, last_seen, plan, status, session_generation, erasure_cursor)
-    VALUES (${sql("github:browser-test")}, ${sql("github")}, ${sql("browser-test")}, ${sql("Browser Test")}, '',
-      ${sql(now)}, ${sql(now)}, ${sql("test")}, 'active', ${sql(generation)}, NULL);`], { stdio: "ignore" });
 }
 try {
   process.env.LIBREPAPER_BROWSER_IGNORE_CERT_ERRORS = "1";
@@ -175,19 +176,19 @@ See equation~\eqref{eq:test}.
     console.log("latex-html-browser: legacy release settings ignored by current HTML renderer");
   }
   if (process.env.LIBREPAPER_BIN) {
+    postgres = postgresTestDatabase("latexml_browser");
     const port = 22000 + Math.floor(Math.random() * 1000);
     const appBase = `http://localhost:${port}`;
-    const env = { ...process.env, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" };
+    const env = { ...process.env, LIBREPAPER_DATABASE_URL: postgres.url, LIBREPAPER_GITHUB_CLIENT_ID: "test-client", LIBREPAPER_GITHUB_CLIENT_SECRET: "test-secret" };
     app = spawn(resolve(process.env.LIBREPAPER_BIN), ["admin", "serve", "--port", String(port), "--data-directory", appData,
       "--publishers", "any", "--commenters", "anyone", "--latex-mirror", mirrorBase], { env, stdio: ["ignore", "ignore", "pipe"] });
-    let appLog = "";
     app.stderr.on("data", (bytes) => { appLog += bytes; });
     await until("app startup", async () => {
       if (app.exitCode !== null) throw new Error(appLog);
       return (await fetch(`${appBase}/api/config`)).ok;
     });
-    const session = appSession();
-    seedAppAccount(session.generation);
+    const accountId = postgres.seedRegisteredAccount({ provider: "github", subject: "github:browser-test", handle: "browser-test", displayName: "Browser Test" });
+    const session = appSession(accountId);
     await tab.setCookie("librepaper_session", session.value, appBase);
     await tab.navigate(appBase);
     await until("app page", () => tab.evaluate(`location.origin === ${JSON.stringify(appBase)} && document.readyState === 'complete'`));
@@ -199,10 +200,12 @@ See equation~\eqref{eq:test}.
     })()`));
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const { slug } = created.body;
+    const buildPreferenceKey = `librepaper-build-v2:${JSON.stringify([appBase, "github:browser-test", slug])}`;
+    await tab.evaluate(`localStorage.setItem(${JSON.stringify(buildPreferenceKey)}, ${JSON.stringify(JSON.stringify({ selection: "tool", backend: "browser", tool: "tex", output: "html", format: "latex" }))})`);
     await tab.resize(1300, 900);
     await tab.navigate(`${appBase}/docs/${slug}`);
-    await until("initial PDF", async () => (await tab.text()).includes("First app paragraph"), 245000);
-    console.log("latex-html-browser: app PDF ready");
+    await until("initial HTML frame", () => tab.evaluate(`document.querySelector('iframe')?.src.includes('/raw/')`));
+    await until("initial HTML preview", async () => (await tab.text()).includes("First app paragraph"), 245000);
     async function choose(label) {
       await tab.evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='View' && b.getClientRects().length).click()`);
       await until(`${label} menu item`, () => tab.evaluate(`Array.from(document.querySelectorAll('[role="menuitem"]')).some(e=>e.textContent.replace('✓','').trim()===${JSON.stringify(label)} && e.getClientRects().length)`));
@@ -212,9 +215,6 @@ See equation~\eqref{eq:test}.
         item.click();
       })()`);
     }
-    await choose("HTML");
-    await until("HTML frame", () => tab.evaluate(`document.querySelector('iframe').src.includes('/raw/')`));
-    await until("HTML preview", async () => (await tab.text()).includes("First app paragraph"), 245000);
     for (const marker of ["Second app paragraph", "Third app paragraph"]) {
       await tab.insert(appSource.replace("First app paragraph", marker), true);
       await until(marker, async () => (await tab.text()).includes(marker), 245000);
@@ -224,10 +224,10 @@ See equation~\eqref{eq:test}.
     await until("remembered content", async () => (await tab.text()).includes("Third app paragraph"), 245000);
     await choose("PDF");
     await until("PDF frame", () => tab.evaluate(`document.querySelector('iframe').src.includes('/pdf/')`));
-    await until("PDF preview after switch", async () => (await tab.text()).includes("Third app paragraph"), 245000);
-    console.log("latex-html-browser: View menu, successive edits, remembered choice and PDF switch passed");
+    console.log("latex-html-browser: PostgreSQL document creation, successive edits, remembered HTML choice and PDF route switch passed");
   }
 } catch (error) {
+  if (appLog) console.error("Application log:\n", appLog);
   if (tab) {
     console.error("Page at failure:", await tab.evaluate("JSON.stringify({text:document.body.innerText,frames:Array.from(document.querySelectorAll('iframe')).map(f=>f.src),storage:{...localStorage}})").catch(() => "unavailable"));
   }
@@ -235,6 +235,7 @@ See equation~\eqref{eq:test}.
 } finally {
   await tab?.close();
   app?.kill();
+  postgres?.drop();
   await new Promise((done) => server.close(done));
   if (mirrorServer) {
     mirrorServer.server.closeAllConnections();

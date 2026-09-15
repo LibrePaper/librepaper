@@ -15,6 +15,9 @@ export const toaster = createToaster({
   gap: 12,
 });
 
+const message = (description, fallback) =>
+  typeof description === "string" && description.trim() ? description : fallback;
+
 /// Something went wrong and the reader has to know. Errors stay until they are
 /// dismissed: a message about work that was refused should not vanish while
 /// the reader is still looking at what they typed.
@@ -24,12 +27,12 @@ export const toaster = createToaster({
 /// than stacked under its twin, which is what a line that may be said on
 /// every caret move ("nothing to jump to here") needs.
 export const problem = (description, options = {}) =>
-  toaster.create({ type: "error", description, duration: Number.POSITIVE_INFINITY, ...options });
+  toaster.create({ type: "error", description: message(description, "The operation could not be completed."), duration: Number.POSITIVE_INFINITY, ...options });
 
 /// Something worked. It goes on its own.
-export const done = (description, options = {}) => toaster.create({ type: "success", description, ...options });
+export const done = (description, options = {}) => toaster.create({ type: "success", description: message(description, "Done."), ...options });
 
-export const said = (description, options = {}) => toaster.create({ type: "info", description, ...options });
+export const said = (description, options = {}) => toaster.create({ type: "info", description: message(description, "LibrePaper has an update."), ...options });
 
 /// Take back a line said under an id: the caret lock that found its place
 /// again has nothing to say about the move before.

@@ -6,16 +6,13 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 
-use crate::auth::{link_sealing_keyring_file, session_key_file, GithubApp, GoogleApp, Policy};
+use crate::auth::{session_key_file, GithubApp, GoogleApp, Policy};
 use crate::config::Configuration;
 use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
 use crate::document::store::Store;
-use crate::room::RoomSet;
 use crate::server::origins::DOCS_PREFIX;
 use crate::server::shell::load_shell;
 use crate::server::Server;
-use crate::storage::journal::JournalStore;
-use crate::storage::maintenance::{DeletionLimits, DeletionWorker, JournalRetirementWorker};
 use crate::storage::{open_storage, StorageOptions};
 use crate::util::die;
 
@@ -172,7 +169,6 @@ pub async fn serve(options: ServeOptions) {
         .validate()
         .unwrap_or_else(|error| die(format!("invalid cost policy: {error}")));
     let storage = options.storage.clone();
-    let durable = storage.fsync;
     let deployment_paths = storage.paths().unwrap_or_else(|err| die(err));
     let retention = parse_retention(options.expire_after.as_deref().unwrap_or(""))
         .unwrap_or_else(|err| die(format!("{err}; use a duration such as 24h or 30d")));
@@ -187,9 +183,9 @@ pub async fn serve(options: ServeOptions) {
     };
     let expire_from = parse_expire_from(options.expire_from.as_deref().unwrap_or(""))
         .unwrap_or_else(|err| die(err));
-    let blobs = open_storage(storage).await.unwrap_or_else(|err| die(err));
-    let writer_lock =
-        acquire_writer_lock(&deployment_paths.writer_lock).unwrap_or_else(|err| die(err));
+    let blobs = open_storage(storage.clone())
+        .await
+        .unwrap_or_else(|err| die(err));
     let reset_marker = deployment_paths.state.join("seed-reset.json");
     if reset_marker.exists() {
         die(format!(
@@ -244,81 +240,33 @@ pub async fn serve(options: ServeOptions) {
 
     let config = Arc::new(options.config);
     let shell = load_shell(&config).unwrap_or_else(|err| die(err));
-    let catalog_path = &deployment_paths.catalog;
-    let catalog = Arc::new(
-        crate::storage::catalog::Catalog::open_with(catalog_path, durable)
-            .unwrap_or_else(|err| die(format!("could not open catalogue: {err}"))),
-    );
-    crate::config::DeploymentPaths::protect_file(catalog_path).unwrap_or_else(|err| die(err));
-    let catalog_nonempty = catalog
-        .totals()
-        .map(|(_, documents)| documents != 0)
-        .unwrap_or_else(|err| die(format!("could not inspect catalogue: {err}")));
-    let deployment_id = deployment_paths
-        .ensure_deployment_identity(catalog_nonempty)
-        .unwrap_or_else(|err| die(err));
     let secrets = &deployment_paths.secrets;
-    let key = session_key_file(&secrets.join("session.key"), catalog_nonempty)
-        .unwrap_or_else(|err| die(err));
-    let link_sealing_keys = link_sealing_keyring_file(&secrets.join("links.key"), catalog_nonempty)
-        .unwrap_or_else(|err| die(err));
+    let key_path = secrets.join("session.key");
+    let key = session_key_file(&key_path, key_path.exists()).unwrap_or_else(|err| die(err));
+    let mut database = crate::storage::postgres::PostgresOptions::new(&storage.database_url);
+    database.max_connections = storage.database_connections;
+    database.policy = crate::storage::postgres::StoragePolicy {
+        owner_bytes: config.storage.per_owner,
+        deployment_bytes: config.storage.total,
+        asset_uploads_per_hour: config.storage.uploads_per_hour as i64,
+        versions_per_hour: config.rate_per_hour,
+        max_uncompacted_updates: 1_000,
+        max_uncompacted_bytes: config.persistence().max_staging_bytes as i64,
+    };
+    let catalog = Arc::new(
+        crate::storage::postgres::PostgresCatalog::connect(database)
+            .await
+            .unwrap_or_else(|err| die(format!("could not connect to PostgreSQL: {err}"))),
+    );
     catalog
-        .set_link_sealing_key(&link_sealing_keys[0])
-        .unwrap_or_else(|err| die(format!("could not configure link sealing: {err}")));
-    for old in link_sealing_keys.iter().skip(1) {
-        catalog
-            .add_link_decryption_key(old)
-            .unwrap_or_else(|err| die(format!("could not configure old link key: {err}")));
-    }
+        .migrate()
+        .await
+        .unwrap_or_else(|error| die(format!("could not migrate PostgreSQL: {error}")));
     let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
         .await
         .unwrap_or_else(|err| die(err));
-    // Reconcile durable publication state and reclaim only jobs already
-    // queued by a committed catalogue transition before accepting traffic.
-    // A complete object set is retried with the original ids; an incomplete
-    // set is resolved as a known abort and queued for safe reclamation.
-    let (deletion_worker, journal_retirement_worker) = if let Some(catalog) = store.catalog.as_ref()
-    {
-        let journal = JournalStore::new(catalog.clone());
-        journal
-            .initialize_local(&deployment_id)
-            .unwrap_or_else(|err| die(format!("could not initialize local journal: {err}")));
-        journal
-            .reconcile_pending(blobs.as_ref())
-            .await
-            .unwrap_or_else(|err| die(format!("local journal reconciliation failed: {err}")));
-        journal
-            .reconcile_object_reservations(blobs.as_ref())
-            .await
-            .unwrap_or_else(|err| die(format!("local journal accounting recovery failed: {err}")));
-        journal
-            .require_recovered()
-            .unwrap_or_else(|err| die(format!("local journal recovery is required: {err}")));
-        let worker = Arc::new(
-            DeletionWorker::new(catalog.clone(), blobs.clone(), DeletionLimits::default())
-                .unwrap_or_else(|err| die(format!("could not initialize deletion worker: {err}"))),
-        );
-        worker
-            .run_once(crate::util::now_unix())
-            .await
-            .unwrap_or_else(|err| die(format!("local deletion recovery failed: {err}")));
-        let journal_worker = Arc::new(
-            JournalRetirementWorker::new(catalog.clone(), blobs.clone(), 1_000)
-                .unwrap_or_else(|err| die(format!("could not initialize journal cleanup: {err}"))),
-        );
-        journal_worker
-            .run_once(crate::util::now_unix())
-            .await
-            .unwrap_or_else(|err| die(format!("local journal cleanup failed: {err}")));
-        (Some(worker), Some(journal_worker))
-    } else {
-        (None, None)
-    };
-    let rooms = RoomSet::new(blobs.clone(), config.clone());
-    rooms.attach_deployment_lock(writer_lock);
     let mut instance = Server::new(
         store,
-        rooms,
         shell,
         app,
         key,
@@ -326,23 +274,6 @@ pub async fn serve(options: ServeOptions) {
         publishers.clone(),
         commenters.clone(),
     );
-    crate::server::publication::PublicationStore::for_store(instance.store.clone())
-        .reconcile_accounting()
-        .await
-        .unwrap_or_else(|err| die(format!("publication accounting recovery failed: {err}")));
-    if let Some(catalog) = instance.store.catalog.clone() {
-        let journal = crate::storage::journal::JournalRuntime::new_with_policy(
-            catalog,
-            blobs.clone(),
-            deployment_id.clone(),
-            crate::storage::journal::CoordinatorLimits::from_persistence(&config.persistence()),
-            config.persistence(),
-            config.storage.per_owner,
-            config.storage.total,
-        )
-        .unwrap_or_else(|err| die(format!("could not initialize journal coordinator: {err}")));
-        instance.rooms.attach_journal(journal);
-    }
     instance.google = google;
     // An operator who wants no public front page at all: the examples stop
     // being listed to people who hold nothing on them.
@@ -367,6 +298,9 @@ pub async fn serve(options: ServeOptions) {
         }
     };
     let instance = Arc::new(instance);
+    if let Err(error) = instance.cost.restore().await {
+        eprintln!("warning: transfer checkpoint could not be restored: {error}");
+    }
 
     println!("librepaper serving http://localhost{address}");
     println!("  documents on http://{DOCS_PREFIX}localhost{address}");
@@ -445,26 +379,6 @@ pub async fn serve(options: ServeOptions) {
         });
     }
 
-    // Reclaim abandoned rendered-publication uploads even when the document
-    // is never opened again. The staging marker is durable, so this remains
-    // correct across restarts.
-    let publication_janitor = instance.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            if let Err(error) = crate::server::publication::PublicationStore::for_store(
-                publication_janitor.store.clone(),
-            )
-            .cleanup_all_staging(crate::util::now_unix())
-            .await
-            {
-                eprintln!("warning: publication staging cleanup failed: {error}");
-            }
-        }
-    });
-
     // The sweeper. A document nobody has open is still written out and still
     // gets its checkpoints: that is the whole difference between a session the
     // server holds and a session it relays, and it is why no browser has to
@@ -482,90 +396,43 @@ pub async fn serve(options: ServeOptions) {
     // A link's expiry is not a request anything hangs off of -- nobody asks
     // the server "has this key gone stale yet". A socket that dialed in while
     // it was still live would otherwise keep answering after it lapsed, so
-    // this reruns every open socket's authorization once a second the same
-    // way a sharing change or a transfer does on the spot.
+    // this revisits only sockets whose known link deadline has elapsed. A
+    // sharing change or transfer still reauthorizes its document on the spot.
     let reauthorizer = instance.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            reauthorizer.reauthorize_all().await;
+            reauthorizer.reauthorize_expired_links().await;
         }
     });
 
-    if let Some(worker) = deletion_worker.clone() {
-        let erasure_catalog = instance.store.catalog.clone();
-        let retention_server = instance.clone();
-        let journal_worker = journal_retirement_worker.clone();
-        let retention_hard_quota = instance.config.storage.per_owner;
-        let retention_hard_count = (instance.config.session.history_max > 0)
-            .then(|| instance.config.session.history_max as u32);
+    {
+        let catalog = instance.store.catalog.clone();
+        let worker = crate::storage::worker::Worker::new(catalog.clone(), blobs.clone());
+        tokio::spawn(worker.run());
+        let maintenance_catalog = catalog;
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                if let Err(error) = worker.run_once(crate::util::now_unix()).await {
-                    eprintln!("warning: local deletion maintenance failed: {error}");
-                }
-                if let Some(journal_worker) = &journal_worker {
-                    if let Err(error) = journal_worker.run_once(crate::util::now_unix()).await {
-                        eprintln!("warning: local journal cleanup failed: {error}");
-                    }
-                }
-                if let Some(catalog) = &erasure_catalog {
-                    let retention_result = catalog
-                        .execute_catalog(1024, {
-                            move |catalog| {
-                                catalog.run_retention_pass_with_limits(
-                                    crate::util::now_unix(),
-                                    500,
-                                    Some(retention_hard_quota),
-                                    retention_hard_count,
-                                )
-                            }
-                        })
-                        .await;
-                    match retention_result {
-                        Ok(pass) => {
-                            if !pass.generation.is_empty() {
-                                eprintln!(
-                                    "{}",
-                                    serde_json::json!({
-                                        "event": "history_retention_pass",
-                                        "generation": pass.generation,
-                                        "removed": pass.removed.len(),
-                                        "blocked": pass.blocked,
-                                    })
-                                );
-                            }
-                            if !pass.removed.is_empty() {
-                                retention_server.rooms.refresh_retention().await;
-                            }
-                        }
-                        Err(_) => eprintln!(
-                            "{}",
-                            serde_json::json!({
-                                "event": "history_retention_pass_failed",
-                            })
-                        ),
-                    }
-                    let _ = catalog
-                        .execute_catalog(512, |catalog| {
-                            catalog.prune_checkpoint_budgets(crate::util::now_unix(), 1_000)
-                        })
-                        .await;
-                    if let Err(error) = crate::storage::maintenance::run_erasure_pass_async(
-                        catalog,
-                        crate::util::now_unix(),
-                        25,
-                        250,
-                    )
-                    .await
-                    {
-                        eprintln!("warning: local account erasure failed: {error}");
-                    }
+                let now = time::OffsetDateTime::now_utc();
+                let generation = now.unix_timestamp() / 30;
+                let job = crate::storage::postgres::NewJob {
+                    kind: "maintenance".into(),
+                    document_id: None,
+                    account_id: None,
+                    scope_key: "deployment".into(),
+                    dedupe_key: Some(format!("lifecycle:{generation}")),
+                    payload: serde_json::json!({}),
+                    priority: -10,
+                    max_attempts: 5,
+                    run_after: now,
+                };
+                if let Err(error) = maintenance_catalog.enqueue_job(job).await {
+                    eprintln!("warning: maintenance scheduling failed: {error}");
                 }
             }
         });
@@ -576,21 +443,9 @@ pub async fn serve(options: ServeOptions) {
     // is about the unacknowledged ones, which have no reason to be lost to an
     // orderly shutdown.
     let closing = instance.clone();
-    let closing_deletion_worker = deletion_worker;
-    let closing_journal_worker = journal_retirement_worker;
     let shutdown = async move {
         shutdown_signal().await;
         closing.rooms.flush().await;
-        if let Some(worker) = closing_deletion_worker {
-            if let Err(error) = worker.run_once(crate::util::now_unix()).await {
-                eprintln!("warning: final local deletion maintenance failed: {error}");
-            }
-        }
-        if let Some(worker) = closing_journal_worker {
-            if let Err(error) = worker.run_once(crate::util::now_unix()).await {
-                eprintln!("warning: final local journal cleanup failed: {error}");
-            }
-        }
     };
 
     let reporting = Arc::downgrade(&instance);
@@ -619,49 +474,16 @@ pub async fn serve(options: ServeOptions) {
     .await;
     reporting_task.abort();
     let _ = reporting_task.await;
+    if let Some(local) = &local {
+        local.stop().await;
+    }
     if let Err(error) = closing_cost.checkpoint().await {
         eprintln!("warning: final transfer checkpoint failed: {error}");
     }
-    // Only now: the graceful shutdown above stops accepting and then drains
-    // the requests already in flight, and those requests still submit
-    // catalogue jobs. Closing admission any earlier would fail a request that
-    // was accepted before the signal. By this point the room set has been
-    // flushed and the deletion and journal workers have run their final pass,
-    // so what remains is whatever is still queued or executing: this rejects
-    // the queue, lets the executing transaction and its completion hook
-    // finish, and only then closes SQLite.
-    if let Some(catalog) = closing_catalog.as_ref() {
-        catalog.shutdown().await;
-    }
+    closing_catalog.close().await;
     if let Err(err) = serve_result {
         die(err);
     }
-}
-
-pub(crate) fn acquire_writer_lock(path: &std::path::Path) -> Result<std::fs::File, String> {
-    use fs2::FileExt;
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true).create(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = options
-        .open(path)
-        .map_err(|err| format!("could not open writer lock {}: {err}", path.display()))?;
-    file.try_lock_exclusive().map_err(|err| {
-        format!(
-            "another server or maintenance command holds {}: {err}",
-            path.display()
-        )
-    })?;
-    Ok(file)
 }
 
 /// Supervisors normally stop Unix services with SIGTERM, while interactive

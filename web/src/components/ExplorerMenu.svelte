@@ -23,8 +23,13 @@
       <Menu.Positioner>
         {#snippet element(attributes)}
           <div {...attributes} style:transform="translate3d(var(--x, -100vw), var(--y, -100vh), 0)" use:positionMenu={menu()}>
-            <Menu.Content class="explorer-menu z-50">
-              {@render content()}
+            <!-- Author the content element here rather than passing `class` to
+                 Menu.Content: a class arriving as a prop carries no scope hash,
+                 so the rule below would have to be global to paint at all. -->
+            <Menu.Content>
+              {#snippet element(attributes)}
+                <div {...attributes} class="explorer-menu">{@render content()}</div>
+              {/snippet}
             </Menu.Content>
           </div>
         {/snippet}
@@ -35,6 +40,7 @@
 
 <style>
   .explorer-menu {
+    z-index: 50;
     box-sizing: border-box;
     width: max-content;
     min-width: 11rem;

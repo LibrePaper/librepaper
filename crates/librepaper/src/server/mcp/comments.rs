@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::room::agent::OperationKey;
+use crate::room::agent_comments::AgentAnnotationAuthority;
 use crate::room::{self, BatchCaller, Comment, Reply, SourceAnchor};
-use crate::storage::catalog::AgentAnnotationAuthority;
 
 fn validate_existing_action(
     action: &str,
@@ -152,7 +152,10 @@ impl Server {
         let view = if view_id.is_empty() {
             None
         } else {
-            Some(self.mcp_load::<View>(slug, actor, view_id, "view").await?)
+            Some(
+                self.mcp_load::<View>(slug, actor, who, view_id, "view")
+                    .await?,
+            )
         };
         let source =
             if let (Some(view), Some(range_id)) = (view.as_ref(), args["range_id"].as_str()) {
@@ -321,8 +324,6 @@ impl Server {
             link_hash: who.link.clone(),
             policy_comment: who.at_least(Role::Commenter),
             require_editor: action == "reject",
-            parent_request_id: String::new(),
-            execution_epoch: runner_execution_epoch(headers),
         };
         room.apply_agent_annotations(
             batch,

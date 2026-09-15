@@ -99,6 +99,21 @@ window.filesCheck = async () => {
   await name('Rename renamed-main.tex', 'main.tex');
   check(row('main.tex').getBoundingClientRect().height <= 40, 'compact file rows');
   check(document.querySelector('.explorer-row svg').getBoundingClientRect().width <= 24, 'compact icons');
+  // The chevron and the guide are the tree machine's own parts, so what they
+  // say is what it thinks: a second copy of the expansion kept in this
+  // component could disagree with the folder it is drawn on.
+  const chevron = (path) => row(path).querySelector('[data-part="branch-indicator"]');
+  check(!row('main.tex').querySelector('[data-part="branch-indicator"]'),
+    'a file has no chevron, only the space one would take');
+  check(chevron('chapters')?.dataset.state === 'closed', 'a shut folder points its chevron aside');
+  row('chapters').click(); await flush();
+  check(chevron('chapters')?.dataset.state === 'open', 'an open folder turns it down');
+  const guide = document.querySelector('.explorer-guide');
+  check(guide && guide.dataset.depth === '1', 'an open folder draws the guide at its own depth');
+  row('chapters').click(); await flush();
+  // Opening a folder also selects it, and a new folder is made inside the
+  // selection; drop it so the next one is made at the root as before.
+  key(row('chapters'), 'Escape'); await flush();
   button('New folder').click(); await flush(); await name('New folder name', 'new');
   check(session.folders().includes('new'), 'created empty folder');
   row('new').click(); await flush(); button('New folder').click(); await flush(); await name('New folder name', 'sub');

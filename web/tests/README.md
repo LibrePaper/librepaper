@@ -20,31 +20,28 @@ each check asserts.
 ### Unit
 
 `agent-client`, `anchor`, `assistant-preview`, `assistant-review`, `assistant`,
-`citations`, `diagnostics`, `dictation-assemble`, `dictation-capture`,
-`dictation-language`, `dictation-models`, `dictation-purge`,
-`dictation-segmenter`, `dictation-webspeech`, `diff-display`, `downloads`,
-`file-manager`, `insert`, `landing`, `latex-biber`, `latex-bibliography`,
+`citations`, `diagnostics`, `downloads`, `file-manager`,
+`insert`, `landing`, `latex-biber`, `latex-bibliography`,
 `latex-driver`, `latex-engine`, `latex-log`, `latex-reader`, `latex-route`,
-`math`, `orphan`, `outline`, `passages`, `pdf-fit`, `provenance`,
+`math`, `orphan`, `outline`, `passages`, `pdf-fit`,
 `quarto-options`, `quarto`, `quota-preferences`, `reader-annotations`,
 `reader-assistant`, `reader-preview`, `reader-races`, `reader-source-events`,
-`redlines`, `review-fixes`, `semantic-redlines`, `settings-quarto`,
+`review-fixes`, `settings-quarto`,
 `submissions`, `suggestions`, `timeline`, `tree-digest`, and `vocabulary`.
 
 ### Integration
 
-`bibliography-wasm`, `companion-lifecycle`, `dictation-service`,
-`history-controller`, `insert-latex-render`, `insert-markdown-render`,
-`insert-quarto-render`, `insert-typst-render`, `latex-controller`,
-`latex-html`, `latex-local`, `latex-resources`, `local-companion`,
-`local-preview`, `needs`, `quarto-local`, `renderer-wasm`, `renderer-worker`,
-`sync`, and `typst-pdf`.
+`bibliography-wasm`, `companion-lifecycle`, `history-source`,
+`insert-latex-render`, `insert-markdown-render`, `insert-quarto-render`,
+`insert-typst-render`, `latex-controller`, `latex-html`, `latex-local`,
+`latex-resources`, `local-companion`, `local-preview`, `needs`,
+`quarto-local`, `renderer-wasm`, `renderer-worker`, `sync`, and `typst-pdf`.
 
 ### Browser
 
 `agent-browser`, `assistant-review-browser`, `citations-browser`,
 `comments-bulk-browser`, `editor-browser`, `files-browser`,
-`history-merge-browser`, `history-panel-browser`, `history-semantic-browser`,
+`history-panel-browser`, `history-reader-browser`,
 `insert-browser`, `latex-browser`, `latex-html-browser`,
 `local-consent-browser`, `markdown-tracking-browser`, `math-browser`,
 `outline-browser`, `responsive-browser`, `typst-viewer`, and `viewer`.

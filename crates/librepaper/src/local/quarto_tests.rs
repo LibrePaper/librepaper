@@ -131,6 +131,36 @@ fn binding_store_scopes_ids_to_origin_and_project() {
 }
 
 #[test]
+fn binding_store_accepts_typst_but_quarto_validation_remains_specific() {
+    let config = tempdir().expect("tempdir");
+    let root = tempdir().expect("root");
+    std::fs::write(root.path().join("paper.typ"), "= hi").expect("source");
+    let store = BindingStore::new(config.path());
+    store
+        .grant("https://example.test", "p", root.path(), "paper.typ")
+        .expect("grant Typst project binding");
+    let options = QuartoJobOptions {
+        binding_id: "binding".into(),
+        main: "paper.typ".into(),
+        ..Default::default()
+    };
+    assert!(options.validate().is_err());
+    std::fs::write(root.path().join("notes.md"), "# Markdown").expect("Markdown source");
+    store
+        .grant("https://example.test", "p", root.path(), "notes.md")
+        .expect("grant Markdown project binding");
+    assert!(QuartoJobOptions {
+        main: "notes.md".into(),
+        ..options
+    }
+    .validate()
+    .is_ok());
+    assert!(store
+        .grant("https://example.test", "p", root.path(), "notes.txt")
+        .is_err());
+}
+
+#[test]
 fn typed_options_reject_shell_and_path_injection() {
     let mut options = QuartoJobOptions {
         binding_id: "binding".into(),
@@ -471,7 +501,7 @@ fn frozen_cache_identity_covers_profiles_parameters_and_dependencies() {
     let profiles = vec!["review".to_string()];
     let dependencies = vec!["data.csv\0deadbeef".to_string()];
     let parameters_sha256 = crate::results::parameters_sha256(&parameters);
-    let computation = engine_adapter::quarto_computation_fingerprint(
+    let computation = computation_fingerprint(
         source,
         "paper.qmd",
         "html",
@@ -593,7 +623,7 @@ fn computation_fingerprint_includes_declared_snapshot_inputs() {
     let source = "```{r}\nread.csv('data/input.csv')\n```\n";
     let parameters = crate::results::parameters_sha256(&BTreeMap::new());
     let dependencies = vec!["data/input.csv\0deadbeef".to_string()];
-    let adapter = engine_adapter::quarto_computation_fingerprint(
+    let adapter = computation_fingerprint(
         source,
         "paper.qmd",
         "html",

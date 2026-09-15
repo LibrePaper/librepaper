@@ -80,11 +80,9 @@ pub(super) fn link_expiry(asked: &str) -> Result<String, String> {
     Ok(crate::util::format_unix(crate::util::now_unix() + seconds))
 }
 
-/// Which provider a stored id belongs to, read off its prefix; a bare id from
-/// before providers existed is GitHub's, as `stored_id` says.
+/// The provider namespace of a catalog account identity.
 pub(super) fn provider_of(id: &str) -> String {
-    stored_id(id)
-        .split_once(':')
+    id.split_once(':')
         .map(|(provider, _)| provider.to_string())
         .unwrap_or_default()
 }
@@ -131,7 +129,11 @@ impl Server {
     /// Mints this document's read link, replacing any it had, and returns the
     /// path to hand out. The key is generated before the write, as the share
     /// route does, since the write is what commits it.
-    pub(super) async fn mint_read_link(&self, slug: &str) -> Result<String, ModifyError> {
+    pub(super) async fn mint_read_link(
+        &self,
+        slug: &str,
+        caller: &Caller,
+    ) -> Result<String, ModifyError> {
         let key = mint_link_key();
         let link = LinkGrant {
             hash: hash_link_key(&key),
@@ -140,8 +142,16 @@ impl Server {
             since: crate::util::timestamp(),
             ..Default::default()
         };
+        let actor = crate::document::store::MutationActor {
+            account_id: caller.id.clone(),
+            owner_key: caller.key.clone(),
+            session_generation: caller.session_generation.clone(),
+            link_hash: String::new(),
+            policy_editor: true,
+            unowned_publisher: caller.id.is_empty(),
+        };
         self.store
-            .modify(slug, |entry| {
+            .modify_as_owner(slug, &actor, |entry| {
                 entry.set_link(link.clone());
                 Ok(())
             })
@@ -149,18 +159,6 @@ impl Server {
         Ok(format!("/docs/{slug}#k={key}"))
     }
 
-    /// The read link a document already has, as a path, when it is live and
-    /// its key was kept; what a revision hands back so the command line can
-    /// print something worth sending without minting anything.
-    pub(super) fn read_link_of(entry: &IndexEntry) -> Value {
-        let now = crate::util::now_unix();
-        match entry.link_for(Role::Reader) {
-            Some(link) if link.live_at(now) && !link.key.is_empty() => {
-                Value::String(format!("/docs/{}#k={}", entry.slug, link.key))
-            }
-            _ => Value::Null,
-        }
-    }
     /// Who a document is shared with, and -- for its owner -- the changes to
     /// that. Reading takes a place on the document by name, so a commenter can
     /// see who else is in the room; a reader who arrived by link is not shown
@@ -285,7 +283,6 @@ impl Server {
             session_generation: current_who.id.session_generation.clone(),
             link_hash: current_who.link.clone(),
             policy_editor: self.publishers.allows(&current_who.id.handle),
-            automation: current_who.automation,
             unowned_publisher: false,
         };
         let updated = self
@@ -340,12 +337,14 @@ impl Server {
         // to what it is holding.
         self.reauthorize(slug).await;
         let mut answer = self.sharing_json(&entry);
-        if let Some((key, _)) = minted {
-            // The document keeps this link's key from here on -- see
-            // `LinkGrant::key` -- but it is worth putting at the top level too,
-            // since this is the response the dialog and the command line are
-            // actually looking at right after asking for it.
+        if let Some((key, link)) = minted {
+            // This response is the only time the raw capability exists. Put
+            // it both in the compatibility field and in the role row the
+            // dialog renders; later GETs intentionally expose metadata only.
+            let url = format!("/docs/{slug}#k={key}");
             answer["key"] = json!(key);
+            answer["links"][link.role.as_str()]["key"] = json!(key);
+            answer["links"][link.role.as_str()]["url"] = json!(url);
         }
         write_json(200, &answer)
     }
@@ -517,83 +516,40 @@ impl Server {
             return write_json(404, &json!({"error": "not found"}));
         }
         // The earlier viewer check is only for a non-enumerating HTTP reply.
-        // Recheck ownership on the authoritative row under SQLite's write
-        // lock before changing anything; transfers and revocations racing
+        // Recheck ownership in the authoritative PostgreSQL transaction before
+        // changing anything; transfers and revocations racing
         // this request therefore have a single winner.
-        if let Some(catalog) = &self.store.catalog {
-            let now = crate::util::timestamp();
-            if let Err(error) = crate::server::upsert_account_job(
-                catalog,
-                crate::storage::catalog::Account {
-                    id: account.id.clone(),
-                    provider: account.provider.clone(),
+        {
+            let catalog = &self.store.catalog;
+            let target = match catalog
+                .upsert_registered_account(crate::storage::postgres::NewAccount {
+                    kind: "registered".into(),
+                    provider: Some(account.provider.clone()),
+                    provider_subject: Some(account.id.clone()),
                     handle: account.handle.clone(),
-                    name: account.name.clone(),
-                    email: String::new(),
-                    first_seen: now.clone(),
-                    last_seen: now,
-                    plan: "default".into(),
-                    status: "active".into(),
-                    session_generation: if cfg!(test) {
-                        "test-session-generation".into()
-                    } else {
-                        random_token()
-                    },
-                    erasure_cursor: None,
-                },
-            )
-            .await
-            {
-                eprintln!("could not record transfer target: {error}");
-                return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
-            }
-            let caller_id = current_who
-                .id
-                .is_signed_in()
-                .then_some(current_who.id.id.as_str());
-            // The transfer re-checks the caller id and session generation
-            // inside its own write, so a caller cancelled after dispatch
-            // either transferred the document under the authority it proved
-            // or did not transfer it at all; there is no partial state and
-            // nothing to undo.
-            let transfer_slug = slug.to_string();
-            let caller_id = caller_id.map(str::to_owned);
-            let caller_key = current_who.key.clone();
-            let caller_generation = current_who
-                .id
-                .is_signed_in()
-                .then(|| current_who.id.session_generation.clone());
-            let new_owner = account.id.clone();
-            let per_owner = self.config.storage.per_owner;
-            if let Err(error) = catalog
-                .execute_catalog(
-                    crate::server::SERVER_JOB_BYTES + transfer_slug.len(),
-                    move |catalog| {
-                        catalog.transfer_ownership_authorized_with_generation(
-                            &transfer_slug,
-                            caller_id.as_deref(),
-                            &caller_key,
-                            caller_generation.as_deref(),
-                            &new_owner,
-                            per_owner,
-                        )
-                    },
-                )
+                    display_name: account.name.clone(),
+                    email: None,
+                })
                 .await
-                .map_err(crate::storage::catalog::CatalogError::from)
             {
-                return match error {
-                    crate::storage::catalog::CatalogError::NotFound => {
-                        write_json(404, &json!({"error": "not found"}))
-                    }
-                    crate::storage::catalog::CatalogError::Conflict(message) => {
-                        write_json(409, &json!({"error": message}))
-                    }
-                    error => {
-                        eprintln!("could not authorize transfer of {slug}: {error}");
-                        write_json(500, &json!({"error": "could not record the change"}))
-                    }
-                };
+                Ok(target) => target,
+                Err(error) => {
+                    eprintln!("could not record transfer target: {error}");
+                    return write_json(503, &json!({"error":"catalogue temporarily unavailable"}));
+                }
+            };
+            let Some(document) = catalog.document_by_slug(slug).await.ok().flatten() else {
+                return write_json(404, &json!({"error":"not found"}));
+            };
+            if uuid::Uuid::parse_str(&current_who.id.id).ok() != Some(document.owner_id) {
+                return write_json(409, &json!({"error":"ownership changed"}));
+            }
+            if let Err(error) = catalog
+                .update_document_identity(document.id, &document.title, target.id, "owned")
+                .await
+            {
+                eprintln!("could not transfer {slug}: {error}");
+                return write_json(500, &json!({"error":"could not record the change"}));
             }
         }
         // The catalogue path has already committed the ownership change in
@@ -602,24 +558,12 @@ impl Server {
         // quite correctly sees the new owner and would reject a successful
         // transfer as an ownership race. Legacy stores have no catalogue
         // transaction, so retain the ownership guard around their write.
-        let moved = if self.store.catalog.is_some() {
+        let moved = {
             self.store
                 .get_result(slug)
                 .await
                 .map_err(|error| ModifyError::Storage(error.to_string()))
                 .and_then(|entry| entry.ok_or(ModifyError::NotFound))
-        } else {
-            self.store
-                .modify(slug, |entry| {
-                    if !entry.owned_by(&current_who.key, &current_who.id.id) {
-                        return Err("ownership changed".into());
-                    }
-                    entry.publisher = account.handle.clone();
-                    entry.publisher_id = account.id.clone();
-                    entry.publisher_name = account.name.clone();
-                    Ok(())
-                })
-                .await
         };
         match moved {
             Ok(entry) => {

@@ -8,11 +8,11 @@
   import Modal from "../Modal.svelte";
   import { offered, search } from "./registry.js";
   import EditorSettings from "./EditorSettings.svelte";
-  import DictationSettings from "./DictationSettings.svelte";
   import StorageSettings from "./StorageSettings.svelte";
-  import CompilerSettings from "./CompilerSettings.svelte";
+  import BuildSettings from "./BuildSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
   import LocalAppSettings from "./LocalAppSettings.svelte";
+  import AccountSettings from "./AccountSettings.svelte";
 
   let {
     open = $bindable(false),
@@ -23,18 +23,22 @@
     keys = "default",
     onkeys,
     // The LaTeX project.
-    latexSettings = { engine: "auto" },
-    onlatexsettings,
+    buildPreferences = {},
+    documentId = "",
+    userId = "anonymous",
+    onbuildpreferences,
     // The Quarto project and the local app it renders on.
     bindingId = "",
     main = "",
     onbindingid,
     options,
-    viewing = null,
     onapplyoptions,
+    // Who is signed in, which is what the account category is about. `{}`
+    // when nobody is, and then that category is not offered at all.
+    account = {},
   } = $props();
 
-  const context = $derived({ format: sourceFormat, mayEdit });
+  const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider) });
   const available = $derived(offered(context));
   // The category shown: the one asked for, or the first offered when that is
   // not (the document changed format, or this browser lost the right to edit).
@@ -78,16 +82,16 @@
         </header>
         {#if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} />
-        {:else if shown.id === "dictation"}
-          <DictationSettings />
         {:else if shown.id === "storage"}
           <StorageSettings />
-        {:else if shown.id === "compiler"}
-          <CompilerSettings {latexSettings} {onlatexsettings} />
+        {:else if shown.id === "build"}
+          <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
         {:else if shown.id === "rendering"}
-          <RenderingSettings {options} {viewing} {onapplyoptions} />
+          <RenderingSettings {options} {onapplyoptions} />
         {:else if shown.id === "local"}
           <LocalAppSettings {main} {sourceFormat} {bindingId} {onbindingid} />
+        {:else if shown.id === "account"}
+          <AccountSettings {account} />
         {/if}
       {/if}
     </div>

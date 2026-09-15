@@ -10,14 +10,14 @@
   {#snippet children(toast)}
     <Toast
       {toast}
-      class="card w-80 p-4 shadow-lg {toast.type === 'error'
+      class="card toast-card p-4 shadow-lg {toast.type === 'error'
         ? 'preset-filled-error-500'
         : toast.type === 'success'
           ? 'preset-filled-success-500'
           : 'preset-filled-surface-200-800'}"
     >
       <div class="flex items-start justify-between gap-3">
-        <Toast.Description class="text-sm" />
+        <Toast.Description class="text-sm">{toast.description}</Toast.Description>
         <Toast.CloseTrigger class="btn-icon btn-icon-sm" aria-label="Dismiss">×</Toast.CloseTrigger>
       </div>
     </Toast>

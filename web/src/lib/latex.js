@@ -1,10 +1,8 @@
-// LaTeX, compiled in this browser, with the local companion as fallback.
+// LaTeX, compiled in this browser.
 //
 // This controller owns exactly
 // one module worker running the browser engine, speaks the worker message protocol to it,
-// and decides -- through `latex/route.js`'s pure state machine -- when a
-// Biber request or a browser failure should instead go to the author's local
-// LibrePaper app. `latex/jobs.js` gives every compile its identity, `latex/
+// and runs browser Biber when needed. `latex/jobs.js` gives every compile its identity, `latex/
 // bibliography.js` reads the real aux/bcf/log a pass produced rather than
 // guessing from source text, and `latex/status.js` is the store the reader's
 // badge subscribes to.
@@ -18,35 +16,17 @@
 //     generation is older than the newest one already resolved must never
 //     become `status().lastResult` -- an edit made and then undone within a
 //     debounce window must not flicker the preview backwards.
-//   - A browser Biber infrastructure failure may use the local companion,
-//     while an input error is reported immediately and is never retried.
+//   - Browser Biber failures are reported immediately and are never retried
+//     through another backend.
 //
-// `latex/local.js` and `latex/worker.js` belong to the
-// packages building the engine adapter and local bridge client
-// alongside this one. Every reference to the first two goes through a
-// dynamic `import()`, and the worker through a constructor tests can
-// replace, precisely so this file loaded and its own checks ran even before
-// those modules existed -- and it keeps working unchanged now that they do,
-// because this file was written against the interfaces they promised, not
-// their earlier absence. `_testing.inject` is how `latex-controller.mjs`
-// supplies fakes for all three; see its doc comment below. `latex/engine.js`
+// `latex/worker.js` is loaded through a constructor tests can replace.
+// `_testing.inject` is how `latex-controller.mjs` supplies fakes; see its doc
+// comment below. `latex/engine.js`
 // is different: it is a small, dependency-free module, so it is imported
 // statically like any ordinary dependency.
 
 import * as jobsMod from "./latex/jobs.js";
 import * as bibliography from "./latex/bibliography.js";
-import * as routeMod from "./latex/route.js";
-
-// Every decision is traced with its event, so a routing question is
-// answerable from the console rather than from a rebuild.
-const route = {
-  ...routeMod,
-  decide(event, state) {
-    const decision = routeMod.decide(event, state);
-    trace("route", event.type, "->", decision.action, decision.failure ? decision.failure.kind : "", event.message ? JSON.stringify(String(event.message).slice(0, 200)) : "", event.validBcf === undefined ? "" : `bcf=${event.validBcf}`);
-    return decision;
-  },
-};
 import * as statusStore from "./latex/status.js";
 import * as logMod from "./latex/log.js";
 import * as engineMod from "./latex/engine.js";
@@ -59,8 +39,7 @@ export const DEFAULT_BASE = "https://latex.librepaper.workers.dev/";
 
 /// The whole job's time budget and the bounded pass count SPEC "Browser
 /// compilation controller" asks for. Both are exceeded as a reported
-/// `failure.kind: "timeout"`, eligible for the same native fallback as any
-/// other browser failure.
+/// `failure.kind: "timeout"`.
 export const DEADLINE_MS = 240_000;
 export const MAX_PASSES = 8;
 
@@ -71,7 +50,6 @@ let base = DEFAULT_BASE;
 // is what lets this file's own logic run under Node with no worker, no
 // network and no real local app anywhere in reach.
 let WorkerClass = typeof Worker !== "undefined" ? Worker : null;
-let localOverride; // undefined = try the real module; anything else, including null, is used as-is
 let biberOverride;
 let biberModule;
 let resourcesOverride;
@@ -105,12 +83,10 @@ let activeCallbacks = null; // { waiting, failing } for that same job
 let jobGeneration = 0;
 let newestResolvedGeneration = -1;
 
-// Routing and bibliography state persist for the whole session (SPEC:
-// "keep that project on the native route for the current editing session";
-// `bibCache` is keyed by `bibliography.identity()`'s hash,
+// Bibliography state persists for the whole session; `bibCache` is keyed by
+// `bibliography.identity()`'s hash,
 // so a citation, database or style change simply misses it rather than
 // needing an explicit invalidation path.
-let routeState = route.initialState({});
 const bibCache = new Map(); // identity -> BiberResult
 let lastStaged = null; // { project, inputs, bibIdentity, generated }
 
@@ -191,13 +167,12 @@ async function loadManifest() {
 export function configure({ project, settings: nextSettings, mayCompile = true } = {}) {
   const changedProject = project !== currentProject;
   currentProject = project;
-  currentSettings = { engine: "auto", ...(nextSettings || {}) };
+  currentSettings = normalizeSettings(nextSettings);
   delete currentSettings.release;
   if (changedProject) {
     cancel();
     jobGeneration = 0;
     newestResolvedGeneration = -1;
-    routeState = route.initialState({});
     bibCache.clear();
     lastStaged = null;
   }
@@ -205,13 +180,6 @@ export function configure({ project, settings: nextSettings, mayCompile = true }
     phase: "idle",
     engine: currentSettings.engine === "auto" ? null : currentSettings.engine,
     release: null,
-    route: routeState.route,
-  });
-  // The local bridge scopes its pairing to (origin, project), so it learns
-  // both the moment the reader names the project; a token issued to one
-  // document never rides along to another.
-  void getLocal().then((local) => {
-    local?.configure?.({ project, origin: typeof location !== "undefined" ? location.origin : "" });
   });
   void mayCompile; // reserved for the reader's own read-only gating, not this module's
 }
@@ -220,12 +188,18 @@ export function settings() {
   return currentSettings;
 }
 
+function normalizeSettings(next = {}) {
+  const backend = ["auto", "browser", "local"].includes(next.backend) ? next.backend : "auto";
+  const tool = typeof next.tool === "string" && next.tool ? next.tool : "tex";
+  const engine = ["auto", "pdflatex", "xelatex", "lualatex"].includes(next.engine) ? next.engine : "auto";
+  return { engine, backend, tool, output: next.output || "pdf", preset: typeof next.preset === "string" ? next.preset : "", options: next.options && typeof next.options === "object" ? { ...next.options } : {} };
+}
+
 /// An engine change clears the bibliography cache and starts a fresh routing
 /// session rather than trying to reconcile artifacts across toolchains.
 export function setSettings(next) {
-  currentSettings = { ...currentSettings, ...next };
+  currentSettings = normalizeSettings({ ...currentSettings, ...next });
   delete currentSettings.release;
-  routeState = route.initialState({});
   bibCache.clear();
   lastStaged = null;
   configuredRelease = null; // the next compile must (re)configure the worker for the new release
@@ -381,17 +355,8 @@ function classifyWorkerError(error, fallbackKind) {
   return error?.name === "WorkerDied" ? "init" : fallbackKind;
 }
 
-// --- Backend seams (local LibrePaper, browser Biber)
+// --- Backend seams (browser Biber)
 // ----------------------------
-
-async function getLocal() {
-  if (localOverride !== undefined) return localOverride;
-  try {
-    return await import("./latex/local.js");
-  } catch {
-    return null;
-  }
-}
 
 async function getResources() {
   if (resourcesOverride !== undefined) return resourcesOverride;
@@ -400,13 +365,6 @@ async function getResources() {
   } catch {
     return null;
   }
-}
-
-function classifyLocalError(error) {
-  const name = error?.name;
-  if (name === "ToolMissing") return "local-tool-missing";
-  if (name === "Denied" || name === "Unauthorized") return "local-denied";
-  return "local-unreachable";
 }
 
 // --- Small helpers over trees and worker outputs ----------------------------
@@ -464,218 +422,41 @@ function buildResult({ job, attempts, startedAt, ok, pdf = null, synctex = null,
   };
 }
 
-// --- Bibliography routing ---------------------------------------------------
-
-/// Drives `route.js`'s state machine for one bibliography requirement, from
-/// the initial `biber-needed` decision through every follow-up event a real
-/// attempt's outcome produces, until it either has a `BiberResult` or a
-async function runBibliography({ request, attempts, engine, release, token }) {
-  if (release?.engines?.biber) {
-    statusStore.set({ phase: "browser-biber", message: "Updating bibliography in browser", backend: "browser" });
-    try {
-      const backend = biberOverride !== undefined ? biberOverride : (biberModule ||= await import("./latex/biber.js"));
-      if (token.cancelled) throw supersededError();
-      const outcome = await backend.runBiber(request, {
-        base: absoluteBase(), release, signal: token.abort.signal,
-        onProgress: progress => { if (!token.cancelled) statusStore.set({ progress }); },
-      });
-      if (token.cancelled) throw supersededError();
-      attempts.push({ stage: "browser-biber", backend: "browser", ok: outcome.ok, log: outcome.blg || "", tool: outcome.tool?.version });
-      if (!outcome.ok) return { ok: false, failure: { kind: "bibliography", message: outcome.error || outcome.blg || "Biber failed", stage: "browser-biber" } };
-      return { ok: true, result: outcome };
-    } catch (error) {
-      if (token.cancelled || error?.name === "AbortError") throw supersededError();
-      // A runtime/download failure can still use the existing local fallback.
-      // A Biber input error above is terminal and is never rerun elsewhere.
-      attempts.push({ stage: "browser-biber", backend: "browser", ok: false, reason: "init", log: String(error) });
-    }
-  }
-  routeState = { ...routeState, snapshot: request.job.snapshot };
-  let decision = route.decide(
-    { type: "biber-needed", identity: request.identity, validBcf: Boolean(request.bcf) },
-    routeState,
-  );
-  routeState = decision.state;
-
-  for (;;) {
-    if (decision.action === "try-local-biber") {
-      statusStore.set({ phase: "checking-local", message: "Checking local LibrePaper", backend: null });
-      const local = await getLocal();
-      if (!local) {
-        decision = route.decide(
-          {
-            type: "local-unreachable",
-            identity: request.identity,
-            validBcf: Boolean(request.bcf),
-            onlyBibliography: true,
-          },
-          routeState,
-        );
-        routeState = decision.state;
-        continue;
-      }
-      statusStore.set({ phase: "local-biber", message: "Running local Biber", backend: "local" });
-      let outcome;
-      try {
-        outcome = await local.runBiber(request, {});
-      } catch (error) {
-        decision = route.decide(
-          {
-            type: classifyLocalError(error),
-            identity: request.identity,
-            validBcf: Boolean(request.bcf),
-            onlyBibliography: true,
-            message: error?.message,
-          },
-          routeState,
-        );
-        routeState = decision.state;
-        continue;
-      }
-      if (outcome.incompatible) {
-        let localTexAvailable = false;
-        try {
-          const caps = await local.capabilities({});
-          localTexAvailable = Boolean(caps?.tools?.[engine]?.available);
-        } catch {
-          /* treated as no usable local TeX */
-        }
-        decision = route.decide(
-          {
-            type: "local-incompatible",
-            identity: request.identity,
-            validBcf: Boolean(request.bcf),
-            localTexAvailable,
-            message: outcome.error,
-          },
-          routeState,
-        );
-        routeState = decision.state;
-        continue;
-      }
-      if (!outcome.ok) {
-        decision = route.decide({ type: "local-biber-failed", message: outcome.error }, routeState);
-        routeState = decision.state;
-        continue;
-      }
-      attempts.push({ stage: "local-biber", backend: "local", ok: true, log: outcome.blg || "", tool: outcome.tool?.version });
-      return { ok: true, result: outcome };
-    }
-
-    // "stop" or "show-browser": terminal. Both leave the browser's own last
-    // pass as the thing to present; the difference is only in whether the
-    // controller keeps that pass's PDF (show-browser) or has nothing to show
-    // at all because browser TeX itself never produced one (stop, reached
-    // only from paths above that cannot occur once a bcf/aux already exists
-    // -- see the callers).
-    return { ok: false, failure: decision.failure, showBrowser: decision.action === "show-browser" };
-  }
-}
-
-// --- Native and browser-failure handling ------------------------------------
-
-async function localTexAvailableFor(engine) {
-  const local = await getLocal();
-  if (!local) return { local: null, available: false };
-  try {
-    const caps = await local.capabilities({});
-    return { local, available: Boolean(caps?.tools?.[engine]?.available) };
-  } catch {
-    return { local, available: false };
-  }
-}
-
-async function runNative({ job, tree, engine, releaseId, attempts, startedAt }) {
-  const local = await getLocal();
-  if (!local) {
-    return buildResult({
-      job,
-      attempts,
-      startedAt,
-      ok: false,
-      failure: { kind: "local-unavailable", message: "Local LibrePaper is unavailable", stage: "native" },
-      provenance: baseProvenance(engine, releaseId),
-    });
-  }
-  statusStore.set({ phase: "native", message: "Compiling locally", backend: "local", progress: null });
-  let result;
-  try {
-    result = await local.runTex({ job, tree, engine, main: tree.main }, {});
-  } catch (error) {
-    routeState = route.decide({ type: "native-failed", message: String(error?.message || error) }, routeState).state;
-    attempts.push({ stage: "native", backend: "local", ok: false, log: String(error?.message || error) });
-    return buildResult({
-      job,
-      attempts,
-      startedAt,
-      ok: false,
-      failure: { kind: "native", message: String(error?.message || error), stage: "native" },
-      provenance: baseProvenance(engine, releaseId),
-    });
-  }
-  if (!result.ok) {
-    routeState = route.decide({ type: "native-failed", message: result.error || "The local build failed" }, routeState).state;
-    attempts.push({ stage: "native", backend: "local", ok: false, log: result.log || "" });
-    return buildResult({
-      job,
-      attempts,
-      startedAt,
-      ok: false,
-      log: result.log,
-      diagnostics: result.diagnostics,
-      failure: { kind: "native", message: result.error || "The local build failed", stage: "native" },
-      provenance: result.provenance || baseProvenance(engine, releaseId),
-    });
-  }
-  routeState = route.decide({ type: "native-ok" }, routeState).state;
-  statusStore.set({ route: "native" });
-  attempts.push({ stage: "native", backend: "local", ok: true, log: result.log || "" });
-  return buildResult({
-    job,
-    attempts,
-    startedAt,
-    ok: true,
-    pdf: result.pdf,
-    synctex: result.synctex,
-    log: result.log,
-    diagnostics: result.diagnostics,
-    failure: null,
-    provenance: result.provenance || { backend: "local", bibliography: null, engine, release: null, tools: {} },
-  });
-}
-
-/// SPEC-latex.md "Precise failure messages": when the bundle index itself
-/// says a `.sty`/`.cls` a document asked for is not in the browser mirror
-/// (`worker.js`'s `tex()` reads this off the resolver evidence, see
-/// driver.js), name it instead of the generic "the document failed to
-/// compile", and show the same one-line pairing instruction the rest of the
-/// interface already uses for "get the local app involved" -- see
-/// `latex/local.js`'s `pairingInstruction()`. `null` when nothing was
-/// reported absent, so the caller's ordinary message stands.
+/// When the bundle index says a requested `.sty`/`.cls` is absent from the
+/// browser mirror, name it instead of the generic compile failure.
 async function mirrorAbsentMessage(mirrorAbsent) {
   const names = [...new Set(Array.isArray(mirrorAbsent) ? mirrorAbsent : [])];
   if (!names.length) return null;
-  const local = await getLocal();
-  const instruction = local?.pairingInstruction
-    ? local.pairingInstruction()
-    : "Run `librepaper local start` on this computer and enter the pairing code it prints.";
   const named = names.length === 1 ? `"${names[0]}"` : `"${names[0]}" and ${names.length - 1} more`;
-  return `Package ${named} is not available in the browser mirror. ${instruction}`;
+  return `Package ${named} is not available in the browser mirror.`;
 }
 
-async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, kind, message }) {
-  routeState = { ...routeState, snapshot: job.snapshot };
+// What this browser cannot do, in the document's own terms.
+//
+// The engine's error for a document that wants LuaTeX or shell-escape is a
+// true statement about a macro and a useless one about the situation:
+// "Undefined control sequence" for \\directlua, "-shell-escape" for minted.
+// LibrePaper builds LaTeX in the browser and nowhere else, so these are
+// permanent limits of this document here, not transient errors -- saying so
+// is more use than a control sequence name.
+function unsupportedReason(source, log) {
+  if (engineMod.needsLuaTeX(source)) {
+    return "This document needs LuaTeX, which LibrePaper's browser compiler does not include. LuaTeX-only packages and \\directlua cannot be built here.";
+  }
+  if (/shell-escape|\\write18|runsystem\(/i.test(log)) {
+    return "This document asks LaTeX to run another program (shell-escape), which a browser cannot do. Packages like minted, svg and gnuplot backends need it; a pre-rendered figure does not.";
+  }
+  return "";
+}
+
+async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, startedAt, kind, message, signal }) {
   // The failure's own words are the reason; the log is the engine's, from
   // the attempt that just failed, and the diagnostics are read out of it so
   // a missing package or an undefined control sequence lands in the gutter
-  // rather than behind a generic sentence.
+  // rather than behind a generic sentence. A limit this compiler simply does
+  // not have replaces that reason: the engine's complaint is a symptom.
   const lastLog = [...attempts].reverse().find((one) => one.stage === "browser")?.log || "";
-  const { available: localUsable } = await localTexAvailableFor(engine);
-  const decision = route.decide({ type: "browser-failed", kind, message, localUsable }, routeState);
-  routeState = decision.state;
-  if (decision.action === "try-native") {
-    return runNative({ job, tree, engine, releaseId, attempts, startedAt });
-  }
+  const unsupported = unsupportedReason(tree?.texts?.[tree?.main] ?? "", lastLog);
   return buildResult({
     job,
     attempts,
@@ -683,7 +464,11 @@ async function handleBrowserFailure({ job, tree, engine, releaseId, attempts, st
     ok: false,
     log: lastLog,
     diagnostics: lastLog ? logMod.parse(lastLog, { main: tree.main, paths: treePaths(tree) }) : [],
-    failure: decision.failure || { kind, message, stage: "browser" },
+    failure: {
+      kind: unsupported ? "unsupported" : kind,
+      message: unsupported || message,
+      stage: "browser",
+    },
     provenance: baseProvenance(engine, releaseId),
   });
 }
@@ -729,8 +514,6 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
   checkpoint();
 
   const attempts = [];
-  routeState = { ...routeState, snapshot: job.snapshot };
-
   const releaseEntry = manifestData.releases?.[releaseId];
   if (!releaseEntry) {
     return buildResult({
@@ -748,18 +531,21 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       provenance: baseProvenance(engine, releaseId),
     });
   }
+  // LuaLaTeX is never selected for the author (see `engine.js`'s `detect`);
+  // reaching here means the setting or a `% !TEX engine` directive asked for
+  // it by name. No release ships LuaTeX, so say that rather than implying a
+  // later release might, or that the document is at fault.
   if (engine === "lualatex" && !releaseEntry.engines?.luatex) {
     return buildResult({
       job, attempts, startedAt, ok: false,
-      failure: { kind: "resources", message: "LuaLaTeX is not available in this release", stage: "browser" },
+      failure: {
+        kind: "unsupported",
+        message: "LibrePaper's browser compiler does not include LuaTeX. Choose pdfLaTeX or XeLaTeX, or remove the LuaLaTeX directive.",
+        stage: "browser",
+      },
       provenance: baseProvenance(engine, releaseId),
     });
   }
-  // "Keep that project on the native route for the current editing session."
-  if (routeState.route === "native") {
-    return runNative({ job, tree, engine, releaseId, attempts, startedAt });
-  }
-
   statusStore.set({ phase: "loading", message: "Loading browser compiler", backend: "browser", release: releaseId, engine, progress: null });
 
   let target;
@@ -774,6 +560,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       releaseId,
       attempts,
       startedAt,
+      signal: token.abort.signal,
       kind: classifyWorkerError(error, "init"),
       message: String(error?.message || error),
     });
@@ -794,6 +581,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
       releaseId,
       attempts,
       startedAt,
+      signal: token.abort.signal,
       kind: classifyWorkerError(error, "resources"),
       message: String(error?.message || error),
     });
@@ -821,6 +609,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         releaseId,
         attempts,
         startedAt,
+        signal: token.abort.signal,
         kind: "timeout",
         message: "The compile exceeded its time budget.",
       });
@@ -841,6 +630,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         releaseId,
         attempts,
         startedAt,
+        signal: token.abort.signal,
         kind: timedOut ? "timeout" : classifyWorkerError(error, "tex"),
         message: String(error?.message || error),
       });
@@ -861,6 +651,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
         releaseId,
         attempts,
         startedAt,
+        signal: token.abort.signal,
         kind: "tex",
         message: (await mirrorAbsentMessage(reply.mirrorAbsent)) || "The document failed to compile.",
       });
@@ -894,33 +685,25 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
       let bibResult = bibCache.get(identity) || null;
       if (bibResult) {
-        bibliographyProvenance = kind === "biber" ? (bibResult.tool?.backend === "browser" ? "browser-biber" : "local-biber") : "bibtex";
+        bibliographyProvenance = kind === "biber" ? "browser-biber" : "bibtex";
         if (bibResult.tool?.version) bibliographyTools = { ...bibliographyTools, biber: bibResult.tool.version };
       } else if (useBiber) {
         const request = { job, stem, main: tree.main, bcf: controlBytes, files, identity };
-        const routed = await runBibliography({ request, attempts, engine, release: releaseEntry, token });
-        checkpoint();
-        if (!routed.ok) {
-          if (routed.showBrowser) {
-            attempts.push({ stage: "browser", backend: "browser", ok: true, log: finalLog });
-            return buildResult({
-              job,
-              attempts,
-              startedAt,
-              ok: true,
-              pdf: lastPdf,
-              synctex: lastSynctex,
-              log: finalLog,
-              diagnostics: logMod.parse(finalLog, { main: tree.main, paths: treePaths(tree) }),
-              failure: routed.failure,
-              provenance: { backend: "browser", bibliography: null, engine, release: releaseId, tools: {} },
-            });
-          }
-          return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: routed.failure, provenance: baseProvenance(engine, releaseId) });
+        statusStore.set({ phase: "browser-biber", message: "Updating bibliography in browser", backend: "browser" });
+        try {
+          const backend = biberOverride !== undefined ? biberOverride : (biberModule ||= await import("./latex/biber.js"));
+          bibResult = await backend.runBiber(request, {
+            base: absoluteBase(), release: releaseEntry, signal: token.abort.signal,
+            onProgress: progress => { if (!token.cancelled) statusStore.set({ progress }); },
+          });
+        } catch (error) {
+          if (token.cancelled || error?.name === "AbortError") throw supersededError();
+          bibResult = { ok: false, error: String(error?.message || error), blg: String(error), tool: { backend: "browser" } };
         }
-        bibResult = routed.result;
+        attempts.push({ stage: "browser-biber", backend: "browser", ok: bibResult.ok, log: bibResult.blg || "", tool: bibResult.tool?.version });
+        if (!bibResult.ok) return buildResult({ job, attempts, startedAt, ok: false, log: finalLog, failure: { kind: "bibliography", message: bibResult.error || bibResult.blg || "Biber failed", stage: "browser-biber" }, provenance: baseProvenance(engine, releaseId) });
         bibCache.set(identity, bibResult);
-        bibliographyProvenance = bibResult.tool?.backend === "browser" ? "browser-biber" : "local-biber";
+        bibliographyProvenance = "browser-biber";
         if (bibResult.tool?.version) bibliographyTools = { ...bibliographyTools, biber: bibResult.tool.version };
       } else {
         let reply2;
@@ -1064,7 +847,6 @@ export function cancel() {
     running = false;
     activeToken = null;
   }
-  routeState = route.decide({ type: "canceled" }, routeState).state;
   pump();
 }
 
@@ -1075,53 +857,6 @@ export function status() {
 export function subscribe(listener) {
   return statusStore.subscribe(listener);
 }
-
-/// "Provide 'Try browser compilation' to reset the route."
-export function tryBrowser() {
-  routeState = route.decide({ type: "try-browser" }, routeState).state;
-  statusStore.set({ route: "browser" });
-}
-
-export const local = {
-  async status() {
-    const module = await getLocal();
-    return module ? module.status() : statusStore.get().local;
-  },
-  async connect(code) {
-    const module = await getLocal();
-    if (!module) throw new Error("the local bridge is not available");
-    return module.connect(code);
-  },
-  async disconnect() {
-    const module = await getLocal();
-    if (module) return module.disconnect();
-  },
-  async retry() {
-    const module = await getLocal();
-    if (module) return module.retry();
-  },
-  async setAddress(url) {
-    const module = await getLocal();
-    if (module) return module.setAddress(url);
-  },
-  async address() {
-    const module = await getLocal();
-    return module ? module.address() : "";
-  },
-  async capabilities(opts) {
-    const module = await getLocal();
-    if (!module) throw new Error("the local bridge is not available");
-    return module.capabilities(opts);
-  },
-  async rescan() {
-    const module = await getLocal();
-    if (module) return module.rescan();
-  },
-  async openApp() {
-    const module = await getLocal();
-    return module ? module.openApp() : "Run `librepaper local start` and follow the printed instructions.";
-  },
-};
 
 export const resources = {
   async size() {
@@ -1142,15 +877,11 @@ export const resources = {
   },
 };
 
-/// Test-only injection. Every field is optional; passing `null` for `local`
-/// explicitly simulates "checked and unavailable" rather than
-/// "not yet checked", which the real dynamic import cannot distinguish from
-/// outside. Not part of the public contract -- `latex-controller.mjs` is the
-/// only caller.
+/// Test-only injection. Not part of the public contract --
+/// `latex-controller.mjs` is the only caller.
 export const _testing = {
-  inject({ worker: WorkerOverride, local: localModule, biber: browserBiberModule, resources: resourcesModule, fetch: fetchOverride, now } = {}) {
+  inject({ worker: WorkerOverride, biber: browserBiberModule, resources: resourcesModule, fetch: fetchOverride, now } = {}) {
     if (WorkerOverride !== undefined) WorkerClass = WorkerOverride;
-    if (localModule !== undefined) localOverride = localModule;
     if (browserBiberModule !== undefined) biberOverride = browserBiberModule;
     if (resourcesModule !== undefined) resourcesOverride = resourcesModule;
     if (fetchOverride !== undefined) {
@@ -1165,7 +896,6 @@ export const _testing = {
   },
   reset() {
     WorkerClass = typeof Worker !== "undefined" ? Worker : null;
-    localOverride = undefined;
     biberOverride = undefined;
     biberModule?.cancel();
     biberModule = undefined;

@@ -33,6 +33,17 @@ function protocol(socket) {
   });
 }
 
+function bidiValue(remote) {
+  if (!remote || typeof remote !== "object" || !("type" in remote)) return remote;
+  if (remote.type === "undefined") return undefined;
+  if (remote.type === "null") return null;
+  if (remote.type === "array") return remote.value.map(bidiValue);
+  if (remote.type === "object") {
+    return Object.fromEntries(remote.value.map(([key, value]) => [key, bidiValue(value)]));
+  }
+  return remote.value;
+}
+
 export async function browser(name, directory, port) {
   mkdirSync(directory, { recursive: true });
   const browserArgs = name === "firefox"
@@ -64,7 +75,7 @@ export async function browser(name, directory, port) {
       const evaluate = async (expression, frame = context) => {
         const result = await send("script.evaluate", { expression, target: { context: frame }, awaitPromise: true });
         if (result.type === "exception") throw new Error(result.exceptionDetails.text);
-        return result.result.value;
+        return bidiValue(result.result);
       };
       return {
         close, evaluate,

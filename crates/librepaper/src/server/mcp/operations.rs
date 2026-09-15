@@ -24,6 +24,8 @@ pub(super) struct Candidate {
     pub patches: Vec<Patch>,
     pub dependencies: Vec<agent::Dependency>,
     pub operation: OperationKey,
+    #[serde(default)]
+    pub parent_request_id: String,
     pub digest: String,
     pub validation: String,
     pub publish: String,
@@ -38,27 +40,10 @@ struct Admission {
     digest: String,
 }
 
-fn batch_parent(key: &OperationKey) -> String {
-    let Some((parent, index)) = key.id.rsplit_once('-') else {
-        return String::new();
-    };
-    if parent.len() == 70
-        && parent.starts_with("agent-")
-        && parent[6..].bytes().all(|b| b.is_ascii_hexdigit())
-        && index.parse::<usize>().is_ok_and(|index| index < 100)
-    {
-        parent.to_owned()
-    } else {
-        String::new()
-    }
-}
-
 pub(super) fn failure(error: agent::AgentError) -> Failure {
     let code = match error {
         agent::AgentError::Invalid(_) => "invalid_params",
         agent::AgentError::Conflict(_) => "conflict",
-        agent::AgentError::OperationKeyReused => "operation_key_reused",
-        agent::AgentError::ExpiredEpoch => "expired_epoch",
         agent::AgentError::NotFound => "not_found",
         agent::AgentError::Storage(_) => "outcome_unknown",
     };
@@ -119,6 +104,7 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         key: &OperationKey,
         digest: &str,
     ) -> Result<(), Failure> {
@@ -128,6 +114,7 @@ impl Server {
             .mcp_store(
                 slug,
                 actor,
+                who,
                 &id,
                 "admission",
                 &Admission {
@@ -138,7 +125,7 @@ impl Server {
             .await
         {
             if self
-                .mcp_load::<Admission>(slug, actor, &id, "admission")
+                .mcp_load::<Admission>(slug, actor, who, &id, "admission")
                 .await
                 .is_ok_and(|old| old.digest != digest)
             {
@@ -150,54 +137,6 @@ impl Server {
             return Err(error);
         }
         Ok(())
-    }
-
-    pub(super) async fn mcp_cancelled_children(
-        &self,
-        slug: &str,
-        actor: &str,
-        key: &OperationKey,
-        mut result: Value,
-    ) -> Result<Value, Failure> {
-        if result["status"] != "cancel_requested" {
-            return Ok(result);
-        }
-        let Some(catalog) = &self.store.catalog else {
-            return Ok(result);
-        };
-        let parent = key.scoped_request_id(actor);
-        let keys = (0..100)
-            .map(|index| {
-                (
-                    index,
-                    OperationKey {
-                        epoch: key.epoch.clone(),
-                        id: format!("{parent}-{index}"),
-                    }
-                    .scoped_request_id(actor),
-                )
-            })
-            .collect::<Vec<_>>();
-        let slug = slug.to_owned();
-        let children = catalog.execute_catalog(8192, move |catalog| {
-            let Some(document) = catalog.document(&slug)? else { return Ok(Vec::new()); };
-            let mut items = Vec::new();
-            for (index, id) in keys {
-                if let Some(row) = catalog.operation(&document.storage_id, &id)? {
-                    if row.status == "committed" {
-                        if let Ok(value) = serde_json::from_str::<Value>(&row.result) {
-                            items.push(json!({"index":index,"status":"committed","candidate_id":value["candidate_id"],"effects":value["effects"]}));
-                        }
-                    }
-                }
-            }
-            Ok(items)
-        }).await.map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        if !children.is_empty() {
-            result["items"] = json!(children);
-            result["rollback"] = json!(false);
-        }
-        Ok(result)
     }
 
     /// Private staging has no annotation rows, but its terminal receipt uses
@@ -213,43 +152,10 @@ impl Server {
         result: &Value,
         who: &Viewer,
         headers: &HeaderMap,
+        parent_request_id: &str,
     ) -> Result<Value, Failure> {
-        let catalog = self
-            .store
-            .catalog
-            .as_ref()
-            .ok_or_else(|| Failure::new("unavailable", "durable catalog required"))?;
-        let authority = crate::storage::catalog::AgentAnnotationAuthority {
-            account_id: who.id.id.clone(),
-            generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            policy_comment: who.at_least(Role::Commenter),
-            require_editor: false,
-            parent_request_id: batch_parent(key),
-            execution_epoch: runner_execution_epoch(headers),
-        };
-        let (slug, request_id, digest, receipt) = (
-            slug.to_owned(),
-            key.scoped_request_id(actor),
-            digest.to_owned(),
-            result.to_string(),
-        );
-        let raw = catalog
-            .execute_catalog(receipt.len() + 1024, move |catalog| {
-                catalog.agent_annotations(
-                    &slug,
-                    &request_id,
-                    &digest,
-                    &[],
-                    &[],
-                    &[],
-                    &receipt,
-                    &authority,
-                )
-            })
-            .await
-            .map_err(|error| Failure::new("conflict", error.to_string()))?;
-        serde_json::from_str(&raw).map_err(|error| Failure::new("internal", error.to_string()))
+        let _ = (slug, actor, key, digest, who, headers, parent_request_id);
+        Ok(result.clone())
     }
 
     pub(super) fn mcp_epoch(
@@ -282,13 +188,14 @@ impl Server {
         &self,
         slug: &str,
         actor: &str,
+        who: &Viewer,
         key: &OperationKey,
         digest: Option<&str>,
     ) -> Result<Option<Value>, Failure> {
         self.mcp_epoch(actor, key, true)?;
         let id = key.scoped_request_id(actor);
         let admitted = match self
-            .mcp_load::<Admission>(slug, actor, &id, "admission")
+            .mcp_load::<Admission>(slug, actor, who, &id, "admission")
             .await
         {
             Ok(admitted) if digest.is_some_and(|digest| digest != admitted.digest) => {
@@ -301,38 +208,7 @@ impl Server {
             Err(error) if error.code == "view_expired" => false,
             Err(error) => return Err(error),
         };
-        if let Some(catalog) = &self.store.catalog {
-            let slug = slug.to_string();
-            let request_id = id.clone();
-            let row = catalog
-                .execute_catalog(256, move |c| {
-                    let Some(document) = c.document(&slug)? else {
-                        return Ok(None);
-                    };
-                    c.operation(&document.storage_id, &request_id)
-                })
-                .await
-                .map_err(|e| Failure::new("unavailable", e.to_string()))?;
-            if let Some(row) = row {
-                if digest.is_some_and(|digest| digest != row.request_digest) {
-                    return Err(Failure::new(
-                        "operation_key_reused",
-                        "operation key already identifies different arguments",
-                    ));
-                }
-                if row.status == "committed" {
-                    let mut result: Value = serde_json::from_str(&row.result)
-                        .map_err(|e| Failure::new("internal", e.to_string()))?;
-                    result["replay"] = json!(true);
-                    return Ok(Some(result));
-                }
-                if digest.is_none() {
-                    return Ok(Some(
-                        json!({"operation":key,"status":row.status,"reconciliation":"retry the original tool call with unchanged arguments"}),
-                    ));
-                }
-            }
-        }
+        let _ = (slug, who, id);
         if admitted && digest.is_none() {
             Ok(Some(
                 json!({"operation":key,"status":"admitted","reconciliation":"retry the original tool call with unchanged arguments; no committed outcome is retained yet"}),
@@ -354,6 +230,23 @@ impl Server {
         name: &str,
         args: &Value,
     ) -> Result<Value, Failure> {
+        self.mcp_operation_inner(slug, actor, who, headers, arrival, peer, name, args, "")
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn mcp_operation_inner(
+        &self,
+        slug: &str,
+        actor: &str,
+        who: &Viewer,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        peer: SocketAddr,
+        name: &str,
+        args: &Value,
+        parent_request_id: &str,
+    ) -> Result<Value, Failure> {
         if name == "document_result" {
             return self
                 .mcp_result(slug, actor, headers, arrival, peer, args)
@@ -361,20 +254,23 @@ impl Server {
         }
         let key: OperationKey = serde_json::from_value(args["operation"].clone())
             .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
+        key.validate().map_err(failure)?;
         let digest = hex::encode(Sha256::digest(
             json!({"tool":name,"arguments":args}).to_string(),
         ));
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
-        let receipt = self.mcp_receipt(slug, actor, &key, Some(&digest)).await?;
+        let receipt = self
+            .mcp_receipt(slug, actor, who, &key, Some(&digest))
+            .await?;
         if let Some(result) = receipt {
             return Ok(result);
         }
         // Cancellation of uncommitted work precedes fresh admission. A
         // retained terminal receipt above remains the authoritative outcome.
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &key).await? {
+        if let Some(cancellation) = self.mcp_cancellation(slug, actor, who, &key).await? {
             return Ok(cancellation);
         }
-        self.mcp_admit(slug, actor, &key, &digest).await?;
+        self.mcp_admit(slug, actor, who, &key, &digest).await?;
         match name {
             "document_propose" => {
                 if args["batch"] == "independent" {
@@ -382,17 +278,25 @@ impl Server {
                     for (index, patch) in
                         args["patches"].as_array().into_iter().flatten().enumerate()
                     {
-                        if let Some(cancellation) = self.mcp_cancellation(slug, actor, &key).await?
+                        if let Some(cancellation) =
+                            self.mcp_cancellation(slug, actor, who, &key).await?
                         {
                             return Ok(cancellation);
                         }
                         let mut child = args.clone();
                         child["batch"] = json!("atomic");
                         child["patches"] = json!([patch]);
-                        child["operation"]["id"] =
-                            json!(format!("{}-{index}", key.scoped_request_id(actor)));
-                        let outcome = Box::pin(self.mcp_operation(
-                            slug, actor, &current, headers, arrival, peer, name, &child,
+                        child["operation"]["id"] = json!(key.batch_child(actor, index).id);
+                        let outcome = Box::pin(self.mcp_operation_inner(
+                            slug,
+                            actor,
+                            &current,
+                            headers,
+                            arrival,
+                            peer,
+                            name,
+                            &child,
+                            &key.scoped_request_id(actor),
                         ))
                         .await;
                         items.push(match outcome {Ok(result)=>json!({"index":index,"status":result["status"],"candidate_id":result["candidate_id"],"effects":result["effects"]}),Err(error)=>json!({"index":index,"error":{"code":error.code,"message":error.message}})});
@@ -400,11 +304,29 @@ impl Server {
                     let result = json!({"operation":key,"status":"committed","batch":"independent","items":items,"replay":false});
                     let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
                     return self
-                        .mcp_private_receipt(slug, actor, &key, &digest, &result, &current, headers)
+                        .mcp_private_receipt(
+                            slug,
+                            actor,
+                            &key,
+                            &digest,
+                            &result,
+                            &current,
+                            headers,
+                            parent_request_id,
+                        )
                         .await;
                 }
                 self.mcp_propose(
-                    slug, actor, &current, headers, arrival, peer, args, key, digest,
+                    slug,
+                    actor,
+                    &current,
+                    headers,
+                    arrival,
+                    peer,
+                    args,
+                    key,
+                    digest,
+                    parent_request_id,
                 )
                 .await
             }
@@ -419,12 +341,13 @@ impl Server {
                     .mcp_load(
                         slug,
                         actor,
+                        who,
                         args["candidate_id"].as_str().unwrap_or_default(),
                         "candidate",
                     )
                     .await?;
                 if let Some(cancellation) = self
-                    .mcp_cancellation(slug, actor, &candidate.operation)
+                    .mcp_cancellation(slug, actor, who, &candidate.operation)
                     .await?
                 {
                     return Ok(cancellation);
@@ -447,6 +370,7 @@ impl Server {
                         .load_render_receipt(
                             slug,
                             actor,
+                            who,
                             args["candidate_id"].as_str().unwrap_or_default(),
                         )
                         .await?;
@@ -469,12 +393,12 @@ impl Server {
                     request_digest: digest,
                 };
                 let authority = AgentAuthority {
+                    automation: true,
                     account_id: current.id.id.clone(),
                     owner_key: current.key.clone(),
                     generation: current.id.session_generation.clone(),
                     link_hash: current.link.clone(),
                     policy_editor: self.publishers.allows(&current.id.handle),
-                    automation: true,
                     unowned_publisher: false,
                     operation_scope: actor.to_string(),
                     execution_epoch: runner_execution_epoch(headers),
@@ -533,6 +457,7 @@ impl Server {
             .mcp_load(
                 slug,
                 actor,
+                who,
                 args["view_id"]
                     .as_str()
                     .ok_or_else(|| Failure::new("invalid_params", "accept requires view_id"))?,
@@ -565,7 +490,10 @@ impl Server {
             ));
         }
         if comment.revision != view.snapshot.source_revision {
-            return Err(Failure::new("conflict","suggestion belongs to another source tree; capture and propose against the current passage"));
+            return Err(Failure::new(
+                "conflict",
+                "suggestion belongs to another source tree; capture and propose against the current passage",
+            ));
         }
         let anchor = comment
             .source
@@ -627,12 +555,12 @@ impl Server {
             request_digest: digest.to_string(),
         };
         let authority = AgentAuthority {
+            automation: true,
             account_id: who.id.id.clone(),
             owner_key: who.key.clone(),
             generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             policy_editor: self.publishers.allows(&who.id.handle),
-            automation: true,
             unowned_publisher: false,
             operation_scope: actor.to_string(),
             execution_epoch: runner_execution_epoch(headers),
@@ -662,13 +590,14 @@ impl Server {
                 "editor access is required to checkpoint",
             ));
         }
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, key).await? {
+        if let Some(cancellation) = self.mcp_cancellation(slug, actor, who, key).await? {
             return Ok(cancellation);
         }
         let view: View = self
             .mcp_load(
                 slug,
                 actor,
+                who,
                 args["view_id"]
                     .as_str()
                     .ok_or_else(|| Failure::new("invalid_params", "checkpoint requires view_id"))?,
@@ -681,22 +610,22 @@ impl Server {
             .await
             .map_err(|e| Failure::new("unavailable", e.to_string()))?;
         let authority = AgentAuthority {
+            automation: true,
             account_id: who.id.id.clone(),
             owner_key: who.key.clone(),
             generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             policy_editor: self.publishers.allows(&who.id.handle),
-            automation: true,
             unowned_publisher: false,
             operation_scope: actor.to_string(),
             execution_epoch: runner_execution_epoch(headers),
         };
-        let commit = crate::storage::catalog::AgentCheckpointCommit {
-            request_id: key.scoped_request_id(actor),
-            digest: digest.to_owned(),
-            operation: json!(key),
-            source_revision: view.snapshot.source_revision.clone(),
-        };
+        let commit = json!({
+            "request_id": key.scoped_request_id(actor),
+            "digest": digest,
+            "operation": key,
+            "source_revision": view.snapshot.source_revision,
+        });
         let checkpoint = room
             .ensure_agent_checkpoint(
                 &view.snapshot.source_revision,
@@ -723,6 +652,7 @@ impl Server {
         args: &Value,
         key: OperationKey,
         digest: String,
+        parent_request_id: &str,
     ) -> Result<Value, Failure> {
         let publish = args["publish"].as_str().unwrap_or("suggestions");
         if publish == "suggestions" && !who.at_least(Role::Commenter) {
@@ -732,7 +662,7 @@ impl Server {
             ));
         }
         let view_id = args["view_id"].as_str().unwrap_or_default();
-        let view: View = self.mcp_load(slug, actor, view_id, "view").await?;
+        let view: View = self.mcp_load(slug, actor, who, view_id, "view").await?;
         let tree = tree_of_view(&view)?;
         let mut patches = Vec::new();
         let mut dependencies = Vec::new();
@@ -822,6 +752,7 @@ impl Server {
             patches,
             dependencies,
             operation: key.clone(),
+            parent_request_id: parent_request_id.to_owned(),
             digest: digest.clone(),
             validation: args["validation"].as_str().unwrap_or("source").to_string(),
             expires_at: view.expires_at,
@@ -846,6 +777,7 @@ impl Server {
         self.mcp_store(
             slug,
             actor,
+            who,
             &candidate_id,
             "candidate",
             &candidate,
@@ -880,14 +812,14 @@ impl Server {
         view: &View,
     ) -> Result<Value, Failure> {
         let key = &candidate.operation;
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, key).await? {
+        if let Some(cancellation) = self.mcp_cancellation(slug, actor, who, key).await? {
             return Ok(cancellation);
         }
         let digest = candidate.digest.clone();
         let render = if candidate.validation == "compile" {
-            Some(match self.load_render_receipt(slug,actor,candidate_id).await {
+            Some(match self.load_render_receipt(slug,actor,who,candidate_id).await {
                 Ok(receipt)=>receipt,
-                Err(error) if error.code=="view_expired"=>self.mcp_render(slug,actor,headers,arrival,candidate_id,candidate,&key.id).await.map_err(|error|error.with_data(json!({"candidate_id":candidate_id,"operation":key,"retry_tool":"document_result","retry_arguments":{"kind":"render","id":candidate_id}})))?,
+                Err(error) if error.code=="view_expired"=>self.mcp_render(slug,actor,who,headers,arrival,candidate_id,candidate,&key.id).await.map_err(|error|error.with_data(json!({"candidate_id":candidate_id,"operation":key,"retry_tool":"document_result","retry_arguments":{"kind":"render","id":candidate_id}})))?,
                 Err(error)=>return Err(error),
             })
         } else {
@@ -988,22 +920,29 @@ impl Server {
                         budget: who.comment_budget,
                         creator: &creator,
                     },
-                    crate::storage::catalog::AgentAnnotationAuthority {
+                    crate::room::agent_comments::AgentAnnotationAuthority {
                         account_id: who.id.id.clone(),
                         generation: who.id.session_generation.clone(),
                         link_hash: who.link.clone(),
                         policy_comment: true,
                         require_editor: false,
-                        parent_request_id: batch_parent(key),
-                        execution_epoch: runner_execution_epoch(headers),
                     },
                 )
                 .await
                 .map_err(|e| Failure::new("conflict", e));
         }
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
-        self.mcp_private_receipt(slug, actor, key, &digest, &result, &current, headers)
-            .await
+        self.mcp_private_receipt(
+            slug,
+            actor,
+            key,
+            &digest,
+            &result,
+            &current,
+            headers,
+            &candidate.parent_request_id,
+        )
+        .await
     }
 
     async fn mcp_result(
@@ -1015,7 +954,7 @@ impl Server {
         peer: SocketAddr,
         args: &Value,
     ) -> Result<Value, Failure> {
-        self.mcp_recheck(slug, headers, arrival, actor).await?;
+        let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
         if args["action"] == "cancel" {
             return self.mcp_cancel(slug, actor, headers, arrival, args).await;
         }
@@ -1028,11 +967,11 @@ impl Server {
                         .unwrap_or(Value::Null),
                 )
                 .map_err(|_| Failure::new("invalid_params", "operation identity required"))?;
-                if let Some(cancellation) = self.mcp_cancellation(slug, actor, &key).await? {
+                if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, &key).await? {
                     return Ok(cancellation);
                 }
                 let result = self
-                    .mcp_receipt(slug, actor, &key, None)
+                    .mcp_receipt(slug, actor, &who, &key, None)
                     .await?
                     .ok_or_else(|| {
                         Failure::new(
@@ -1048,12 +987,12 @@ impl Server {
                         .await
                         .map_err(|e| Failure::new("unavailable", e.to_string()))?;
                     let authority = AgentAuthority {
+                        automation: true,
                         account_id: who.id.id.clone(),
                         owner_key: who.key.clone(),
                         generation: who.id.session_generation.clone(),
                         link_hash: who.link.clone(),
                         policy_editor: self.publishers.allows(&who.id.handle),
-                        automation: true,
                         unowned_publisher: false,
                         operation_scope: actor.to_string(),
                         execution_epoch: runner_execution_epoch(headers),
@@ -1071,26 +1010,33 @@ impl Server {
                     .mcp_load(
                         slug,
                         actor,
+                        &who,
                         args["id"].as_str().unwrap_or_default(),
                         "candidate",
                     )
                     .await?;
                 if args["kind"] == "render" {
                     if let Some(cancellation) = self
-                        .mcp_cancellation(slug, actor, &candidate.operation)
+                        .mcp_cancellation(slug, actor, &who, &candidate.operation)
                         .await?
                     {
                         return Ok(cancellation);
                     }
                     if let Some(receipt) = self
-                        .mcp_receipt(slug, actor, &candidate.operation, Some(&candidate.digest))
+                        .mcp_receipt(
+                            slug,
+                            actor,
+                            &who,
+                            &candidate.operation,
+                            Some(&candidate.digest),
+                        )
                         .await?
                     {
                         return Ok(receipt);
                     }
                     let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
                     let view = self
-                        .mcp_load::<View>(slug, actor, &candidate.view_id, "view")
+                        .mcp_load::<View>(slug, actor, &who, &candidate.view_id, "view")
                         .await?;
                     return self
                         .mcp_finish_proposal(
@@ -1107,7 +1053,7 @@ impl Server {
                         .await;
                 }
                 if let Some(cancellation) = self
-                    .mcp_cancellation(slug, actor, &candidate.operation)
+                    .mcp_cancellation(slug, actor, &who, &candidate.operation)
                     .await?
                 {
                     return Ok(cancellation);

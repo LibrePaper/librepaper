@@ -1,0 +1,116 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,\n                    d.source_format,d.main_path,d.update_sequence,d.project_generation,\n                    d.current_version_id,d.current_publication_id,d.settings,d.created_at,\n                    d.updated_at,d.deleted_at\n             FROM documents d\n             WHERE d.status='active'\n               AND (d.owner_id=$1 OR EXISTS (\n                    SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=$1\n                      AND (g.source_link_hash IS NULL OR EXISTS (\n                        SELECT 1 FROM share_links l WHERE l.document_id=d.id\n                          AND l.token_hash=g.source_link_hash AND l.revoked_at IS NULL\n                          AND (l.expires_at IS NULL OR l.expires_at>now())\n                      ))\n               ) OR ($4 AND d.ownership_mode='example'))\n               AND (d.updated_at,d.id) < (COALESCE($2::timestamptz,'infinity'),\n                                            COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))\n             ORDER BY d.updated_at DESC,d.id DESC LIMIT $5",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "slug",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "ownership_mode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "source_format",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "main_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "update_sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "project_generation",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "current_version_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 11,
+        "name": "current_publication_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 12,
+        "name": "settings",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 13,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 15,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Bool",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "3f8c433e5e0f7946f2de7d0081c411e156d687efddedd1dbde8a260a46d0c56b"
+}

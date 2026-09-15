@@ -137,3 +137,114 @@ export function zip(files) {
 
   return new Blob([out.bytes], { type: "application/zip" });
 }
+
+// Read stored and deflated ZIPs without extracting anything onto a filesystem.
+// Both the compressed input and actual decompressed bytes are bounded: central
+// directory sizes are untrusted and cannot authorize an unbounded allocation.
+export async function unzip(blob, { maxBytes = 64 * 1024 * 1024, maxFiles = 2000 } = {}) {
+  const corrupt = () => new Error("The ZIP archive is corrupt.");
+  const tooLarge = () => new Error("The archive is too large.");
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || !Number.isSafeInteger(maxFiles) || maxFiles < 1) {
+    throw new Error("Invalid archive limits.");
+  }
+  // Allow ZIP headers and a comment in addition to the document's byte budget.
+  if (blob.size > maxBytes + maxFiles * 1024 + 65557) throw tooLarge();
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let eocd = -1;
+  for (let at = bytes.length - 22; at >= Math.max(0, bytes.length - 22 - 0xffff); at--) {
+    if (view.getUint32(at, true) === 0x06054b50 && at + 22 + view.getUint16(at + 20, true) === bytes.length) {
+      eocd = at;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("This is not a readable ZIP archive.");
+  const count = view.getUint16(eocd + 10, true);
+  const centralSize = view.getUint32(eocd + 12, true);
+  const centralAt = view.getUint32(eocd + 16, true);
+  if (count === 0xffff || centralAt === 0xffffffff || centralSize === 0xffffffff) {
+    throw new Error("ZIP64 archives are not supported.");
+  }
+  if (view.getUint16(eocd + 4, true) || view.getUint16(eocd + 6, true) || view.getUint16(eocd + 8, true) !== count) {
+    throw new Error("Split ZIP archives are not supported.");
+  }
+  if (centralAt + centralSize !== eocd) throw corrupt();
+  // Directory records do not consume the document's file count, but still
+  // have a finite bound independent of how many empty directories were sent.
+  if (count > Math.min(65534, maxFiles * 9)) throw new Error("The archive contains too many entries.");
+  const entries = [];
+  const names = new Set();
+  let at = centralAt;
+  let total = 0;
+  for (let n = 0; n < count; n++) {
+    if (at + 46 > eocd || view.getUint32(at, true) !== 0x02014b50) throw corrupt();
+    const flags = view.getUint16(at + 8, true);
+    const method = view.getUint16(at + 10, true);
+    const compressed = view.getUint32(at + 20, true);
+    const size = view.getUint32(at + 24, true);
+    const expectedCrc = view.getUint32(at + 16, true);
+    const nameSize = view.getUint16(at + 28, true);
+    const extraSize = view.getUint16(at + 30, true);
+    const commentSize = view.getUint16(at + 32, true);
+    const external = view.getUint32(at + 38, true);
+    const localAt = view.getUint32(at + 42, true);
+    if (view.getUint16(at + 34, true)) throw new Error("Split ZIP archives are not supported.");
+    if ([compressed, size, localAt].includes(0xffffffff)) throw new Error("ZIP64 archives are not supported.");
+    if (at + 46 + nameSize + extraSize + commentSize > eocd) throw corrupt();
+    const encodedName = bytes.subarray(at + 46, at + 46 + nameSize);
+    let name;
+    try { name = decoder.decode(encodedName); }
+    catch { throw new Error("ZIP filenames must use UTF-8. Re-export the archive with UTF-8 names."); }
+    at += 46 + nameSize + extraSize + commentSize;
+    if (!name || name.startsWith("/") || name.includes("\\") || /^[a-z]:/i.test(name) || /[\u0000-\u001f\u007f]/.test(name)) throw new Error("The archive contains an invalid path.");
+    const path = name.endsWith("/") ? name.slice(0, -1) : name;
+    if (path.split("/").some(part => !part || part.trim() === "." || part.trim() === "..")) throw new Error("The archive contains an invalid path.");
+    const key = path.trim().normalize("NFC").toLowerCase();
+    if (names.has(key)) throw new Error(name + ": two archive entries cannot share one name.");
+    names.add(key);
+    if (flags & 0x41) throw new Error("The archive contains an encrypted file: " + name);
+    const fileType = (external >>> 16) & 0xf000;
+    if (fileType && fileType !== 0x8000 && fileType !== 0x4000) throw new Error("The archive contains a symbolic link or special file: " + name);
+    if (method !== 0 && method !== 8) throw new Error("This archive uses unsupported compression for " + name + ".");
+    if (localAt + 30 > centralAt || view.getUint32(localAt, true) !== 0x04034b50) throw corrupt();
+    const localNameSize = view.getUint16(localAt + 26, true);
+    const localExtraSize = view.getUint16(localAt + 28, true);
+    const dataAt = localAt + 30 + localNameSize + localExtraSize;
+    if (dataAt + compressed > centralAt || localNameSize !== nameSize || view.getUint16(localAt + 8, true) !== method || view.getUint16(localAt + 6, true) !== flags) throw corrupt();
+    if (!encodedName.every((byte, i) => byte === bytes[localAt + 30 + i])) throw corrupt();
+    if (!(flags & 8) && (view.getUint32(localAt + 14, true) !== expectedCrc || view.getUint32(localAt + 18, true) !== compressed || view.getUint32(localAt + 22, true) !== size)) throw corrupt();
+    if (name.endsWith("/") || fileType === 0x4000) {
+      if (size !== 0) throw corrupt();
+      continue;
+    }
+    if (entries.length >= maxFiles) throw new Error("The archive contains more than " + maxFiles + " files.");
+    if (size > maxBytes - total) throw tooLarge();
+    total += size;
+    entries.push({ path: name, dataAt, compressed, size, method, expectedCrc });
+  }
+  if (at !== eocd) throw corrupt();
+  const result = [];
+  for (const entry of entries) {
+    let body = bytes.subarray(entry.dataAt, entry.dataAt + entry.compressed);
+    if (entry.method === 8) {
+      if (typeof DecompressionStream === "undefined") throw new Error("This browser cannot unpack compressed ZIP files. Update your browser or publish the directory with the CLI.");
+      let inflated = 0;
+      const limited = new TransformStream({
+        transform(chunk, controller) {
+          inflated += chunk.byteLength;
+          if (inflated > entry.size) throw tooLarge();
+          controller.enqueue(chunk);
+        },
+      });
+      try {
+        body = new Uint8Array(await new Response(new Blob([body]).stream().pipeThrough(new DecompressionStream("deflate-raw")).pipeThrough(limited)).arrayBuffer());
+      } catch {
+        throw new Error("Could not decompress " + entry.path + ": unsupported compression, corrupt data, or exceeded size limit.");
+      }
+    }
+    if (body.length !== entry.size || crc32(body) !== entry.expectedCrc) throw new Error("The ZIP archive is corrupt near " + entry.path + ".");
+    result.push({ path: entry.path, bytes: body });
+  }
+  return result;
+}

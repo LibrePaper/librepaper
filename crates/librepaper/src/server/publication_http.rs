@@ -68,12 +68,10 @@ impl Server {
         if method != expected_method {
             return plain(405, "method not allowed");
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, &headers, arrival, None).await;
         if who.auth_failed {
             return plain(401, "authentication expired or was revoked");
         }
@@ -97,13 +95,7 @@ impl Server {
         let Some(request_id) = headers
             .get("idempotency-key")
             .and_then(|v| v.to_str().ok())
-            .filter(|id| {
-                !id.is_empty()
-                    && id.len() <= 128
-                    && id
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-            })
+            .filter(|id| crate::util::request_key_timestamp(id).is_some())
             .map(str::to_owned)
         else {
             return plain(400, "a valid Idempotency-Key is required");
@@ -118,12 +110,10 @@ impl Server {
             Err(_) => return plain(413, "publication request is too large"),
         };
         // Body transfer is an untrusted await boundary. Resolve authority again.
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, &headers, arrival, None).await;
         if who.auth_failed || !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(403, "publication access changed");
         }
@@ -133,7 +123,6 @@ impl Server {
             session_generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             policy_editor: self.publishers.allows(&who.id.handle),
-            automation: who.automation,
             unowned_publisher: false,
         };
         let store = store.with_actor(actor);
@@ -170,12 +159,18 @@ impl Server {
             Err(_) => return plain(400, "invalid publication request"),
         };
         let expected = input.expected_publication_id.as_deref().unwrap_or("");
-        let prepared = match store.prepared(&entry.storage_id, &request_id).await {
+        let prepared = match store
+            .prepared_identity(&entry.storage_id, &request_id)
+            .await
+        {
             Ok(prepared) => prepared,
             Err(error) => return publication_error(error),
         };
         let manifest = PublicationManifest {
-            publication_id: request_id.clone(),
+            publication_id: prepared
+                .as_ref()
+                .map(|identity| identity.publication_id.clone())
+                .unwrap_or_else(|| hex::encode(crate::auth::random_bytes(16))),
             bundle_sha256: input.manifest.bundle_sha256,
             previous_publication_id: expected.to_string(),
             source_sha256: input.manifest.source_sha256,
@@ -215,13 +210,13 @@ impl Server {
                 .activate(&entry.storage_id, &request_id, expected, &manifest)
                 .await
             {
-                Ok(()) => {
+                Ok(committed) => {
                     if let Ok(room) = self.rooms.try_get(slug).await {
-                        room.broadcast(&json!({"type": "publication-updated", "publication_id": manifest.publication_id})).await;
+                        room.broadcast(&json!({"type": "publication-updated", "publication_id": committed.publication_id})).await;
                     }
                     write_json(
                         200,
-                        &json!({"publication": self.publication_metadata(&entry, &who, arrival, &manifest).await}),
+                        &json!({"publication": self.publication_metadata(&entry, &who, arrival, &committed).await}),
                     )
                 }
                 Err(error) => publication_error(error),

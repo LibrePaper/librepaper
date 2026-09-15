@@ -8,21 +8,33 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use axum::extract::ws::Utf8Bytes;
 use tokio::sync::mpsc;
 
 /// What a room or assistant channel sends to one connected socket.
 #[derive(Clone, Debug)]
 pub enum Outgoing {
     Text(String),
+    /// Text serialized once for a fanout. `Utf8Bytes` is clone-on-reference, so
+    /// every queue item and the websocket handoff can share the same payload
+    /// allocation.
+    SharedText(Utf8Bytes),
     Close(String),
 }
 
 impl Outgoing {
+    /// Build a text frame whose immutable payload can be cheaply cloned for
+    /// each recipient.
+    pub fn shared_text(value: impl Into<Utf8Bytes>) -> Self {
+        Self::SharedText(value.into())
+    }
+
     /// Approximate wire bytes conservatively. JSON text is UTF-8 and the
     /// framing allowance covers a small WebSocket header.
     pub fn bytes(&self) -> usize {
         match self {
             Self::Text(value) => value.len().saturating_add(2),
+            Self::SharedText(value) => value.len().saturating_add(2),
             Self::Close(reason) => reason.len().saturating_add(2),
         }
     }
@@ -201,7 +213,15 @@ impl Sender {
             Inner::Bounded(inner) => inner,
             #[cfg(test)]
             Inner::Raw(inner) => {
-                return inner.try_send(outgoing).map_err(|error| error.into_inner())
+                // Raw channels predate the bounded sender and are used by
+                // room tests. Keep their observable String representation so
+                // those tests do not need to know about the production-only
+                // sharing optimization.
+                let outgoing = match outgoing {
+                    Outgoing::SharedText(text) => Outgoing::Text(text.to_string()),
+                    outgoing => outgoing,
+                };
+                return inner.try_send(outgoing).map_err(|error| error.into_inner());
             }
         };
         if !self.queue.reserve(bytes) {
@@ -329,5 +349,113 @@ mod budget_tests {
         drop(receiver);
         assert_eq!(budget.snapshot()["queue_bytes"], 0);
         assert_eq!(sender.queued(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn shared_fanout_keeps_one_payload_and_reserves_each_queue() {
+        let payload = Outgoing::shared_text("payload".repeat(64));
+        let Outgoing::SharedText(text) = &payload else {
+            unreachable!("shared_text constructs SharedText");
+        };
+        let budget = crate::server::socket_budget::SocketBudget::new(
+            crate::server::socket_budget::SocketPolicy {
+                queue_bytes_max: 8 * payload.bytes(),
+                ..Default::default()
+            },
+        );
+        let mut queues = Vec::new();
+        for _ in 0..8 {
+            let admit = budget.clone();
+            let release = budget.clone();
+            let (sender, receiver) = Sender::channel(
+                2,
+                1024,
+                Some(Arc::new(move |frames, bytes| {
+                    assert!(frames < 0);
+                    release.queue_remove((-frames) as usize, bytes);
+                })),
+                Some(Arc::new(move |bytes| admit.queue_admit(bytes))),
+            );
+            sender.try_send(payload.clone()).unwrap();
+            assert_eq!(sender.queued(), (1, text.len() + 2));
+            queues.push((sender, receiver));
+        }
+        assert_eq!(budget.snapshot()["queue_bytes"], 8 * payload.bytes());
+        // Sharing storage must not let a recipient bypass deployment limits.
+        assert!(queues[0].0.try_send(payload.clone()).is_err());
+
+        for (sender, mut receiver) in queues {
+            let queued = receiver.recv().await.unwrap();
+            let (outgoing, reservation) = queued.into_parts();
+            let Outgoing::SharedText(received) = outgoing else {
+                unreachable!("production fanout keeps SharedText");
+            };
+            let original = axum::body::Bytes::from(text.clone());
+            let received = axum::body::Bytes::from(received);
+            assert_eq!(original.as_ptr(), received.as_ptr());
+            assert_eq!(sender.queued(), (1, payload.bytes()));
+            drop(reservation);
+            assert_eq!(sender.queued(), (0, 0));
+        }
+        assert_eq!(budget.snapshot()["queue_bytes"], 0);
+    }
+
+    /// A repeatable smoke benchmark for the complete production path. It
+    /// compares per-recipient String allocation with one owned `Utf8Bytes`
+    /// allocation cloned across all recipients, for both a small and a large
+    /// frame. Run with `cargo test -p librepaper --lib
+    /// room::outgoing::budget_tests::benchmark_shared_fanout -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn benchmark_shared_fanout() {
+        const RECIPIENTS: usize = 64;
+        const ROUNDS: usize = 1_000;
+        const TRIALS: usize = 3;
+
+        fn run(payload_len: usize, shared: bool) -> std::time::Duration {
+            let source = "x".repeat(payload_len);
+            let mut queues = (0..RECIPIENTS)
+                .map(|_| Sender::channel(2, payload_len + 1024, None, None))
+                .collect::<Vec<_>>();
+            let started = std::time::Instant::now();
+            for _ in 0..ROUNDS {
+                let shared_payload = shared.then(|| Outgoing::shared_text(source.clone()));
+                for (sender, _) in &queues {
+                    let outgoing = match &shared_payload {
+                        Some(payload) => payload.clone(),
+                        None => Outgoing::Text(source.clone()),
+                    };
+                    sender
+                        .try_send(outgoing)
+                        .expect("fanout recipient queue has capacity");
+                }
+                for (_, receiver) in &mut queues {
+                    let queued = receiver.try_recv().expect("fanout frame is queued");
+                    std::hint::black_box(queued.into_parts().0);
+                }
+            }
+            started.elapsed()
+        }
+
+        for payload_len in [128, 4096] {
+            let mut shared_total = std::time::Duration::ZERO;
+            let mut string_total = std::time::Duration::ZERO;
+            for trial in 0..TRIALS {
+                if trial % 2 == 0 {
+                    string_total += run(payload_len, false);
+                    shared_total += run(payload_len, true);
+                } else {
+                    shared_total += run(payload_len, true);
+                    string_total += run(payload_len, false);
+                }
+            }
+            let frames = RECIPIENTS * ROUNDS * TRIALS;
+            eprintln!(
+                "fanout {payload_len}B: String {:?}, SharedText {:?} ({frames} frames each)",
+                string_total / TRIALS as u32,
+                shared_total / TRIALS as u32,
+            );
+        }
     }
 }

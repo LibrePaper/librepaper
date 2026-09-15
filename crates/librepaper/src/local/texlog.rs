@@ -233,29 +233,6 @@ fn clean(text: &str) -> String {
     text.trim().to_string()
 }
 
-/// Whether the log asks to be run again: an undefined reference, a moved
-/// label, a table of contents that changed.
-pub fn rerun(log: &str) -> bool {
-    static AGAIN: OnceLock<Regex> = OnceLock::new();
-    static UNDEFINED: OnceLock<Regex> = OnceLock::new();
-    let again = AGAIN.get_or_init(|| {
-        Regex::new(r"Rerun to get|Rerun LaTeX|Please rerun|Label\(s\) may have changed").unwrap()
-    });
-    let undefined = UNDEFINED
-        .get_or_init(|| Regex::new(r"LaTeX Warning: (Reference|Citation) .* undefined").unwrap());
-    again.is_match(log) || undefined.is_match(log)
-}
-
-/// Whether the log says BibTeX has work to do: a citation the document made
-/// and no bibliography to resolve it from yet.
-pub fn needs_bibtex(log: &str) -> bool {
-    static CITED: OnceLock<Regex> = OnceLock::new();
-    static NO_BBL: OnceLock<Regex> = OnceLock::new();
-    let cited = CITED.get_or_init(|| Regex::new(r"LaTeX Warning: Citation .* undefined").unwrap());
-    let no_bbl = NO_BBL.get_or_init(|| Regex::new(r"No file .*\.bbl\.").unwrap());
-    cited.is_match(log) || no_bbl.is_match(log)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,29 +303,6 @@ mod tests {
             .find(|d| d.message.starts_with("Overfull"))
             .expect("an overfull hbox diagnostic");
         assert_eq!(overfull.severity, "warning");
-    }
-
-    #[test]
-    fn rerun_recognises_the_standard_phrases() {
-        assert!(rerun(
-            "LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right."
-        ));
-        assert!(rerun(
-            "Package hyperref Warning: Rerun to get \\  \\ references right."
-        ));
-        assert!(rerun(
-            "LaTeX Warning: Citation `x' on page 1 undefined on input line 3."
-        ));
-        assert!(!rerun("This document compiled cleanly."));
-    }
-
-    #[test]
-    fn needs_bibtex_recognises_undefined_citations_and_a_missing_bbl() {
-        assert!(needs_bibtex(
-            "LaTeX Warning: Citation `knuth1984' on page 1 undefined on input line 5."
-        ));
-        assert!(needs_bibtex("No file main.bbl."));
-        assert!(!needs_bibtex("Everything is fine."));
     }
 
     #[test]

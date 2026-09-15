@@ -16,6 +16,8 @@ import { needsBibliography } from "./bibliography-engine.js";
 import * as latex from "./latex.js";
 import * as latexHtml from "./latex/html.js";
 import * as quarto from "./engines/quarto.js";
+import * as localBridge from "./companion/client.js";
+import { snapshotDigest } from "./tree-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
 
@@ -59,8 +61,48 @@ export function producesPdf(format) {
   return outputKind(format) === "pdf";
 }
 
+// Authored HTML is displayed from the isolated preview origin, not from the
+// directory that contains its source. Point relative display assets at the
+// authenticated object URLs gathered for this exact tree. Keep the rewrite
+// deliberately narrow: links and nested documents retain their authored
+// meaning, while the attributes that load binary display content use the
+// same URLs as Markdown's renderer.
+export function resolveHtmlAssetUrls(source, tree) {
+  const urls = tree.urls || {};
+  const base = new URL(tree.main || "index.html", "https://librepaper.invalid/");
+  const projectPath = (reference) => {
+    if (!reference || reference.startsWith("#") || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(reference)) return null;
+    try {
+      const target = new URL(reference, base);
+      return target.origin === base.origin ? decodeURIComponent(target.pathname.slice(1)) : null;
+    } catch {
+      return null;
+    }
+  };
+  const escapedAttribute = (value) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Project HTML files cannot be navigated to below the preview's /raw/
+  // endpoint. Embed them as an iframe document instead, preserving the
+  // authored sandbox boundary and avoiding a request that can only be a 404.
+  source = source.replace(/<iframe\b([^>]*?)\bsrc\s*=\s*(["'])(.*?)\2([^>]*)>/gi,
+    (whole, before, quote, reference, after) => {
+      const path = projectPath(reference);
+      const nested = path && tree.texts?.[path];
+      return typeof nested === "string"
+        ? `<iframe${before}srcdoc="${escapedAttribute(nested)}"${after}>`
+        : whole;
+    });
+  const resolve = (reference) => {
+    const path = projectPath(reference);
+    return path && urls[path] ? urls[path] : reference;
+  };
+  return source.replace(/\b(src|poster|data)\s*=\s*(["'])(.*?)\2/gi,
+    (whole, attribute, quote, reference) => `${attribute}=${quote}${resolve(reference)}${quote}`);
+}
+
 export function cancelPreview(options) {
   latexHtml.cancel(options);
+  activeLocalAbort?.abort();
+  activeLocalAbort = null;
 }
 
 // Whether this browser can compile a source document. Readers without a
@@ -76,7 +118,9 @@ function request(format, operation, args = {}, moduleUrls = urls()) {
   return rendererRequest(new URL(url, globalThis.location.href).href, operation, args);
 }
 
-/// The word-level diff shared with `librepaper sync`. It does not depend on
+let activeLocalAbort = null;
+
+/// The word-level diff used for source projections. It does not depend on
 /// the source format, but runs through the same engine module as the document
 /// so the browser needs no second WASM bundle. HTML documents use Markdown's
 /// small module when one is available.
@@ -118,19 +162,42 @@ export function formatOf(path) {
 /// A render carries `html` or `pdf`, never both, and the caller posts
 /// whichever it has: flow documents are painted into the shell and paged
 /// documents into the PDF frame, and that is the whole difference here.
-export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null } = {}) {
+export async function render(tree, title, { manual = false, format: requestedFormat = "pdf", configuration = null, buildPreferences = null, project = "" } = {}) {
   const source = tree.texts?.[tree.main] ?? "";
   const format = formatOf(tree.main);
+  // LaTeX is never dispatched to the companion from here. It builds in the
+  // browser, and its one local path is the automatic Biber and native
+  // fallback that `latex.js` routes for itself.
+  if (buildPreferences?.selection === "tool" && buildPreferences.backend === "local" && format !== "latex") {
+    localBridge.configure({ project, origin: globalThis.location?.origin || "", active: true });
+    const digest = await snapshotDigest(tree);
+    const usesWorkspace = ["quarto", "calepin"].includes(buildPreferences.tool);
+    // Snapshot builds can use the companion-owned hosted workspace populated
+    // from this request's complete manifest. A user-granted folder is only
+    // needed when the document deliberately depends on unshared local files.
+    const job = { snapshot: digest, generation: Date.now(), binding: usesWorkspace ? localBridge.bindingId() : "", inputRevision: digest };
+    const output = buildPreferences.output || (format === "typst" ? "pdf" : "html");
+    activeLocalAbort?.abort();
+    const abort = new AbortController();
+    activeLocalAbort = abort;
+    let result;
+    if (buildPreferences.tool === "quarto") {
+      const options = { ...(buildPreferences.options || {}), ...(buildPreferences.profile ? { profile: buildPreferences.profile } : {}), ...(buildPreferences.parameters ? { parameters: buildPreferences.parameters } : {}), ...(buildPreferences.policy ? { policy: buildPreferences.policy } : {}) };
+      result = await localBridge.runBuild({ job, tree, builder: "quarto", output, options, preset: buildPreferences.preset, bindingId: job.binding }, { signal: abort.signal });
+      return { artifact: result.artifact, artifactKind: result.kind, html: result.kind === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null, pdf: result.kind === "pdf" ? result.artifact : null, diagnostics: result.diagnostics || [], log: result.log || result.logs || "", provenance: result.provenance, ok: result.ok, failure: result.ok ? null : { kind: "local", message: result.error || "Local Quarto build failed" } };
+    }
+    result = await localBridge.runBuild({ job, tree, builder: buildPreferences.tool, output, options: buildPreferences.options || {}, preset: buildPreferences.preset, bindingId: job.binding }, { signal: abort.signal });
+    return { artifact: result.artifact, artifactKind: output, html: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null, pdf: output === "pdf" ? result.artifact : null, diagnostics: result.diagnostics || [], log: result.log || "", provenance: result.provenance, ok: result.ok, failure: result.ok ? null : { kind: "local", message: result.error || `Local ${buildPreferences.tool} build failed` } };
+  }
   // A historical render receives a configuration snapshot resolved before
   // its cache lookup. Use its module URLs, not mutable shell globals, so the
   // cache identity names the renderer that actually runs.
   const capturedModules = configuration && Object.prototype.hasOwnProperty.call(configuration, "modules")
     ? configuration.modules : urls();
-  // HTML's renderer is the identity, so there is nothing to fetch and nothing
-  // that can fail: the source is the page. A directory whose main file is
-  // HTML is allowed, and nothing in it is rewritten -- an HTML document is
-  // self-contained, as it always was.
-  if (format === "html") return { html: source, diagnostics: [] };
+  // HTML needs no compiler: the source is the page. Resolve its relative
+  // binary dependencies because the page itself is displayed from the
+  // isolated documents origin rather than from the source directory.
+  if (format === "html") return { html: resolveHtmlAssetUrls(source, tree), diagnostics: [] };
   // LaTeX branches before `load`, and not into it. What follows below writes
   // files into a WebAssembly module's memory through `alloc`/`add_file`/
   // `set_main`, an ABI the engine crate exports and a TeX distribution has
@@ -167,9 +234,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
       // The log travels too, for the one case the list is empty and the log
       // is the only account of why there is no PDF.
       log: log || "",
-      // `latex.js` may have fallen back to a local backend; the reader
-      // shows that provenance and both attempts' logs (SPEC "Failure
-      // presentation") rather than the browser-only shape this used to be.
+      // Keep provenance and the browser attempt log explicit for diagnostics.
       attempts,
       provenance,
       failure,

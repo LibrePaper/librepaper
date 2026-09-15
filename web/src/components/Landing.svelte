@@ -2,12 +2,14 @@
   // The landing page: what you may publish, and the projects you have. A
   // project is a document and the directory around it -- its chapters and its
   // figures -- and it is found here by any of them.
+  import { FileUpload } from "@skeletonlabs/skeleton-svelte";
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import Modal from "./Modal.svelte";
   import Hero from "./Hero.svelte";
   import Toasts from "./Toasts.svelte";
+  import CopyLink from "./CopyLink.svelte";
   import Page from "./layout/Page.svelte";
   import Stack from "./layout/Stack.svelte";
   import Row from "./layout/Row.svelte";
@@ -15,6 +17,9 @@
   import { SHELL_HEADERS, config as loadConfig, get, me as whoami, upload } from "../lib/api.js";
   import { FAVORITES, VIEWED, read, write } from "../lib/storage.js";
   import { day as isoDay } from "../lib/dates.js";
+  import { unzip } from "../lib/zip.js";
+  import { archiveProject, archiveSelection } from "../lib/project-upload.js";
+  import { preparedProjects } from "../lib/offline-projects.js";
 
   let me = $state({});
   // Replaced by the server's own on load; this is only what the drop zone
@@ -40,14 +45,14 @@
   let chosen = $state(null);
   let title = $state("");
   let busy = $state(false);
-  let dragging = $state(false);
   let shared = $state(null);
   let confirming = $state(false);
   let confirmText = $state("");
   let sharing = $state(false);
   let pendingDeletion = [];
-  let fileInput = $state(null);
   let titleInput = $state(null);
+  let chooseSerial = 0;
+  let parsing = $state(false);
 
   const maxLabel = $derived(Math.round(config.max_document / (1024 * 1024)) + " MB");
 
@@ -185,10 +190,26 @@
       counts = counted;
       paths = listed;
     } catch (error) {
-      problem(error?.message || "Could not refresh projects.");
+      if (navigator.onLine !== false) problem(error?.message || "Could not refresh projects.");
       return false;
     }
     return true;
+  }
+
+  async function showOfflineProjects() {
+    try {
+      const local = await preparedProjects();
+      const bySlug = new Map(documents.map((document_) => [document_.slug, document_]));
+      for (const record of local) {
+        if (bySlug.has(record.identity.slug)) continue;
+        bySlug.set(record.identity.slug, {
+          ...record.document,
+          updated_at: record.preparedAt,
+          offline_prepared: true,
+        });
+      }
+      documents = [...bySlug.values()];
+    } catch { /* the online project list remains useful without local storage */ }
   }
 
   async function deleteSelected() {
@@ -240,6 +261,8 @@
   /* ------------------------------------------------------------ file picking */
 
   function refuse(message) {
+    chooseSerial++;
+    parsing = false;
     chosen = null;
     title = "";
     fileError = message;
@@ -258,6 +281,41 @@
       return refuse(`${file.name} is ${(file.size / (1024 * 1024)).toFixed(1)} MB; the limit is ${maxLabel}.`);
     }
     return true;
+  }
+
+  function selectArchiveMain(main) {
+    if (!chosen?.archive) return;
+    chosen.main = main;
+    try {
+      const selected = archiveSelection(chosen.project, main, config);
+      chosen.files = selected.files;
+      chosen.skipped = selected.skipped;
+      fileError = "";
+    } catch (error) {
+      chosen.files = [];
+      fileError = error.message;
+    }
+  }
+
+  async function chooseArchive(file, serial) {
+    try {
+      const entries = await unzip(file, { maxBytes: config.max_document + (config.max_assets || 0), maxFiles: (config.max_files || 200) * 9 });
+      if (serial !== chooseSerial) return;
+      const project = archiveProject(entries, config);
+      chosen = { name: file.name, project, candidates: project.candidates, main: project.main, files: [], skipped: project.skipped, archive: true };
+      title = file.name.replace(/\.zip$/i, "").replace(/[_-]+/g, " ").trim();
+      if (project.main) {
+        selectArchiveMain(project.main);
+        const mainEntry = project.files.find((entry) => entry.path === project.main);
+        title = titleFrom(new TextDecoder().decode(mainEntry.bytes), mainEntry.path);
+      }
+      await Promise.resolve();
+      if (serial === chooseSerial) titleInput?.select();
+    } catch (error) {
+      if (serial === chooseSerial) refuse(error?.message || "Could not read the ZIP archive.");
+    } finally {
+      if (serial === chooseSerial) parsing = false;
+    }
   }
 
   // The document usually names itself: <title> or the first heading in HTML,
@@ -281,29 +339,44 @@
   // decision. The title arrives selected, so typing replaces it and Enter
   // alone accepts it.
   async function choose(file) {
-    if (!valid(file)) return;
+    const serial = ++chooseSerial;
+    chosen = null;
     fileError = "";
+    parsing = true;
+    if (/\.zip$/i.test(file.name)) return chooseArchive(file, serial);
+    if (!valid(file)) return;
     chosen = file;
     title = file.name;
     await Promise.resolve();
     titleInput?.select();
     const text = await file.text().catch(() => "");
+    if (serial !== chooseSerial) return;
     // The reader may already be typing by the time the file is read.
     if (title === file.name) {
       title = titleFrom(text, file.name);
       titleInput?.select();
     }
+    parsing = false;
   }
 
+  function cancelChoice() {
+    chooseSerial++;
+    parsing = false;
+    chosen = null;
+    title = "";
+  }
+
+  // A document dropped anywhere on the page, not only on the zone: the zone
+  // is where it says to drop one, not the only place that takes one.
   function drop(event) {
     event.preventDefault();
-    dragging = false;
     const file = event.dataTransfer?.files?.[0];
     if (file) choose(file);
   }
 
   async function submit(event) {
     event.preventDefault();
+    if (parsing || busy) return;
     if (!chosen) {
       refuse("Choose a document to upload.");
       return;
@@ -311,7 +384,12 @@
     busy = true;
     try {
       const form = new FormData();
-      form.append("file", chosen, chosen.name);
+      if (chosen.archive) {
+        if (!chosen.main) { fileError = "Choose the document file to open from the archive."; return; }
+        const selected = archiveSelection(chosen.project, chosen.main, config);
+        for (const entry of selected.files) form.append("file", new Blob([entry.bytes]), entry.path);
+        form.append("main", chosen.main);
+      } else form.append("file", chosen, chosen.name);
       form.append("title", title);
       const response = await upload(form);
       if (!response.ok) {
@@ -332,10 +410,14 @@
   }
 
   $effect(() => {
+    void showOfflineProjects();
     loadConfig().then((found) => (config = found)).catch(() => {});
     whoami().then(async (who) => {
       me = who;
-      if (who.can_publish) await showList();
+      if (who.can_publish) {
+        await showList();
+        await showOfflineProjects();
+      }
     });
   });
 </script>
@@ -365,36 +447,49 @@
     {#if me.can_publish}
       <form onsubmit={submit}>
         {#if !chosen}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="card preset-outlined-surface-300-700 flex flex-col items-center gap-3 border-dashed p-8 text-center transition-colors {dragging
-              ? 'preset-tonal-primary'
-              : ''}"
-            ondragenter={(event) => { event.preventDefault(); dragging = true; }}
-            ondragover={(event) => { event.preventDefault(); dragging = true; }}
-            ondragleave={() => (dragging = false)}
-            ondrop={drop}
+          <!-- The zone, its button and its input are Skeleton's, which is
+               Zag's: the drag counting that a plain `dragleave` gets wrong
+               over child elements, the button that opens the picker without
+               reaching for the input, and the labelling between the three.
+               What a file has to be is still ours -- `valid` says why a file
+               was turned away in words, where `accept` and `maxFileSize`
+               would only say that it was. -->
+          <FileUpload
+            maxFiles={1}
+            accept={config.extensions.join(",") + ",.zip,text/html"}
+            onFileAccept={({ files }) => files[0] && choose(files[0])}
+            onFileReject={({ files }) => valid(files[0]?.file)}
           >
-            <Icon name="upload" size={28} />
-            <p class="text-lg">Drop a document here to start a project</p>
-            <button type="button" class="btn preset-filled-primary-500" onclick={() => fileInput.click()}>
-              Choose a file
-            </button>
-            <small class="text-surface-600-400">
-              {config.extensions.join(" or ")} files, up to {maxLabel}
-            </small>
-            <input
-              type="file"
-              bind:this={fileInput}
-              hidden
-              accept={config.extensions.join(",") + ",text/html"}
-              onchange={(event) => event.currentTarget.files[0] && choose(event.currentTarget.files[0])}
-            />
-          </div>
+            <FileUpload.Dropzone disableClick class="card preset-outlined-surface-300-700 flex flex-col items-center gap-3 border-dashed p-8 text-center transition-colors data-[dragging]:preset-tonal-primary">
+              <Icon name="upload" size={28} />
+              <FileUpload.Label class="text-lg">Drop a document here to start a project</FileUpload.Label>
+              <FileUpload.Trigger class="btn preset-filled-primary-500">Choose a file</FileUpload.Trigger>
+              <small class="text-surface-600-400">
+                {config.extensions.join(" or ")} files or .zip projects. Document text up to {maxLabel}.
+              </small>
+              {#if parsing}
+                <p class="text-sm text-surface-600-400" role="status">Reading project archive…</p>
+                <button type="button" class="btn preset-outlined-surface-300-700" onclick={cancelChoice}>Cancel</button>
+              {/if}
+            </FileUpload.Dropzone>
+            <FileUpload.HiddenInput />
+          </FileUpload>
         {:else}
           <div class="card preset-outlined-surface-300-700 p-6">
             <Stack gap={3}>
               <p class="font-semibold">{chosen.name}</p>
+              {#if chosen.archive}
+                <label class="label">
+                  <span class="label-text">Document file</span>
+                  <select class="select" value={chosen.main} onchange={(event) => selectArchiveMain(event.currentTarget.value)}>
+                    <option value="" disabled>Choose the main document</option>
+                    {#each chosen.candidates as path}
+                      <option value={path}>{path}</option>
+                    {/each}
+                  </select>
+                  {#if chosen.skipped.length}<small class="text-surface-600-400">Files excluded from upload: {chosen.skipped.join(", ")}</small>{/if}
+                </label>
+              {/if}
               <label class="label">
                 <span class="label-text">Title</span>
                 <!-- Escape backs out of the choice rather than only clearing
@@ -404,15 +499,15 @@
                   bind:this={titleInput}
                   bind:value={title}
                   onkeydown={(event) => {
-                    if (event.key === "Escape") { event.preventDefault(); chosen = null; }
+                    if (event.key === "Escape") { event.preventDefault(); cancelChoice(); }
                   }}
                 />
               </label>
               <Row gap={2} justify="end">
-                <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (chosen = null)}>
+                <button type="button" class="btn preset-outlined-surface-300-700" onclick={cancelChoice}>
                   Cancel
                 </button>
-                <button type="submit" class="btn preset-filled-primary-500" disabled={busy}>
+                <button type="submit" class="btn preset-filled-primary-500" disabled={busy || parsing || (chosen.archive && (!chosen.main || !!fileError))}>
                   {busy ? "Creating…" : "Create project"}
                 </button>
               </Row>
@@ -477,14 +572,15 @@
                 </th>
                 <th class="w-8"></th>
                 {#each [["title", "Project"], ["files", "Files"], ["comments", "Comments"], ["updated", "Updated"], ["viewed", "Opened"]] as [column, name]}
-                  <th class={DATE_COLUMNS.has(column) ? "col-when" : ""}>
+                  <th class={DATE_COLUMNS.has(column) ? "col-when" : ""}
+                      aria-sort={sortBy === column ? (ascending ? "ascending" : "descending") : "none"}>
                     <button
                       type="button"
                       class="cursor-pointer {sortBy === column ? 'text-primary-500 font-semibold' : ''}"
                       onclick={() => sortColumn(column)}
                     >
                       {name}
-                      {#if sortBy === column}{ascending ? "▲" : "▼"}{/if}
+                      {#if sortBy === column}<span aria-hidden="true">{ascending ? "▲" : "▼"}</span>{/if}
                     </button>
                   </th>
                 {/each}
@@ -519,6 +615,7 @@
                   <td>
                     <Row gap={2}>
                       <a class="anchor" href="/docs/{doc.slug}">{doc.title}</a>
+                      {#if doc.offline_prepared}<span class="text-surface-600-400 text-xs">Offline</span>{/if}
                       <!-- The file the search found, when it was not the
                            title. Opening it opens the project on that file. -->
                       {#if found(doc, needle).path}
@@ -577,10 +674,13 @@
   description="Share this link; anyone with it can comment, no account needed."
 >
   {#snippet children()}
-    <input class="input" readonly value={shared ?? ""} />
+    <Row gap={2}>
+      <input class="input min-w-0 flex-1" readonly aria-label="Link to the published document" value={shared ?? ""} />
+      <CopyLink href={shared ?? ""} label="Copy the link" />
+    </Row>
   {/snippet}
   {#snippet footer()}
-    <a role="button" class="btn preset-outlined-surface-300-700" href={shared ?? "/"}>Open</a>
+    <a class="btn preset-outlined-surface-300-700" href={shared ?? "/"}>Open</a>
     <button type="button" class="btn preset-filled-primary-500" onclick={() => (sharing = false)}>Done</button>
   {/snippet}
 </Modal>

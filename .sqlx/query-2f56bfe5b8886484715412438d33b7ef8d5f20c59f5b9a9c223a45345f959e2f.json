@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT update_sequence,uncompacted_update_count,uncompacted_update_bytes\n             FROM documents WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "update_sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "uncompacted_update_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "uncompacted_update_bytes",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2f56bfe5b8886484715412438d33b7ef8d5f20c59f5b9a9c223a45345f959e2f"
+}

@@ -1,37 +1,23 @@
-// The format-independent history display contract.
+// The format-independent projection of a rendered page.
 //
 // Renderers produce HTML, but HTML is an implementation detail: wrapper
 // elements, syntax-highlighting spans, generated ids, and whitespace used for
-// layout must not become review changes. This module turns a rendered page
-// into a small, serialisable semantic projection and compares two projections
-// with deterministic resource bounds. It deliberately has no dependency on a
-// renderer or on the live reader frame, which also makes the baseline safe to
-// parse in an inert DOMParser document.
+// layout are not words anybody wrote. This module turns a rendered page into
+// a small, bounded projection of the words in it, which is what a passage is
+// looked for in. It deliberately has no dependency on a renderer or on the
+// live reader frame, which also makes a historical page safe to parse in an
+// inert DOMParser document.
 
 import { Segmenter } from "@formatjs/intl-segmenter";
 
 export const PROJECTION_VERSION = 1;
 // FormatJS bundles the UAX #29 tables and does not delegate to browser ICU.
 // Keep the package/data identity explicit so segmentation changes invalidate
-// projections rather than silently changing comparison results.
+// projections rather than silently changing their words.
 export const SEGMENTATION_VERSION = "@formatjs/intl-segmenter@12.2.7";
 const WORD_SEGMENTER = new Segmenter("en", { granularity: "word" });
 const GRAPHEME_SEGMENTER = new Segmenter("en", { granularity: "grapheme" });
-export const DEFAULT_LIMITS = Object.freeze({
-  tokens: 20_000,
-  work: 2_000_000,
-  trace: 4_000,
-  hunks: 1_000,
-  // Projection values cross the frame boundary. Count their UTF-16 payload
-  // before walking locations so a small token count cannot hide a huge string.
-  bytes: 16 * 1024 * 1024,
-  path: 256,
-  sourceOffset: 4 * 1024 * 1024,
-  assetPath: 4_096,
-  parts: 64,
-  assets: 4_096,
-  string: 256,
-});
+export const DEFAULT_LIMITS = Object.freeze({ tokens: 20_000 });
 
 function boundedLimits(input) {
   const limits = { ...DEFAULT_LIMITS };
@@ -70,65 +56,6 @@ function sourceParts(state, start, end) {
     sourceStart: span.sourceStart + Math.max(0, start - span.start),
     sourceEnd: span.sourceStart + Math.min(span.end, end) - span.start,
   }));
-}
-
-function assetEntries(value, limits = DEFAULT_LIMITS) {
-  const paths = value?.paths;
-  if (!paths || typeof paths !== "object" || Array.isArray(paths)) return [];
-  const keys = Object.keys(paths);
-  if (keys.length > limits.assets) return [];
-  return keys.map((path) => {
-    const entry = paths[path];
-    if (path.length > limits.assetPath || !entry || typeof entry !== "object" || typeof entry.digest !== "string"
-      || !/^[0-9a-f]{64}$/u.test(entry.digest)
-      || (entry.url !== undefined && (typeof entry.url !== "string" || entry.url.length > limits.string * 4))) return null;
-    return { path, digest: entry.digest, ...(entry.url ? { url: entry.url } : {}) };
-  }).filter(Boolean);
-}
-
-function sourceUrl(element) {
-  return element.getAttribute("src") || element.getAttribute("data-librepaper-source-url") || "";
-}
-
-function withoutFragment(value) {
-  const at = String(value || "").indexOf("#");
-  return at < 0 ? String(value || "") : String(value || "").slice(0, at);
-}
-
-function fragmentDigest(value) {
-  const match = String(value || "").match(/#librepaper-asset=([0-9a-f]{64})$/u);
-  return match ? match[1] : "";
-}
-
-// Renderer attributes are hints only. An image is comparable when its digest
-// is backed by the captured tree and, when a URL/path is present, that locator
-// agrees with the authorized evidence. This prevents stale or arbitrary
-// `data-asset-digest` attributes from proving unchanged image bytes.
-function assetIdentity(element, evidence) {
-  const entries = assetEntries(evidence);
-  if (!entries.length) return null;
-  const path = element.getAttribute("data-asset-path") || "";
-  const declared = element.getAttribute("data-asset-digest")
-    || element.getAttribute("data-librepaper-image-digest")
-    || element.getAttribute("data-librepaper-digest")
-    || element.getAttribute("data-asset") || "";
-  const url = sourceUrl(element);
-  const fromFragment = fragmentDigest(url);
-  const digest = declared || fromFragment;
-  const base = withoutFragment(url);
-  if (fromFragment && digest !== fromFragment) return null;
-  const matches = entries.filter((entry) => {
-    if (path && entry.path !== path) return false;
-    if (digest && entry.digest !== digest) return false;
-    if (base && entry.url && withoutFragment(entry.url) !== base) return false;
-    // A URL without a matching captured URL is not an authorization proof.
-    if (base && !entry.url) return false;
-    // A bare renderer digest is not a path/digest mapping and is therefore
-    // still untrusted, even when it happens to equal one captured digest.
-    return Boolean(path || base);
-  });
-  if (matches.length !== 1) return null;
-  return matches[0].digest;
 }
 
 function addToken(state, kind, value, display = value, location = {}, comparable = true, contributes = true) {
@@ -266,9 +193,8 @@ function walk(state, node, path = []) {
   if (semantic) {
     if (tag === "IMG" || element.matches("figure img")) {
       flushRun(state);
-      const identity = assetIdentity(element, state.assetEvidence);
       const alt = element.getAttribute("alt") || "Figure";
-      atomic(state, element, nextPath, "figure", `asset:${identity || `unverified:${alt}`}|alt:${alt}`, alt, Boolean(identity));
+      atomic(state, element, nextPath, "figure", `alt:${alt}`, alt);
     } else if (element.matches("[data-citation]")) {
       const key = element.getAttribute("data-citation-key") || element.getAttribute("data-citation");
       const locator = element.getAttribute("data-locator") || "";
@@ -306,9 +232,6 @@ export function projectHtml(html, options = {}) {
     const template = document.createElement("template");
     template.innerHTML = source;
     for (const element of template.content.querySelectorAll("*")) {
-      // Keep the original locator for evidence matching, then remove all
-      // fetchable attributes before handing the inert markup to DOMParser.
-      if (element.hasAttribute("src")) element.setAttribute("data-librepaper-source-url", element.getAttribute("src"));
       for (const attribute of ["src", "srcset", "href", "poster", "data", "style", "background"]) element.removeAttribute(attribute);
     }
     source = template.innerHTML;
@@ -325,7 +248,6 @@ export function projectDom(root, options = {}) {
     code: false, run: [], runSpans: [], nodes: 0,
     nodeLimit: limits.nodes ?? limits.tokens * 4,
     tokenLimit: limits.tokens, complete: true,
-    assetEvidence: { paths: Object.fromEntries(assetEntries(options.assetEvidence, limits).map((entry) => [entry.path, entry])) },
   };
   walk(state, root, []);
   flushRun(state);
@@ -334,189 +256,4 @@ export function projectDom(root, options = {}) {
   }
   if (!state.complete) return state;
   return { ...state, complete: state.tokens.every((token) => token.comparable !== false) };
-}
-
-export function projectText(text) {
-  // Source-only fallback keeps review useful if a renderer cannot produce
-  // HTML. It is explicitly marked as such so callers never present it as a
-  // semantic render comparison.
-  const state = {
-    version: PROJECTION_VERSION, segmentation: SEGMENTATION_VERSION, tokens: [], locations: [], text: "",
-    code: true, run: [{ text: String(text || ""), path: [] }], runSpans: [],
-    tokenLimit: DEFAULT_LIMITS.tokens, complete: true, sourceOnly: true,
-  };
-  flushRun(state);
-  return { ...state, complete: state.complete, sourceOnly: true };
-}
-
-function equal(a, b) {
-  return a?.comparable !== false && b?.comparable !== false && a?.kind === b?.kind && a?.value === b?.value;
-}
-
-// A bounded Myers frontier. Equal prefixes/suffixes are stripped before trace
-// allocation. If the deterministic work/trace budget is exhausted the whole
-// affected middle is returned as one simplified replacement.
-export function diffProjections(a, b, options = {}) {
-  const limits = boundedLimits(options.limits);
-  const aa = a?.tokens || [], bb = b?.tokens || [];
-  let fromA = 0; let fromB = 0;
-  while (fromA < aa.length && fromB < bb.length && equal(aa[fromA], bb[fromB])) { fromA += 1; fromB += 1; }
-  let toA = aa.length; let toB = bb.length;
-  while (toA > fromA && toB > fromB && equal(aa[toA - 1], bb[toB - 1])) { toA -= 1; toB -= 1; }
-  if (fromA === toA && fromB === toB) return [];
-  const n = toA - fromA; const m = toB - fromB;
-  if (n + m > limits.tokens) {
-    return [{ fromA, toA, fromB, toB, deleted: aa.slice(fromA, toA), inserted: bb.slice(fromB, toB), simplified: true }];
-  }
-  const maxD = Math.min(n + m, Math.max(0, limits.trace));
-  const size = 2 * maxD + 3;
-  const center = maxD + 1;
-  const frontier = new Int32Array(size);
-  frontier.fill(-1);
-  frontier[center + 1] = 0;
-  const trace = [];
-  let work = 0;
-  let found = -1;
-  for (let d = 0; d <= maxD; d += 1) {
-    trace.push(frontier.slice());
-    for (let k = -d; k <= d; k += 2) {
-      const index = center + k;
-      let x;
-      if (k === -d || (k !== d && frontier[index - 1] < frontier[index + 1])) x = frontier[index + 1];
-      else x = frontier[index - 1] + 1;
-      let y = x - k;
-      while (x < n && y < m && equal(aa[fromA + x], bb[fromB + y])) { x += 1; y += 1; work += 1; }
-      work += 1;
-      if (work > limits.work) break;
-      frontier[index] = x;
-      if (x >= n && y >= m) { found = d; break; }
-    }
-    if (found >= 0 || work > limits.work) break;
-  }
-  const coarse = () => [{ fromA, toA, fromB, toB, deleted: aa.slice(fromA, toA), inserted: bb.slice(fromB, toB), simplified: true }];
-  if (found < 0) return coarse();
-
-  // Reconstruct the shortest edit script from the saved frontiers.
-  const edits = [];
-  let x = n; let y = m;
-  for (let d = found; d > 0; d -= 1) {
-    const previous = trace[d];
-    const k = x - y;
-    const previousK = k === -d || (k !== d && previous[center + k - 1] < previous[center + k + 1]) ? k + 1 : k - 1;
-    const previousX = previous[center + previousK];
-    const previousY = previousX - previousK;
-    while (x > previousX && y > previousY) { edits.push({ kind: "equal", a: x - 1, b: y - 1 }); x -= 1; y -= 1; }
-    if (x === previousX) { edits.push({ kind: "insert", b: y - 1 }); y -= 1; }
-    else { edits.push({ kind: "delete", a: x - 1 }); x -= 1; }
-  }
-  while (x > 0 && y > 0) { edits.push({ kind: "equal", a: x - 1, b: y - 1 }); x -= 1; y -= 1; }
-  while (x > 0) { edits.push({ kind: "delete", a: x - 1 }); x -= 1; }
-  while (y > 0) { edits.push({ kind: "insert", b: y - 1 }); y -= 1; }
-  edits.reverse();
-
-  const hunks = [];
-  let hunk = null;
-  const flush = () => { if (hunk) { hunks.push(hunk); hunk = null; } };
-  let i = 0; let j = 0;
-  for (const edit of edits) {
-    if (edit.kind === "equal") { flush(); i += 1; j += 1; continue; }
-    if (!hunk) hunk = { fromA: fromA + i, toA: fromA + i, fromB: fromB + j, toB: fromB + j, deleted: [], inserted: [] };
-    if (edit.kind === "delete") { hunk.deleted.push(aa[fromA + i]); hunk.toA = fromA + (++i); }
-    else { hunk.inserted.push(bb[fromB + j]); hunk.toB = fromB + (++j); }
-  }
-  flush();
-  return hunks.length > limits.hunks ? coarse() : hunks.map((value) => ({ ...value, simplified: false }));
-}
-
-export function projectionHunks(a, b, options = {}) {
-  const hunks = diffProjections(a, b, options);
-  const sourceRanges = (projection, from, to) => (projection.locations || [])
-    .slice(from, to)
-    .flatMap((location) => location.parts || [])
-    .filter((part) => typeof part.path === "string" && Number.isFinite(part.sourceStart)
-      && Number.isFinite(part.sourceEnd) && part.sourceEnd > part.sourceStart)
-    .map((part) => ({
-      path: part.path, start: part.sourceStart, end: part.sourceEnd, validated: true,
-    }));
-  return hunks.map((hunk) => {
-    const oldAt = a.tokens.slice(0, hunk.fromA).reduce((sum, token) => sum + (token.offset ?? (token.display || "").length), 0);
-    const from = b.tokens.slice(0, hunk.fromB).reduce((sum, token) => sum + (token.offset ?? (token.display || "").length), 0);
-    const insert = hunk.inserted.filter((token) => token.kind !== "block" && token.kind !== "figure")
-      .map((token) => token.display || "").join("");
-    const old = hunk.deleted.map((token) => token.display || "").join("");
-    // Source ranges are display metadata only. They are consumed by the
-    // source-only attribution pass after exact source evidence is established;
-    // no text match or rendered intermediate can manufacture them.
-    const deletedRanges = sourceRanges(a, hunk.fromA, hunk.toA);
-    const insertedRanges = sourceRanges(b, hunk.fromB, hunk.toB);
-    return {
-      ...hunk, at: oldAt, position: from, insert, old, new: insert,
-      sourceRanges: insertedRanges.length ? insertedRanges : deletedRanges,
-      sourceRangesA: deletedRanges, sourceRangesB: insertedRanges,
-      kind: old && insert ? "replace" : old ? "delete" : "insert",
-    };
-  });
-}
-
-export function validateProjection(projection, limits = DEFAULT_LIMITS) {
-  limits = boundedLimits(limits);
-  if (!projection || projection.version !== PROJECTION_VERSION || projection.segmentation !== SEGMENTATION_VERSION
-    || !Array.isArray(projection.tokens)
-    || projection.complete !== true || projection.tokens.length > limits.tokens || typeof projection.text !== "string"
-    || projection.text.length * 2 > limits.bytes
-    || (projection.sourceOnly !== undefined && typeof projection.sourceOnly !== "boolean")) return false;
-  if (!Array.isArray(projection.locations) || projection.locations.length > limits.tokens * 2) return false;
-  const rawAssets = projection.assetEvidence;
-  if (rawAssets !== undefined && (!rawAssets || typeof rawAssets !== "object" || Array.isArray(rawAssets)
-    || !rawAssets.paths || typeof rawAssets.paths !== "object" || Array.isArray(rawAssets.paths))) return false;
-  const rawAssetPaths = rawAssets?.paths || {};
-  if (assetEntries(rawAssets, limits).length !== Object.keys(rawAssetPaths).length) return false;
-  let bytes = projection.text.length * 2;
-  for (const entry of assetEntries(rawAssets, limits)) bytes += (entry.path.length + entry.digest.length + (entry.url?.length || 0)) * 2;
-  let offsets = 0;
-  const tokens = projection.tokens.every((token) => {
-    if (!token || typeof token.kind !== "string" || token.kind.length > limits.string
-      || typeof token.value !== "string" || typeof token.display !== "string"
-      || token.comparable !== true || Number.isInteger(token.offset) === false
-      || token.offset < 0 || token.offset > token.display.length) return false;
-    bytes += (token.kind.length + token.value.length + token.display.length) * 2;
-    offsets += token.offset;
-    return bytes <= limits.bytes && offsets <= projection.text.length;
-  });
-  const validPath = (path) => Array.isArray(path) && path.length <= limits.path
-    && path.every((index) => Number.isInteger(index) && index >= 0 && index <= limits.tokens * 4);
-  const seenLocations = new Set();
-  const locations = projection.locations.every((location) => {
-    if (!location || !Number.isInteger(location.token) || location.token < 0 || location.token >= projection.tokens.length
-      || seenLocations.has(location.token)
-      || (location.element !== undefined && (typeof location.element !== "string" || location.element.length > limits.string))
-      || (location.path !== undefined && !validPath(location.path))
-      || (location.start !== undefined && (!Number.isInteger(location.start) || location.start < 0 || location.start > projection.text.length))
-      || (location.end !== undefined && (!Number.isInteger(location.end) || location.end < 0 || location.end > projection.text.length))
-      || (location.start !== undefined && location.end !== undefined && location.start > location.end)) return false;
-    seenLocations.add(location.token);
-    if (location.parts !== undefined && (!Array.isArray(location.parts) || location.parts.length > limits.parts)) return false;
-    bytes += 16 + (location.element?.length || 0) * 2 + (location.path?.length || 0) * 4;
-    const validParts = (location.parts || []).every((part) => part && validPath(part.path)
-      && Number.isInteger(part.sourceStart) && Number.isInteger(part.sourceEnd)
-      && part.sourceStart >= 0 && part.sourceEnd >= part.sourceStart
-      && part.sourceEnd <= limits.sourceOffset);
-    for (const part of location.parts || []) bytes += 16 + (part?.path?.length || 0) * 4;
-    return validParts && bytes <= limits.bytes;
-  });
-  return tokens && locations && seenLocations.size === projection.tokens.length
-    && offsets === projection.text.length && bytes <= limits.bytes;
-}
-
-export class ProjectionCache {
-  constructor(limit = 16) { this.limit = limit; this.entries = new Map(); this.scope = ""; this.generation = 0; }
-  setScope(scope) { if (String(scope) !== this.scope) { this.scope = String(scope); this.clear(); } }
-  key(identity) { return `${this.scope}\u0000${JSON.stringify(identity)}`; }
-  get(identity) { return this.entries.get(this.key(identity))?.value; }
-  put(identity, value) {
-    this.entries.set(this.key(identity), { value, generation: this.generation });
-    while (this.entries.size > this.limit) this.entries.delete(this.entries.keys().next().value);
-    return value;
-  }
-  clear() { this.generation += 1; this.entries.clear(); }
 }

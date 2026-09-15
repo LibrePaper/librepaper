@@ -4,9 +4,13 @@
 use super::*;
 
 /// The longest a checkpoint's label may be, in characters. Long enough for
-/// "sent to the journal, second round" and short enough that the history panel
+/// "submitted after review, second round" and short enough that the history panel
 /// is a list of names rather than of paragraphs.
 pub(super) const MAX_LABEL: usize = 120;
+
+fn is_checkpoint_id(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok()
+}
 
 /// Content authorship is separate from the checkpoint event actor. Current
 /// session writes do not carry a durable contributor interval proof, so the
@@ -44,12 +48,10 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, None).await;
         // History contains source paths, revisions, and source-bearing
         // checkpoint metadata, so it is editor-only.
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
@@ -59,30 +61,28 @@ impl Server {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
         };
-        let page = query.and_then(|raw| {
-            let values: HashMap<_, _> = url::form_urlencoded::parse(raw.as_bytes())
-                .into_owned()
-                .collect();
-            if !values.contains_key("after") && !values.contains_key("limit") {
-                return None;
-            }
-            let after = values
-                .get("after")
-                .and_then(|value| value.parse::<i64>().ok());
-            let limit = values
-                .get("limit")
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(64)
-                .clamp(1, 200);
-            Some((after, limit))
-        });
-        let (checkpoints, next_cursor) = if let Some((after, limit)) = page {
+        let page = query
+            .map(|raw| {
+                let values: HashMap<_, _> = url::form_urlencoded::parse(raw.as_bytes())
+                    .into_owned()
+                    .collect();
+                let after = values
+                    .get("after")
+                    .and_then(|value| value.parse::<i64>().ok());
+                let limit = values
+                    .get("limit")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or(64)
+                    .clamp(1, 200);
+                (after, limit)
+            })
+            .unwrap_or((None, 64));
+        let (checkpoints, next_cursor) = {
+            let (after, limit) = page;
             match room.checkpoint_page(after, limit).await {
                 Ok(result) => result,
                 Err(error) => return write_json(503, &json!({"error": error})),
             }
-        } else {
-            (room.manifest().await.checkpoints, None)
         };
         let checkpoints: Vec<_> = checkpoints.iter().map(checkpoint_wire).collect();
         let durability = room.history_durability().await;
@@ -138,19 +138,18 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        // A digest and nothing else: this becomes a storage key.
-        if !is_sha(sha) {
+        // The checkpoint event ID addresses a catalog row; its tree digest
+        // and physical object locator are separate identities.
+        if !is_checkpoint_id(sha) {
             return plain(404, "not found");
         }
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, None).await;
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
@@ -225,18 +224,19 @@ impl Server {
         // `current` is a virtual row used by the history panel. Naming it
         // first captures pending edits, then labels the resulting checkpoint.
         let current = sha == "current";
-        if !current && !is_sha(sha) {
+        if !current && !is_checkpoint_id(sha) {
             return plain(404, "not found");
         }
         if cross_site_refused(request.headers(), arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (_entry, who) = match self
+            .entry_viewer(slug, request.headers(), arrival, None)
+            .await
+        {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, request.headers(), arrival, None).await;
         // As everywhere else: a document somebody may not change is not a
         // document they need to learn the shape of.
         if !who.at_least(Role::Editor) {
@@ -260,22 +260,8 @@ impl Server {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
         };
-        let authority = crate::storage::catalog::MutationAuthority {
-            account_id: who.id.id.as_str(),
-            owner_key: who.key.as_str(),
-            generation: who.id.session_generation.as_str(),
-            link_hash: who.link.as_str(),
-            policy_editor: self.publishers.allows(&who.id.handle),
-            automation: who.automation,
-            unowned_publisher: false,
-            execution_epoch: "",
-            agent_checkpoint: None,
-        };
         let sha = if current {
-            match room
-                .checkpoint_now_with_authority("label", who.attribution(), authority)
-                .await
-            {
+            match room.checkpoint_now("label", who.attribution()).await {
                 Ok(Some(sha)) => sha,
                 Ok(None) => return plain(404, "not found"),
                 Err(error) => {
@@ -289,7 +275,7 @@ impl Server {
         } else {
             sha.to_string()
         };
-        match room.label_as_authority(&sha, &label, Some(authority)).await {
+        match room.label_version(&sha, &label).await {
             Ok(true) => write_json(200, &json!({"sha": sha, "label": label})),
             Ok(false) => plain(404, "not found"),
             Err(error) => refused_with(
@@ -318,12 +304,13 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (_entry, who) = match self
+            .entry_viewer(slug, request.headers(), arrival, None)
+            .await
+        {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, request.headers(), arrival, None).await;
         if !who.at_least(Role::Editor) {
             return plain(404, "not found");
         }
@@ -337,13 +324,8 @@ impl Server {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .trim();
-        if requested.is_empty()
-            || requested.len() > 64
-            || !requested
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        {
-            return write_json(400, &json!({"error": "a checkpoint SHA is required"}));
+        if !is_checkpoint_id(requested) {
+            return write_json(400, &json!({"error": "a checkpoint ID is required"}));
         }
 
         let room = match self.rooms.try_get(slug).await {
@@ -353,12 +335,11 @@ impl Server {
         // The owner may have transferred the document, or a link may have
         // been revoked, while the request body was being read. Recheck the
         // role immediately before the room mutation as well as before it.
-        let current_entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
-            Err(response) => return response,
-        };
-        let current_who = self.viewer(&current_entry, &headers, arrival, None).await;
+        let (_current_entry, current_who) =
+            match self.entry_viewer(slug, &headers, arrival, None).await {
+                Ok(result) => result,
+                Err(response) => return response,
+            };
         if !current_who.at_least(Role::Editor) {
             return plain(404, "not found");
         }
@@ -381,7 +362,7 @@ impl Server {
         room.broadcast_editors_except(
             None,
             &json!({
-                "type": "y-update",
+                "type": "doc-update",
                 "update": encode_update(&update),
             }),
         )

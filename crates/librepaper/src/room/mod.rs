@@ -9,42 +9,39 @@
 //! created mean what the spec says. resolved is ours; the spec has no notion
 //! of it, and permits extra properties.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use futures_util::{stream, StreamExt};
+use loro::LoroDoc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest;
 use tokio::sync::{Mutex, RwLock};
-use yrs::Transact;
 
 use crate::config::{Configuration, CHECKPOINT_DEFER_SECONDS};
-use crate::document::history::{self, Checkpoint, Manifest};
+use crate::document::history::{Checkpoint, Manifest};
 use crate::document::session;
-use crate::storage::blob::{
-    checkpoint_key, room_key, session_key, take_room_lease, BlobError, BlobStore, BlobVersion,
-    Lease,
-};
+use crate::storage::blob::BlobStore;
 use crate::util::{clean, new_id};
-use crate::util::{now_unix, parse_timestamp, timestamp};
+use crate::util::{now_unix, timestamp};
 
 pub(crate) mod agent;
 pub(crate) mod agent_comments;
 mod agent_view;
 mod catalog;
-mod checkpoint;
+pub(crate) mod checkpoint;
 mod command;
-mod comments;
+pub(crate) mod comments;
 pub(crate) mod error;
 mod figures;
+#[cfg(test)]
+mod idle_room_tests;
 pub(crate) mod outgoing;
+pub(crate) mod proposals;
 mod resident;
-mod retention;
-pub(crate) mod revisions;
-mod suggestions;
 pub(crate) mod text;
 
 use catalog::*;
@@ -107,15 +104,36 @@ pub struct Message {
     pub resolved: bool,
     #[serde(default)]
     pub temp_id: String,
-    /// A Yjs update, base64-encoded.
+    /// A document update, base64-encoded.
     #[serde(default)]
     pub update: String,
-    /// A Yjs state vector, base64-encoded: what the sender already has, so the
+    /// A version vector, base64-encoded: what the sender already has, so the
     /// server can answer with the rest and nothing more.
     #[serde(default)]
     pub vector: String,
+    /// The proposal a message is about (§5.1).
+    #[serde(default)]
+    pub proposal_id: String,
+    /// Which hunk of it, numbered across the whole proposal as §5.2 numbers
+    /// them. An index rather than an offset, because the two sides count text
+    /// differently and an index is the one name that means the same to both.
+    #[serde(default)]
+    pub hunk: usize,
+    /// Whether the reviewer took that hunk.
+    #[serde(default)]
+    pub accepted: bool,
+    /// A branch frontier, base64-encoded. `tip` on a decision is the tip the
+    /// reviewer was looking at, so a decision about a diff that has since
+    /// changed can be refused rather than applied to text nobody reviewed.
+    #[serde(default)]
+    pub base: String,
+    #[serde(default)]
+    pub tip: String,
+    /// Why, which matters most when the answer is no.
+    #[serde(default)]
+    pub note: String,
     /// The sender's own number for this update, counted up per socket and sent
-    /// back on `y-ack` once the update it names is durable. A browser holds
+    /// back on `doc-ack` once the update it names is durable. A browser holds
     /// everything above the last acknowledged number and resends it after a
     /// reconnect.
     #[serde(default)]
@@ -127,7 +145,7 @@ pub struct Message {
     pub chunks: usize,
     #[serde(default)]
     pub index: usize,
-    /// Why a checkpoint was asked for: `cli`, `sync`, `restore`, `label`. Only
+    /// Why a checkpoint was asked for: `cli`, `restore`, `label`. Only
     /// these four arrive from outside; the rest the server decides for itself.
     #[serde(default)]
     pub why: String,
@@ -136,8 +154,8 @@ pub struct Message {
     /// client never has to infer which request a frame belongs to.
     #[serde(default)]
     pub request_id: String,
-    /// The revision the caller inspected. Anchored comments preserve this
-    /// value so suggestion acceptance can use the existing stale path.
+    /// The revision the caller inspected, kept so a comment can say which
+    /// version of the text it was written against.
     #[serde(default)]
     pub revision: String,
     /// Publication the rendered selection came from. The server treats this
@@ -185,7 +203,9 @@ pub struct Peer {
 /// draft of it: it is persisted, it outlives every socket, and it is seeded
 /// once from the source the document was created with.
 pub struct Session {
-    pub doc: yrs::Doc,
+    pub doc: LoroDoc,
+    /// Highest PostgreSQL collaboration sequence merged into this room.
+    pub durable_sequence: i64,
     /// Whether the document has changed since `sessions/<slug>` was written.
     pub dirty: bool,
     /// Start of the current dirty interval. It is deliberately not refreshed
@@ -195,9 +215,9 @@ pub struct Session {
     /// this survives durable session writes and resets only when a checkpoint
     /// captures the current generation.
     pub pending_checkpoint_since: i64,
-    /// Last successful durable snapshot, used for the deployment-wide flush
-    /// floor. It is separate from checkpoint time: a busy room still gets a
-    /// bounded journal flush cadence without creating history entries.
+    /// Last successful durable update, used for the deployment-wide flush
+    /// floor. It is separate from version time: a busy room still gets a
+    /// bounded flush cadence without creating history entries.
     pub last_persist_at: i64,
     /// Bumped on every mutation that changes the document or how its files
     /// are named -- an edit, a main-file change, a restore, an asset naming.
@@ -213,8 +233,7 @@ pub struct Session {
     ///
     /// A v1 update carries every block it inserts, so the snapshot after
     /// applying an update is at most the snapshot before plus that update's
-    /// own length; deletions only shrink it. That is the same bound the quota
-    /// reservation has always leaned on. Keeping it here is what lets the
+    /// own length; deletions only shrink it. Keeping it here is what lets the
     /// encoded ceiling be decided on every keystroke without encoding the
     /// whole document each time. Any mutation that is not a measured update
     /// clears it through `mark_dirty`, and the next exact encode -- a persist,
@@ -224,6 +243,10 @@ pub struct Session {
     /// against `generation` to say whether the document has changed since
     /// then, so an idle room is not re-hashed every second to answer that.
     pub checkpoint_generation: u64,
+    /// The newest checkpoint's tree, once this room has seen it: what the next
+    /// checkpoint is diffed against to record the paths it moved. `None` until
+    /// a load establishes it or a checkpoint writes one.
+    pub checkpoint_tree: Option<crate::document::history::Tree>,
     /// When the last update arrived, and who sent it. Both feed the quiet
     /// checkpoint, whose `by` is the editor whose update last landed. The
     /// stable account travels with the display name so an automatic
@@ -240,21 +263,11 @@ pub struct Session {
     pub last_checkpoint: String,
     /// What the source is written in, which travels with every checkpoint.
     pub format: String,
-    /// The tree the last checkpoint recorded, so the next one can say which
-    /// paths moved without reading it back. Empty on a cold room, and filled
-    /// from storage by the first checkpoint that needs it.
-    pub last_tree: Option<crate::document::history::Tree>,
     /// Every asset this document holds, by digest, and what it costs. Read
     /// once when the room is loaded and added to by each upload, because a
     /// checkpoint has to record what a figure weighs and the shared document
     /// carries only its name.
     pub asset_sizes: HashMap<String, i64>,
-    /// When each asset was written here, for the grace period. Uploading a
-    /// figure and naming it are two requests, and an asset pruned in between
-    /// is one somebody had just successfully uploaded. Held in memory only:
-    /// the gap it covers is seconds, and a server that restarted in the middle
-    /// of it has lost the upload anyway.
-    pub asset_written_at: HashMap<String, i64>,
 }
 
 impl Session {
@@ -272,6 +285,16 @@ impl Session {
         // one. `receive_update` re-establishes it explicitly after this, with
         // the bytes it actually admitted.
         self.encoded_bound = None;
+    }
+
+    /// Record that the newest checkpoint covers what the document says now.
+    /// Taken by the checkpoint that wrote the tree and by the one that found
+    /// it already written: both leave the document covered, and a covered
+    /// document is not asked for a checkpoint again until it changes.
+    pub(super) fn cover_checkpoint(&mut self, tree: crate::document::history::Tree) {
+        self.checkpoint_generation = self.generation;
+        self.pending_checkpoint_since = 0;
+        self.checkpoint_tree = Some(tree);
     }
 
     /// The exact encoded length, learned from an encode that just happened.
@@ -317,14 +340,6 @@ pub struct RoomState {
     /// When a socket was last attached or detached, which is what says an idle
     /// room may be evicted.
     pub touched: i64,
-    /// The versions this server last saw of the three objects a room owns.
-    /// Every write of them is conditional on these, so a write that loses is
-    /// proof that another process owns the room -- which is what makes the
-    /// lease enforced rather than advisory. Empty means "there was nothing
-    /// there", which is how a document with no session or no comments starts.
-    pub session_version: BlobVersion,
-    pub manifest_version: BlobVersion,
-    pub comments_version: BlobVersion,
 }
 
 pub struct Room {
@@ -333,42 +348,24 @@ pub struct Room {
     /// Legacy/isolated rooms fall back to their slug.
     storage_id: String,
     blobs: Arc<dyn BlobStore>,
-    checkpoint_cache: Arc<crate::document::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     /// True when another server holds this room's lock: it can be read and
-    /// served, but nothing here may write over what that server is doing. Set
-    /// when the room is loaded, and again if a renewal ever finds the lock in
-    /// somebody else's hands.
+    /// served, but nothing here may write over what that server is doing.
+    /// Startup and later corruption/lifecycle checks can fence the room.
     read_only: std::sync::atomic::AtomicBool,
-    /// Why `read_only` is set, so a refusal can say whether the lease moved,
+    /// Why `read_only` is set, so a refusal can say whether the writer lock is unavailable,
     /// the document is gone, or this server could not read what it would be
     /// writing over. Only meaningful while `read_only` is true; it is a
     /// companion to that flag and never a substitute for the durable
-    /// catalogue and lease checks a write still makes.
+    /// catalogue generation checks a write still makes.
     fence_reason: std::sync::atomic::AtomicU8,
-    /// How many checkpoints of this room are between their first write and
-    /// their last. The blob sweep at the end of a checkpoint deletes what no
-    /// tree names, and a checkpoint still on its way to writing its tree has
-    /// blobs nothing names yet; the sweep runs only when it is the sole
-    /// checkpoint in flight, so it can never collect those.
-    checkpointing: std::sync::atomic::AtomicUsize,
-    /// This server's name in the lease, and the lease it holds. A lease is
-    /// takeable again once it has gone stale, so holding a room in memory for
-    /// longer than that without renewing would let a second server take it and
-    /// leave both writing the whole document over each other.
-    holder: String,
-    lease: Mutex<Lease>,
     /// The index, for the half of a checkpoint that is bookkeeping: the size a
     /// document's history counts against its owner's quota, and the digest of
     /// the newest checkpoint. Set once, after the store exists, because the
     /// store and the rooms are made in that order.
     store: Arc<std::sync::OnceLock<Arc<crate::document::store::Store>>>,
-    /// The authoritative local catalogue.  Legacy test fixtures may omit it;
-    /// production rooms are always attached to the catalogue by `Store`.
-    catalog: Arc<std::sync::OnceLock<Arc<crate::storage::catalog::Catalog>>>,
-    /// The local durable edit journal. Legacy fixtures leave this unset;
-    /// production catalog-backed rooms receive it from `serve`.
-    journal: Arc<std::sync::OnceLock<Arc<crate::storage::journal::JournalRuntime>>>,
+    /// The authoritative local catalogue. Unattached rooms are read-only.
+    catalog: Arc<std::sync::OnceLock<Arc<crate::storage::postgres::PostgresCatalog>>>,
     /// Serializes session snapshots and conditional writes without blocking edits.
     session_write: Mutex<()>,
     /// Serializes mutations that must remain one publication operation from
@@ -398,12 +395,7 @@ pub struct Room {
     manifest_write: Mutex<()>,
     /// Serializes writers of the room's comment list.
     ///
-    /// A room with no catalogue has nothing narrower to persist than the whole
-    /// list, so a comment mutation prepares the list it wants under state,
-    /// writes it with state released, and installs it afterwards. Two writers
-    /// overlapping in that window would each write a list missing the other's
-    /// change, and the loser's conditional write would fence the room instead
-    /// of merging. This gate is what keeps them apart.
+    /// Serializes preparation and installation around catalog writes.
     ///
     /// It is deliberately not `restore_write`: source edits and socket traffic
     /// never take it, and a comment should not wait behind a whole restore.
@@ -422,7 +414,7 @@ pub enum Applied {
     /// Close the socket, with this refusal. Either it wrote past one of the
     /// document's ceilings, it wrote faster than a person can, or this server
     /// momentarily has no capacity to save what it wrote. The variant says
-    /// which, so the socket handler and `librepaper sync` never have to read
+    /// which, so socket and agent handlers never have to read
     /// the message to find out whether reconnecting is worth anything.
     Refuse(WriteError),
 }
@@ -434,144 +426,30 @@ pub(crate) const ENCODED_CEILING_REFUSAL: &str =
     "this document's saved state has reached the largest size this deployment can durably \
      save; its edit history counts towards that as well as its text";
 
-/// What a peer is told when this server is merely full. It is a separate
-/// message because reporting saturation as a size limit tells a person their
-/// document can never be saved, which is false.
-pub(crate) const BUSY_REFUSAL: &str =
-    "this server has no free capacity to save right now; reconnect to continue editing";
-
-/// What accepting a suggestion did.
-pub enum Accepted {
-    /// The edit landed: `update` is the Yjs update every socket is sent,
-    /// `sha` the checkpoint it was recorded in.
-    Applied {
-        update: Vec<u8>,
-        sha: String,
-        resolved_at: String,
-    },
-    /// A retry of a request already applied. Nothing changed this time;
-    /// the caller answers with what happened the first time.
-    Noop { sha: String, resolved_at: String },
-}
-
-/// Why `accept_suggestion` refused, so the dispatch sites -- the socket loop
-/// and the REST comments route -- can shape the exact JSON the spec promises
-/// for each.
-pub enum AcceptError {
-    /// The exact refusal text a client is shown.
-    Refused(String),
-    /// The passage could not be placed, even against the checkpoint the
-    /// suggestion was made on. The browser opens the merge editor on this.
-    Stale,
-    /// Storage, or the room itself, failed.
-    Failed(String),
-}
-
 /// A slug's own loading slot: `None` while its load is in flight, `Some` once
 /// it has landed. One `Mutex` per slug rather than one shared with `rooms`
 /// (R35) -- see `RoomSet::loading`.
 type LoadingSlot = Arc<Mutex<Option<Arc<Room>>>>;
 
-/// One checkpoint's presence in `Room::checkpointing`, counted in when made
-/// and out when dropped, so an early return counts out as surely as the end
-/// of the function does.
-struct InFlight<'a>(&'a std::sync::atomic::AtomicUsize);
-
-impl<'a> InFlight<'a> {
-    fn new(counter: &'a std::sync::atomic::AtomicUsize) -> Self {
-        counter.fetch_add(1, Ordering::Relaxed);
-        InFlight(counter)
-    }
-}
-
-impl Drop for InFlight<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-/// The two cancellation gates the room tests park a caller in: after an edit
-/// reservation commits, and after a checkpoint's budget admission commits.
-/// Both are the window the completion hook cannot observe, and both are keyed
-/// by slug so tests in one process cannot gate each other's rooms.
-#[cfg(test)]
-pub(crate) struct ReservationGate {
-    pub(crate) slug: String,
-    /// Signalled as a caller enters the window, so a test can act inside it
-    /// rather than wait for a clock.
-    pub(crate) reached: tokio::sync::Notify,
-    /// One permit lets one parked caller out.
-    pub(crate) resume: tokio::sync::Semaphore,
-}
-
-#[cfg(test)]
-impl ReservationGate {
-    pub(crate) fn new(slug: &str) -> Arc<Self> {
-        Arc::new(Self {
-            slug: slug.to_string(),
-            reached: tokio::sync::Notify::new(),
-            resume: tokio::sync::Semaphore::new(0),
-        })
-    }
-
-    /// Park a caller in the window, announcing that it got there.
-    async fn park(gate: &TestGate, slug: &str) {
-        let gate = {
-            let held = match gate.lock() {
-                Ok(held) => held,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            held.as_ref().filter(|gate| gate.slug == slug).cloned()
-        };
-        if let Some(gate) = gate {
-            gate.reached.notify_one();
-            if let Ok(permit) = gate.resume.acquire().await {
-                permit.forget();
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-type TestGate = std::sync::Mutex<Option<Arc<ReservationGate>>>;
-
-#[cfg(test)]
-pub(crate) fn after_edit_reservation_gate() -> &'static TestGate {
-    &catalog::AFTER_EDIT_RESERVATION
-}
-
-#[cfg(test)]
-pub(crate) fn after_checkpoint_admission_gate() -> &'static TestGate {
-    &checkpoint::AFTER_CHECKPOINT_ADMISSION
-}
-
 pub struct RoomSet {
     /// Who this server is, in the lock objects it takes. A name rather than a
     /// pid, because a pid means nothing to whoever reads the refusal.
-    holder: String,
     /// Comments live wherever the documents do. On a bucket that makes the
     /// server genuinely stateless.
     pub blobs: Arc<dyn BlobStore>,
-    checkpoint_cache: Arc<crate::document::checkpoint_cache::CheckpointCache>,
     config: Arc<Configuration>,
     rooms: Mutex<HashMap<String, Arc<Room>>>,
     /// Serialize capacity decisions, not cached lookups. Never acquire this
     /// while retaining a room state or registry guard.
     admission: Mutex<()>,
-    /// One slot per slug currently being loaded, so a cold room's lease
-    /// acquisition and storage reads happen with no lock held on `rooms` --
+    /// One slot per slug currently being loaded, so a cold room's catalog
+    /// and storage reads happen with no lock held on `rooms` --
     /// a slow load must not stall every other document's lookup, only
     /// concurrent callers of the same slug (R35). Removed once the load it
     /// was made for finishes, successfully or not.
     loading: Mutex<HashMap<String, LoadingSlot>>,
     store: Arc<std::sync::OnceLock<Arc<crate::document::store::Store>>>,
-    catalog: Arc<std::sync::OnceLock<Arc<crate::storage::catalog::Catalog>>>,
-    journal: Arc<std::sync::OnceLock<Arc<crate::storage::journal::JournalRuntime>>>,
-    /// A local deployment has one writer, held for the lifetime of the
-    /// process.  Remote stores use the per-room fenced lease below instead;
-    /// keeping this separate prevents a local cold-open from manufacturing a
-    /// blob lease that can outlive the deployment lock.
-    deployment_lock: Arc<std::sync::OnceLock<Option<std::fs::File>>>,
+    catalog: Arc<std::sync::OnceLock<Arc<crate::storage::postgres::PostgresCatalog>>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -599,23 +477,6 @@ impl std::fmt::Display for RoomAdmissionError {
 
 impl std::error::Error for RoomAdmissionError {}
 
-/// Names this process in a room lock: the machine it runs on and its pid,
-/// which is enough to tell two of them apart and to tell a restart from a
-/// second server.
-fn this_server() -> String {
-    let host = std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "server".to_string());
-    // The random tail is what makes two of these distinguishable when a pid
-    // cannot tell them apart -- a second `RoomSet` in one process, or a pid
-    // reused after a restart. A holder that another holder can be mistaken for
-    // is a lease that renews when it should have been refused.
-    let token = hex::encode(crate::auth::random_bytes(4));
-    format!("{host}/{}/{token}", std::process::id())
-}
-
 impl RoomSet {
     /// Remove an erased account's authored review rows from every resident
     /// cache immediately; the catalogue worker performs the durable bounded
@@ -640,7 +501,7 @@ impl RoomSet {
             for point in &mut state.manifest.checkpoints {
                 if point.by_account.as_deref() == Some(account_id) {
                     point.by_account = None;
-                    point.by = crate::storage::catalog::ERASED_ATTRIBUTION.to_string();
+                    point.by = "Deleted account".to_string();
                 }
             }
             // The pending attribution a quiet, automatic or deferred
@@ -656,76 +517,23 @@ impl RoomSet {
                 }
             }
         }
-        // A room can be evicted and reloaded while the bounded erasure worker
-        // is still draining SQLite.  Invalidate immutable checkpoint reads as
-        // well, so no request can combine a fresh comment list with a stale
-        // cached history object from before the erasure started.
-        self.checkpoint_cache.invalidate_prefix("history/").await;
     }
-    pub fn new(blobs: Arc<dyn BlobStore>, config: Arc<Configuration>) -> RoomSet {
+    pub fn new(store: Arc<crate::document::store::Store>) -> RoomSet {
+        let blobs = store.blobs.clone();
+        let config = store.config.clone();
+        let attached_store = Arc::new(std::sync::OnceLock::new());
+        let catalog = Arc::new(std::sync::OnceLock::new());
+        let _ = attached_store.set(store.clone());
+        let _ = catalog.set(store.catalog.clone());
         RoomSet {
-            holder: this_server(),
             blobs,
-            checkpoint_cache: Arc::new(
-                crate::document::checkpoint_cache::CheckpointCache::default(),
-            ),
             config,
             rooms: Mutex::new(HashMap::new()),
             admission: Mutex::new(()),
             loading: Mutex::new(HashMap::new()),
-            store: Arc::new(std::sync::OnceLock::new()),
-            catalog: Arc::new(std::sync::OnceLock::new()),
-            journal: Arc::new(std::sync::OnceLock::new()),
-            deployment_lock: Arc::new(std::sync::OnceLock::new()),
+            store: attached_store,
+            catalog,
         }
-    }
-
-    /// Pass the deployment lock acquired by `serve` before constructing the
-    /// server.  The handle is retained here so a room can rely on the same
-    /// process-wide ownership decision without taking a second OS lock.
-    pub fn attach_deployment_lock(&self, lock: std::fs::File) {
-        let _ = self.deployment_lock.set(Some(lock));
-    }
-
-    /// Mark this deployment as a local reader when another process already
-    /// owns its writer lock.  This is useful to callers that acquire the lock
-    /// before building a `RoomSet` and want to retain the failed claim.
-    /// `serve` itself never calls this -- it exits rather than start a second
-    /// writer over the same directory -- but the test harness's `server_over`
-    /// does, to model exactly the second-process-over-one-bucket
-    /// configuration `a_second_process_over_the_same_storage_does_not_write`
-    /// (tests/history.rs) exercises: every room this deployment opens comes
-    /// up read-only, per the `deployment_lock.get()` check below, instead of
-    /// each taking its own per-room fenced lease. Its only caller is
-    /// `#[cfg(test)]` code, so a non-test build of the library sees it as
-    /// unused; the allow below is for that build, not because it is
-    /// unreachable within this crate.
-    #[allow(dead_code)]
-    pub fn attach_deployment_lock_unavailable(&self) {
-        let _ = self.deployment_lock.set(None);
-    }
-
-    /// Hands the rooms the index. Called once, by `Server::new`, because a
-    /// checkpoint has to record its own size against the document's quota and
-    /// the store is what holds that.
-    pub fn attach_store(&self, store: Arc<crate::document::store::Store>) {
-        let _ = self.store.set(store);
-        if let Some(store) = self.store.get() {
-            if let Some(catalog) = &store.catalog {
-                let _ = self.catalog.set(catalog.clone());
-            }
-        }
-    }
-
-    /// Attach the one deployment-wide journal before any room is loaded.
-    /// Existing rooms are never created before Server::new finishes, so a
-    /// once-lock keeps this setup race-free without changing RoomSet's API.
-    pub fn attach_journal(&self, journal: Arc<crate::storage::journal::JournalRuntime>) {
-        let _ = self.journal.set(journal);
-    }
-
-    pub fn journal_attached(&self) -> bool {
-        self.journal.get().is_some()
     }
 
     /// Explicit production admission. Unlike the compatibility `get` helper,
@@ -817,7 +625,7 @@ impl RoomSet {
         if let Some(existing) = self.rooms.lock().await.get(slug) {
             return existing.clone();
         }
-        // A cache miss gets its own slot, one per slug, so a slow lease
+        // A cache miss gets its own slot, one per slug, so slow storage
         // acquisition or storage read for this document is never made behind
         // the map lock -- a warm room's lookup, and another slug's cold load,
         // both proceed while this one is still in flight (R35). Two callers
@@ -841,47 +649,17 @@ impl RoomSet {
         if let Some(room) = loaded.as_ref() {
             return room.clone();
         }
-        // Taken before anything is read, so a second server writing the same
-        // bucket finds out it is second rather than interleaving its writes
-        // with the first one's.  The serve command also holds the deployment
-        // writer lock; this per-room lease keeps the test/embedded Server
-        // constructor honest when it is used without that outer command.
-        // A local filesystem is owned by this process/deployment and has no
-        // second writer behind a remote object store.  Avoid creating a
-        // blob-backed lock during a cold open; stale lock files are otherwise
-        // indistinguishable from a live remote lease after a restart.
-        let lease = if self.blobs.is_local() {
-            if let Some(lock) = self.deployment_lock.get() {
-                crate::storage::blob::Lease {
-                    held: lock.is_some(),
-                    verified: true,
-                    ..Default::default()
-                }
-            } else {
-                // Compatibility/embedded callers may not have a deployment
-                // command to pass its process-wide lock.  Retain the fenced
-                // room lease for that API; production `serve` always attaches
-                // its deployment lock before any room can be opened.
-                take_room_lease(self.blobs.as_ref(), slug, &self.holder, None).await
-            }
-        } else {
-            take_room_lease(self.blobs.as_ref(), slug, &self.holder, None).await
-        };
-        if !lease.held {
-            eprintln!(
-                "warning: the lease on {slug} is held by {} at epoch {}; this server serves it \
-                 read-only",
-                lease.holder, lease.epoch
-            );
-        }
+        // Production startup owns the deployment writer lock before rooms
+        // open. Embedded catalog fixtures can omit the OS lock, while an
+        // explicitly failed writer claim always opens read-only.
         let mut catalog_read_failed = false;
-        let catalog_document = match self.catalog.get() {
+        let catalog_document = match self.catalog.as_ref().get() {
             Some(catalog) => match read_catalog_document(catalog, slug).await {
                 Ok(document) => document,
                 Err(error) => {
                     eprintln!(
-                        "warning: could not read catalogue document {slug} while opening room: {error}"
-                    );
+                    "warning: could not read catalogue document {slug} while opening room: {error}"
+                );
                     catalog_read_failed = true;
                     None
                 }
@@ -891,40 +669,31 @@ impl RoomSet {
         let deleting = catalog_document
             .as_ref()
             .is_some_and(|document| document.status == "deleting");
-        let storage_id = match self.store.get() {
+        let storage_id = (match self.store.as_ref().get() {
             Some(store) => match store.get_result(slug).await {
                 Ok(entry) => entry.map(|entry| entry.storage_id).or_else(|| {
-                    // A publication is staged as `creating` until its first
-                    // checkpoint commits.  It is not visible through the
-                    // ordinary active-document lookup yet, but the room
-                    // created for that publication must still use the
-                    // catalogue identity or a restart would reopen it under
-                    // the slug and miss its journal/session objects.
                     catalog_document
                         .as_ref()
-                        .map(|document| document.storage_id.clone())
+                        .map(|document| document.id.to_string())
                 }),
                 Err(error) => {
                     eprintln!("warning: could not read catalogue entry {slug}: {error}");
                     catalog_read_failed = true;
                     catalog_document
                         .as_ref()
-                        .map(|document| document.storage_id.clone())
+                        .map(|document| document.id.to_string())
                 }
-            }
-            .filter(|identity| !identity.is_empty())
-            .unwrap_or_else(|| slug.to_string()),
-            None => slug.to_string(),
-        };
+            },
+            None => None,
+        })
+        .filter(|identity| !identity.is_empty())
+        .unwrap_or_else(|| slug.to_string());
         let room = Arc::new(Room {
             slug: slug.to_string(),
             storage_id,
             blobs: self.blobs.clone(),
-            checkpoint_cache: self.checkpoint_cache.clone(),
             config: self.config.clone(),
-            read_only: std::sync::atomic::AtomicBool::new(
-                !lease.held || deleting || catalog_read_failed,
-            ),
+            read_only: std::sync::atomic::AtomicBool::new(deleting || catalog_read_failed),
             fence_reason: std::sync::atomic::AtomicU8::new(if deleting {
                 FenceReason::Deleted as u8
             } else if catalog_read_failed {
@@ -932,12 +701,8 @@ impl RoomSet {
             } else {
                 FenceReason::HeldElsewhere as u8
             }),
-            checkpointing: std::sync::atomic::AtomicUsize::new(0),
-            holder: self.holder.clone(),
-            lease: Mutex::new(lease),
             store: self.store.clone(),
             catalog: self.catalog.clone(),
-            journal: self.journal.clone(),
             session_write: Mutex::new(()),
             publication_write: Mutex::new(()),
             publication_checkpoint: RwLock::new(()),
@@ -954,6 +719,7 @@ impl RoomSet {
                 rate: HashMap::new(),
                 session: Session {
                     doc: session::new_doc(),
+                    durable_sequence: 0,
                     dirty: false,
                     dirty_since: 0,
                     pending_checkpoint_since: 0,
@@ -962,35 +728,20 @@ impl RoomSet {
                     encoded_size: None,
                     encoded_bound: None,
                     checkpoint_generation: 0,
+                    checkpoint_tree: None,
                     updated_at: 0,
                     by: Attribution::system(),
                     asked: None,
                     last_checkpoint_at: 0,
                     last_checkpoint: String::new(),
                     format: String::new(),
-                    last_tree: None,
                     asset_sizes: HashMap::new(),
-                    asset_written_at: HashMap::new(),
                 },
                 manifest: Measured::new(Manifest::default()),
                 touched: now_unix(),
-                session_version: BlobVersion::new(),
-                manifest_version: BlobVersion::new(),
-                comments_version: BlobVersion::new(),
             }),
         });
         room.load().await;
-        // Reconcile prepared agent source operations before this room can be
-        // returned to query, socket, or checkpoint callers. The prepared
-        // intent carries its authenticated actor and a durable pre-effect
-        // backup, so restart does not rely on an expired MCP view.
-        if let Err(error) = room.recover_pending_agent_on_load().await {
-            eprintln!(
-                "warning: could not reconcile pending agent operation for {}: {error}",
-                slug
-            );
-            room.fence(FenceReason::AgentRecoveryPending);
-        }
         let room_bytes = room.resident_bytes().await;
         let _admission = self.admission.lock().await;
         if room_bytes <= self.config.session.rooms_bytes_max {
@@ -1072,13 +823,7 @@ impl RoomSet {
                 let _ = peer.tx.try_send(Outgoing::Close("document deleted".into()));
             }
         }
-        // The deletion worker owns object removal. Keeping all object keys in
-        // the durable queue means a crash after fencing cannot release quota
-        // while an old room/session/checkpoint is still reachable.
-        let object_identity = storage_id.unwrap_or(&room.storage_id);
-        self.checkpoint_cache
-            .invalidate_prefix(&crate::storage::blob::history_prefix(object_identity))
-            .await;
+        let _ = storage_id;
         self.rooms.lock().await.remove(slug);
     }
 
@@ -1098,55 +843,18 @@ impl RoomSet {
         };
         // Bound storage concurrency while letting other rooms save during a slow write.
         let idle: Vec<String> = stream::iter(open)
-            .map(|(slug, room)| async move { room.tick().await.then_some(slug) })
+            .map(|(slug, room)| async move {
+                if let Err(error) = room.merge_remote_updates().await {
+                    eprintln!(
+                        "warning: could not merge remote collaboration updates for {slug}: {error}"
+                    );
+                }
+                room.tick().await.then_some(slug)
+            })
             .buffer_unordered(4)
             .filter_map(|slug| async move { slug })
             .collect()
             .await;
-        // A catalogue-backed deployment also schedules documents that are
-        // currently cold.  The persisted clock is the scheduler authority;
-        // loading a bounded page avoids requiring every document to be held
-        // in memory at once, and hard admission simply defers the remainder.
-        if let Some(catalog) = self.catalog.get() {
-            let now = now_unix();
-            let interval = self.config.session.history_interval_seconds;
-            let due = catalog
-                .execute_catalog(DESCRIPTOR_BYTES, move |catalog| {
-                    catalog.documents_due_auto_checkpoint(now, interval, 64)
-                })
-                .await;
-            if let Ok(due) = due {
-                for document in due {
-                    if let Ok(room) = self.try_get(&document.slug).await {
-                        let _ = room.tick().await;
-                        let settled = {
-                            let state = room.state.lock().await;
-                            !state.session.dirty
-                                && state.session.generation == state.session.checkpoint_generation
-                        };
-                        if settled {
-                            // A manual checkpoint can leave this scheduler
-                            // clock stale. Advance examined, unchanged rows so
-                            // the next page of due documents gets its turn.
-                            // The observation above is taken under state and
-                            // the write is made without it: an edit that
-                            // arrives in between only defers this document's
-                            // *automatic* interval by one period, and its own
-                            // quiet-period checkpoint -- a far shorter timer --
-                            // is what actually covers it. Holding state here
-                            // would stall every editor of a document the
-                            // sweeper touches once an interval.
-                            let slug = document.slug.clone();
-                            let _ = catalog
-                                .execute_catalog(slug.len() + DESCRIPTOR_BYTES, move |catalog| {
-                                    catalog.touch_auto_checkpoint(&slug, now)
-                                })
-                                .await;
-                        }
-                    }
-                }
-            }
-        }
         // Kept for a while after the last socket closes: a reader who
         // reloads the page should not pay for a state transfer from storage.
         // The ceiling in `get` is what bounds the map; this only trims it.
@@ -1160,19 +868,6 @@ impl RoomSet {
                 }
             }
         }
-    }
-
-    /// Reconcile resident manifests after account-wide retention has removed
-    /// cold rows. This is intentionally separate from `sweep`: preference
-    /// grace/application must not alter checkpoint cadence or live saves.
-    pub async fn refresh_retention(&self) {
-        let rooms: Vec<Arc<Room>> = self.rooms.lock().await.values().cloned().collect();
-        stream::iter(rooms)
-            .for_each_concurrent(
-                4,
-                |room| async move { room.refresh_retained_manifest().await },
-            )
-            .await;
     }
 
     /// Estimates may await room state, but never own either registry while
@@ -1190,13 +885,7 @@ impl RoomSet {
     pub async fn cost_snapshot(&self) -> serde_json::Value {
         let count = self.rooms.lock().await.len();
         let bytes = self.cached_bytes().await;
-        let mut value = serde_json::json!({"rooms": count, "resident_bytes": bytes, "loading": self.loading.lock().await.len(), "checkpoint_cache_bytes":self.checkpoint_cache.bytes().await});
-        if let Some(journal) = self.journal.get() {
-            let (queued, executing) = journal.payload_bytes_in_flight().await;
-            let memory = journal.memory();
-            value["persistence"] = serde_json::json!({"queued_bytes":queued,"executing_bytes":executing,"staging_bytes":memory.held_bytes(),"staging_peak_bytes":memory.peak_bytes(),"waiting":memory.waiters()});
-        }
-        value
+        serde_json::json!({"rooms": count, "resident_bytes": bytes, "loading": self.loading.lock().await.len()})
     }
 
     /// Revalidate under the registry before removal. A nonblocking state lock
@@ -1217,7 +906,6 @@ impl RoomSet {
         if !state.sockets.is_empty()
             || state.session.dirty
             || state.session.asked.is_some()
-            || candidate.checkpointing.load(Ordering::Relaxed) != 0
             || stale_at.is_some_and(|now| now.saturating_sub(state.touched) <= 60)
         {
             return false;
@@ -1256,13 +944,6 @@ impl RoomSet {
         }
     }
 
-    /// How many documents this server is holding in memory, which is the
-    /// number the ceiling is on.
-    #[allow(dead_code)] // asked by the tests that check the ceiling holds
-    pub async fn open_count(&self) -> usize {
-        self.rooms.lock().await.len()
-    }
-
     /// Writes out every open room, for a server on its way down.
     pub async fn flush(&self) {
         let open: Vec<Arc<Room>> = self.rooms.lock().await.values().cloned().collect();
@@ -1278,6 +959,42 @@ impl RoomSet {
 }
 
 impl Room {
+    /// Apply a server edit only when its complete CRDT state can be saved.
+    /// Callers hold room state throughout this synchronous operation. Reusing
+    /// the candidate's update (rather than running the edit twice) preserves
+    /// generated file IDs and makes the measured change the committed change.
+    pub(crate) fn checked_edit<T, E>(
+        &self,
+        doc: &LoroDoc,
+        edit: impl FnOnce(&LoroDoc) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<WriteError>,
+    {
+        let before = session::encode_state(doc);
+        let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+        let staging = before
+            .len()
+            .saturating_add(self.config.max_document)
+            .saturating_add(4096)
+            .min(ceiling);
+        let _ = staging;
+        let candidate = doc.fork();
+        session::apply_update(&candidate, &before)
+            .map_err(|error| E::from(WriteError::Storage(error)))?;
+        let value = edit(&candidate)?;
+        let bytes = session::encode_state(&candidate).len();
+        if bytes > ceiling {
+            return Err(E::from(WriteError::Size(
+                crate::config::SizeRefusal::Encoded { bytes, ceiling },
+            )));
+        }
+        let update = session::encode_diff(&candidate, &session::encode_vector(doc))
+            .map_err(|error| E::from(WriteError::Storage(error)))?;
+        session::apply_update(doc, &update).map_err(|error| E::from(WriteError::Storage(error)))?;
+        Ok(value)
+    }
+
     /// Immutable storage identity shared by catalog and rendered-publication
     /// operations. The slug is only a public handle and is not sufficient
     /// for publication object serialization.
@@ -1285,182 +1002,11 @@ impl Room {
         &self.storage_id
     }
 
-    /// Decides a live tracked revision. The decision is serialized with all
-    /// publication writes and persisted before it is announced. Text rollback
-    /// is guarded by the proposed content: if concurrent work changed the
-    /// affected span, the operation remains pending and reports a conflict.
-    pub async fn decide_revision(
-        &self,
-        revision_id: &str,
-        action: &str,
-        actor: &str,
-        can_review: bool,
-        request_id: &str,
-    ) -> Value {
-        let _publication = self.publication_write.lock().await;
-        if self.read_only() {
-            return json!({"type":"error","message":"editing is not permitted","revision_id":revision_id,"request_id":request_id});
-        }
-        if !can_review {
-            return json!({"type":"error","message":"revision review is not permitted","revision_id":revision_id,"request_id":request_id});
-        }
-        if request_id.trim().is_empty() {
-            return json!({"type":"error","message":"revision decision requires request_id","revision_id":revision_id,"request_id":request_id});
-        }
-        let before_vector;
-        let revision;
-        let before_state;
-        let before_session;
-        {
-            let mut state = self.state.lock().await;
-            before_state = session::encode_state(&state.session.doc);
-            before_session = (
-                state.session.dirty,
-                state.session.dirty_since,
-                state.session.pending_checkpoint_since,
-                state.session.last_persist_at,
-                state.session.generation,
-                state.session.encoded_size,
-                state.session.encoded_bound,
-                state.session.checkpoint_generation,
-                state.session.updated_at,
-                state.session.by.clone(),
-            );
-            before_vector = session::encode_vector(&state.session.doc);
-            let mut records = match revisions::records(&state.session.doc) {
-                Ok(records) => records,
-                Err(error) => {
-                    return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id})
-                }
-            };
-            let Some(record_index) = records.iter().position(|record| record.id == revision_id)
-            else {
-                return json!({"type":"error","message":"unknown revision","revision_id":revision_id,"request_id":request_id});
-            };
-            if !request_id.is_empty()
-                && records.iter().any(|other| {
-                    other.id != revision_id
-                        && other.history.iter().any(|item| {
-                            item.get("request_id").and_then(Value::as_str) == Some(request_id)
-                        })
-                })
-            {
-                return json!({"type":"error","message":"request id was already used for another revision","revision_id":revision_id,"request_id":request_id});
-            }
-            let record = &records[record_index];
-            if !request_id.is_empty() {
-                if let Some(previous) = record
-                    .history
-                    .iter()
-                    .find(|item| item.get("request_id").and_then(Value::as_str) == Some(request_id))
-                {
-                    if previous.get("action").and_then(Value::as_str) != Some(action) {
-                        return json!({"type":"error","message":"request id was already used for another revision action","revision_id":revision_id,"request_id":request_id});
-                    }
-                    if previous.get("actor").and_then(Value::as_str) != Some(actor) {
-                        return json!({"type":"error","message":"request id belongs to another reviewer","revision_id":revision_id,"request_id":request_id});
-                    }
-                    return json!({
-                        "type":"revision-decision", "revision_id":revision_id,
-                        "status": previous.get("to").and_then(Value::as_str).unwrap_or(&record.status),
-                        "request_id":request_id, "noop":true, "durable":true,
-                    });
-                }
-            }
-            if let Some(error) = revisions::dependency_error(record, &records) {
-                return json!({
-                    "type":"error", "message":error, "conflict":true,
-                    "revision_id":revision_id, "dependencies":record.dependencies.clone(),
-                    "request_id":request_id,
-                });
-            }
-            if action != "undo" && !record.pending() {
-                return json!({"type":"revision-decision","revision_id":revision_id,"status":record.status,"request_id":request_id,"noop":true});
-            }
-            let record = &mut records[record_index];
-            let old_status = record.status.clone();
-            let at = crate::util::timestamp();
-            if let Err(error) = record.decision(action, actor, &at) {
-                return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id});
-            }
-            if let Some(history) = record.history.last_mut() {
-                history["request_id"] = json!(request_id);
-            }
-            // Apply a guarded inverse at the CRDT anchors. This handles
-            // insertions, replacements, and deletions without searching for
-            // repeated text. Undoing an accepted revision only reopens its
-            // status; undoing a rejection reapplies the proposal.
-            let inverse = if action == "reject" && old_status == "pending" {
-                Some((record.after.clone(), record.before.clone()))
-            } else if action == "undo" {
-                let rejected = record
-                    .history
-                    .iter()
-                    .rev()
-                    .nth(1)
-                    .and_then(|item| item.get("to"))
-                    .and_then(Value::as_str)
-                    == Some("rejected");
-                rejected.then(|| (record.before.clone(), record.after.clone()))
-            } else {
-                None
-            };
-            if let Some((expected, replacement)) = inverse {
-                if let Err(error) =
-                    revisions::guarded_inverse(&state.session.doc, record, &expected, &replacement)
-                {
-                    record.status = old_status;
-                    record.history.pop();
-                    return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id});
-                }
-            }
-            let map = revisions::revision_map(&state.session.doc);
-            {
-                let mut txn = state.session.doc.transact_mut();
-                if revisions::put(&mut txn, &map, record).is_err() {
-                    return json!({"type":"error","message":"could not encode revision","revision_id":revision_id,"request_id":request_id});
-                }
-            }
-            state.session.mark_dirty(crate::util::now_unix());
-            state.session.generation += 1;
-            state.session.updated_at = crate::util::now_unix();
-            revision = record.clone();
-        }
-        if let Err(error) = self.persist().await {
-            let restored = session::new_doc();
-            if session::apply_update(&restored, &before_state).is_ok() {
-                let mut state = self.state.lock().await;
-                state.session.doc = restored;
-                state.session.dirty = before_session.0;
-                state.session.dirty_since = before_session.1;
-                state.session.pending_checkpoint_since = before_session.2;
-                state.session.last_persist_at = before_session.3;
-                state.session.generation = before_session.4;
-                state.session.encoded_size = before_session.5;
-                state.session.encoded_bound = before_session.6;
-                state.session.checkpoint_generation = before_session.7;
-                state.session.updated_at = before_session.8;
-                state.session.by = before_session.9;
-            }
-            return json!({"type":"error","message":format!("could not save revision: {error}"),"revision_id":revision_id,"request_id":request_id});
-        }
-        let update = {
-            let state = self.state.lock().await;
-            session::encode_diff(&state.session.doc, &before_vector)
-                .unwrap_or_else(|_| session::encode_state(&state.session.doc))
-        };
-        self.broadcast_editors_except(
-            None,
-            &json!({"type":"y-update","update":encode_update(&update)}),
-        )
-        .await;
-        json!({"type":"revision-decision","revision_id":revision_id,"revision":revision,"request_id":request_id,"durable":true})
-    }
-    /// Reports the independently observable live-save and history-checkpoint
+    /// Reports the independently observable live-save and history-version
     /// boundaries without forcing either operation.  `dirty` is cleared only
     /// after the session snapshot has been accepted by storage; generation
     /// coverage is advanced only after the checkpoint is committed.  In
-    /// particular, this does not treat a journal cursor or checkpoint delay
+    /// particular, this does not treat an update sequence or version delay
     /// as proof of the other boundary.
     pub async fn history_durability(&self) -> HistoryDurability {
         let state = self.state.lock().await;
@@ -1475,18 +1021,8 @@ impl Room {
         }
     }
 
-    fn snapshot_budget(&self, bytes: usize) -> i64 {
-        let bytes = bytes.min(i64::MAX as usize) as i64;
-        if self.journal.get().is_some() {
-            // Segment framing, manifest publication and a possible recovery base.
-            bytes.saturating_mul(3).saturating_add(8192)
-        } else {
-            bytes
-        }
-    }
-
     async fn load(&self) {
-        if let Some(catalog) = self.catalog.get() {
+        if let Some(catalog) = self.catalog.as_ref().get() {
             match load_catalog_comments(catalog, &self.slug).await {
                 Ok((seq, comments)) => {
                     let mut state = self.state.lock().await;
@@ -1501,62 +1037,30 @@ impl Room {
                     self.fence(FenceReason::UnreadableState);
                 }
             }
-        } else if let Ok((raw, at)) = self.blobs.get_versioned(&room_key(&self.slug)).await {
-            // Read with its version, because legacy fixture writes are
-            // conditional on the version this server last saw.
-            if let Ok(stored) = serde_json::from_slice::<RoomState_>(&raw) {
-                let mut state = self.state.lock().await;
-                state.seq = stored.seq;
-                *state.comments = stored.comments;
-                state.comments.sort_by_key(|item| item.seq);
-                state.comments_version = at;
-            }
+        } else {
+            self.fence(FenceReason::UnreadableState);
         }
         self.load_session().await;
     }
 
-    /// Brings the document back: the persisted session state if there is one,
-    /// and otherwise the source the document was published with, which is the
-    /// one time a session is ever seeded.
-    ///
-    /// This is also the whole of the migration. A document stored the old way
-    /// has no `sessions/<slug>` and does have a source -- or, published as
-    /// HTML, has the page itself -- and is seeded from it the first time
-    /// anybody opens it. Nothing is rewritten until then, so a deployment that
-    /// is rolled back loses nothing.
+    /// Recover the PostgreSQL collaboration base and ordered update tail.
     async fn load_session(&self) {
-        let (manifest, manifest_at) = if let Some(catalog) = self.catalog.get() {
-            match load_catalog_manifest(catalog, &self.slug).await {
-                Ok(manifest) => (manifest, BlobVersion::new()),
-                Err(err) => {
-                    eprintln!(
-                        "warning: the catalogue history of {} is unreadable ({err}); this room opens read-only",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    (Manifest::default(), BlobVersion::new())
-                }
-            }
-        } else {
-            match history::load_versioned(self.blobs.as_ref(), &self.slug).await {
-                Ok(pair) => pair,
-                Err(err) => {
-                    // No manifest is an empty one; a manifest that exists and
-                    // cannot be parsed is not the same thing, and defaulting it
-                    // here would let the next checkpoint write a near-empty
-                    // history over a real one this server merely could not read.
-                    // The room opens read-only until somebody looks at the
-                    // object by hand.
-                    eprintln!(
-                    "warning: the history of {} is unreadable ({err}); this room opens read-only",
+        let Some(catalog) = self.catalog.as_ref().get() else {
+            self.fence(FenceReason::UnreadableState);
+            return;
+        };
+        let manifest = match load_catalog_manifest(catalog, &self.slug).await {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                eprintln!(
+                    "warning: unreadable catalog history for {}: {error}",
                     self.slug
                 );
-                    self.fence(FenceReason::UnreadableState);
-                    (Manifest::default(), BlobVersion::new())
-                }
+                self.fence(FenceReason::UnreadableState);
+                return;
             }
         };
-        let entry = match self.store.get() {
+        let entry = match self.store.as_ref().get() {
             Some(store) => match store.get_result(&self.slug).await {
                 Ok(entry) => entry,
                 Err(error) => {
@@ -1581,174 +1085,130 @@ impl Room {
             })
             .unwrap_or_default();
 
-        let durable_journal_sequence = if let Some(journal) = self.journal.get() {
-            match journal.latest_sequence(&self.storage_id, 0) {
-                Ok(sequence) => sequence,
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not read the durable journal cursor for {}: {error}",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    0
-                }
+        let document_id = match uuid::Uuid::parse_str(&self.storage_id) {
+            Ok(id) => id,
+            Err(_) => {
+                self.fence(FenceReason::UnreadableState);
+                return;
             }
+        };
+        let collaboration = crate::storage::collaboration::CollaborationStorage::new(
+            catalog.clone(),
+            self.blobs.clone(),
+        );
+        let recovered = match collaboration.recover(document_id).await {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!(
+                    "warning: could not recover collaboration state for {}: {error}",
+                    self.slug
+                );
+                self.fence(FenceReason::UnreadableState);
+                return;
+            }
+        };
+        let cold = recovered.base.is_none() && recovered.updates.is_empty();
+        // Releases before the full-project seed fix could persist one update
+        // containing only the main file. Repair precisely that first-save
+        // shape from its immutable version while retaining edits to the main
+        // text. Later collaboration state may represent intentional deletes
+        // and must never be filled back in from an older version.
+        let repair_first_save = recovered.base.is_none()
+            && recovered.update_sequence <= 1
+            && recovered.project_generation == 0;
+        let starter_repair = starter_bibliography(entry.as_ref()).is_some();
+        let published_seed = if cold || repair_first_save || starter_repair {
+            self.published_project(document_id, entry.as_ref()).await
         } else {
-            0
+            None
         };
-        let stored = if let Some(journal) = self.journal.get() {
-            match journal.recover_latest(&self.storage_id).await {
-                Ok(raw) => raw.map(|body| (body, BlobVersion::new())),
-                Err(err) => {
-                    // A catalogue-backed deployment must not seed over an
-                    // unreadable journal: doing so would fork the live
-                    // document from its committed edits.
-                    eprintln!(
-                        "warning: could not recover the journal for {}: {err}",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    let mut state = self.state.lock().await;
-                    *state.manifest = manifest;
-                    state.session.format = format;
-                    return;
-                }
-            }
-        } else {
-            match self.blobs.get_versioned(&session_key(&self.slug)).await {
-                Ok((raw, at)) => Some((raw, at)),
-                Err(BlobError::NotFound) => None,
-                Err(err) => {
-                    // Storage that cannot be read is not storage to seed over:
-                    // a session seeded from the published source on top of a
-                    // state that is merely unreachable would show the
-                    // document twice.
-                    eprintln!(
-                        "warning: could not read the session for {}: {err}",
-                        self.slug
-                    );
-                    self.fence(FenceReason::UnreadableState);
-                    let mut state = self.state.lock().await;
-                    *state.manifest = manifest;
-                    state.session.format = format;
-                    return;
-                }
-            }
-        };
-
-        let seed = match &stored {
-            Some(_) => None,
-            None => self.published_source(entry.as_ref()).await,
-        };
-
         let mut state = self.state.lock().await;
         *state.manifest = manifest;
-        state.manifest_version = manifest_at;
         state.session.format = format;
-        if let Some(point) = state.manifest.latest().cloned() {
-            state.session.last_checkpoint = point.sha.clone();
-            state.session.last_checkpoint_at = parse_timestamp(&point.at).unwrap_or(0);
-            // A freshly loaded document has taken no edits yet, so generation
-            // 0 covers whatever the newest checkpoint recorded until proven
-            // otherwise.
-            state.session.checkpoint_generation = 0;
+        let candidate = session::new_doc();
+        let mut applied = false;
+        if let Some(base) = recovered.base {
+            applied = session::apply_update(&candidate, &base).is_ok();
         }
-        let named = entry
-            .as_ref()
-            .map(|entry| entry.main.clone())
-            .unwrap_or_default();
-        match stored {
-            Some((raw, at)) => {
-                // Decoded onto a fresh document first, and installed only if
-                // it actually applies: a session that half-applies onto the
-                // live document is worse than one left alone, since the live
-                // document is what the next persist would write over the
-                // original object with.
-                let candidate = session::new_doc();
-                if session::apply_update(&candidate, &raw).is_ok() {
-                    state.session.doc = candidate;
-                    state.session_version = at;
-                    // A recovered session may contain edits newer than the
-                    // newest checkpoint. Mark that relationship explicitly so
-                    // the hourly scheduler can checkpoint it after restart;
-                    // quiet-time debounce must not be the only trigger.
-                    // `generation` doubles as the next journal sequence for
-                    // local persistence.  It must resume at the recovered
-                    // durable cursor; resetting it to one would make the
-                    // first post-restart edit reuse an old sequence and be
-                    // mistaken for an idempotent retry.
-                    state.session.generation = durable_journal_sequence;
-                    state.session.checkpoint_generation = 0;
-                    state.session.pending_checkpoint_since = now_unix();
-                } else {
-                    eprintln!(
-                        "warning: the session for {} is unreadable; preserving it and trying to \
-                         recover from its history",
-                        self.slug
-                    );
-                    // The corrupt object is diagnosable evidence and must
-                    // never be overwritten by whatever recovery does next, so
-                    // it is copied aside before anything else touches it.
-                    let sibling = format!("{}.unreadable-{}", session_key(&self.slug), now_unix());
-                    if let Err(err) = self
-                        .blobs
-                        .put(&sibling, raw.clone(), "application/octet-stream")
-                        .await
-                    {
-                        eprintln!(
-                            "warning: could not preserve the unreadable session for {} ({err})",
-                            self.slug
-                        );
-                    }
-                    match self
-                        .rebuild_from_checkpoint(&state.session.doc, &state.manifest, &named)
-                        .await
-                    {
-                        Ok(()) => {
-                            // Recovered onto the document in memory, from the
-                            // last checkpoint's own tree; storage still has
-                            // the corrupt object, so this is dirty until the
-                            // next persist writes the recovered state over it.
-                            state.session.mark_dirty(now_unix());
-                            state.session.generation += 1;
-                            state.session_version = at;
-                        }
-                        Err(err) => {
-                            eprintln!(
-                                "warning: could not recover {} from its history either ({err}); \
-                                 this room opens read-only",
-                                self.slug
-                            );
-                            self.fence(FenceReason::UnreadableState);
-                        }
-                    }
+        for update in recovered.updates {
+            applied |= session::apply_update(&candidate, &update.update_bytes).is_ok();
+        }
+        if applied {
+            state.session.doc = candidate;
+            state.session.generation = recovered.update_sequence as u64;
+            state.session.durable_sequence = recovered.update_sequence;
+            state.session.dirty = false;
+            if repair_first_save {
+                if let Some((project, _)) = published_seed.as_ref() {
+                    state.session.dirty =
+                        hydrate_project(&state.session.doc, &project.archive, true);
                 }
             }
-            None => {
-                if let Some((source, format)) = seed {
-                    state.session.format = format.clone();
-                    session::replace_text(
+            if let Some((project, bibliography_added)) = published_seed.as_ref() {
+                if *bibliography_added
+                    && !session::has_meta(
                         &state.session.doc,
-                        &source,
-                        &main_path_for(&named, &format),
-                    );
-                    // Seeded, not edited: what is in the document is what
-                    // storage already says, so there is nothing to write back
-                    // until somebody types.
-                    state.session.dirty = false;
+                        session::STARTER_BIBLIOGRAPHY_REPAIRED,
+                    )
+                {
+                    if let Some(crate::storage::source_archive::SourceFile::Inline {
+                        bytes,
+                        ..
+                    }) = project.archive.files.iter().find(|file| {
+                        matches!(file, crate::storage::source_archive::SourceFile::Inline { path, .. } if path == "references.bib")
+                    }) {
+                        if !session::texts_of(&state.session.doc).contains_key("references.bib") {
+                            session::put_text(
+                                &state.session.doc,
+                                "references.bib",
+                                &String::from_utf8_lossy(bytes),
+                            );
+                        }
+                    }
+                    session::mark_meta(&state.session.doc, session::STARTER_BIBLIOGRAPHY_REPAIRED);
+                    state.session.dirty = true;
                 }
             }
+        } else if let Some((project, _)) = published_seed.as_ref() {
+            state.session.format = project.archive.source_format.clone();
+            hydrate_project(&state.session.doc, &project.archive, false);
+            state.session.dirty = false;
         }
-        // A journal-backed room was opened from an already durable snapshot.
-        // Treat that load as the beginning of the next flush interval; the
-        // first edit after a restart must still be acknowledged promptly,
-        // rather than inheriting an artificial fifteen-second delay from the
-        // in-memory default timestamp.
-        if self.journal.get().is_some() && !state.session.dirty {
-            state.session.last_persist_at = now_unix().saturating_sub(15);
-        }
+        state.session.last_persist_at = now_unix().saturating_sub(15);
         drop(state);
         self.load_asset_sizes().await;
+        self.adopt_checkpoint_baseline().await;
+    }
+
+    /// Whether the document this room just recovered is the document the
+    /// newest checkpoint already holds, and if so, saying so.
+    ///
+    /// The sweeper decides whether to take a checkpoint by comparing two
+    /// counters, which costs nothing per second. But a recovered session
+    /// starts with a generation taken from its update sequence and a coverage
+    /// of zero, so without this every room would open believing it had
+    /// unmarked edits: one checkpoint a second after every load, of a
+    /// document nobody had touched.
+    ///
+    /// The comparison is against content, once, here -- the only place where
+    /// reading the whole tree is both necessary and affordable. Leaving the
+    /// counters apart is the safe direction: it costs a checkpoint of a
+    /// document that is already checkpointed, where the reverse would lose
+    /// edits that a crash left in the update log and no version covers.
+    async fn adopt_checkpoint_baseline(&self) {
+        let mut state = self.state.lock().await;
+        let Some(point) = state.manifest.latest().cloned() else {
+            return;
+        };
+        if point.tree_sha.is_empty() {
+            return;
+        }
+        let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
+        if tree.digest() != point.tree_sha {
+            return;
+        }
+        state.session.last_checkpoint = point.sha;
+        state.session.cover_checkpoint(tree);
     }
 
     /// What each of this document's figures weighs, read once when the room is
@@ -1756,26 +1216,40 @@ impl Room {
     /// its size, and a checkpoint has to record what the document costs -- so
     /// the answer is read from where the bytes are, which is the store.
     ///
-    /// One listing per room rather than one request per figure, and a failure
-    /// is not fatal: a size this does not know reads as zero, which
-    /// under-counts a quota rather than refusing a document.
+    /// Rooms resolve current asset metadata through one bounded PostgreSQL query and fence on a
+    /// missing or unreadable asset instead of deriving an under-sized tree.
     async fn load_asset_sizes(&self) {
-        let Ok(found) = self
-            .blobs
-            .list(&crate::storage::blob::asset_prefix(&self.storage_id))
-            .await
-        else {
+        let Some(catalog) = self.catalog.as_ref().get() else {
             return;
         };
-        let mut state = self.state.lock().await;
-        for object in found {
-            if let Some(sha) = object.key.rsplit('/').next() {
-                state
-                    .session
-                    .asset_sizes
-                    .insert(sha.to_string(), object.size);
-            }
+        let digests = {
+            let state = self.state.lock().await;
+            session::assets_of(&state.session.doc)
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        if digests.is_empty() {
+            return;
         }
+        let Ok(document_id) = uuid::Uuid::parse_str(&self.storage_id) else {
+            self.fence(FenceReason::UnreadableState);
+            return;
+        };
+        let sizes = catalog.asset_sizes_by_digests(document_id, &digests).await;
+        let Ok(sizes) = sizes else {
+            self.fence(FenceReason::UnreadableState);
+            return;
+        };
+        let expected = digests
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        if sizes.len() != expected {
+            self.fence(FenceReason::UnreadableState);
+            return;
+        }
+        let mut state = self.state.lock().await;
+        state.session.asset_sizes.extend(sizes);
     }
 
     /// The bytes a session is seeded from, for a document that has one and no
@@ -1787,61 +1261,51 @@ impl Room {
     /// the format becomes `html`, because that is what the bytes are. Seeding
     /// markdown's slot with HTML and still calling it markdown is how a
     /// migrated document would come back rendered twice.
-    async fn published_source(
+    async fn published_project(
         &self,
+        document_id: uuid::Uuid,
         entry: Option<&crate::document::store::IndexEntry>,
-    ) -> Option<(String, String)> {
-        let store = self.store.get()?;
-        let entry = entry?;
-        let source = if entry.source_format.is_empty() || entry.source_format == "html" {
-            None
-        } else {
-            match store.read_source(&self.slug).await {
-                Ok(source) => Some(source),
-                Err(BlobError::NotFound) => None,
-                Err(error) => {
-                    eprintln!(
-                        "warning: could not read published source for {}: {error}",
-                        self.slug
+    ) -> Option<(crate::storage::source::StoredProject, bool)> {
+        let store = self.store.as_ref().get()?;
+        let catalog = &store.catalog;
+        let source = crate::storage::source::SourceStorage::new(
+            catalog.clone(),
+            self.blobs.clone(),
+            Default::default(),
+        );
+        match source.read_current(document_id).await {
+            Ok(Some(mut project)) => {
+                // The first PostgreSQL onboarding release omitted tutorial
+                // bibliographies from its immutable archives.
+                let bibliography = starter_bibliography(entry);
+                let bibliography_added = bibliography.is_some()
+                    && !project.archive.files.iter().any(|file| {
+                        matches!(file, crate::storage::source_archive::SourceFile::Inline { path, .. } if path == "references.bib")
+                    });
+                if let Some(bytes) = bibliography.filter(|_| bibliography_added) {
+                    project.archive.files.push(
+                        crate::storage::source_archive::SourceFile::Inline {
+                            path: "references.bib".into(),
+                            bytes: bytes.to_vec(),
+                        },
                     );
-                    self.fence(FenceReason::UnreadableState);
-                    return None;
                 }
+                Some((project, bibliography_added))
             }
-        };
-        if let Some(raw) = source {
-            return Some((
-                String::from_utf8_lossy(&raw).to_string(),
-                entry.source_format.clone(),
-            ));
-        }
-        // Nothing under the old keys either. That is the ordinary state of a
-        // document that has just been created -- the index entry exists and
-        // the session is about to be seeded by whoever created it -- so it is
-        // not worth a word. Only a document that had a source and lost it
-        // falls through to its page, and that is worth saying.
-        let page = match store.read(&self.slug, &entry.sha).await {
-            Ok(page) => page,
-            Err(BlobError::NotFound) => return None,
+            Ok(None) => {
+                eprintln!("warning: no current source exists for {}", self.slug);
+                self.fence(FenceReason::UnreadableState);
+                None
+            }
             Err(error) => {
                 eprintln!(
-                    "warning: could not read published page for {}: {error}",
+                    "warning: could not read published project for {}: {error}",
                     self.slug
                 );
                 self.fence(FenceReason::UnreadableState);
-                return None;
+                None
             }
-        };
-        if !entry.source_format.is_empty() && entry.source_format != "html" {
-            eprintln!(
-                "warning: {} has no stored {} source; it opens as the page it was published as",
-                self.slug, entry.source_format
-            );
         }
-        Some((
-            String::from_utf8_lossy(&page).to_string(),
-            "html".to_string(),
-        ))
     }
 
     /// Whether another server holds this room, as of the last time we asked.
@@ -1857,7 +1321,7 @@ impl Room {
 
     /// Stops this server writing the room, recording why. The first reason
     /// wins: a room fenced because its state could not be read stays that way
-    /// even if a later lease renewal also fails, because that is the reason an
+    /// even if a later write also fails, because that is the reason an
     /// operator has to act on.
     fn fence(&self, reason: FenceReason) {
         // Deletion is the exception: it is final and outranks whatever
@@ -1875,284 +1339,17 @@ impl Room {
         ))
     }
 
-    /// Says whether this server may still write the room, renewing the lease
-    /// when it is old enough to be worth saying so again. Renewal is on the
-    /// write path rather than on a timer: a room nobody is writing does not
-    /// need holding, and a room being written is asked about often enough.
-    ///
-    /// Two things make this a lease rather than a claim. A renewal asserts the
-    /// epoch this server believes it holds, so a server that was fenced out
-    /// while it was stalled finds out instead of writing over the new holder.
-    /// And past `Lease::safe_until` -- a guard's width before the lease could
-    /// be taken from us -- writing is refused unless a renewal succeeds first,
-    /// so a holder stops strictly before anybody else could start, without
-    /// having to trust its own idea of the time against theirs.
-    ///
-    /// Losing the lease makes the room read-only for good. The other server's
-    /// copy is the live one, and continuing to write ours would put half of
-    /// each thread in the stored list.
+    /// Native mutations enforce catalog generation and operation authority.
+    /// Preserve the room's startup, corruption, and lifecycle fences too.
     async fn hold(&self) -> bool {
-        if self.read_only() {
-            return false;
-        }
-        if self.catalog.get().is_some() || self.blobs.is_local() {
-            return true;
-        }
-        let mut lease = self.lease.lock().await;
-        // Verify the lease on every durable write.  A holder can be fenced
-        // while its lease still looks fresh locally; trusting the cached
-        // interval would let a stalled writer publish after takeover.
-        let renewed = take_room_lease(
-            self.blobs.as_ref(),
-            &self.slug,
-            &self.holder,
-            Some(lease.epoch),
-        )
-        .await;
-        if !renewed.held {
-            eprintln!(
-                "warning: the lease on {} is held by {} at epoch {}; this server is read-only \
-                 for it from now on",
-                self.slug, renewed.holder, renewed.epoch
-            );
-            self.fence(FenceReason::HeldElsewhere);
-            return false;
-        }
-        if renewed.verified {
-            *lease = renewed;
-        } else {
-            // A storage error kept this renewal from confirming anything:
-            // `renewed.held` is a provisional "nothing has shown we lost it",
-            // not a fresh proof that we still have it. Adopting its `taken_at`
-            // would push `safe_until` out on the strength of that, so the
-            // previous, actually verified `taken_at` is kept instead -- the
-            // safe interval keeps counting down, and writing here stops at
-            // its end unless a later renewal is verified before then (R24).
-            eprintln!(
-                "warning: could not verify the lease on {} against storage; its safe interval \
-                 keeps counting down from the last renewal storage actually confirmed",
-                self.slug
-            );
-            if now_unix() >= lease.safe_until() {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Writes an object this room owns, and only over the version this server
-    /// last saw. This is the enforcement behind the lease: a write that loses
-    /// the compare-and-swap is proof that another process owns the room, and
-    /// this one stops writing rather than finding out later. `version` is
-    /// updated in place on success.
-    async fn write_owned(
-        &self,
-        key: &str,
-        body: Vec<u8>,
-        version: &mut BlobVersion,
-    ) -> Result<(), String> {
-        let change = ObjectChange {
-            slug: self.slug.clone(),
-            storage_id: self.storage_id.clone(),
-            operation_id: crate::util::new_id(),
-            object_key: key.to_string(),
-            kind: "mutable".into(),
-        };
-        let reservation = match self.catalog.get() {
-            Some(catalog) => Some(
-                reserve_object_change(
-                    catalog,
-                    change,
-                    body.len() as i64,
-                    self.config.storage.per_owner,
-                    self.config.storage.total,
-                    None,
-                )
-                .await
-                .map_err(|error| error.to_string())?,
-            ),
-            None => None,
-        };
-        match self.blobs.swap(key, body, version).await {
-            Ok(at) => {
-                if let Some(reservation) = reservation {
-                    reservation
-                        .commit(at.clone())
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
-                *version = at;
-                Ok(())
-            }
-            Err(BlobError::Conflict) => {
-                if let Some(reservation) = reservation {
-                    reservation.abort().await;
-                }
-                eprintln!(
-                    "warning: {key} was written by another server; this one is read-only for {} \
-                     from now on",
-                    self.slug
-                );
-                self.fence(FenceReason::HeldElsewhere);
-                Err("this room is written by another server".into())
-            }
-            Err(err) => {
-                if let Some(reservation) = reservation {
-                    reservation.abort().await;
-                }
-                Err(err.to_string())
-            }
-        }
-    }
-
-    async fn put_accounted(
-        &self,
-        key: &str,
-        body: Vec<u8>,
-        kind: &str,
-        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-    ) -> Result<(), WriteError> {
-        self.put_accounted_with_type(key, body, "application/octet-stream", kind, actor)
-            .await
-    }
-
-    async fn put_accounted_with_type(
-        &self,
-        key: &str,
-        body: Vec<u8>,
-        content_type: &str,
-        kind: &str,
-        actor: Option<crate::storage::catalog::MutationAuthority<'_>>,
-    ) -> Result<(), WriteError> {
-        let change = ObjectChange {
-            slug: self.slug.clone(),
-            storage_id: self.storage_id.clone(),
-            operation_id: crate::util::new_id(),
-            object_key: key.to_string(),
-            kind: kind.to_string(),
-        };
-        // The catalogue is where a quota, a lost right or a busy deployment
-        // is decided; keep those distinctions rather than flattening them
-        // into prose a caller would have to read back.
-        let reservation = match self.catalog.get() {
-            Some(catalog) => Some(
-                reserve_object_change(
-                    catalog,
-                    change,
-                    body.len() as i64,
-                    self.config.storage.per_owner,
-                    self.config.storage.total,
-                    actor.as_ref().map(OwnedAuthority::new),
-                )
-                .await
-                .map_err(WriteError::from)?,
-            ),
-            None => None,
-        };
-        match self.blobs.put(key, body, content_type).await {
-            Ok(()) => {
-                if let Some(reservation) = reservation {
-                    reservation
-                        .commit(String::new())
-                        .await
-                        .map_err(WriteError::from)?;
-                }
-                Ok(())
-            }
-            Err(error) => {
-                if let Some(reservation) = reservation {
-                    reservation.abort().await;
-                }
-                Err(WriteError::Storage(error.to_string()))
-            }
-        }
-    }
-
-    /// Adds one prepared comment to the room and persists the list, for the
-    /// seeding command -- the one comment writer outside `room/`, and until
-    /// now the one that took no gate at all while writing the same object
-    /// every comment mutation writes.
-    pub async fn append_comment(&self, mut comment: Comment) -> Result<(), String> {
-        let _comment_writer = self.comment_write.lock().await;
-        let (seq, comments) = {
-            let state = self.state.lock().await;
-            let seq = state.seq.saturating_add(1);
-            comment.seq = seq;
-            let mut comments = state.comments.clone();
-            comments.push(comment);
-            (seq, comments)
-        };
-        self.persist_comments(seq, comments).await
-    }
-
-    /// Persists one prepared comment list with room state released, and
-    /// installs it only once storage has taken it: the whole JSON blob for a
-    /// room with no catalogue (there is nothing narrower to write), or a
-    /// row-by-row reconciliation via `save_catalog_comments` for a
-    /// catalogue-backed one -- every ordinary comment mutation on a
-    /// catalogue-backed room instead updates its one changed row directly and
-    /// never comes here.
-    ///
-    /// The caller holds `comment_write` and prepared `comments` from the list
-    /// the room held under state, so what is written differs from that list by
-    /// exactly the caller's own change and by nothing else. The legacy blob is
-    /// written conditionally on the version observed under state; losing that
-    /// compare-and-swap is proof another process owns the room, which fences
-    /// it here as everywhere else. On any failure nothing is installed, so a
-    /// failed write leaves room state as it was rather than putting an older
-    /// snapshot back over somebody else's change.
-    pub(super) async fn persist_comments(
-        &self,
-        seq: i64,
-        mut comments: Vec<Comment>,
-    ) -> Result<(), String> {
-        if !self.hold().await {
-            return Err("this room is held by another server".into());
-        }
-        if let Some(catalog) = self.catalog.get() {
-            let mut seq = seq;
-            save_catalog_comments(catalog, &self.slug, &mut seq, &mut comments).await?;
-            let mut state = self.state.lock().await;
-            state.seq = state.seq.max(seq);
-            *state.comments = comments;
-            return Ok(());
-        }
-        let expected = self.state.lock().await.comments_version.clone();
-        let raw = json!({"seq": seq, "comments": to_stored(&comments)});
-        let body = serde_json::to_vec(&raw).map_err(|err| err.to_string())?;
-        let mut version = expected.clone();
-        self.write_owned(&room_key(&self.slug), body, &mut version)
-            .await?;
-        let mut state = self.state.lock().await;
-        if state.comments_version != expected {
-            // The gate keeps other comment writers out of this window, so the
-            // only way the fence moves is a reload, and what a reload installed
-            // is the durable list. Report the write rather than putting a list
-            // assembled before it back over the top.
-            return Err("this room's comments were reloaded during that write".into());
-        }
-        state.comments_version = version;
-        *state.comments = comments;
-        state.seq = state.seq.max(seq);
-        Ok(())
-    }
-
-    /// Every comment, for seeding and for the tests that read a room back.
-    #[allow(dead_code)]
-    pub async fn snapshot(&self) -> Vec<Comment> {
-        self.state.lock().await.comments.clone()
+        !self.read_only() && self.catalog.as_ref().get().is_some()
     }
 
     /// The per-caller view of the whole thread: the hello frame and the REST
     /// listing both need this, since deletable differs by who is asking.
     pub async fn snapshot_for(&self, author: &str, is_owner: bool) -> Vec<CommentView> {
         let state = self.state.lock().await;
-        state
-            .comments
-            .iter()
-            .filter(|item| is_owner || crate::room::comments::visible_to_reader(item))
-            .map(|item| CommentView::for_viewer(item, author, is_owner))
-            .collect()
+        comment_views(&state.comments, author, is_owner)
     }
 
     /// Captures source and annotations while holding the same room lock. A
@@ -2175,12 +1372,7 @@ impl Room {
         let format = state.session.format.clone();
         let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
         let texts = session::texts_of(&state.session.doc);
-        let comments = state
-            .comments
-            .iter()
-            .filter(|item| is_owner || crate::room::comments::visible_to_reader(item))
-            .map(|item| CommentView::for_viewer(item, author, is_owner))
-            .collect();
+        let comments = comment_views(&state.comments, author, is_owner);
         (source, format, tree, texts, comments)
     }
 
@@ -2255,7 +1447,7 @@ impl Room {
     pub async fn broadcast_except(&self, skip: Option<u64>, payload: &Value) {
         let message = payload.to_string();
         let mut state = self.state.lock().await;
-        send_to_all(&mut state, skip, &message);
+        send_to(&mut state, skip, Outgoing::shared_text(message), |_| true);
     }
 
     /// Relays source synchronization frames only to editor peers. Reader and
@@ -2264,7 +1456,9 @@ impl Room {
     pub async fn broadcast_editors_except(&self, skip: Option<u64>, payload: &Value) {
         let message = payload.to_string();
         let mut state = self.state.lock().await;
-        send_to_editors(&mut state, skip, &message);
+        send_to(&mut state, skip, Outgoing::shared_text(message), |peer| {
+            peer.may_edit
+        });
     }
 
     /// Counts comment actions per caller per clock hour. A live link is the
@@ -2292,113 +1486,6 @@ impl Room {
     pub async fn format(&self) -> String {
         let _publication_writer = self.publication_write.lock().await;
         self.state.lock().await.session.format.clone()
-    }
-
-    /// Writes a source into the live document, as an edit rather than as a
-    /// substitution: the common prefix and suffix are left alone, so an editor
-    /// typing elsewhere at that moment keeps their words and their caret and
-    /// sees the rest change under them. This is how a command-line publish, a
-    /// `sync` write and a restore all reach the document.
-    ///
-    /// Returns the update to relay, which is what the sockets are sent. An
-    /// empty update is a valid outcome -- writing the source a document
-    /// already holds changes nothing -- so a refusal is an `Err`, never an
-    /// empty `Vec`.
-    #[cfg(test)]
-    pub async fn set_source(&self, source: &str, format: &str) -> Result<Vec<u8>, WriteError> {
-        self.set_main_file(source, format, "").await
-    }
-
-    /// Writes a source into the named main file. A directory publish knows
-    /// what its document is called; other callers supply the implied name.
-    pub async fn set_main_file(
-        &self,
-        source: &str,
-        format: &str,
-        named: &str,
-    ) -> Result<Vec<u8>, WriteError> {
-        let _publication_writer = self.publication_write.lock().await;
-        if self.read_only() {
-            // Another server owns this room; writing our copy would only
-            // diverge from the one that is actually being persisted, and
-            // `persist` would refuse it anyway (R23).
-            return Err(self.fenced());
-        }
-        let mut state = self.state.lock().await;
-        if self.read_only() {
-            return Err(self.fenced());
-        }
-        let before = session::encode_vector(&state.session.doc);
-        // What the main file is called, for the one case where there is not
-        // one yet: a document being published for the first time. It follows
-        // from what the document is written in, which is the same name the
-        // migration gives a document that predates directories.
-        let implied = if !format.is_empty() {
-            format.to_string()
-        } else if !named.is_empty() {
-            // No format was given, but the main file's own name was --
-            // deriving from its extension keeps the two from disagreeing
-            // when a caller names a file without also spelling out its
-            // format (R27).
-            let derived = format_from_path(named);
-            if derived.is_empty() {
-                state.session.format.clone()
-            } else {
-                derived
-            }
-        } else {
-            state.session.format.clone()
-        };
-        // A publish onto a room that already holds a long history can carry
-        // the snapshot past the encoded ceiling even though the source itself
-        // is inside `max_document`. Rehearsed on a scratch copy first, so a
-        // refusal leaves the live document exactly as it was rather than
-        // wedging the room at its next persist.
-        let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-        let known = match state.session.encoded_bound {
-            Some(bound) => bound,
-            None => {
-                let exact = session::encode_state(&state.session.doc).len();
-                state.session.encoded_bound = Some(exact);
-                exact
-            }
-        };
-        // `replace_text` writes the difference, so it cannot add more than
-        // the new source plus its framing. Only when that bound cannot decide
-        // is the scratch copy worth its allocation.
-        if known.saturating_add(source.len()).saturating_add(1024) > ceiling {
-            let scratch = session::new_doc();
-            if session::apply_update(&scratch, &session::encode_state(&state.session.doc)).is_ok() {
-                session::replace_text(&scratch, source, &main_path_for(named, &implied));
-                let candidate = session::encode_state(&scratch).len();
-                if candidate > ceiling {
-                    let refusal = crate::config::SizeRefusal::Encoded {
-                        bytes: candidate,
-                        ceiling,
-                    };
-                    eprintln!(
-                        "warning: refusing to write {}: {}",
-                        self.slug,
-                        crate::config::WriteRefusal::Permanent(refusal)
-                    );
-                    return Err(WriteError::Size(refusal));
-                }
-            }
-        }
-        session::replace_text(&state.session.doc, source, &main_path_for(named, &implied));
-        if !format.is_empty() {
-            state.session.format = format.to_string();
-        } else if !named.is_empty() {
-            let derived = format_from_path(named);
-            if !derived.is_empty() {
-                state.session.format = derived;
-            }
-        }
-        state.session.mark_dirty(now_unix());
-        state.session.generation += 1;
-        state.session.updated_at = now_unix();
-        Ok(session::encode_diff(&state.session.doc, &before)
-            .unwrap_or_else(|_| session::encode_state(&state.session.doc)))
     }
 
     /// What a socket is answered with on `y-open`: everything the document
@@ -2449,7 +1536,7 @@ impl Room {
         let by = by.into();
         let _publication_writer = self.publication_write.lock().await;
         if self.read_only() {
-            // Another server holds this room's lease. Applying and relaying
+            // A fenced room cannot persist changes. Applying and relaying
             // the update anyway would show every other peer a document this
             // server cannot persist, and diverge from whatever the actual
             // holder is doing -- so it is refused before anything is touched,
@@ -2480,42 +1567,14 @@ impl Room {
                 return Applied::Refuse(WriteError::RateLimited);
             }
         }
-        // Admission, the quota reservation, and the apply are three phases,
-        // and only the first and the last need room state. The reservation is
-        // taken with state released so that a document's readers, its socket
-        // attachments and its checkpoints are not stalled for the length of a
-        // SQLite quota decision; what the release costs is that the document
-        // can move underneath us, so the generation observed during admission
-        // is checked before the update is applied and a reservation that no
-        // longer describes the snapshot it was sized for is given back and
-        // taken again. An unreserved update is still never applied or
-        // relayed: nothing below this loop touches the document until a
-        // reservation matching the current generation is in hand.
-        //
-        // Only `restore_and_checkpoint` and suggestion acceptance can move
-        // the generation here -- every other CRDT mutation takes
-        // `publication_write`, which this call holds -- so the retry is rare
-        // and bounded. Exhausting it is reported as saturation rather than as
-        // a size refusal, because the document is fine and reconnecting works.
-        const RESERVATION_ATTEMPTS: usize = 8;
-        let mut attempts = 0usize;
-        let (pending_edit, admitted_bound) = loop {
+        // Validate and bound the candidate while holding room state. Durable
+        // quota is charged when an immutable version or asset is committed;
+        // live CRDT updates do not reserve estimated physical bytes.
+        let admitted_bound = {
             let decoded = match session::decode_update(update) {
                 Ok(decoded) => decoded,
                 Err(_) => return Applied::Ignored,
             };
-            // Revision decisions and history are server-owned. A browser may
-            // create pending capture records, but a raw Yjs update cannot
-            // rewrite status/history or remove a record. Rehearse the exact
-            // update on a scratch document before admission so a rejected
-            // metadata mutation never reaches the live document or peers.
-            if !revisions::client_update_safe_after_as(
-                &state.session.doc,
-                update,
-                Some(by.display()),
-            ) {
-                return Applied::Ignored;
-            }
             let decoded = match session::admit_decoded_update(
                 &state.session.doc,
                 decoded,
@@ -2527,191 +1586,56 @@ impl Room {
                 session::DecodedAdmission::TooLarge => {
                     return Applied::Refuse(WriteError::Document(
                         crate::room::error::DocumentLimit::Size,
-                    ))
+                    ));
                 }
                 session::DecodedAdmission::TooMany => {
                     return Applied::Refuse(WriteError::Document(
                         crate::room::error::DocumentLimit::Files,
-                    ))
+                    ));
                 }
                 session::DecodedAdmission::Fits(decoded) => decoded,
             };
-            // The quota reservation below is awaited, and a parsed `yrs::Update`
-            // is not `Send`, so it cannot be held across that await: the socket
-            // task's future has to stay spawnable. The parse is therefore dropped
-            // here and repeated once the bytes are reserved. Repeating it is
-            // cheap beside the full document encode this same path already does
-            // to size the reservation, and it is the alternative to reserving
-            // before the size and file ceilings have decided -- which would
-            // charge, however briefly, for updates this room refuses.
             drop(decoded);
-            // `S` bounds what a person can see; `E` bounds what persistence has
-            // to write, and the two move independently -- a document whose text
-            // never grows still accumulates CRDT history and metadata. A
-            // candidate that would carry the snapshot past `E` is refused here,
-            // before it is applied and before it is relayed, because a snapshot
-            // that cannot be journalled could never be acknowledged and relaying
-            // it would show every peer a document this server cannot save.
-            let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-            let admitted_bound = {
-                let known = match state.session.encoded_bound {
-                    Some(bound) => bound,
-                    None => {
-                        let exact = session::encode_state(&state.session.doc).len();
-                        state.session.encoded_bound = Some(exact);
-                        exact
-                    }
-                };
-                let bound = known.saturating_add(update.len());
-                if bound <= ceiling {
-                    bound
-                } else {
-                    // The cheap bound cannot decide, so buy the exact answer on a
-                    // scratch copy. That copy is a large allocation, so it is
-                    // admitted against the same memory budget persistence uses.
-                    let _staging = match self.journal.get() {
-                        Some(journal) => {
-                            match journal
-                                .memory()
-                                .try_acquire(crate::config::PersistenceLimits::staging_cost(bound))
-                            {
-                                Ok(permit) => Some(permit),
-                                Err(error) if error.is_temporary() => {
-                                    return Applied::Refuse(WriteError::ServerBusy)
-                                }
-                                Err(_) => {
-                                    return Applied::Refuse(WriteError::Document(
-                                        crate::room::error::DocumentLimit::Encoded,
-                                    ))
-                                }
-                            }
-                        }
-                        None => None,
-                    };
-                    let Some(exact) = session::rehearsed_encoded_len(&state.session.doc, update)
-                    else {
-                        return Applied::Ignored;
-                    };
-                    if exact > ceiling {
-                        return Applied::Refuse(WriteError::Document(
-                            crate::room::error::DocumentLimit::Encoded,
-                        ));
-                    }
-                    exact
-                }
-            };
-            // Reserve the whole next snapshot, not just this message. The SQL
-            // admission view includes unsaved work in every live room and keeps a
-            // separate reservation for a snapshot already being written.
-            //
-            // The reservation is taken through the catalogue's execution
-            // boundary, so the quota decision waits on a blocking thread instead
-            // of parking a Tokio worker on the connection.  What it returns is a
-            // guard rather than a number: a caller cancelled between that
-            // transaction committing and this room accounting for the bytes must
-            // not leave them charged, and only the guard and its completion hook
-            // between them cover both halves of that window.
-            let Some(catalog) = self.catalog.get() else {
-                break (None, admitted_bound);
-            };
-            let generation = state.session.generation;
-            let bound = session::encode_state(&state.session.doc)
-                .len()
-                .saturating_add(update.len());
-            let budget = self.snapshot_budget(bound);
-            drop(state);
-            let reservation = match reserve_pending_edit(
-                catalog,
-                &self.slug,
-                budget,
-                self.config.storage.per_owner,
-                self.config.storage.total,
-            )
-            .await
-            {
-                Ok(reservation) => reservation,
-                Err(error) => {
-                    // The catalogue said no. Which allowance it was is in the
-                    // error; what the peer is told is that this document has
-                    // no room, which is the same either way.
-                    let _ = error;
-                    return Applied::Refuse(WriteError::Document(
-                        crate::room::error::DocumentLimit::Quota,
-                    ));
-                }
-            };
-            // The window between the reservation committing and the room taking
-            // it on. Room state is deliberately not held here.
-            #[cfg(test)]
-            pause_after_edit_reservation(&self.slug).await;
-            state = self.state.lock().await;
-            if self.read_only() {
-                drop(state);
-                reservation.rollback().await;
-                return Applied::Refuse(self.fenced());
-            }
-            // The socket may have closed, or lost its right to write, while the
-            // reservation was in SQL. Neither of those may be relayed, and the
-            // bytes go back rather than staying charged to a document that is
-            // not going to grow by them.
-            if !state.sockets.get(&socket).is_some_and(|peer| peer.may_edit) {
-                drop(state);
-                reservation.rollback().await;
-                return Applied::Ignored;
-            }
-            if state.session.generation == generation {
-                break (Some(reservation), admitted_bound);
-            }
-            // The document moved while the quota decision was in flight, so the
-            // ceilings above decided against a document that no longer exists and
-            // the reservation is sized for the wrong snapshot. Give it back and
-            // decide again against what the room now holds.
-            drop(state);
-            reservation.rollback().await;
-            attempts += 1;
-            state = self.state.lock().await;
-            if attempts >= RESERVATION_ATTEMPTS {
-                return Applied::Refuse(WriteError::ServerBusy);
-            }
+            update.len()
         };
         // Read before the update is applied, so a change to the shared
         // main-file pointer can be told from a document that already opened
         // with this main file.
         let main_before = session::main_path(&state.session.doc);
-        let applied = session::decode_update(update)
-            .and_then(|decoded| session::apply_decoded_update(&state.session.doc, decoded));
-        if applied.is_err() {
-            // Give the bytes back without room state: a malformed update must
-            // not make every reader of this document wait on a catalogue
-            // rollback it has nothing to do with.
-            drop(state);
-            if let Some(pending_edit) = pending_edit {
-                pending_edit.rollback().await;
+        // Repair may add paths or main-file metadata. Admit the repaired
+        // state too, and apply its exact update, so a correction cannot push
+        // an otherwise admissible browser edit over the persistence ceiling.
+        let applied = self.checked_edit(&state.session.doc, |candidate| {
+            session::apply_update(candidate, update).map_err(WriteError::Invalid)?;
+            let before = session::encode_vector(candidate);
+            let repaired = session::repair(candidate, &self.config.paths());
+            if repaired.is_empty() {
+                Ok(None)
+            } else {
+                session::encode_diff(candidate, &before)
+                    .map(Some)
+                    .map_err(WriteError::Invalid)
             }
-            return Applied::Ignored;
-        }
-        // Taken after the peer's update rather than before it, so that what is
-        // relayed below is the correction alone and not the peer's own work
-        // sent back to it a second time.
-        let before = session::encode_vector(&state.session.doc);
-        // Every key in the shared document is a string an editor can set, so
-        // what one wrote is checked before anybody else is shown it. A fault
-        // here is put right rather than refused: bytes are the bill and a
-        // socket that spends them is closed, but a path the rules refuse is a
-        // mistake a person can see, and closing their socket over it would
-        // lose the rest of what they typed. What the repair changed is relayed
-        // as the server's own update, after the peer's, so every browser --
-        // the one that wrote the bad path included -- ends at the same
-        // document.
-        let put_right = session::repair(&state.session.doc, &self.config.paths());
-        let mut repaired_bytes = 0usize;
-        if !put_right.is_empty() {
-            if let Ok(correction) = session::encode_diff(&state.session.doc, &before) {
-                repaired_bytes = correction.len();
-                let payload =
-                    json!({"type": "y-update", "update": encode_update(&correction)}).to_string();
-                send_to_editors(&mut state, None, &payload);
+        });
+        let correction = match applied {
+            Ok(correction) => correction,
+            Err(error) => {
+                return match error {
+                    WriteError::Invalid(_) => Applied::Ignored,
+                    WriteError::Size(_) => Applied::Refuse(WriteError::Document(
+                        crate::room::error::DocumentLimit::Encoded,
+                    )),
+                    error => Applied::Refuse(error),
+                };
             }
+        };
+        let repaired_bytes = correction.as_ref().map_or(0, Vec::len);
+        if let Some(correction) = correction {
+            let payload =
+                json!({"type": "doc-update", "update": encode_update(&correction)}).to_string();
+            send_to(&mut state, None, Outgoing::shared_text(payload), |peer| {
+                peer.may_edit
+            });
         }
         // Counted only once the update is one this document actually took. A
         // refused update must not be acknowledged by the next write, and it
@@ -2741,35 +1665,21 @@ impl Room {
         state.session.generation += 1;
         state.session.updated_at = now;
         state.session.by = by.clone();
-        // The room state now accounts for the reserved snapshot, so the
-        // reservation stays charged until the next one replaces it rather
-        // than being rolled back by the guard.
-        if let Some(pending_edit) = pending_edit {
-            pending_edit.keep();
-        }
         Applied::Relay
     }
 
-    /// Writes `sessions/<slug>` when the document has changed, and only then
+    /// Appends PostgreSQL collaboration state when the document has changed, and only then
     /// tells the sockets their updates are durable. Relaying an update is not
     /// an acknowledgment: nothing here says "saved" until storage has said so.
     pub async fn persist(&self) -> Result<bool, WriteError> {
         if self.write_session(true, true).await?.is_none() {
             return Ok(false);
         }
-        let (format, main) = {
-            let state = self.state.lock().await;
-            (
-                state.session.format.clone(),
-                session::main_path(&state.session.doc),
-            )
-        };
-        self.record_size_now(None, &format, &main).await;
         Ok(true)
     }
 
     /// Snapshot under the write gate: checkpoints and timer saves cannot write
-    /// snapshots out of order or use the same ETag. Ordinary edits use only
+    /// snapshots out of order or reuse an update sequence. Ordinary edits use only
     /// state, so they can proceed during storage I/O.
     async fn write_session(
         &self,
@@ -2791,23 +1701,21 @@ impl Room {
         if self.read_only() {
             return Err(self.fenced());
         }
+        self.merge_remote_updates()
+            .await
+            .map_err(WriteError::Storage)?;
         if only_dirty && !self.state.lock().await.session.dirty {
             return Ok(None);
         }
-        if !self.hold().await {
-            return Err(self.fenced());
-        }
-        let (body, generation, durable, mut version) = {
+        let catalog = self
+            .catalog
+            .get()
+            .ok_or_else(|| WriteError::Storage("PostgreSQL catalog required".into()))?;
+        let document_id = uuid::Uuid::parse_str(&self.storage_id)
+            .map_err(|_| WriteError::Storage("room has an invalid document id".into()))?;
+        let (body, generation, durable) = {
             let mut state = self.state.lock().await;
             let body = session::encode_state(&state.session.doc);
-            // `E`, at the last gate before anything durable happens. Room
-            // admission refuses an oversized candidate before applying it, so
-            // reaching this means an internal caller grew the document past
-            // the ceiling, or the room was loaded from a snapshot an older,
-            // laxer configuration wrote. Either way the write is refused
-            // explicitly rather than truncated, and the room is fenced so the
-            // once-a-second sweeper does not retry a permanent failure
-            // forever. What is already stored stays readable.
             let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
             if body.len() > ceiling {
                 self.fence(FenceReason::Oversized);
@@ -2823,77 +1731,37 @@ impl Room {
                 .iter()
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
-            (body, generation, durable, state.session_version.clone())
-        };
-        // The reservation comes back as a guard rather than as a bare
-        // success, so the window between this transaction committing and
-        // the room owning the reservation cannot leak it. It is taken with
-        // room state released: the session writer gate is what serialises
-        // the reservation row, and holding state as well only stalled every
-        // reader and editor of this document for the length of the quota
-        // decision. Nothing between the encode above and here can invalidate
-        // the reservation -- an edit that lands meanwhile leaves the snapshot
-        // this call writes merely older than the room, which the generation
-        // comparison at the end already accounts for, and the next write
-        // reserves for the newer snapshot.
-        let quota = match self.catalog.get() {
-            Some(catalog) => Some(
-                begin_room_write(
-                    catalog,
-                    &self.slug,
-                    &self.storage_id,
-                    self.snapshot_budget(body.len()),
-                    self.config.storage.per_owner,
-                    self.config.storage.total,
-                )
-                .await
-                .map_err(WriteError::from)?,
-            ),
-            None => None,
+            (body, generation, durable)
         };
         let size = body.len() as i64;
-        // `generation` is normally advanced by every mediated CRDT mutation.
-        // A checkpoint can also be requested after an internal caller has
-        // changed the document directly (for example while attaching an
-        // asset), though, and those changes still need a fresh journal
-        // cursor.  Never reuse a durable sequence merely because the in
-        // memory generation did not move with that internal mutation.
-        let mut durable_sequence = generation.saturating_add(1);
-        if let Some(journal) = self.journal.get() {
-            let latest = journal
-                .latest_sequence(&self.storage_id, 0)
-                .map_err(|error| error.to_string())?;
-            durable_sequence = durable_sequence.max(latest.saturating_add(1));
-            journal
-                .append(&self.storage_id, durable_sequence, body.clone())
+        let collaboration = crate::storage::collaboration::CollaborationStorage::new(
+            catalog.clone(),
+            self.blobs.clone(),
+        );
+        let durable_sequence = collaboration
+            .append(document_id, &body)
+            .await
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
+        if durable_sequence % 100 == 0 {
+            catalog
+                .enqueue_job(crate::storage::postgres::NewJob {
+                    kind: "source_compaction".into(),
+                    document_id: Some(document_id),
+                    account_id: None,
+                    scope_key: format!("document:{document_id}"),
+                    dedupe_key: Some(format!("through:{durable_sequence}")),
+                    payload: serde_json::json!({"through_update_sequence":durable_sequence}),
+                    priority: 0,
+                    max_attempts: 5,
+                    run_after: time::OffsetDateTime::now_utc(),
+                })
                 .await
-                .map_err(|error| error.to_string())?;
-            // Keep the committed replay tail bounded even for rooms whose
-            // edits never become quiet enough for a checkpoint.  The base is
-            // published through the same journal head transition, so an
-            // acknowledgement cannot overtake compaction or its retirement
-            // metadata.
-            if journal
-                .compaction_due(&self.storage_id, 0, durable_sequence)
-                .map_err(|error| error.to_string())?
-            {
-                journal
-                    .compact(&self.storage_id, 0, durable_sequence, body.clone())
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-        if self.journal.get().is_none() {
-            self.write_owned(&session_key(&self.slug), body, &mut version)
-                .await?;
-        }
-        if let Some(quota) = quota {
-            quota.commit().await.map_err(WriteError::from)?;
+                .map_err(|e| WriteError::Storage(e.to_string()))?;
         }
         let mut state = self.state.lock().await;
-        state.session_version = version;
+        state.session.durable_sequence = state.session.durable_sequence.max(durable_sequence);
         if state.session.generation == generation {
-            // The journal cursor and logical edit generation are independent:
+            // The durable update sequence and logical edit generation are independent:
             // persisting a document must not make an older checkpoint cover it.
             state.session.dirty = false;
             state.session.dirty_since = 0;
@@ -2908,13 +1776,44 @@ impl Room {
                     continue;
                 }
                 peer.acked = seq;
-                let payload = json!({"type": "y-ack", "seq": seq}).to_string();
+                let payload = json!({"type": "doc-ack", "seq": seq}).to_string();
                 if peer.tx.try_send_durable(Outgoing::Text(payload)).is_err() {
                     state.sockets.remove(&id);
                 }
             }
         }
-        Ok(Some((size, durable_sequence.min(i64::MAX as u64) as i64)))
+        Ok(Some((size, durable_sequence)))
+    }
+
+    async fn merge_remote_updates(&self) -> Result<(), String> {
+        let catalog = self
+            .catalog
+            .as_ref()
+            .get()
+            .ok_or("PostgreSQL catalog required")?;
+        let document_id =
+            uuid::Uuid::parse_str(&self.storage_id).map_err(|_| "invalid document id")?;
+        loop {
+            let after = self.state.lock().await.session.durable_sequence;
+            let updates = catalog
+                .updates_after(document_id, after, 256)
+                .await
+                .map_err(|e| e.to_string())?;
+            if updates.is_empty() {
+                return Ok(());
+            }
+            let full = updates.len() == 256;
+            let mut state = self.state.lock().await;
+            for update in updates {
+                session::apply_update(&state.session.doc, &update.update_bytes)
+                    .map_err(|e| e.to_string())?;
+                state.session.durable_sequence =
+                    state.session.durable_sequence.max(update.update_sequence);
+            }
+            if !full {
+                return Ok(());
+            }
+        }
     }
 
     /// What the sweeper does to one room, once a second: write the document if
@@ -2967,15 +1866,10 @@ impl Room {
             dirty_for >= 15
         };
         let quiet = quiet_for >= limits.write_after_seconds.max(0);
-        // Quiet periods may request an early save only after the journal's
+        // Quiet periods may request an early save only after collaboration storage's
         // flush floor. Continuous typing still reaches the dirty-age deadline;
         // it must not reset that deadline or force a write on every brief pause.
-        // The compatibility session store retains its original debounce policy.
-        let flush_due = if self.journal.get().is_some() {
-            floor_elapsed && (quiet || dirty_for >= 15)
-        } else {
-            quiet || floor_elapsed
-        };
+        let flush_due = floor_elapsed && (quiet || dirty_for >= 15);
         if dirty && flush_due {
             if let Err(err) = self.persist().await {
                 eprintln!(
@@ -3025,12 +1919,91 @@ impl Room {
     }
 }
 
+/// Populate a Yjs project from its immutable source archive. With
+/// `missing_only`, this repairs the one-update state written by releases that
+/// seeded only the main file and preserves any edit already made to that file.
+fn starter_bibliography(
+    entry: Option<&crate::document::store::IndexEntry>,
+) -> Option<&'static [u8]> {
+    let entry = entry?;
+    match entry.title.as_str() {
+        "Learn LibrePaper with Markdown" if entry.slug.starts_with("starter-1-") => Some(
+            include_bytes!("../../../../docs/examples/tutorial-markdown/references.bib"),
+        ),
+        "Learn LibrePaper with Typst" if entry.slug.starts_with("starter-2-") => Some(
+            include_bytes!("../../../../docs/examples/tutorial-typst/references.bib"),
+        ),
+        "Learn LibrePaper with HTML" if entry.slug.starts_with("starter-3-") => Some(
+            include_bytes!("../../../../docs/examples/tutorial-html/references.bib"),
+        ),
+        "Learn LibrePaper with LaTeX" if entry.slug.starts_with("starter-4-") => Some(
+            include_bytes!("../../../../docs/examples/tutorial-latex/references.bib"),
+        ),
+        "Learn LibrePaper with Quarto" if entry.slug.starts_with("starter-5-") => Some(
+            include_bytes!("../../../../docs/examples/tutorial-quarto/references.bib"),
+        ),
+        _ => None,
+    }
+}
+
+fn hydrate_project(
+    doc: &LoroDoc,
+    archive: &crate::storage::source_archive::SourceArchive,
+    missing_only: bool,
+) -> bool {
+    use crate::storage::source_archive::SourceFile;
+
+    let existing_texts = session::texts_of(doc);
+    let existing_assets = session::assets_of(doc);
+    let mut changed = false;
+    let mut main_id = None;
+    for file in &archive.files {
+        match file {
+            SourceFile::Inline { path, bytes } => {
+                if missing_only && existing_texts.contains_key(path) {
+                    continue;
+                }
+                let body = String::from_utf8_lossy(bytes);
+                let id = session::put_text(doc, path, &body);
+                if *path == archive.main_path {
+                    main_id = Some(id);
+                }
+                changed = true;
+            }
+            SourceFile::Asset { path, digest, .. } => {
+                if missing_only && existing_assets.contains_key(path) {
+                    continue;
+                }
+                session::put_asset(doc, path, &hex::encode(digest));
+                changed = true;
+            }
+        }
+    }
+    if session::main_path(doc).is_empty() {
+        if let Some(id) = main_id.or_else(|| {
+            session::paths_of(doc)
+                .into_iter()
+                .find_map(|(id, path)| (path == archive.main_path).then_some(id))
+        }) {
+            session::set_main(doc, &id);
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// The document's directory as a checkpoint records it, and the bytes of each
-/// text by digest -- which is what the blobs are written from, so that two
-/// files with the same contents are one object and a file that did not change
-/// is not written again.
+/// text keyed by digest, so that two files with the same contents are carried
+/// once in the map this returns.
+///
+/// That is the only sharing here. The caller packs these bodies into a source
+/// archive which inlines every file in full (`SourceFile::Inline`), so a file
+/// that did not change is written again in the next version's archive. What
+/// deduplication exists lives one level up: `commit_version` declines to write
+/// a version whose tree digest already names the newest one, and `commit_archive`
+/// reuses an existing blob when the encoded archive is byte-identical.
 pub fn tree_of(
-    doc: &yrs::Doc,
+    doc: &LoroDoc,
     asset_sizes: &HashMap<String, i64>,
 ) -> (crate::document::history::Tree, HashMap<String, String>) {
     use crate::document::history::{Tree, TreeEntry};
@@ -3120,36 +2093,26 @@ pub fn decode_update(text: &str) -> Option<Vec<u8>> {
 /// Sends to every socket but one, dropping any that has fallen too far behind
 /// to take another frame. A dropped socket is not a lost edit: the browser
 /// reconnects and asks for what it is missing by state vector.
-fn send_to_all(state: &mut RoomState, skip: Option<u64>, message: &str) {
-    let mut behind = Vec::new();
-    for (id, peer) in &state.sockets {
-        if Some(*id) == skip {
-            continue;
-        }
-        if peer
-            .tx
-            .try_send(Outgoing::Text(message.to_string()))
-            .is_err()
-        {
-            behind.push(*id);
-        }
-    }
-    for id in behind {
-        state.sockets.remove(&id);
-    }
+fn comment_views(comments: &[Comment], author: &str, is_owner: bool) -> Vec<CommentView> {
+    comments
+        .iter()
+        .filter(|item| is_owner || crate::room::comments::visible_to_reader(item))
+        .map(|item| CommentView::for_viewer(item, author, is_owner))
+        .collect()
 }
 
-pub(super) fn send_to_editors(state: &mut RoomState, skip: Option<u64>, message: &str) {
+fn send_to(
+    state: &mut RoomState,
+    skip: Option<u64>,
+    message: Outgoing,
+    include: impl Fn(&Peer) -> bool,
+) {
     let mut behind = Vec::new();
     for (id, peer) in &state.sockets {
-        if Some(*id) == skip || !peer.may_edit {
+        if Some(*id) == skip || !include(peer) {
             continue;
         }
-        if peer
-            .tx
-            .try_send(Outgoing::Text(message.to_string()))
-            .is_err()
-        {
+        if peer.tx.try_send(message.clone()).is_err() {
             behind.push(*id);
         }
     }
@@ -3178,5 +2141,53 @@ pub fn rate_key(address: &str) -> String {
                 segments[0], segments[1], segments[2], segments[3]
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod project_hydration_tests {
+    use super::*;
+    use crate::storage::source_archive::{SourceArchive, SourceFile};
+
+    fn archive() -> SourceArchive {
+        SourceArchive {
+            source_format: "latex".into(),
+            main_path: "main.tex".into(),
+            files: vec![
+                SourceFile::Inline {
+                    path: "main.tex".into(),
+                    bytes: b"edited main".to_vec(),
+                },
+                SourceFile::Inline {
+                    path: "sections/body.tex".into(),
+                    bytes: b"section".to_vec(),
+                },
+                SourceFile::Asset {
+                    path: "figure.png".into(),
+                    asset_id: uuid::Uuid::nil(),
+                    digest: [7; 32],
+                    bytes: 10,
+                    media_type: "image/png".into(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn cold_hydration_restores_the_complete_project() {
+        let doc = session::new_doc();
+        assert!(hydrate_project(&doc, &archive(), false));
+        assert_eq!(session::main_path(&doc), "main.tex");
+        assert_eq!(session::texts_of(&doc)["sections/body.tex"], "section");
+        assert_eq!(session::assets_of(&doc)["figure.png"], "07".repeat(32));
+    }
+
+    #[test]
+    fn first_save_repair_preserves_the_edited_main_file() {
+        let doc = session::new_doc();
+        session::replace_text(&doc, "my edit", "main.tex");
+        assert!(hydrate_project(&doc, &archive(), true));
+        assert_eq!(session::text_of(&doc), "my edit");
+        assert_eq!(session::texts_of(&doc)["sections/body.tex"], "section");
     }
 }

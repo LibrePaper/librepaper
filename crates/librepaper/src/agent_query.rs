@@ -1030,29 +1030,11 @@ fn scan_search_all(
     terms: &[String],
 ) -> (Vec<SearchIndex>, bool) {
     let mut hits = Vec::new();
-    for path in paths {
-        let Some(source) = snapshot.texts.get(path) else {
-            continue;
-        };
-        let path: Arc<str> = Arc::from(path.as_str());
-        for term in terms {
-            for (start, matched) in source.match_indices(term) {
-                let (line, column) =
-                    indexed_position(source, indexes.offsets.get(path.as_ref()), start);
-                hits.push(SearchIndex {
-                    path: Arc::clone(&path),
-                    start,
-                    end: start + matched.len(),
-                    line,
-                    column,
-                });
-                if hits.len() > SEARCH_CACHE_MATCHES {
-                    return (hits, false);
-                }
-            }
-        }
-    }
-    (hits, true)
+    let complete = visit_search_hits(snapshot, indexes, paths, terms, |hit| {
+        hits.push(hit);
+        hits.len() <= SEARCH_CACHE_MATCHES
+    });
+    (hits, complete)
 }
 
 fn scan_search_page(
@@ -1065,6 +1047,28 @@ fn scan_search_page(
 ) -> (Vec<SearchIndex>, bool) {
     let mut page = Vec::with_capacity(limit);
     let mut seen = 0;
+    let complete = visit_search_hits(snapshot, indexes, paths, terms, |hit| {
+        if seen < offset {
+            seen += 1;
+            return true;
+        }
+        if page.len() >= limit {
+            return false;
+        }
+        page.push(hit);
+        seen += 1;
+        true
+    });
+    (page, complete)
+}
+
+fn visit_search_hits(
+    snapshot: &QuerySnapshot,
+    indexes: &SnapshotIndexes,
+    paths: &[String],
+    terms: &[String],
+    mut visit: impl FnMut(SearchIndex) -> bool,
+) -> bool {
     for path in paths {
         let Some(source) = snapshot.texts.get(path) else {
             continue;
@@ -1072,27 +1076,21 @@ fn scan_search_page(
         let path: Arc<str> = Arc::from(path.as_str());
         for term in terms {
             for (start, matched) in source.match_indices(term) {
-                if seen < offset {
-                    seen += 1;
-                    continue;
-                }
-                if page.len() >= limit {
-                    return (page, false);
-                }
                 let (line, column) =
                     indexed_position(source, indexes.offsets.get(path.as_ref()), start);
-                page.push(SearchIndex {
+                if !visit(SearchIndex {
                     path: Arc::clone(&path),
                     start,
                     end: start + matched.len(),
                     line,
                     column,
-                });
-                seen += 1;
+                }) {
+                    return false;
+                }
             }
         }
     }
-    (page, true)
+    true
 }
 
 fn selected_paths(
@@ -1388,17 +1386,70 @@ fn bibliography_query(
 }
 
 fn field_value(body: &str, field: &str) -> Value {
-    let needle = format!("{field}=");
-    body.split(',')
-        .find_map(|part| {
-            let part = part.trim();
-            let value = part
-                .strip_prefix(&needle)?
-                .trim()
-                .trim_matches(['{', '}', '"']);
-            Some(Value::String(value.to_string()))
-        })
-        .unwrap_or(Value::Null)
+    let mut segment_start = 0;
+    let mut brace_depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (offset, byte) in body.bytes().enumerate() {
+        if quoted {
+            if byte == b'"' && !escaped {
+                quoted = false;
+            }
+            escaped = byte == b'\\' && !escaped;
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'{' => brace_depth += 1,
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b',' if brace_depth == 0 => {
+                if let Some(value) = bibtex_segment_value(&body[segment_start..offset], field) {
+                    return Value::String(value);
+                }
+                segment_start = offset + 1;
+            }
+            _ => {}
+        }
+        escaped = false;
+    }
+    bibtex_segment_value(&body[segment_start..], field).map_or(Value::Null, Value::String)
+}
+
+fn bibtex_segment_value(segment: &str, field: &str) -> Option<String> {
+    let (name, value) = segment.trim().split_once('=')?;
+    if !name.trim().eq_ignore_ascii_case(field) {
+        return None;
+    }
+    let value = value.trim();
+    if let Some(value) = value.strip_prefix('{') {
+        let mut depth = 0usize;
+        let mut quoted = false;
+        let mut escaped = false;
+        for (offset, byte) in value.bytes().enumerate() {
+            if quoted {
+                if byte == b'"' && !escaped {
+                    quoted = false;
+                }
+                escaped = byte == b'\\' && !escaped;
+                continue;
+            }
+            match byte {
+                b'"' => quoted = true,
+                b'{' => depth += 1,
+                b'}' if depth == 0 => return Some(value[..offset].to_string()),
+                b'}' => depth -= 1,
+                _ => {}
+            }
+            escaped = false;
+        }
+    }
+    Some(
+        value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .unwrap_or(value)
+            .to_string(),
+    )
 }
 
 fn cited_keys(snapshot: &QuerySnapshot) -> BTreeSet<String> {
@@ -1926,6 +1977,27 @@ mod tests {
         assert_eq!(entries[0]["key"], "first");
         assert_eq!(entries[1]["key"], "second");
         assert!(entries[0]["end"].as_u64().unwrap() < entries[1]["start"].as_u64().unwrap());
+    }
+
+    #[test]
+    fn bibliography_fields_allow_spacing_and_commas_in_values() {
+        let mut captured = snapshot();
+        captured.texts.insert(
+            "refs.bib".into(),
+            "@book{key, author = {Doe, Jane}, title = {A, careful title}}".into(),
+        );
+        let result = read(
+            &captured,
+            &[json!({"kind":"bibliography","path":"refs.bib"})],
+            QueryBudget {
+                max_bytes: 20_000,
+                max_tokens: 3_000,
+            },
+        )
+        .expect("bibliography query");
+        let entry = &result["results"][0]["entries"][0];
+        assert_eq!(entry["author"], "Doe, Jane");
+        assert_eq!(entry["title"], "A, careful title");
     }
 
     #[test]

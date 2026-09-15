@@ -49,7 +49,9 @@ Try changing the four values and leave a comment on this paragraph.
 
 ## Working with other clients
 
-The browser editor is enough for writing and reading. Use `librepaper sync` to
-keep a local folder synchronized, or use `librepaper publish` to publish from the terminal. Readers render the small Markdown document in their browser and need no local toolchain.
+The browser editor is enough for writing and reading. A one-shot
+`librepaper export DOCUMENT --project --output ./paper-copy` creates an
+independent local copy. Readers render the small Markdown document in their
+browser and need no local toolchain.
 
 ## References

@@ -8,6 +8,10 @@
   // rounded rectangle as a square-cornered path is what made these look like
   // icons from two different sets.
   const ICONS = {
+    home: [
+      ["path", "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"],
+      ["path", "M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
+    ],
     eye: [["path", "M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"], ["circle", { cx: 12, cy: 12, r: 3 }]],
     bot: [["path", "M12 8V4H8"], ["rect", { width: 16, height: 12, x: 4, y: 8, rx: 2 }], ["path", "M2 14h2"], ["path", "M20 14h2"], ["path", "M15 13v2"], ["path", "M9 13v2"]],
     "chevrons-up": [["path", "m17 11-5-5-5 5"], ["path", "m17 18-5-5-5 5"]],
@@ -18,12 +22,6 @@
       ["path", "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"],
       ["path", "M12 9v4"],
       ["path", "M12 17h.01"],
-    ],
-    users: [
-      ["path", "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"],
-      ["path", "M16 3.128a4 4 0 0 1 0 7.744"],
-      ["path", "M22 21v-2a4 4 0 0 0-3-3.87"],
-      ["circle", { cx: 9, cy: 7, r: 4 }],
     ],
     "chevron-down": [["path", "m6 9 6 6 6-6"]],
     "chevron-up": [["path", "m18 15-6-6-6 6"]],
@@ -147,17 +145,38 @@
       ["path", "M22 21v-2a4 4 0 0 0-3-3.87"],
       ["path", "M16 3.13a4 4 0 0 1 0 7.75"],
     ],
-    // Lucide's mic, for dictation: the composer,
-    // comment, and reply buttons that hand text to the recognizer.
-    mic: [
-      ["path", "M12 19v3"],
-      ["path", "M19 10v2a7 7 0 0 1-14 0v-2"],
-      ["rect", { x: 9, y: 2, width: 6, height: 13, rx: 3 }],
-    ],
     trash: [
       ["path", "M3 6h18"],
       ["path", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"],
       ["path", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"],
+    ],
+    // The PDF controls, which used to be a set of their own inside the frame.
+    // They sit in the preview header now, so they are drawn from here like
+    // every other control in the application rather than from four SVG files
+    // masked into a shadow root. Lucide's zoom-in, zoom-out, hand and
+    // text-cursor, with their `line` elements written as paths: rect, circle
+    // and path are the only shapes this component draws.
+    "zoom-in": [
+      ["circle", { cx: 11, cy: 11, r: 8 }],
+      ["path", "m21 21-4.35-4.35"],
+      ["path", "M11 8v6"],
+      ["path", "M8 11h6"],
+    ],
+    "zoom-out": [
+      ["circle", { cx: 11, cy: 11, r: 8 }],
+      ["path", "m21 21-4.35-4.35"],
+      ["path", "M8 11h6"],
+    ],
+    hand: [
+      ["path", "M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"],
+      ["path", "M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"],
+      ["path", "M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"],
+      ["path", "M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"],
+    ],
+    "text-cursor": [
+      ["path", "M17 22h-1a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4h1"],
+      ["path", "M7 22h1a4 4 0 0 0 4-4"],
+      ["path", "M7 2h1a4 4 0 0 1 4 4"],
     ],
   };
 

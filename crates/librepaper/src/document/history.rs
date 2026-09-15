@@ -1,27 +1,13 @@
 //! The manifest: what a document used to say, and when.
 //!
-//! A checkpoint is the document's whole directory at one moment -- every path
-//! and the digest of what was at it -- named by the sha256 of that tree.
-//! `history/<slug>/<sha>` holds the tree, `history/<slug>/blobs/<sha>` holds
-//! one text apiece, and `history/<slug>/index.json` holds this list, oldest
-//! first. Restoring to Tuesday restores every chapter and the bibliography
-//! together; a chapter and the file that includes it can never be recorded out
-//! of step.
-//!
-//! Nothing here is ever rewritten: a checkpoint is appended, and the only
-//! removals are `destroy`, expiry, and the two ceilings that shed the oldest.
-//! That includes the checkpoints taken when a document was one text: such an
-//! entry has no `tree`, its object is the source bytes rather than a tree, and
-//! it is read below as a tree of one file. The timeline is therefore
-//! continuous across the change, and a rollback finds every old checkpoint
-//! exactly as it left it.
+//! Each checkpoint is a distinct event whose canonical tree describes the
+//! whole document directory. PostgreSQL retains the version timeline while
+//! immutable archives and assets live in the configured blob store.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-use crate::storage::blob::{history_index_key, BlobError, BlobStore, BlobVersion};
 
 /// One entry in the manifest. The field names are wire format: the manifest
 /// is served to the browser as it stands.
@@ -70,8 +56,13 @@ pub struct Checkpoint {
     pub tree: bool,
     /// The paths whose digest differs from the parent's, so the timeline can
     /// say what moved without opening two trees.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub changed: Vec<String>,
+    ///
+    /// `None` is "never asked" and an empty list is "asked, and no file
+    /// moved". They are different answers and the timeline says different
+    /// things about them, so they must not collapse into one value on the
+    /// wire: `None` is absent from the JSON, `Some(vec![])` is `[]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<Vec<String>>,
     /// Catalogue sequence used as a stable tie breaker during retention.
     #[serde(default)]
     pub seq: i64,
@@ -153,25 +144,48 @@ impl Tree {
         self
     }
 
-    /// The name of this tree: the sha256 of the JSON that is stored, so that
-    /// naming it and writing it can never disagree.
+    /// The name of this tree: the sha256 of what it says.
     pub fn digest(&self) -> String {
-        hex::encode(Sha256::digest(self.to_bytes()))
+        hex::encode(self.digest_bytes())
     }
 
-    /// The digest of the source inputs, independent of the Yjs item ids used
-    /// by a live room. Native artifact publishers use this to prove that the
-    /// PDF was compiled from the exact canonical file tree they uploaded.
-    pub fn input_digest(&self) -> String {
-        let mut canonical = self.clone();
-        for entry in canonical.files.values_mut() {
-            entry.id.clear();
-        }
-        canonical.digest()
+    /// The same name, as the catalogue stores it.
+    pub fn digest_bytes(&self) -> [u8; 32] {
+        Sha256::digest(self.to_bytes()).into()
     }
 
+    /// What this tree says, canonically: which file is the document, what it
+    /// is compiled with, and every path with the digest of what is at it.
+    ///
+    /// Deliberately not the whole stored object. A text's `id` is which
+    /// shared object holds it, minted afresh whenever a file is created, so a
+    /// document rebuilt from its own archive carries different ids than the
+    /// session that wrote it; an entry's `size` follows from its bytes.
+    /// Neither is part of what the document says, and naming a tree after
+    /// them made two identical documents impossible to recognise as one --
+    /// which is exactly the question a checkpoint has to answer before
+    /// writing itself down again.
     pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).unwrap_or_default()
+        #[derive(Serialize)]
+        struct Content<'a> {
+            main: &'a str,
+            files: BTreeMap<&'a str, (&'a str, &'a str)>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            settings: Option<&'a CompileSettings>,
+        }
+        serde_json::to_vec(&Content {
+            main: &self.main,
+            files: self
+                .files
+                .iter()
+                .map(|(path, entry)| (path.as_str(), (entry.kind.as_str(), entry.sha.as_str())))
+                .collect(),
+            settings: self
+                .settings
+                .as_ref()
+                .filter(|settings| !settings.is_empty()),
+        })
+        .unwrap_or_default()
     }
 
     /// The size a checkpoint counts against the quota: the sum over the tree,
@@ -180,49 +194,32 @@ impl Tree {
         self.files.values().map(|entry| entry.size).sum()
     }
 
-    /// A checkpoint taken when a document was one text, read as what it is: a
-    /// directory of one file, at the path the document's main file has now.
-    /// The bytes were the source, so the checkpoint's own sha is the text's.
-    pub fn of_one_file(path: &str, id: &str, sha: &str, size: i64) -> Tree {
-        let mut files = BTreeMap::new();
-        files.insert(
-            path.to_string(),
-            TreeEntry {
-                kind: "text".to_string(),
-                id: id.to_string(),
-                sha: sha.to_string(),
-                size,
-            },
-        );
-        Tree {
-            main: path.to_string(),
-            files,
-            settings: None,
-        }
-    }
-
-    /// The paths whose digest differs from `parent`'s, added and removed
-    /// included, sorted. What the timeline lists on an entry.
-    pub fn changed_from(&self, parent: Option<&Tree>) -> Vec<String> {
-        let Some(parent) = parent else {
-            return self.files.keys().cloned().collect();
-        };
-        let mut moved: Vec<String> = self
+    /// The paths at which this tree differs from the one before it: added,
+    /// removed, or holding different bytes. This is what a checkpoint records
+    /// so that the timeline can say which files a moment touched without
+    /// opening two trees for every row it draws.
+    ///
+    /// Identity is the content digest alone. A text re-created at the same
+    /// path with the same body is a new object in the shared document and
+    /// nothing at all in the history of what the document said.
+    pub fn changed_from(&self, parent: &Tree) -> Vec<String> {
+        let mut paths: Vec<String> = self
             .files
             .iter()
-            .filter(|(path, entry)| parent.files.get(*path).map(|was| &was.sha) != Some(&entry.sha))
+            .filter(|(path, entry)| {
+                parent.files.get(*path).map(|before| &before.sha) != Some(&entry.sha)
+            })
             .map(|(path, _)| path.clone())
             .collect();
-        moved.extend(
+        paths.extend(
             parent
                 .files
                 .keys()
                 .filter(|path| !self.files.contains_key(*path))
                 .cloned(),
         );
-        moved.sort();
-        moved.dedup();
-        moved
+        paths.sort();
+        paths
     }
 }
 
@@ -238,222 +235,98 @@ impl Manifest {
     pub fn latest(&self) -> Option<&Checkpoint> {
         self.checkpoints.last()
     }
+}
 
-    pub fn has(&self, sha: &str) -> bool {
-        self.checkpoints.iter().any(|point| point.sha == sha)
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    /// Rehydrate the in-memory timeline from the authoritative catalogue.
-    ///
-    /// The local catalogue stores one row per checkpoint rather than a
-    /// whole-document manifest blob.  Keeping this conversion here makes the
-    /// room code independent of SQL column layout while preserving the wire
-    /// representation used by the history API.  Rows are sorted by `seq`
-    /// before they become a manifest; callers may therefore pass a bounded
-    /// page or the complete result without relying on database row order.
-    #[allow(dead_code)]
-    pub fn from_catalog_rows(
-        mut rows: Vec<crate::storage::catalog::Checkpoint>,
-    ) -> Result<Self, String> {
-        rows.sort_by_key(|row| row.seq);
-        let mut checkpoints = Vec::with_capacity(rows.len());
-        for row in rows {
-            let changed = match row.changed.as_deref() {
-                None => Vec::new(),
-                Some(raw) => serde_json::from_str::<Vec<String>>(raw).map_err(|err| {
-                    format!("checkpoint {} has invalid changed metadata: {err}", row.sha)
-                })?,
-            };
-            checkpoints.push(Self::from_catalog_row(row, changed));
-        }
-        Ok(Self { checkpoints })
-    }
-
-    #[allow(dead_code)]
-    fn from_catalog_row(
-        row: crate::storage::catalog::Checkpoint,
-        changed: Vec<String>,
-    ) -> Checkpoint {
-        Checkpoint {
-            sha: row.sha,
-            tree_sha: row.tree_sha,
-            parent: row.parent.clone(),
-            at: row.at,
-            by: row.by,
-            by_account: row.by_account,
-            why: row.why,
-            source_format: row.source_format,
-            size: row.size,
-            label: row.label,
-            commit: row.git_commit,
-            dirty: row.dirty,
-            tree: true,
-            changed,
-            seq: row.seq,
-            original_parent: row.parent,
-            ancestry_gap: false,
-        }
-    }
-
-    /// Convert this timeline entry to the catalogue's normalized row shape.
-    /// `seq` and `durable_seq` are supplied by the journal coordinator because
-    /// they are not properties of an immutable checkpoint object.
-    #[allow(dead_code)]
-    pub fn catalog_row(
-        slug: &str,
-        point: &Checkpoint,
-        seq: i64,
-        durable_seq: i64,
-    ) -> Result<crate::storage::catalog::Checkpoint, String> {
-        // `-1` asks the catalogue transaction to allocate the next sequence;
-        // persisted rows themselves are always non-negative.
-        if seq < -1 || durable_seq < 0 {
-            return Err(
-                "seq must be -1 or non-negative, and durable_seq must be non-negative".into(),
-            );
-        }
-        let changed = if point.changed.is_empty() {
-            Some("[]".to_string())
-        } else {
-            Some(
-                serde_json::to_string(&point.changed)
-                    .map_err(|err| format!("could not encode changed metadata: {err}"))?,
-            )
-        };
-        Ok(crate::storage::catalog::Checkpoint {
-            slug: slug.to_string(),
-            sha: point.sha.clone(),
-            seq,
-            durable_seq,
-            tree_sha: point.content_sha().to_string(),
-            parent: point.parent.clone(),
-            at: point.at.clone(),
-            by: point.by.clone(),
-            by_account: point.by_account.clone(),
-            why: point.why.clone(),
-            source_format: point.source_format.clone(),
-            size: point.size,
-            label: point.label.clone(),
-            git_commit: point.commit.clone(),
-            dirty: point.dirty,
-            changed,
-        })
-    }
-
-    /// What every checkpoint of this document costs, which is the half of the
-    /// index entry's `size` that is not the session state.
-    pub fn bytes(&self) -> i64 {
-        self.checkpoints.iter().map(|point| point.size).sum()
-    }
-
-    /// Sheds the oldest checkpoints until `keep` says to stop. The newest is
-    /// never shed -- shedding it would lose the document -- and an unlabelled
-    /// one always goes before a labelled one, whatever their ages, because a
-    /// label is somebody saying this moment matters.
-    ///
-    /// Returns the SHAs dropped, for the caller to delete.
-    #[allow(dead_code)]
-    pub fn shed(&mut self, keep: impl FnMut(&Manifest) -> bool) -> Vec<String> {
-        self.shed_protected("", keep)
-    }
-
-    /// Sheds history while retaining the selected source, even when it is old
-    /// and unlabelled. A restore has selected that point, so pruning it before
-    /// its tree and assets are read would make the operation fail halfway.
-    pub fn shed_protected(
-        &mut self,
-        protected: &str,
-        mut keep: impl FnMut(&Manifest) -> bool,
-    ) -> Vec<String> {
-        let mut dropped = Vec::new();
-        while !keep(self) && self.checkpoints.len() > 1 {
-            let oldest_unlabelled = self.checkpoints[..self.checkpoints.len() - 1]
+    fn tree(files: &[(&str, &str)]) -> Tree {
+        Tree {
+            main: files
+                .first()
+                .map(|(path, _)| (*path).into())
+                .unwrap_or_default(),
+            files: files
                 .iter()
-                .position(|point| point.label.is_empty() && point.sha != protected);
-            // Every checkpoint labelled: the oldest goes.
-            let index = oldest_unlabelled.or_else(|| {
-                self.checkpoints[..self.checkpoints.len() - 1]
-                    .iter()
-                    .position(|point| point.sha != protected)
-            });
-            let Some(index) = index else {
-                // The only shed candidate is the selected restore source.
-                // Leave it in place; a later checkpoint can shed it after
-                // the restore has completed.
-                break;
-            };
-            let gone = self.checkpoints.remove(index);
-            // The chain stays linear: whoever pointed at the dropped entry now
-            // points where it did.
-            for point in self.checkpoints.iter_mut() {
-                if point.parent == gone.sha {
-                    point.parent = gone.parent.clone();
-                }
-            }
-            dropped.push(gone.sha);
-        }
-        dropped
-    }
-}
-
-/// Reads a document's manifest, with the version it was read at. No manifest
-/// is an empty one, which is how a document with no history yet reads; a
-/// manifest that exists and cannot be parsed is an error, because carrying on
-/// would write a near-empty one over a real history.
-pub async fn load_versioned(
-    blobs: &dyn BlobStore,
-    slug: &str,
-) -> Result<(Manifest, BlobVersion), String> {
-    match blobs.get_versioned(&history_index_key(slug)).await {
-        Err(BlobError::NotFound) => Ok((Manifest::default(), BlobVersion::new())),
-        Err(err) => Err(err.to_string()),
-        Ok((raw, at)) => {
-            let manifest = serde_json::from_slice(&raw).map_err(|err| {
-                format!(
-                    "the history of {slug} is not readable ({err}); move it aside to start empty"
-                )
-            })?;
-            Ok((manifest, at))
+                .map(|(path, sha)| {
+                    (
+                        (*path).to_string(),
+                        TreeEntry {
+                            kind: "text".into(),
+                            sha: (*sha).into(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+            settings: None,
         }
     }
-}
 
-/// The tree one checkpoint recorded. An entry marked `tree` is read as the
-/// JSON it is; one from before -- when a checkpoint was a source and nothing
-/// else -- is read as a directory of one file at `path`, which is what makes
-/// the timeline continuous across the change without a single old object being
-/// rewritten.
-pub async fn load_tree(
-    blobs: &dyn BlobStore,
-    slug: &str,
-    point: &Checkpoint,
-    path: &str,
-    id: &str,
-) -> Result<Tree, String> {
-    let raw = blobs
-        .get(&crate::storage::blob::checkpoint_key(slug, &point.sha))
-        .await
-        .map_err(|err| err.to_string())?;
-    if !point.tree {
-        return Ok(Tree::of_one_file(path, id, &point.sha, raw.len() as i64));
+    #[test]
+    fn a_tree_names_the_paths_that_moved() {
+        let before = tree(&[("paper.tex", "a"), ("references.bib", "b")]);
+        let after = tree(&[("paper.tex", "a2"), ("references.bib", "b")]);
+        assert_eq!(after.changed_from(&before), vec!["paper.tex".to_string()]);
     }
-    let tree: Tree = serde_json::from_slice(&raw).map_err(|err| {
-        format!(
-            "the checkpoint {} of {slug} is not readable ({err})",
-            point.sha
-        )
-    })?;
-    if !point.tree_sha.is_empty() && hex::encode(Sha256::digest(&raw)) != point.tree_sha {
-        return Err(format!(
-            "the checkpoint {} of {slug} has a tree digest that does not match its catalogue row",
-            point.sha
-        ));
-    }
-    Ok(tree)
-}
 
-/// The manifest alone, for the callers that are only reading it.
-#[allow(dead_code)] // the tests and the timeline read the manifest alone
-pub async fn load(blobs: &dyn BlobStore, slug: &str) -> Result<Manifest, String> {
-    Ok(load_versioned(blobs, slug).await?.0)
+    #[test]
+    fn an_added_or_removed_file_is_a_change_at_its_own_path() {
+        let before = tree(&[("paper.tex", "a")]);
+        let after = tree(&[("paper.tex", "a"), ("sections/one.tex", "c")]);
+        assert_eq!(
+            after.changed_from(&before),
+            vec!["sections/one.tex".to_string()]
+        );
+        assert_eq!(
+            before.changed_from(&after),
+            vec!["sections/one.tex".to_string()]
+        );
+    }
+
+    /// "No file moved" and "nobody recorded what moved" are different facts
+    /// and the timeline says different things about them, so the wire format
+    /// has to keep them apart. An absent `changed` is the unknown; `[]` is
+    /// the answer that no file differs -- which is what a version whose main
+    /// file or compile settings changed looks like.
+    #[test]
+    fn an_unanswered_change_list_is_not_an_empty_one() {
+        let unknown = Checkpoint {
+            changed: None,
+            ..Default::default()
+        };
+        let nothing = Checkpoint {
+            changed: Some(Vec::new()),
+            ..Default::default()
+        };
+        let encoded = serde_json::to_value(&unknown).unwrap();
+        assert!(
+            encoded.get("changed").is_none(),
+            "an unrecorded change list says nothing on the wire"
+        );
+        assert_eq!(
+            serde_json::to_value(&nothing).unwrap()["changed"],
+            serde_json::json!([]),
+            "a version that moved no file says so"
+        );
+        assert_eq!(
+            serde_json::from_value::<Checkpoint>(encoded)
+                .unwrap()
+                .changed,
+            None,
+            "and the absence survives the round trip as an absence"
+        );
+    }
+
+    #[test]
+    fn a_tree_that_says_the_same_thing_moved_nothing() {
+        let before = tree(&[("paper.tex", "a"), ("references.bib", "b")]);
+        let mut after = before.clone();
+        // A file re-created at the same path with the same body: a new object
+        // in the shared document, and nothing in the history of the text.
+        after.files.get_mut("paper.tex").unwrap().id = "fresh".into();
+        assert!(after.changed_from(&before).is_empty());
+        assert!(before.changed_from(&before).is_empty());
+    }
 }

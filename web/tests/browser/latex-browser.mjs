@@ -1,4 +1,4 @@
-// End-to-end: a real headless Chromium, driving the real `worker.js` against
+// End-to-end: real headless Firefox and Chromium, driving the real `worker.js` against
 // the real mirror, compiling real corpus documents through real nested
 // engine workers. Nothing here is mocked -- that is the point of a
 // browser check separate from the Node ones, and why it is not in `bun run
@@ -27,6 +27,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browser, until } from "../../tools/browser-driver.mjs";
 
+// Usage: node web/tests/browser/latex-browser.mjs [firefox|chromium|both]
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(dirname(dirname(HERE)));
 const MIRROR = process.env.MIRROR || join(ROOT, "..", "wasm-latex", "mirror");
@@ -34,11 +36,16 @@ const CORPUS = join(ROOT, "tools", "latex", "corpus");
 const PAGES = JSON.parse(readFileSync(join(CORPUS, "pages.json"), "utf8"));
 
 const PORT = 8813;
-const CDP_PORT = 9813;
+const DEBUG_PORT = 9813;
 const BASE = `http://127.0.0.1:${PORT}`;
+const requestedBrowser = process.argv[2] || "both";
+if (!["firefox", "chromium", "both"].includes(requestedBrowser)) {
+  throw new Error(`expected firefox, chromium, or both; got ${requestedBrowser}`);
+}
+const browsers = requestedBrowser === "both" ? ["firefox", "chromium"] : [requestedBrowser];
 
-function log(...args) {
-  console.log("latex-browser:", ...args);
+function log(browserName, ...args) {
+  console.log(`latex-browser (${browserName}):`, ...args);
 }
 
 // --- wait for a mirror ------------------------------------------------------
@@ -140,7 +147,7 @@ async function __librepaperInit(base) {
       const waiter = pending.get(msg.id);
       if (!waiter) return;
       pending.delete(msg.id);
-      msg.failed ? waiter.reject(new Error(msg.failed)) : waiter.resolve(msg);
+      msg.failed ? waiter.reject(new Error(typeof msg.failed === "string" ? msg.failed : JSON.stringify(msg.failed))) : waiter.resolve(msg);
     }
   };
   function send(cmd, extra) {
@@ -250,7 +257,7 @@ async function runJob(driver, expression, timeoutMs = 240000) {
   await driver.evaluate(
     `globalThis.${slot} = { done: false }; (${expression}).then(` +
       `(r) => { globalThis.${slot} = { done: true, result: r }; }, ` +
-      `(e) => { globalThis.${slot} = { done: true, error: String((e && e.stack) || e) }; });true`,
+      `(e) => { globalThis.${slot} = { done: true, error: String(e && e.message ? e.message + "\\n" + (e.stack || "") : e) }; });true`,
   );
   await until(slot, () => driver.evaluate(`globalThis.${slot}.done`), timeoutMs);
   const job = await driver.evaluate(`globalThis.${slot}`);
@@ -263,9 +270,9 @@ async function runJob(driver, expression, timeoutMs = 240000) {
 /// shipping the whole outputs map back to Node.
 const SUMMARY = `(r) => ({ ok: r.ok, status: r.status, log: r.log, pdf: __librepaperBytes(r.pdf), synctex: __librepaperBytes(r.synctex), passes: r.__passes, ranBibtex: r.__ranBibtex })`;
 
-async function main() {
+async function main(browserName) {
   const manifest = await waitForMirror();
-  log(`mirror ready: default_release=${manifest.default_release}`);
+  log(browserName, `mirror ready: default_release=${manifest.default_release}`);
 
   const scratch = mkdtempSync(join(tmpdir(), "librepaper-latex-browser-"));
   const server = spawn(process.execPath, [join(ROOT, "tools", "latex", "tools", "serve.mjs"), "--port", String(PORT), "--mirror", MIRROR], {
@@ -280,12 +287,12 @@ async function main() {
   const timings = {};
   try {
     await until("mirror server", async () => (await fetch(`${BASE}/mirror/manifest.json`)).ok, 20000);
-    driver = await browser("chromium", join(scratch, "chromium"), CDP_PORT);
+    driver = await browser(browserName, join(scratch, browserName), DEBUG_PORT);
     await driver.navigate(`${BASE}/`);
     await until("harness page", () => driver.evaluate("document.readyState === 'complete'"), 20000);
     await driver.evaluate(PAGE_DRIVER);
     const init = await driver.evaluate(`__librepaperInit(${JSON.stringify(BASE)})`);
-    log("configured:", JSON.stringify(init));
+    log(browserName, "configured:", JSON.stringify(init));
 
     // The dedicated fixture uses biblatex's Biber backend and cites Knuth.
     // Run it through latex.js so the check covers browser Biber selection,
@@ -298,7 +305,7 @@ async function main() {
       );
       const pdfBytes = result.pdf ? Buffer.from(result.pdf, "base64") : null;
       const inspected = inspectPdfBytes(pdfBytes, scratch);
-      log(`biber: ok=${result.ok} bibliography=${result.provenance?.bibliography} pages=${inspected.pages}`);
+      log(browserName, `biber: ok=${result.ok} bibliography=${result.provenance?.bibliography} pages=${inspected.pages}`);
       if (!result.ok || result.provenance?.bibliography !== "browser-biber") {
         throw new Error(`biber: controller did not use browser Biber (provenance=${JSON.stringify(result.provenance)}, attempts=${JSON.stringify(result.attempts)})\n${result.log?.slice(-3000) || ""}`);
       }
@@ -322,16 +329,16 @@ async function main() {
         `__librepaperCompile(${JSON.stringify(c.engine)}, ${JSON.stringify(tree)}).then(${SUMMARY})`,
       );
       timings[c.id] = Date.now() - start;
-      log(`${c.id}: passes=${result.passes} ranBibtex=${result.ranBibtex}`);
+      log(browserName, `${c.id}: passes=${result.passes} ranBibtex=${result.ranBibtex}`);
       const pdfBytes = result.pdf ? Buffer.from(result.pdf, "base64") : null;
       const inspected = inspectPdfBytes(pdfBytes, scratch);
       const expected = PAGES[c.id];
-      log(`${c.id}: ok=${result.ok} pages=${inspected.pages} (expected ${expected.pages}) synctex=${Boolean(result.synctex)} ${timings[c.id]}ms`);
+      log(browserName, `${c.id}: ok=${result.ok} pages=${inspected.pages} (expected ${expected.pages}) synctex=${Boolean(result.synctex)} ${timings[c.id]}ms`);
       if (!result.ok || !inspected.pdf) {
         throw new Error(`${c.id}: compile did not produce a PDF\n${result.log.slice(-2000)}`);
       }
       if (inspected.pages !== expected.pages) {
-        log(`${c.id} log tail:`, result.log.slice(-3000));
+        log(browserName, `${c.id} log tail:`, result.log.slice(-3000));
         throw new Error(`${c.id}: expected ${expected.pages} pages, got ${inspected.pages}`);
       }
       if (expected.synctex && !result.synctex) {
@@ -345,12 +352,12 @@ async function main() {
         const noUndefined = !/undefined citations|Citation .*undefined/i.test(result.log);
         if (!hasCitationText || !noUndefined) {
           const bib = await driver.evaluate("globalThis.__librepaperLastBib && { status: globalThis.__librepaperLastBib.status, bbl: Boolean(globalThis.__librepaperLastBib.bbl), blg: globalThis.__librepaperLastBib.blg }");
-          log("paper bibtex result:", JSON.stringify(bib));
+          log(browserName, "paper bibtex result:", JSON.stringify(bib));
           if (!hasCitationText && !noUndefined) {
             throw new Error(`paper: no evidence BibTeX ran (no "Knuth" in text, log warns of undefined citations)`);
           }
         }
-        log(`paper: citation text present=${hasCitationText}, no undefined-citation warning=${noUndefined}`);
+        log(browserName, `paper: citation text present=${hasCitationText}, no undefined-citation warning=${noUndefined}`);
       }
     }
 
@@ -361,7 +368,7 @@ async function main() {
       const edited = { ...tree, texts: { ...tree.texts, "main.tex": tree.texts["main.tex"].replace("Nothing is concluded.", "Nothing at all is concluded.") } };
       await runJob(driver, `__librepaperCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(edited)})`);
       const tally = await (await fetch(`${BASE}/__bytes`)).json();
-      log(`prose-edit recompile: ${tally.total} new bytes fetched from the mirror`);
+      log(browserName, `prose-edit recompile: ${tally.total} new bytes fetched from the mirror`);
       if (tally.total !== 0) {
         throw new Error(`expected zero new bytes on a same-session recompile, got ${tally.total}: ${JSON.stringify(tally.files)}`);
       }
@@ -380,7 +387,7 @@ async function main() {
       // are accepted since which one appears depends on how the chapter was
       // brought in, not on anything this check controls.
       const mentionsMissing = /chapters\/02(\.tex)?.*not found|not found.*chapters\/02|no file chapters\/02/i.test(result.log);
-      log(`removed-chapter recompile: ok=${result.ok} status=${result.status} missing-file-in-log=${mentionsMissing}`);
+      log(browserName, `removed-chapter recompile: ok=${result.ok} status=${result.status} missing-file-in-log=${mentionsMissing}`);
       if (!mentionsMissing) {
         throw new Error(`removing chapters/02.tex did not surface as a missing file in the log -- the old chapter may have been reused:\n${result.log.slice(-2000)}`);
       }
@@ -406,14 +413,14 @@ async function main() {
         driver,
         `__librepaperCompile(${JSON.stringify("pdflatex")}, ${JSON.stringify(tree)}).then(${SUMMARY})`,
       );
-      log(`fatal-error recompile: ok=${result.ok} status=${result.status} pdf=${result.pdf ? "present" : "null"}`);
+      log(browserName, `fatal-error recompile: ok=${result.ok} status=${result.status} pdf=${result.pdf ? "present" : "null"}`);
       if (result.pdf !== null) {
         throw new Error(`a fatal \\input error before \\end{document} must yield pdf === null, got a PDF (${Buffer.from(result.pdf, "base64").length} bytes)\nlog tail:\n${result.log.slice(-2000)}`);
       }
     }
 
-    log("timings (ms):", JSON.stringify(timings));
-    log("all assertions passed");
+    log(browserName, "timings (ms):", JSON.stringify(timings));
+    log(browserName, "all assertions passed");
   } finally {
     await driver?.close();
     server.kill();
@@ -423,4 +430,4 @@ async function main() {
   }
 }
 
-await main();
+for (const browserName of browsers) await main(browserName);

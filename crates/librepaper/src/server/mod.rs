@@ -24,21 +24,19 @@ use sha2::{Digest, Sha256};
 use crate::auth::pseudonym::pseudonym_for;
 use crate::auth::{
     cookie_name, normalized, now_unix, pkce_verifier, random_token, read_device, read_session,
-    read_visitor, sign_device, sign_session, sign_visitor, stored_id, Accounts, DeviceOutcome,
-    GithubAccounts, GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache,
-    DEVICE_POLL_INTERVAL, DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB,
-    PROVIDER_GOOGLE, SESSION_COOKIE, SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
+    read_visitor, sign_device, sign_session, sign_visitor, Accounts, DeviceOutcome, GithubAccounts,
+    GithubApp, GoogleApp, Identity, PendingCodes, Policy, TokenCache, DEVICE_POLL_INTERVAL,
+    DEVICE_TOKEN_MAX_AGE, DEVICE_TOKEN_PREFIX, PROVIDER_GITHUB, PROVIDER_GOOGLE, SESSION_COOKIE,
+    SESSION_MAX_AGE, STATE_COOKIE, VISITOR_COOKIE,
 };
 use crate::config::Configuration;
-use crate::document::history::{Tree, TreeEntry};
 use crate::document::render::{title_from_html, title_from_markdown};
 use crate::document::store::{
-    random_suffix, slugify, Ceiling, Guest, IndexEntry, LinkGrant, ModifyError, Publication,
-    PutError, Role, Store,
+    random_suffix, slugify, Ceiling, IndexEntry, LinkGrant, ModifyError, Publication, PutError,
+    Role, Store,
 };
 use crate::room::{
-    decode_update, encode_update, AcceptError, Accepted, Applied, Command, Message as RoomMessage,
-    Outgoing, Room, RoomSet, Sender, WriteError,
+    decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet, Sender,
 };
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
@@ -76,9 +74,54 @@ pub use sharing::*;
 pub use signin::*;
 use socket::*;
 
-pub struct Server {
+/// The document boundary shared by HTTP handlers and realtime rooms.
+///
+/// Keeping the durable store and the resident-room cache together prevents a
+/// server from constructing either half without wiring the other.  Existing
+/// handler code dereferences through this service while operations migrate to
+/// its authorization-aware API.
+pub struct DocumentService {
     pub store: Arc<Store>,
     pub rooms: RoomSet,
+}
+
+impl DocumentService {
+    pub fn new(store: Store) -> Self {
+        let store = Arc::new(store);
+        let rooms = RoomSet::new(store.clone());
+        Self { store, rooms }
+    }
+
+    /// Read through the authoritative catalogue without conflating a storage
+    /// failure with a missing document.
+    #[allow(clippy::result_large_err)]
+    async fn checked_entry(&self, slug: &str) -> Result<Option<IndexEntry>, Reply> {
+        self.store.get_result(slug).await.map_err(|error| {
+            write_json(
+                503,
+                &json!({
+                    "error": error.to_string(),
+                    "retryable": true,
+                }),
+            )
+        })
+    }
+
+    /// Apply the complete read policy to an already-resolved caller.
+    fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
+        if who.automation {
+            return entry.example
+                || (!who.link.is_empty()
+                    && entry
+                        .link_role(&who.link, crate::util::now_unix())
+                        .is_some());
+        }
+        entry.readable_by(&who.key, &who.id.id, &who.link, crate::util::now_unix())
+    }
+}
+
+pub struct Server {
+    documents: DocumentService,
     pub shell: HashMap<String, ShellFile>,
     pub app: GithubApp,
     /// The other way in. Configured from the environment alone, and set after
@@ -101,7 +144,7 @@ pub struct Server {
     /// The terminals waiting to be signed in. In memory only: a restart
     /// forgets them, and a `login` that was mid-flight starts again.
     pub pending: PendingCodes,
-    /// Serialize first-sign-in provisioning; its progress is durable in SQLite.
+    /// Serialize first-sign-in provisioning; its progress is durable in PostgreSQL.
     onboarding: tokio::sync::Mutex<()>,
     /// Private agent channels are live coordination and never durable data.
     pub chat: chat::Hub,
@@ -136,6 +179,14 @@ pub struct Server {
     /// with. Inserted when a socket attaches to a room and removed on every
     /// exit from `run_socket`, so a stale entry never outlives its socket.
     connections: tokio::sync::Mutex<HashMap<u64, Connection>>,
+}
+
+impl std::ops::Deref for Server {
+    type Target = DocumentService;
+
+    fn deref(&self) -> &Self::Target {
+        &self.documents
+    }
 }
 
 /// Explicitly marks a request as an agent/automation request. In this mode a
@@ -241,22 +292,30 @@ enum AuthenticationFailure {
     Unavailable,
 }
 
-/// Declared input for a server-side catalogue job: an account id or a slug
-/// and no payload.
-pub(crate) const SERVER_JOB_BYTES: usize = 512;
+/// Values resolved once at the admission boundary and shared by every handler
+/// involved in one HTTP request.
+#[derive(Clone, Debug)]
+pub(super) struct RequestContext {
+    pub arrival: Arrival,
+    pub peer: SocketAddr,
+    authentication: Result<Identity, AuthenticationFailure>,
+}
+
+impl RequestContext {
+    fn identity(&self) -> Identity {
+        self.authentication.clone().unwrap_or_default()
+    }
+}
 
 /// Read one account row off the runtime worker.
 pub(crate) async fn account_row(
-    catalog: &Arc<crate::storage::catalog::Catalog>,
+    catalog: &Arc<crate::storage::postgres::PostgresCatalog>,
     id: &str,
-) -> Result<Option<crate::storage::catalog::Account>, crate::storage::catalog::CatalogError> {
-    let id = id.to_string();
-    catalog
-        .execute_catalog(SERVER_JOB_BYTES + id.len(), move |catalog| {
-            catalog.account(&id)
-        })
-        .await
-        .map_err(crate::storage::catalog::CatalogError::from)
+) -> Result<Option<crate::storage::postgres::AccountRecord>, crate::storage::postgres::Error> {
+    let Ok(id) = uuid::Uuid::parse_str(id) else {
+        return Ok(None);
+    };
+    catalog.account(id).await
 }
 
 /// Establish or refresh one account row off the runtime worker.
@@ -265,21 +324,17 @@ pub(crate) async fn account_row(
 /// dispatch leaves exactly the row it would have left, and the next request
 /// reads it. Nothing is reserved here, so there is nothing to refund.
 pub(crate) async fn upsert_account_job(
-    catalog: &Arc<crate::storage::catalog::Catalog>,
-    account: crate::storage::catalog::Account,
-) -> Result<crate::storage::catalog::Account, crate::storage::catalog::CatalogError> {
-    catalog
-        .execute_catalog(SERVER_JOB_BYTES + account.id.len(), move |catalog| {
-            catalog.upsert_account(&account)
-        })
-        .await
-        .map_err(crate::storage::catalog::CatalogError::from)
+    catalog: &Arc<crate::storage::postgres::PostgresCatalog>,
+    account: crate::storage::postgres::NewAccount,
+) -> Result<crate::storage::postgres::AccountRecord, crate::storage::postgres::Error> {
+    catalog.upsert_registered_account(account).await
 }
 
-fn authentication_failure_of(
-    error: crate::storage::catalog::CatalogError,
-) -> AuthenticationFailure {
-    if matches!(error, crate::storage::catalog::CatalogError::Conflict(_)) {
+fn authentication_failure_of(error: crate::storage::postgres::Error) -> AuthenticationFailure {
+    if matches!(
+        error,
+        crate::storage::postgres::Error::Conflict(_) | crate::storage::postgres::Error::Invalid(_)
+    ) {
         AuthenticationFailure::Invalid
     } else {
         AuthenticationFailure::Unavailable
@@ -287,27 +342,26 @@ fn authentication_failure_of(
 }
 
 impl Server {
-    /// Read a document through the authoritative catalogue when one is
-    /// configured.  A catalogue failure is never treated as a missing
-    /// document: callers map this response to a retryable 503, while the
-    /// `Ok(None)` case remains an ordinary 404.
     #[allow(clippy::result_large_err)]
-    async fn checked_entry(&self, slug: &str) -> Result<Option<IndexEntry>, Reply> {
-        self.store.get_result(slug).await.map_err(|error| {
-            write_json(
-                503,
-                &json!({
-                    "error": error.to_string(),
-                    "retryable": true,
-                }),
-            )
-        })
+    pub(super) async fn entry_viewer(
+        &self,
+        slug: &str,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        query: Option<&str>,
+    ) -> Result<(IndexEntry, Viewer), Reply> {
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return Err(plain(404, "not found")),
+            Err(response) => return Err(response),
+        };
+        let who = self.viewer(&entry, headers, arrival, query).await;
+        Ok((entry, who))
     }
 
     #[allow(clippy::too_many_arguments)] // a server is made of exactly these
     pub fn new(
         store: Store,
-        rooms: RoomSet,
         shell: HashMap<String, ShellFile>,
         app: GithubApp,
         key: Vec<u8>,
@@ -315,17 +369,18 @@ impl Server {
         publishers: Policy,
         commenters: Policy,
     ) -> Server {
-        // The rooms are handed the index before anything opens one: a
-        // checkpoint has to charge itself to the document's owner, and the
-        // index is what holds that.
-        let store = Arc::new(store);
-        rooms.attach_store(store.clone());
+        // Rooms and durable document storage form one service boundary and
+        // are wired before the server can be observed.
+        let documents = DocumentService::new(store);
         let accounts = Arc::new(GithubAccounts::new(&app));
-        let cost = Arc::new(cost::CostMeter::new(&config, store.catalog.clone()));
+        let cost = Arc::new(cost::CostMeter::new(
+            &config,
+            documents.store.catalog.clone(),
+        ));
         let socket_budget = socket_budget::SocketBudget::new(config.sockets);
+        let mcp_capacity = mcp::Capacity::default();
         Server {
-            store,
-            rooms,
+            documents,
             shell,
             app,
             google: GoogleApp::default(),
@@ -339,7 +394,7 @@ impl Server {
             pending: PendingCodes::new(),
             onboarding: tokio::sync::Mutex::new(()),
             chat: chat::Hub::default(),
-            mcp_capacity: mcp::Capacity::default(),
+            mcp_capacity,
             latex: None,
             fonts: None,
             cost,
@@ -356,10 +411,17 @@ impl Server {
         // multipart overhead together -- so Axum's own default (2 MiB, meant
         // for a deployment that never overrides it) must not additionally cut
         // a legitimate upload off before that ceiling is even consulted.
+        let fallback = Router::new()
+            .fallback(routes::dispatch)
+            .with_state(self.clone());
         Router::new()
-            .fallback(cost::handle)
+            .merge(routes::api_router(self.clone()))
+            .merge(fallback)
             .layer(DefaultBodyLimit::disable())
-            .with_state(self)
+            .layer(axum::middleware::from_fn_with_state(
+                self.clone(),
+                cost::middleware,
+            ))
     }
 
     /// Identifies the caller: a browser by its session cookie, the CLI by the
@@ -432,88 +494,35 @@ impl Server {
             };
         }
 
-        let Some(catalog) = &self.store.catalog else {
-            return Ok(identity);
-        };
+        let catalog = &self.store.catalog;
 
         if github_bearer {
             // A real GitHub bearer is an admission path of its own. Establish
             // the account on first use and always take the generation from the
             // authoritative row, so cached provider identity cannot bypass
             // account erasure or session revocation.
-            let now = crate::util::timestamp();
-            let profile = crate::storage::catalog::Account {
-                id: identity.id.clone(),
-                provider: identity.provider.clone(),
+            let profile = crate::storage::postgres::NewAccount {
+                kind: "registered".into(),
+                provider: Some(identity.provider.clone()),
+                provider_subject: Some(identity.id.clone()),
                 handle: identity.handle.clone(),
-                name: identity.name.clone(),
-                email: String::new(),
-                first_seen: now.clone(),
-                last_seen: now,
-                plan: "default".into(),
-                status: "active".into(),
-                session_generation: random_token(),
-                erasure_cursor: None,
+                display_name: identity.name.clone(),
+                email: None,
             };
-            let account = match account_row(catalog, &identity.id).await {
-                Err(_) => return Err(AuthenticationFailure::Unavailable),
-                Ok(Some(account)) if account.status != "active" => {
-                    return Err(AuthenticationFailure::Invalid)
-                }
-                Ok(Some(account)) => {
-                    // A cached bearer still observes lifecycle state above,
-                    // while profile changes are refreshed only when there is
-                    // something to write. This keeps ordinary bearer traffic
-                    // read-only and avoids a catalogue transaction per call.
-                    if account.provider != profile.provider
-                        || account.handle != profile.handle
-                        || account.name != profile.name
-                        || account.email != profile.email
-                    {
-                        upsert_account_job(catalog, profile)
-                            .await
-                            .map_err(authentication_failure_of)?
-                    } else {
-                        account
-                    }
-                }
-                Ok(None) => upsert_account_job(catalog, profile)
-                    .await
-                    .map_err(authentication_failure_of)?,
-            };
-            identity.session_generation = account.session_generation;
+            let account = upsert_account_job(catalog, profile)
+                .await
+                .map_err(authentication_failure_of)?;
+            identity.id = account.id.to_string();
+            identity.session_generation = account.session_generation.to_string();
             return Ok(identity);
         }
 
-        #[cfg(test)]
-        if matches!(account_row(catalog, &identity.id).await, Ok(None))
-            && identity.session_generation == "test-session-generation"
-        {
-            let now = crate::util::timestamp();
-            let _ = upsert_account_job(
-                catalog,
-                crate::storage::catalog::Account {
-                    id: identity.id.clone(),
-                    provider: identity.provider.clone(),
-                    handle: identity.handle.clone(),
-                    name: identity.name.clone(),
-                    email: String::new(),
-                    first_seen: now.clone(),
-                    last_seen: now,
-                    plan: "test".into(),
-                    status: "active".into(),
-                    session_generation: identity.session_generation.clone(),
-                    erasure_cursor: None,
-                },
-            )
-            .await;
-        }
         match account_row(catalog, &identity.id).await {
             Ok(Some(account))
                 if account.status == "active"
                     && needs_generation
                     && !identity.session_generation.is_empty()
-                    && account.session_generation == identity.session_generation =>
+                    && account.session_generation.to_string() == identity.session_generation =>
             {
                 Ok(identity)
             }
@@ -652,7 +661,18 @@ impl Server {
         } else {
             self.owner(headers, arrival, &id)
         };
-        let presented_link = self.link_hash(headers, query);
+        let mut presented_link = self.link_hash(headers, query);
+        // A signed-in link holder is pinned after their first visit. On later
+        // bare-URL opens, recover only the digest of the still-live link they
+        // originally presented; the raw capability is never stored.
+        if !automation && presented_link.is_empty() && id.is_signed_in() {
+            presented_link = entry
+                .guests
+                .iter()
+                .find(|guest| guest.id == id.id)
+                .map(|guest| guest.link.clone())
+                .unwrap_or_default();
+        }
         let now = crate::util::now_unix();
         let ceiling = self.ceiling_for(&id);
         let mut role = if automation {
@@ -698,20 +718,6 @@ impl Server {
             automation,
             auth_failed,
         }
-    }
-
-    /// Whether a caller may read this document at all: its owner, whoever
-    /// holds a live link, and anybody at all for an example. The bare URL
-    /// opens nothing for anyone else.
-    pub fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
-        if who.automation {
-            return entry.example
-                || (!who.link.is_empty()
-                    && entry
-                        .link_role(&who.link, crate::util::now_unix())
-                        .is_some());
-        }
-        entry.readable_by(&who.key, &who.id.id, &who.link, crate::util::now_unix())
     }
 
     /// Answers the request itself when the caller may not publish, and
@@ -808,17 +814,14 @@ impl Server {
         // generation was revoked. This helper is called only after the
         // fallible authentication gate has confirmed a 401, so an unavailable
         // catalogue never causes a live credential to be cleared.
-        let revoked = match self.store.catalog.as_ref() {
-            Some(catalog) => match account_row(catalog, &identity.id).await {
-                Ok(Some(account)) => {
-                    account.status != "active"
-                        || identity.session_generation.is_empty()
-                        || account.session_generation != identity.session_generation
-                }
-                Ok(None) => true,
-                Err(_) => false,
-            },
-            None => false,
+        let revoked = match account_row(&self.store.catalog, &identity.id).await {
+            Ok(Some(account)) => {
+                account.status != "active"
+                    || identity.session_generation.is_empty()
+                    || account.session_generation.to_string() != identity.session_generation
+            }
+            Ok(None) => true,
+            Err(_) => false,
         };
         if revoked {
             add_cookie(response, &clear_cookie(&name, https));
@@ -828,46 +831,6 @@ impl Server {
     fn auth_credential_supplied(&self, headers: &HeaderMap, arrival: &Arrival) -> bool {
         header_of(headers, "authorization").is_some()
             || cookie(headers, &cookie_name(arrival.is_https(), SESSION_COOKIE)).is_some()
-    }
-
-    async fn authentication_failure(
-        &self,
-        headers: &HeaderMap,
-        arrival: &Arrival,
-    ) -> Option<(u16, &'static str)> {
-        if !self.auth_credential_supplied(headers, arrival) {
-            return None;
-        }
-        match self.authenticated_identity(headers, arrival).await {
-            Ok(identity) if identity.is_signed_in() => None,
-            Ok(_) | Err(AuthenticationFailure::Invalid) => {
-                Some((401, "authentication expired or was revoked"))
-            }
-            Err(AuthenticationFailure::Unavailable) => {
-                Some((503, "authentication service temporarily unavailable"))
-            }
-        }
-    }
-
-    /// Narrows a listing to what one caller should see: the reserved examples
-    /// unless the front page is off, the documents that predate ownership,
-    /// their own uploads, everything shared with them by name, and everything
-    /// they are a recorded guest of.
-    ///
-    /// A document shared by a link nobody has opened yet is not here, and
-    /// cannot be: the link lives in one browser rather than on an account, so
-    /// that browser's own list is where it belongs until somebody signed in
-    /// actually uses it, at which point they are a guest and this is exactly
-    /// where it belongs.
-    pub fn visible(&self, entries: Vec<IndexEntry>, who: &Caller) -> Vec<IndexEntry> {
-        entries
-            .into_iter()
-            .filter(|entry| {
-                (entry.example && self.listing)
-                    || entry.owned_by(&who.key, &who.id)
-                    || entry.guests.iter().any(|guest| guest.id == who.id)
-            })
-            .collect()
     }
 
     /// One row of a listing: what the document is, and what this caller holds
@@ -888,10 +851,15 @@ impl Server {
         // guest whose link says "editor" on a deployment that will not let
         // them publish is listed as the commenter they actually are.
         let link = entry
-            .guests
-            .iter()
-            .find(|guest| guest.id == who.id)
-            .map(|guest| guest.link.clone())
+            .bookmark_link_hash
+            .clone()
+            .or_else(|| {
+                entry
+                    .guests
+                    .iter()
+                    .find(|guest| guest.id == who.id)
+                    .map(|guest| guest.link.clone())
+            })
             .unwrap_or_default();
         let role = entry.role_of(
             &who.key,
@@ -998,15 +966,14 @@ impl Server {
         // a commenter by name.
         let command = command.with_creator(creator);
         let (mut result, ok) = room
-            .apply_command(
+            .apply_command_with_actor(
                 command,
                 address,
                 author,
                 &who.link,
                 who.comment_budget,
                 may_edit,
-                &id.id,
-                &id.session_generation,
+                self.annotation_mutation_actor(who, false),
             )
             .await;
         if !request_id.is_empty() {
@@ -1027,111 +994,23 @@ impl Server {
     /// its Yjs update is relayed here, the way `handle_restore` relays a
     /// restore's -- to every socket, sender included, since nobody's own copy
     /// already has an edit the server made on their behalf.
-    async fn decide_suggestion(
+    fn annotation_mutation_actor(
         &self,
-        room: &Room,
-        incoming: &RoomMessage,
-        may_edit: bool,
-        by: &crate::room::Attribution,
-        account_id: &str,
-        session_generation: &str,
-    ) -> (Value, bool) {
-        let fail = |text: &str| -> (Value, bool) {
-            (
-                json!({
-                    "type": "error", "message": text,
-                    "comment_id": incoming.comment_id, "request_id": incoming.request_id,
-                    "version": 1, "protocol": "librepaper.room.v1",
-                }),
-                false,
-            )
-        };
-        if !may_edit {
-            return fail("only an editor may decide a suggestion");
-        }
-        let command = match incoming.clone().into_command() {
-            Ok(command) => command,
-            Err(error) => return (error.response(), false),
-        };
-        match command {
-            Command::Accept {
-                comment_id,
-                request_id,
-                ..
-            } => {
-                return match room
-                    .accept_suggestion_authorized(
-                        &comment_id,
-                        &request_id,
-                        by,
-                        account_id,
-                        session_generation,
-                    )
-                    .await
-                {
-                    Ok(Accepted::Applied {
-                        update,
-                        sha,
-                        resolved_at,
-                    }) => {
-                        room.broadcast_editors_except(
-                            None,
-                            &json!({"type": "y-update", "update": encode_update(&update)}),
-                        )
-                        .await;
-                        (
-                            json!({
-                                "type": "accept", "comment_id": comment_id,
-                                "resolved_in": sha, "resolved_at": resolved_at,
-                                "request_id": request_id,
-                                "version": 1, "protocol": "librepaper.room.v1",
-                            }),
-                            true,
-                        )
-                    }
-                    Ok(Accepted::Noop { sha, resolved_at }) => (
-                        // Still a success -- `ok` is what the caller's status
-                        // code and the room-wide broadcast key off of, and a
-                        // retry answering with what already happened is exactly
-                        // that, not a refusal.
-                        json!({
-                            "type": "accept", "comment_id": comment_id,
-                            "resolved_in": sha, "resolved_at": resolved_at,
-                            "request_id": request_id, "noop": true,
-                            "version": 1, "protocol": "librepaper.room.v1",
-                        }),
-                        true,
-                    ),
-                    Err(AcceptError::Refused(text)) => fail(&text),
-                    Err(AcceptError::Stale) => (
-                        json!({
-                            "type": "error", "stale": true, "comment_id": comment_id,
-                            "message": "the passage has changed since this was suggested",
-                            "request_id": request_id,
-                            "version": 1, "protocol": "librepaper.room.v1",
-                        }),
-                        false,
-                    ),
-                    Err(AcceptError::Failed(text)) => fail(&text),
-                };
-            }
-            Command::Reject {
-                comment_id,
-                request_id,
-                ..
-            } => match room
-                .reject_suggestion_authorized(&comment_id, account_id, session_generation)
-                .await
-            {
-                Ok(mut result) => {
-                    result["request_id"] = json!(request_id);
-                    result["version"] = json!(1);
-                    result["protocol"] = json!("librepaper.room.v1");
-                    (result, true)
-                }
-                Err(text) => fail(&text),
+        who: &Viewer,
+        require_editor: bool,
+    ) -> crate::document::store::MutationActor {
+        let ceiling = self.ceiling_for(&who.id);
+        crate::document::store::MutationActor {
+            account_id: who.id.id.clone(),
+            owner_key: who.key.clone(),
+            session_generation: who.id.session_generation.clone(),
+            link_hash: who.link.clone(),
+            policy_editor: if require_editor {
+                ceiling.edit
+            } else {
+                ceiling.comment
             },
-            _ => fail("that command is not a suggestion decision"),
+            unowned_publisher: false,
         }
     }
 }

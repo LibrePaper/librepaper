@@ -7,7 +7,7 @@
   import SettingRow from "./SettingRow.svelte";
   import { parseRenderOptions } from "../../lib/quarto-options.js";
 
-  let { options, viewing = null, onapplyoptions } = $props();
+  let { options, onapplyoptions } = $props();
 
   let draftProfile = $state("");
   let parametersText = $state("{}");
@@ -84,7 +84,7 @@
     }
   }
 
-  const disabled = $derived(Boolean(viewing) || applying);
+  const disabled = $derived(applying);
 </script>
 
 <SettingRow id="rendering-profile" title="Profile"
@@ -99,13 +99,14 @@
   <textarea class="textarea setting-textarea" rows="4" value={parametersText}
             placeholder={'{"year": 2026, "region": "north", "draft": true}'}
             aria-label="Quarto parameters" aria-invalid={Boolean(validationError)} spellcheck="false"
+            aria-describedby={validationError || applyError ? "rendering-parameters-error" : undefined}
             oninput={(event) => { parametersText = event.currentTarget.value; changed(); }} {disabled}></textarea>
   {#if validationError || applyError}
-    <p class="setting-error" role="alert">{validationError || applyError}</p>
+    <p id="rendering-parameters-error" class="setting-error" role="alert">{validationError || applyError}</p>
   {/if}
 </SettingRow>
 
-<SettingRow title="" description={viewing ? "Return to the current version to change these." : dirty ? "The preview restarts with the new settings." : ""}>
+<SettingRow title="" description={dirty ? "The preview restarts with the new settings." : ""}>
   <button class="btn btn-sm preset-filled-primary-500" type="button" onclick={() => void apply()}
           disabled={disabled || !dirty || Boolean(validationError)}>
     {applying ? "Applying…" : "Apply"}

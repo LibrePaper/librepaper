@@ -2,6 +2,408 @@
 //! and the shell pages the reader's origin serves.
 
 use super::*;
+use axum::extract::{Extension, Path, State};
+use axum::middleware::Next;
+use axum::routing::{any, get, post};
+
+/// Typed API routes. Routes migrate here without changing their domain
+/// handlers; the remaining fallback serves origin-specific pages and static
+/// assets.
+pub(super) fn api_router(server: Arc<Server>) -> Router {
+    Router::new()
+        .route("/api/account/storage", get(quota_storage))
+        .route("/api/account/quota-status", get(quota_storage))
+        .route("/api/documents", post(upload))
+        .route("/api/documents/{slug}/mcp", any(mcp))
+        .route("/api/documents/{slug}/delete", post(delete_document))
+        .route("/api/documents/{slug}/state", get(document_state))
+        .route("/api/documents/{slug}/history", get(history))
+        .route(
+            "/api/documents/{slug}/history/{sha}",
+            get(checkpoint).patch(label_checkpoint),
+        )
+        .route("/api/documents/{slug}/restore", post(restore))
+        .route("/api/documents/{slug}/chat", any(chat_root))
+        .route("/api/documents/{slug}/chat/{*tail}", any(chat))
+        .route("/api/documents/{slug}/suggestions", post(suggestions))
+        .route(
+            "/api/documents/{slug}/assistant/capabilities",
+            get(assistant_capabilities),
+        )
+        .route("/api/documents/{slug}/publication", any(publication_meta))
+        .route(
+            "/api/documents/{slug}/publication/prepare",
+            any(publication_prepare),
+        )
+        .route(
+            "/api/documents/{slug}/publication/objects/{hash}",
+            any(publication_object),
+        )
+        .route(
+            "/api/documents/{slug}/publication/activate",
+            any(publication_activate),
+        )
+        .route("/api/documents/{slug}/assets", any(document_assets))
+        .route("/api/documents/{slug}/assets/{sha}", get(document_asset))
+        .route(
+            "/api/documents/{slug}/quarto/checkpoint",
+            post(quarto_checkpoint),
+        )
+        .route("/api/documents/{slug}/share", any(share))
+        .route("/api/documents/{slug}/transfer", post(transfer))
+        .route("/api/documents/{slug}/source", get(source))
+        .route("/api/documents/{slug}/snapshot", get(snapshot))
+        .route("/api/documents/{slug}/comments", any(comments))
+        .route(
+            "/api/documents/{slug}/agent/candidates/{candidate}",
+            any(candidate),
+        )
+        .route(
+            "/api/documents/{slug}/agent/candidates/{candidate}/source",
+            any(candidate_source),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            server.clone(),
+            api_guard,
+        ))
+        .with_state(server)
+}
+
+async fn api_guard(
+    State(server): State<Arc<Server>>,
+    Extension(context): Extension<RequestContext>,
+    request: Request<Body>,
+    next: Next,
+) -> Reply {
+    if context.arrival.is_docs_host() {
+        return plain(404, "not found");
+    }
+    if let Err(failure) = &context.authentication {
+        let (status, message) = match failure {
+            AuthenticationFailure::Invalid => (401, "authentication expired or was revoked"),
+            AuthenticationFailure::Unavailable => {
+                (503, "authentication service temporarily unavailable")
+            }
+        };
+        let mut response = write_json(status, &json!({"error": message}));
+        if status == 401 {
+            server
+                .clear_dead_session(&mut response, request.headers(), &context.arrival)
+                .await;
+        }
+        return response;
+    }
+    next.run(request).await
+}
+
+async fn quota_storage(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_quota_storage(request, &ctx.arrival).await
+}
+
+async fn upload(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_upload(request, &ctx.arrival).await
+}
+
+async fn mcp(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_mcp(request, ctx.peer, &ctx.arrival, &slug)
+        .await
+}
+
+async fn delete_document(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_delete(request.headers(), &ctx.arrival, &slug)
+        .await
+}
+
+async fn document_state(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_state(
+            request.headers(),
+            &ctx.arrival,
+            &slug,
+            request.uri().query(),
+        )
+        .await
+}
+
+async fn history(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_history(
+            request.headers(),
+            &ctx.arrival,
+            &slug,
+            request.uri().query(),
+        )
+        .await
+}
+
+async fn checkpoint(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, sha)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_checkpoint(request.headers(), &ctx.arrival, &slug, &sha)
+        .await
+}
+
+async fn label_checkpoint(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, sha)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_label(request, &ctx.arrival, &slug, &sha)
+        .await
+}
+
+async fn restore(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_restore(request, &ctx.arrival, &slug).await
+}
+
+async fn chat(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, tail)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    let tail = tail.split('/').collect::<Vec<_>>();
+    server
+        .handle_chat(request, ctx.peer, &ctx.arrival, &slug, &tail)
+        .await
+}
+
+async fn chat_root(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_chat(request, ctx.peer, &ctx.arrival, &slug, &[])
+        .await
+}
+
+async fn suggestions(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_assistant_batch(request, ctx.peer, &ctx.arrival, &slug)
+        .await
+}
+
+async fn assistant_capabilities(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_assistant_capabilities(request.headers(), &ctx.arrival, &slug)
+        .await
+}
+
+async fn publication_meta(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_publication(request, &ctx.arrival, &slug, "meta")
+        .await
+}
+
+async fn publication_prepare(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_publication(request, &ctx.arrival, &slug, "prepare")
+        .await
+}
+
+async fn publication_object(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, hash)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_publication(request, &ctx.arrival, &slug, &format!("objects/{hash}"))
+        .await
+}
+
+async fn publication_activate(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_publication(request, &ctx.arrival, &slug, "activate")
+        .await
+}
+
+async fn document_assets(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    if !matches!(*request.method(), Method::PUT | Method::POST) {
+        return plain(405, "method not allowed");
+    }
+    server
+        .handle_asset_upload(request, &ctx.arrival, &slug)
+        .await
+}
+
+async fn document_asset(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, sha)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_asset_read(request.headers(), &ctx.arrival, &slug, &sha)
+        .await
+}
+
+async fn quarto_checkpoint(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_quarto_checkpoint(request, &ctx.arrival, &slug)
+        .await
+}
+
+async fn share(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_share(request, &ctx.arrival, &slug).await
+}
+
+async fn transfer(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_transfer(request, &ctx.arrival, &slug).await
+}
+
+async fn source(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_source(
+            request.headers(),
+            &ctx.arrival,
+            &slug,
+            request.uri().query(),
+        )
+        .await
+}
+
+async fn snapshot(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_snapshot(
+            request.headers(),
+            &ctx.arrival,
+            &slug,
+            request.uri().query(),
+        )
+        .await
+}
+
+async fn comments(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_comments(request, ctx.peer, &ctx.arrival, &slug)
+        .await
+}
+
+async fn candidate(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, candidate)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_candidate(request, ctx.peer, &ctx.arrival, &slug, &candidate, false)
+        .await
+}
+
+async fn candidate_source(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, candidate)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_candidate(request, ctx.peer, &ctx.arrival, &slug, &candidate, true)
+        .await
+}
 
 /// A parsed request path, in the shapes the routes below look for.
 pub(super) fn segments(path: &str) -> Vec<&str> {
@@ -40,10 +442,11 @@ pub(super) fn is_sha(value: &str) -> bool {
 
 pub(super) async fn dispatch(
     axum::extract::State(server): axum::extract::State<Arc<Server>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    axum::extract::Extension(context): axum::extract::Extension<RequestContext>,
     request: Request<Body>,
 ) -> Reply {
-    let arrival = Arrival::from_peer(request.headers(), peer.ip());
+    let arrival = context.arrival.clone();
+    let peer = context.peer;
     let path = request.uri().path().to_string();
     let method = request.method().clone();
     let parts = segments(&path);
@@ -90,7 +493,7 @@ pub(super) async fn dispatch(
         // the shell is served from this origin.
         if path.starts_with("/assets/") {
             if let Some(asset) = server.shell.get(&path) {
-                let mut response = write_asset(asset);
+                let mut response = write_asset(asset, request.headers());
                 privacy_headers(&mut response);
                 return response;
             }
@@ -151,10 +554,13 @@ pub(super) async fn dispatch(
     // busy catalogue is retryable rather than indistinguishable from a
     // private/missing document.
     if (path.starts_with("/api/") || path.starts_with("/ws/")) && !path.starts_with("/api/auth/") {
-        if let Some((status, message)) = server
-            .authentication_failure(request.headers(), &arrival)
-            .await
-        {
+        if let Err(failure) = &context.authentication {
+            let (status, message) = match failure {
+                AuthenticationFailure::Invalid => (401, "authentication expired or was revoked"),
+                AuthenticationFailure::Unavailable => {
+                    (503, "authentication service temporarily unavailable")
+                }
+            };
             let mut response = write_json(status, &json!({"error": message}));
             if status == 401 {
                 server
@@ -206,20 +612,7 @@ pub(super) async fn dispatch(
             .await;
     }
 
-    // --- api ---------------------------------------------------------------
-    if let ["api", "documents", slug, "mcp"] = &parts[..] {
-        return server.handle_mcp(request, peer, &arrival, slug).await;
-    }
-    if let ["api", "documents", slug, "agent", "candidates", candidate_id] = &parts[..] {
-        return server
-            .handle_candidate(request, peer, &arrival, slug, candidate_id, false)
-            .await;
-    }
-    if let ["api", "documents", slug, "agent", "candidates", candidate_id, "source"] = &parts[..] {
-        return server
-            .handle_candidate(request, peer, &arrival, slug, candidate_id, true)
-            .await;
-    }
+    // --- API routes not yet expressed in `api_router` ----------------------
     if path == "/api/account/erase" && method == Method::POST {
         if cross_site_refused(request.headers(), &arrival) {
             return write_json(403, &cross_site_refusal());
@@ -230,7 +623,7 @@ pub(super) async fn dispatch(
                 &json!({"error": "account erasure is unavailable in automation mode"}),
             );
         }
-        let identity = server.whoami(request.headers(), &arrival).await;
+        let identity = context.identity();
         if !identity.is_signed_in() {
             return write_json(401, &json!({"error": "sign in to erase this account"}));
         }
@@ -240,60 +633,20 @@ pub(super) async fn dispatch(
                 &json!({"error": "authentication provider is not configured"}),
             );
         }
-        let Some(catalog) = &server.store.catalog else {
-            return write_json(503, &json!({"error": "local catalogue unavailable"}));
+        let catalog = &server.store.catalog;
+        let Ok(account_id) = uuid::Uuid::parse_str(&identity.id) else {
+            return write_json(409, &json!({"error":"invalid account identity"}));
         };
+        if let Err(error) = catalog
+            .begin_account_erasure(account_id, time::Duration::days(7))
+            .await
         {
-            let account_id = identity.id.clone();
-            let generation = crate::util::new_id();
-            if let Err(error) = catalog
-                .execute_catalog(
-                    crate::server::SERVER_JOB_BYTES + account_id.len(),
-                    move |catalog| catalog.begin_erasure(&account_id, &generation),
-                )
-                .await
-            {
-                return write_json(409, &json!({"error": error.to_string()}));
-            }
+            return write_json(409, &json!({"error": error.to_string()}));
         }
         server.reauthorize_all().await;
         server.rooms.erase_author_from_caches(&identity.id).await;
-        if let Err(error) = crate::storage::maintenance::run_erasure_pass_async(
-            catalog,
-            crate::util::now_unix(),
-            25,
-            250,
-        )
-        .await
-        {
-            eprintln!("warning: account erasure pass failed: {error}");
-        }
         return write_json(202, &json!({"status": "erasing"}));
     }
-    if path == "/api/account/storage" && method == Method::GET {
-        return server.handle_quota_storage(request, &arrival).await;
-    }
-    if path == "/api/account/storage/preview" && method == Method::POST {
-        return server.handle_quota_preview(request, &arrival).await;
-    }
-    if path == "/api/account/storage/apply" && method == Method::POST {
-        return server.handle_quota_apply(request, &arrival).await;
-    }
-    // Explicit quota names are aliases for clients that do not use the
-    // account-settings/storage wording.
-    if path == "/api/account/quota-status" && method == Method::GET {
-        return server.handle_quota_storage(request, &arrival).await;
-    }
-    if path == "/api/account/quota-preview" && method == Method::POST {
-        return server.handle_quota_preview(request, &arrival).await;
-    }
-    if path == "/api/account/quota-apply" && method == Method::POST {
-        return server.handle_quota_apply(request, &arrival).await;
-    }
-    if path == "/api/documents" && method == Method::POST {
-        return server.handle_upload(request, &arrival).await;
-    }
-
     // Listing is the one thing a link-holder must not be able to do: knowing
     // one document must not reveal the others, so it takes a publisher.
     if path == "/api/list" && (method == Method::POST || method == Method::GET) {
@@ -322,38 +675,22 @@ pub(super) async fn dispatch(
             .get("after_updated")
             .zip(listing_query.get("after_slug"))
             .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
-        let entries = if server.store.catalog.is_some() {
-            match server
-                .store
-                .visible_page_with_options(
-                    (!who.id.is_empty()).then_some(who.id.as_str()),
-                    (!who.key.is_empty()).then_some(who.key.as_str()),
-                    listing_cursor,
-                    listing_limit,
-                    server.listing,
-                )
-                .await
-            {
-                Ok(entries) => entries,
-                Err(error) => {
-                    eprintln!("could not query document listing: {error}");
-                    return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
-                }
+        let entries = match server
+            .store
+            .visible_page_with_options(
+                (!who.id.is_empty()).then_some(who.id.as_str()),
+                (!who.key.is_empty()).then_some(who.key.as_str()),
+                listing_cursor,
+                listing_limit,
+                server.listing,
+            )
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                eprintln!("could not query document listing: {error}");
+                return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
             }
-        } else {
-            let mut entries = server.visible(server.store.list().await, &who);
-            entries.sort_by(|a, b| {
-                b.updated_at
-                    .cmp(&a.updated_at)
-                    .then_with(|| b.slug.cmp(&a.slug))
-            });
-            if let Some((updated, slug)) = listing_cursor {
-                entries.retain(|entry| {
-                    (entry.updated_at.as_str(), entry.slug.as_str()) < (updated, slug)
-                });
-            }
-            entries.truncate(listing_limit as usize);
-            entries
         };
         let documents: Vec<Value> = entries
             .iter()
@@ -369,171 +706,6 @@ pub(super) async fn dispatch(
             }
         }
         return write_json(200, &body);
-    }
-
-    if let ["api", "documents", slug, "delete"] = parts[..] {
-        if method == Method::POST {
-            return server
-                .handle_delete(request.headers(), &arrival, slug)
-                .await;
-        }
-    }
-
-    // The whole state of a document, for a socket whose state is too large to
-    // send down a text frame. Same origin, signed, and short-lived, and the
-    // document's own read permission is checked again here rather than taken
-    // on trust from the socket that minted the link.
-    if let ["api", "documents", slug, "state"] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_state(request.headers(), &arrival, slug, request.uri().query())
-                .await;
-        }
-    }
-
-    // What this document used to say, and when. Readable by whoever may read
-    // the document: a checkpoint is the document at a moment, and a history
-    // that were harder to read than the text would be a strange kind of
-    // secret.
-    if let ["api", "documents", slug, "history"] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_history(request.headers(), &arrival, slug, request.uri().query())
-                .await;
-        }
-    }
-
-    // One checkpoint: what the document said at that moment, every file of it.
-    // Read by whoever may read the document, on the same reasoning the
-    // manifest is -- and named by a `PATCH`, which takes an editor, because a
-    // label is a change to what the document says about itself.
-    if let ["api", "documents", slug, "history", sha] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_checkpoint(request.headers(), &arrival, slug, sha)
-                .await;
-        }
-        if method == Method::PATCH {
-            return server.handle_label(request, &arrival, slug, sha).await;
-        }
-    }
-
-    // Restoring is an editor write. The room first makes the current state
-    // durable, applies the selected tree as a Yjs update, and records a
-    // second checkpoint before this route answers, so reconnecting editors
-    // and a restarted server see the same result.
-    if let ["api", "documents", slug, "restore"] = parts[..] {
-        if method == Method::POST {
-            return server.handle_restore(request, &arrival, slug).await;
-        }
-    }
-
-    if let ["api", "documents", slug, "chat", tail @ ..] = &parts[..] {
-        return server
-            .handle_chat(request, peer, &arrival, slug, tail)
-            .await;
-    }
-
-    if let ["api", "documents", slug, "suggestions"] = parts[..] {
-        if method == Method::POST {
-            return server
-                .handle_assistant_batch(request, peer, &arrival, slug)
-                .await;
-        }
-    }
-    if let ["api", "documents", slug, "assistant", "capabilities"] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_assistant_capabilities(request.headers(), &arrival, slug)
-                .await;
-        }
-    }
-
-    // Rendered publication channel. It is independent of source files and
-    // source synchronization: readers may inspect only the current manifest
-    // and its explicitly declared display objects, while editors may stage
-    // and activate a replacement.
-    if let ["api", "documents", slug, "publication"] = parts[..] {
-        return server
-            .handle_publication(request, &arrival, slug, "meta")
-            .await;
-    }
-    if let ["api", "documents", slug, "publication", "prepare"] = parts[..] {
-        return server
-            .handle_publication(request, &arrival, slug, "prepare")
-            .await;
-    }
-    if let ["api", "documents", slug, "publication", "objects", hash] = parts[..] {
-        return server
-            .handle_publication(request, &arrival, slug, &format!("objects/{hash}"))
-            .await;
-    }
-    if let ["api", "documents", slug, "publication", "activate"] = parts[..] {
-        return server
-            .handle_publication(request, &arrival, slug, "activate")
-            .await;
-    }
-
-    // The figures. Putting one takes an editor, because it puts bytes on the
-    // server; reading one takes whatever reading the document takes, so a
-    // private paper's figures are as private as its text.
-    if let ["api", "documents", slug, "assets"] = parts[..] {
-        if method == Method::PUT || method == Method::POST {
-            return server.handle_asset_upload(request, &arrival, slug).await;
-        }
-    }
-    if let ["api", "documents", slug, "assets", sha] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_asset_read(request.headers(), &arrival, slug, sha)
-                .await;
-        }
-    }
-
-    // Quarto bundles are immutable render records. Publishing is an editor
-    // action; manifests and their scoped assets are readable wherever the
-    // document itself is readable.
-    if let ["api", "documents", slug, "quarto", "checkpoint"] = parts[..] {
-        if method == Method::POST {
-            return server
-                .handle_quarto_checkpoint(request, &arrival, slug)
-                .await;
-        }
-    }
-    // Who a document is shared with. Reading it takes a place on the document;
-    // changing it takes the owner, because sharing is not delegated.
-    if let ["api", "documents", slug, "share"] = parts[..] {
-        return server.handle_share(request, &arrival, slug).await;
-    }
-
-    // Handing a document to somebody else, with its history, its comments and
-    // its quota. Behind its own route because it is not a grant: it is the one
-    // change that leaves the caller with nothing.
-    if let ["api", "documents", slug, "transfer"] = parts[..] {
-        if method == Method::POST {
-            return server.handle_transfer(request, &arrival, slug).await;
-        }
-    }
-
-    // The editable source of a document, for whoever may replace it. Only the
-    // publisher can act on it, so only the publisher is shown it.
-    if let ["api", "documents", slug, "source"] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_source(request.headers(), &arrival, slug, request.uri().query())
-                .await;
-        }
-    }
-
-    // One consistent read for automation clients: source and annotations are
-    // captured from the same room state, and the source digest identifies
-    // exactly what the client inspected.
-    if let ["api", "documents", slug, "snapshot"] = parts[..] {
-        if method == Method::GET {
-            return server
-                .handle_snapshot(request.headers(), &arrival, slug, request.uri().query())
-                .await;
-        }
     }
 
     if let ["api", "documents", slug] = parts[..] {
@@ -593,29 +765,12 @@ pub(super) async fn dispatch(
                     .iter()
                     .any(|guest| guest.id == who.id.id && guest.link == who.link)
             {
-                let guest = Guest {
-                    id: who.id.id.clone(),
-                    name: who.id.name.clone(),
-                    since: crate::util::timestamp(),
-                    link: who.link.clone(),
-                };
                 // Not a reason to refuse the document: the pin is bookkeeping
                 // about the visit, and the visit itself is what matters.
-                if let Err(err) =
-                    server
-                        .store
-                        .modify(slug, |entry| {
-                            if !entry.guests.iter().any(|existing| {
-                                existing.id == guest.id && existing.link == guest.link
-                            }) {
-                                entry.guests.push(guest.clone());
-                            }
-                            Ok(())
-                        })
-                        .await
-                {
-                    eprintln!("warning: could not record a guest on {slug}: {err:?}");
-                }
+                let _ = server
+                    .store
+                    .pin_link_guest(slug, &who.id.id, &who.link, who.role)
+                    .await;
             }
             let mut body = json!({
                 "slug": entry.slug, "title": entry.title,
@@ -670,11 +825,6 @@ pub(super) async fn dispatch(
         }
     }
 
-    // REST fallbacks, used when the socket is unavailable.
-    if let ["api", "documents", slug, "comments"] = parts[..] {
-        return server.handle_comments(request, peer, &arrival, slug).await;
-    }
-
     // Public, fixed documentation assets linked by the README and the
     // distributable agent skill. Keep this allowlist compile-time embedded;
     // no request may turn it into an arbitrary filesystem read.
@@ -717,7 +867,7 @@ pub(super) async fn dispatch(
         }
     }
     if let Some(asset) = server.shell.get(&page) {
-        let mut response = write_asset(asset);
+        let mut response = write_asset(asset, request.headers());
         server.issue_visitor(request.headers(), &arrival, asset, &mut response);
         return response;
     }
@@ -938,6 +1088,7 @@ impl Server {
             set(&mut response, "etag", &etag);
             set(&mut response, "cache-control", cache_control);
             set(&mut response, "referrer-policy", "no-referrer");
+            set(&mut response, "x-content-type-options", "nosniff");
             if is_html {
                 set(&mut response, "vary", "Accept-Encoding");
             }
@@ -949,6 +1100,7 @@ impl Server {
         set(&mut response, "etag", &etag);
         set(&mut response, "cache-control", cache_control);
         set(&mut response, "referrer-policy", "no-referrer");
+        set(&mut response, "x-content-type-options", "nosniff");
         if gzip {
             set(&mut response, "content-encoding", "gzip");
         }
@@ -1004,28 +1156,35 @@ impl Server {
         else {
             return false;
         };
-        if generation.len() != 64
-            || !generation
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        {
-            return false;
-        }
-        let Some(catalog) = &self.store.catalog else {
-            return false;
-        };
+        let catalog = &self.store.catalog;
         let slug = entry.slug.clone();
         let id_for_catalog = id.clone();
         let generation = generation.to_string();
-        catalog
-            .execute_catalog(
-                crate::server::SERVER_JOB_BYTES + slug.len() + id.len() + generation.len(),
-                move |catalog| {
-                    catalog.display_account_authorized(&slug, &id_for_catalog, &generation)
-                },
-            )
-            .await
-            .unwrap_or(false)
+        let Ok(account_id) = uuid::Uuid::parse_str(&id_for_catalog) else {
+            return false;
+        };
+        let Ok(generation) = generation.parse::<i64>() else {
+            return false;
+        };
+        sqlx::query_scalar!(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM documents d JOIN accounts a ON a.id=$2
+                 LEFT JOIN grants g ON g.document_id=d.id AND g.account_id=a.id
+                   AND (g.source_link_hash IS NULL OR EXISTS (
+                     SELECT 1 FROM share_links l WHERE l.document_id=d.id
+                       AND l.token_hash=g.source_link_hash AND l.revoked_at IS NULL
+                       AND (l.expires_at IS NULL OR l.expires_at>now())))
+                 WHERE d.slug=$1 AND d.status='active' AND a.status='active'
+                   AND a.session_generation=$3
+                   AND (d.owner_id=a.id OR g.account_id IS NOT NULL)
+               ) AS "exists!""#,
+            slug,
+            account_id,
+            generation,
+        )
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap_or(false)
     }
 
     /// Which formats this deployment can render again in a reader, and so
@@ -1163,5 +1322,22 @@ impl Server {
         // change to the agent or to the viewer.
         set(&mut response, "cache-control", "no-store");
         response
+    }
+}
+
+#[cfg(test)]
+mod frame_agent_tests {
+    use super::with_agent;
+
+    #[test]
+    fn injected_agent_runs_as_a_classic_bundle() {
+        let page = with_agent(
+            b"<!doctype html><body>preview</body>",
+            "http://localhost:8081",
+        );
+        let page = String::from_utf8(page).unwrap();
+        assert!(page.contains(
+            "<script src=\"/agent.js?reader=http%3A%2F%2Flocalhost%3A8081\"></script></body>"
+        ));
     }
 }

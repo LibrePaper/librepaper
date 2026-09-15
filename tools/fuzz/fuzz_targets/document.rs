@@ -19,8 +19,7 @@ use librepaper::session;
 use librepaper_fuzz::{configuration, rules};
 use wasm_helpers::text::diff;
 use libfuzzer_sys::fuzz_target;
-use yrs::types::text::TextPrelim;
-use yrs::{Map, Transact};
+use loro::{Container, LoroMap, LoroText, ValueOrContainer};
 
 #[derive(Arbitrary, Debug)]
 enum Op {
@@ -51,10 +50,10 @@ enum Op {
 
 fuzz_target!(|ops: Vec<Op>| {
     let doc = session::new_doc();
-    let files = doc.get_or_insert_map(session::FILES);
-    let paths = doc.get_or_insert_map(session::PATHS);
-    let assets = doc.get_or_insert_map(session::ASSETS);
-    let meta = doc.get_or_insert_map(session::META);
+    let files = doc.get_map(session::FILES);
+    let paths = doc.get_map(session::PATHS);
+    let assets = doc.get_map(session::ASSETS);
+    let meta = doc.get_map(session::META);
 
     for op in &ops {
         match op {
@@ -91,23 +90,22 @@ fuzz_target!(|ops: Vec<Op>| {
             }
             Op::SetMain { id } => session::set_main(&doc, id),
             Op::RawFile { id, body, path } => {
-                let mut txn = doc.transact_mut();
-                files.insert(&mut txn, id.clone(), TextPrelim::new(body.clone()));
+                let _ = files.insert_container(id, LoroText::new());
+                if let Some(text) = text_at(&files, id) {
+                    text.insert_utf16(0, body).ok();
+                }
                 if let Some(path) = path {
-                    paths.insert(&mut txn, id.clone(), path.clone());
+                    paths.insert(id, path.as_str()).ok();
                 }
             }
             Op::RawPath { id, path } => {
-                let mut txn = doc.transact_mut();
-                paths.insert(&mut txn, id.clone(), path.clone());
+                paths.insert(id, path.as_str()).ok();
             }
             Op::RawAsset { path, sha } => {
-                let mut txn = doc.transact_mut();
-                assets.insert(&mut txn, path.clone(), sha.clone());
+                assets.insert(path, sha.as_str()).ok();
             }
             Op::RawMain { id } => {
-                let mut txn = doc.transact_mut();
-                meta.insert(&mut txn, session::MAIN, id.clone());
+                meta.insert(session::MAIN, id.as_str()).ok();
             }
         }
     }
@@ -161,47 +159,61 @@ fuzz_target!(|ops: Vec<Op>| {
     assert_eq!(before, after, "a second repair changed the document");
 });
 
+/// Helper: extract a text container from a map by id.
+fn text_at(files: &LoroMap, id: &str) -> Option<LoroText> {
+    match files.get(id)? {
+        ValueOrContainer::Container(Container::Text(t)) => Some(t),
+        _ => None,
+    }
+}
+
+/// Helper: extract a string value from a map by key.
+fn string_at(map: &LoroMap, key: &str) -> Option<String> {
+    match map.get(key)? {
+        ValueOrContainer::Value(loro::LoroValue::String(s)) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
 /// Whether `meta.main` names an id with a text under it. Read from the map
 /// rather than through `main_id`, which answers "" for no main at all -- and
 /// "" is an id a peer can give a file.
-fn names_a_text(doc: &yrs::Doc) -> bool {
-    use yrs::Out;
-    let files = doc.get_or_insert_map(session::FILES);
-    let meta = doc.get_or_insert_map(session::META);
-    let txn = doc.transact();
-    let Some(Out::Any(yrs::Any::String(id))) = meta.get(&txn, session::MAIN) else {
+fn names_a_text(doc: &loro::LoroDoc) -> bool {
+    let files = doc.get_map(session::FILES);
+    let meta = doc.get_map(session::META);
+    let Some(id) = string_at(&meta, session::MAIN) else {
         return false;
     };
-    matches!(files.get(&txn, &id), Some(Out::YText(_)))
+    matches!(files.get(&id), Some(ValueOrContainer::Container(Container::Text(_))))
 }
 
 /// Whether the `files` map holds any text at all.
-fn has_a_text(doc: &yrs::Doc) -> bool {
-    use yrs::Out;
-    let files = doc.get_or_insert_map(session::FILES);
-    let txn = doc.transact();
-    files
-        .iter(&txn)
-        .any(|(_, value)| matches!(value, Out::YText(_)))
+fn has_a_text(doc: &loro::LoroDoc) -> bool {
+    let files = doc.get_map(session::FILES);
+    for key in files.keys() {
+        let k = key.to_string();
+        if matches!(files.get(&k), Some(ValueOrContainer::Container(Container::Text(_)))) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether `meta.main` is set at all, to anything.
-fn has_main(doc: &yrs::Doc) -> bool {
-    let meta = doc.get_or_insert_map(session::META);
-    let txn = doc.transact();
-    meta.get(&txn, session::MAIN).is_some()
+fn has_main(doc: &loro::LoroDoc) -> bool {
+    let meta = doc.get_map(session::META);
+    meta.get(session::MAIN).is_some()
 }
 
 /// Every text in `files`, keyed by id.
-fn texts_by_id(doc: &yrs::Doc) -> std::collections::BTreeMap<String, String> {
-    use yrs::{GetString, Out};
-    let files = doc.get_or_insert_map(session::FILES);
-    let txn = doc.transact();
-    files
-        .iter(&txn)
-        .filter_map(|(id, value)| match value {
-            Out::YText(text) => Some((id.to_string(), text.get_string(&txn))),
-            _ => None,
-        })
-        .collect()
+fn texts_by_id(doc: &loro::LoroDoc) -> std::collections::BTreeMap<String, String> {
+    let files = doc.get_map(session::FILES);
+    let mut result = std::collections::BTreeMap::new();
+    for key in files.keys() {
+        let id = key.to_string();
+        if let Some(ValueOrContainer::Container(Container::Text(text))) = files.get(&id) {
+            result.insert(id, text.to_string());
+        }
+    }
+    result
 }

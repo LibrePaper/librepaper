@@ -1,4 +1,4 @@
-// Real Skeleton controls and CodeMirror/Yjs transactions, including a peer
+// Real Skeleton controls and CodeMirror edits committed to a shared document,
 // changing the document while the insertion dialog owns keyboard focus.
 import assert from "node:assert/strict";
 import { build } from "vite";
@@ -19,7 +19,7 @@ writeFileSync(entry, `
 import { tick } from ${imp("node_modules/svelte/src/index-client.js")};
 import { createClassComponent } from ${imp("node_modules/svelte/src/legacy/legacy-client.js")};
 import { EditorView } from ${imp("node_modules/@codemirror/view/dist/index.js")};
-import { yUndoManagerKeymap } from ${imp("node_modules/y-codemirror.next/src/y-undomanager.js")};
+import { undo as loroUndo } from ${imp("node_modules/loro-codemirror/dist/undo.js")};
 import Editor from ${imp("src/components/Editor.svelte")};
 import InsertMenu from ${imp("src/components/InsertMenu.svelte")};
 import { join as joinSession } from ${imp("src/lib/collab.js")};
@@ -45,8 +45,8 @@ window.setupInsert = async (format, source = null) => {
 const view=()=>EditorView.findFromDOM(document.querySelector('.cm-editor'));
 window.insertState=()=>({text:view().state.doc.toString(),selection:view().state.sliceDoc(view().state.selection.main.from,view().state.selection.main.to),focused:view().hasFocus});
 window.selectInsert=(from,to=from)=>{view().dispatch({selection:{anchor:from,head:to}});view().focus();};
-window.remoteInsert=async()=>{ session.doc.transact(()=>session.textOf(file).insert(0,'REMOTE '),'remote');await tick(); };
-window.undoInsert=()=>yUndoManagerKeymap[0].run(view());
+window.remoteInsert=async()=>{ session.textOf(file).insert(0,'REMOTE '); session.doc.commit(); await tick(); };
+window.undoInsert=()=>loroUndo(view());
 window.targetChecks=async()=>{
   const context=component.getInsertContext();
   const another=session.addText('other.md','Other document');
@@ -70,7 +70,7 @@ window.atomicSetupCheck=async()=>{
   window.undoInsert();await tick();
   const undone=session.textOf(chapter).toString()==='BEFORE AFTER'&&session.textOf(main).toString()===oldMain;
   view().dispatch({selection:{anchor:0,head:6}});const selectionContext=component.getInsertContext();
-  session.doc.transact(()=>session.textOf(chapter).insert(3,'PEER'),'remote');await tick();
+  session.textOf(chapter).insert(3,'PEER'); session.doc.commit(); await tick();
   const conflict=component.applyInsertResult({text:'BAD'},selectionContext);
   return {applied,undone,conflict,text:session.textOf(chapter).toString()};
 };

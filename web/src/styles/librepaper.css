@@ -24,7 +24,7 @@ body > nav {
   z-index: 10;
   height: var(--librepaper-bar);
   padding-inline: --spacing(4);
-  border-bottom: 1px solid var(--color-divider);
+  border-bottom: 1px solid var(--color-pane-edge);
   background: color-mix(in srgb, var(--color-shell) 94%, transparent);
   backdrop-filter: blur(12px);
 }
@@ -37,8 +37,11 @@ body > nav {
 main.reader {
   /* Each pane's width is a variable so the separator beside it can move it,
      clamped so nothing can be squeezed out of existence. */
-  --librepaper-sidebar: 360px;
-  --librepaper-editor: 480px;
+  /* Until the Reader has measured the window, in the same rem the limits in
+     panes.js are written in. */
+  --librepaper-activity: 3rem;
+  --librepaper-sidebar: 22.5rem;
+  --librepaper-editor: 30rem;
   height: calc(100dvh - var(--librepaper-bar));
   /* Flex rather than a grid of named columns: any pane can be folded away, and
      a row that simply has one fewer item needs no template for each of the
@@ -62,7 +65,7 @@ main.reader {
   /* One row, which the editor -- or the figure standing in for it -- fills. A
      grid rather than a block so that min-height: 0 reaches what is in it. */
   grid-template-rows: minmax(0, 1fr);
-  border-right: 1px solid var(--color-divider);
+  border-right: 1px solid var(--color-pane-edge);
 }
 
 /* ------------------------------------------------------------- the files */
@@ -113,8 +116,25 @@ main.reader {
 .explorer-drop { box-shadow: inset 0 0 0 2px var(--color-primary-500); }
 .explorer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .explorer-row svg { width: --spacing(4); height: --spacing(4); flex-shrink: 0; }
-.explorer-chevron { width: --spacing(3); flex-shrink: 0; color: var(--color-surface-600-400); }
+/* One chevron, turned, rather than two icons swapped: what it points at is
+   the same thing either way, and `data-state` is the machine's own answer
+   about whether the folder is open -- not a second copy kept beside it. */
+.explorer-chevron { width: --spacing(3); flex-shrink: 0; color: var(--color-surface-600-400); transition: transform 120ms ease; }
+.explorer-chevron[data-state="open"] { transform: rotate(90deg); }
 .explorer-chevron svg { width: --spacing(3); height: --spacing(3); }
+@media (prefers-reduced-motion: reduce) { .explorer-chevron { transition: none; } }
+/* The guide sits at its folder's chevron and runs the height of what the
+   folder holds. `--depth` is Zag's, published on each node it draws. */
+.explorer [data-part="branch-content"] { position: relative; }
+.explorer-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(--spacing(2) + (var(--depth, 1) - 1) * --spacing(4) + --spacing(1.5));
+  width: 1px;
+  background: var(--color-divider);
+  pointer-events: none;
+}
 .viewport {
   position: relative;
   display: flex;
@@ -147,37 +167,71 @@ main.reader {
   background: var(--color-shell);
 }
 .preview-filename {
+  flex: 1 1 auto;
   min-width: 0;
   color: var(--panel-muted);
 }
-.preview-activity {
-  position: absolute;
-  z-index: 1;
-  top: --spacing(10);
-  left: 50%;
-  display: inline-flex;
+/* The controls for whatever is in the frame. A paged document has zoom and a
+   cursor tool, a flowing one has neither, and the header is the same row
+   either way: the controls the format has, in the middle, between the file it
+   is previewing and how its last build went.
+
+   These were drawn inside the PDF frame in the operating system's button
+   colours, which is why the paged preview and the flowing one looked like two
+   applications. Everything here is the shell's own vocabulary -- the icon
+   button, the divider, the radius -- so they are the same controls as the rest
+   of the workspace's. */
+.preview-controls {
+  display: flex;
   align-items: center;
-  gap: --spacing(2);
-  transform: translateX(-50%);
-  padding: --spacing(2) --spacing(3);
+  gap: --spacing(1);
+  flex: none;
+}
+/* The rail between "how large" and "what the pointer does": two groups of
+   controls, one row, and a line rather than a gap to say they are two. */
+.preview-controls .preview-tools {
+  display: flex;
+  align-items: center;
+  gap: --spacing(1);
+  margin-inline-start: --spacing(1);
+  padding-inline-start: --spacing(2);
+  border-inline-start: 1px solid var(--color-divider);
+}
+.preview-zoom {
+  height: --spacing(7);
+  padding-inline: --spacing(2);
   border: 1px solid var(--color-divider);
-  border-radius: var(--radius-container);
-  background: color-mix(in srgb, var(--color-shell) 92%, transparent);
-  box-shadow: var(--shadow-md);
+  border-radius: var(--radius-base);
+  background: var(--color-shell);
   color: var(--color-surface-700-300);
-  pointer-events: none;
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+.preview-zoom:hover { background: var(--color-row-hover); }
+.preview-zoom:focus-visible { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
+/* A narrow pane is the frame's room before it is the controls': the zoom
+   modes have their own buttons beside them, and the file being previewed is
+   the one thing the header cannot say twice. */
+@media (max-width: 900px) {
+  .preview-zoom { display: none; }
 }
 /* The column, at the left of the window: the tabs, then whichever panel they
    chose. The panel is what scrolls, so the tabs stay where they are, and a
-   sticky row inside a panel has the panel to stick to. */
+   sticky row inside a panel has the panel to stick to.
+
+   `--librepaper-sidebar` is the panel's own width, and the rail of icons is
+   added to it here. The reader drags the panel, so the minimum they can drag
+   it to is a minimum for the part with the words in: a column that counted the
+   rail gave a 240px minimum 192px of panel, and the panels were written for
+   the number on the label. */
 .sidebar {
   background: var(--color-sidebar);
-  flex: 0 0 var(--librepaper-sidebar);
+  flex: 0 0 calc(var(--librepaper-sidebar) + var(--librepaper-activity));
   display: flex;
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--color-divider);
+  border-right: 1px solid var(--color-pane-edge);
 }
 .panel {
   flex: 1 1 auto;
@@ -188,6 +242,16 @@ main.reader {
   font-size: var(--panel-font-size);
   line-height: var(--panel-line-height);
 }
+/* A panel is as wide as the column the reader left it at, and the column can
+   be dragged to its minimum at any moment. A control that insists on being
+   wider than that does not get a wider column: it gets a panel scrolling
+   sideways under a sidebar that clips, which is how a menu ends up half
+   outside the window. Nothing in here may be wider than what it is in, and a
+   select is told it may shrink -- left alone it is as wide as its longest
+   option, whatever that option turns out to say. */
+.panel :where(select, input, textarea, button) { max-width: 100%; }
+.panel :where(select) { min-width: 0; }
+
 .panel-status { margin-bottom: --spacing(3); }
 .panel-actions { display: flex; align-items: center; flex-wrap: wrap; gap: --spacing(1); margin-bottom: --spacing(4); }
 .panel-intro { margin-bottom: var(--panel-section-gap); }
@@ -196,6 +260,37 @@ main.reader {
 .panel-muted { color: var(--panel-muted); }
 .panel-meta { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
 .panel :where(input, textarea, select) { font-family: inherit; font-size: inherit; }
+/* Two sidebar panels head themselves with a row of tabs, and the sidebar
+   narrows to PANES.sidebar.min (240px), so the row has to survive there:
+   equal shares that are allowed to shrink, one line, and an ellipsis once a
+   label outgrows its share. At that minimum the longer labels do still clip,
+   which is why each tab carries its own text as a title. The query below
+   measures the tab row, not the sidebar, so keep the gutters here as well --
+   a panel that adds its own inset would compress at a different width. Keep
+   the whole recipe here rather than in each panel: written twice it drifts,
+   and note the query only ever resolves for descendants of the container,
+   never for the tab row that declares it. */
+.panel-tabs {
+  container-type: inline-size;
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-surface-300-700);
+}
+.panel-tabs > :where([role="tab"]) {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: --spacing(2) --spacing(1);
+  cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@container (max-width: 15rem) {
+  .panel-tabs > :where([role="tab"]) { padding-inline: 2px; font-size: 0.8125rem; }
+}
 /* A dropdown needs the same room between its words and its edge that every
    button and text field has. Skeleton leaves a select's inline padding unset
    deliberately -- the padding is also what the native arrow is drawn in, and
@@ -218,9 +313,17 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
    is the arrangement of a row -- the time, then what happened -- which is not
    a thing the theme knows; every colour and every step of spacing in it comes
    from the theme all the same. */
+.panel.timeline {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .timeline-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   list-style: none;
-  padding: 0 --spacing(2) --spacing(3);
+  padding: --spacing(1) --spacing(2) --spacing(3);
   margin: 0;
 }
 .timeline-row {
@@ -229,50 +332,16 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
   align-items: center;
   gap: --spacing(1);
 }
-/* One quiet line down the gutter, joining the dots and nothing else. This
-   used to be a coloured bracket drawn around the compared range, which left
-   the column carrying three signals at once -- outlined dots, author-coloured
-   dots, and coloured segments -- none of them read clearly. The range is said
-   in words now, under the row it belongs to, and colour in the gutter is
-   spent only on the version being looked at. */
-.timeline-row::before {
-  content: "";
-  position: absolute;
-  left: 10px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--color-surface-200-800);
-  pointer-events: none;
-  z-index: 2;
-}
-.timeline-dot {
-  position: relative;
-  z-index: 3;
+.timeline-marker {
   flex: none;
   width: 8px;
   height: 8px;
   margin-inline: 3px;
   border-radius: 50%;
-  background: var(--color-primary-500);
-}
-/* Who took the checkpoint, by colour, in the order people first appear. */
-.timeline-dot.author-1 { background: var(--color-warning-500); }
-.timeline-dot.author-2 { background: var(--color-error-500); }
-.timeline-dot.author-3 { background: var(--color-tertiary-500); }
-.timeline-dot.author-4 { background: var(--color-surface-500); }
-/* The live document is not a checkpoint yet, so its dot is hollow. */
-.timeline-dot-now {
   background: transparent;
-  box-shadow: inset 0 0 0 1.5px var(--panel-muted);
 }
-.range-start .timeline-dot,
-.range-end .timeline-dot {
-  box-shadow: 0 0 0 2px var(--color-sidebar), 0 0 0 3.5px var(--color-primary-500);
-}
-.range-end .timeline-dot-now {
-  box-shadow: inset 0 0 0 1.5px var(--panel-muted), 0 0 0 2px var(--color-sidebar), 0 0 0 3.5px var(--color-primary-500);
-}
+.timeline-marker-important { background: var(--color-primary-500); }
+.timeline-marker-current { box-shadow: inset 0 0 0 1.5px var(--panel-muted); }
 .timeline-point {
   display: flex;
   flex: 1;
@@ -290,12 +359,13 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 .timeline-here,
 .timeline-here:hover {
   background: var(--color-row-selected);
+  box-shadow: inset 3px 0 0 var(--color-primary-500);
 }
 /* Every timestamp in one column: a history is scanned down the times, and
    ragged ones make the reader find each one before reading it. */
 .timeline-when {
   flex: none;
-  min-width: 4.5rem;
+  min-width: 4.15rem;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -310,10 +380,26 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 .timeline-who {
   color: var(--color-surface-700-300);
 }
+/* What the version moved, under who moved it: the row's second line, and the
+   reason a column of identical-looking autosaves can be told apart. */
+.timeline-moved {
+  color: var(--panel-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* A name is the one thing in the column somebody wrote on purpose. */
 .timeline-named .timeline-what strong {
   color: var(--color-surface-950-50);
 }
+.timeline-inline-action,
+.timeline-inline-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+.timeline-inline-actions { gap: --spacing(0.5); }
 /* The actions on a row show for the row under the cursor and the row being
    looked at: four icons on every row is a column of icons, not a history.
    They sit over the end of the row rather than beside it, so the column
@@ -341,17 +427,6 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 /* The row being looked at keeps its actions on a line of their own, under
    the words rather than over them: it is the row somebody is about to name,
    restore or link, and the one a finger can reach without a hover. */
-.timeline-row:has(.timeline-here) {
-  flex-wrap: wrap;
-}
-.timeline-row:has(.timeline-here) .timeline-actions {
-  position: static;
-  transform: none;
-  flex-basis: 100%;
-  justify-content: flex-end;
-  padding: 0 --spacing(1) --spacing(0.5) 26px;
-  background: transparent;
-}
 /* The day stays in view while its marks scroll under it, so it needs a ground
    of its own -- the shell's, as the comment tools have. It sits in the text
    column, past the dots, so the quiet gutter line runs beside it. A day separates runs of rows
@@ -361,141 +436,31 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
   position: relative;
 }
 .timeline-day {
-  display: flex;
-  align-items: center;
-  gap: --spacing(2);
-  padding: --spacing(3) --spacing(1) --spacing(1) 26px;
+  padding: --spacing(3) --spacing(1) --spacing(1) 22px;
   font-size: var(--panel-meta-size);
   font-weight: 400;
   color: var(--panel-muted);
   background: var(--color-sidebar);
 }
-.timeline-day::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--color-surface-200-800);
-}
-.timeline-folded {
-  flex: 1;
-  padding: --spacing(0.5) --spacing(1) --spacing(0.5) 26px;
-  font-size: var(--panel-meta-size);
-  text-align: left;
-  color: var(--color-surface-600-400);
-  cursor: pointer;
-}
-.timeline-folded:hover {
-  text-decoration: underline;
-}
-.timeline-files {
-  flex-wrap: wrap;
-  gap: --spacing(1) --spacing(2);
-  padding: 0 --spacing(1) --spacing(1.5) 26px;
-}
-.timeline-file {
-  font-size: var(--panel-meta-size);
-  color: var(--color-primary-500);
-  text-decoration: underline dotted;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-/* What changed, under the version it belongs to rather than above the whole
-   column. This used to be the head of the panel, where it took half the
-   height and competed with the history itself; it now appears on one row at
-   a time, so the timeline stays an index of when and by whom. The changes
-   themselves are still painted in the document; the list of them as prose is
-   folded away. */
-.timeline-detail-row {
-  display: block;
-}
-.timeline-detail {
-  display: flex;
-  flex-direction: column;
-  gap: --spacing(1.5);
-  margin: --spacing(1) --spacing(2) --spacing(2) 26px;
-  padding: --spacing(2);
-  border-left: 2px solid var(--color-primary-500);
-  border-radius: var(--radius-base);
-  background: var(--color-surface-50-950);
-}
-.history-span {
+.timeline-section h4 {
   margin: 0;
-}
-.history-span strong {
-  color: var(--color-surface-950-50);
-  font-weight: var(--panel-title-weight);
-}
-.history-nav {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: --spacing(2);
-}
-.history-steps {
-  display: flex;
-}
-.history-switch {
-  display: flex;
-  align-items: center;
-  gap: --spacing(1.5);
-  margin-left: auto;
-  cursor: pointer;
-}
-.history-changes summary,
-.history-files summary {
-  cursor: pointer;
-}
-.history-hunks {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: --spacing(1) 0 0;
-  padding: 0;
-}
-.history-hunk {
-  display: block;
-  width: 100%;
-  padding: --spacing(1) --spacing(1.5);
-  border-radius: var(--radius-container);
-  font-size: var(--panel-font-size);
-  line-height: 1.45;
-  text-align: left;
+  padding: --spacing(2) --spacing(1) --spacing(1) 22px;
   color: var(--panel-muted);
-  overflow-wrap: anywhere;
-  cursor: pointer;
+  font-size: var(--panel-meta-size);
+  font-weight: 500;
 }
-.history-hunk:hover {
-  background: var(--color-surface-100-900);
-  color: var(--color-surface-700-300);
-}
-.history-hunk-here,
-.history-hunk-here:hover {
-  background: var(--color-row-selected);
-}
-/* What went and what came, in the panel: struck through and underlined, as
-   the frame paints them, in the semantic colours the theme already has. */
-.history-hunk del,
-.history-file-diff-body del {
-  color: var(--color-error-500);
-  text-decoration: line-through;
-  background: color-mix(in srgb, var(--color-error-500) 10%, transparent);
-  border-radius: 2px;
-}
-.history-hunk ins,
-.history-file-diff-body ins {
-  color: var(--color-success-500);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  background: color-mix(in srgb, var(--color-success-500) 12%, transparent);
-  border-radius: 2px;
-}
-.history-paths {
-  display: flex;
-  flex-direction: column;
-  gap: --spacing(1);
-  margin-top: --spacing(1);
-}
+.history-filter { display: flex; justify-content: space-between; gap: --spacing(2); }
+/* Both choices on the rail at once. The indicator is the moving pill Zag
+   measures and positions; the items sit above it, so the selected one reads
+   against the pill rather than behind it. */
+.history-filter-control { position: relative; display: flex; gap: --spacing(1); padding: --spacing(1); border-radius: var(--radius-container); background: var(--color-row-hover); font-size: var(--panel-meta-size); }
+/* Zag measures the checked item and publishes the rect as custom properties,
+   positioning the indicator's `left` itself; the other three are ours to
+   spend, so the pill takes the whole of the item it is under. */
+.history-filter-indicator { z-index: 0; top: var(--top); width: var(--width); height: var(--height); border-radius: var(--radius-base); background: var(--color-surface-50-950); box-shadow: var(--shadow-sm); }
+.history-filter-item { position: relative; z-index: 1; padding: --spacing(1) --spacing(3); border-radius: var(--radius-base); cursor: pointer; white-space: nowrap; color: var(--panel-muted); }
+.history-filter-item[data-state="checked"] { color: inherit; font-weight: 500; }
+.history-filter-item[data-focus-visible] { outline: 2px solid var(--color-primary-500); outline-offset: 1px; }
 
 /* Whatever is left when the document is not showing takes the room it would
    have had: the source if it is there, the comments otherwise. */
@@ -537,6 +502,13 @@ main.reader.no-preview:not(.editing) .sidebar {
   padding: --spacing(8);
   max-width: 40rem;
 }
+/* The card's own actions sit on one line and wrap rather than stack, so a
+   narrow pane does not turn three buttons into three rows. */
+.latexpane .notyet .notyet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: --spacing(2);
+}
 main.reader.source-right .latexpane {
   order: 1;
 }
@@ -573,7 +545,7 @@ main.reader.source-right .viewport {
 main.reader.source-right .editorpane {
   order: 3;
   border-right: 0;
-  border-left: 1px solid var(--color-divider);
+  border-left: 1px solid var(--color-pane-edge);
 }
 
 /* ------------------------------------------------------------------- grips */
@@ -586,18 +558,21 @@ main.reader.source-right .editorpane {
   /* The width the layout counts (`GRIP` in panes.js); the hand gets more
      than the eye does, below. Stacked above its neighbours so that the extra
      reach lands on the grip and not on the frame or the editor beside it. */
-  flex: 0 0 6px;
+  flex: 0 0 0.375rem;
   z-index: 5;
   cursor: col-resize;
   background: transparent;
   transition: background 0.15s;
 }
-/* Sixteen pixels to take hold of, centred on the six that are drawn: a
-   separator that has to be hit exactly is one that gets missed. */
+/* Twenty-four pixels to take hold of, centred on the six that are drawn: the
+   target size WCAG asks for, and a separator that has to be hit exactly is one
+   that gets missed. The reach does overlap the last few pixels of whatever
+   scrollbar sits against it, which is the trade: a scrollbar is dragged by a
+   thumb with room either side of it, a separator is a line. */
 .grip::before {
   content: "";
   position: absolute;
-  inset: 0 -5px;
+  inset: 0 -9px;
 }
 /* A short bar in the middle says there is something here to drag before the
    pointer has found it. It gives way to the full-height highlight on hover. */
@@ -720,20 +695,35 @@ main.reader.source-right .editorpane {
 
 /* Somebody else's caret, and their name beside it.
  *
- * y-codemirror draws the caret in the colour that person picked when they
- * joined and leaves the shape of it to the page. The label sits above the line
- * rather than in it, so nobody's name pushes anyone's text around. */
-.cm-ySelectionCaret {
-  position: relative;
-  border-left: 2px solid;
-  border-right: none;
-  margin-left: -1px;
+ * The binding draws the caret as an absolutely positioned element, hands the
+ * name through a `--name` custom property, and puts a colour class on it. What
+ * is left to the page is the shape of it, and where the name goes: above the
+ * line rather than in it, so that nobody's name pushes anyone's text around.
+ * The binding's own base theme puts the label below the line, which these
+ * rules override.
+ *
+ * The class names are generated from the palette in `lib/collab.js`, one per
+ * colour somebody can be given when they join. They are written out rather
+ * than injected at runtime because the palette is fixed and short: a person's
+ * colour is chosen from six, not from anywhere. Adding a colour there means
+ * adding a rule here, which is the coupling worth having -- the alternative is
+ * building stylesheets in JavaScript to serve six values. */
+.user-color-2f5bd0 { --presence: #2f5bd0; }
+.user-color-c2410c { --presence: #c2410c; }
+.user-color-15803d { --presence: #15803d; }
+.user-color-7c3aed { --presence: #7c3aed; }
+.user-color-be123c { --presence: #be123c; }
+.user-color-0e7490 { --presence: #0e7490; }
+
+.loro-cursor {
+  background: var(--presence, var(--color-primary-500));
   box-sizing: border-box;
 }
-.cm-ySelectionCaretDot {
-  display: none;
-}
-.cm-ySelectionInfo {
+/* The label takes its background from `--presence` rather than `currentColor`,
+ * because the rule below sets `color` to white for the name itself: read in
+ * the other order, the label would be white on white. */
+.loro-cursor::before {
+  content: var(--name);
   position: absolute;
   top: -1.4em;
   left: -2px;
@@ -742,6 +732,7 @@ main.reader.source-right .editorpane {
   line-height: 1.4;
   font-family: var(--typo-base--font-family);
   color: white;
+  background: var(--presence, var(--color-primary-500));
   white-space: nowrap;
   border-radius: var(--radius-base);
   opacity: 0.85;
@@ -750,8 +741,16 @@ main.reader.source-right .editorpane {
   pointer-events: none;
   z-index: 5;
 }
-.cm-ySelectionCaret:hover .cm-ySelectionInfo {
+.loro-cursor:hover::before {
   opacity: 1;
+}
+
+/* The run of text somebody else has selected. Kept faint: it sits behind
+ * prose that has to stay readable while they are choosing what to do with
+ * it. */
+.loro-selection {
+  background: var(--presence, var(--color-primary-500));
+  opacity: 0.25;
 }
 
 /* -------------------------------------------------------------- annotating */
@@ -792,6 +791,21 @@ main.reader.source-right .editorpane {
 /* A resolved annotation is settled business: one line, clipped to the width of
    the column rather than to a number of characters, so how much of it shows is
    the reader's choice of column width. */
+/* A collapsed note opens from the keyboard as well as the mouse, so this is
+   a button where it is the only thing in the card. It keeps the card's own
+   type and colour: what it looks like is one line of text, which is what it
+   is. */
+button.summary {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
 .summary {
   white-space: nowrap;
   overflow: hidden;
@@ -831,10 +845,14 @@ main.reader.adapted .mobile-pane-nav {
   overscroll-behavior: contain;
   height: calc(var(--spacing) * 14 + env(safe-area-inset-bottom));
   padding: var(--spacing) calc(var(--spacing) * 2) max(var(--spacing), env(safe-area-inset-bottom));
-  border-top: 1px solid var(--color-divider);
+  border-top: 1px solid var(--color-pane-edge);
   background: var(--color-shell);
 }
 .mobile-pane-nav > * { flex-shrink: 0; }
+/* The one row of controls that is only ever touched, so it is the one row
+   sized for a finger rather than for a pointer: the 44px a thumb needs, where
+   the rail beside a mouse gets the 32px that reads better in a column. */
+.mobile-pane-nav :where(.icon-control) { width: 2.75rem; height: 2.75rem; }
 main.reader .sidebar, main.reader .editorpane, main.reader .viewport, main.reader .latexpane {
   min-height: 0;
   overscroll-behavior: contain;
@@ -1001,6 +1019,20 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   outline-offset: -1px;
 }
 
+/* ------------------------------------------------------------- switches */
+/* The skin for Skeleton's switch, which is Zag's: a track and a thumb, and
+   every state read off a `data-` attribute rather than off the input, which
+   the machine hides. Written here rather than in either panel because the
+   changes panel and the settings dialog both wear it, and a switch that
+   differed between them would be two switches. */
+.switch { position: relative; flex: none; width: 1.8rem; height: 1rem; border-radius: 1rem; background: var(--color-surface-300-700); transition: background .15s; }
+.switch[data-state="checked"] { background: var(--color-primary-500); }
+.switch[data-focus-visible] { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
+.switch-thumb { position: absolute; width: .75rem; height: .75rem; left: .125rem; top: .125rem; border-radius: 50%; background: var(--color-surface-50-950); transition: transform .15s; }
+.switch-thumb[data-state="checked"] { transform: translateX(.8rem); }
+[data-scope="switch"][data-part="root"] { cursor: pointer; }
+[data-scope="switch"][data-part="root"][data-disabled] { cursor: default; opacity: .6; }
+
 /* ------------------------------------------------------------- settings */
 /* The settings dialog: a page-sized card (see Modal's `full`) holding a
    navigation column and a body that scrolls on its own, and inside the
@@ -1067,4 +1099,37 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   .setting-control { justify-content: flex-start; }
   .setting-status { grid-template-columns: auto minmax(0, 1fr); }
   .setting-status .setting-control { grid-column: 1 / -1; }
+}
+
+/* ------------------------------------------------------- forced colours */
+
+/* Windows High Contrast and its kin replace every colour on the page with the
+   pair the reader chose, and drop most shadows with them. Everything here
+   says "this one is the current one" with a tint or an inset bar, so in
+   forced colours it said nothing at all. A border is the one thing that
+   survives, so that is what these become. */
+@media (forced-colors: active) {
+  .explorer-row[data-selected],
+  .timeline-here,
+  .panel-tabs > [role="tab"][aria-selected="true"],
+  .icon-control[aria-pressed="true"] {
+    outline: 2px solid;
+    outline-offset: -2px;
+  }
+  /* A highlight colour is the content, not decoration: these swatches are
+     the only place in the application where the colour itself is the
+     information, so they keep their own. */
+  .color-swatch { forced-color-adjust: none; }
+  .color-swatch.selected { outline: 3px solid; outline-offset: 1px; }
+}
+
+/* ---------------------------------------------------------------- toasts */
+
+/* Twenty rem of message, or the window if the window is narrower than that:
+   at 320px the fixed width stood off the right-hand edge with the end of
+   every sentence past it. Skeleton owns the toast element, so this is a
+   global class rather than a scoped one. */
+.toast-card {
+  width: 20rem;
+  max-width: calc(100vw - var(--spacing) * 8);
 }

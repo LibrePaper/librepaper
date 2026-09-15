@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO publication_files(publication_id,path,storage_key,digest,byte_length,media_type)\n                 SELECT $1,input.path,input.storage_key,input.digest,input.byte_length,input.media_type\n                 FROM unnest($2::text[],$3::text[],$4::bytea[],$5::bigint[],$6::text[])\n                   AS input(path,storage_key,digest,byte_length,media_type)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        "ByteaArray",
+        "Int8Array",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "12666279bc444de791532cc7d47f7f655a321fabd38f43a991ab0939d1b565c9"
+}

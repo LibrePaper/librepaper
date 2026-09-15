@@ -16,12 +16,18 @@ const body = (start, end) => {
 
 const showList = body("  async function showList()", "  async function deleteSelected");
 const reallyDelete = body("  async function reallyDelete()", "  /* ------------------------------------------------------------ file picking */");
+const submit = body("  async function submit(event)", "  $effect(() => {");
 
 const context = (values) => vm.createContext({
   Promise,
   Set,
   Map,
   URLSearchParams,
+  // A refresh that fails because the browser is offline says nothing: the
+  // page has its own offline notice, and a toast per failed poll on top of it
+  // is noise. Online is what every case here assumes unless it passes its own
+  // `navigator`, which the offline case below does.
+  navigator: { onLine: true },
   ...values,
 });
 
@@ -56,6 +62,26 @@ const context = (values) => vm.createContext({
   assert.deepEqual(problems, []);
 }
 
+// Archive submissions preserve the selected main file and send every extracted
+// entry as a directory upload. A missing main reports an error without losing
+// the archive selection, so the user can simply choose another candidate.
+{
+  const forms = [];
+  const ctx = context({
+    chosen: { archive: true, main: "", files: [{ path: "paper.qmd", bytes: new Uint8Array([1]) }], name: "paper.zip" },
+    title: "Paper", busy: false, parsing: false, fileError: "", problem: () => {},
+    refuse: () => { throw new Error("archive selection was lost"); },
+    upload: async (form) => { forms.push(form); return { ok: true, json: async () => ({ url: "/docs/paper" }) }; },
+    showList: async () => {}, shared: null, sharing: false, location: { origin: "https://example.test" },
+    URL, Blob, FormData,
+  });
+  vm.runInContext(submit, ctx);
+  await vm.runInContext("submit({ preventDefault() {} })", ctx);
+  assert.equal(forms.length, 0);
+  assert.equal(ctx.chosen.main, "");
+  assert.match(ctx.fileError, /Choose the document/);
+}
+
 // A later-page failure reports the refresh problem while leaving the prior
 // complete listing intact.
 {
@@ -77,6 +103,24 @@ const context = (values) => vm.createContext({
   await vm.runInContext("showList()", ctx);
   assert.deepEqual(Array.from(ctx.documents, (doc) => doc.slug), ["still-visible"]);
   assert.match(problems[0], /refresh failed/);
+}
+
+// Offline, the same failure is silent: `showOfflineProjects` is what the page
+// shows instead, and a network error there is expected rather than reportable.
+{
+  const problems = [];
+  const ctx = context({
+    documents: [{ slug: "still-visible" }], counts: new Map(), paths: new Map(),
+    SHELL_HEADERS: {},
+    navigator: { onLine: false },
+    fetch: async () => { throw new TypeError("Failed to fetch"); },
+    get: async () => ({ comment_count: 0, files: [] }),
+    problem: (message) => problems.push(message),
+  });
+  vm.runInContext(showList, ctx);
+  assert.equal(await vm.runInContext("showList()", ctx), false);
+  assert.deepEqual(problems, []);
+  assert.deepEqual(Array.from(ctx.documents, (doc) => doc.slug), ["still-visible"]);
 }
 
 // Successful deletion updates only its own state. HTTP and network failures
@@ -114,4 +158,4 @@ const context = (values) => vm.createContext({
   assert.match(problems[0], /Could not delete 2 projects/);
 }
 
-console.log("landing: pagination, refresh preservation, and deletion failure checks passed");
+console.log("landing: pagination, refresh preservation, silent offline refresh, and deletion failure checks passed");

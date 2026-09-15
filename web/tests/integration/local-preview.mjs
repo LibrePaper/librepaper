@@ -3,7 +3,14 @@
 // the same shape of harness `tests/frame-preview.mjs` and
 // `tests/reader-races.mjs` already use for Reader's other controllers.
 import assert from "node:assert/strict";
-import { createLocalPreview } from "../../src/lib/reader/local-preview.js";
+import { loadRunes } from "../helpers/runes.mjs";
+
+// The controller owns its own state, so it is a `.svelte.js` module and is
+// compiled before it is imported. What used to arrive through onRunningChange
+// and onError is read from `ctl.state` instead.
+const { createLocalPreview } = await loadRunes(
+  new URL("../../src/lib/reader/local-preview.svelte.js", import.meta.url),
+);
 
 const deferred = () => {
   let resolve, reject;
@@ -61,20 +68,19 @@ function notRendered(rendering) {
     localPreviewStatus: async () => ({ state: "running" }),
     localPreviewPage: async () => ({ rendering: false }),
   };
-  const tree = { main: "main.qmd" };
-  const running = [];
+  const tree = { main: "main.qmd", assets: { "figure.png": new Uint8Array([1, 2, 3]) } };
   const ctl = createLocalPreview({
     local, engine: "quarto",
     publish: () => {}, say: () => {},
-    treeNow: () => tree, entrypointOf: (t) => t.main,
+    treeNow: async () => tree, entrypointOf: (t) => t.main,
     optionsOf: () => ({ format: "html" }), jobOf: () => ({ binding: "hosted" }),
-    onRunningChange: (session) => running.push(session),
     setTimer, clearTimer,
   });
   await ctl.sync(); // no-op: nothing running yet
   assert.equal(syncs.length, 0);
   await ctl.start();
   assert.equal(syncs.length, 1);
+  assert.deepEqual(syncs[0].assets["figure.png"], new Uint8Array([1, 2, 3]));
   assert.equal(started.length, 1);
   assert.equal(started[0].engine, "quarto");
   assert.equal(started[0].options.entrypoint, "main.qmd");
@@ -82,7 +88,7 @@ function notRendered(rendering) {
   assert.equal(started[0].job.binding, "hosted");
   assert.equal(ctl.running, true);
   assert.equal(ctl.id, "p1");
-  assert.deepEqual(running.at(-1), { id: "p1", url: "http://x/", state: "running" });
+  assert.deepEqual(ctl.state.session, { id: "p1", url: "http://x/", state: "running" });
   await flush(); // the page poll's first (0ms) tick
   console.log("local-preview: start() syncs the workspace and starts both polls");
 }
@@ -301,13 +307,12 @@ console.log("local-preview: all checks passed");
 
 // Errors can be consumed entirely by Diagnostics, and a failed start retries.
 {
-  const errors = [];
   const {setTimer, clearTimer} = timerHarness();
   let tries = 0;
   const ctl = createLocalPreview({
     engine: "quarto", treeNow: () => ({main: "main.qmd"}),
     entrypointOf: t => t.main, optionsOf: () => ({}),
-    onError: message => errors.push(message), setTimer, clearTimer,
+    setTimer, clearTimer,
     local: {
       syncWorkspace: async () => {},
       startLocalPreview: async () => {
@@ -318,10 +323,10 @@ console.log("local-preview: all checks passed");
     },
   });
   await ctl.start();
-  assert.equal(errors.at(-1), "Quarto is not installed");
+  assert.equal(ctl.state.error, "Quarto is not installed");
   await ctl.start();
   assert.equal(ctl.running, true);
-  assert.equal(errors.at(-1), "");
+  assert.equal(ctl.state.error, "", "a new attempt clears what the last one said");
   await ctl.stop();
 }
 console.log("local-preview: startup edits, cancellation, settings restart and diagnostic-only errors passed");

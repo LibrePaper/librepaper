@@ -1,9 +1,18 @@
 // Owns one room and one Yjs collaboration session. Reader keeps the domain
 // callbacks and rendering state; this module owns sockets, retries, metadata
 // checks, and all observers attached to the session.
+//
+// `collab` is handed in rather than imported. It is the only door to
+// loro-crdt, and loro-crdt is three megabytes of wasm: importing it here would
+// put the CRDT on the critical path of every reader, including the ones who
+// have a published document and no source room to join at all. The caller
+// loads it -- with a dynamic `import()` -- on the one path that needs it, so
+// everything below stays synchronous and the bytes stay off a reader's first
+// paint.
 import { openRoom as defaultOpenRoom } from "../room.js";
-import * as defaultCollab from "../collab.js";
 import { keyHeaders } from "../api.js";
+import { assertSameProject, projectIdentity } from "../project-identity.js";
+import { createGeneration } from "./generation.js";
 
 const capability = (document_) => JSON.stringify([
   document_?.role ?? null,
@@ -17,7 +26,7 @@ export function createReaderCollaboration({
   key = "",
   fetcher = globalThis.fetch,
   openRoom = defaultOpenRoom,
-  collab = defaultCollab,
+  collab,
   getIdentity = () => "",
   getCanEdit = () => false,
   onMessage = () => {},
@@ -39,10 +48,12 @@ export function createReaderCollaboration({
   let session = null;
   let document_ = null;
   let disposed = false;
-  let reconnectGeneration = 0;
+  const reconnects = createGeneration();
   let retryTimer = null;
   let filesCleanup = null;
-  let awarenessHandler = null;
+  // EphemeralStore hands back an unsubscribe function rather than taking a
+  // handler it can be asked to forget later, so what is kept is the way out.
+  let presenceCleanup = null;
 
   function clearRetry() {
     if (retryTimer !== null) clearTimer(retryTimer);
@@ -52,7 +63,7 @@ export function createReaderCollaboration({
   function send(message) {
     // Y updates made while a socket is reconnecting remain in the local Yjs
     // document. `start()` catches them up after the server identity check.
-    if (message.type?.startsWith("y-update") && !session?.joined) return undefined;
+    if (message.type?.startsWith("doc-update") && !session?.joined) return undefined;
     return room?.send(message);
   }
 
@@ -60,8 +71,8 @@ export function createReaderCollaboration({
     clearRetry();
     filesCleanup?.();
     filesCleanup = null;
-    if (session && awarenessHandler) session.awareness.off("change", awarenessHandler);
-    awarenessHandler = null;
+    presenceCleanup?.();
+    presenceCleanup = null;
     session?.leave();
     session = null;
   }
@@ -85,8 +96,7 @@ export function createReaderCollaboration({
     active.watchSource(() => onSource(active));
     active.onSwap(() => onSwap(active));
     filesCleanup = active.onFiles((events) => onFiles(events, active));
-    awarenessHandler = () => onAwareness(active);
-    active.awareness.on("change", awarenessHandler);
+    presenceCleanup = active.ephemeral.subscribe(() => onAwareness(active));
     onSession(active);
     // Reader/commenter sessions use this socket only for rendered
     // annotations. They receive the initial comment hello, but never send a
@@ -102,7 +112,7 @@ export function createReaderCollaboration({
 
   async function reconnect(up) {
     if (disposed) return;
-    const current = ++reconnectGeneration;
+    const stale = reconnects.begin();
     clearRetry();
     if (!up) {
       session?.disconnected();
@@ -114,45 +124,67 @@ export function createReaderCollaboration({
     active?.disconnected();
     try {
       const response = await fetcher(`/api/documents/${slug}`, { headers: keyHeaders(key) });
-      if (disposed || current !== reconnectGeneration || session !== active) return;
+      if (disposed || stale() || session !== active) return;
       if (!response.ok) return changed("document");
       const latest = await response.json();
-      if (disposed || current !== reconnectGeneration || session !== active) return;
-      if ((document_.created_at && latest.created_at !== document_.created_at)
-          || capability(latest) !== capability(document_)) return changed("capability");
+      if (disposed || stale() || session !== active) return;
+      if (document_.created_at || latest.created_at) {
+        try {
+          assertSameProject(
+            projectIdentity({ server: globalThis.location?.origin, slug, createdAt: document_.created_at }),
+            projectIdentity({ server: globalThis.location?.origin, slug, createdAt: latest.created_at }),
+          );
+        } catch {
+          return changed("document");
+        }
+      }
+      if (capability(latest) !== capability(document_)) return changed("capability");
       if (sourceSync) room?.send(active.open());
       onConnected(true);
     } catch (error) {
-      if (disposed || current !== reconnectGeneration || session !== active) return;
+      if (disposed || stale() || session !== active) return;
       clearRetry();
       retryTimer = setTimer(() => {
         retryTimer = null;
-        if (!disposed && current === reconnectGeneration && session === active) void reconnect(true);
+        if (!disposed && !stale() && session === active) void reconnect(true);
       }, retryMs);
     }
   }
 
-  function start(nextDocument) {
+  function openLocal(nextDocument) {
     if (disposed) return null;
-    if (room) return session;
+    if (session) return session;
     document_ = nextDocument;
+    return join(nextDocument);
+  }
+
+  function connect() {
+    if (disposed || room) return session;
+    if (!document_) throw new Error("open the local project before connecting");
     room = openRoom(slug, {
       onMessage: (event) => { if (!disposed) onMessage(event); },
       onConnected: reconnect,
       key,
     });
-    return join(nextDocument);
+    if (sourceSync) room.send(session.open());
+    return session;
+  }
+
+  function start(nextDocument) {
+    openLocal(nextDocument);
+    connect();
+    return session;
   }
 
   function close() {
     if (disposed) return;
     disposed = true;
-    reconnectGeneration += 1;
+    reconnects.cancel();
     clearRetry();
     filesCleanup?.();
     filesCleanup = null;
-    if (session && awarenessHandler) session.awareness.off("change", awarenessHandler);
-    awarenessHandler = null;
+    presenceCleanup?.();
+    presenceCleanup = null;
     session?.leave();
     session = null;
     room?.close();

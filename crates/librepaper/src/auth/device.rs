@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -429,8 +429,6 @@ struct SourceWindow {
 pub struct PendingCodes {
     pub(super) entries: Mutex<HashMap<String, Pending>>,
     source_limits: Mutex<HashMap<String, SourceWindow>>,
-    /// Seconds, so a test can shorten it through a shared reference.
-    pub(super) max_age: AtomicU64,
 }
 
 /// What a poll for the token learns.
@@ -451,17 +449,11 @@ impl PendingCodes {
         PendingCodes {
             entries: Mutex::new(HashMap::new()),
             source_limits: Mutex::new(HashMap::new()),
-            max_age: AtomicU64::new(DEVICE_CODE_MAX_AGE.as_secs()),
         }
     }
 
     pub fn max_age(&self) -> i64 {
-        self.max_age.load(Ordering::Relaxed) as i64
-    }
-
-    #[allow(dead_code)]
-    pub fn set_max_age(&self, seconds: u64) {
-        self.max_age.store(seconds, Ordering::Relaxed);
+        DEVICE_CODE_MAX_AGE.as_secs() as i64
     }
 
     /// Starts a flow after applying both the global cap and the source window.
@@ -498,18 +490,6 @@ impl PendingCodes {
             return None;
         }
         window.starts += 1;
-        self.insert_pending(&mut entries)
-    }
-
-    /// Test-only compatibility helper for filling the global table without
-    /// making one synthetic source hit the production source limit.
-    #[cfg(test)]
-    pub fn start(&self) -> Option<(String, String)> {
-        let mut entries = self.entries.lock().expect("pending codes poisoned");
-        self.sweep(&mut entries);
-        if entries.len() >= DEVICE_CODES_MAX {
-            return None;
-        }
         self.insert_pending(&mut entries)
     }
 
@@ -572,13 +552,6 @@ impl PendingCodes {
             }
             None => DeviceOutcome::Pending,
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        let mut entries = self.entries.lock().expect("pending codes poisoned");
-        self.sweep(&mut entries);
-        entries.len()
     }
 
     pub(super) fn sweep(&self, entries: &mut HashMap<String, Pending>) {

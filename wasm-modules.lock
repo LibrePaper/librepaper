@@ -9,8 +9,8 @@
 # To move a pin: run `make wasm-update REPO=wasm-markdown TAG=vX.Y.Z` with an
 # explicit repository and tag, then review the native and browser pin diff.
 #
-# module             repository          tag       sha256
-markdown.wasm        wasm-markdown       v0.1.1    c701483e38f9da1691e752be48c8283119ec78598a296479a4da4986ecaf1114
-bibliography.wasm    wasm-bibliography   v0.1.1    80b419d22478d829ae64eddebfca49766b7e8c87cfd5fd620fe7a11f089f7d59
-citations.wasm       wasm-bibliography   v0.1.1    a5123aecdac6d3c4bdb80750347287f03969aaf201a8c86d89f8d9b7ba79691b
-typst.wasm           wasm-typst          v0.3.1    ba8567264f8c785de3d3525ef9230369641fc912632e944102fee40eeadeab4d
+# module             repository          tag       sha256                                                           brotli_sha256
+markdown.wasm        wasm-markdown       v0.1.1    c701483e38f9da1691e752be48c8283119ec78598a296479a4da4986ecaf1114  6fa7e9ebb23df5e4c5f477744e5305f7399a36ecfa288ec854c113209ce49cf4
+bibliography.wasm    wasm-bibliography   v0.1.1    80b419d22478d829ae64eddebfca49766b7e8c87cfd5fd620fe7a11f089f7d59  b7b1548a892c3eb8d19d9f167ed3b2b45e24e2d575e88d731b4926bed1a50f32
+citations.wasm       wasm-bibliography   v0.1.1    a5123aecdac6d3c4bdb80750347287f03969aaf201a8c86d89f8d9b7ba79691b  050195ed2cefb8d2809c9d64b95a43b93b22d156481ec184d2923a5b396bac9d
+typst.wasm           wasm-typst          v0.3.1    ba8567264f8c785de3d3525ef9230369641fc912632e944102fee40eeadeab4d  cc9a8772d9c7564a44145610d68a049be196a6ba492d835fd58aa1da88dc4fb0

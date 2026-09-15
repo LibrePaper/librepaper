@@ -1,7 +1,6 @@
 <script>
   // What this browser has downloaded for LaTeX and kept, and how to forget
-  // it: the compiler and its packages. Offered only for a LaTeX document; the
-  // speech models a browser downloads are listed under Dictation. Nothing
+  // it: the compiler and its packages. Offered only for a LaTeX document. Nothing
   // here touches a document.
   import SettingRow from "./SettingRow.svelte";
   import * as latex from "../../lib/latex.js";

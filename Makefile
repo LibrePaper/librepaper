@@ -22,6 +22,7 @@ BIB     := web/dist/wasm/bibliography.wasm
 CITES   := web/dist/wasm/citations.wasm
 # Fetched, not built: see wasm-modules.lock and the bottom of this file.
 TYPST   := web/dist/wasm/typst.wasm
+WASM_BR := $(WASM).br $(BIB).br $(CITES).br $(TYPST).br
 # The pages. web/dist is entirely a build output, so it is an input to
 # nothing: what the pages are built from lives in web/src and web/public.
 SHELL_OUT := web/dist/index.html
@@ -45,7 +46,7 @@ install: $(BIN)  ## Build and install to ~/.local/bin (override PREFIX= or BINDI
 
 # Rebuilt whenever any source, page or renderer changes.
 # Keep every required renderer in step with the shell and native compiler.
-$(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(TYPST) $(SHELL_OUT) | wasm
+$(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(TYPST) $(WASM_BR) $(SHELL_OUT) | wasm
 	@mkdir -p $(dir $@)
 	@cargo build --release -p librepaper
 	@# Copied beside and renamed over: a server running from the old binary
@@ -59,8 +60,7 @@ $(BIN): $(SOURCES) $(WASM) $(BIB) $(CITES) $(TYPST) $(SHELL_OUT) | wasm
 test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@cd web && bun run check
 	@cargo fmt --check
-	@node web/tools/pin-tools.test.mjs
-	@node tools/latex/tools/check-mirror.test.mjs
+	@node --test 'web/tools/*.test.mjs' 'tools/**/*.test.mjs'
 	@cargo clippy --workspace --all-targets -- -D warnings
 # nextest runs each case in its own process, so one crate's failure does not
 # abandon the crates after it and a hung case is named rather than waited on.
@@ -79,8 +79,9 @@ test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 # Explicit suites kept out of the default inventory because they require
 # host tools or intentionally exercise release-sized resource ceilings.
 test-external:  ## Run Quarto/R/Python and real local-service integration tests
-	@cargo test -p librepaper quarto -- --ignored --nocapture
-	@cargo test -p librepaper quarto_managed_preview_starts_serves_and_stops -- --ignored --nocapture
+	@cargo test -p librepaper quarto -- --ignored --nocapture --test-threads=1 \
+		--skip quarto_project_scope_collects_pages_and_nested_web_resources \
+		--skip quarto_book_scope_keeps_chapter_navigation
 
 test-release-workloads:  ## Run supported-limit and diagnostic workloads
 	@cargo test -p librepaper the_supported_maximum_source_survives_a_restart -- --ignored --nocapture
@@ -89,6 +90,26 @@ test-release-workloads:  ## Run supported-limit and diagnostic workloads
 	@cargo test -p librepaper persistence_capacity_workload -- --ignored --nocapture
 	@cargo test -p librepaper persistence_default_limits_refuse_without_discarding_dirty_rooms -- --ignored --nocapture
 	@cargo test -p librepaper mcp_protocol_transfer_benchmark -- --ignored --nocapture
+
+# The components, in a real browser. Not part of `test`: each one builds a
+# bundle with vite and drives a headless chromium, which is minutes rather than
+# seconds. But nothing else runs them, and a substrate change once left three of
+# them referring to a library that had been uninstalled -- broken for as long as
+# nobody looked, because every other check passed.
+browser:  ## Run the component tests in headless chromium (needs chromium)
+	@command -v chromium >/dev/null || command -v google-chrome >/dev/null || \
+		{ echo "no chromium to drive; skipping the browser tests"; exit 0; }
+	@failed=""; \
+	for test in web/tests/browser/*.mjs; do \
+		printf '%s: ' "$$(basename $$test)"; \
+		if (cd web && timeout 300 node "../$$test" >/tmp/browser-test.log 2>&1); then \
+			echo ok; \
+		else \
+			echo FAILED; failed="$$failed $$(basename $$test)"; \
+			sed 's/^/    /' /tmp/browser-test.log | tail -8; \
+		fi; \
+	done; \
+	[ -z "$$failed" ] || { echo "failed:$$failed"; exit 1; }
 
 # The rendered reader, in a real browser. Not part of `test`: it needs the
 # built binary and a chromium, and it starts a server of its own on a
@@ -161,11 +182,7 @@ examples: $(EXAMPLES)
 # admin seed --backup <verified-point>` the operator runs deliberately, so a second
 # `make deploy` serves what is there rather than refusing to start.
 seed: $(BIN) $(EXAMPLES)
-	@if [ -e $(DATA)/catalog.db ]; then \
-		echo "$(DATA) is already seeded; serving it as is (move it aside to reseed)"; \
-	else \
-		$(BIN) admin seed --data-directory $(DATA) $(if $(OWNER),--owner $(OWNER)); \
-	fi
+	@$(BIN) admin seed --data-directory $(DATA) $(if $(OWNER),--owner $(OWNER))
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
@@ -187,10 +204,38 @@ latex-smoke: $(BIN)  ## Compile and display the seeded LaTeX example in Chromium
 	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
 	@node web/tools/latex-e2e.mjs $(BIN) browser docs/examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
 
+# The local deployment keeps PostgreSQL on the same machine in a persistent
+# Docker volume. An explicitly configured database URL always wins, so hosted
+# and native PostgreSQL installations do not involve Docker.
+DEV_POSTGRES_CONTAINER ?= librepaper-postgres
+DEV_POSTGRES_PORT      ?= 55432
+DEV_POSTGRES_VOLUME    ?= librepaper-postgres-data
+DEV_POSTGRES_PASSWORD  ?= librepaper-local
+DEV_POSTGRES_URL       := postgresql://postgres:$(DEV_POSTGRES_PASSWORD)@127.0.0.1:$(DEV_POSTGRES_PORT)/librepaper
+
+.PHONY: postgres-dev
+postgres-dev:  ## Start the persistent PostgreSQL used by an unconfigured local deploy
+	@command -v docker >/dev/null || { echo "make deploy needs Docker or LIBREPAPER_DATABASE_URL"; exit 1; }
+	@docker inspect $(DEV_POSTGRES_CONTAINER) >/dev/null 2>&1 || docker run -d \
+		--name $(DEV_POSTGRES_CONTAINER) --restart unless-stopped \
+		-p 127.0.0.1:$(DEV_POSTGRES_PORT):5432 \
+		-e POSTGRES_PASSWORD=$(DEV_POSTGRES_PASSWORD) -e POSTGRES_DB=librepaper \
+		-v $(DEV_POSTGRES_VOLUME):/var/lib/postgresql/data postgres:17-alpine >/dev/null
+	@docker start $(DEV_POSTGRES_CONTAINER) >/dev/null
+	@for attempt in $$(seq 1 30); do \
+		docker exec $(DEV_POSTGRES_CONTAINER) pg_isready -U postgres -d librepaper >/dev/null 2>&1 && exit 0; \
+		sleep 1; \
+	done; echo "PostgreSQL did not become ready"; exit 1
+
 # Use the ordinary sign-in flow: each new account receives five private
 # examples and owns its copies. Guest roles come from links created in Share.
 deploy: latex-check $(BIN)  ## Serve locally; sign in for your five examples and share links to test roles
-	@$(MAKE) serve LIBREPAPER_PUBLISHERS=any
+	@if [ -n "$(LIBREPAPER_DATABASE_URL)" ]; then \
+		$(MAKE) serve LIBREPAPER_PUBLISHERS=any; \
+	else \
+		$(MAKE) postgres-dev; \
+		LIBREPAPER_DATABASE_URL='$(DEV_POSTGRES_URL)' $(MAKE) serve LIBREPAPER_PUBLISHERS=any; \
+	fi
 
 # The deployment keys -- the Cloudflare token, the endpoints, the GitHub app
 # -- live sops-encrypted in deploy/keys.yaml. A target cannot export into the
@@ -263,10 +308,33 @@ wasm-check:  ## Check native and browser renderer tags without network access
 # The files are produced by the phony aggregate above. This rule lets Make
 # resolve them as binary prerequisites on a clean checkout while preserving
 # their mtimes so a changed renderer causes the embedding binary to rebuild.
-$(WASM) $(BIB) $(CITES) $(TYPST): | wasm
+$(WASM) $(BIB) $(CITES) $(TYPST) $(WASM_BR): | wasm
 
 # Update one explicitly named renderer tag in Cargo.toml and wasm-modules.lock.
 # The command never looks up or selects a latest release implicitly.
 wasm-update:  ## Update one renderer (REPO=wasm-markdown TAG=vX.Y.Z)
 	@test -n "$(REPO)" -a -n "$(TAG)" || { echo 'usage: make wasm-update REPO=wasm-markdown TAG=vX.Y.Z' >&2; exit 2; }
 	@node web/tools/update-module-pin.mjs --repo "$(REPO)" --tag "$(TAG)"
+
+# The compile-time-checked SQL cache. `.sqlx/` is what lets an ordinary build
+# verify every query without a database; it goes stale the moment a query or a
+# migration changes, so regenerating it is part of changing either.
+#
+# Both targets use their own database, separate from the one `make deploy`
+# keeps, because preparing applies every migration to it.
+SQLX_POSTGRES_DB  ?= librepaper_sqlx
+SQLX_DATABASE_URL := postgresql://postgres:$(DEV_POSTGRES_PASSWORD)@127.0.0.1:$(DEV_POSTGRES_PORT)/$(SQLX_POSTGRES_DB)
+
+.PHONY: sqlx-database
+sqlx-database: postgres-dev  ## Recreate the schema-only database the SQL checks run against
+	@docker exec $(DEV_POSTGRES_CONTAINER) psql -U postgres -c 'DROP DATABASE IF EXISTS $(SQLX_POSTGRES_DB)' >/dev/null
+	@docker exec $(DEV_POSTGRES_CONTAINER) psql -U postgres -c 'CREATE DATABASE $(SQLX_POSTGRES_DB)' >/dev/null
+	@DATABASE_URL='$(SQLX_DATABASE_URL)' sqlx migrate run --source crates/librepaper/migrations/postgres
+
+.PHONY: sqlx-prepare
+sqlx-prepare: sqlx-database  ## Regenerate .sqlx/ after changing any query or migration
+	@SQLX_OFFLINE=false DATABASE_URL='$(SQLX_DATABASE_URL)' cargo sqlx prepare --workspace -- --all-targets
+
+.PHONY: sqlx-check
+sqlx-check: sqlx-database  ## Fail if .sqlx/ no longer matches the queries in the tree
+	@SQLX_OFFLINE=false DATABASE_URL='$(SQLX_DATABASE_URL)' cargo sqlx prepare --check --workspace -- --all-targets

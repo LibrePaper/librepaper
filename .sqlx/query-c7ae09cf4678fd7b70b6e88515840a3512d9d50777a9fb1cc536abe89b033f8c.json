@@ -1,0 +1,125 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,\n                    archive_key,archive_encoding_version,archive_digest,archive_bytes,\n                    logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,\n                    author_label,created_at\n             FROM document_versions WHERE document_id=$1\n             ORDER BY sequence DESC LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "through_update_sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "project_generation",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "archive_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "archive_encoding_version",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 8,
+        "name": "archive_digest",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 9,
+        "name": "archive_bytes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "logical_bytes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "tree_digest",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 12,
+        "name": "changed_paths",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 13,
+        "name": "reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "label",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "author_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 16,
+        "name": "author_label",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 17,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "c7ae09cf4678fd7b70b6e88515840a3512d9d50777a9fb1cc536abe89b033f8c"
+}

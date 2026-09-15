@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (SELECT count(*) FROM documents d\n                       WHERE d.owner_id=$1 AND d.status='active')::bigint AS \"documents!\",\n                      (SELECT count(*) FROM document_versions v\n                       JOIN documents d ON d.id=v.document_id\n                       WHERE d.owner_id=$1 AND d.status='active')::bigint AS \"versions!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "documents!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "versions!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "54eefe678aba1681f5d052f9f420e1bd758792acf5cd752e599c994132b2a5f5"
+}

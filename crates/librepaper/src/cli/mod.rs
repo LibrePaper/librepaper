@@ -10,15 +10,9 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
 use crate::config::{parse_budget_transfer, Configuration};
-use crate::document::render::{
-    counted, is_html, is_markdown, is_typst, report, title_from_html, title_from_markdown,
-    title_from_typst,
-};
-use crate::http::{
-    detail_of, get_as, get_json, get_with_token, post_directory, post_json, text, Credentials,
-};
+use crate::http::{detail_of, get_as, get_json, get_with_token, post_json, text, Credentials};
 use crate::storage::StorageFlags;
-use crate::util::{die, is_terminal_stdout, new_id};
+use crate::util::{die, new_id};
 
 /// Removed deployment settings must fail loudly even when they arrive through
 /// the process environment. Clap can reject removed arguments, but it cannot
@@ -79,8 +73,6 @@ pub mod export;
 mod history;
 pub(crate) mod mcp;
 pub mod peer;
-mod publish;
-mod quarto;
 mod runner;
 pub(crate) mod runner_context;
 pub(crate) mod runner_journal;
@@ -88,11 +80,9 @@ mod runner_lifecycle;
 pub(crate) mod runner_preview;
 mod runner_transport;
 mod skills;
-pub mod sync;
 mod tokens;
 
 pub use documents::*;
-pub use publish::*;
 pub use tokens::*;
 
 #[derive(Parser)]
@@ -315,6 +305,9 @@ impl ServiceFlags {
                     "network_max" => config.sockets.network_max = count,
                     "principal_max" => config.sockets.principal_max = count,
                     "document_max" => config.sockets.document_max = count,
+                    "document_readers_max" => config.sockets.document_readers_max = count,
+                    "document_commenters_max" => config.sockets.document_commenters_max = count,
+                    "document_editors_max" => config.sockets.document_editors_max = count,
                     "queue_bytes_max" => config.sockets.queue_bytes_max = count,
                     "state_network_bytes" => config.sockets.state_network_bytes = value,
                     "state_deployment_bytes" => config.sockets.state_deployment_bytes = value,
@@ -329,9 +322,6 @@ impl ServiceFlags {
                 match name.as_str() {
                     "max_encoded_snapshot_bytes" => {
                         config.persistence.max_encoded_snapshot_bytes = value
-                    }
-                    "max_queued_payload_bytes" => {
-                        config.persistence.max_queued_payload_bytes = value
                     }
                     "max_staging_bytes" => config.persistence.max_staging_bytes = value,
                     _ => die(format!("unknown advanced persistence limit: {name}")),
@@ -488,29 +478,10 @@ fn backup_policy_from_config(path: Option<&std::path::Path>) -> crate::config::B
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Read or export the agent skills bundled with this version (offline)
-    Skills {
-        #[command(subcommand)]
-        command: skills::SkillsCommand,
-    },
     /// Sign in through a deployment, in a browser
     Login,
     /// Forget the stored sign-in
     Logout,
-    /// Publish a document and print its link
-    Publish {
-        /// The HTML, markdown or typst file to publish, or a directory holding one
-        file: String,
-        /// Display title; defaults to the first heading, then the filename
-        #[arg(long, value_name = "TITLE")]
-        title: Option<String>,
-        /// Full existing slug to replace, keeping link and comments
-        #[arg(long, value_name = "SLUG")]
-        slug: Option<String>,
-        /// Which file in a directory is the document
-        #[arg(long, value_name = "PATH")]
-        main: Option<String>,
-    },
     /// Deployment administration and operator commands.
     Admin {
         #[command(subcommand)]
@@ -518,59 +489,35 @@ pub(crate) enum Command {
     },
     /// List your documents
     List,
-    /// Open a document in the browser
-    Open {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// A share link, or the key from one
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-    },
-    /// Keep a local file and a document in step, both ways, until interrupted
-    Sync {
-        /// A full slug, or one of the short handles `list` prints
-        id: String,
-        /// The file to keep in step with the document's main file
-        file: String,
-        /// How long either side stays quiet before it is acted on (default 250ms)
-        #[arg(long, value_name = "DURATION")]
-        interval: Option<String>,
-        /// An edit link, or the key from one: join as its holder, with no
-        /// sign-in needed where the deployment asks for none
-        #[arg(long, value_name = "LINK")]
-        key: Option<String>,
-        /// Show the project files that would be synchronized, then exit
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Annotations as W3C JSON-LD, markdown, or a response to reviewers
+    /// Export comments or an independent copy of the complete project
     Export {
         /// A full slug, or one of the short handles `list` prints
         id: String,
         /// jsonld (W3C Web Annotation), markdown, or response
-        #[arg(long, value_name = "FORMAT", default_value = "jsonld")]
-        format: String,
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
         /// Only comments made at or after this checkpoint, using its history digest
         #[arg(long, value_name = "SHA")]
         since: Option<String>,
-        /// File to write; defaults to standard output
-        #[arg(long, value_name = "FILE")]
+        /// File for comments, or a new directory for a project
+        #[arg(long, value_name = "PATH")]
         output: Option<String>,
         /// A share link, or the key from one: read as its holder rather than
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
+        /// Export comments (the default when no mode is supplied)
+        #[arg(long, conflicts_with = "project")]
+        comments: bool,
+        /// Export all project source files and owned binary assets
+        #[arg(long, conflicts_with = "comments")]
+        project: bool,
     },
     /// The local compilation service: run native TeX on this machine for
     /// the browser editor when its own compiler cannot
     Local {
         #[command(subcommand)]
         command: LocalCommand,
-    },
-    /// Import, publish, and inspect saved Quarto results without executing code
-    Quarto {
-        #[command(subcommand)]
-        command: quarto::QuartoCommand,
     },
     /// Run the MCP adapter or manage the local assistant runner.
     Agent {
@@ -617,11 +564,6 @@ pub(crate) enum AdminCommand {
         #[arg(long, default_value_t = 8080, value_name = "PORT")]
         port: u16,
     },
-    /// Manage the keys used by a deployment.
-    Key {
-        #[command(subcommand)]
-        command: KeyCommand,
-    },
     /// Replace local or remote data with the example documents
     Seed {
         #[command(flatten)]
@@ -639,17 +581,8 @@ pub(crate) enum AdminCommand {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum KeyCommand {
-    /// Rotate the local deployment's sealed-link key.
-    Rotate {
-        /// Deployment data directory
-        directory: PathBuf,
-    },
-}
-
-#[derive(Subcommand)]
 pub(crate) enum BackupCommand {
-    /// Create a verified offline SQLite/object/secrets recovery point.
+    /// Create a snapshot-consistent PostgreSQL and immutable-object recovery point.
     Create {
         #[command(flatten)]
         storage: StorageFlags,
@@ -668,6 +601,8 @@ pub(crate) enum BackupCommand {
     },
     /// Restore a verified backup into a new deployment directory.
     Restore {
+        #[command(flatten)]
+        storage: StorageFlags,
         /// Backup directory to read
         backup: String,
         /// New deployment directory to create
@@ -678,6 +613,11 @@ pub(crate) enum BackupCommand {
 /// `librepaper local <command>`. See `crate::local::cli`.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalCommand {
+    /// Manage companion-local build presets and their execution grants.
+    Preset {
+        #[command(subcommand)]
+        command: LocalPresetCommand,
+    },
     /// Manage local Quarto execution permissions.
     Quarto {
         #[command(subcommand)]
@@ -767,6 +707,55 @@ pub enum LocalCommand {
 }
 
 #[derive(Subcommand, Clone, Debug)]
+pub enum LocalPresetCommand {
+    /// List safe metadata for locally configured presets.
+    List,
+    /// Create a local preset. Options and environment are key=value pairs.
+    Create {
+        name: String,
+        adapter: String,
+        #[arg(long, value_delimiter = ',')]
+        format: Vec<String>,
+        #[arg(long = "option", value_name = "KEY=VALUE")]
+        options: Vec<String>,
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        environment: Vec<String>,
+        #[arg(long)]
+        wrapper: Option<String>,
+    },
+    /// Update a local preset; all grants become invalid.
+    Update {
+        id: String,
+        name: String,
+        adapter: String,
+        #[arg(long, value_delimiter = ',')]
+        format: Vec<String>,
+        #[arg(long = "option", value_name = "KEY=VALUE")]
+        options: Vec<String>,
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        environment: Vec<String>,
+        #[arg(long)]
+        wrapper: Option<String>,
+    },
+    Remove {
+        id: String,
+    },
+    Grant {
+        preset: String,
+        origin: String,
+        project: String,
+        entrypoint: String,
+        #[arg(long, default_value = "snapshot")]
+        workspace: String,
+        #[arg(long, default_value = "build")]
+        operation: String,
+    },
+    Revoke {
+        id: String,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
 pub enum LocalQuartoCommand {
     /// Grant this machine permission to render a linked Quarto project
     Bind {
@@ -802,76 +791,46 @@ pub async fn main() {
     let server = cli.server;
     let token = cli.token;
     match cli.command {
-        Command::Skills { command } => {
-            if let Err(error) = skills::run(command) {
-                die(error);
-            }
-        }
         Command::Login => login(server).await,
         Command::Logout => logout(),
-        Command::Publish {
-            file,
-            title,
-            slug,
-            main,
-        } => {
-            publish(
-                &file,
-                title.unwrap_or_default(),
-                slug.unwrap_or_default(),
-                server,
-                token,
-                main.unwrap_or_default(),
-            )
-            .await
-        }
         Command::Admin { command } => run_admin(command, server, token).await,
         Command::List => list_documents(server, token).await,
-        Command::Open { id, key } => {
-            open_document(&id, server, token, key.unwrap_or_default()).await
-        }
-        Command::Sync {
-            id,
-            file,
-            interval,
-            key,
-            dry_run,
-        } => {
-            crate::cli::sync::sync_document(
-                &id,
-                &file,
-                server,
-                token,
-                interval.unwrap_or_default(),
-                key.unwrap_or_default(),
-                dry_run,
-            )
-            .await
-        }
         Command::Export {
             id,
             format,
             since,
             output,
             key,
+            comments: _,
+            project,
         } => {
-            crate::cli::export::export_document(
-                &id,
-                server,
-                token,
-                &format,
-                output.unwrap_or_default(),
-                since.unwrap_or_default(),
-                key.unwrap_or_default(),
-            )
-            .await
-        }
-        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
-        Command::Quarto { command } => {
-            if let Err(error) = quarto::run(command, server, token).await {
-                die(error);
+            if project {
+                if format.is_some() || since.is_some() {
+                    die("--format and --since apply only to comments export");
+                }
+                let output = output.unwrap_or_else(|| die("--project requires --output DIRECTORY"));
+                crate::cli::export::export_project(
+                    &id,
+                    server,
+                    token,
+                    &output,
+                    key.unwrap_or_default(),
+                )
+                .await
+            } else {
+                crate::cli::export::export_document(
+                    &id,
+                    server,
+                    token,
+                    format.as_deref().unwrap_or("jsonld"),
+                    output.unwrap_or_default(),
+                    since.unwrap_or_default(),
+                    key.unwrap_or_default(),
+                )
+                .await
             }
         }
+        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
         Command::Agent { command } => {
             if let Err(err) = crate::cli::peer::run_cli(command, server, token).await {
                 die(err);
@@ -910,7 +869,7 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
         AdminCommand::Status {
             endpoint,
             port,
-            storage,
+            storage: _,
         } => {
             let endpoint = endpoint
                 .or(server)
@@ -929,12 +888,7 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
             }
             let (status, payload) = match get_json(&url, Duration::from_secs(10)).await {
                 Ok(response) => response,
-                Err(error) => {
-                    let paths = storage.options().paths().unwrap_or_else(|error| die(error));
-                    let payload = crate::server::cost::offline_status(&paths.catalog)
-                        .unwrap_or_else(|offline| die(format!("could not query operator status: {error}; could not read durable counters: {offline}")));
-                    (200, payload)
-                }
+                Err(error) => die(format!("could not query operator status: {error}")),
             };
             if status != 200 {
                 die(format!(
@@ -948,58 +902,6 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                     "could not format operator status: {error}"
                 )))
             );
-        }
-        AdminCommand::Key {
-            command: KeyCommand::Rotate { directory },
-        } => {
-            let root = directory;
-            let _writer_lock =
-                crate::server::serve::acquire_writer_lock(&root.join("state/writer.lock"))
-                    .unwrap_or_else(|error| die(error));
-            let catalog = crate::storage::catalog::Catalog::open(root.join("catalog.db"))
-                .unwrap_or_else(|error| die(format!("could not open catalogue: {error}")));
-            let key_path = root.join("secrets/links.key");
-            let keys = crate::auth::link_sealing_keyring_file(&key_path, true)
-                .unwrap_or_else(|error| die(error));
-            let key_id = |key: &[u8]| {
-                use sha2::Digest;
-                hex::encode(sha2::Sha256::digest(key))[..16].to_string()
-            };
-            let durable_primary = catalog
-                .link_keyring_primary_id()
-                .unwrap_or_else(|error| die(error.to_string()));
-            let source_index = durable_primary
-                .as_deref()
-                .and_then(|primary| keys.iter().position(|key| key_id(key) == primary))
-                .unwrap_or(0);
-            let source = keys[source_index].clone();
-            let destination = if key_id(&keys[0]) != key_id(&source) {
-                keys[0].clone()
-            } else {
-                crate::auth::random_bytes(32)
-            };
-            let mut persisted = Vec::with_capacity(keys.len() + 1);
-            persisted.push(destination.clone());
-            persisted.push(source.clone());
-            for key in keys {
-                if key_id(&key) != key_id(&destination) && key_id(&key) != key_id(&source) {
-                    persisted.push(key);
-                }
-            }
-            crate::auth::write_link_sealing_keyring(&key_path, &persisted)
-                .unwrap_or_else(|error| die(error));
-            catalog
-                .set_link_sealing_key(&source)
-                .unwrap_or_else(|error| die(error.to_string()));
-            for old in persisted.iter().skip(1) {
-                catalog
-                    .add_link_decryption_key(old)
-                    .unwrap_or_else(|error| die(error.to_string()));
-            }
-            let changed = catalog
-                .rotate_link_sealing_key(&destination)
-                .unwrap_or_else(|error| die(error.to_string()));
-            println!("resealed {changed} links");
         }
         AdminCommand::Seed {
             storage,
@@ -1037,18 +939,18 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                     advanced_config,
                 },
         } => {
-            let backup_policy = backup_policy_from_config(advanced_config.as_deref());
-            crate::storage::backup::backup_cli(
-                storage.options(),
-                directory,
-                id.unwrap_or_default(),
-                backup_policy,
-            )
-            .await
+            let _backup_policy = backup_policy_from_config(advanced_config.as_deref());
+            crate::storage::backup::backup_cli(storage.options(), directory, id.unwrap_or_default())
+                .await
         }
         AdminCommand::Backup {
-            command: BackupCommand::Restore { backup, directory },
-        } => crate::storage::backup::restore_cli(backup, directory).await,
+            command:
+                BackupCommand::Restore {
+                    storage,
+                    backup,
+                    directory,
+                },
+        } => crate::storage::backup::restore_cli(storage.options(), backup, directory).await,
     }
 }
 
@@ -1086,5 +988,67 @@ fn origin_of(server: &str) -> String {
             url.port_or_known_default().unwrap_or(0)
         ),
         _ => server.trim().trim_end_matches('/').to_lowercase(),
+    }
+}
+
+#[cfg(test)]
+mod socket_policy_tests {
+    use super::*;
+
+    #[test]
+    fn simplified_command_surface_and_export_modes_parse() {
+        for removed in ["publish", "sync", "open", "skills", "quarto"] {
+            assert!(
+                Cli::try_parse_from(["librepaper", removed]).is_err(),
+                "{removed} remains available"
+            );
+        }
+        let comments = Cli::try_parse_from([
+            "librepaper",
+            "export",
+            "paper",
+            "--comments",
+            "--format",
+            "markdown",
+        ]);
+        assert!(comments.is_ok());
+        let project = Cli::try_parse_from([
+            "librepaper",
+            "export",
+            "paper",
+            "--project",
+            "--output",
+            "copy",
+        ]);
+        assert!(project.is_ok());
+        assert!(
+            Cli::try_parse_from(["librepaper", "export", "paper", "--comments", "--project"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn advanced_configuration_accepts_separate_document_role_caps() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "sockets:\n  document_readers_max: 80\n  document_commenters_max: 12\n  document_editors_max: 5\n").unwrap();
+        let config = ServiceFlags {
+            advanced_config: Some(file.path().to_path_buf()),
+            ..Default::default()
+        }
+        .configuration();
+        assert_eq!(config.sockets.document_readers_max, 80);
+        assert_eq!(config.sockets.document_commenters_max, 12);
+        assert_eq!(config.sockets.document_editors_max, 5);
+        assert_eq!(config.sockets.document_max, 256);
+        for name in [
+            "document_readers_max",
+            "document_commenters_max",
+            "document_editors_max",
+        ] {
+            assert_eq!(
+                config.policy_origins[&format!("sockets.{name}")],
+                "configuration file"
+            );
+        }
     }
 }

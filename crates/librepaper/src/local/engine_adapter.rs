@@ -4,8 +4,8 @@
 //! persistence.  This module owns the small amount of engine selection needed
 //! to hand a request to the implementation that knows its source inventory,
 //! invocation policy, output capture and publication exclusions. Quarto is
-//! the only computation engine currently supported by this adapter surface;
-//! TeX and Biber continue through the existing native runner.
+//! the only computation engine currently supported by this adapter surface.
+//! LaTeX is built in the browser, so no TeX or Biber job reaches here.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -17,32 +17,20 @@ use tokio::sync::{mpsc, watch};
 use super::protocol::{
     Capabilities, JobOutcome, JobRequest, JobStatus, QuartoJobOptions, Workspace,
 };
-use super::{native, quarto, quarto_capture};
+use super::{quarto, quarto_capture};
 
-/// The engine selected for a local job.  The `Native` arm is the compatibility
-/// path for the pre-adapter TeX/Biber jobs; it does not grant another engine
-/// access to the Quarto execution surface.
+/// The engine selected for a local job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobAdapter {
-    Native,
     Quarto,
 }
 
 /// Selects an adapter from the explicit wire job kind and engine field.
-/// Unknown kinds never fall through to native execution.  Calepin is named
-/// here so adding its wire vocabulary cannot accidentally enable execution
-/// before its adapter, grants and capture policy exist.
+/// Unknown kinds are refused rather than dispatched. Calepin is named here so
+/// adding its wire vocabulary cannot accidentally enable execution before its
+/// adapter, grants and capture policy exist.
 pub fn select(request: &JobRequest) -> Result<JobAdapter, String> {
     match request.kind.as_str() {
-        "tex"
-            if matches!(
-                request.engine.as_str(),
-                "" | "pdflatex" | "xelatex" | "lualatex"
-            ) =>
-        {
-            Ok(JobAdapter::Native)
-        }
-        "biber" if request.engine.is_empty() => Ok(JobAdapter::Native),
         "quarto" if request.engine.is_empty() || request.engine == "quarto" => {
             Ok(JobAdapter::Quarto)
         }
@@ -51,10 +39,6 @@ pub fn select(request: &JobRequest) -> Result<JobAdapter, String> {
             request.engine
         )),
         "calepin" => Err("unsupported execution engine: calepin".into()),
-        "tex" | "biber" => Err(format!(
-            "unsupported engine {:?} for {} job",
-            request.engine, request.kind
-        )),
         other => Err(format!("unknown job kind: {other}")),
     }
 }
@@ -70,19 +54,56 @@ pub async fn run(
     progress: mpsc::UnboundedSender<JobStatus>,
     bindings: &super::quarto::BindingStore,
 ) -> JobOutcome {
-    let id = workspace
+    let job_id = workspace
         .root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    match select(&request) {
-        Ok(JobAdapter::Native) => {
-            native::run_job(tex_path, request, workspace, cancel, progress).await
+    if request.protocol == 2 && request.builder.is_some() {
+        let tools = crate::local::discovery::tool_paths(tex_path).await;
+        if let Some(super::protocol::WorkspaceRequest::Snapshot {
+            binding_id: Some(binding_id),
+        }) = request.workspace.as_ref()
+        {
+            let binding =
+                match bindings.resolve_scoped(binding_id, &request.origin, &request.project) {
+                    Ok(binding) => binding,
+                    Err(error) => return unsupported(&request, &job_id, &error),
+                };
+            let root = match std::fs::canonicalize(&binding.root) {
+                Ok(root) if root.is_dir() => root,
+                _ => return unsupported(&request, &job_id, "bound workspace root is unavailable"),
+            };
+            if root != binding.root {
+                return unsupported(&request, &job_id, "bound workspace root changed");
+            }
+            if request.entrypoint.as_deref() != Some(binding.entrypoint.as_str()) {
+                return unsupported(
+                    &request,
+                    &job_id,
+                    "entrypoint no longer matches the scoped binding",
+                );
+            }
         }
+        if request.builder.as_deref() == Some("quarto") {
+            return quarto::run_job_with_bindings(request, workspace, cancel, progress, bindings)
+                .await;
+        }
+        return crate::local::builders::runner::run(
+            request,
+            workspace,
+            tools,
+            cancel,
+            progress,
+            &bindings.preset_store(),
+        )
+        .await;
+    }
+    match select(&request) {
         Ok(JobAdapter::Quarto) => {
             quarto::run_job_with_bindings(request, workspace, cancel, progress, bindings).await
         }
-        Err(error) => unsupported(&request, &id, &error),
+        Err(error) => unsupported(&request, &job_id, &error),
     }
 }
 
@@ -90,13 +111,24 @@ pub async fn run(
 /// behind this function means the service has no engine-specific capability
 /// branch and cannot accidentally advertise a future engine.
 pub async fn capabilities(refresh: bool, tex_path: &[std::path::PathBuf]) -> Capabilities {
-    super::discovery::discover(refresh, tex_path).await
-}
-
-/// Quarto policy support is version-gated by the adapter.  An unavailable or
-/// unparsable version stays conservative and permits project defaults only.
-pub fn quarto_supported_policies(version: Option<&str>) -> Vec<String> {
-    quarto::supported_policies(version)
+    let zotero_client = super::zotero::Client::local();
+    let (mut capabilities, zotero) = tokio::join!(
+        super::discovery::discover(refresh, tex_path),
+        zotero_client.probe()
+    );
+    capabilities.zotero = match zotero {
+        Ok(()) => super::protocol::Tool {
+            available: true,
+            version: Some("api-v3".into()),
+            note: "Zotero desktop local API is available".into(),
+        },
+        Err(error) => super::protocol::Tool {
+            available: false,
+            version: None,
+            note: error.to_string(),
+        },
+    };
+    capabilities
 }
 
 fn unsupported(request: &JobRequest, id: &str, error: &str) -> JobOutcome {
@@ -184,44 +216,6 @@ impl QuartoInvocationPlan {
     }
 }
 
-/// Delegates source inventory to the Quarto implementation while keeping the
-/// adapter as the only caller-facing engine boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceInventory {
-    pub tree_sha256: String,
-    pub files: Vec<String>,
-}
-
-pub fn quarto_source_inventory(
-    root: &Path,
-    manifest: &[super::protocol::ManifestEntry],
-) -> Result<SourceInventory, String> {
-    quarto::inventory_manifest_impl(root, manifest)
-}
-
-pub fn quarto_source_tree_inventory(root: &Path) -> Result<SourceInventory, String> {
-    quarto::inventory_tree_impl(root)
-}
-
-pub fn quarto_computation_fingerprint(
-    source: &str,
-    entrypoint: &str,
-    format: &str,
-    profiles: &[String],
-    parameters_sha256: Option<&str>,
-    dependencies: &[String],
-) -> String {
-    let mut document = crate::quarto::parse_qmd(source, entrypoint);
-    document.dependencies = dependencies.to_vec();
-    crate::quarto::computation_fingerprint_for_format(
-        &document,
-        entrypoint,
-        format,
-        profiles,
-        parameters_sha256,
-    )
-}
-
 pub fn quarto_capture(
     manifest_path: &Path,
     source_path: &str,
@@ -234,6 +228,7 @@ pub fn quarto_capture(
 /// The files selected for a Quarto publication.  Quarto's source and
 /// editorial inputs are shareable by default; generated output and local
 /// environments require an explicit `.librepaper-share.json` include.
+#[allow(dead_code)]
 pub fn quarto_shared_paths(
     root: &Path,
     main: &str,
@@ -341,7 +336,7 @@ mod tests {
 
     fn request(kind: &str, engine: &str) -> JobRequest {
         JobRequest {
-            protocol: 1,
+            protocol: 2,
             kind: kind.into(),
             project: "project".into(),
             origin: "https://example.test".into(),
@@ -352,7 +347,14 @@ mod tests {
             stem: String::new(),
             quarto: None,
             manifest: Vec::new(),
+            source: None,
             options: Default::default(),
+            builder: None,
+            workspace: None,
+            entrypoint: None,
+            output: None,
+            builder_options: None,
+            preset: None,
         }
     }
 
@@ -360,7 +362,9 @@ mod tests {
     fn explicit_job_gate_keeps_quarto_narrow() {
         assert_eq!(select(&request("quarto", "")), Ok(JobAdapter::Quarto));
         assert_eq!(select(&request("quarto", "quarto")), Ok(JobAdapter::Quarto));
-        assert_eq!(select(&request("tex", "")), Ok(JobAdapter::Native));
+        // LaTeX builds in the browser; no TeX or Biber job is dispatchable.
+        assert!(select(&request("tex", "")).is_err());
+        assert!(select(&request("biber", "")).is_err());
         assert_eq!(
             select(&request("calepin", "")),
             Err("unsupported execution engine: calepin".into())
@@ -389,10 +393,10 @@ mod tests {
     #[test]
     fn policy_capabilities_are_version_gated() {
         assert_eq!(
-            quarto_supported_policies(Some("Quarto 1.2.9")),
+            quarto::supported_policies(Some("Quarto 1.2.9")),
             vec!["project-defaults"]
         );
-        assert!(quarto_supported_policies(Some("Quarto 1.3.0")).contains(&"frozen".into()));
-        assert_eq!(quarto_supported_policies(None), vec!["project-defaults"]);
+        assert!(quarto::supported_policies(Some("Quarto 1.3.0")).contains(&"frozen".into()));
+        assert_eq!(quarto::supported_policies(None), vec!["project-defaults"]);
     }
 }

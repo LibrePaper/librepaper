@@ -32,6 +32,6 @@ Try changing the estimate and leave a comment on this paragraph. Typst Universe 
 
 == Working with other clients
 
-Choose Typst PDF preview for printed layout or experimental Typst HTML preview for flowing, semantic output. If a document contains executable Calepin chunks, the companion can offer a Calepin PDF preview. Use `librepaper sync` for a local editor and `librepaper publish` to publish from the terminal. Readers receive the stored PDF and do not need Typst installed.
+Choose Typst PDF preview for printed layout or experimental Typst HTML preview for flowing, semantic output. If a document contains executable Calepin chunks, the companion can offer a Calepin PDF preview. A project export creates an independent local copy. Readers receive the stored PDF and do not need Typst installed.
 
 #bibliography("references.bib", style: "american-psychological-association")
