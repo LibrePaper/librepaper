@@ -9,7 +9,9 @@
   // or a stale URL -- leaves the badge everyone else already has.
   let { name = "", key = "", icon = "", title = "", size = 7, src = "" } = $props();
   let broken = $state("");
-  const PALETTE = ["primary", "secondary", "tertiary", "success", "warning", "error"].map((tone) => `var(--color-${tone}-500)`);
+  // The -700 stop rather than the -500: these carry white initials, and at
+  // -500 the lighter three of the six hues sit under 4.5:1 behind them.
+  const PALETTE = ["primary", "secondary", "tertiary", "success", "warning", "error"].map((tone) => `var(--color-${tone}-700)`);
   function colour(seed) {
     let hash = 0;
     for (const char of String(seed)) hash = (hash * 31 + char.codePointAt(0)) >>> 0;

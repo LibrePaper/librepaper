@@ -123,8 +123,10 @@ export async function render(bytes, root, mode = "auto") {
     const first = await document_.getPage(1);
     if (mine !== generation) return 0;
     const size = first.getViewport({ scale: 1 });
+    // The frame is all page now: the controls moved out to the preview
+    // header, so nothing is subtracted for a bar inside it.
     const scale = viewerScale(mode, document.documentElement.clientWidth,
-      document.documentElement.clientHeight - 40, size.width, size.height);
+      document.documentElement.clientHeight, size.width, size.height);
     renderScale = scale;
     staging.dataset.scale = String(scale / (96 / 72));
     first.cleanup();
@@ -287,4 +289,3 @@ function gap(text) {
   return span;
 }
 
-export { createToolbar } from "./toolbar.js";

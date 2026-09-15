@@ -34,20 +34,27 @@ export function createLocalPreview({
   engine,
   label = engine,
   isDisposed = () => false,
-  onRunningChange,
-  onRenderingChange,
+  // The preview starting is the one change with a consequence beyond
+  // drawing it: a managed preview taking the pane invalidates whatever this
+  // browser was rendering into it.
   onStartingChange,
   onEnded,
-  onError,
   now = () => Date.now(),
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (timer) => clearTimeout(timer),
 } = {}) {
   void now; // reserved for a future backoff; every cadence today is fixed.
 
-  let session = null; // the bridge's { id, url, ... }, or null while idle
-  let starting = false;
-  let rendering = false;
+  // What the page draws. Owned here rather than mirrored into the page
+  // through callbacks: these are facts about a preview, the preview is this
+  // module, and a mirror is one more thing that can disagree.
+  const state = $state({
+    session: null, // the bridge's { id, url, ... }, or null while idle
+    starting: false,
+    rendering: false,
+    // The last thing that went wrong, or "" once a new attempt clears it.
+    error: "",
+  });
   let pageTimer = null;
   let pageEtag = null;
   let statusTimer = null;
@@ -61,10 +68,7 @@ export function createLocalPreview({
   let reconciliation = 0;
 
   function setRendering(value) {
-    value = !!value;
-    if (rendering === value) return;
-    rendering = value;
-    onRenderingChange?.(rendering);
+    state.rendering = !!value;
   }
 
   function report(message, isProblem) {
@@ -94,7 +98,7 @@ export function createLocalPreview({
     const tick = () => {
       Promise.resolve(local.localPreviewPage(id, { etag: pageEtag }))
         .then((page) => {
-          if (isDisposed() || session?.id !== id) return;
+          if (isDisposed() || state.session?.id !== id) return;
           setRendering(page?.rendering);
           if (page?.kind === "html") {
             pageEtag = page.etag;
@@ -108,12 +112,12 @@ export function createLocalPreview({
           // A network hiccup is not a reason to stop polling; the status
           // poll is what decides the preview is dead. "Not rendered yet"
           // still carries a render-state flag worth reflecting.
-          if (isDisposed() || session?.id !== id) return;
+          if (isDisposed() || state.session?.id !== id) return;
           if (error?.name === "NotRendered") setRendering(error.rendering);
         })
         .finally(() => {
-          if (isDisposed() || session?.id !== id || pageTimer === null) return;
-          pageTimer = setTimer(tick, rendering ? POLL_FAST_MS : POLL_SLOW_MS);
+          if (isDisposed() || state.session?.id !== id || pageTimer === null) return;
+          pageTimer = setTimer(tick, state.rendering ? POLL_FAST_MS : POLL_SLOW_MS);
         });
     };
     pageTimer = setTimer(tick, 0);
@@ -124,15 +128,14 @@ export function createLocalPreview({
   // bridge is told to drop it, the last log line is reported, and the
   // caller's `onEnded` gets a chance to repaint its own fallback preview.
   function endSession(message, isProblem) {
-    const active = session;
+    const active = state.session;
     if (!active) return;
-    session = null;
+    state.session = null;
     stopPagePoll();
     stopStatusPoll();
-    onRunningChange?.(null);
     void local.stopLocalPreview(active.id).catch(() => {});
     report(message, isProblem);
-    onError?.(message);
+    state.error = message || "";
     onEnded?.();
   }
 
@@ -141,16 +144,16 @@ export function createLocalPreview({
     const tick = () => {
       Promise.resolve(local.localPreviewStatus(id))
         .then((status) => {
-          if (isDisposed() || session?.id !== id) return;
+          if (isDisposed() || state.session?.id !== id) return;
           if (status?.state && status.state !== "running") {
             const line = String(status.log_tail || "").trim().split("\n").filter(Boolean).pop();
             endSession(line || `${label} preview ended`, true);
             return;
           }
-          if (session?.id === id) statusTimer = setTimer(tick, STATUS_POLL_MS);
+          if (state.session?.id === id) statusTimer = setTimer(tick, STATUS_POLL_MS);
         })
         .catch((error) => {
-          if (isDisposed() || session?.id !== id) return;
+          if (isDisposed() || state.session?.id !== id) return;
           endSession(`${label} preview ended: ${error.message}`, true);
         });
     };
@@ -159,26 +162,26 @@ export function createLocalPreview({
 
   function setStarting(value) {
     value = !!value;
-    if (starting === value) return;
-    starting = value;
-    onStartingChange?.(starting);
+    if (state.starting === value) return;
+    state.starting = value;
+    onStartingChange?.(state.starting);
   }
 
   async function start() {
     const mine = lifecycle;
     if (pendingStop) await pendingStop;
     if (pendingStart) await pendingStart;
-    if (mine !== lifecycle || session || isDisposed()) return;
+    if (mine !== lifecycle || state.session || isDisposed()) return;
     pendingStart = runStart();
     try { await pendingStart; }
     finally { pendingStart = null; }
   }
 
   async function runStart() {
-    if (session || starting || isDisposed()) return;
+    if (state.session || state.starting || isDisposed()) return;
     const mine = lifecycle;
     const cancelled = () => isDisposed() || lifecycle !== mine;
-    onError?.("");
+    state.error = "";
     setStarting(true);
     try {
       const tree = await Promise.resolve(treeNow());
@@ -190,9 +193,8 @@ export function createLocalPreview({
         await local.stopLocalPreview(started.id).catch(() => {});
         return;
       }
-      session = started;
+      state.session = started;
       errorShown = false;
-      onRunningChange?.(session);
       startPagePoll(started.id);
       startStatusPoll(started.id);
       if (syncQueued) {
@@ -201,8 +203,8 @@ export function createLocalPreview({
       }
     } catch (error) {
       if (!cancelled()) {
-        onError?.(error.message || `${label} preview unavailable`);
-        report(error.message || `${label} preview unavailable`, true);
+        state.error = error.message || `${label} preview unavailable`;
+        report(state.error, true);
         errorShown = true;
       }
     } finally {
@@ -213,12 +215,11 @@ export function createLocalPreview({
   async function stop() {
     lifecycle += 1;
     syncQueued = false;
-    const active = session;
+    const active = state.session;
     if (!active) { await Promise.all([pendingStart, pendingStop]); return; }
-    session = null;
+    state.session = null;
     stopPagePoll();
     stopStatusPoll();
-    onRunningChange?.(null);
     const stopped = local.stopLocalPreview(active.id).catch(() => {});
     pendingStop = stopped;
     await stopped;
@@ -231,8 +232,8 @@ export function createLocalPreview({
   // one-for-one. The engine's own file watcher does the rest once the
   // workspace has the new bytes.
   async function sync() {
-    if (starting && !session) { syncQueued = true; return; }
-    if (!session || isDisposed()) return;
+    if (state.starting && !state.session) { syncQueued = true; return; }
+    if (!state.session || isDisposed()) return;
     if (syncBusy) {
       syncQueued = true;
       return;
@@ -242,8 +243,8 @@ export function createLocalPreview({
       await local.syncWorkspace({ tree: await Promise.resolve(treeNow()) });
     } catch (error) {
       if (!errorShown) {
-        onError?.(error.message || `${label} preview could not sync`);
-        report(error.message || `${label} preview could not sync`, true);
+        state.error = error.message || `${label} preview could not sync`;
+        report(state.error, true);
         errorShown = true;
       }
       await stop();
@@ -266,7 +267,7 @@ export function createLocalPreview({
     const next = active || null;
     if (target !== next) {
       target = next;
-      const wasActive = session || starting;
+      const wasActive = state.session || state.starting;
       if (wasActive || pendingStop) await stop();
       if (mine !== reconciliation) return;
       if (!active && wasActive) { onEnded?.(); return; }
@@ -275,7 +276,7 @@ export function createLocalPreview({
       await start();
       return;
     }
-    if (session || starting || pendingStop) {
+    if (state.session || state.starting || pendingStop) {
       await stop();
       onEnded?.();
     }
@@ -286,17 +287,18 @@ export function createLocalPreview({
     stop,
     sync,
     reconcile,
+    state,
     get rendering() {
-      return rendering;
+      return state.rendering;
     },
     get running() {
-      return !!session;
+      return !!state.session;
     },
     get starting() {
-      return starting;
+      return state.starting;
     },
     get id() {
-      return session?.id ?? null;
+      return state.session?.id ?? null;
     },
   };
 }

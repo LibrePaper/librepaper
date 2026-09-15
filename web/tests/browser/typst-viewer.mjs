@@ -29,18 +29,28 @@ const assets = {
   "librepaper-icon.png": new Uint8Array(readFileSync(join(REPO, "docs", "examples", "tutorial-typst", "librepaper-icon.png"))),
 };
 
-function compile(main, source = texts[main]) {
-  handOver(wasm, { main, texts: { ...texts, [main]: source }, assets });
+function compile(main, source = texts[main], siblings = {}) {
+  handOver(wasm, { main, texts: { ...texts, ...siblings, [main]: source }, assets });
   const result = call(wasm, "compile", source, "Typst viewer fixture");
   assert.equal(result.kind, "pdf", `${main} did not produce a PDF`);
   assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
   return result.bytes;
 }
 
+// The tutorial is a project rather than a file: it includes a section and
+// cites a bibliography, both beside it on disk. They are handed over with it,
+// or the compile stops at the include and this whole suite has no PDF to
+// show.
+const TUTORIAL = join(REPO, "docs", "examples", "tutorial-typst");
+const tutorialFiles = {
+  "sections/rendering.typ": readFileSync(join(TUTORIAL, "sections", "rendering.typ"), "utf8"),
+  "references.bib": readFileSync(join(TUTORIAL, "references.bib"), "utf8"),
+};
+
 const PDFs = {
   paper: compile("paper.typ"),
   long: compile("long.typ"),
-  tutorial: compile("librepaper.typ", readFileSync(join(REPO, "docs", "examples", "tutorial-typst", "librepaper.typ"), "utf8")),
+  tutorial: compile("librepaper.typ", readFileSync(join(TUTORIAL, "librepaper.typ"), "utf8"), tutorialFiles),
 };
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PORT = 8800 + Math.floor(Math.random() * 200);
@@ -231,28 +241,34 @@ async function run() {
   const controls = await tab.eval(`
     const doc = frame.contentDocument;
     const win = frame.contentWindow;
-    const toolbar = doc.querySelector('.pdf-toolbar').shadowRoot;
-    const select = toolbar.getElementById('scaleSelect');
+    // The controls are the reader's, not the frame's: zoom and the cursor
+    // tool arrive over the same channel a preview does. The harness stands in
+    // for the preview header here.
     const originalText = window.text();
+    const ask = (message) => win.postMessage({ librepaper: true, ...message }, '*');
     async function mode(value) {
       const old = doc.querySelector('.pages');
-      select.value = value;
-      select.dispatchEvent(new Event('change'));
+      ask({ type: 'viewer-scale', mode: value });
       for (let i = 0; i < 100 && old === doc.querySelector('.pages'); i++)
         await new Promise(r => setTimeout(r, 50));
       if (old === doc.querySelector('.pages')) throw new Error('zoom did not render');
     }
     await mode('page-fit');
     const fit = doc.querySelector('.page').getBoundingClientRect();
-    const fits = fit.width <= doc.documentElement.clientWidth && fit.height <= win.innerHeight - 40;
+    const fits = fit.width <= doc.documentElement.clientWidth && fit.height <= win.innerHeight;
     await mode('2');
     const zoomWidth = doc.querySelector('.page').getBoundingClientRect().width;
-    toolbar.getElementById('cursorHandTool').click();
+    ask({ type: 'viewer-tool', tool: 'hand' });
+    // The frame imports grab-to-pan the first time it is asked for the hand.
+    for (let i = 0; i < 100 && !doc.documentElement.classList.contains('grab-to-pan-grab'); i++)
+      await new Promise(r => setTimeout(r, 50));
     doc.querySelector('.page').dispatchEvent(new MouseEvent('mousedown', {bubbles:true, button:0, clientX:300, clientY:300}));
     doc.dispatchEvent(new MouseEvent('mousemove', {bubbles:true, buttons:1, clientX:200, clientY:200}));
     doc.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
     const panned = doc.documentElement.scrollTop > 0;
-    toolbar.getElementById('cursorSelectTool').click();
+    ask({ type: 'viewer-tool', tool: 'select' });
+    for (let i = 0; i < 100 && doc.documentElement.classList.contains('grab-to-pan-grab'); i++)
+      await new Promise(r => setTimeout(r, 50));
     const selection = !doc.documentElement.classList.contains('grab-to-pan-grab');
     await mode('page-width');
     const width = doc.querySelector('.page').getBoundingClientRect().width;
@@ -291,49 +307,58 @@ async function run() {
   `);
   check("a ligature-safe Typst text anchor paints", ligature?.marks > 0 && ligature.text === "fixture", JSON.stringify(ligature));
 
+  // A suggestion over a PDF is drawn beside the words rather than among them.
+  // The agent paints a proposal as a real span, which a flowing document can
+  // simply put after the passage; a PDF page cannot, because the glyphs are
+  // on the canvas and every run of selectable text above them is transparent
+  // and absolutely placed. Left in the run, the proposal inherits that
+  // transparency -- invisible words -- and widens the run it sits in. The
+  // rules that lift it out live in `pages/viewer.html`.
   const tracked = await tab.eval(`
     const doc = window.doc();
     const at = window.anchor({ exact: 'Typst PDF fixture', prefix: '', suffix: '' });
     if (!at) return null;
-    const spans = [...doc.querySelectorAll('.textLayer span:not(.gap)')];
-    const bounds = () => spans.map(span => {
-      const r = doc.createRange(); r.selectNodeContents(span);
-      const b = r.getBoundingClientRect();
+    const runs = [...doc.querySelectorAll('.textLayer span:not(.gap)')];
+    // The boxes of the runs themselves: a proposal drawn in the flow would
+    // widen the one it was inserted into, wherever it ended up on screen.
+    const boxes = () => runs.map(span => {
+      const b = span.getBoundingClientRect();
       return [b.x, b.y, b.width, b.height];
     });
-    const before = JSON.stringify(bounds());
-    const text = doc.body.textContent;
+    const before = JSON.stringify(boxes());
+    const text = window.text();
     window.paint([{ id: 'tracked', start: at.start, end: at.end, motivation: 'editing', proposed: 'A revised title' }]);
     await new Promise(resolve => setTimeout(resolve, 100));
-    const proposals = doc.querySelectorAll('mark[data-proposed]');
     const strike = doc.querySelector('mark[data-librepaper~="tracked"]');
     const style = doc.defaultView.getComputedStyle(strike);
-    const proposalCount = proposals.length;
-    const proposalPosition = doc.defaultView.getComputedStyle(proposals[0], '::after').position;
-    window.paint([]);
-    window.frames[0].postMessage({ librepaper: true, type: 'redlines', items: [
-      { kind: 'insert', start: at.start, end: at.end, who: 'Editor' },
-      { kind: 'delete', at: at.start, text: 'Previous title', who: 'Editor' },
-    ] }, '*');
-    await new Promise(resolve => setTimeout(resolve, 100));
-    const insertion = doc.querySelector('mark.librepaper-ins');
-    const deletion = doc.querySelector('mark.librepaper-del');
-    const result = { proposalCount, proposalPosition,
+    const proposals = doc.querySelectorAll('.librepaper-suggestion-synthetic');
+    const proposal = doc.defaultView.getComputedStyle(proposals[0]);
+    const result = { proposalCount: proposals.length,
+      proposalText: proposals[0]?.textContent,
+      // Opaque, and out of the run: the two things the text layer would
+      // otherwise take away from it.
+      proposalColour: proposal.color,
+      proposalPlacement: [proposal.position, proposal.left],
       visibleStrike: style.textDecorationColor !== 'rgba(0, 0, 0, 0)',
-      inserted: [...doc.querySelectorAll('mark.librepaper-ins')].map(m => m.textContent).join(''),
-      deletionPosition: doc.defaultView.getComputedStyle(deletion, '::before').position,
-      underline: doc.defaultView.getComputedStyle(insertion).textDecorationLine,
-      sameText: doc.body.textContent === text,
-      // Splitting text nodes can round glyph widths by 1/64 CSS pixel at fractional zoom.
-      sameBounds: bounds().every((box, i) => box.every((value, j) => Math.abs(value - JSON.parse(before)[i][j]) < 0.05)) };
-    window.frames[0].postMessage({ librepaper: true, type: 'redlines', items: [] }, '*');
+      // The proposal is not a word of the document, so the text the agent
+      // publishes -- what every anchor is measured against -- must not have
+      // grown by one character of it.
+      sameText: window.text() === text,
+      // Rounding at fractional zoom moves a box by well under a pixel.
+      sameBoxes: boxes().every((box, i) => box.every((value, j) => Math.abs(value - JSON.parse(before)[i][j]) < 0.05)) };
+    window.paint([]);
     await new Promise(resolve => setTimeout(resolve, 100));
-    result.cleared = !doc.querySelector('mark.librepaper-ins, mark.librepaper-del');
+    result.cleared = !doc.querySelector('.librepaper-suggestion-synthetic, mark[data-librepaper]');
     return result;
   `);
-  check("PDF suggestions paint one proposal with a visible strike", tracked?.proposalCount === 1 && tracked.visibleStrike && tracked.proposalPosition === 'absolute', JSON.stringify(tracked));
-  check("PDF redlines underline insertions without moving selectable text", tracked?.inserted === 'Typst PDF fixture' && tracked.underline.includes('underline') && tracked.sameText && tracked.sameBounds && tracked.deletionPosition === 'absolute', JSON.stringify(tracked));
-  check("PDF redlines clear cleanly", tracked?.cleared, JSON.stringify(tracked));
+  check("PDF suggestions paint one proposal with a visible strike",
+    tracked?.proposalCount === 1 && tracked.proposalText === 'A revised title' && tracked.visibleStrike,
+    JSON.stringify(tracked));
+  check("a PDF proposal is legible over the page and leaves the runs where they were",
+    tracked?.proposalColour !== 'rgba(0, 0, 0, 0)' && tracked.proposalPlacement[0] === 'absolute'
+      && tracked.proposalPlacement[1] !== 'auto' && tracked.sameText && tracked.sameBoxes,
+    JSON.stringify(tracked));
+  check("PDF suggestions clear cleanly", tracked?.cleared, JSON.stringify(tracked));
 
   // Point comments use an empty text quote and a zero-width inline marker. A
   // custom colour must remain visible in the PDF text layer, while the marker
@@ -375,11 +400,9 @@ async function run() {
 
   const pointZoom = await tab.eval(`
     const doc = window.doc();
-    const toolbar = doc.querySelector('.pdf-toolbar').shadowRoot;
-    const select = toolbar.getElementById('scaleSelect');
     const marker = () => doc.querySelector('.librepaper-point-marker')?.getBoundingClientRect();
     const before = marker();
-    select.value = '2'; select.dispatchEvent(new Event('change'));
+    frame.contentWindow.postMessage({ librepaper: true, type: 'viewer-scale', mode: '2' }, '*');
     for (let i = 0; i < 100 && !marker(); i++) await new Promise(r => setTimeout(r, 50));
     await new Promise(r => setTimeout(r, 150));
     const zoomed = marker();
@@ -396,8 +419,15 @@ async function run() {
   check("PDF point marker follows zoom and parent repaint", pointZoom?.markers === 1 && pointZoom?.text.includes('Typst PDF fixture') && pointZoom.rerendered?.every(Number.isFinite), JSON.stringify(pointZoom));
 
   // Empty PDF end-of-line items must leave a separator in the live DOM.
-  // Without it, this highlight becomes "parameteris fixed", fails to anchor,
-  // and sorts after the comments instead of between them in the sidebar.
+  // Without it the last word of a line runs into the first word of the next --
+  // "consistent:A small" -- so a sentence that wraps cannot be found at all,
+  // and a comment on it sorts to the end of the sidebar instead of into the
+  // document's own order.
+  //
+  // Each of these three sentences wraps in the tutorial's layout, and they
+  // must come back in the order the document puts them in. (They replaced the
+  // three sentences of a fixture this suite no longer compiles, whose middle
+  // sentence was the one that wrapped; the ordering here is the tutorial's.)
   await tab.eval("window.paint([]); await new Promise(r => setTimeout(r, 80)); await window.sendPdf('/pdf/tutorial')");
   await settle(tab);
   const positions = await tab.eval(`
@@ -408,7 +438,7 @@ async function run() {
     ].map((exact) => window.anchor({ exact })?.start ?? null);
   `);
   check("a highlight across a Typst line break anchors between comments",
-    positions.every(Number.isFinite) && positions[0] < positions[2] && positions[2] < positions[1],
+    positions.every(Number.isFinite) && positions[0] < positions[1] && positions[1] < positions[2],
     JSON.stringify(positions));
 
   await tab.eval("await window.sendPdf('/pdf/long')");
@@ -454,7 +484,7 @@ async function run() {
       const viewer = frame.contentWindow.librepaperViewer;
       const marks = [...window.doc().querySelectorAll('mark[data-librepaper]')].filter((m) => !m.closest('span.gap'));
       const markPages = [...new Set(marks.map((mark) => mark.closest('.page')?.dataset.page).filter(Boolean))];
-      return { at, startPage: viewer.pageForOffset(at.start), endPage: viewer.pageForOffset(at.end - 1), markPages, marks: marks.length, proposals: window.doc().querySelectorAll('mark[data-proposed]').length };
+      return { at, startPage: viewer.pageForOffset(at.start), endPage: viewer.pageForOffset(at.end - 1), markPages, marks: marks.length, proposals: window.doc().querySelectorAll('.librepaper-suggestion-synthetic').length };
     `);
     check("the cross-page text anchor paints in the PDF text layer", found?.marks > 0, JSON.stringify(found));
     check("the cross-page highlight reaches both pages", found?.markPages?.length > 1, JSON.stringify(found));

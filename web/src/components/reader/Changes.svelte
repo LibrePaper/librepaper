@@ -1,4 +1,7 @@
 <script>
+  import { Menu } from "@skeletonlabs/skeleton-svelte";
+  import ExplorerMenu from "../ExplorerMenu.svelte";
+
   let {
     revisions = [], comments = [], files = [], tracking = false, markup = true, showMarkup,
     canTrack = true, canReview = true, selected = "", selectedRevision = "", filters = {},
@@ -178,6 +181,10 @@
     const failed = settled.filter((entry) => entry.status === "rejected");
     feedback = failed.length ? `${batch.ids.length - failed.length} undone; ${failed.length} could not be undone. The affected changes remain pending.` : `Undid ${batch.action === "accept" ? "acceptance" : "rejection"}${batch.ids.length > 1 ? "s" : ""}.`;
   }
+  function chooseMenuItem(value) {
+    if (value === "markup") onmarkup?.(!markupVisible);
+    else if (value === "undo") void undo();
+  }
   function move(offset) { const index = filteredRows.findIndex((item) => rowId(item) === active); const item = filteredRows[index + offset] || filteredRows[index]; if (item) activate(item, { focus: true }); }
   function resolve(item) {
     const ids = item.affectedRevisionIds || item.dependencies || [idOf(item)];
@@ -186,7 +193,7 @@
     else feedback = "Source-based resolution is unavailable for this conflict; review the affected passages individually.";
   }
   function keydown(event) {
-    if (event.defaultPrevented || event.isComposing || event.target.closest("input,select,textarea,[contenteditable=true],details")) return;
+    if (event.defaultPrevented || event.isComposing || event.target.closest("input,select,textarea,[contenteditable=true],details,[data-scope='menu']")) return;
     const item = rowFor(active); const key = event.key.toLowerCase();
     if (event.key === "ArrowDown" || key === "j") { event.preventDefault(); onnext?.(active); move(1); }
     else if (event.key === "ArrowUp" || key === "k") { event.preventDefault(); onprevious?.(active); move(-1); }
@@ -214,8 +221,29 @@
     <div class="changes-meta" aria-live="polite">{allPending} pending{allRows.length !== allPending ? ` · ${allRows.length} total` : ""}{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}</div>
     <div class="filter-bar">
       <select aria-label="Change status" value={activeFilters.status} onchange={(event) => updateFilter("status", event)}><option value="pending">Pending</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="all">All statuses</option></select>
-      {#if showExtraFilters}<button type="button" class="btn btn-sm preset-tonal-surface" aria-expanded={filtersOpen} aria-controls="change-extra-filters" onclick={() => filtersOpen = !filtersOpen}>Filter{activeFilters.author || activeFilters.file || activeFilters.session ? " •" : ""}</button>{/if}
-      <details class="changes-menu"><summary aria-label="More change options">•••</summary><div class="menu-popover"><strong>View</strong><label class="markup-toggle"><input type="checkbox" checked={markupVisible} disabled={!onmarkup} onchange={(event) => onmarkup?.(event.currentTarget.checked)} /> Markup</label>{#if undoBatch}<button type="button" class="btn btn-sm preset-tonal-surface" onclick={() => void undo()}>Undo last decision</button>{/if}<hr /><strong>Keyboard shortcuts</strong><span class="panel-muted">J/K or ↑/↓ to move<br />A to accept · R to reject</span></div></details>
+      {#if showExtraFilters}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" aria-expanded={filtersOpen} aria-controls="change-extra-filters" onclick={() => filtersOpen = !filtersOpen}>Filter{activeFilters.author || activeFilters.file || activeFilters.session ? " •" : ""}</button>{/if}
+      <Menu onSelect={(chosen) => chooseMenuItem(chosen.value)}>
+        <!-- The button is authored here rather than handed a `class`: a class
+             arriving as a prop carries no scope hash, so the rules below would
+             have to be global to paint at all. -->
+        <Menu.Trigger>
+          {#snippet element(attributes)}
+            <button {...attributes} class="changes-menu" aria-label="More change options">•••</button>
+          {/snippet}
+        </Menu.Trigger>
+        <ExplorerMenu>
+          <div class="changes-menu-label">View</div>
+          <Menu.Item value="markup" class="menuitem" disabled={!onmarkup}>
+            <span class="w-4">{markupVisible ? "✓" : ""}</span>Markup
+          </Menu.Item>
+          {#if undoBatch}
+            <Menu.Item value="undo" class="menuitem"><span class="w-4"></span>Undo last decision</Menu.Item>
+          {/if}
+          <hr class="hr my-1" />
+          <div class="changes-menu-label">Keyboard shortcuts</div>
+          <div class="changes-menu-hint">J/K or ↑/↓ to move<br />A to accept · R to reject</div>
+        </ExplorerMenu>
+      </Menu>
     </div>
     {#if filtersOpen && showExtraFilters}<div id="change-extra-filters" class="filters" aria-label="Change filters">
       {#if derivedAuthors.length > 1}<select aria-label="Filter by author" value={activeFilters.author} onchange={(event) => updateFilter("author", event)}><option value="">All authors</option>{#each derivedAuthors as author}<option value={author}>{authorFilterLabel(author)}</option>{/each}</select>{/if}
@@ -231,7 +259,7 @@
         <div class="row-head"><button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-author">{authorLabel(item)}{timeLabel(item) ? ` · ${timeLabel(item)}` : ""}</span><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}{shortDiff(item)}{/if}</span>{#if derivedFiles.length > 1}<span class="row-context">{pathOf(item)}</span>{/if}{#if statusOf(item) !== "pending"}<span class="row-status">{statusOf(item)}</span>{/if}</button></div>
         <div class="row-footer"><span></span>{#if pending(item)}<span class="row-actions"><button type="button" class="btn btn-sm row-action reject" aria-label={`Reject change in ${pathOf(item)}`} title={why || "Reject this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button><button type="button" class="btn btn-sm row-action accept" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button></span>{/if}</div>
         {#if isOpen && why}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
-          <div class="conflict" role="alert"><strong>Needs attention</strong><p>{why}</p><button type="button" class="btn btn-sm preset-tonal-surface" onclick={() => resolve(item)}>Resolve dependency</button></div>
+          <div class="conflict" role="alert"><strong>Needs attention</strong><p>{why}</p><button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => resolve(item)}>Resolve dependency</button></div>
         </div>{#if item.replies?.length}<details class="discussion"><summary>Discussion ({item.replies.length})</summary><ul>{#each item.replies as reply (reply.id)}<li><strong>{reply.creator || "Author"}:</strong> {reply.body}</li>{/each}</ul></details>{/if}{/if}
       </article>
     {/each}
@@ -246,11 +274,15 @@
   .changes-meta, .row-context, .row-status { color: var(--color-surface-500-400); font-size: .75rem; }
   .tracking-toggle { display: flex; align-items: center; gap: .45rem; font-size: .78rem; cursor: pointer; } .tracking-toggle input { position: absolute; opacity: 0; pointer-events: none; } .switch { position: relative; width: 1.8rem; height: 1rem; border-radius: 1rem; background: var(--color-surface-300-700); transition: background .15s; } .switch::after { content: ""; position: absolute; width: .75rem; height: .75rem; left: .125rem; top: .125rem; border-radius: 50%; background: var(--color-surface-50-950); transition: transform .15s; } .tracking-toggle input:checked + .switch { background: var(--color-primary-500); } .tracking-toggle input:checked + .switch::after { transform: translateX(.8rem); } .tracking-toggle input:focus-visible + .switch { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
   /* The header of a panel that can be dragged down to fifteen rem: a row that
-     insists on a width is a row that pushes the ••• menu out of the column and
-     its popover under the sidebar's own clipping. So the status select takes
-     what is left rather than asking for seven rem of it, and the row wraps
-     before it overflows. */
-  .filter-bar { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .65rem; } .filter-bar select { flex: 1 1 6rem; min-width: 0; max-width: 100%; } .filter-bar .changes-menu { margin-left: auto; position: relative; } .changes-menu summary { list-style: none; cursor: pointer; padding: .2rem .45rem; border-radius: .25rem; } .changes-menu summary::-webkit-details-marker { display: none; } .menu-popover { position: absolute; right: 0; top: calc(100% + .25rem); width: min(13rem, calc(100vw - 2rem)); padding: .7rem; display: grid; gap: .45rem; background: var(--color-surface-50-950); border: 1px solid var(--color-surface-200-800); border-radius: .4rem; box-shadow: var(--shadow-xl); } .menu-popover label { display: flex; gap: .4rem; align-items: center; font-size: .8rem; } .menu-popover hr { width: 100%; border: 0; border-top: 1px solid var(--color-surface-200-800); }
+     insists on a width is a row that pushes the ••• button out of the column.
+     So the status select takes what is left rather than asking for seven rem
+     of it, and the row wraps before it overflows. What the button opens is
+     portalled to the body, so the column's own clipping is not its problem. */
+  .filter-bar { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .65rem; } .filter-bar select { flex: 1 1 6rem; min-width: 0; max-width: 100%; }
+  .changes-menu { margin-left: auto; padding: .2rem .45rem; border: 0; border-radius: .25rem; background: none; line-height: 1; cursor: pointer; }
+  .changes-menu:hover, .changes-menu[data-state="open"] { background: var(--color-surface-200-800); }
+  .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--color-surface-600-400); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  .changes-menu-hint { padding: 0 .65rem .35rem; color: var(--color-surface-500-400); font-size: .75rem; line-height: var(--panel-line-height); }
   .filters { flex-wrap: wrap; margin-top: .5rem; } .filters select { min-width: 0; max-width: 100%; flex: 1 1 7rem; }
   .changes-list { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; } .change-row { position: relative; content-visibility: auto; contain-intrinsic-size: 0 7rem; border-bottom: 1px solid var(--color-surface-200-800); padding: .8rem var(--spacing); } .change-row.active { background: color-mix(in srgb, var(--color-primary-500) 8%, transparent); box-shadow: inset 3px 0 var(--color-primary-500); } .change-row.blocked { box-shadow: inset 3px 0 var(--color-warning-500); }
   .row-head { align-items: flex-start; gap: .4rem; } .row-main { min-width: 0; flex: 1; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; } .row-author, .row-diff, .row-context, .row-status { display: block; } .row-author { font-size: .78rem; font-weight: 600; } .row-diff { margin: .45rem 0; font: .84rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; } .row-diff span { display: block; } .insertion { color: var(--color-success-700-300); } .deletion { color: var(--color-error-700-300); text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); } .row-footer { display: flex; min-height: 1.8rem; align-items: center; justify-content: space-between; } .row-actions { display: flex; gap: .25rem; } .row-action { flex: 0 0 auto; background: transparent; } .row-action.accept { color: var(--color-success-700-300); } .row-action.reject { color: var(--color-error-700-300); }

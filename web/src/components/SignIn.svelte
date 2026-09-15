@@ -30,7 +30,7 @@
     </p>
     <Stack gap={2}>
       {#each me.providers ?? [] as provider (provider)}
-        <a role="button" class="btn preset-filled-primary-500 w-fit" href={href(provider)}>
+        <a class="btn preset-filled-primary-500 w-fit" href={href(provider)}>
           {NAMES[provider] ?? provider}
         </a>
       {/each}

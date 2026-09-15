@@ -147,23 +147,23 @@
         {/each}
         </div>
         {#if onhistory}
-          <button type="button" class="btn btn-sm preset-tonal-surface" onclick={onhistory}>Show changes since…</button>
+          <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={onhistory}>Show changes since…</button>
         {/if}
         {#if canComment && (resolvable.length || clearable.length || (canModerate && deletable.length))}
           <div class="bulk flex gap-1" role="group" aria-label="All comments">
             {#if resolvable.length}
-              <button type="button" class="btn btn-sm preset-tonal-surface"
+              <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
                 title="Resolve every open comment"
                 onclick={resolveAll}>Resolve all</button>
             {/if}
             {#if clearable.length}
-              <button type="button" class="btn btn-sm preset-tonal-surface"
+              <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
                 title="Delete every resolved comment"
                 disabled={!ondeletemany}
                 onclick={() => ondeletemany?.(clearable)}>Clear resolved</button>
             {/if}
             {#if canModerate && deletable.length}
-              <button type="button" class="btn btn-sm preset-tonal-surface"
+              <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
                 title="Delete every comment"
                 disabled={!ondeletemany}
                 onclick={() => ondeletemany?.(deletable)}>Delete all</button>
@@ -192,8 +192,8 @@
           <p class="panel-meta">{group.pending.length} pending</p>
           {#if canModerate && group.pending.length}
             <div class="flex gap-2">
-              <button class="btn btn-sm preset-tonal-surface" disabled={Boolean(rejecting)} onclick={() => void reviewNext(group)}>Review next</button>
-              <button class="btn btn-sm preset-tonal-surface" disabled={Boolean(rejecting) || !onrejectconfirmed} onclick={() => void rejectGroup(group)}>{rejecting === group.pass ? "Rejecting…" : "Reject all"}</button>
+              <button class="btn btn-sm preset-outlined-surface-300-700" disabled={Boolean(rejecting)} onclick={() => void reviewNext(group)}>Review next</button>
+              <button class="btn btn-sm preset-outlined-surface-300-700" disabled={Boolean(rejecting) || !onrejectconfirmed} onclick={() => void rejectGroup(group)}>{rejecting === group.pass ? "Rejecting…" : "Reject all"}</button>
             </div>
           {/if}
         </div>

@@ -1,6 +1,25 @@
 // Semantic actions shared by the navbar and the source-format adapters.
 import { buildLatex } from './insert-latex.js';
 import { buildTypst } from './insert-typst.js';
+
+/**
+ * @typedef InsertItem
+ * @type {object}
+ * @property {string} id
+ * @property {string} label
+ * @property {string} group
+ * @property {string|null} dialog
+ * @property {string} keywords
+ */
+
+/**
+ * @param {string} id
+ * @param {string} label
+ * @param {string} group
+ * @param {string|null} dialog
+ * @param {string} [keywords='']
+ * @returns {InsertItem}
+ */
 const item = (id, label, group, dialog, keywords = '') => ({ id, label, group, dialog, keywords });
 export const INSERT_ACTIONS = [
   item('heading', 'Heading / section', 'Structure', 'heading', 'subsection subsubsection'),
@@ -20,6 +39,52 @@ export const INSERT_ACTIONS = [
 ];
 const formats = new Set(['latex', 'typst', 'markdown', 'quarto']);
 const scholarly = new Set(['theorem','lemma','proposition','definition','proof','example','remark']);
+
+/**
+ * @typedef InsertContext
+ * @type {object}
+ * @property {string} [text='']
+ * @property {string} [format]
+ * @property {string} [path]
+ * @property {string} [mainText]
+ * @property {string} [mainPath]
+ * @property {string} [selection]
+ * @property {{from: number; to: number; text: string}} [selection]
+ * @property {{path: string; text: string}[]} [files]
+ */
+
+/**
+ * @typedef InsertOptions
+ * @type {object}
+ * @property {string} [title]
+ * @property {string} [level]
+ * @property {number} [rows]
+ * @property {number} [columns]
+ * @property {string} [src]
+ * @property {string} [caption]
+ * @property {string} [width]
+ * @property {string} [label]
+ * @property {string} [gap]
+ * @property {string} [language]
+ * @property {string} [alignment]
+ * @property {boolean} [numbered]
+ * @property {boolean} [header]
+ * @property {string[]} [keys]
+ * @property {string} [style]
+ * @property {string} [locator]
+ * @property {string} [file]
+ * @property {string} [target]
+ * @property {string} [url]
+ * @property {string} [environment]
+ * @property {string} [brackets]
+ * @property {boolean} [inMath]
+ */
+
+/**
+ * @param {string} path
+ * @param {string} [base]
+ * @returns {string}
+ */
 function relativePath(path, base) {
   if (/^(?:[a-z]+:|\/)/i.test(path)) return path;
   const from=(base || '').split('/').slice(0,-1),to=path.split('/');

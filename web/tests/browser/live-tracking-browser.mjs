@@ -99,12 +99,29 @@ try {
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("editor mounted", () => page.evaluate("Boolean(window.live && document.querySelector('.cm-editor'))"), 15000);
   const clickText = (text) => page.evaluate(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)})?.click()`);
+  // The ••• menu: open it, wait for Zag to say so, then choose by item value.
+  // Zag opens on pointerdown, so a bare click() never reaches it.
+  const press = async (selector) => {
+    await until(selector, () => page.evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`), 5000);
+    await page.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)});
+      node.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" }));
+      node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
+      node.click(); })()`);
+  };
+  const trigger = '[data-scope="menu"][data-part="trigger"]';
+  const chooseMore = async (value) => {
+    await press(trigger);
+    await until("changes menu open", () => page.evaluate(`document.querySelector('${trigger}')?.getAttribute('data-state')==='open'`), 5000);
+    await press(`[data-scope="menu"][data-part="item"][data-value="${value}"]`);
+    await until("changes menu closed", () => page.evaluate(`document.querySelector('${trigger}')?.getAttribute('data-state')!=='open'`), 5000);
+  };
+
   await page.evaluate('document.querySelector("[aria-label=\\"Track changes: Off\\"]").click()');
   assert.equal(await page.evaluate("live.state().enabled"), true);
   assert.equal(await page.evaluate("document.querySelector('[aria-label=\"Track changes: On\"]')?.checked"), true);
-  await page.evaluate('document.querySelector(".markup-toggle input").click()');
+  await chooseMore("markup");
   assert.equal(await page.evaluate("live.state().showMarkup"), false);
-  await page.evaluate('document.querySelector(".markup-toggle input").click()');
+  await chooseMore("markup");
   await page.evaluate("live.edit(4, 9, 'red')");
   let state = await page.evaluate("live.state()");
   assert.equal(state.text, "The red fox.");
@@ -143,7 +160,7 @@ try {
   await page.evaluate("live.acknowledgeAll()");
   await until("review completed", () => page.evaluate("document.querySelector('#changes').textContent.includes('No pending changes')"), 2000);
   assert.equal(await page.evaluate("live.state().text"), "Remote The red fox.!?");
-  await clickText("Undo last decision");
+  await chooseMore("undo");
   await until("captured decision undo", () => page.evaluate("window.pendingRequests.length===1"), 2000);
   await page.evaluate("live.acknowledgeAll()");
   await until("decision undo completed", () => page.evaluate("live.state().revisions.filter(r=>r.status==='pending').length===1"), 2000);

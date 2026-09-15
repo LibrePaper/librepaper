@@ -93,11 +93,11 @@
   // history. Everyone else's caret is drawn where they are, labelled with
   // their name.
   import { EditorState, Transaction, StateField, StateEffect } from "@codemirror/state";
-  import { EditorView, lineNumbers, highlightActiveLine, drawSelection, Decoration, WidgetType } from "@codemirror/view";
+  import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, dropCursor, rectangularSelection, drawSelection, Decoration, WidgetType } from "@codemirror/view";
   import { defaultKeymap, indentWithTab, selectAll } from "@codemirror/commands";
-  import { autocompletion, completionKeymap, startCompletion } from "@codemirror/autocomplete";
+  import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, startCompletion } from "@codemirror/autocomplete";
   import { searchKeymap, highlightSelectionMatches, openSearchPanel } from "@codemirror/search";
-  import { syntaxHighlighting, HighlightStyle, defaultHighlightStyle, StreamLanguage } from "@codemirror/language";
+  import { syntaxHighlighting, HighlightStyle, defaultHighlightStyle, StreamLanguage, bracketMatching, foldGutter, foldKeymap, indentOnInput } from "@codemirror/language";
   import { markdown } from "@codemirror/lang-markdown";
   import { html as htmlLanguage } from "@codemirror/lang-html";
   import {
@@ -632,6 +632,7 @@
       doc: text.toString(),
       extensions: [
         EditorView.editable.of(Boolean(editable)),
+        EditorView.contentAttributes.of({ "aria-label": path ? `Source of ${path}` : "Source" }),
         // Vim, when the setting says so, and always first: an earlier
         // extension has precedence, and Vim has to see a key before the
         // default keymap does, or `j` inserts a letter instead of moving.
@@ -639,6 +640,15 @@
         lineNumbers(),
         drawSelection(),
         highlightActiveLine(),
+        highlightActiveLineGutter(),
+        highlightSpecialChars(),
+        dropCursor(),
+        EditorState.allowMultipleSelections.of(true),
+        rectangularSelection(),
+        bracketMatching(),
+        closeBrackets(),
+        foldGutter(),
+        indentOnInput(),
         highlightSelectionMatches(),
         syntaxHighlighting(sourceHighlightStyle, { fallback: true }),
         languageOf(path, format),
@@ -664,6 +674,8 @@
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
+          ...closeBracketsKeymap,
+          ...foldKeymap,
           indentWithTab,
           ...completionKeymap,
           ...defaultKeymap,

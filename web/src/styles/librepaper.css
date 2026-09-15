@@ -24,7 +24,7 @@ body > nav {
   z-index: 10;
   height: var(--librepaper-bar);
   padding-inline: --spacing(4);
-  border-bottom: 1px solid var(--color-divider);
+  border-bottom: 1px solid var(--color-pane-edge);
   background: color-mix(in srgb, var(--color-shell) 94%, transparent);
   backdrop-filter: blur(12px);
 }
@@ -65,7 +65,7 @@ main.reader {
   /* One row, which the editor -- or the figure standing in for it -- fills. A
      grid rather than a block so that min-height: 0 reaches what is in it. */
   grid-template-rows: minmax(0, 1fr);
-  border-right: 1px solid var(--color-divider);
+  border-right: 1px solid var(--color-pane-edge);
 }
 
 /* ------------------------------------------------------------- the files */
@@ -150,8 +150,53 @@ main.reader {
   background: var(--color-shell);
 }
 .preview-filename {
+  flex: 1 1 auto;
   min-width: 0;
   color: var(--panel-muted);
+}
+/* The controls for whatever is in the frame. A paged document has zoom and a
+   cursor tool, a flowing one has neither, and the header is the same row
+   either way: the controls the format has, in the middle, between the file it
+   is previewing and how its last build went.
+
+   These were drawn inside the PDF frame in the operating system's button
+   colours, which is why the paged preview and the flowing one looked like two
+   applications. Everything here is the shell's own vocabulary -- the icon
+   button, the divider, the radius -- so they are the same controls as the rest
+   of the workspace's. */
+.preview-controls {
+  display: flex;
+  align-items: center;
+  gap: --spacing(1);
+  flex: none;
+}
+/* The rail between "how large" and "what the pointer does": two groups of
+   controls, one row, and a line rather than a gap to say they are two. */
+.preview-controls .preview-tools {
+  display: flex;
+  align-items: center;
+  gap: --spacing(1);
+  margin-inline-start: --spacing(1);
+  padding-inline-start: --spacing(2);
+  border-inline-start: 1px solid var(--color-divider);
+}
+.preview-zoom {
+  height: --spacing(7);
+  padding-inline: --spacing(2);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-base);
+  background: var(--color-shell);
+  color: var(--color-surface-700-300);
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+.preview-zoom:hover { background: var(--color-row-hover); }
+.preview-zoom:focus-visible { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
+/* A narrow pane is the frame's room before it is the controls': the zoom
+   modes have their own buttons beside them, and the file being previewed is
+   the one thing the header cannot say twice. */
+@media (max-width: 900px) {
+  .preview-zoom { display: none; }
 }
 /* The column, at the left of the window: the tabs, then whichever panel they
    chose. The panel is what scrolls, so the tabs stay where they are, and a
@@ -169,7 +214,7 @@ main.reader {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--color-divider);
+  border-right: 1px solid var(--color-pane-edge);
 }
 .panel {
   flex: 1 1 auto;
@@ -457,7 +502,7 @@ main.reader.source-right .viewport {
 main.reader.source-right .editorpane {
   order: 3;
   border-right: 0;
-  border-left: 1px solid var(--color-divider);
+  border-left: 1px solid var(--color-pane-edge);
 }
 
 /* ------------------------------------------------------------------- grips */
@@ -679,6 +724,21 @@ main.reader.source-right .editorpane {
 /* A resolved annotation is settled business: one line, clipped to the width of
    the column rather than to a number of characters, so how much of it shows is
    the reader's choice of column width. */
+/* A collapsed note opens from the keyboard as well as the mouse, so this is
+   a button where it is the only thing in the card. It keeps the card's own
+   type and colour: what it looks like is one line of text, which is what it
+   is. */
+button.summary {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
 .summary {
   white-space: nowrap;
   overflow: hidden;
@@ -768,7 +828,7 @@ main.reader.adapted .mobile-pane-nav {
   overscroll-behavior: contain;
   height: calc(var(--spacing) * 14 + env(safe-area-inset-bottom));
   padding: var(--spacing) calc(var(--spacing) * 2) max(var(--spacing), env(safe-area-inset-bottom));
-  border-top: 1px solid var(--color-divider);
+  border-top: 1px solid var(--color-pane-edge);
   background: var(--color-shell);
 }
 .mobile-pane-nav > * { flex-shrink: 0; }
@@ -1008,4 +1068,37 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   .setting-control { justify-content: flex-start; }
   .setting-status { grid-template-columns: auto minmax(0, 1fr); }
   .setting-status .setting-control { grid-column: 1 / -1; }
+}
+
+/* ------------------------------------------------------- forced colours */
+
+/* Windows High Contrast and its kin replace every colour on the page with the
+   pair the reader chose, and drop most shadows with them. Everything here
+   says "this one is the current one" with a tint or an inset bar, so in
+   forced colours it said nothing at all. A border is the one thing that
+   survives, so that is what these become. */
+@media (forced-colors: active) {
+  .explorer-row[data-selected],
+  .timeline-here,
+  .panel-tabs > [role="tab"][aria-selected="true"],
+  .icon-control[aria-pressed="true"] {
+    outline: 2px solid;
+    outline-offset: -2px;
+  }
+  /* A highlight colour is the content, not decoration: these swatches are
+     the only place in the application where the colour itself is the
+     information, so they keep their own. */
+  .color-swatch { forced-color-adjust: none; }
+  .color-swatch.selected { outline: 3px solid; outline-offset: 1px; }
+}
+
+/* ---------------------------------------------------------------- toasts */
+
+/* Twenty rem of message, or the window if the window is narrower than that:
+   at 320px the fixed width stood off the right-hand edge with the end of
+   every sentence past it. Skeleton owns the toast element, so this is a
+   global class rather than a scoped one. */
+.toast-card {
+  width: 20rem;
+  max-width: calc(100vw - var(--spacing) * 8);
 }

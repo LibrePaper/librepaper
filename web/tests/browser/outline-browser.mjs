@@ -225,8 +225,15 @@ try {
       const active = document.querySelector('.cm-activeLine');
       return selected?.textContent.trim().includes(${JSON.stringify(title)}) && active?.textContent.includes(${JSON.stringify(title)});
     })()`), 5000);
-    const after = await tab.evaluate("document.querySelector('.cm-scroller')?.scrollTop || 0");
-    assert.ok(after > before || after > 20, `heading ${title} scrolls the source`);
+    // The active line lights up before the editor has finished scrolling to
+    // it: CodeMirror applies the scroll on its next measure cycle, which on a
+    // busy machine is a few frames after the line is marked. So the position
+    // is waited for rather than read the instant the line appears -- read
+    // once, this passed on an idle machine and failed on a loaded one.
+    await until(`heading ${title} scrolls the source`, async () => {
+      const after = await tab.evaluate("document.querySelector('.cm-scroller')?.scrollTop || 0");
+      return after > before || after > 20;
+    }, 5000);
     assert.equal(await tab.evaluate("document.activeElement?.closest('.cm-editor') !== null"), true, `heading ${title} focuses source`);
   };
 

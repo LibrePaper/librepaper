@@ -10,6 +10,9 @@ import Nav from "../components/Nav.svelte";
 import Hero from "../components/Hero.svelte";
 import { me as whoami } from "../lib/api.js";
 
+const prose = document.querySelector("main");
+if (prose && !prose.id) prose.id = "main";
+
 mount(Hero, { target: document.getElementById("hero") });
 // The bar goes before the page's own markup, so it is the body's first child
 // and the stylesheet's `body > nav` rules apply to it as they do everywhere

@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import * as localBridge from "../../src/lib/companion/client.js";
-import { createLocalPreview } from "../../src/lib/reader/local-preview.js";
+import { loadRunes } from "../helpers/runes.mjs";
+
+const { createLocalPreview } = await loadRunes(
+  new URL("../../src/lib/reader/local-preview.svelte.js", import.meta.url),
+);
 import { _testing, configure, probe, quartoRequest, runQuarto, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../../src/lib/companion/client.js";
 import { parameterSha256 } from "../../src/lib/engines/quarto.js";
 
@@ -342,7 +346,6 @@ console.log("quarto-local: preview lifecycle calls work, and calepinAvailable de
     const start = reader.indexOf(`  const ${name} = createLocalPreview({`);
     assert.ok(start >= 0);
     const end = reader.indexOf("\n  });", start) + "\n  });".length;
-    const errors = [];
     const context = vm.createContext({
       localQuarto: localBridge, quartoBindingId: localBridge.bindingId(),
       buildPreferences: { output: "html", profile: null, parameters: {} },
@@ -351,13 +354,13 @@ console.log("quarto-local: preview lifecycle calls work, and calepinAvailable de
       localPreviewTreeNow: async () => ({ main: engine === "quarto" ? "main.qmd" : "main.typ", texts: { [engine === "quarto" ? "main.qmd" : "main.typ"]: "Hello" } }),
       quartoRenderContext: () => ({ format: "html", profiles: [], parameters: {} }),
       createLocalPreview: options => createLocalPreview({ ...options,
-        onError: message => errors.push(message), setTimer: () => ({}), clearTimer: () => {},
+        setTimer: () => ({}), clearTimer: () => {},
       }),
     });
     vm.runInContext(`${reader.slice(start, end)}\nglobalThis.controller = ${name};`, context);
     await context.controller.start();
     assert.deepEqual(calls, ["sync", "hosted"], `${engine} previews the workspace just synchronized`);
-    assert.equal(context.controller.running, true, errors.join("; "));
+    assert.equal(context.controller.running, true, context.controller.state.error);
     assert.equal(localBridge.bindingId(), "revoked-project-binding", "explicit render-job setting is preserved");
     await context.controller.stop();
   }

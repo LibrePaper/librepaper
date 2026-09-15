@@ -3,7 +3,7 @@
 // no release, deployment, or existing mirror is modified by this check.
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFileSync, writeFileSync, readdirSync, symlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join, extname } from "node:path";
@@ -17,6 +17,12 @@ const engineRoot = resolve(process.env.LATEXML_DIST || join(root, "../wasm-latex
 const mirror = resolve(process.env.MIRROR || join(root, "../wasm-latex/mirror"));
 const hostedMirrorUrl = process.env.LATEXML_MIRROR_URL?.replace(/\/?$/, "/");
 if (hostedMirrorUrl && !/^https:\/\//i.test(hostedMirrorUrl)) throw new Error("LATEXML_MIRROR_URL must use HTTPS");
+// The local mirror is served over HTTPS from a throwaway self-signed cert,
+// which openssl mints; a hosted mirror needs none.
+if (!hostedMirrorUrl && spawnSync("openssl", ["version"], { stdio: "ignore" }).error) {
+  console.log("latex-html-browser: no openssl for the HTTPS mirror; skipping (install openssl, or set LATEXML_MIRROR_URL)");
+  process.exit(0);
+}
 const manifest = hostedMirrorUrl
   ? await (await fetch(new URL("manifest.json", hostedMirrorUrl))).json()
   : JSON.parse(readFileSync(join(mirror, "manifest.json"), "utf8"));

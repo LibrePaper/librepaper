@@ -8,6 +8,7 @@
   import Modal from "./Modal.svelte";
   import Hero from "./Hero.svelte";
   import Toasts from "./Toasts.svelte";
+  import CopyLink from "./CopyLink.svelte";
   import Page from "./layout/Page.svelte";
   import Stack from "./layout/Stack.svelte";
   import Row from "./layout/Row.svelte";
@@ -574,14 +575,15 @@
                 </th>
                 <th class="w-8"></th>
                 {#each [["title", "Project"], ["files", "Files"], ["comments", "Comments"], ["updated", "Updated"], ["viewed", "Opened"]] as [column, name]}
-                  <th class={DATE_COLUMNS.has(column) ? "col-when" : ""}>
+                  <th class={DATE_COLUMNS.has(column) ? "col-when" : ""}
+                      aria-sort={sortBy === column ? (ascending ? "ascending" : "descending") : "none"}>
                     <button
                       type="button"
                       class="cursor-pointer {sortBy === column ? 'text-primary-500 font-semibold' : ''}"
                       onclick={() => sortColumn(column)}
                     >
                       {name}
-                      {#if sortBy === column}{ascending ? "▲" : "▼"}{/if}
+                      {#if sortBy === column}<span aria-hidden="true">{ascending ? "▲" : "▼"}</span>{/if}
                     </button>
                   </th>
                 {/each}
@@ -675,10 +677,13 @@
   description="Share this link; anyone with it can comment, no account needed."
 >
   {#snippet children()}
-    <input class="input" readonly value={shared ?? ""} />
+    <Row gap={2}>
+      <input class="input min-w-0 flex-1" readonly aria-label="Link to the published document" value={shared ?? ""} />
+      <CopyLink href={shared ?? ""} label="Copy the link" />
+    </Row>
   {/snippet}
   {#snippet footer()}
-    <a role="button" class="btn preset-outlined-surface-300-700" href={shared ?? "/"}>Open</a>
+    <a class="btn preset-outlined-surface-300-700" href={shared ?? "/"}>Open</a>
     <button type="button" class="btn preset-filled-primary-500" onclick={() => (sharing = false)}>Done</button>
   {/snippet}
 </Modal>

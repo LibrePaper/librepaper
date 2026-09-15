@@ -17,8 +17,13 @@
 
 let viewer = null; // the render module, once something has needed it
 let stage = null;
-let toolbar = null;
+let pan = null;
 let scaleMode = "auto";
+// Where the reader is, learned from the first message it sends. The zoom and
+// the cursor tool are set from the preview header, so this frame has to
+// answer it -- and it answers only the window that spoke to it first, never
+// "*".
+let readerOrigin = null;
 let paintGeneration = 0;
 // The last PDF drawn, kept so a resize can redraw it. The pages are sized to
 // the width the frame has (see `pdf/render.js`), and the frame's width is not
@@ -32,23 +37,43 @@ function ready() {
   if (stage) return stage;
   document.body.replaceChildren();
   stage = document.createElement("main");
-  toolbar = viewer.createToolbar((mode) => {
-    scaleMode = mode;
-    if (drawn) void paint(drawn);
-  });
-  document.body.append(toolbar.element, stage);
+  document.body.append(stage);
   return stage;
 }
 
-function waiting(message) {
-  const note = document.createElement("p");
+/// What the frame has nothing to show. Two sentences at most, in the same
+/// voice as the reader's own "Not yet rendered" card, because a reader who
+/// sees this cannot tell which side of the frame boundary wrote it.
+function waiting(title, detail = "") {
+  const note = document.createElement("div");
   note.className = "note";
-  note.textContent = message;
-  toolbar?.destroy();
-  toolbar = null;
+  const heading = document.createElement("p");
+  heading.className = "note-title";
+  heading.textContent = title;
+  note.append(heading);
+  if (detail) {
+    const line = document.createElement("p");
+    line.textContent = detail;
+    note.append(line);
+  }
+  pan?.select();
   document.body.replaceChildren(note);
   stage = null;
   drawn = null;
+  report();
+}
+
+/// Tell the header what the page is drawn at.
+///
+/// It owns the zoom control, so it cannot show "150%" beside a page it did
+/// not measure: the scale that came out of `viewerScale` is this side's to
+/// report. No PDF on screen is reported too -- that is what takes the
+/// controls out of the header.
+function report() {
+  if (!readerOrigin) return;
+  const scale = stage?.firstElementChild ? Number(stage.firstElementChild.dataset.scale) : null;
+  parent.postMessage({ librepaper: true, type: "viewer-state",
+    drawn: Boolean(drawn), mode: scaleMode, scale: Number.isFinite(scale) ? scale : null }, readerOrigin);
 }
 
 /// Draw `bytes`, which may be the ones already on screen.
@@ -71,7 +96,7 @@ async function paint(bytes) {
     if (mine !== paintGeneration) return;
     const pages = await viewer.render(keep.slice(), ready(), scaleMode);
     if (mine !== paintGeneration || !pages) return;
-    toolbar.update(scaleMode, Number(stage.firstElementChild.dataset.scale));
+    report();
     // The page index for an offset, for the caret lock and SyncTeX. Neither
     // is built here; both need this and nothing else from the viewer, so it
     // is exposed now rather than left for them to reach into the DOM for.
@@ -83,7 +108,7 @@ async function paint(bytes) {
     // deliberately no second signal here.
   } catch (error) {
     if (mine !== paintGeneration) return;
-    waiting(`this PDF could not be drawn: ${error}`);
+    waiting("This PDF could not be drawn.", String(error?.message || error));
   }
 }
 
@@ -110,6 +135,30 @@ addEventListener("message", async (event) => {
   if (event.source !== parent) return;
   const message = event.data;
   if (!message || message.librepaper !== true) return;
+  readerOrigin = event.origin;
+
+  // Zoom, from the header's controls. A mode is redrawn at once, because the
+  // pages on screen are the wrong size the moment it changes.
+  if (message.type === "viewer-scale") {
+    scaleMode = String(message.mode || "auto");
+    if (drawn) await paint(drawn);
+    else report();
+    return;
+  }
+  // The cursor tool, likewise. pdf.js's grab-to-pan is the only piece of the
+  // old in-frame toolbar that has to live here.
+  if (message.type === "viewer-tool") {
+    pan ??= (await import("../lib/pdf/pan.js")).createPan();
+    message.tool === "hand" ? pan.grab() : pan.select();
+    return;
+  }
+  // A frame that has just loaded says nothing until it is asked: the header
+  // sends this when it appears, so controls for a page drawn before the
+  // reader last navigated come back in the right state.
+  if (message.type === "reader-ready") {
+    report();
+    return;
+  }
   if (message.type !== "preview" || !message.pdf) return;
 
   // The bytes cross the frame boundary as an ArrayBuffer -- structured clone
@@ -121,4 +170,4 @@ addEventListener("message", async (event) => {
   await paint(bytes);
 });
 
-waiting("nothing to show yet");
+waiting("Nothing to show yet.", "This document has not been rendered in this browser.");

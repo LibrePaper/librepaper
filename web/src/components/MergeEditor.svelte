@@ -30,8 +30,12 @@
   let host = $state(null);
   let merge = null;
 
-  function extensions(readOnly = false, collaborative = false) {
+  // `side` names the pane a screen reader has landed in: CodeMirror's editable
+  // is a textbox, and two unnamed textboxes side by side are two of "edit
+  // text" with nothing to tell them apart.
+  function extensions(readOnly = false, collaborative = false, side = "") {
     return [
+      EditorView.contentAttributes.of({ "aria-label": side || "Source" }),
       lineNumbers(),
       keymap.of([indentWithTab, ...defaultKeymap, ...(collaborative ? yUndoManagerKeymap : [])]),
       EditorView.lineWrapping,
@@ -47,11 +51,11 @@
     if (!host) return;
     merge = diff
       ? new MergeView({
-        a: { doc: String(oldText || ""), extensions: extensions(true) },
+        a: { doc: String(oldText || ""), extensions: extensions(true, false, baselineLabel) },
         b: {
           doc: liveText?.toString() ?? String(newText || ""),
           extensions: [
-            ...extensions(!editable, Boolean(editable && liveText)),
+            ...extensions(!editable, Boolean(editable && liveText), targetLabel),
             // Binding the editable side to the live Y.Text means a revert
             // button inserts only its hunk and preserves a coauthor's update
             // that landed while this view was open.
@@ -66,7 +70,7 @@
         parent: host,
       })
       : new EditorView({
-        state: EditorState.create({ doc: String(oldText || ""), extensions: extensions(true) }),
+        state: EditorState.create({ doc: String(oldText || ""), extensions: extensions(true, false, baselineLabel) }),
         parent: host,
       });
     return () => {

@@ -4,7 +4,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { availableDownloads, inlineBlobUrls } from "../../src/lib/reader/downloads.js";
+import {
+  availableDownloads,
+  docxFile,
+  entryDownload,
+  inlineBlobUrls,
+  projectFiles,
+  renderingFile,
+} from "../../src/lib/reader/downloads.js";
 
 const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
 const body = (start, end) => {
@@ -40,74 +47,44 @@ assert.deepEqual(
   "the preview follows the explicitly previewed file",
 );
 
-// `downloadTree`/`downloadEntry` call this shared helper, so it has to be
-// evaluated alongside them rather than stubbed: the point of the check is the
-// order of the directory snapshot against the asset fetch, which happens
-// inside it.
-const gatherFigures = body("  async function gatherFigures(digests)", "  // Outline reads the same live text");
-const downloadTree = body("  async function downloadTree()", "  // A text dropped");
-const downloadEntry = body("  async function downloadEntry(entry)", "  // Dropping a file");
+// The archive is cut from the tree and directory the caller passed, so a
+// folder added while the assets are in flight cannot reach it. That ordering
+// used to need a VM harness to observe; it is now a property of the
+// signature, and what is left to check is that the assets arrive at all.
+const folders = ["project", "project/old-folder"];
+const gathering = (assets, missing = []) => async () => ({ held: { assets }, missing });
 
-function deferred() {
-  let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+{
+  const files = await projectFiles({
+    tree: live,
+    folders: [...folders],
+    gather: gathering({ "project/fig.png": Uint8Array.of(7) }),
+  });
+  assert.equal(files["project/current.md"], "live");
+  assert.equal(files["project/new.md"], "new live file");
+  assert.deepEqual([...files["project/fig.png"]], [7]);
+  assert(files["project/"] instanceof Uint8Array);
+  assert(files["project/old-folder/"] instanceof Uint8Array);
+  assert(!files["project/new-folder/"]);
 }
 
-async function runDownload(source, entry, mayEdit = true) {
-  const assets = deferred();
-  const context = vm.createContext({
-    Blob,
-    Uint8Array,
-    Promise,
-    setTimeout: () => 0,
-    folders: ["project", "project/old-folder"],
-    session: { tree: () => live },
-    figures: { gather: () => assets.promise },
-    SHELL_HEADERS: {},
-    KEY: "key",
-    SLUG: "paper",
-    keyHeaders: () => ({}),
-    authHeaders: () => ({}),
-    basename: (path) => path.split("/").pop(),
-    inside: (path, parent) => path === parent || path.startsWith(`${parent}/`),
-    say: (message) => { throw new Error(message); },
-    saveBlob: () => {},
-    captured: null,
-    entry,
-    mayEdit,
-  });
-  const executable = source.replaceAll(
-    'const { zip } = await import("../lib/zip.js");',
-    'const zip = (files) => { captured = files; return new Blob(); };',
-  );
-  assert(!executable.includes('await import("../lib/zip.js")'));
-  vm.runInContext(`${liveTreeNow}\n${treeNow}\n${gatherFigures}\n${executable}`, context);
-  const pending = vm.runInContext(`${entry ? "downloadEntry(entry)" : "downloadTree()"}`, context, {
-    filename: "Reader.svelte",
-  });
-  // The directory snapshot must precede the asynchronous asset fetch.
-  context.folders = ["project", "project/new-folder"];
-  assets.resolve({ assets: { "project/fig.png": Uint8Array.of(7) } });
-  await pending;
-  return context.captured;
-}
-
-const wholeProject = await runDownload(downloadTree, null);
-assert.equal(wholeProject["project/current.md"], "live");
-assert.equal(wholeProject["project/new.md"], "new live file");
-assert.deepEqual([...wholeProject["project/fig.png"]], [7]);
-assert(wholeProject["project/"] instanceof Uint8Array);
-assert(wholeProject["project/old-folder/"] instanceof Uint8Array);
-assert(!wholeProject["project/new-folder/"]);
+// A project archive tolerates no hole: a figure the server does not have
+// fails the download rather than producing a zip found to be incomplete later.
+await assert.rejects(
+  projectFiles({ tree: live, folders: [...folders], gather: gathering({}, ["project/fig.png"]) }),
+  /could not download project\/fig\.png/,
+);
 
 // Reader and commenter sessions both set `mayEdit` to false. Even if a stale
 // menu or another caller reaches the action directly, it must stop before it
 // gathers assets or creates the project archive.
-await assert.rejects(
-  runDownload(downloadTree, null, false),
-  /Editor access is required to download the project/,
-);
+{
+  const guard = body("  async function downloadTree()", "  const addDroppedText");
+  assert.ok(
+    guard.indexOf("Editor access is required to download the project") < guard.indexOf("projectFiles("),
+    "downloadTree refuses a non-editor before it gathers anything",
+  );
+}
 
 // The action is absent as well as guarded. Editors and owners are the two
 // roles for which Reader sets `mayEdit`.
@@ -117,12 +94,41 @@ assert.match(
   "the File menu only offers the project archive to editors and owners",
 );
 
-const selectedProject = await runDownload(downloadEntry, { kind: "folder", path: "project" });
-assert.equal(selectedProject["project/current.md"], "live");
-assert.equal(selectedProject["project/new.md"], "new live file");
-assert.deepEqual([...selectedProject["project/fig.png"]], [7]);
-assert(selectedProject["project/"] instanceof Uint8Array);
-assert(selectedProject["project/old-folder/"] instanceof Uint8Array);
+{
+  const chosen = await entryDownload({
+    entry: { kind: "folder", path: "project" },
+    tree: live,
+    folders: [...folders],
+    gather: gathering({ "project/fig.png": Uint8Array.of(7) }),
+  });
+  assert.equal(chosen.name, "project.zip");
+  assert.equal(chosen.files["project/current.md"], "live");
+  assert.equal(chosen.files["project/new.md"], "new live file");
+  assert.deepEqual([...chosen.files["project/fig.png"]], [7]);
+  assert(chosen.files["project/"] instanceof Uint8Array);
+  assert(chosen.files["project/old-folder/"] instanceof Uint8Array);
+}
+
+// One file downloads as itself, not as an archive of one.
+{
+  const chosen = await entryDownload({
+    entry: { kind: "file", path: "project/current.md" },
+    tree: live,
+    folders: [...folders],
+    gather: gathering({}),
+  });
+  assert.deepEqual(chosen, { name: "current.md", bytes: "live" });
+}
+
+await assert.rejects(
+  entryDownload({
+    entry: { kind: "file", path: "project/gone.md" },
+    tree: live,
+    folders: [...folders],
+    gather: gathering({}),
+  }),
+  /This file is no longer available/,
+);
 
 // The File menu offers the download for the document's output kind, and only
 // once there is something to hand over.
@@ -139,6 +145,39 @@ assert(selectedProject["project/old-folder/"] instanceof Uint8Array);
   assert.deepEqual(flow({ displayedFormat: "html" }), { pdf: false, html: true }, "an authored HTML document is its own rendering");
   assert.deepEqual(flow({ deliveredKind: "" }), { pdf: false, html: false }, "a flow document has no generated-output fallback");
   assert.deepEqual(availableDownloads({ outputKind: "" }), { pdf: false, html: false });
+}
+
+// An export is cut from what this tab is holding, and says so when it is
+// holding nothing.
+{
+  const pdf = await renderingFile({ kind: "pdf", slug: "paper", preview: { kind: "pdf", bytes: Uint8Array.of(1) } });
+  assert.equal(pdf.name, "paper.pdf");
+  assert.equal(pdf.blob.type, "application/pdf");
+  await assert.rejects(
+    renderingFile({ kind: "pdf", slug: "paper", preview: { kind: "html", html: "<p>x</p>" } }),
+    /Render the document before exporting its PDF/,
+  );
+
+  const html = await renderingFile({ kind: "html", slug: "paper", preview: { kind: "html", html: "<p>x</p>" } });
+  assert.equal(html.name, "paper.html");
+  assert.equal(await html.blob.text(), "<p>x</p>");
+
+  // Authored HTML is its own rendering: its source is exported verbatim, and
+  // a source that could not be read is an error rather than a quiet fall back
+  // to whatever the frame happens to be showing.
+  const authored = await renderingFile({
+    kind: "html", slug: "paper", authored: true, authoredHtml: "<h1>source</h1>",
+    preview: { kind: "html", html: "<p>painted</p>" },
+  });
+  assert.equal(await authored.blob.text(), "<h1>source</h1>");
+  await assert.rejects(
+    renderingFile({ kind: "html", slug: "paper", authored: true, authoredHtml: null, preview: { kind: "html", html: "<p>painted</p>" } }),
+    /Render the document before exporting its HTML/,
+  );
+
+  const docx = docxFile(Uint8Array.of(1, 2), "paper");
+  assert.equal(docx.name, "paper.docx");
+  assert.match(docx.blob.type, /wordprocessingml/);
 }
 
 // A painted page names its figures by object URL; the download carries the

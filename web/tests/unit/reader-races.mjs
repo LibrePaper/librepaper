@@ -8,8 +8,13 @@ import { diagnosticContext } from "../../src/lib/assistant-review.js";
 import { createReaderBoot } from "../../src/lib/reader/boot.js";
 import { createPendingChat } from "../../src/lib/reader/chat.js";
 import { createReaderCollaboration } from "../../src/lib/reader/collaboration.js";
+import { createPreviewRenderer } from "../../src/lib/reader/preview-render.js";
 import { createRenderCoordinator } from "../../src/lib/reader/render-coordinator.js";
+import { loadRunes } from "../helpers/runes.mjs";
 import { needsSourceRefresh } from "../../src/lib/reader/source-events.js";
+
+const { createBuildSettings } = await loadRunes(new URL("../../src/lib/reader/build-settings.svelte.js", import.meta.url));
+const { createTimeline } = await loadRunes(new URL("../../src/lib/reader/timeline.svelte.js", import.meta.url));
 
 const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
 const body = (start, end) => {
@@ -23,8 +28,6 @@ const body = (start, end) => {
 // `updatePreviewTarget` points the local app at this document through a small
 // helper now, so that helper is sliced in wherever the function is exercised.
 const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which of Quarto's own live preview");
-const previewHelpers = body("  async function gatherFigures(digests)", "  // Outline reads the same live text");
-const paintPreview = `${previewHelpers}\n${body("  async function paintPreview()", "  // A source that is not actively")}`;
 
 // Initial Quarto setup must configure the companion as active for an editor.
 // If permission is assigned afterwards, editable onboarding examples remain
@@ -178,40 +181,130 @@ const context = (values) => {
   return ctx;
 };
 
+// A render, with the page's answers to "what is true now" as a plain object
+// the check can move under it. The renderer and the coordinator are the real
+// ones; what used to be a VM realm full of free variables is `facts`.
+const preview = (values = {}) => {
+  const facts = {
+    disposed: false,
+    navigation: 0,
+    source: 0,
+    everPainted: false,
+    editing: true,
+    format: "",
+    hasSession: true,
+    paintsTheFrame: true,
+    latexOutput: "pdf",
+    typstOutput: "pdf",
+    buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
+    quartoExecutionApproved: true,
+    livePreviewOwnsPane: false,
+    ...values.facts,
+  };
+  const state = {
+    compiling: false, lastCompile: 0, failure: false, failureReason: "",
+    lastLatexResult: null, provenance: null, docxArtifact: null,
+  };
+  const status = {
+    begin: ({ clearFailure = false } = {}) => {
+      state.compiling = true;
+      if (clearFailure) state.failure = false;
+    },
+    finish: () => { state.compiling = false; },
+    succeeded: () => { state.failure = false; state.failureReason = ""; },
+    failed: (reason) => { state.failure = true; state.failureReason = String(reason || "could not render"); },
+    resetFailure: () => { state.failure = false; state.failureReason = ""; },
+    recordDuration: (seconds) => { if (seconds) state.lastCompile = seconds; },
+    recordLatex: (result) => { state.lastLatexResult = result; },
+    recordProvenance: (value) => { state.provenance = value; },
+    recordDocx: (value) => { state.docxArtifact = value; },
+    clearDocx: () => { state.docxArtifact = null; },
+  };
+  const harness = {
+    facts,
+    state,
+    published: [],
+    diagnostics: [],
+    sent: [],
+    synctex: [],
+    refreshed: 0,
+    tree: values.tree || (() => ({ main: "main.md", texts: { "main.md": "x" }, digests: {} })),
+  };
+  harness.coordinator = createRenderCoordinator({
+    navigation: () => facts.navigation,
+    source: () => facts.source,
+    main: () => harness.tree().main,
+    render: (ticket) => harness.render(ticket),
+  });
+  harness.render = createPreviewRenderer({
+    slug: "doc",
+    coordinator: harness.coordinator,
+    status,
+    framePreview: { publish: (payload) => harness.published.push(payload) },
+    diagnostics: { rendered: (value) => harness.diagnostics.push(value) },
+    renderers: values.renderers,
+    snapshotDigest: values.snapshotDigest || (async () => "test-render-digest"),
+    diagnosticContext,
+    parseSynctex: values.parseSynctex,
+    facts: () => facts,
+    tree: () => harness.tree(),
+    gather: values.gather || (async () => ({ held: { assets: {}, urls: {} }, missing: [] })),
+    heading: values.heading || (async () => "Title"),
+    takeManual: values.takeManual,
+    onsynctex: (parsed) => harness.synctex.push(parsed),
+    send: (message) => harness.sent.push(message),
+    refreshFrame: () => harness.refreshed++,
+  });
+  harness.paint = () => harness.coordinator.request();
+  return harness;
+};
+
 // A compiler result with neither html nor pdf leaves the existing preview up.
 {
   const rendered = deferred();
-  const sent = [];
-  const old = { kind: "html", html: "<p>last good page</p>" };
-  const ctx = context({
-    displayedFormat: "latex", pdfOutput: true, compilesHere: true, paintsTheFrame: true,
-    issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
-    sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
-    compiling: false, everPainted: true, latestPreview: old,
-    sourceFormat: "latex", previewTimer: null, rendering: null,
-    treeNow: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
-    snapshotDigest: async () => "digest-A", headingOf: async () => "",
-    figures: { gather: async () => ({ assets: {}, urls: {} }) },
+  const harness = preview({
+    facts: { format: "latex", everPainted: true },
+    tree: () => ({ main: "paper.tex", texts: { "paper.tex": "x" }, digests: {} }),
+    snapshotDigest: async () => "digest-A",
+    heading: async () => "",
     renderers: {
       formatOf: () => "latex", render: () => rendered.promise,
       producesPdf: () => true,
       failurePage: async () => "<p>failure</p>",
     },
-    SHELL_HEADERS: {}, KEY: "key", SLUG: "doc", keyHeaders: () => {},
-    framePreview: { publish: () => {}, clear: () => {} },
-    renderingStore: { cancelPoll: () => {} }, holdRendering: () => {},
-    diagnosticPainter: { rendered: () => {} }, tell: (message) => sent.push(message),
-    say: () => {},
   });
-  vm.runInContext(paintPreview, ctx);
-  const pending = vm.runInContext("paintPreview()", ctx);
-  // Disabling editing while the compiler is active must release its latch.
-  ctx.compilesHere = false;
+  const pending = harness.paint();
   rendered.resolve({ pdf: null, diagnostics: [{ severity: "error" }] });
   await pending;
-  assert.equal(ctx.latestPreview, old);
-  assert.equal(sent.length, 0);
-  assert.equal(ctx.renderCoordinator.running, false);
+  assert.deepEqual(harness.published, [], "the page that was up stays up");
+  assert.deepEqual(harness.sent, [], "and nothing replaces it in the frame");
+  // The compile is over even though it produced nothing, so the next one is
+  // free to start: a failure must not leave the latch held.
+  assert.equal(harness.coordinator.running, false);
+  assert.equal(harness.state.compiling, false);
+}
+
+// A live preview owns the pane: this browser's own compile stays out of it.
+{
+  const harness = preview({
+    facts: { format: "quarto", livePreviewOwnsPane: true },
+    renderers: { formatOf: () => assert.fail("a live preview must not be compiled over"), producesPdf: () => false },
+  });
+  await harness.paint();
+  assert.deepEqual(harness.published, []);
+  assert.equal(harness.refreshed, 0);
+}
+
+// A frame showing something this render does not own is refreshed rather than
+// painted over.
+{
+  const harness = preview({
+    facts: { paintsTheFrame: false },
+    renderers: { formatOf: () => assert.fail("nothing is compiled for a frame this render does not own"), producesPdf: () => false },
+  });
+  await harness.paint();
+  assert.equal(harness.refreshed, 1);
+  assert.deepEqual(harness.published, []);
 }
 
 console.log("reader-races: all checks passed");
@@ -261,21 +354,26 @@ console.log("reader-races: all checks passed");
       files: {}, list: () => [], folders: () => [], mainId: () => "main",
       mainPath: () => "paper.tex", latexSettings: () => ({ engine: "auto" }),
     },
-    files: [], folders: [], openFile: "", previewMain: "", sourceFormat: "markdown", shownFigure: null,
-    viewing: null, tick: async () => {}, paintPreview: () => {},
-    mayEdit: true, previousFigure: null, ARRIVED_FILE: "", arrivedFileOpened: false,
-    navigationGeneration: 0, renderingRequest: 0, issued: 0, rendering: null,
-    renderingChecked: false, latestPreview: null, renderedSha: null,
-    frameShowsCheckpoint: false, everPainted: false, everPaintedShown: false,
-    docsOrigin: null, dropHeldRendering: () => {}, navigateFrame: () => {},
+    // The directory itself belongs to the workspace, which is driven on its
+    // own in tests/unit/workspace.mjs. What is checked here is the other half
+    // of that read: re-pointing the preview at the file the session now calls
+    // its main one, which is a rendering question rather than a directory one.
+    files: [], previewFile: "", previewMain: "", sourceFormat: "markdown",
+    tick: async () => ({ then: () => {} }), paintPreview: () => {},
+    navigationGeneration: 0, everPainted: false, everPaintedShown: false,
+    docsOrigin: null, navigateFrame: () => {}, readerDisposed: false,
     framePreview: { clear: () => {} },
-    renderingStore: { reset: () => {} },
+    renderCoordinator: { invalidate: () => {} },
+    renderStatus: { resetFailure: () => {} },
     renderers: { formatOf: () => "latex", warm: () => {} },
-    configureLatex: () => configured++, sourceChanged: () => {},
+    pairLocalQuarto: () => {},
+    configureLatex: () => configured++,
   });
-  vm.runInContext(body("  function refreshFiles()", "  // A file added"), ctx);
-  vm.runInContext("refreshFiles()", ctx);
+  vm.runInContext(body("  function updatePreviewTarget()", "  function previewThisFile()"), ctx);
+  vm.runInContext("updatePreviewTarget()", ctx);
   assert.equal(configured, 1);
+  assert.equal(ctx.previewMain, "paper.tex");
+  assert.equal(ctx.sourceFormat, "latex");
 }
 
 // LaTeX configuration follows format/session lifetime. Build settings are
@@ -283,7 +381,6 @@ console.log("reader-races: all checks passed");
 {
   const releases = [];
   const configurations = [];
-  const updates = [];
   let paints = 0;
   const makeSession = () => {
     const observers = new Set();
@@ -300,46 +397,76 @@ console.log("reader-races: all checks passed");
     };
   };
   const first = makeSession();
-  const ctx = context({
-    session: first, mayEdit: true, sourceFormat: "latex", SLUG: "project",
-    renderers: { available: () => true }, paintPreview: () => paints++,
-    readBuildPreferences: () => ({ selection: "automatic", backend: "auto", engine: "auto" }),
-    buildScope: () => ({ origin: "https://app.example", user: "anonymous", document: "project" }),
+  const settings = createBuildSettings({
+    slug: "project",
+    origin: "https://app.example",
+    read: () => ({ selection: "automatic", backend: "auto", engine: "auto" }),
+    renderers: { available: () => true },
+    paint: () => paints++,
     latex: {
-      configure: (value) => configurations.push(value), cancel: () => {},
+      configure: (value) => configurations.push(value), cancel: () => {}, setSettings: () => {},
       // Compiler releases are mirror-global. Reader setup must not fetch a
       // release list or write an automatic project pin.
       releases: () => { throw new Error("reader must not load compiler releases"); },
     },
   });
-  vm.runInContext(body("  let latexObservedSession = null;", "  // The most recent LaTeX compile result"), ctx);
-  vm.runInContext('configureLatex("latex"); configureLatex("latex")', ctx);
-  assert.equal(configurations.length, 1);
+  settings.configureLatex("latex", first, "anonymous");
+  settings.configureLatex("latex", first, "anonymous");
+  assert.equal(configurations.length, 1, "one session is configured once");
   assert.equal(configurations[0].project, "project");
   assert.equal(configurations[0].mayCompile, true);
   assert.equal(first.observers.size, 0);
   assert.equal(paints, 0);
-  vm.runInContext('configureLatex("markdown")', ctx);
-  assert.equal(first.observers.size, 0);
-  vm.runInContext('configureLatex("latex")', ctx);
+  settings.configureLatex("markdown", first, "anonymous");
+  settings.configureLatex("latex", first, "anonymous");
   assert.equal(first.observers.size, 0);
   assert.equal(first.writes.length, 0);
   const second = makeSession();
-  ctx.session = second;
-  vm.runInContext('configureLatex("latex")', ctx);
+  settings.configureLatex("latex", second, "anonymous");
   assert.equal(first.observers.size, 0);
   assert.equal(second.observers.size, 0);
   assert.equal(first.writes.length, 0);
   assert.equal(second.writes.length, 0);
   assert.equal(releases.length, 0, "readers must not load or pin a compiler release");
-  vm.runInContext('stopLatex()', ctx);
+  settings.stopLatex();
   assert.equal(second.observers.size, 0);
-  ctx.session = makeSession();
-  ctx.mayEdit = false;
-  vm.runInContext('configureLatex("latex")', ctx);
+  // A cold reader has no edit permission and still compiles from source.
+  settings.configureLatex("latex", makeSession(), "anonymous");
   assert.equal(configurations.at(-1).mayCompile, true, "cold readers compile from source without edit permission");
   assert.equal(releases.length, 0, "readers must not pin the default release");
-  vm.runInContext('stopLatex()', ctx);
+  settings.stopLatex();
+}
+
+// A build preference belongs to one reader on one browser. Signing in is a
+// different reader, so what the last one had running is interrupted; loading
+// the same reader's preference again is not, because source hydration and
+// later source changes own the rendering.
+{
+  const interrupted = [];
+  const applied = [];
+  const settings = createBuildSettings({
+    slug: "project",
+    origin: "https://app.example",
+    read: (scope, format) => ({ selection: "tool", backend: "local", tool: "calepin", output: "pdf", user: scope.user, format }),
+    renderers: { available: () => true },
+    latex: { configure: () => {}, cancel: () => {}, setSettings: () => {} },
+    interrupt: (next) => interrupted.push(next),
+    apply: (preference, format, how) => applied.push({ format, how, tool: preference.tool }),
+  });
+  settings.follow({ format: "typst", user: "anonymous" });
+  assert.deepEqual(interrupted, [], "the first load interrupts nothing");
+  settings.follow({ format: "typst", user: "anonymous" });
+  assert.deepEqual(interrupted, [], "the same reader's preference, again, interrupts nothing");
+  settings.follow({ format: "typst", user: "google:ada" });
+  assert.deepEqual(interrupted, [null], "signing in is a different reader");
+  assert.deepEqual(applied.map((entry) => entry.how), ["loaded", "loaded", "loaded"]);
+  assert.equal(settings.state.preferences.user, "google:ada", "and their preference is the one loaded");
+
+  // A preference chosen by hand interrupts with the choice itself, so a local
+  // preview that the choice keeps using can survive it.
+  settings.choose({ selection: "tool", backend: "local", tool: "calepin" }, "typst");
+  assert.deepEqual(interrupted.at(-1), { selection: "tool", backend: "local", tool: "calepin" });
+  assert.equal(applied.at(-1).how, "chosen");
 }
 
 // A worker result still advances the preview after a keystroke. Requests made
@@ -352,15 +479,9 @@ for (const invalidate of [null, "navigation", "main"]) {
   const diagnostics = [];
   let text = "first";
   let main = "main.md";
-  const ctx = context({
-    displayedFormat: "markdown", pdfOutput: false, compilesHere: false, paintsTheFrame: true,
-    buildPreferences: { selection: "automatic", backend: "auto", output: "html" },
-    SLUG: "doc",
-    issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
-    sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
-    previewTimer: null, everPainted: true, latestPreview: null,
-    treeNow: () => ({ main, texts: { [main]: text }, digests: {} }),
-    headingOf: async () => "Title",
+  const harness = preview({
+    facts: { format: "markdown", everPainted: true },
+    tree: () => ({ main, texts: { [main]: text }, digests: {} }),
     renderers: {
       formatOf: () => "markdown",
       producesPdf: () => false,
@@ -369,34 +490,31 @@ for (const invalidate of [null, "navigation", "main"]) {
         return calls.length === 1 ? first.promise : second.promise;
       },
     },
-    framePreview: { publish: (payload) => delivered.push(payload.html), clear: () => {} },
-    renderingStore: { cancelPoll: () => {} },
-    diagnosticPainter: { rendered: (value) => diagnostics.push(value) },
-    say: (message) => assert.fail(message),
   });
-  vm.runInContext(paintPreview, ctx);
-  const pending = vm.runInContext("paintPreview()", ctx);
+  const pending = harness.paint();
   await Promise.resolve();
   text = "intermediate";
-  ctx.sourceGeneration++;
-  await vm.runInContext("paintPreview()", ctx);
+  harness.facts.source++;
+  await harness.paint();
   text = "latest";
-  ctx.sourceGeneration++;
-  if (invalidate === "navigation") ctx.navigationGeneration++;
+  harness.facts.source++;
+  if (invalidate === "navigation") harness.facts.navigation++;
   if (invalidate === "main") main = "other.md";
-  await vm.runInContext("paintPreview()", ctx);
+  await harness.paint();
   assert.equal(calls.length, 1, "only one compile can be in flight");
   first.resolve({ html: "first", diagnostics: [] });
   await pending;
   await new Promise(setImmediate);
+  delivered.push(...harness.published.map((payload) => payload.html));
+  diagnostics.push(...harness.diagnostics);
   assert.deepEqual(delivered, invalidate ? [] : ["first"]);
   assert.equal(diagnostics.length, 0, "outdated diagnostics stay hidden");
   assert.equal(calls.length, 2);
   assert.equal(calls[1].texts[main], "latest");
   second.resolve({ html: "latest", diagnostics: [] });
   await new Promise(setImmediate);
-  assert.equal(delivered.at(-1), "latest");
-  assert.equal(ctx.renderCoordinator.running, false);
+  assert.equal(harness.published.at(-1).html, "latest");
+  assert.equal(harness.coordinator.running, false);
 }
 
 // A peer's edit advances the source generation the history panel reads, so a
@@ -483,27 +601,28 @@ for (const invalidate of [null, "navigation", "main"]) {
 // like any other draft format -- nothing rendered is ever uploaded, so there
 // is no saved bundle left to prefer over it.
 {
-  let compiled = 0;
-  const published = [];
-  const ctx = context({
-    sourceFormat: "quarto", session: {}, paintsTheFrame: true, pdfOutput: false, compilesHere: false,
-    issued: 0, painted: 0, viewing: null, navigationGeneration: 0, sourceGeneration: 0,
-    previewPaintBusy: false, previewPaintQueued: false, previewTimer: null, everPainted: true,
-    treeNow: () => ({ main: "main.qmd", texts: { "main.qmd": "source" }, digests: {} }),
-    headingOf: async () => "Title",
+  const builds = [];
+  const harness = preview({
+    facts: { format: "quarto", everPainted: true },
+    tree: () => ({ main: "main.qmd", texts: { "main.qmd": "source" }, digests: {} }),
     renderers: {
       formatOf: () => "quarto", producesPdf: () => false,
-      render: async () => { compiled++; return { html: "<p>draft</p>", diagnostics: [] }; },
+      render: async (_tree, _title, options) => {
+        builds.push(options.buildPreferences);
+        return { html: "<p>draft</p>", diagnostics: [] };
+      },
     },
-    framePreview: { publish: (value) => published.push(value), clear: () => {} },
-    renderingStore: { cancelPoll: () => {} },
-    diagnosticPainter: { rendered: () => {} }, say: () => {},
   });
-  vm.runInContext(paintPreview, ctx);
-  await vm.runInContext("paintPreview()", ctx);
-  assert.equal(compiled, 1, "a Quarto document with no live preview compiles its own draft");
-  assert.equal(published[0].kind, "html");
-  assert.equal(published[0].html, "<p>draft</p>");
+  await harness.paint();
+  assert.equal(builds.length, 1, "a Quarto document with no live preview compiles its own draft");
+  assert.equal(harness.published[0].kind, "html");
+  assert.equal(harness.published[0].html, "<p>draft</p>");
+
+  // And a reader who has not approved execution gets the Markdown it is,
+  // rather than code this browser was never given permission to run.
+  harness.facts.quartoExecutionApproved = false;
+  await harness.paint();
+  assert.deepEqual(builds.at(-1), { selection: "tool", backend: "browser", tool: "markdown", output: "html" });
 }
 
 // Typst follows the PDF lifecycle too: one compile in flight, latest request
@@ -516,15 +635,10 @@ for (const invalidate of [null, "navigation", "main"]) {
   const held = [];
   const diagnostics = [];
   let text = "first";
-  const ctx = context({
-    displayedFormat: "typst", pdfOutput: true, compilesHere: true, paintsTheFrame: true,
-    issued: 0, painted: 0, viewing: null, navigationGeneration: 0,
-    sourceGeneration: 0, previewPaintBusy: false, previewPaintQueued: false,
-    previewTimer: null, everPainted: false, latestPreview: null,
-    paintRendering: async () => {},
-    treeNow: () => ({ main: "main.typ", texts: { "main.typ": text }, digests: {} }),
-    headingOf: async () => "Title", snapshotDigest: async () => "digest-typst",
-    figures: { gather: async () => ({ assets: {}, urls: {} }) },
+  const harness = preview({
+    facts: { format: "typst" },
+    tree: () => ({ main: "main.typ", texts: { "main.typ": text }, digests: {} }),
+    snapshotDigest: async () => "digest-typst",
     renderers: {
       formatOf: () => "typst",
       producesPdf: () => true,
@@ -533,18 +647,12 @@ for (const invalidate of [null, "navigation", "main"]) {
         return calls.length === 1 ? first.promise : second.promise;
       },
     },
-    framePreview: { publish: (payload) => delivered.push(payload.bytes[0]), clear: () => {} },
-    renderingStore: { cancelPoll: () => {} },
-    holdRendering: (...args) => held.push(args),
-    diagnosticPainter: { rendered: (value) => diagnostics.push(value) },
-    tell: () => {}, say: (message) => assert.fail(message),
   });
-  vm.runInContext(paintPreview, ctx);
-  const pending = vm.runInContext("paintPreview()", ctx);
+  const pending = harness.paint();
   await new Promise(setImmediate);
   text = "latest";
-  ctx.sourceGeneration++;
-  await vm.runInContext("paintPreview()", ctx);
+  harness.facts.source++;
+  await harness.paint();
   assert.equal(calls.length, 1, "Typst keeps one PDF compile active");
   first.resolve({ pdf: Uint8Array.of(1), diagnostics: [] });
   await pending;
@@ -552,6 +660,9 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(calls.length, 2, "Typst queues the latest source snapshot");
   second.resolve({ pdf: Uint8Array.of(2), diagnostics: [] });
   await new Promise(setImmediate);
+  delivered.push(...harness.published.map((payload) => payload.bytes[0]));
+  diagnostics.push(...harness.diagnostics);
+  held.push(...harness.sent);
   assert.deepEqual(delivered, [1, 2], "Typst may show an intermediate PDF, then the latest one");
   assert.equal(held.length, 0, "Typst output is transient and is never retained");
   assert.equal(diagnostics.length, 1, "an intermediate Typst PDF cannot clear newer diagnostics");
@@ -560,59 +671,51 @@ for (const invalidate of [null, "navigation", "main"]) {
 // A first Typst compile that returns structured diagnostics must leave the
 // reader in its explicit PDF failure state instead of a blank frame.
 {
-  const ctx = context({
-    displayedFormat: "typst", pdfOutput: true, compilesHere: true, paintsTheFrame: true,
-    issued: 0, painted: 0, viewing: null, navigationGeneration: 0, sourceGeneration: 0,
-    previewPaintBusy: false, previewPaintQueued: false, previewTimer: null,
-    everPainted: false, everPaintedShown: false, latestPreview: null, pdfFailure: false,
-    sourceFormat: "typst", treeNow: () => ({ main: "main.typ", texts: { "main.typ": "bad" }, digests: {} }),
-    headingOf: async () => "Title", snapshotDigest: async () => "digest-typst",
-    paintRendering: async () => {},
-    figures: { gather: async () => ({ assets: {}, urls: {} }) },
-    renderers: {
-      formatOf: () => "typst", producesPdf: () => true,
-      render: async () => ({ pdf: null, diagnostics: [{ severity: "error", message: "broken" }] }),
-      failurePage: async () => null,
-    },
-    framePreview: {
-      publish: () => assert.fail("a failed first Typst compile must not deliver a PDF"),
-      clear: () => {},
-    },
-    renderingStore: { cancelPoll: () => {} },
-    holdRendering: () => assert.fail("a failed first Typst compile must not store a PDF"),
-    diagnosticPainter: { rendered: () => {} }, tell: () => {}, say: (message) => assert.fail(message),
+  const renderers = {
+    formatOf: () => "typst", producesPdf: () => true,
+    render: async () => ({ pdf: null, diagnostics: [{ severity: "error", message: "broken" }] }),
+    failurePage: async () => null,
+  };
+  let tree = () => ({ main: "main.typ", texts: { "main.typ": "bad" }, digests: {} });
+  const harness = preview({
+    facts: { format: "typst" },
+    tree: () => tree(),
+    snapshotDigest: async () => "digest-typst",
+    renderers,
   });
-  vm.runInContext(paintPreview, ctx);
-  await vm.runInContext("paintPreview()", ctx);
-  assert.equal(ctx.renderState.failure, true, "structured Typst diagnostics set the PDF failure state");
-  assert.equal(ctx.latestPreview, null, "a failed first Typst compile leaves no blank success preview");
+  harness.tree = () => tree();
+  await harness.paint();
+  assert.equal(harness.state.failure, true, "structured Typst diagnostics set the PDF failure state");
+  assert.deepEqual(
+    harness.published, [],
+    "a failed first Typst compile leaves no blank success preview",
+  );
 
   // A compiler setup failure has neither a TeX log nor source diagnostics.
   // Its structured reason must reach the failure pane.
-  ctx.sourceFormat = "latex";
-  ctx.displayedFormat = "latex";
-  ctx.treeNow = () => ({ main: "main.tex", texts: { "main.tex": "source" }, digests: {} });
-  ctx.renderers.formatOf = () => "latex";
-  ctx.renderers.render = async () => ({ pdf: null, log: "", diagnostics: [], failure: { message: "The mirror has no engine release" } });
-  await vm.runInContext("paintPreview()", ctx);
-  assert.equal(ctx.renderState.failureReason, "The mirror has no engine release");
+  harness.facts.format = "latex";
+  tree = () => ({ main: "main.tex", texts: { "main.tex": "source" }, digests: {} });
+  renderers.formatOf = () => "latex";
+  renderers.render = async () => ({ pdf: null, log: "", diagnostics: [], failure: { message: "The mirror has no engine release" } });
+  await harness.paint();
+  assert.equal(harness.state.failureReason, "The mirror has no engine release");
 
   // HTML conversion errors belong to the source snapshot that caused them.
   const pendingHtml = deferred();
-  ctx.latexOutput = "html";
-  ctx.pdfOutput = false;
-  ctx.renderStatus.resetFailure();
-  ctx.renderers.render = (_tree, _title, options) => {
+  harness.facts.latexOutput = "html";
+  harness.state.failure = false;
+  harness.state.failureReason = "";
+  renderers.render = (_tree, _title, options) => {
     assert.equal(options.format, "html");
     return pendingHtml.promise;
   };
-  const htmlPaint = vm.runInContext("paintPreview()", ctx);
+  const htmlPaint = harness.paint();
   await new Promise(setImmediate);
-  ctx.sourceGeneration++;
+  harness.facts.source++;
   pendingHtml.reject(new Error("old conversion failed"));
   await htmlPaint;
-  assert.equal(ctx.renderState.failure, false, "an old HTML error cannot mark a newer edit failed");
-  assert.equal(ctx.renderState.failureReason, "");
+  assert.equal(harness.state.failure, false, "an old HTML error cannot mark a newer edit failed");
+  assert.equal(harness.state.failureReason, "");
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
@@ -826,38 +929,41 @@ console.log('reader-races: View and compact menus expose the same explicit previ
 // a collaborator's edit, or this reader in another tab -- must be confirmed
 // again rather than quietly thrown away.
 {
-  const restoreCheckpoint = body("  function restoreCheckpoint(sha)", "  async function confirmRestore()");
-  const confirmRestore = body("  async function confirmRestore()", "  async function nameCheckpoint");
-  const projectSignature = body("  const projectSignature = () =>", "  function restoreCheckpoint(sha)");
-  let tree = { main: "main.md", texts: { "main.md": "as confirmed" }, files: {} };
+  // Reader reads the signature and hands it over, so the check drives the
+  // timeline the same way: what a confirmation is worth depends on the
+  // project it was given, not on what a session says a moment later.
   const posted = [];
-  const ctx = vm.createContext({
-    mayEdit: true, restoring: false, restoreSha: "", restoreBusy: false,
-    restoreBaseline: "", restoreMoved: false, checkpoints: [],
-    JSON, session: { tree: () => tree },
-    SLUG: "doc", KEY: "", authHeaders: () => ({}),
-    fetch: async (url, options) => {
+  const timeline = createTimeline({
+    slug: "doc",
+    key: "",
+    history: { loadWithStatus: async () => ({ checkpoints: [], durability: null }) },
+    fetcher: async (url, options) => {
       posted.push({ url, body: options.body });
       return { ok: true, json: async () => ({}) };
     },
-    loadHistory: async () => {},
-    historySource: { select: async () => {} },
-    toastProblem: (message) => assert.fail(message),
+    problem: (message) => assert.fail(message),
   });
-  vm.runInContext(`${projectSignature}\n${restoreCheckpoint}\n${confirmRestore}`, ctx);
+  timeline.state.canEdit = true;
+  const asShown = JSON.stringify({ main: "main.md", texts: { "main.md": "as confirmed" }, files: {} });
+  const moved = JSON.stringify({ main: "main.md", texts: { "main.md": "somebody else typed" }, files: {} });
 
-  vm.runInContext("restoreCheckpoint('sha-one')", ctx);
-  assert.equal(ctx.restoring, true);
-  tree = { main: "main.md", texts: { "main.md": "somebody else typed" }, files: {} };
-  await vm.runInContext("confirmRestore()", ctx);
+  timeline.ask("sha-one", asShown);
+  assert.equal(timeline.state.restoring, true);
+  await timeline.confirm(moved);
   assert.equal(posted.length, 0, "a project that moved is not restored over without a second look");
-  assert.equal(ctx.restoreMoved, true, "and the dialog says so");
-  assert.equal(ctx.restoring, true, "and stays open");
+  assert.equal(timeline.state.restoreMoved, true, "and the dialog says so");
+  assert.equal(timeline.state.restoring, true, "and stays open");
 
-  await vm.runInContext("confirmRestore()", ctx);
+  await timeline.confirm(moved);
   assert.equal(posted.length, 1, "confirming against what is now on the screen restores");
   assert.equal(JSON.parse(posted[0].body).sha, "sha-one");
-  assert.equal(ctx.restoring, false);
-  assert.equal(ctx.restoreMoved, false);
+  assert.equal(timeline.state.restoring, false);
+  assert.equal(timeline.state.restoreMoved, false);
+
+  // A reader who cannot edit cannot restore, whatever reaches the action.
+  const readOnly = createTimeline({ slug: "doc", fetcher: () => assert.fail("a reader must not restore") });
+  readOnly.ask("sha-one", asShown);
+  assert.equal(readOnly.state.restoring, false);
+  await readOnly.confirm(asShown);
 }
 console.log('reader-races: a restore is confirmed against the project it will replace');

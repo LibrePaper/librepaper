@@ -1,19 +1,9 @@
 import assert from "node:assert/strict";
-import { compileModule } from "svelte/compiler";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { loadRunes } from "../helpers/runes.mjs";
 
-const source = new URL("../../src/lib/reader/history-source.svelte.js", import.meta.url);
-const dir = mkdtempSync(join(tmpdir(), "history-source-test-"));
-let createHistorySource;
-try {
-  const compiled = compileModule(readFileSync(source, "utf8"), { filename: source.pathname, generate: "client" });
-  const code = compiled.js.code.replace(/from (["'])([^"']+)\1/g, (_, quote, specifier) => `from ${JSON.stringify(import.meta.resolve(specifier))}`);
-  const output = join(dir, "source.mjs"); writeFileSync(output, code);
-  ({ createHistorySource } = await import(pathToFileURL(output).href));
-} finally { rmSync(dir, { recursive: true, force: true }); }
+const { createHistorySource } = await loadRunes(
+  new URL("../../src/lib/reader/history-source.svelte.js", import.meta.url),
+);
 
 const tree = (sha, text, extra = {}) => ({ sha, main: "main.md", texts: { "main.md": text }, files: {}, ...extra });
 const points = [tree("A", "original"), tree("B", "revision", { parent: "A" })];

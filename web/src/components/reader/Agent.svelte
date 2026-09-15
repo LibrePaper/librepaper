@@ -384,14 +384,14 @@
     <p class="panel-muted">Click a button below to copy connection instructions to your clipboard. Paste them into a new message in your local coding agent (Codex, Claude, Pi, etc.) and send it to connect the agent to this document. Choose <strong>Reader</strong> to let it read, <strong>Commenter</strong> to let it read, comment, and suggest changes, <strong>Edit with track changes</strong> to require suggestions you can accept or reject, or <strong>Edit directly</strong> to allow source edits.</p>
     <div class="access-buttons" role="group" aria-label="Copy setup prompt with access">
       {#each roles as role}
-        <button class="btn btn-sm preset-tonal-surface" disabled={busy || starting || !connection.id || (!canShare && currentRole !== (role.role || role.id))} data-access={role.id} title={role.help} onclick={() => void copyInstructions(role.id)}>{role.label}</button>
+        <button class="btn btn-sm preset-outlined-surface-300-700" disabled={busy || starting || !connection.id || (!canShare && currentRole !== (role.role || role.id))} data-access={role.id} title={role.help} onclick={() => void copyInstructions(role.id)}>{role.label}</button>
       {/each}
     </div>
     {#if copyFallback}<textarea class="input setup-prompt" readonly rows="6" aria-label="Setup prompt to copy" value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>{/if}
   </div>
   {#if !connection.id}<button class="btn preset-filled-primary-500" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Retry connection"}</button>{/if}
   {#if connection.id && !connection.connected}
-    <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm preset-tonal-surface" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
+    <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm preset-outlined-surface-300-700" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
   {/if}
 
   </Tabs.Content>
@@ -410,7 +410,7 @@
   {/if}
 
   {#each uncertainTasks() as item (item.id)}
-    <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm preset-tonal-surface" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
+    <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm preset-outlined-surface-300-700" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
   {/each}
   <ChatTranscript messages={connection.messages} empty={connection.runnerConnected ? "No messages yet." : "Connect your agent in the Connection tab to begin."} roleLabel={(message) => message.role === "user" ? "You" : "Agent"} onresult={chooseResult} />
 
@@ -463,7 +463,7 @@
         {#each comments.filter(comment => !comment.resolved) as comment (comment.id)}
           <div>
             <p class="panel-muted">{comment.body || comment.exact || "Suggestion"}</p>
-            <button class="btn btn-sm preset-tonal-surface" disabled={!caps.can_comment} onclick={() => oncommenttask(comment)}>{comment.motivation === "editing" ? "Refine suggestion" : "Address comment"}</button>
+            <button class="btn btn-sm preset-outlined-surface-300-700" disabled={!caps.can_comment} onclick={() => oncommenttask(comment)}>{comment.motivation === "editing" ? "Refine suggestion" : "Address comment"}</button>
           </div>
         {/each}
       </div>
@@ -474,7 +474,7 @@
         {#each diagnostics as item}
           <div>
             <p class="panel-muted">{item.message}</p>
-            <button class="btn btn-sm preset-tonal-surface" disabled={!caps.can_comment} onclick={() => ondiagnostictask(item)}>Fix diagnostic</button>
+            <button class="btn btn-sm preset-outlined-surface-300-700" disabled={!caps.can_comment} onclick={() => ondiagnostictask(item)}>Fix diagnostic</button>
           </div>
         {/each}
       </div>

@@ -126,10 +126,22 @@
 	--color-shell: light-dark(#ffffff, var(--color-surface-950));
 	--color-sidebar: #f7f8f7;
 	--color-preview: #f6f6f4;
-	--color-divider: #e5e8e6;
-	--color-row-hover: #f0f2f1;
-	--color-row-selected: #eef3f0;
-	--color-line-number: #8d9691;
+	/* Two weights of line, because they are two different jobs. Between the
+	   panes, where the boundary is what tells the workspace apart from itself,
+	   the line is the stronger of the two; inside a panel, where a rule only
+	   separates one row from the next on a surface that is already one thing,
+	   it stays a hairline. Both were the same faint value, and at 1.23:1 the
+	   pane edges were doing neither job. */
+	--color-divider: #dadfdc;
+	--color-pane-edge: #c3ccc7;
+	/* A hover and a selection have to be seen to be states at all: against the
+	   sidebar these were 1.06:1 and 1.05:1, which is a difference a screen
+	   renders and an eye does not. */
+	--color-row-hover: #e9ecea;
+	--color-row-selected: #e4ece7;
+	/* Line numbers are text somebody reads a number off and types into a
+	   search, not decoration, so they clear 4.5:1 against the editor. */
+	--color-line-number: #6e7772;
 	/* Sidebar typography and rhythm are shared by every panel. */
 	--panel-font-size: var(--text-sm);
 	--panel-line-height: 1.5;

@@ -10,7 +10,7 @@
   {#snippet children(toast)}
     <Toast
       {toast}
-      class="card w-80 p-4 shadow-lg {toast.type === 'error'
+      class="card toast-card p-4 shadow-lg {toast.type === 'error'
         ? 'preset-filled-error-500'
         : toast.type === 'success'
           ? 'preset-filled-success-500'

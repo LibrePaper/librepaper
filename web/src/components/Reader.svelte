@@ -18,12 +18,18 @@
   import * as latex from "../lib/latex.js";
   import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
   import * as localQuarto from "../lib/companion/client.js";
-  import { checkPlacement, basename, inside } from "../lib/file-manager.js";
+  import { basename } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
   import { createAnnotations } from "../lib/reader/annotations.js";
   import { createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
   import { createReaderCollaboration } from "../lib/reader/collaboration.js";
+  import { createWorkspace } from "../lib/reader/workspace.svelte.js";
+  import { createBuildSettings } from "../lib/reader/build-settings.svelte.js";
+  import { createTimeline } from "../lib/reader/timeline.svelte.js";
+  import { createPassageTrace } from "../lib/reader/passage-trace.svelte.js";
+  import { createPreviewRenderer } from "../lib/reader/preview-render.js";
+  import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { prepareOfflineProject, preparedProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
   import { createPublicationPublisher, createPublicationReader, sha256 } from "../lib/publication.js";
@@ -35,22 +41,17 @@
     config as loadConfig,
     keyHeaders,
     signInHref,
-    uploadAsset,
   } from "../lib/api.js";
   import {
-    KEYMAP,
-    LAYOUT,
     LINKED,
-    PANEL,
-    SOURCE_SIDE,
     linkFor,
     markViewed,
     read,
     takeKeyFromFragment,
     write,
   } from "../lib/storage.js";
-  import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, LAYOUTS, PANES, RATIOS, clamp, measure, pixels, px, remember, showing, stored } from "../lib/panes.js";
-  import { iconFor } from "../lib/panels.js";
+  import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, RATIOS, clamp, measure, pixels, px, showing } from "../lib/panes.js";
+  import { tabsFor } from "../lib/panels.js";
 
   import { tick, untrack } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
@@ -62,12 +63,13 @@
   import Modal from "./Modal.svelte";
   import Toasts from "./Toasts.svelte";
   import { done as toastDone, problem as toastProblem, said as toastSaid } from "../lib/toast.svelte.js";
-  import { availableDownloads, inlineBlobUrls, saveBlob } from "../lib/reader/downloads.js";
+  import { archive, availableDownloads, docxFile, entryDownload, projectFiles, renderingFile, saveBlob } from "../lib/reader/downloads.js";
   import Preview from "./Preview.svelte";
+  import PreviewControls from "./PreviewControls.svelte";
   import Grip from "./Grip.svelte";
   import { parseRenderOptions } from "../lib/quarto-options.js";
   import SettingsDialog from "./settings/SettingsDialog.svelte";
-  import { anonymousIdentity, read as readBuildPreferences, update as updateBuildPreferences } from "../lib/build-preferences.js";
+  import { anonymousIdentity, update as updateBuildPreferences } from "../lib/build-preferences.js";
   import LatexStatus from "./LatexStatus.svelte";
   import PreviewStatus from "./PreviewStatus.svelte";
   import Avatar from "./Avatar.svelte";
@@ -77,10 +79,20 @@
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
-  import { createLocalPreview } from "../lib/reader/local-preview.js";
-  import { HIGHLIGHT_COLORS } from "../lib/annotation-colors.js";
+  import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
+  import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import InsertMenu from "./InsertMenu.svelte";
   import ReaderSidebar from "./reader/ReaderSidebar.svelte";
+  import PanelRail from "./reader/PanelRail.svelte";
+  import Files from "./reader/Files.svelte";
+  import Outline from "./reader/Outline.svelte";
+  import Agent from "./reader/Agent.svelte";
+  import Collaboration from "./reader/Collaboration.svelte";
+  import Changes from "./reader/Changes.svelte";
+  import Share from "./reader/Share.svelte";
+  import Diagnostics from "./reader/Diagnostics.svelte";
+  import History from "./reader/History.svelte";
+  import PendingAnnotations from "./reader/PendingAnnotations.svelte";
   import { createRevisionController } from "../lib/track-changes.js";
 
   const SLUG = location.pathname.split("/").pop();
@@ -163,24 +175,15 @@
 
   let preview = $state(null);
   // Both Quarto's own live preview and a Typst document previewed through
-  // Calepin run the same `createLocalPreview` lifecycle (`../lib/reader/local-preview.js`)
-  // against the same local app; only the reactive mirrors below -- what the
-  // template reads -- are per engine.
-  let quartoPreview = $state(null);
-  let quartoPreviewStarting = $state(false);
-  let quartoPreviewError = $state("");
-  let calepinPreviewError = $state("");
+  // Calepin run the same `createLocalPreview` lifecycle
+  // (`../lib/reader/local-preview.svelte.js`) against the same local app.
+  // Each controller owns what it is doing -- running, starting, re-rendering,
+  // and the last thing that went wrong -- and the aliases further down read
+  // it, rather than the page keeping a copy of each and a callback to keep
+  // the copy honest.
   let localConnectionError = $state("");
   let quartoLiveSyncTimer = null;
-  // Whether the bridge says Quarto is currently re-rendering the live
-  // preview -- carried on every response of the page route (200, 304, 404
-  // alike), never just the ones with new HTML. Drives the "Rendering…" badge
-  // and the faster poll cadence while true.
-  let quartoRendering = $state(false);
-  let calepinPreview = $state(null);
-  let calepinPreviewStarting = $state(false);
   let calepinSyncTimer = null;
-  let calepinRendering = $state(false);
   // The Quarto profile and parameters this browser previews with, set under
   // Settings and remembered per document. The format is never chosen here:
   // it comes from the document's front matter, and older remembered options
@@ -243,7 +246,14 @@
     }
   }
 
+  // What running Quarto here actually means. It was a title attribute on the
+  // button, which is to say it was invisible on a touch screen and delayed on
+  // every other: a consequence of this size is asked about, not hinted at.
+  const QUARTO_WARNING = "Quarto can execute arbitrary code from this document on your computer.";
+  let quartoConsent = $state(false);
+
   async function runQuartoLocally() {
+    quartoConsent = false;
     if (!await ensureLocalApp()) return;
     await setQuartoPreviewMode("quarto");
     quartoExecutionApproved = true;
@@ -447,6 +457,11 @@
           void paintPreview();
         }
         break;
+      case "viewer-state":
+        viewerView = message.drawn
+          ? { mode: String(message.mode || "auto"), scale: Number(message.scale) || null }
+          : null;
+        break;
       case "selection":
         showSelection(message.selector, message.rect);
         break;
@@ -599,7 +614,7 @@
     selectedAnnotation = String(comment.id);
     const suggestion = comment.motivation === "editing";
     const plainHighlight = comment.motivation === "highlighting" && !comment.body && !comment.replies?.length;
-    if (!suggestion) collaborationTab = plainHighlight ? "highlights" : "comments";
+    if (!suggestion) prefs.collaborationTab = plainHighlight ? "highlights" : "comments";
     void showPanel(suggestion ? "changes" : "collaboration");
     const targetPanel = panel;
     await tick();
@@ -623,7 +638,7 @@
       }
       const id = session?.idOf(comment.sourcePath);
       if (id) {
-        openFile = id;
+        ws.openFile = id;
         editor?.goToIn(id, comment.sourceStart);
       } else editor?.goTo(comment.sourceStart);
       return;
@@ -638,7 +653,7 @@
     }
     if (shown.source && comment.sourceStart != null && editing && editor) {
       const id = session.idOf(comment.sourcePath);
-      if (id) { openFile = id; editor.goToIn(id, comment.sourceStart); }
+      if (id) { ws.openFile = id; editor.goToIn(id, comment.sourceStart); }
       else editor.goTo(comment.sourceStart);
     }
   }
@@ -646,15 +661,45 @@
   function placeBar(rect) {
     if (rect && !matchMedia("(max-width:760px)").matches) {
       const frameRect = document.querySelector(".viewport").getBoundingClientRect();
+      const width = barElement?.offsetWidth || 250;
+      const middle = frameRect.left + rect.left + (rect.right - rect.left) / 2;
       bar = {
         shown: true,
-        left: Math.max(8, Math.min(innerWidth - 260, frameRect.left + rect.left + (rect.right - rect.left) / 2 - 125)),
-        top: Math.max(65, frameRect.top + rect.top - 42),
+        left: withinWindow(middle - width / 2, width),
+        // Clear of the bar at the top of the window, which is where this
+        // number comes from rather than from a constant beside it.
+        top: Math.max(belowTheBar(), frameRect.top + rect.top - 42),
       };
       return;
     }
     bar = { ...bar, shown: true };
   }
+
+  let barElement = $state(null);
+  const BAR_MARGIN = 8;
+
+  // How far down the window anything is allowed to start: the height of the
+  // bar at the top, taken from the stylesheet that sets it rather than from a
+  // number copied out of it, and the gap the placing has always left below it.
+  function belowTheBar() {
+    const declared = getComputedStyle(document.documentElement).getPropertyValue("--librepaper-bar").trim();
+    const height = declared.endsWith("px") ? Number.parseFloat(declared) : (Number.parseFloat(declared) || 3.5) * unit;
+    return Math.round(height) + 9;
+  }
+
+  const withinWindow = (left, width) =>
+    Math.max(BAR_MARGIN, Math.min(innerWidth - width - BAR_MARGIN, left));
+
+  // The tool decides how wide the bar is -- highlighting adds five swatches --
+  // and the width is only knowable once it is drawn, so the placing above is
+  // made good here, after it is.
+  $effect(() => {
+    if (!bar.shown || !barElement) return;
+    void tool;
+    const width = barElement.offsetWidth;
+    const left = withinWindow(bar.left, width);
+    if (Math.abs(left - bar.left) > 1) bar = { ...bar, left };
+  });
 
   function chooseTool(which) {
     if (!mayChat) return;
@@ -1160,13 +1205,9 @@
     // external project binding may be stale and is not synchronized here.
     jobOf: () => ({ binding: localQuarto.HOSTED_BINDING }),
     isDisposed: () => readerDisposed,
-    onRunningChange: (session) => (quartoPreview = session),
-    onRenderingChange: (value) => (quartoRendering = value),
-    onStartingChange: (value) => {
-      quartoPreviewStarting = value;
-      if (value) navigationGeneration += 1;
-    },
-    onError: (message) => (quartoPreviewError = message),
+    // A managed preview taking the pane invalidates whatever this browser
+    // was rendering into it.
+    onStartingChange: (value) => { if (value) navigationGeneration += 1; },
     onEnded: () => void paintPreview(),
   });
 
@@ -1175,17 +1216,28 @@
     engine: "calepin",
     label: "Calepin",
     publish: (payload) => framePreview.publish(payload),
-    onError: (message) => (calepinPreviewError = message),
     treeNow: localPreviewTreeNow,
     entrypointOf: (tree) => tree.main,
     optionsOf: () => ({ format: "pdf" }),
     jobOf: () => ({ binding: localQuarto.HOSTED_BINDING }),
     isDisposed: () => readerDisposed,
-    onRunningChange: (session) => (calepinPreview = session),
-    onRenderingChange: (value) => (calepinRendering = value),
-    onStartingChange: (value) => (calepinPreviewStarting = value),
     onEnded: () => void paintPreview(),
   });
+
+  // What each controller says about itself, read where the page used to read
+  // its own copy.
+  const quartoPreview = $derived(quartoPreviewController.state.session);
+  const quartoPreviewStarting = $derived(quartoPreviewController.state.starting);
+  // Whether the bridge says Quarto is currently re-rendering the live preview
+  // -- carried on every response of the page route (200, 304, 404 alike),
+  // never just the ones with new HTML. Drives the "Rendering…" badge and the
+  // faster poll cadence while true.
+  const quartoRendering = $derived(quartoPreviewController.state.rendering);
+  const quartoPreviewError = $derived(quartoPreviewController.state.error);
+  const calepinPreview = $derived(calepinPreviewController.state.session);
+  const calepinPreviewStarting = $derived(calepinPreviewController.state.starting);
+  const calepinRendering = $derived(calepinPreviewController.state.rendering);
+  const calepinPreviewError = $derived(calepinPreviewController.state.error);
 
   // Drives the whole automatic mode for each engine: starts the managed
   // preview the moment its conditions are met, and tears it down (falling
@@ -1222,12 +1274,18 @@
     if (quartoLiveActive) await quartoPreviewController.start();
   }
 
-  // The manifest, and whether the last read of it succeeded. The panel shows
-  // the rows; the comparison below owns everything about a selected version.
-  let checkpoints = $state.raw([]);
-  let historyDurability = $state.raw(null);
-  let historyProblem = $state("");
-  let historyLoadGeneration = 0;
+  // The manifest, and whether the last read of it succeeded, belong to the
+  // timeline; the comparison below owns everything about a selected version.
+  const timeline = createTimeline({
+    slug: SLUG,
+    key: KEY,
+    problem: (message) => toastProblem(message),
+    onrestored: () => historySource.select(""),
+    disposed: () => readerDisposed,
+  });
+  const checkpoints = $derived(timeline.state.checkpoints);
+  const historyDurability = $derived(timeline.state.durability);
+  const historyProblem = $derived(timeline.state.problem);
   // Selection is a user-interface fact, not proof that the source could be
   // read: a failed comparison reports itself in the workspace and cannot make
   // a clicked version appear unselected.
@@ -1265,24 +1323,8 @@
   // And which file, when the landing page's search found the project by one
   // of its files. Honoured once the directory has arrived, and once only.
   const ARRIVED_FILE = new URLSearchParams(location.search).get("file") || "";
-  let arrivedFileOpened = false;
 
-  async function loadHistory() {
-    const mine = ++historyLoadGeneration;
-    try {
-      const loaded = await history.loadWithStatus(SLUG, keyHeaders(KEY));
-      if (readerDisposed || mine !== historyLoadGeneration) return;
-      checkpoints = loaded.checkpoints;
-      historyDurability = loaded.durability;
-      historyProblem = "";
-    } catch (error) {
-      if (readerDisposed || mine !== historyLoadGeneration) return;
-      // A failed refresh is not evidence that the previous save state still
-      // applies; keep the old rows for selection but make status unknown.
-      historyDurability = null;
-      historyProblem = error.message || "the history could not be read";
-    }
-  }
+  const loadHistory = () => timeline.load();
 
   // The timeline and the source workspace share one selection. Selecting a
   // version compares it with the current source and nothing else: the
@@ -1293,72 +1335,18 @@
     return pending;
   }
 
-  let restoring = $state(false);
-  let restoreSha = $state("");
-  let restoreBusy = $state(false);
-  // The project as it stood when this restore was put to the reader. A
-  // restore replaces every file, so what it is about to discard has to be
-  // what they were shown -- see `confirmRestore`.
-  let restoreBaseline = "";
-  let restoreMoved = $state(false);
-  const restoreName = $derived.by(() => {
-    const point = checkpoints.find((point) => point.sha === restoreSha);
-    return point ? `${point.label ? `${point.label} · ` : ""}${new Date(point.at).toLocaleString()}` : "this version";
-  });
+  const restoreBusy = $derived(timeline.state.restoreBusy);
+  const restoreMoved = $derived(timeline.state.restoreMoved);
+  const restoreName = $derived(timeline.describe(timeline.state.restoreSha));
+  // What restoring is about to discard, read here and handed over, so that
+  // the question and the answer are asked of the same project.
   const projectSignature = () => {
     const tree = session?.tree?.();
     return JSON.stringify({ main: tree?.main || "", texts: tree?.texts || {}, files: tree?.files || {} });
   };
-  function restoreCheckpoint(sha) {
-    if (!mayEdit || !sha) return;
-    restoreSha = sha;
-    restoreBaseline = projectSignature();
-    restoreMoved = false;
-    restoring = true;
-  }
-
-  async function confirmRestore() {
-    const sha = restoreSha;
-    if (!mayEdit || !sha) return;
-    // Somebody else -- or this reader in another tab -- may have written to
-    // the project while the dialog was open. What restoring discards is then
-    // not what was confirmed, so the confirmation is asked for again against
-    // the project as it now stands.
-    const signature = projectSignature();
-    if (signature !== restoreBaseline) {
-      restoreBaseline = signature;
-      restoreMoved = true;
-      return;
-    }
-    restoreBusy = true;
-    try {
-      const response = await fetch(`/api/documents/${SLUG}/restore`, {
-        method: "POST",
-        headers: authHeaders(KEY, "application/json"),
-        body: JSON.stringify({ sha }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || "that checkpoint could not be restored");
-      restoring = false;
-      restoreMoved = false;
-      await loadHistory();
-      await historySource.select("");
-    } catch (error) {
-      toastProblem(error.message || "that checkpoint could not be restored");
-    } finally {
-      restoreBusy = false;
-    }
-  }
-
-  async function nameCheckpoint(sha, given) {
-    try {
-      await history.label(SLUG, sha, given, keyHeaders(KEY));
-    } catch (error) {
-      toastProblem(error.message || "that checkpoint could not be named");
-      return;
-    }
-    await loadHistory();
-  }
+  const restoreCheckpoint = (sha) => timeline.ask(sha, projectSignature());
+  const confirmRestore = () => timeline.confirm(projectSignature());
+  const nameCheckpoint = (sha, given) => timeline.name(sha, given);
 
   // The link to a moment: the document's own link with the checkpoint on it.
   // A query rather than a fragment, because the fragment is where a link key
@@ -1375,46 +1363,21 @@
   // entry at which it stopped being found. This is what replaces "Needs
   // re-anchoring" on the card, which told the person who wrote the comment
   // nothing they did not already know.
-  let went = $state({});
-  let replacements = $state({});
-  let passageTraceGeneration = 0;
-  let lastPassageTrace = null;
+  const passageTrace = createPassageTrace({
+    slug: SLUG,
+    key: KEY,
+    now: () => ({ source: sourceGeneration, visible: docText }),
+    loadCheckpoints: async () => {
+      await loadHistory();
+      return timeline.state.checkpoints;
+    },
+  });
+  const went = $derived(passageTrace.state.went);
+  const replacements = $derived(passageTrace.state.replacements);
 
   async function tracePassages() {
     if (docText === null || !session) return;
-    const lost = comments.filter((comment) => comment.orphaned && !comment.region);
-    const ids = lost.map((comment) => comment.id + ":" + comment.revision).join("|");
-    if (lastPassageTrace?.source === sourceGeneration && lastPassageTrace?.visible === docText && lastPassageTrace?.ids === ids) return;
-    const visible = docText;
-    const source = sourceGeneration;
-    lastPassageTrace = { source, visible, ids };
-    const mine = ++passageTraceGeneration;
-    const currentTree = session.tree();
-    const nextWent = {};
-    const nextReplacements = {};
-    if (lost.length && !checkpoints.length) await loadHistory();
-    const list = checkpoints;
-    for (const comment of lost) {
-      if (mine !== passageTraceGeneration || source !== sourceGeneration || visible !== docText) return;
-      try {
-        const point = await passages.wentAt(SLUG, comment, list, keyHeaders(KEY));
-        if (point) nextWent[comment.id] = point;
-        if (!comment.revision) continue;
-        const oldText = comment.source
-          ? await passages.sourceTextAt(SLUG, comment.revision, comment.source.path, keyHeaders(KEY))
-          : await passages.textAt(SLUG, comment.revision, keyHeaders(KEY));
-        const current = comment.source ? currentTree.texts[comment.source.path] ?? "" : visible;
-        const replacement = await passages.replacementAt(oldText, current, comment.source || comment);
-        if (replacement !== null) nextReplacements[comment.id] = replacement;
-      } catch {
-        // A missing checkpoint cannot establish a replacement.
-        if (mine === passageTraceGeneration) lastPassageTrace = null;
-      }
-    }
-    if (mine === passageTraceGeneration && source === sourceGeneration && visible === docText) {
-      went = nextWent;
-      replacements = nextReplacements;
-    }
+    return passageTrace.trace({ comments, tree: session.tree(), checkpoints });
   }
 
   // The document as a renderer takes it: every text in it, the figures by
@@ -1456,7 +1419,9 @@
     navigation: () => navigationGeneration,
     source: () => sourceGeneration,
     main: () => treeNow().main,
-    render: renderPreview,
+    // Called rather than passed: the renderer is built further down the file,
+    // and this closure is what lets the coordinator exist before it.
+    render: (ticket) => renderPreview(ticket),
   });
 
   /// Fetches the figures a tree's digests point to and reports which of the
@@ -1525,6 +1490,26 @@
           ? counted(warningCount, "warning")
           : "",
   );
+
+  // What the rail says about a panel beyond its name: a fuller label for a
+  // screen reader, counts to print under the icon, a dot to mark it. Written
+  // here because this is where a diagnostic and a tracked change mean
+  // something; the rail draws whatever it is handed.
+  const badges = $derived({
+    diagnostics: {
+      says: diagnosticBadge ? `Diagnostics: ${diagnosticBadge}` : "",
+      counts: diagnostics.length
+        ? [
+            errorCount ? { tone: "errors", of: errorCount } : null,
+            warningCount ? { tone: "warnings", of: warningCount } : null,
+          ].filter(Boolean)
+        : [],
+    },
+    changes: {
+      says: trackingState.enabled ? "Changes — tracking on" : "",
+      dot: trackingState.enabled,
+    },
+  });
 
   // A reader is told nothing about live editor diagnostics. They cannot fix
   // them, and a red badge for a typo in somebody else's editing session would
@@ -1601,88 +1586,59 @@
   const renderStatus = createRenderStatus();
   const renderState = renderStatus.state;
 
-  // The project's LaTeX settings, mirrored into state because the Yjs `meta`
-  // map they live in is not itself reactive: the Compiler settings need to redraw
-  // when a settings change arrives from another collaborator, not only when
-  // this browser writes one. Kept current by the `meta.observe` handler set
-  // up by `configureLatex` when this project enters LaTeX mode.
-  let latexSettingsState = $state({ engine: "auto" });
-  // Build selection is deliberately browser local. The collaborative session
-  // still supplies source files, never this preference.
-  let buildPreferences = $state({ selection: "automatic", backend: "auto", format: "" });
+  // Which tool builds this document is the build settings' to own; what the
+  // page keeps is the consequence -- which output each format is producing,
+  // and which preview mode it is in.
   const buildUserId = $derived(me.provider && me.handle ? `${me.provider}:${me.handle}` : anonymousIdentity());
-  let previousBuildUser = "";
-  function buildScope() { return { origin: location.origin, user: buildUserId, document: SLUG }; }
+  const buildSettings = createBuildSettings({
+    slug: SLUG,
+    origin: location.origin,
+    interrupt: (next) => {
+      navigationGeneration += 1;
+      renderers.cancelPreview({ keepWarm: true });
+      latex.cancel();
+      // A local preview survives only a choice that keeps using it. `next` is
+      // null when the reader changed rather than the preference, and then
+      // neither does.
+      const local = next?.selection === "tool" && next?.backend === "local";
+      if (sourceFormat === "quarto" && !(local && next.tool === "quarto")) void quartoPreviewController?.stop?.();
+      if (sourceFormat === "typst" && !(local && next.tool === "calepin")) void calepinPreviewController?.stop?.();
+    },
+    // The two paths differ, and deliberately. A preference *loaded* for a
+    // format says what that format's preview mode is whether or not this
+    // document is in it -- the Typst mode is read when a Typst file is opened
+    // later. A preference *chosen* by hand only speaks for the document on
+    // screen, because that is what the reader was looking at when they chose.
+    apply: (preference, format, how) => {
+      if (format === "latex") latexOutput = preference.output === "html" ? "html" : "pdf";
+      if (format === "typst") typstOutput = preference.output === "html" ? "html" : "pdf";
+      if (how === "loaded") {
+        typstPreviewMode = preference.backend === "local" && preference.tool === "calepin" ? "calepin" : "typst";
+        if (preference.selection === "tool") {
+          quartoPreviewMode = preference.backend === "local" && preference.tool === "quarto" ? "quarto" : "markdown";
+        }
+        return;
+      }
+      const local = preference.selection === "tool" && preference.backend === "local";
+      if (format === "quarto") quartoPreviewMode = local && preference.tool === "quarto" ? "quarto" : "markdown";
+      if (format === "typst") typstPreviewMode = local && preference.tool === "calepin" ? "calepin" : "typst";
+    },
+    paint: () => void paintPreview(),
+  });
+  const buildPreferences = $derived(buildSettings.state.preferences);
+  const latexSettingsState = $derived(buildSettings.state.latex);
+  const buildScope = () => buildSettings.scopeFor(buildUserId);
   $effect(() => {
     const format = sourceFormat;
     const user = buildUserId;
-    if (format) untrack(() => {
-      if (previousBuildUser && previousBuildUser !== user) {
-        navigationGeneration += 1;
-        renderers.cancelPreview({ keepWarm: true });
-        latex.cancel();
-        void quartoPreviewController?.stop?.();
-        void calepinPreviewController?.stop?.();
-      }
-      previousBuildUser = user;
-      buildPreferences = readBuildPreferences({ origin: location.origin, user, document: SLUG }, format);
-      {
-        if (format === "latex") latexOutput = buildPreferences.output === "html" ? "html" : "pdf";
-        if (format === "typst") typstOutput = buildPreferences.output === "html" ? "html" : "pdf";
-        if (format === "latex") latex.configure({ project: SLUG, settings: buildPreferences });
-        typstPreviewMode = buildPreferences.backend === "local" && buildPreferences.tool === "calepin" ? "calepin" : "typst";
-        if (buildPreferences.selection === "tool") quartoPreviewMode = buildPreferences.backend === "local" && buildPreferences.tool === "quarto" ? "quarto" : "markdown";
-        // Source hydration and later source changes own rendering. Loading an
-        // identical browser-local preference must not cancel their compile.
-      }
-    });
+    if (format) untrack(() => buildSettings.follow({ format, user }));
   });
-  function setBuildPreferences(next) {
-    buildPreferences = next;
-    if (sourceFormat === "latex") latexOutput = next.output === "html" ? "html" : "pdf";
-    if (sourceFormat === "typst") typstOutput = next.output === "html" ? "html" : "pdf";
-    navigationGeneration += 1;
-    renderers.cancelPreview({ keepWarm: true });
-    latex.cancel();
-    const localSelected = next.selection === "tool" && next.backend === "local";
-    if (sourceFormat === "quarto" && (!localSelected || next.tool !== "quarto")) void quartoPreviewController?.stop?.();
-    if (sourceFormat === "typst" && (!localSelected || next.tool !== "calepin")) void calepinPreviewController?.stop?.();
-    if (sourceFormat === "quarto") quartoPreviewMode = localSelected && next.tool === "quarto" ? "quarto" : "markdown";
-    if (sourceFormat === "typst") typstPreviewMode = localSelected && next.tool === "calepin" ? "calepin" : "typst";
-    if (sourceFormat === "latex") {
-      const engine = next.engine || "auto";
-      latexSettingsState = { ...next, engine, backend: next.backend, tool: next.tool || "tex", output: next.output || "pdf", preset: next.preset || "" };
-      latex.configure({ project: SLUG, settings: latexSettingsState, mayCompile: renderers.available("latex") });
-      latex.setSettings(latexSettingsState);
-    }
-    void paintPreview();
-  }
-  let latexObservedSession = null;
-
-  function stopLatex() {
-    if (latexObservedSession) {
-      latex.cancel();
-    }
-    latexObservedSession = null;
-  }
+  const setBuildPreferences = (next) => buildSettings.choose(next, sourceFormat);
+  const stopLatex = () => buildSettings.stopLatex();
 
   function configureLatex(format) {
-    if (format !== "latex" || !session) {
-      stopLatex();
-      return;
-    }
-    if (latexObservedSession === session) return;
-    stopLatex();
-    const active = session;
-    buildPreferences = readBuildPreferences(buildScope(), format);
-    latexOutput = buildPreferences.output === "html" ? "html" : "pdf";
-    latexSettingsState = { ...buildPreferences, engine: buildPreferences.engine || "auto", backend: buildPreferences.backend || "auto", tool: buildPreferences.tool || "tex", output: buildPreferences.output || "pdf", preset: buildPreferences.preset || "" };
-    latex.configure({
-      project: SLUG,
-      settings: latexSettingsState,
-      mayCompile: renderers.available("latex"),
-    });
-    latexObservedSession = active;
+    const loaded = buildSettings.configureLatex(format, session, buildUserId);
+    if (loaded) latexOutput = loaded.output === "html" ? "html" : "pdf";
   }
 
   // The most recent LaTeX compile result -- success or failure -- kept whole
@@ -1769,6 +1725,16 @@
   // "" since the last navigation. `framePreview.preview()` knows the same,
   // but not reactively, and the File menu's download items follow this.
   let deliveredKind = $state("");
+  // What the PDF frame is showing, as the frame itself reports it: whether a
+  // page is drawn at all, the zoom mode in force, and the scale it came out
+  // at. The header's controls are drawn from this rather than from what was
+  // last asked for, so the percentage beside them is the one on screen -- a
+  // frame too narrow for "150%" draws it smaller, and says so.
+  //
+  // A format with no paged frame never sends it, which is exactly how the
+  // controls stay out of the header for flowing HTML.
+  let viewerView = $state(null);
+  let viewerTool = $state("select");
   let activeSynctex = null;
   framePreview = createFramePreview({
     slug: SLUG,
@@ -1778,6 +1744,11 @@
     send: tell,
     onNavigate: () => {
       frameReady = false;
+      // A new frame has nothing drawn in it and no tool set; it says so once
+      // it loads. Until then the controls go away rather than describing the
+      // document that just left.
+      viewerView = null;
+      viewerTool = "select";
       renderCoordinator.invalidate();
       deliveredKind = "";
       renderStatus.clearDocx();
@@ -1837,243 +1808,60 @@
     return renderCoordinator.request();
   }
 
-  async function renderPreview(mine) {
-    try {
-      if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: paint requested", sourceFormat, Boolean(session));
-    } catch { /* diagnostics are optional */ }
-    if (readerDisposed) return;
-    clearTimeout(previewTimer);
-    previewTimer = null;
-    // The live preview owns the pane while it is running (or starting): the
-    // frame shows Quarto's own page, kept current by `syncQuartoLive` and
-    // the page poller, not by anything painted here.
-    // `typeof` rather than a bare read: tests/unit/reader-races.mjs runs this
-    // function's body in isolation against a context that does not declare
-    // these names for its non-Quarto (and some Quarto) cases.
-    // Keyed to a preview actually running or starting, not to whether this
-    // browser is paired: a browser whose preview failed to start falls
-    // through to the draft below, rather than leaving the pane at whatever
-    // it showed last.
-    if (sourceFormat === "quarto" && typeof quartoLiveActive !== "undefined" && quartoLiveActive &&
-        typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
-      return;
-    }
-    // Same guard, for a Typst document currently showing what Calepin
-    // delivers rather than this browser's own compile.
-    if (sourceFormat === "typst" && typeof calepinActive !== "undefined" && calepinActive &&
-        typeof calepinPreview !== "undefined" && (calepinPreview || calepinPreviewStarting)) {
-      return;
-    }
-    // Every preview is compiled from the source in this tab. Results remain
-    // in the frame only for the active view or an explicit user export.
-    if (!paintsTheFrame) {
-      refreshFramedPage();
-      return;
-    }
-    const tree = treeNow();
-    const snapshotNavigation = navigationGeneration;
-    const snapshotSource = sourceGeneration;
-    let snapshotIdentity = "";
-    const format = renderers.formatOf(tree.main);
-    try {
-      if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: tree", tree.main, format, Object.keys(tree.texts || {}).length);
-    } catch { /* diagnostics are optional */ }
-    // The collaboration session exists before its first Yjs state arrives.
-    // Rendering that placeholder used to call the renderer registry with an
-    // empty format and permanently consume the initial paint.
-    if (!tree.main || !format) return;
-    const htmlPreview = editing && ((format === "typst" && typstOutput === "html") || (format === "latex" && latexOutput === "html"));
-    const paged = renderers.producesPdf(format) && !htmlPreview;
-    const slow = format === "latex";
-    // Shared by both guard points so asset fetching and compilation reject
-    // against the same captured navigation, source policy, and main path.
-    const renderGuard = {
-      ticket: mine,
-      capturedNavigation: snapshotNavigation,
-      capturedSource: snapshotSource,
-      strictSource: slow || format === "quarto",
-      capturedMain: tree.main,
-    };
-    try {
-      // The figures, if this document has any. A figure not yet here is
-      // awaited before the first compile that needs it, and the page that is
-      // already up stays up meanwhile: rendering without them would produce a
-      // document with holes in it and replace it a moment later, which reads
-      // as a flicker rather than as progress.
-      if (Object.keys(tree.digests || {}).length) {
-        const { held, missing } = await gatherFigures(tree.digests);
-        try {
-          if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: assets", Object.keys(held.assets || {}).length, missing);
-        } catch { /* diagnostics are optional */ }
-        if (renderCoordinator.superseded(renderGuard)) return;
-        // A flow page remains useful when an image blob is unavailable:
-        // render its text and let the image appear missing. Paged formats
-        // still require a complete tree.
-        if (paged || (format === "latex" && htmlPreview)) {
-          if (missing.length) {
-            throw new Error(`could not fetch figure${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
-          }
-        }
-        tree.assets = held.assets;
-        // Authored figure URLs and cached Quarto output assets are both part
-        // of this render. Keep both inventories when the figure collector
-        // returns its authenticated blob URLs.
-        tree.urls = { ...(tree.urls || {}), ...held.urls };
-      }
-      // A LaTeX compile takes seconds rather than milliseconds, so the pane
-      // says one is running. The last page that compiled stays up under it:
-      // an author who is typing has something to look at, which is the whole
-      // difference between this and a pane that blanks for four seconds.
-      if (paged || htmlPreview) {
-        renderStatus.begin({ clearFailure: !everPainted });
-      }
-      // Keep a transient source identity for diagnostics and race checks. It
-      // is never sent to the server as a rendering name or persisted result.
-      snapshotIdentity = await snapshotDigest(tree, tree.assets || {});
-      try {
-        if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: rendering", format, snapshotIdentity);
-      } catch { /* diagnostics are optional */ }
-      if (readerDisposed) return;
-      // A manual compile is asked for once; the flag is read here, at the
-      // one call site that reaches the compiler, and cleared immediately so
-      // it cannot linger onto an edit's ordinary debounced compile.
-      // `typeof` rather than a bare read: tests/unit/reader-races.mjs runs this
-      // function's body in isolation, pulled out of the component by a text
-      // marker, against a context that supplies only the variables each test
-      // needs -- `manualCompile` among them only here, where it is read, not
-      // there. `typeof` is the one operator that does not throw on a name a
-      // context never declared; the assignment below is unconditional
-      // because assigning an undeclared name is not an error.
-      const manual = typeof manualCompile === "boolean" && manualCompile;
+  // The render itself is `reader/preview-render.js`. What stays here is the
+  // page's answer to "what is true now", which that render asks for again
+  // after every await, and the few effects it cannot perform itself.
+  const renderPreview = createPreviewRenderer({
+    slug: SLUG,
+    coordinator: renderCoordinator,
+    status: renderStatus,
+    framePreview: { publish: (payload) => framePreview.publish(payload) },
+    diagnostics: diagnosticPainter,
+    renderers,
+    snapshotDigest,
+    diagnosticContext,
+    parseSynctex,
+    facts: () => ({
+      disposed: readerDisposed,
+      navigation: navigationGeneration,
+      source: sourceGeneration,
+      everPainted,
+      editing,
+      format: sourceFormat,
+      hasSession: Boolean(session),
+      paintsTheFrame,
+      latexOutput,
+      typstOutput,
+      buildPreferences,
+      quartoExecutionApproved,
+      // A local tool's own preview owns the pane while it is running or
+      // starting. Answered here because only this page knows which of the two
+      // local previews a given format would be using.
+      livePreviewOwnsPane:
+        (sourceFormat === "quarto" && quartoLiveActive && Boolean(quartoPreview || quartoPreviewStarting))
+        || (sourceFormat === "typst" && calepinActive && Boolean(calepinPreview || calepinPreviewStarting)),
+    }),
+    tree: () => treeNow(),
+    gather: (digests) => gatherFigures(digests),
+    heading: (tree) => headingOf(tree),
+    takeManual: () => {
+      const manual = manualCompile;
       manualCompile = false;
-      let rendered;
+      return manual;
+    },
+    onsynctex: (parsed) => { activeSynctex = parsed; },
+    send: (message) => tell(message),
+    clearDebounce: () => {
+      clearTimeout(previewTimer);
+      previewTimer = null;
+    },
+    refreshFrame: () => refreshFramedPage(),
+    debug: (...parts) => {
       try {
-        const title = await headingOf(tree);
-        if (readerDisposed) return;
-        const renderOptions = { ...(manual ? { manual: true } : {}) };
-        if (htmlPreview) renderOptions.format = "html";
-        const selectedBuild = format === "quarto" && (typeof quartoExecutionApproved === "undefined" || !quartoExecutionApproved)
-          ? { selection: "tool", backend: "browser", tool: "markdown", output: "html" }
-          : buildPreferences;
-        rendered = await renderers.render(tree, title, { ...renderOptions, buildPreferences: selectedBuild, project: SLUG });
-        try {
-          if (localStorage.getItem("librepaper-latex-debug")) console.debug("preview: result", Boolean(rendered?.pdf), rendered?.ok, rendered?.failure?.message || "");
-        } catch { /* diagnostics are optional */ }
-      } finally {
-        // Only the newest compile owns the badge. An older one finishing
-        // afterwards must not turn the spinner off under a newer one.
-        if ((paged || htmlPreview) && renderCoordinator.isNewer(mine)) renderStatus.finish();
-      }
-      if (readerDisposed) return;
-      if (format === "latex" && !htmlPreview) renderStatus.recordLatex(rendered);
-      const { html, pdf, artifact, artifactKind, synctex, diagnostics: said, seconds, log, provenance } = rendered;
-      const contextualDiagnostics = (said || []).map((item) => diagnosticContext(item, tree, snapshotIdentity));
-      // An in-flight preview may finish after another keystroke: HTML and
-      // Typst may show that intermediate progress while the queued render
-      // catches up. Navigation and main-file changes still invalidate it;
-      // LaTeX keeps its strict source guard.
-      if (renderCoordinator.superseded(renderGuard)) {
-        // Collaboration can emit a bookkeeping-only Yjs transaction while a
-        // slow compile is running. Accept the result when the canonical tree
-        // is still byte-for-byte the one that produced it.
-        const sameLatexTree = format === "latex" && renderCoordinator.isNewer(mine) &&
-          snapshotNavigation === navigationGeneration &&
-          snapshotIdentity === await snapshotDigest(treeNow());
-        if (!sameLatexTree) return;
-      }
-      renderCoordinator.commit(mine);
-      if (artifact && artifactKind === "docx" && rendered.ok !== false) {
-        const buffer = artifact.buffer ? artifact.buffer.slice(artifact.byteOffset, artifact.byteOffset + artifact.byteLength) : artifact;
-        renderStatus.recordDocx({ bytes: new Uint8Array(buffer.slice(0)), snapshot: snapshotIdentity, source: snapshotSource, navigation: snapshotNavigation });
-      } else if (artifactKind !== "docx") renderStatus.clearDocx();
-      renderStatus.recordProvenance({ backend: "browser", builder: format === "quarto" ? "Markdown draft" : format, ...provenance, snapshot: snapshotIdentity });
-      if (paged || htmlPreview) renderStatus.recordDuration(seconds);
-      // A render carries `html` or `pdf`, and the reader posts whichever it
-      // has. The bytes are transferred rather than copied: a PDF is megabytes
-      // and this page has no further use for it once the frame has it.
-      if (pdf) {
-        renderStatus.succeeded();
-        const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
-        if (typeof activeSynctex !== "undefined") activeSynctex = null;
-        const preview = { kind: "pdf", sha: snapshotIdentity, bytes: new Uint8Array(buffer.slice(0)) };
-        framePreview.publish(preview);
-        if (snapshotSource === sourceGeneration) {
-          diagnosticPainter.rendered({ page: "", diagnostics: contextualDiagnostics });
-        }
-        // SyncTeX is navigation metadata, not part of the rendered page.
-        // Large maps can take long enough to decompress and index that
-        // awaiting them here left a finished PDF behind the placeholder.
-        if (format === "latex" && synctex && typeof parseSynctex === "function") {
-          void parseSynctex(synctex, Object.keys(tree.texts || {})).then((parsed) => {
-            if (!readerDisposed && renderCoordinator.isCommitted(mine) &&
-                snapshotNavigation === navigationGeneration && snapshotSource === sourceGeneration) {
-              activeSynctex = parsed;
-            }
-          }).catch(() => {
-            // The PDF remains useful when optional source mapping is invalid.
-          });
-        }
-        return;
-      }
-      if (typeof html === "string") {
-        renderStatus.succeeded();
-        // The page is what the document says now, so every error said about an
-        // earlier state of it is cleared at once. The warnings that came with
-        // this page are painted on the same slow schedule the errors are, so
-        // that a font name half typed does not flash a badge on every
-        // keystroke.
-        framePreview.publish({ kind: "html", html });
-        if (snapshotSource === sourceGeneration) {
-          diagnosticPainter.rendered({ page: html, diagnostics: contextualDiagnostics });
-        }
-        return;
-      }
-      if (artifactKind === "docx" && artifact && rendered.ok !== false) {
-        renderStatus.succeeded();
-        diagnosticPainter.rendered({ page: null, diagnostics: contextualDiagnostics });
-        return;
-      }
-      // No new page: an already painted page stays up transiently while the
-      // diagnostics for the current source settle.
-      if (snapshotSource !== sourceGeneration) return;
-      // A log the parser found nothing in is still the only account there
-      // is of what happened, and its last lines are where an engine says
-      // why it stopped.
-      const hasError = contextualDiagnostics.some((item) => item.severity !== "warning");
-      const failureReason = hasError
-        ? ""
-        : rendered.failure?.message || (log || "").trim().split("\n").slice(-12).join("\n") ||
-          "the compiler produced no preview and no log";
-      const failureDiagnostics = hasError
-        ? contextualDiagnostics
-        : [...contextualDiagnostics, diagnosticContext({ severity: "error", message: failureReason }, tree, snapshotIdentity)];
-      renderStatus.failed(failureReason);
-      diagnosticPainter.rendered({ page: null, diagnostics: failureDiagnostics });
-      if (failureReason) console.error(`${format}: could not render:`, failureReason);
-      // Unless nothing was ever painted, the frame gets a transient failure
-      // page for flow formats; paged formats use the source and diagnostics
-      // pane below.
-      if (!everPainted) {
-        const page = await renderers
-          .failurePage(await headingOf(tree), format)
-          .catch(() => null);
-        if (!readerDisposed && page && renderCoordinator.atLeastCommitted(mine) && snapshotNavigation === navigationGeneration) tell({ type: "preview", html: page });
-      }
-    } catch (error) {
-      // Not a document that did not compile: a renderer that could not be
-      // fetched, which is this page's problem rather than the author's.
-      const currentSnapshot = snapshotNavigation === navigationGeneration &&
-        (!(paged || slow) || snapshotSource === sourceGeneration);
-      if (renderCoordinator.isNewer(mine) && currentSnapshot && error.name !== "Superseded") {
-        renderStatus.failed(error.message || "could not render");
-        console.error(`${format}: could not render:`, error);
-        diagnosticPainter.rendered({
-          page: null,
-          diagnostics: [diagnosticContext({ severity: "error", message: renderState.failureReason }, tree, snapshotIdentity)],
-        });
-      }
-    }
-  }
+        if (localStorage.getItem("librepaper-latex-debug")) console.debug(...parts);
+      } catch { /* diagnostics are optional */ }
+    },
+  });
 
   // A source that is not actively being edited in this browser waits for a
   // pause, so remote changes and preview-only views do not render every word.
@@ -2225,7 +2013,7 @@
     if (!found) return;
     const id = session.idOf(found.path);
     if (id) {
-      openFile = id;
+      ws.openFile = id;
       editor.goToIn(id, found.at);
     } else {
       editor.goTo(found.at);
@@ -2238,7 +2026,7 @@
     const precise = activeSynctex.inverse(Number(pdfPoint.page), Number(pdfPoint.x), Number(pdfPoint.y));
     const id = precise && session.idOf(precise.path);
     if (!id) return false;
-    openFile = id;
+    ws.openFile = id;
     editor.openAt(id, precise.line, 1);
     return true;
   }
@@ -2250,37 +2038,18 @@
 
   /* ------------------------------------------------------------------ panes */
 
-  // How the window is divided, and which side the source is on. Both are one
-  // reader's habit rather than anything about a document, so both are
-  // remembered and an editor reopened lands where they left it.
-  let layout = $state(LAYOUTS.includes(read(LAYOUT, "split")) ? read(LAYOUT, "split") : "split");
-  let sourceSide = $state(read(SOURCE_SIDE, "left") === "right" ? "right" : "left");
-  // Which keys the editor answers to. A preference of the person at this
-  // browser, not of the document, and nobody's default but their own; set
-  // from the Settings panel, beside the rest of this browser's preferences.
-  let keys = $state(["vim", "emacs"].includes(read(KEYMAP, "default")) ? read(KEYMAP, "default") : "default");
+  // How the window is divided, which side the source is on, which keys the
+  // editor answers to, which panel is open and how wide the panes are: one
+  // reader's habits rather than anything about a document. The preferences
+  // own them, and own writing them down -- see `reader/preferences.svelte.js`
+  // for why those are one act and not two.
+  const preferences = createPreferences();
+  const prefs = preferences.state;
+  const layout = $derived(prefs.layout);
+  const sourceSide = $derived(prefs.sourceSide);
+  const keys = $derived(prefs.keys);
+  const sizes = $derived(prefs.sizes);
 
-  // The column at the left, and what is in it: the files, the comments or the
-  // history, or "" for closed. One value rather than a switch per panel,
-  // because the column shows one thing at a time. An editor's first visit
-  // opens on the files -- the shape of the project is what a project space
-  // starts with -- and every visit after that opens where they left it.
-  //
-  // Somebody who came by a read or a comment link is shown the document and
-  // its comments first. History is available to compare review rounds; files
-  // and editor settings remain in the editor workspace.
-  const TABS = [
-    { id: "files", says: "Files", editorOnly: true },
-    { id: "outline", says: "Outline", editorOnly: true },
-    { id: "collaboration", says: "Collaboration" },
-    { id: "changes", says: "Changes", editorOnly: false },
-    { id: "agent", says: "Agent" },
-    // History is readable by link-holders too: reviewers need the “since”
-    // view even when they cannot edit or restore the live source.
-    { id: "history", says: "History" },
-    { id: "diagnostics", says: "Diagnostics", editOnly: true },
-    { id: "share", says: "Share", sharingOnly: true },
-  ];
   // Settings are not a column: they open as a dialog from the navbar menu, so
   // the sidebar stays what its icons offer. Every entry point opens the same
   // dialog on the category it is about. A browser that last left the column
@@ -2291,12 +2060,18 @@
     settingsCategory = category;
     settingsOpen = true;
   }
-  const PANELS = ["", ...TABS.map((tab) => tab.id)];
-  const storedPanel = read(PANEL, null);
-  const migratedPanel = storedPanel === "comments" || storedPanel === "chat" ? "collaboration" : storedPanel;
-  let panel = $state(PANELS.includes(migratedPanel) ? migratedPanel : "files");
-  let collaborationTab = $state(storedPanel === "chat" ? "chat" : "comments");
-  const chatVisible = $derived(panel === "collaboration" && collaborationTab === "chat" && shown.comments);
+
+  // The column at the left, and what is in it: the files, the comments or the
+  // history, or "" for closed. One value rather than a switch per panel,
+  // because the column shows one thing at a time. An editor's first visit
+  // opens on the files -- the shape of the project is what a project space
+  // starts with -- and every visit after that opens where they left it.
+  //
+  // Somebody who came by a read or a comment link is shown the document and
+  // its comments first. History is available to compare review rounds; files
+  // and editor settings remain in the editor workspace.
+  const panel = $derived(prefs.panel);
+  const chatVisible = $derived(panel === "collaboration" && prefs.collaborationTab === "chat" && shown.comments);
   $effect(() => { if (chatVisible) unreadChat = false; });
   // Mount panels on their first visit and retain them across view changes.
   // This preserves scroll positions, expanded folders and unsent chat drafts.
@@ -2304,21 +2079,22 @@
   $effect(() => {
     if (settled && shown.comments && panel && !visitedPanels.includes(panel)) visitedPanels = [...visitedPanels, panel];
   });
-  // Narrow screens show one workspace view at a time. This is independent of
-  // the desktop split, so widening the window restores the reader's layout.
-  const MOBILE_VIEW = "librepaper-mobile-view";
-  let mobileView = $state(["document", "source", "sidebar"].includes(read(MOBILE_VIEW, "document"))
-    ? read(MOBILE_VIEW, "document") : "document");
-  let preferredPane = $state(read(LAYOUT, "split") === "source" ? "source" : "document");
+  // Annotations waiting on the server are offered back from the collaboration
+  // panel, so that panel has to exist as soon as there are any -- including
+  // for a reader who has not opened it yet, whose unsent comment would
+  // otherwise have nowhere to be recovered from.
+  const mountedPanels = $derived(
+    unconfirmed.length && !visitedPanels.includes("collaboration")
+      ? [...visitedPanels, "collaboration"]
+      : visitedPanels,
+  );
+  const mobileView = $derived(prefs.mobileView);
+  const preferredPane = $derived(prefs.preferredPane);
   function showMobileView(view) {
     if (view === "source" && !editing && panel !== "history") view = "document";
-    mobileView = view;
-    if (view !== "sidebar") preferredPane = view;
-    if (!compact && view !== "sidebar" && layout !== "split") {
-      layout = view;
-      write(LAYOUT, layout);
-    }
-    write(MOBILE_VIEW, view);
+    preferences.setMobileView(view);
+    if (view !== "sidebar") prefs.preferredPane = view;
+    if (!compact && view !== "sidebar" && layout !== "split") preferences.setLayout(view);
     if (view === "sidebar" && !panel) showPanel(home);
   }
   function selectPanel(name) {
@@ -2326,14 +2102,9 @@
     showPanel(next);
     if (width <= 760) showMobileView(next ? "sidebar" : "document");
   }
-  // The tabs this browser is offered. `editorOnly` waits on the role the
-  // document answers with; `editOnly` on the source pane being open.
-  const tabs = $derived(
-    TABS.filter(
-      (tab) =>
-        (!tab.editorOnly || mayEdit) && (!tab.editOnly || editing) && (!tab.sharingOnly || canSeeSharing || canPublish),
-    ),
-  );
+  // The tabs this browser is offered. Which reader may see which panel is
+  // written with the panels, in lib/panels.js; this only says who is asking.
+  const tabs = $derived(tabsFor({ mayEdit, editing, canSeeSharing, canPublish }));
   // Where the column goes back to when what it showed is taken away: the
   // files for an editor, the comments for everybody else.
   const home = $derived(mayEdit ? "files" : "collaboration");
@@ -2355,7 +2126,7 @@
     if (panel === "history" && name !== "history") historySource.close();
     // Reopening starts at the current source.
     const enteringHistory = name === "history" && panel !== "history";
-    panel = name;
+    preferences.setPanel(name, remembered);
     if (enteringHistory) void historySource.select("");
     // Changes is a source-review queue. On desktop, opening it establishes a
     // source-only workspace; on compact screens the sidebar remains visible
@@ -2365,8 +2136,9 @@
         if (panel === "changes") showMobileView("source");
       });
     }
-    if (compact) mobileView = name ? "sidebar" : "document";
-    if (remembered) write(PANEL, name);
+    // Not remembered: a panel opening the sidebar on a narrow screen is what
+    // this visit is doing, not what the reader asked to come back to.
+    if (compact) prefs.mobileView = name ? "sidebar" : "document";
     return name === "history" ? loadHistory() : Promise.resolve();
   }
 
@@ -2374,10 +2146,6 @@
   // them; the comment column is kept in pixels. Two units because they are two
   // different kinds of pane: half a window stays half when the window changes,
   // and a comment card wants the same readable width whatever the screen is.
-  let sizes = $state({
-    [PANES.editor.key]: stored(PANES.editor),
-    [PANES.sidebar.key]: stored(PANES.sidebar),
-  });
   let guide = $state({ shown: false, left: 0, held: false });
   let grabbing = $state(false);
   // The width the panes are divided out of. Bound rather than read when
@@ -2430,8 +2198,7 @@
   // permanent -- drag the window in and the split is squeezed, drag it out and
   // it stays squeezed, because what was asked for is gone.
   function setSize(pane, size) {
-    sizes[pane.key] = clamp(pane, panes, size);
-    remember(pane, sizes[pane.key]);
+    preferences.setSize(pane, clamp(pane, panes, size));
   }
 
   // The three arrangements, in the order the button walks through them. The
@@ -2462,35 +2229,24 @@
   }
 
   function cycleLayout() {
-    layout = ARRANGEMENTS[layout].next;
-    write(LAYOUT, layout);
+    preferences.setLayout(ARRANGEMENTS[layout].next);
     if (compact) showMobileView(layout === "source" ? "source" : "document");
   }
 
-  function putSourceOn(side) {
-    sourceSide = side;
-    write(SOURCE_SIDE, side);
-  }
+  const putSourceOn = (side) => preferences.setSourceSide(side);
 
-  function setKeys(next) {
-    keys = next;
-    write(KEYMAP, next);
-  }
+  const setKeys = (next) => preferences.setKeys(next);
 
   // What ":q" in Vim mode asks for: the document alone, set directly rather
   // than reached by cycling, and remembered like any other choice of layout.
-  function showDocumentAlone() {
-    layout = "document";
-    write(LAYOUT, layout);
-  }
+  const showDocumentAlone = () => preferences.setLayout("document");
 
   // Everything the layout menu offers, named by what was chosen. The menu
   // reports the value of the line rather than each line calling back, so this
   // is the one place those names are read.
   function chose(what) {
     if (what.startsWith("layout-")) {
-      layout = what.slice(7);
-      write(LAYOUT, layout);
+      preferences.setLayout(what.slice(7));
       if (compact) showMobileView(layout === "source" ? "source" : "document");
       return;
     }
@@ -2561,30 +2317,24 @@
 
   function downloadDocx() {
     if (!docxDownload) return;
-    saveBlob(new Blob([docxDownload.bytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }), `${SLUG}.docx`);
+    const file = docxFile(docxDownload.bytes, SLUG);
+    saveBlob(file.blob, file.name);
   }
 
   // Exports read the transient result currently held by this tab. LibrePaper
   // never fetches or uploads a generated result for an export.
   async function downloadRendering(kind) {
     try {
-      if (kind === "pdf") {
-        const preview = framePreview.preview();
-        let bytes = preview?.kind === "pdf" ? preview.bytes : null;
-        if (!bytes) throw new Error("Render the document before exporting its PDF.");
-        saveBlob(new Blob([bytes], { type: "application/pdf" }), `${SLUG}.pdf`);
-        return;
-      }
-      let html = null;
-      if (displayedFormat === "html") {
-        const tree = treeNow();
-        html = tree.texts?.[tree.main] ?? null;
-      } else {
-        const preview = framePreview.preview();
-        html = preview?.kind === "html" ? await inlineBlobUrls(preview.html) : null;
-      }
-      if (typeof html !== "string") throw new Error("Render the document before exporting its HTML.");
-      saveBlob(new Blob([html], { type: "text/html" }), `${SLUG}.html`);
+      const authored = displayedFormat === "html";
+      const tree = authored ? treeNow() : null;
+      const file = await renderingFile({
+        kind,
+        slug: SLUG,
+        preview: framePreview.preview(),
+        authored,
+        authoredHtml: authored ? tree.texts?.[tree.main] ?? null : null,
+      });
+      saveBlob(file.blob, file.name);
     } catch (error) {
       say(error.message || "Could not download the rendering.", true);
     }
@@ -2654,12 +2404,26 @@
 
   /* ------------------------------------------------------------- the files */
 
-  // The directory as the list shows it, and where everyone's caret is. Held
-  // as state rather than derived, because what they are derived from is a
-  // CRDT that changes outside Svelte's knowledge.
-  let files = $state([]);
-  let folders = $state([]);
-  let openFile = $state("");
+  // The directory as the list shows it, and where everyone's caret is. The
+  // workspace owns all of it; what is read here is read through it, and the
+  // aliases below exist so that reading it looks like reading a local.
+  const workspace = createWorkspace({
+    slug: SLUG,
+    key: KEY,
+    arrivedFile: ARRIVED_FILE,
+    say,
+    paint: () => paintPreview(),
+    retarget: () => updatePreviewTarget(),
+    onarrived: (file) => openTheFile(file),
+  });
+  const ws = workspace.state;
+  const files = $derived(ws.files);
+  const folders = $derived(ws.folders);
+  const openFile = $derived(ws.openFile);
+  const peersByFile = $derived(ws.peersByFile);
+  const rules = $derived(ws.rules);
+  const shownFigure = $derived(ws.figure);
+  const figureUrl = $derived(ws.figureUrl);
   let outlineActiveFrom = $state(null);
   let outlineRevision = $state(0);
   let previewMain = $state("");
@@ -2671,55 +2435,19 @@
   const editorFormat = $derived(renderers.formatOf(toolbarPath) || sourceFormat);
   const canPreviewFile = $derived(files.some((file) =>
     file.id === openFile && file.kind === "text" && Boolean(renderers.formatOf(file.path))));
-  let peersByFile = $state(new Map());
-  // The deployment's rules, which say what a path may be and what may sit at
-  // one. Fetched rather than compiled in, so a deployment that widens its
-  // extension lists widens them here too.
-  let rules = $state({});
   loadConfig()
     .then((answer) => {
-      rules = answer || {};
+      ws.rules = answer || {};
       if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
     })
     .catch(() => {
       /* the server checks every path again; this only explains it sooner */
     });
 
-  // Reading the directory into the list. Deliberately does not paint: the
-  // first call happens while the session is still being joined, before the
-  // frame has even navigated to the documents origin, and a paint sent then
-  // is a postMessage to a window that is not there yet. What paints is a
-  // *change* -- `filesChanged` below -- and the first paint of all is the one
-  // the arriving text triggers, as it always was.
-  function refreshFiles() {
-    if (!session) return;
-    const previousFigure = shownFigure;
-    const previousFiles = files;
-    files = session.list();
-    folders = session.folders();
-    if (previousFigure) {
-      const moved = files.filter((file) => file.kind === "asset" && file.sha === previousFigure.sha
-        && !previousFiles.some((previous) => previous.path === file.path));
-      const current = files.find((file) => file.kind === "asset" && file.path === previousFigure.path)
-        || (moved.length === 1 ? moved[0] : null);
-      shownFigure = current || null;
-      if (current && openFile === previousFigure.id) openFile = current.id;
-    }
-    // A file that went away under this browser -- somebody else deleted it --
-    // leaves the editor showing something that is not there any more, so it
-    // falls back to the document itself.
-    if (openFile && !files.some((file) => file.id === openFile)) openFile = "";
-    if (!openFile) openFile = session.mainId();
-    // The file the link named, if the project has one by that name. An
-    // editor's source pane opens on it; a reader has no pane to open it in
-    // and no list to mark it in, so for them the link is to the document.
-    if (ARRIVED_FILE && mayEdit && !arrivedFileOpened && files.length) {
-      arrivedFileOpened = true;
-      const named = files.find((file) => file.path === ARRIVED_FILE);
-      if (named) openTheFile(named);
-    }
-    updatePreviewTarget();
-  }
+  // Reading the directory into the list is the workspace's; what is left
+  // here is the preview target, which is a rendering question rather than a
+  // directory one.
+  const refreshFiles = () => workspace.refresh();
 
   function updatePreviewTarget() {
     if (!session) return;
@@ -2755,10 +2483,7 @@
     if (!canPreviewFile) return;
     previewFile = openFile;
     updatePreviewTarget();
-    if (!compact && layout === "source") {
-      layout = "split";
-      write(LAYOUT, layout);
-    }
+    if (!compact && layout === "source") preferences.setLayout("split");
     if (compact) showMobileView("document");
   }
 
@@ -2777,24 +2502,16 @@
   }
 
   function refreshPeers() {
-    if (!session) return;
-    peersByFile = session.whereEveryoneIs();
-    participants = session.participants();
+    workspace.refreshPeers();
+    participants = ws.participants;
   }
 
   function openTheFile(file) {
-    // A figure has no editor: choosing one shows it. The id of an asset is
-    // its path, since its bytes are not in the shared document and there is
-    // nothing else to key it by.
     if (openFile !== file.id) outlineActiveFrom = null;
-    openFile = file.id;
-    shownFigure = file.kind === "asset" ? file : null;
+    workspace.show(file);
     // Choosing a file is asking to see it, so an arrangement with no source
     // pane makes room for one. Remembered like any other choice of layout.
-    if (mayEdit && !compact && layout === "document") {
-      layout = "split";
-      write(LAYOUT, layout);
-    }
+    if (mayEdit && !compact && layout === "document") preferences.setLayout("split");
     if (mayEdit) showMobileView("source");
   }
 
@@ -2819,77 +2536,24 @@
     else editor.openAt?.(id, heading.line, 1);
   }
 
-  // The figure being looked at, when the chosen file is one. Held rather than
-  // derived because the bytes it needs are fetched.
-  let shownFigure = $state(null);
-  let figureUrl = $state("");
+  // The bytes of the figure being looked at are fetched by the workspace;
+  // this is the effect that asks it to, whenever the figure changes.
   $effect(() => {
-    const wanted = shownFigure;
-    if (!wanted) {
-      figureUrl = "";
-      return;
-    }
-    figures
-      .gather(SLUG, { [wanted.path]: wanted.sha }, authHeaders(KEY))
-      .then((held) => {
-        if (shownFigure === wanted) figureUrl = held.urls[wanted.path] || "";
-      })
-      .catch(() => {
-        if (shownFigure === wanted) figureUrl = "";
-      });
+    void ws.figure;
+    workspace.watchFigure();
   });
 
-  function addFile(path) {
-    if (!mayEdit) throw new Error("This project is read-only.");
-    path = checkPlacement(rules, { kind: "text", path }, session.list(), session.folders());
-    openFile = session.addText(path, "");
-    paintPreview();
-  }
-
-  function relocateFiles(entries, destination, rename) {
-    const plan = session.relocate(entries, destination, rules, rename);
-    if (plan.files.some((file) => file.path !== file.previousPath)) {
-      say("Files moved. References in source files are not changed automatically.");
-    }
-  }
-
-  function deleteFiles(entries) {
-    session.removeEntries(entries);
-    paintPreview();
-  }
-
-  function makeMain(file) {
-    if (file.kind !== "text") return;
-    session.setMain(file.id);
-    paintPreview();
-  }
-
-  /// A figure: the bytes go to the store and the name goes into the shared
-  /// document, in that order. The name is this browser's to give; the bytes
-  /// are the server's to keep, under their own digest.
-  ///
-  /// The two are separate requests, which is why the server keeps a figure
-  /// nothing refers to for an hour: between them there is a moment when the
-  /// bytes are stored and nothing names them.
-  async function addFigure(file, path = file.name) {
-    if (!mayEdit) throw new Error("This project is read-only.");
-    const activeSession = session;
-    path = checkPlacement(rules, { kind: "asset", path }, activeSession.list(), activeSession.folders());
-    const { sha } = await uploadAsset(SLUG, file, KEY);
-    // An upload yields to other editors; recheck before installing its name.
-    if (session !== activeSession || !mayEdit) throw new Error("The editing session changed during upload.");
-    checkPlacement(rules, { kind: "asset", path }, session.list(), session.folders());
-    session.putAsset(path, sha);
-    paintPreview();
-    return path;
-  }
+  const addFile = (path) => workspace.addText(path);
+  const relocateFiles = (entries, destination, rename) => workspace.relocate(entries, destination, rename);
+  const deleteFiles = (entries) => workspace.remove(entries);
+  const makeMain = (file) => workspace.setMain(file);
+  const addFigure = (file, path) => workspace.addFigure(file, path);
 
   function insertContext() {
     if (!mayEdit) return null;
     const context = editor?.getInsertContext?.();
     if (!context) return null;
-    const assets = session.list().filter(file => file.kind === "asset");
-    return { ...context, files: [...context.files, ...assets] };
+    return { ...context, files: [...context.files, ...workspace.assets()] };
   }
   function applyInsertion(result, context) {
     if (!mayEdit || !editor?.applyInsertResult?.(result, context)) {
@@ -2900,12 +2564,7 @@
   async function uploadInsertAsset(file) {
     return await addFigure(file);
   }
-  async function previewInsertAsset(path) {
-    const sha = session?.tree?.().digests?.[path];
-    if (!sha) return "";
-    const held = await figures.gather(SLUG, { [path]: sha }, authHeaders(KEY));
-    return held.urls[path] || "";
-  }
+  const previewInsertAsset = (path) => workspace.assetUrl(path);
 
   /// The whole directory, as a zip. Built here rather than by a route,
   /// because everything it needs is already in this browser: the texts are in
@@ -2918,63 +2577,24 @@
       return;
     }
     try {
-      const tree = liveTreeNow();
-      const currentFolders = [...folders];
-      const files = { ...tree.texts };
-      for (const path of currentFolders) files[`${path}/`] = new Uint8Array();
-      if (Object.keys(tree.digests || {}).length) {
-        const { held, missing } = await gatherFigures(tree.digests);
-        if (missing.length) {
-          throw new Error(`could not download ${missing.join(", ")}`);
-        }
-        Object.assign(files, held.assets);
-      }
-      // Loaded when it is asked for. A reader who never downloads a document
-      // should not carry the code that would have built one.
-      const { zip } = await import("../lib/zip.js");
+      // The tree and the directory are read here, before anything is awaited,
+      // and handed over as values: `projectFiles` cannot then be cut from a
+      // tree newer than the one whose assets it fetched.
+      const files = await projectFiles({ tree: liveTreeNow(), folders: [...folders], gather: gatherFigures });
       // Named for the document rather than for its main file: what is being
       // downloaded is the directory, and the slug is what a person knows it by.
-      saveBlob(zip(files), `${SLUG}.zip`);
+      saveBlob(await archive(files), `${SLUG}.zip`);
     } catch (error) {
       say(error.message || "could not download the project", true);
     }
   }
 
-  // A text dropped or chosen is read and added as a file. Its bytes are
-  // words, so they belong in the shared document rather than in the store.
-  async function addDroppedText(file, path = file.name) {
-    if (!mayEdit) throw new Error("This project is read-only.");
-    const activeSession = session;
-    const text = await file.text();
-    if (session !== activeSession || !mayEdit) throw new Error("The editing session changed during upload.");
-    path = checkPlacement(rules, { kind: "text", path }, session.list(), session.folders());
-    openFile = session.addText(path, text);
-    paintPreview();
-  }
+  const addDroppedText = (file, path) => workspace.addDroppedText(file, path);
 
   async function downloadEntry(entry) {
     try {
-      const tree = liveTreeNow();
-      const currentFolders = [...folders];
-      const selected = (path) => entry.kind === "folder" ? inside(path, entry.path) : path === entry.path;
-      const content = Object.fromEntries(Object.entries(tree.texts).filter(([path]) => selected(path)));
-      const digests = Object.fromEntries(Object.entries(tree.digests || {}).filter(([path]) => selected(path)));
-      if (Object.keys(digests).length) {
-        const held = await figures.gather(SLUG, digests, authHeaders(KEY));
-        if (Object.keys(digests).some((path) => !Object.prototype.hasOwnProperty.call(held.assets, path))) throw new Error("Could not download all selected files.");
-        Object.assign(content, held.assets);
-      }
-      let blob;
-      if (entry.kind === "folder") {
-        for (const path of currentFolders) if (path === entry.path || selected(path)) content[path + "/"] = new Uint8Array();
-        content[entry.path + "/"] = new Uint8Array();
-        const { zip } = await import("../lib/zip.js");
-        blob = zip(content);
-      } else {
-        if (!(entry.path in content)) throw new Error("This file is no longer available.");
-        blob = new Blob([content[entry.path]]);
-      }
-      saveBlob(blob, basename(entry.path) + (entry.kind === "folder" ? ".zip" : ""));
+      const chosen = await entryDownload({ entry, tree: liveTreeNow(), folders: [...folders], gather: gatherFigures });
+      saveBlob(chosen.files ? await archive(chosen.files) : new Blob([chosen.bytes]), chosen.name);
     } catch (error) { say(error.message || "Could not download this item.", true); }
   }
 
@@ -3033,6 +2653,7 @@
       },
       onSession: (active) => {
         session = active;
+        workspace.attach(active);
         tracking = createRevisionController({
           doc: active.doc,
           author: identity || document_.commenting_as || "Anonymous",
@@ -3089,6 +2710,10 @@
     // Quarto documents; configuring before this assignment leaves the
     // companion inactive and the pane stuck on its Markdown fallback.
     mayEdit = Boolean(allowed);
+    // The workspace guards its own writes, so it is told once, here, where
+    // the permission is settled.
+    ws.canEdit = mayEdit;
+    timeline.state.canEdit = mayEdit;
     offlinePrepared = Boolean(document_.offline_prepared);
     if (mayEdit && !offlinePrepared) {
       void preparedProject({ server: location.origin, slug: SLUG })
@@ -3455,7 +3080,7 @@
     {#if mayEdit && publicationStatus}
       <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => openPanel("share")}>Unpublished changes</button>
     {/if}
-    <div class="presence" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
+    <div class="presence" role="group" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
       <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
       {#if !connected}<span class="connection-label">Offline</span>{/if}
       {#each participants.slice(0, 3) as person (person.key)}
@@ -3527,53 +3152,113 @@
   {/snippet}
 </Nav>
 
-<main class="reader" class:editing={shown.source} class:no-preview={!shown.document}
+<main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
       class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact || (splitTight && layout === "split")}
       style="height: calc(100dvh - var(--librepaper-bar)); --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
+  <!-- What this page is. The title is in the bar, where it is a span beside
+       the menus rather than a heading, so the one heading a screen reader
+       looks for first is here instead: said once, seen by nobody. -->
+  <h1 class="sr-only">{doc.title || "Untitled document"}</h1>
+  <!-- Each panel, wired where its state lives. The column renders whichever
+       of these its rail has selected; none of it travels through the column
+       as props, so a panel can grow a field without the column hearing of it. -->
+  {#snippet filesPanel()}
+    <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
+      {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
+      onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
+      ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
+      onmain={makeMain} onfigure={addFigure} ontext={addDroppedText}
+      ondownload={downloadTree} ondownloaditem={downloadEntry} />
+  {/snippet}
+
+  {#snippet outlinePanel()}
+    <Outline headings={outlineHeadings} activeFrom={outlineActiveFrom} onselect={openOutlineHeading} />
+  {/snippet}
+
+  {#snippet agentPanel()}
+    <Agent slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
+      path={session?.paths?.get(openFile) || ""} selection={pending}
+      revision={pending?.revision || ""} request={assistantRequest}
+      {comments} {diagnostics} oncommenttask={askCommentAssistant}
+      ondiagnostictask={askDiagnostic} onreview={reviewAssistantResults} onpreview={previewAssistant} />
+  {/snippet}
+
+  {#snippet collaborationPanel()}
+    <Collaboration messages={liveChat} {connected} canPost={mayChat} onsend={sendLiveChat}
+      {unreadChat} bind:tab={prefs.collaborationTab} {comments} {figureAt} {identity}
+      commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
+      canComment={mayChat} hasFigures={figureAt.length > 0} ontool={chooseTool}
+      onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
+      ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} />
+    {@render pendingRecovery("collaboration")}
+  {/snippet}
+
+  {#snippet changesPanel()}
+    <Changes {comments} {files} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"}
+      {canModerate} canReview={mayEdit} {tool}
+      revisions={trackingState.revisions} tracking={trackingState.enabled}
+      showMarkup={trackingState.showMarkup} canTrack={mayEdit} {selectedRevision}
+      ontracking={setTrackingEnabled} onmarkup={(value) => tracking?.setShowMarkup(value)}
+      onrevisionreveal={revealRevision} onrevisiondecide={(id, action) => tracking.decide(id, action)}
+      onrevisionundo={(id) => tracking.undo(id)}
+      {went} {replacements} canComment={mayChat} ontool={chooseTool} onreveal={revealAnnotation}
+      selected={selectedAnnotation} onresolve={resolve} ondelete={askDelete}
+      ondeletemany={askDeleteMany} onreply={reply}
+      onaccept={(comment) => decideSuggestion(comment, "accept")}
+      onreject={(comment) => decideSuggestion(comment, "reject")}
+      onrejectconfirmed={rejectConfirmed}
+      onhistory={() => { void showPanel("history"); }} />
+    {@render pendingRecovery("changes")}
+  {/snippet}
+
+  {#snippet sharePanel()}
+    <Share open={panel === "share" && shown.comments} inline slug={SLUG}
+      canShare={doc.role === "owner"} {canSeeSharing} mayPublish={canPublish}
+      publishedVersion={publishedPublication} unpublishedChanges={publicationStatus}
+      publicationReady={publicationMetadataReady} publicationFailed={publicationMetadataFailed}
+      onpublish={publishCurrent} onrefreshpublication={refreshPublicationMetadata}
+      onclose={() => showPanel("")} />
+  {/snippet}
+
+  {#snippet diagnosticsPanel()}
+    <Diagnostics {diagnostics} localAppProblem={localAppDiagnostics.length > 0}
+      onretrylocal={() => sourceFormat === "quarto" ? setQuartoPreviewMode("quarto") : sourceFormat === "typst" ? setTypstPreviewMode("calepin") : ensureLocalApp()}
+      main={previewMain || session?.mainPath() || ""}
+      canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
+      provenance={renderState.lastLatexResult?.provenance || null}
+      attempts={renderState.lastLatexResult?.attempts || []} />
+  {/snippet}
+
+  {#snippet historyPanel()}
+    <History {checkpoints} viewing={historySelectedSha} canEdit={mayEdit}
+      durability={historyDurability} problem={historyProblem} onview={viewPoint}
+      onname={nameCheckpoint} oncopy={checkpointLink} />
+  {/snippet}
+
+  <!-- Annotations the server has not acknowledged, offered back wherever
+       annotations are shown, so work is never only in a failed request. -->
+  {#snippet pendingRecovery(id)}
+    {#if panel === id && unconfirmed.length}
+      <div class="pending-recovery">
+        <PendingAnnotations items={unconfirmed}
+          onretry={(annotationId) => outbox.retry(annotationId, (message) => collaboration?.send(message))}
+          ondiscard={discardAnnotation} />
+      </div>
+    {/if}
+  {/snippet}
+
   <ReaderSidebar
-    {trackingState} {selectedRevision} ontracking={setTrackingEnabled}
-    onmarkup={(value) => tracking?.setShowMarkup(value)} onrevisionreveal={revealRevision}
-    onrevisiondecide={(id, action) => tracking.decide(id, action)}
-    onrevisionundo={(id) => tracking.undo(id)}
-    {shown} {tabs} {panel} {diagnostics} {diagnosticBadge} {errorCount} {warningCount}
-    {editing} layout={layout} arrangements={ARRANGEMENTS} {settled} {visitedPanels} {unconfirmed}
-    {mayEdit} {files} {folders} {openFile} peersByFile={peersByFile} {rules}
-    {outlineHeadings} {outlineActiveFrom} slug={SLUG} link={linkFor(SLUG)} canShare={doc.role === "owner"}
-    {canSeeSharing}
-    mayPublish={canPublish} onpublish={publishCurrent}
-    publishedVersion={publishedPublication} unpublishedChanges={publicationStatus}
-    publicationReady={publicationMetadataReady} publicationFailed={publicationMetadataFailed}
-    onrefreshpublication={refreshPublicationMetadata}
-    path={session?.paths?.get(openFile) || ""} selection={pending} selected={selectedAnnotation}
-    revision={pending?.revision || ""} request={assistantRequest} {comments} {figureAt} {identity}
-    commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
-    {liveChat} {connected} {mayChat} {unreadChat} bind:collaborationTab
-    {checkpoints} {historySelectedSha} historyDurability={historyDurability}
-    {historyProblem} localAppDiagnostics={localAppDiagnostics}
-    previewMain={previewMain || session?.mainPath() || ""} lastLatexResult={renderState.lastLatexResult} compact={compact}
-    {outbox} {collaboration} panes={panes} sidebarPane={PANES.sidebar}
-    onselectpanel={selectPanel} oncyclelayout={cycleLayout} bind:onfilelist={fileList}
-    onopen={openTheFile} onadd={addFile} onmkdir={(path) => session.addFolder(path, rules)}
-    onrelocate={relocateFiles} ondelete={deleteFiles}
-    onduplicate={(entry, path) => session.duplicateEntry(entry, path, rules)} onmain={makeMain}
-    onfigure={addFigure} ontext={addDroppedText} ondownload={downloadTree} ondownloaditem={downloadEntry}
-    onopenoutline={openOutlineHeading} oncommenttask={askCommentAssistant} ondiagnostictask={askDiagnostic}
-    onreview={reviewAssistantResults} onpreview={previewAssistant} onsendchat={sendLiveChat}
-    ontool={chooseTool} onreveal={revealAnnotation} onresolve={resolve} onaskdelete={askDelete}
-    ondeletemany={askDeleteMany} onreply={reply} ondecide={decideSuggestion}
-    onrejectconfirmed={rejectConfirmed}
-    onshowhistory={() => { void showPanel("history"); }}
-    onshareclose={() => showPanel("")}
-    ondrop={dropped}
-    onretrylocal={() => sourceFormat === "quarto" ? setQuartoPreviewMode("quarto") : sourceFormat === "typst" ? setTypstPreviewMode("calepin") : ensureLocalApp()}
-    canopendiagnostic={(item) => Boolean(diagnosticFile(item))} onopendiagnostic={openDiagnostic}
-    onviewpoint={viewPoint} onnamecheckpoint={nameCheckpoint}
-    oncopycheckpoint={checkpointLink}
+    {shown} {tabs} {panel} {settled} {compact} {editing} mounted={mountedPanels}
+    layout={layout} arrangements={ARRANGEMENTS} {badges}
+    panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
+              collaboration: collaborationPanel, changes: changesPanel,
+              share: sharePanel, diagnostics: diagnosticsPanel, history: historyPanel }}
+    panes={panes} sidebarPane={PANES.sidebar}
+    onselectpanel={selectPanel} oncyclelayout={cycleLayout} ondrop={dropped}
     onsize={(size) => setSize(PANES.sidebar, size)} onguide={(where) => (guide = where)}
     ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}
-    onretryannotation={(id, send) => outbox.retry(id, send)} ondiscardannotation={discardAnnotation}
   />
 
   {#if editing || panel === "history"}
@@ -3609,7 +3294,7 @@
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} {tracking} {selectedRevision} onrevision={(revision) => { selectedRevision = revision.id; void showPanel("changes"); }} format={editorFormat} file={openFile} {keys} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
-                  onfilechange={(id) => { openFile = id; outlineActiveFrom = null; shownFigure = null; }} />
+                  onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; }} />
         {/key}
       {/if}
     </section>
@@ -3699,13 +3384,28 @@
         <p>{calepinPreviewError || localConnectionError || (typstNeedsCalepinCommand ? "Install the calepin command to use this preview." : "Connect the local LibrePaper app to use Calepin preview.")}</p>
       {/if}
       {#if previewProblem}
-        <button class="btn btn-sm preset-tonal-surface" onclick={() => showPanel("diagnostics")}>Open Diagnostics</button>
+        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => showPanel("diagnostics")}>Open Diagnostics</button>
       {/if}
     </div>
   {/snippet}
+  {#snippet previewControls()}
+    {#if viewerView}
+      <PreviewControls mode={viewerView.mode} scale={viewerView.scale} tool={viewerTool}
+        onmode={(mode) => {
+          // Optimistic, so the select does not snap back while the page is
+          // redrawn; the frame corrects it with the scale it really used.
+          viewerView = { ...viewerView, mode };
+          tell({ type: "viewer-scale", mode });
+        }}
+        ontool={(next) => {
+          viewerTool = next;
+          tell({ type: "viewer-tool", tool: next });
+        }} />
+    {/if}
+  {/snippet}
   {#snippet previewStatusControl()}
     {#if sourceFormat === "quarto" && mayEdit && !quartoExecutionApproved}
-      <button class="btn btn-sm preset-filled-primary-500" title="Quarto can execute arbitrary code from this document on your computer" onclick={() => void runQuartoLocally()}>Run Quarto locally</button>
+      <button class="btn btn-sm preset-filled-primary-500" title={QUARTO_WARNING} onclick={() => (quartoConsent = true)}>Run Quarto locally</button>
     {:else}
       <PreviewStatus label={previewStatusLabel} busy={previewBusy}
         tone={previewProblem ? "error" : "neutral"}>
@@ -3714,13 +3414,13 @@
     {/if}
   {/snippet}
   {#if publishedMode && !publishedPublication?.id}
-    <section class="latexpane" role="status"><div class="notyet">
+    <section class="latexpane"><div class="notyet" role="status">
       <h2 class="h4">Not published yet</h2>
       <p class="text-surface-700-300 text-sm">The publisher has not published a reader version of this document.</p>
     </div></section>
   {/if}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
-           path={previewMain} status={previewStatusControl}
+           path={previewMain} status={previewStatusControl} controls={previewControls}
            away={!shown.document || unrendered || failedBeforeRender} />
 
   <nav class="mobile-pane-nav" aria-label="Workspace view">
@@ -3730,12 +3430,7 @@
       <IconButton icon="file-text" label="Source" pressed={shown.source}
                   onclick={() => showMobileView("source")} />
     {/if}
-    {#each compact ? tabs : [] as tab (tab.id)}
-      <IconButton icon={iconFor(tab.id)} label={tab.says}
-        pressed={shown.comments && panel === tab.id}
-        controls={`sidebar-panel-${tab.id}`} expanded={shown.comments && panel === tab.id}
-        onclick={() => selectPanel(tab.id)} />
-    {/each}
+    <PanelRail tabs={compact ? tabs : []} {panel} open={shown.comments} onselect={selectPanel} />
   </nav>
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
@@ -3746,6 +3441,7 @@
 
 {#if bar.shown && mayChat}
   <div
+    bind:this={barElement}
     id="selectionbar"
     class="flex gap-1"
     style="display: flex; left: {bar.left}px; top: {bar.top}px"
@@ -3754,7 +3450,7 @@
       <div class="highlight-colors" role="group" aria-label="Highlight color">
         {#each HIGHLIGHT_COLORS as color}
           <button type="button" class:selected={highlightColor === color} class="color-swatch" style="background:{color}"
-            aria-label="Use {color} highlight" aria-pressed={highlightColor === color}
+            aria-label="Use {colorName(color)} highlight" aria-pressed={highlightColor === color}
             onclick={() => (highlightColor = color)}></button>
         {/each}
         <label class="custom-color" title="Choose highlight color">
@@ -3850,12 +3546,20 @@
   {/snippet}
 </Modal>
 
-<Modal bind:open={restoring} title="Restore this version?"
+<Modal bind:open={quartoConsent} title="Run Quarto on this computer?"
+  description="{QUARTO_WARNING} Only continue for a document whose authors you trust.">
+  {#snippet footer()}
+    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (quartoConsent = false)}>Cancel</button>
+    <button type="button" class="btn preset-filled-primary-500" onclick={() => void runQuartoLocally()}>Run Quarto locally</button>
+  {/snippet}
+</Modal>
+
+<Modal bind:open={timeline.state.restoring} title="Restore this version?"
   description={restoreMoved
     ? `The project changed while this was open. Restore ${restoreName} over the project as it now stands? The current version will be preserved in history.`
     : `Restore ${restoreName}. Every file in the project is replaced, and the current version is preserved in history.`}>
   {#snippet footer()}
-    <button type="button" class="btn preset-outlined-surface-300-700" disabled={restoreBusy} onclick={() => (restoring = false)}>Cancel</button>
+    <button type="button" class="btn preset-outlined-surface-300-700" disabled={restoreBusy} onclick={() => (timeline.state.restoring = false)}>Cancel</button>
     <button type="button" class="btn preset-filled-primary-500" disabled={restoreBusy || !mayEdit} onclick={confirmRestore}>
       {restoreBusy ? "Restoring…" : restoreMoved ? "Restore anyway" : "Restore version"}
     </button>
@@ -3926,7 +3630,9 @@
     .compact-workspace-menu { display: block; }
   }
   .highlight-colors { display:flex; align-items:center; gap:3px; padding:2px; border-radius:4px; background:var(--color-surface-100-900); }
-  .color-swatch { width:1.25rem; height:1.25rem; border:2px solid transparent; border-radius:50%; }
+  .color-swatch { width:1.5rem; height:1.5rem; border:2px solid transparent; border-radius:50%; }
   .color-swatch.selected { border-color:var(--color-surface-900-100); box-shadow:0 0 0 1px var(--color-primary-500); }
-  .custom-color input { width:1.35rem; height:1.35rem; padding:0; border:0; background:transparent; }
+  .custom-color { display:grid; place-items:center; width:1.5rem; height:1.5rem; }
+  .custom-color input { width:1.5rem; height:1.5rem; padding:0; border:0; background:transparent; }
+  .pending-recovery { flex-shrink: 0; max-height: 35%; overflow-y: auto; border-top: 1px solid var(--color-surface-300-700); background: var(--color-surface-100-900); }
 </style>

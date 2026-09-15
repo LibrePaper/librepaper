@@ -75,8 +75,7 @@ web/dist/README.md: README.md
 test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@cd web && bun run check
 	@cargo fmt --check
-	@node web/tools/pin-tools.test.mjs
-	@node tools/latex/tools/check-mirror.test.mjs
+	@node --test 'web/tools/*.test.mjs' 'tools/**/*.test.mjs'
 	@cargo clippy --workspace --all-targets -- -D warnings
 # nextest runs each case in its own process, so one crate's failure does not
 # abandon the crates after it and a hung case is named rather than waited on.

@@ -149,9 +149,10 @@ try {
     assert.equal(await b.evaluate(`Boolean(document.querySelector(${JSON.stringify(button)}))`), true, name + ' has an icon');
     await click(button);
     if (name === 'Changes') {
-      // With its filters and its ••• menu open, which is the widest it gets.
+      // With its filters open, which is the widest the column itself gets.
+      // The ••• menu is portalled to the body and so is not measured here.
       await b.evaluate(`(() => { const more = [...document.querySelectorAll('.filter-bar button')].find(node => node.textContent.trim().startsWith('Filter'));
-        more?.click(); const menu = document.querySelector('.changes-menu'); if (menu) menu.open = true; })()`);
+        more?.click(); })()`);
       await flush();
     }
     const panel = await panelAt(name, 240);

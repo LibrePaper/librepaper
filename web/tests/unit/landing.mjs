@@ -23,6 +23,11 @@ const context = (values) => vm.createContext({
   Set,
   Map,
   URLSearchParams,
+  // A refresh that fails because the browser is offline says nothing: the
+  // page has its own offline notice, and a toast per failed poll on top of it
+  // is noise. Online is what every case here assumes unless it passes its own
+  // `navigator`, which the offline case below does.
+  navigator: { onLine: true },
   ...values,
 });
 
@@ -100,6 +105,24 @@ const context = (values) => vm.createContext({
   assert.match(problems[0], /refresh failed/);
 }
 
+// Offline, the same failure is silent: `showOfflineProjects` is what the page
+// shows instead, and a network error there is expected rather than reportable.
+{
+  const problems = [];
+  const ctx = context({
+    documents: [{ slug: "still-visible" }], counts: new Map(), paths: new Map(),
+    SHELL_HEADERS: {},
+    navigator: { onLine: false },
+    fetch: async () => { throw new TypeError("Failed to fetch"); },
+    get: async () => ({ comment_count: 0, files: [] }),
+    problem: (message) => problems.push(message),
+  });
+  vm.runInContext(showList, ctx);
+  assert.equal(await vm.runInContext("showList()", ctx), false);
+  assert.deepEqual(problems, []);
+  assert.deepEqual(Array.from(ctx.documents, (doc) => doc.slug), ["still-visible"]);
+}
+
 // Successful deletion updates only its own state. HTTP and network failures
 // retain their selections and favorites, while a selection made during the
 // requests survives too.
@@ -135,4 +158,4 @@ const context = (values) => vm.createContext({
   assert.match(problems[0], /Could not delete 2 projects/);
 }
 
-console.log("landing: pagination, refresh preservation, and deletion failure checks passed");
+console.log("landing: pagination, refresh preservation, silent offline refresh, and deletion failure checks passed");

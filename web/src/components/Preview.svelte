@@ -8,7 +8,12 @@
   //
   // Everything arriving from the frame is untrusted. The agent shares an
   // origin with the document, and a hostile document can rewrite it.
-  let { src, docsOrigin, onmessage, onload, path = "", grabbing = false, away = false, status } = $props();
+  //
+  // `controls` is whatever the format in the frame can be asked for -- zoom
+  // and a cursor tool for a PDF, nothing for flowing HTML. It is a snippet
+  // rather than anything this component knows about: the header is one row
+  // for every format, and what stands in it is the reader's business.
+  let { src, docsOrigin, onmessage, onload, path = "", grabbing = false, away = false, status, controls } = $props();
 
   let frame = $state(null);
   let viewport = $state(null);
@@ -51,9 +56,10 @@
 
 <section class="viewport" class:away bind:this={viewport} inert={away}
          style:--held-width="{heldWidth}px" style:--held-height="{heldHeight}px">
-  {#if path || status}
+  {#if path || status || controls}
     <div class="preview-header">
       {#if path}<div class="preview-filename truncate" title={path} aria-label="Previewed file">{path}</div>{/if}
+      {@render controls?.()}
       {@render status?.()}
     </div>
   {/if}

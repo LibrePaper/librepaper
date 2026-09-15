@@ -35,18 +35,45 @@ assert.equal(messages.at(-1).type, "preview");
 quartoPdf.dispose();
 
 const readerSource = await readFile(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
+const previewSource = await readFile(new URL("../../src/lib/reader/preview-render.js", import.meta.url), "utf8");
 assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && buildPreferences\.output === "pdf"[\s\S]*?\? "pdf"/);
 assert.match(readerSource, /const frameLoaded = \(\) => \{[\s\S]*?framePreview\.markReady\(\)[\s\S]*?replayPreview\(\)/);
 assert.match(readerSource, /<Preview[\s\S]*?onload=\{frameLoaded\}/);
 assert.doesNotMatch(readerSource, /toastDone\("(?:Quarto |Calepin )?Preview ready"/);
 assert.doesNotMatch(readerSource, /say\(error\.message \|\| "could not render", true\)/);
 assert.doesNotMatch(readerSource, /nothing to jump to here/);
-assert.match(readerSource, /failureDiagnostics[\s\S]*?severity: "error"[\s\S]*?diagnosticPainter\.rendered\(\{ page: null, diagnostics: failureDiagnostics \}\)/);
+// A compile that produced no page still says why, and says it through the
+// diagnostics rather than by blanking the frame. The render itself is a
+// module now, so this is asked of the module.
+assert.match(previewSource, /const failed = hasError[\s\S]*?severity: "error"[\s\S]*?diagnostics\.rendered\(\{ page: null, diagnostics: failed \}\)/);
 assert.match(readerSource, /let quartoExecutionApproved = \$state\(false\)/);
 assert.match(readerSource, /async function runQuartoLocally\(\)[\s\S]*?await setQuartoPreviewMode\("quarto"\)[\s\S]*?quartoExecutionApproved = true/);
 assert.match(readerSource, /quartoExecutionApproved = true;\n  \}/);
 assert.match(readerSource, /Quarto can execute arbitrary code[\s\S]*?Run Quarto locally/);
-assert.match(readerSource, /\{#snippet previewStatusControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !quartoExecutionApproved\}[\s\S]*?<button[\s\S]*?runQuartoLocally\(\)[\s\S]*?>Run Quarto locally<\/button>/);
-assert.match(readerSource, /format === "quarto" && \(typeof quartoExecutionApproved === "undefined" \|\| !quartoExecutionApproved\)[\s\S]*?backend: "browser", tool: "markdown"/);
+// The control asks before it runs: the warning is a dialog somebody has to
+// answer, not a tooltip a mouse might hover over.
+assert.match(readerSource, /\{#snippet previewStatusControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !quartoExecutionApproved\}[\s\S]*?<button[\s\S]*?quartoConsent = true[\s\S]*?>Run Quarto locally<\/button>/);
+assert.match(readerSource, /<Modal bind:open=\{quartoConsent\}[\s\S]*?QUARTO_WARNING[\s\S]*?runQuartoLocally\(\)/);
+// A Quarto document nobody approved for execution is drawn as the Markdown
+// it is. The condition used to carry a `typeof` guard, because the only way
+// to test it was to slice it out of the component into a context that had
+// never declared the name; it is an argument now.
+assert.match(previewSource, /format === "quarto" && !current\.quartoExecutionApproved[\s\S]*?backend: "browser", tool: "markdown"/);
+// The paged controls are the preview header's, and the frame is what says
+// what they should read: a zoom the frame could not honour -- a pane too
+// narrow for 150% -- must not leave the header claiming it did.
+assert.match(readerSource, /case "viewer-state":[\s\S]*?viewerView = message\.drawn[\s\S]*?: null;/);
+assert.match(readerSource, /tell\(\{ type: "viewer-scale", mode \}\)/);
+assert.match(readerSource, /tell\(\{ type: "viewer-tool", tool: next \}\)/);
+// No PDF in the frame, no paged controls in the header: that is what keeps
+// the row honest for a flowing document, which has none of them.
+assert.match(readerSource, /\{#snippet previewControls\(\)\}\s*\{#if viewerView\}/);
+const viewerSource = await readFile(new URL("../../src/entries/viewer.js", import.meta.url), "utf8");
+// Nothing of the frame's own is drawn over the page any more.
+assert.doesNotMatch(viewerSource, /createToolbar/);
+assert.match(viewerSource, /type: "viewer-state"[\s\S]*?readerOrigin/);
+// The frame answers the window that spoke to it, never "*".
+assert.doesNotMatch(viewerSource, /parent\.postMessage\([\s\S]*?"\*"\)/);
+
 const agentSource = await readFile(new URL("../../src/agent/agent.js", import.meta.url), "utf8");
 assert.match(agentSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*?height: auto;/);

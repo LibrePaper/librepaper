@@ -50,7 +50,7 @@
   <Tooltip.Trigger>
     {#snippet element(attributes)}
       {#if href}
-        <a {...attributes} {href} class={classes} aria-label={label} role="button">
+        <a {...attributes} {href} class={classes} aria-label={label}>
           <Icon name={icon} {filled} />
         </a>
       {:else}

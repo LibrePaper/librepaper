@@ -78,21 +78,18 @@ import { sha256HexOfText } from "../lib/digest.js";
   // written in at build time, beside the copy of KaTeX the build made.
   const typesetMath = createMathTypesetter({ base: __KATEX__, document, window });
 
-  // A pending suggestion's proposal is drawn after its passage by
-  // `::after`, which adds no text node -- the offset tables this file keeps
-  // stay true to what the document actually contains. Installed once, up
-  // front: unlike the document's own styles, nothing here ever needs to
-  // change, and it survives every body replacement `adoptStyles` does for a
-  // live preview.
-  const proposedStyle = document.createElement("style");
-  proposedStyle.dataset.librepaperProposed = "1";
-  proposedStyle.textContent = `
-    mark[data-proposed]::after {
-      content: attr(data-proposed);
-      text-decoration: underline;
-      color: var(--librepaper-proposed-color, inherit);
-      margin-inline-start: 0.2em;
-    }
+  // The marks this file draws that are not the document's: a point comment's
+  // bubble and the ring around whichever annotation the sidebar has singled
+  // out. Installed once, up front: unlike the document's own styles, nothing
+  // here ever needs to change, and it survives every body replacement
+  // `adoptStyles` does for a live preview.
+  //
+  // A proposal used to be generated content on the mark itself, so that it
+  // added no text node; it is a real span now -- the synthetic span below --
+  // kept out of the offset tables by the text walk instead.
+  const markStyle = document.createElement("style");
+  markStyle.dataset.librepaperMarks = "1";
+  markStyle.textContent = `
     .librepaper-point-bubble::before { content: "\\1F4AC"; }
     /* The annotation the sidebar has singled out: a ring around every piece
        of its passage, its figure box, or its point bubble, so that it stands
@@ -109,13 +106,17 @@ import { sha256HexOfText } from "../lib/digest.js";
       outline-offset: 2px;
     }
   `;
-  document.head.appendChild(proposedStyle);
+  document.head.appendChild(markStyle);
 
   // Suggestions painted inline: a proposed deletion is a mark over the words
   // themselves, and a proposed insertion has no words in the document to wrap,
-  // so it is a span carrying the proposed text -- the same `data-proposed`
-  // trick as above, so the offset tables below never see it as a character of
-  // real content.
+  // so it is a span carrying the proposed text. `data-librepaper-synthetic`
+  // is what keeps it out of the walk below, so the offset tables never see it
+  // as a character of real content.
+  //
+  // A paged document draws this same span differently -- beside the passage
+  // rather than inline, in `pages/viewer.html` -- because a PDF page has no
+  // inline to give it and the text layer over the glyphs is transparent.
   const suggestionStyle = document.createElement("style");
   suggestionStyle.dataset.librepaperSuggestions = "1";
   suggestionStyle.textContent = `

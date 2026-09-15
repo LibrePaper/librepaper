@@ -134,7 +134,9 @@
 <!-- The whole card is the click target for opening a resolved note, which is
      what `summary` says it is. It is not a button: it holds buttons, and a
      button inside a button is a worse thing than a click handler on an
-     article. The keyboard reaches everything in it through those. -->
+     article. The keyboard reaches everything in it through those -- except
+     when it is collapsed, where the card holds no buttons at all and the
+     click was the only way in. There, the summary is the button. -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
 <article
   id="{cardIdPrefix}-{comment.id}"
@@ -148,7 +150,8 @@
   onclick={click}
 >
   {#if collapsed}
-    <div class="summary">{summary}</div>
+    <button type="button" class="summary" aria-expanded="false"
+            onclick={() => (expanded = true)}>{summary}</button>
   {:else}
     <div class="flex flex-col gap-2">
       <Row gap={1} wrap>

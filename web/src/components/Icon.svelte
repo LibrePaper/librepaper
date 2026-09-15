@@ -23,12 +23,6 @@
       ["path", "M12 9v4"],
       ["path", "M12 17h.01"],
     ],
-    users: [
-      ["path", "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"],
-      ["path", "M16 3.128a4 4 0 0 1 0 7.744"],
-      ["path", "M22 21v-2a4 4 0 0 0-3-3.87"],
-      ["circle", { cx: 9, cy: 7, r: 4 }],
-    ],
     "chevron-down": [["path", "m6 9 6 6 6-6"]],
     "chevron-up": [["path", "m18 15-6-6-6 6"]],
     // Lucide's diff, for "compare since this checkpoint" in the timeline.
@@ -155,6 +149,34 @@
       ["path", "M3 6h18"],
       ["path", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"],
       ["path", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"],
+    ],
+    // The PDF controls, which used to be a set of their own inside the frame.
+    // They sit in the preview header now, so they are drawn from here like
+    // every other control in the application rather than from four SVG files
+    // masked into a shadow root. Lucide's zoom-in, zoom-out, hand and
+    // text-cursor, with their `line` elements written as paths: rect, circle
+    // and path are the only shapes this component draws.
+    "zoom-in": [
+      ["circle", { cx: 11, cy: 11, r: 8 }],
+      ["path", "m21 21-4.35-4.35"],
+      ["path", "M11 8v6"],
+      ["path", "M8 11h6"],
+    ],
+    "zoom-out": [
+      ["circle", { cx: 11, cy: 11, r: 8 }],
+      ["path", "m21 21-4.35-4.35"],
+      ["path", "M8 11h6"],
+    ],
+    hand: [
+      ["path", "M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"],
+      ["path", "M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"],
+      ["path", "M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"],
+      ["path", "M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"],
+    ],
+    "text-cursor": [
+      ["path", "M17 22h-1a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4h1"],
+      ["path", "M7 22h1a4 4 0 0 0 4-4"],
+      ["path", "M7 2h1a4 4 0 0 1 4 4"],
     ],
   };
 

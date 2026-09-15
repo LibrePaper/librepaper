@@ -22,6 +22,13 @@
   let storageOpen = $state(false);
 </script>
 
+<!-- The way past the bar. Every page puts twenty-odd controls between the
+     top of the document and the first thing on the page -- the logo, the
+     menus, the title, presence, the account -- and this is one Tab and one
+     Enter over all of them. It shows itself when it takes the focus and is
+     invisible otherwise, which is the only time anyone needs it. -->
+<a class="skip-link" href="#main">Skip to content</a>
+
 <nav class="flex items-center justify-between gap-4">
   <div class="nav-identity flex min-w-0 items-center gap-3">
     <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
@@ -66,7 +73,7 @@
         </ExplorerMenu>
       </Menu>
     {:else if me.providers?.length}
-      <a role="button" class="btn btn-sm preset-filled-primary-500" href={signInHref()}>Sign in</a>
+      <a class="btn btn-sm preset-filled-primary-500" href={signInHref()}>Sign in</a>
     {/if}
   </div>
 </nav>
@@ -76,6 +83,11 @@
 </Modal>
 
 <style>
+  .skip-link { position: absolute; left: calc(var(--spacing) * 2); top: calc(var(--spacing) * -12); z-index: 200; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3); border-radius: var(--radius-base); background: var(--color-primary-500); color: white; font-size: var(--text-sm); transition: top 0.15s; }
+  /* `:focus`, not `:focus-visible`: this is only ever reached by moving the
+     focus, and it has to show itself every time it is, however the focus got
+     there. */
+  .skip-link:focus { top: calc(var(--spacing) * 2); outline: 2px solid var(--color-surface-950-50); outline-offset: 2px; }
   /* The button is the circle: no box of its own, a ring on hover so it reads
      as something to press, and the focus outline every icon control wears. */
   :global(.account) { display: inline-grid; place-items: center; padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; line-height: 0; }

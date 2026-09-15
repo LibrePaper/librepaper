@@ -99,9 +99,10 @@
   <textarea class="textarea setting-textarea" rows="4" value={parametersText}
             placeholder={'{"year": 2026, "region": "north", "draft": true}'}
             aria-label="Quarto parameters" aria-invalid={Boolean(validationError)} spellcheck="false"
+            aria-describedby={validationError || applyError ? "rendering-parameters-error" : undefined}
             oninput={(event) => { parametersText = event.currentTarget.value; changed(); }} {disabled}></textarea>
   {#if validationError || applyError}
-    <p class="setting-error" role="alert">{validationError || applyError}</p>
+    <p id="rendering-parameters-error" class="setting-error" role="alert">{validationError || applyError}</p>
   {/if}
 </SettingRow>
 
