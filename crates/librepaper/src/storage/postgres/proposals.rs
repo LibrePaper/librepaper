@@ -269,3 +269,145 @@ impl PostgresCatalog {
             .map_err(Error::from)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::postgres::{NewAccount, NewDocument, PostgresOptions};
+    use serde_json::json;
+
+    /// The whole life of a proposal against a real database, because every
+    /// statement here is written out rather than checked by the compiler: a
+    /// column that does not exist, or an upsert whose conflict target is wrong,
+    /// is a runtime error and nothing above this layer would notice until a
+    /// reviewer clicked accept.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_proposal_is_opened_updated_decided_and_resolved() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        sqlx::query(
+            "TRUNCATE document_proposal_hunks,document_proposals,document_updates,documents,accounts CASCADE",
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+
+        let account = catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some("proposals".into()),
+                handle: "owner".into(),
+                display_name: "Owner".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let document = catalog
+            .create_document(NewDocument {
+                slug: "paper".into(),
+                owner_id: account.id,
+                ownership_mode: "owned".into(),
+                title: "A paper".into(),
+                source_format: "quarto".into(),
+                main_path: "paper.qmd".into(),
+                settings: json!({"version": 1}),
+            })
+            .await
+            .unwrap();
+
+        let id = super::super::new_id();
+        catalog
+            .open_proposal(NewProposal {
+                document_id: document.id,
+                id,
+                author: "Ada".into(),
+                author_peer: 7,
+                base_frontiers: vec![1, 2, 3],
+                tip_frontiers: vec![1, 2, 3],
+                branch_bytes: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let open = catalog.open_proposals(document.id).await.unwrap();
+        assert_eq!(open.len(), 1, "a freshly opened proposal is open");
+        assert_eq!(open[0].author, "Ada");
+        assert_eq!(open[0].author_peer, 7);
+
+        catalog
+            .update_proposal_branch(id, vec![4, 5, 6], vec![9, 9, 9])
+            .await
+            .unwrap();
+        let stored = catalog
+            .proposal(id)
+            .await
+            .unwrap()
+            .expect("it is still there");
+        assert_eq!(
+            stored.tip_frontiers,
+            vec![4, 5, 6],
+            "the tip moved with the branch"
+        );
+        assert_eq!(stored.branch_bytes, vec![9, 9, 9]);
+
+        catalog
+            .decide_hunk(id, 0, true, "Bob".into(), vec![4, 5, 6], None)
+            .await
+            .unwrap();
+        // Deciding the same hunk again replaces the answer rather than adding a
+        // second one: a reviewer who changes their mind before the proposal
+        // resolves has one answer on record, not two.
+        catalog
+            .decide_hunk(
+                id,
+                0,
+                false,
+                "Bob".into(),
+                vec![4, 5, 6],
+                Some("not this".into()),
+            )
+            .await
+            .unwrap();
+        let decided = catalog.decisions(id).await.unwrap();
+        assert_eq!(
+            decided.len(),
+            1,
+            "one row per hunk, whatever the reviewer does"
+        );
+        assert!(
+            !decided[0].accepted,
+            "the later answer is the one that stands"
+        );
+
+        let sequence = catalog
+            .resolve_with_update(id, "Bob".into(), document.id, b"an update")
+            .await
+            .unwrap();
+        assert!(sequence >= 1, "resolving appends to the update log");
+
+        assert!(
+            catalog
+                .open_proposals(document.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a resolved proposal is no longer open"
+        );
+
+        // The update and the resolution landed together, which is the property
+        // the whole transaction exists for.
+        let logged: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM document_updates WHERE document_id=$1")
+                .bind(document.id)
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap();
+        assert_eq!(logged, 1, "exactly one update carried the resolution");
+    }
+}
