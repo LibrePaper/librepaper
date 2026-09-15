@@ -221,21 +221,45 @@ impl SourceStorage {
                 .unwrap_or_else(|| source_archive::tree_of(&input.archive).0.digest_bytes()),
         );
         let encoded = source_archive::encode(input.archive, self.limits)?;
-        self.catalog
-            .check_storage_admission(input.document_id, encoded.bytes.len() as i64)
-            .await?;
-        let version_id = super::postgres::new_id();
-        let archive_key = format!(
-            "documents/{}/versions/{version_id}.tar.zst",
-            input.document_id
+        // An archive is named by the digest of its own bytes, so two versions
+        // of a document that say the same thing name one object and it is
+        // stored once. The timeline still gets a row for each: what is shared
+        // is the storage, not the event.
+        let content_key = format!(
+            "documents/{}/archives/{}.tar.zst",
+            input.document_id,
+            hex::encode(encoded.digest)
         );
-        self.write_verified(
-            &archive_key,
-            encoded.bytes.clone(),
-            "application/zstd",
-            encoded.digest,
-        )
-        .await?;
+        let held = self
+            .catalog
+            .archive_for_digest(input.document_id, &encoded.digest)
+            .await?;
+        // Bytes already in the store cost nothing to hold again, and a quota
+        // that charged for them would refuse writes for space in use by
+        // nothing.
+        self.catalog
+            .check_storage_admission(
+                input.document_id,
+                if held.is_some() {
+                    0
+                } else {
+                    encoded.bytes.len() as i64
+                },
+            )
+            .await?;
+        let archive_key = match held {
+            Some(key) => key,
+            None => {
+                self.write_shared(
+                    &content_key,
+                    encoded.bytes.clone(),
+                    "application/zstd",
+                    encoded.digest,
+                )
+                .await?;
+                content_key
+            }
+        };
         let version = self
             .catalog
             .create_version(NewVersion {
@@ -415,6 +439,38 @@ impl SourceStorage {
             }
         }
         Ok(records)
+    }
+
+    /// Writes an object whose key is the digest of its own bytes.
+    ///
+    /// Unlike `write_verified`, finding something already there is an
+    /// ordinary outcome rather than a conflict: a second version holding the
+    /// same archive computes the same name for it. What is already there is
+    /// verified against the digest that named it before anything is built on
+    /// top of it, so a corrupt or truncated object is refused rather than
+    /// silently adopted by every version that would have shared it.
+    async fn write_shared(
+        &self,
+        key: &str,
+        body: Vec<u8>,
+        media_type: &str,
+        digest: [u8; 32],
+    ) -> Result<(), Error> {
+        let expected_length = body.len() as u64;
+        match self.blobs.put_new(key, body, media_type).await {
+            Ok(()) => {}
+            Err(BlobError::Conflict) => {
+                let found = self.blobs.get(key).await?;
+                return verify(&found, &digest, expected_length as i64);
+            }
+            Err(error) => return Err(error.into()),
+        }
+        if self.blobs.length(key).await? != expected_length {
+            return Err(Error::Invalid(
+                "blob length changed after immutable write".into(),
+            ));
+        }
+        Ok(())
     }
 
     async fn write_verified(

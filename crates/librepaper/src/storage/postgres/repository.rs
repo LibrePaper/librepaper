@@ -980,15 +980,27 @@ impl PostgresCatalog {
                 "account version creation rate exceeded".into(),
             ));
         }
+        // What this version adds to the store, which is not the same as what
+        // it holds. An archive that another version already names is already
+        // there; naming it again writes no bytes, and charging an account for
+        // them would bill it twice for one object.
+        let held = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM document_versions WHERE archive_key=$1)
+               AS "held!""#,
+            input.archive_key,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        let charge = if held { 0 } else { input.archive_bytes };
         let owner_usage = owner_usage_bytes(&mut *tx, document.owner_id).await?;
         let deployment_usage =
             sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
                 .fetch_one(&mut *tx)
                 .await?;
-        if owner_usage.saturating_add(input.archive_bytes) > self.policy.owner_bytes {
+        if owner_usage.saturating_add(charge) > self.policy.owner_bytes {
             return Err(Error::Conflict("account storage quota exceeded".into()));
         }
-        if deployment_usage.saturating_add(input.archive_bytes) > self.policy.deployment_bytes {
+        if deployment_usage.saturating_add(charge) > self.policy.deployment_bytes {
             return Err(Error::Conflict(
                 "deployment storage threshold exceeded".into(),
             ));
@@ -1062,6 +1074,31 @@ impl PostgresCatalog {
             limit,
         )
         .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// The object an existing version of this document already holds these
+    /// exact archive bytes under, if one does.
+    ///
+    /// Returns the stored key rather than a bare yes, because it is the key a
+    /// new version must name to share the object -- and it is not always the
+    /// content-addressed name a writer would mint today. A version written
+    /// before archives were shared holds its bytes under its own id, and the
+    /// cheapest thing a duplicate of it can do is point at that.
+    pub async fn archive_for_digest(
+        &self,
+        document_id: Uuid,
+        digest: &[u8],
+    ) -> Result<Option<String>> {
+        sqlx::query_scalar!(
+            "SELECT archive_key FROM document_versions
+             WHERE document_id=$1 AND archive_digest=$2
+             ORDER BY sequence LIMIT 1",
+            document_id,
+            digest,
+        )
+        .fetch_optional(&self.pool)
         .await
         .map_err(Error::from)
     }
@@ -1205,8 +1242,12 @@ where
 {
     sqlx::query_scalar!(
         r#"SELECT COALESCE(sum(bytes),0)::bigint AS "total!" FROM (
-             SELECT v.archive_bytes AS bytes FROM document_versions v
+             SELECT v.archive_bytes AS bytes FROM (
+               SELECT DISTINCT ON (v.archive_key) v.archive_key, v.archive_bytes
+               FROM document_versions v
                JOIN documents d ON d.id=v.document_id WHERE d.owner_id=$1
+               ORDER BY v.archive_key, v.id
+             ) v
              UNION ALL SELECT a.byte_length FROM document_assets a
                JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
              UNION ALL SELECT f.byte_length FROM publication_files f

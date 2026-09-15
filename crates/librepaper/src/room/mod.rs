@@ -2239,9 +2239,15 @@ fn hydrate_project(
 }
 
 /// The document's directory as a checkpoint records it, and the bytes of each
-/// text by digest -- which is what the blobs are written from, so that two
-/// files with the same contents are one object and a file that did not change
-/// is not written again.
+/// text keyed by digest, so that two files with the same contents are carried
+/// once in the map this returns.
+///
+/// That is the only sharing here. The caller packs these bodies into a source
+/// archive which inlines every file in full (`SourceFile::Inline`), so a file
+/// that did not change is written again in the next version's archive. What
+/// deduplication exists lives one level up: `commit_version` declines to write
+/// a version whose tree digest already names the newest one, and `commit_archive`
+/// reuses an existing blob when the encoded archive is byte-identical.
 pub fn tree_of(
     doc: &yrs::Doc,
     asset_sizes: &HashMap<String, i64>,

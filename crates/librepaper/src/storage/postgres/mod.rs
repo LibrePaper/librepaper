@@ -1266,6 +1266,231 @@ mod tests {
 
         catalog.close().await;
     }
+
+    /// The copies already on disk are reclaimed without losing an event.
+    ///
+    /// Sharing only helps versions written after it existed; every version
+    /// written before holds its own copy of its bytes, which is where the
+    /// duplication actually accumulated. The maintenance pass repoints those
+    /// at one object. What it must not do -- and what this pins -- is shorten
+    /// the history: the rows, their order and their reasons all survive, and
+    /// only the storage behind them is shared.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn duplicate_archives_already_written_are_reclaimed() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let unique = new_id().simple().to_string();
+        let account = catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some(format!("legacy-{unique}")),
+                handle: format!("owner-{unique}"),
+                display_name: "Owner".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let document = catalog
+            .create_document(NewDocument {
+                slug: format!("paper-{unique}"),
+                owner_id: account.id,
+                ownership_mode: "owned".into(),
+                title: "A Paper".into(),
+                source_format: "latex".into(),
+                main_path: "paper.tex".into(),
+                settings: json!({"version":1}),
+            })
+            .await
+            .unwrap();
+
+        // Two versions holding the same bytes under private names: what every
+        // version looked like before archives were shared.
+        let digest = [11_u8; 32];
+        let legacy = |name: &str| NewVersion {
+            document_id: document.id,
+            parent_id: None,
+            through_update_sequence: 0,
+            project_generation: 0,
+            archive_key: format!("documents/{}/versions/{name}.tar.zst", document.id),
+            archive_encoding_version: 1,
+            archive_digest: digest,
+            archive_bytes: 500,
+            logical_bytes: 400,
+            tree_digest: None,
+            changed_paths: None,
+            reason: "quiet".into(),
+            label: None,
+            author_account_id: Some(account.id),
+            author_label: "Owner".into(),
+            make_current: true,
+        };
+        let first = catalog.create_version(legacy("one")).await.unwrap();
+        let second = catalog.create_version(legacy("two")).await.unwrap();
+        assert_ne!(first.archive_key, second.archive_key);
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap(),
+            1000,
+            "two private copies are two objects, and are charged as two"
+        );
+
+        let object_root = tempfile::tempdir().unwrap();
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+        let maintenance = Maintenance::new(Arc::new(catalog.clone()), blobs);
+        assert_eq!(
+            maintenance.share_duplicate_archives(100).await.unwrap(),
+            1,
+            "the later copy is repointed at the earlier one"
+        );
+
+        let versions = catalog.versions(document.id, 10).await.unwrap();
+        assert_eq!(versions.len(), 2, "reclaiming bytes does not remove events");
+        assert!(
+            versions.iter().all(|v| v.archive_key == first.archive_key),
+            "both events now name the object that was there first"
+        );
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap(),
+            500,
+            "one object is charged once"
+        );
+        assert_eq!(
+            maintenance.share_duplicate_archives(100).await.unwrap(),
+            0,
+            "a second pass finds nothing left to share"
+        );
+
+        catalog.close().await;
+    }
+
+    /// Two versions that hold the same document hold one archive.
+    ///
+    /// The timeline still gets a row for each -- returning to what a document
+    /// said an hour ago is an event, and the history is the record of events
+    /// -- but the bytes behind those rows are one object, named by their own
+    /// digest. The account is charged for it once, which is the half that
+    /// used to be wrong in the expensive direction: a document saved fifty
+    /// times between two edits was fifty archives and fifty charges for one
+    /// document.
+    ///
+    /// Deliberately account-scoped and given its own object store, so it
+    /// makes no claim about a counter other tests are also moving.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn versions_holding_the_same_document_share_one_archive() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let unique = new_id().simple().to_string();
+        let account = catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some(format!("shared-{unique}")),
+                handle: format!("owner-{unique}"),
+                display_name: "Owner".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let document = catalog
+            .create_document(NewDocument {
+                slug: format!("paper-{unique}"),
+                owner_id: account.id,
+                ownership_mode: "owned".into(),
+                title: "A Paper".into(),
+                source_format: "latex".into(),
+                main_path: "paper.tex".into(),
+                settings: json!({"version":1}),
+            })
+            .await
+            .unwrap();
+
+        let object_root = tempfile::tempdir().unwrap();
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+        let sources = SourceStorage::new(
+            Arc::new(catalog.clone()),
+            blobs.clone(),
+            ArchiveLimits::default(),
+        );
+        let commit = |body: &'static str, reason: &'static str| {
+            let sources = &sources;
+            let id = document.id;
+            async move {
+                sources
+                    .commit_archive(crate::storage::source::CommitArchive {
+                        document_id: id,
+                        archive: crate::storage::source_archive::SourceArchive {
+                            source_format: "latex".into(),
+                            main_path: "paper.tex".into(),
+                            files: vec![crate::storage::source_archive::SourceFile::Inline {
+                                path: "paper.tex".into(),
+                                bytes: body.as_bytes().to_vec(),
+                            }],
+                        },
+                        through_update_sequence: 0,
+                        project_generation: 0,
+                        tree_digest: None,
+                        changed_paths: None,
+                        reason: reason.into(),
+                        label: None,
+                        author_account_id: Some(account.id),
+                        author_label: "Owner".into(),
+                        make_current: true,
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let first = commit("\\documentclass{article}\n", "created").await;
+        let charged = catalog.usage_bytes(Some(account.id)).await.unwrap();
+        assert_eq!(
+            charged, first.version.archive_bytes,
+            "the first version is charged for the archive it wrote"
+        );
+
+        // The same document again: a new event, no new bytes.
+        let same = commit("\\documentclass{article}\n", "quiet").await;
+        assert_eq!(
+            same.version.archive_key, first.version.archive_key,
+            "an identical document is stored under the name its bytes already have"
+        );
+        assert_ne!(
+            same.version.id, first.version.id,
+            "sharing the archive must not collapse two events into one row"
+        );
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap(),
+            charged,
+            "holding the same bytes again costs nothing"
+        );
+        let archives = blobs
+            .list(&format!("documents/{}/archives/", document.id))
+            .await
+            .unwrap();
+        assert_eq!(archives.len(), 1, "one object stands behind both versions");
+
+        // A document that says something else is a different object, and is
+        // charged for, so the saving is in duplication alone.
+        let changed = commit("\\documentclass{book}\n", "quiet").await;
+        assert_ne!(changed.version.archive_key, first.version.archive_key);
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap(),
+            charged + changed.version.archive_bytes,
+            "new bytes are still new bytes"
+        );
+
+        catalog.close().await;
+    }
 }
 
 #[cfg(test)]

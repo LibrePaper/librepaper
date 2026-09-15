@@ -210,9 +210,19 @@ impl Worker {
         let orphan_grace_hours = 24 * 7;
         let completed_job_retention_days = 7;
         let completed_job_batch = 1000;
+        // Before the sweep, not after: repointing duplicates is what makes the
+        // copies they released collectable, and the sweep's grace period starts
+        // from when an object stops being referenced.
+        let duplicate_archive_batch = 1000;
         let mut failures = Vec::new();
         if let Err(error) = maintenance
             .delete_superseded_bases(base_cleanup_batch)
+            .await
+        {
+            failures.push(error);
+        }
+        if let Err(error) = maintenance
+            .share_duplicate_archives(duplicate_archive_batch)
             .await
         {
             failures.push(error);

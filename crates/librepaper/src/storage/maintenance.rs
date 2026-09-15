@@ -65,6 +65,80 @@ impl Maintenance {
     /// Remove old immutable objects which have no domain-row reference.
     /// Persistent cursors make each run bounded without starving keys late in
     /// a large namespace. A complete pass resets its cursor to the beginning.
+    /// Points versions that hold identical archives at a single object.
+    ///
+    /// Every version written before archives were shared holds a private copy
+    /// of its bytes, so a document saved repeatedly between two edits holds
+    /// many copies of one thing. This is not a change to the history: each
+    /// event keeps its row, its time and its author, and only the object
+    /// behind it becomes the one an earlier event already had. The oldest
+    /// version of each identical set is the keeper, so the surviving object is
+    /// the one that has been there longest.
+    ///
+    /// Nothing is deleted here. The copies this releases become unreferenced
+    /// and are collected by `delete_orphans`, which holds them for its grace
+    /// period first -- so the bytes are reclaimed a week after they stop being
+    /// needed rather than the instant a query says so.
+    pub async fn share_duplicate_archives(&self, batch: i64) -> Result<usize, String> {
+        if !(1..=5000).contains(&batch) {
+            return Err("archive sharing batch must be 1..=5000".into());
+        }
+        // Identity is the archive digest within one document. Across documents
+        // it is deliberately not shared: an object lives under its document's
+        // prefix, and erasing a document must be able to take its bytes with
+        // it without asking who else was reading them.
+        let updated = sqlx::query!(
+            "WITH keeper AS (
+               SELECT DISTINCT ON (document_id, archive_digest)
+                      document_id, archive_digest, archive_key
+               FROM document_versions
+               ORDER BY document_id, archive_digest, sequence, id
+             ), target AS (
+               SELECT v.id, k.archive_key
+               FROM document_versions v
+               JOIN keeper k
+                 ON k.document_id = v.document_id AND k.archive_digest = v.archive_digest
+               WHERE v.archive_key <> k.archive_key
+               LIMIT $1
+             )
+             UPDATE document_versions v SET archive_key = t.archive_key
+             FROM target t WHERE v.id = t.id",
+            batch,
+        )
+        .execute(self.catalog.pool())
+        .await
+        .map_err(|error| error.to_string())?
+        .rows_affected() as usize;
+        if updated == 0 {
+            return Ok(0);
+        }
+        // The usage counter is maintained by triggers on insert and delete,
+        // and this moved neither: it changed which object a row names. Rebuilt
+        // from what is referenced now, which is the same sum the counter is
+        // meant to hold.
+        //
+        // Between here and the orphan sweep the released copies are still on
+        // disk while no longer counted. That window is the sweep's grace
+        // period, and erring low means a deployment admits a write it has the
+        // room for rather than refusing one it does not.
+        sqlx::query!(
+            "UPDATE storage_usage SET bytes = (
+               SELECT COALESCE(sum(bytes), 0)::bigint FROM (
+                 SELECT byte_length AS bytes FROM document_assets
+                 UNION ALL SELECT archive_bytes FROM (
+                   SELECT DISTINCT ON (archive_key) archive_bytes
+                   FROM document_versions ORDER BY archive_key, id
+                 ) distinct_archives
+                 UNION ALL SELECT byte_length FROM publication_files
+               ) held
+             )",
+        )
+        .execute(self.catalog.pool())
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(updated)
+    }
+
     pub async fn delete_orphans(&self, batch: usize, grace: Duration) -> Result<usize, String> {
         if !(1..=1000).contains(&batch) || grace < Duration::days(7) {
             return Err("orphan cleanup bounds are invalid".into());
