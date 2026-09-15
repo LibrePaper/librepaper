@@ -47,7 +47,9 @@ function fakeSession(joinOptions) {
   const observers = new Set();
   return {
     joined: false,
-    awareness: { on: (_name, fn) => observers.add(fn), off: (_name, fn) => observers.delete(fn) },
+    // EphemeralStore returns the unsubscribe function rather than taking the
+    // handler back later, so the fake returns one too.
+    ephemeral: { subscribe: (fn) => { observers.add(fn); return () => observers.delete(fn); } },
     watchSource: () => {}, onSwap: () => {}, onFiles: () => () => {},
     open: () => ({ type: "doc-open" }), disconnected() { this.joined = false; },
     leave() { this.left = true; observers.clear(); },
