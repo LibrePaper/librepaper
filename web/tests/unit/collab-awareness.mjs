@@ -82,10 +82,14 @@ try {
   // pending cursor update is superseded by the removal state.
   session.ephemeral.set("cursor", { head: 100 });
   const beforeLeave = presenceFrames(sent).length;
+  // Deletion triggers immediate removal send before the scheduled update
+  session.ephemeral.delete("cursor");
+  assert.equal(presenceFrames(sent).length, beforeLeave + 1, "deletion is immediate");
+  assert.equal(timers.size, 0, "deletion cancels pending throttle");
+
   session.leave();
   left = true;
-  assert.equal(presenceFrames(sent).length, beforeLeave + 1, "local removal is immediate");
-  assert.equal(timers.size, 0, "destroy clears the presence timer");
+  assert.equal(timers.size, 0, "destroy clears any remaining presence timer");
   const afterLeave = sent.length;
   runTimers();
   assert.equal(sent.length, afterLeave, "destroy prevents a delayed presence send");

@@ -2338,7 +2338,6 @@
   // Pin an explicitly previewed file by identity so renames keep it selected.
   // Empty means follow the shared main file; opening an include never pins it.
   let previewFile = $state("");
-  let handledFileTransactions = new WeakSet();
   const toolbarPath = $derived(files.find((file) => file.id === openFile)?.path || "");
   const editorFormat = $derived(renderers.formatOf(toolbarPath) || sourceFormat);
   const canPreviewFile = $derived(files.some((file) =>
@@ -2404,9 +2403,12 @@
   // changing the main Y.Text.
   function filesChanged(events, active = session) {
     if (!active || active !== session) return;
-    // Nested text edits change the preview, but not the file list.
-    if (!Array.isArray(events) || events.some((event) => event.target === active.files)) refreshFiles();
-    if (needsSourceRefresh(events, active.text, handledFileTransactions)) sourceChanged();
+    // Nested text edits change the preview, but not the file list. An event
+    // names the container it happened to by id, so that is what the directory
+    // is compared against -- not the handle this component is holding.
+    const directory = active.files?.id;
+    if (!Array.isArray(events) || events.some((event) => event.target === directory)) refreshFiles();
+    if (needsSourceRefresh(events, active.text)) sourceChanged();
   }
 
   function refreshPeers() {
@@ -2560,7 +2562,6 @@
       onSession: (active) => {
         session = active;
         workspace.attach(active);
-        handledFileTransactions = new WeakSet();
         refreshFiles();
         refreshPeers();
         // A restored Yjs document can already contain its complete tree when

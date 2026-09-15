@@ -556,20 +556,22 @@ export function createProjectSession({
     /// Called whenever the directory changes -- a file added, renamed,
     /// removed, or made the main one -- so the list can be redrawn.
     onFiles(watcher) {
-      // In Loro, we use document-level subscription to watch for changes to
-      // the relevant containers. Each event batch includes changes to all
-      // containers, so we filter for events affecting files, paths, assets, and meta.
-      const filesId = files.id;
-      const pathsId = paths.id;
-      const assetsId = assets.id;
-      const metaId = meta.id;
+      // The watcher hears once per batch, not once per event. A rename moves a
+      // path and a delete clears a digest in the same commit, and a file list
+      // that redrew itself for each of those separately would show a state that
+      // never existed.
+      //
+      // An event carries its absolute path from the root, so the first segment
+      // says which of the four maps it happened under. Matching on that rather
+      // than on the maps' own container ids is what makes this reach INSIDE a
+      // file: typing into an included text is an event on that text, whose
+      // path begins at `files`, and a reader that watched only the maps would
+      // never repaint for it.
+      const roots = new Set(["files", "paths", "assets", "meta"]);
+      const ids = new Set([files.id, paths.id, assets.id, meta.id]);
       const unsub = doc.subscribe((eventBatch) => {
-        // Call the watcher once per batch with all relevant events from that batch
-        const relevantEvents = eventBatch.events.filter((event) =>
-          event.target === filesId ||
-          event.target === pathsId ||
-          event.target === assetsId ||
-          event.target === metaId
+        const relevantEvents = eventBatch.events.filter(
+          (event) => roots.has(event.path?.[0]) || ids.has(event.target),
         );
         if (relevantEvents.length > 0) {
           watcher(relevantEvents);
