@@ -48,12 +48,10 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, None).await;
         // History contains source paths, revisions, and source-bearing
         // checkpoint metadata, so it is editor-only.
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
@@ -148,12 +146,10 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, None).await;
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
@@ -234,12 +230,13 @@ impl Server {
         if cross_site_refused(request.headers(), arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (_entry, who) = match self
+            .entry_viewer(slug, request.headers(), arrival, None)
+            .await
+        {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, request.headers(), arrival, None).await;
         // As everywhere else: a document somebody may not change is not a
         // document they need to learn the shape of.
         if !who.at_least(Role::Editor) {
@@ -307,12 +304,13 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (_entry, who) = match self
+            .entry_viewer(slug, request.headers(), arrival, None)
+            .await
+        {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, request.headers(), arrival, None).await;
         if !who.at_least(Role::Editor) {
             return plain(404, "not found");
         }
@@ -337,12 +335,11 @@ impl Server {
         // The owner may have transferred the document, or a link may have
         // been revoked, while the request body was being read. Recheck the
         // role immediately before the room mutation as well as before it.
-        let current_entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
-            Err(response) => return response,
-        };
-        let current_who = self.viewer(&current_entry, &headers, arrival, None).await;
+        let (_current_entry, current_who) =
+            match self.entry_viewer(slug, &headers, arrival, None).await {
+                Ok(result) => result,
+                Err(response) => return response,
+            };
         if !current_who.at_least(Role::Editor) {
             return plain(404, "not found");
         }

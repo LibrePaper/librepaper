@@ -244,12 +244,10 @@ impl Server {
                 Value::Null,
             );
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+            Ok(result) => result,
             Err(reply) => return reply,
         };
-        let who = self.viewer(&entry, &headers, arrival, None).await;
         if who.auth_failed {
             return plain(401, "authentication expired or revoked");
         }

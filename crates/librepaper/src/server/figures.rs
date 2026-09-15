@@ -83,12 +83,13 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (_entry, who) = match self
+            .entry_viewer(slug, request.headers(), arrival, None)
+            .await
+        {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, request.headers(), arrival, None).await;
         if who.auth_failed {
             return write_json(
                 401,
@@ -123,12 +124,10 @@ impl Server {
         let Ok(body) = to_bytes(request.into_body(), ceiling).await else {
             return write_json(413, &json!({"error": "that figure is too large"}));
         };
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (_entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, &headers, arrival, None).await;
         if who.auth_failed {
             return write_json(
                 401,
@@ -188,12 +187,10 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, None).await;
         // The catalogue repeats the live editor check inside the lease
         // transaction.  Route-level Viewer state is only an early rejection;
         // it is never permission to construct a mutable storage key.

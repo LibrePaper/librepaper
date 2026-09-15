@@ -343,6 +343,23 @@ fn authentication_failure_of(error: crate::storage::postgres::Error) -> Authenti
 }
 
 impl Server {
+    #[allow(clippy::result_large_err)]
+    pub(super) async fn entry_viewer(
+        &self,
+        slug: &str,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        query: Option<&str>,
+    ) -> Result<(IndexEntry, Viewer), Reply> {
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return Err(plain(404, "not found")),
+            Err(response) => return Err(response),
+        };
+        let who = self.viewer(&entry, headers, arrival, query).await;
+        Ok((entry, who))
+    }
+
     #[allow(clippy::too_many_arguments)] // a server is made of exactly these
     pub fn new(
         store: Store,

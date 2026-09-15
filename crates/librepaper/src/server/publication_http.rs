@@ -68,12 +68,10 @@ impl Server {
         if method != expected_method {
             return plain(405, "method not allowed");
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, &headers, arrival, None).await;
         if who.auth_failed {
             return plain(401, "authentication expired or was revoked");
         }
@@ -112,12 +110,10 @@ impl Server {
             Err(_) => return plain(413, "publication request is too large"),
         };
         // Body transfer is an untrusted await boundary. Resolve authority again.
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, &headers, arrival, None).await;
         if who.auth_failed || !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(403, "publication access changed");
         }

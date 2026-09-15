@@ -705,17 +705,13 @@ pub enum QuartoRenderScope {
 
 impl QuartoJobOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if self.binding_id.is_empty() || self.binding_id.len() > 256 {
-            return Err("quarto binding_id is required and must be at most 256 bytes".into());
-        }
-        if !safe_relative_path(&self.main)
-            || !(self.main.ends_with(".qmd") || self.main.ends_with(".md"))
-        {
-            return Err("quarto main must be a safe project-relative .qmd or .md path".into());
-        }
-        if !matches!(self.format.as_str(), "html" | "pdf" | "docx" | "revealjs") {
-            return Err(format!("unsupported quarto output format: {}", self.format));
-        }
+        validate_binding_id(&self.binding_id, "quarto")?;
+        validate_entrypoint(
+            &self.main,
+            &[".qmd", ".md"],
+            "quarto main must be a safe project-relative .qmd or .md path",
+        )?;
+        validate_output_format(&self.format, &["html", "pdf", "docx", "revealjs"], "quarto")?;
         if self.render_scope == QuartoRenderScope::Project {
             return Err(
                 "Quarto website and book project renders are not supported; render one document instead"
@@ -840,18 +836,13 @@ impl Default for CalepinJobOptions {
 
 impl CalepinJobOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if self.binding_id.is_empty() || self.binding_id.len() > 256 {
-            return Err("calepin binding_id is required and must be at most 256 bytes".into());
-        }
-        if !safe_relative_path(&self.main) || !self.main.ends_with(".typ") {
-            return Err("entrypoint must be a safe project-relative .typ path".into());
-        }
-        if !matches!(self.format.as_str(), "html" | "pdf") {
-            return Err(format!(
-                "unsupported calepin output format: {}",
-                self.format
-            ));
-        }
+        validate_binding_id(&self.binding_id, "calepin")?;
+        validate_entrypoint(
+            &self.main,
+            &[".typ"],
+            "entrypoint must be a safe project-relative .typ path",
+        )?;
+        validate_output_format(&self.format, &["html", "pdf"], "calepin")?;
         Ok(())
     }
 }
@@ -1026,6 +1017,33 @@ pub fn safe_relative_path(path: &str) -> bool {
     }
     path.split('/')
         .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn validate_binding_id(value: &str, engine: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 256 {
+        return Err(format!(
+            "{engine} binding_id is required and must be at most 256 bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_entrypoint(value: &str, extensions: &[&str], message: &str) -> Result<(), String> {
+    if !safe_relative_path(value)
+        || !extensions
+            .iter()
+            .any(|extension| value.ends_with(extension))
+    {
+        return Err(message.into());
+    }
+    Ok(())
+}
+
+fn validate_output_format(value: &str, allowed: &[&str], engine: &str) -> Result<(), String> {
+    if !allowed.contains(&value) {
+        return Err(format!("unsupported {engine} output format: {value}"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

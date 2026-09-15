@@ -52,10 +52,10 @@ impl StorageOptions {
 pub async fn open_storage(options: StorageOptions) -> Result<Arc<dyn BlobStore>, String> {
     let paths = options.paths()?;
 
-    create_private_dir(&paths.deployment)?;
-    create_private_dir(&paths.objects)?;
-    create_private_dir(&paths.state)?;
-    create_private_dir(&paths.secrets)?;
+    create_private_dir(&paths.deployment, "deployment directory")?;
+    create_private_dir(&paths.objects, "objects directory")?;
+    create_private_dir(&paths.state, "state directory")?;
+    create_private_dir(&paths.secrets, "secrets directory")?;
     match options.object_store.as_str() {
         "filesystem" => Ok(Arc::new(ObjectBlobStore::filesystem(
             paths.objects,
@@ -76,14 +76,14 @@ pub async fn open_storage(options: StorageOptions) -> Result<Arc<dyn BlobStore>,
     }
 }
 
-fn create_private_dir(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn create_private_dir(path: &std::path::Path, context: &str) -> Result<(), String> {
     std::fs::create_dir_all(path)
-        .map_err(|err| format!("could not create {}: {err}", path.display()))?;
+        .map_err(|err| format!("could not create {context} {}: {err}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .map_err(|err| format!("could not protect {}: {err}", path.display()))?;
+            .map_err(|err| format!("could not protect {context} {}: {err}", path.display()))?;
     }
     Ok(())
 }

@@ -367,12 +367,14 @@ impl CostMeter {
         Self::expire(&mut state, now_unix());
         self.refresh_mode(&mut state);
         let limited = state.limited;
+        let resources = self.active_resources(&state);
+        let resource = resources.first().copied();
         let classes: serde_json::Map<String, Value> = CLASS_NAMES
             .iter()
             .enumerate()
             .map(|(i, name)| (name.to_string(), json!(state.durable.sent[i])))
             .collect();
-        json!({"event":"cost_usage", "mode":if limited {"Limited"} else {"Normal"}, "resource":self.active_resources(&state).first(),"resources":self.active_resources(&state), "transfer_remaining":self.config.cost.transfer_bytes.map(|_| self.remaining(&state, false)), "emergency_remaining":self.remaining(&state, true), "response_bytes":classes, "mode_nanoseconds":state.durable.mode_nanoseconds, "response_size_histogram":state.durable.response_size_histogram, "response_size_upper_bounds_bytes":[1024,4096,16384,65536,1048576,16777216,null], "ordinary_reserved_bytes":state.ordinary_reserved,"emergency_reserved_bytes":state.emergency_reserved, "mutation_outcomes":state.durable.mutation_outcomes,"mutation_outcome_classes":["accepted","authentication","permission","size","requests","transfer","storage","work","other"], "responses_by_class_and_status_group":state.durable.responses, "bytes_by_class_and_status_group":state.durable.bytes_by_status, "policy":self.config.effective_policy()})
+        json!({"event":"cost_usage", "mode":if limited {"Limited"} else {"Normal"}, "resource":resource,"resources":resources, "transfer_remaining":self.config.cost.transfer_bytes.map(|_| self.remaining(&state, false)), "emergency_remaining":self.remaining(&state, true), "response_bytes":classes, "mode_nanoseconds":state.durable.mode_nanoseconds, "response_size_histogram":state.durable.response_size_histogram, "response_size_upper_bounds_bytes":[1024,4096,16384,65536,1048576,16777216,null], "ordinary_reserved_bytes":state.ordinary_reserved,"emergency_reserved_bytes":state.emergency_reserved, "mutation_outcomes":state.durable.mutation_outcomes,"mutation_outcome_classes":["accepted","authentication","permission","size","requests","transfer","storage","work","other"], "responses_by_class_and_status_group":state.durable.responses, "bytes_by_class_and_status_group":state.durable.bytes_by_status, "policy":self.config.effective_policy()})
     }
 
     pub fn ordinary_available(&self) -> bool {

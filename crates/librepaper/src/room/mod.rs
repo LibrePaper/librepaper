@@ -1523,12 +1523,7 @@ impl Room {
     /// listing both need this, since deletable differs by who is asking.
     pub async fn snapshot_for(&self, author: &str, is_owner: bool) -> Vec<CommentView> {
         let state = self.state.lock().await;
-        state
-            .comments
-            .iter()
-            .filter(|item| is_owner || crate::room::comments::visible_to_reader(item))
-            .map(|item| CommentView::for_viewer(item, author, is_owner))
-            .collect()
+        comment_views(&state.comments, author, is_owner)
     }
 
     /// Captures source and annotations while holding the same room lock. A
@@ -1551,12 +1546,7 @@ impl Room {
         let format = state.session.format.clone();
         let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
         let texts = session::texts_of(&state.session.doc);
-        let comments = state
-            .comments
-            .iter()
-            .filter(|item| is_owner || crate::room::comments::visible_to_reader(item))
-            .map(|item| CommentView::for_viewer(item, author, is_owner))
-            .collect();
+        let comments = comment_views(&state.comments, author, is_owner);
         (source, format, tree, texts, comments)
     }
 
@@ -1631,7 +1621,7 @@ impl Room {
     pub async fn broadcast_except(&self, skip: Option<u64>, payload: &Value) {
         let message = payload.to_string();
         let mut state = self.state.lock().await;
-        send_to_all(&mut state, skip, Outgoing::shared_text(message));
+        send_to(&mut state, skip, Outgoing::shared_text(message), |_| true);
     }
 
     /// Relays source synchronization frames only to editor peers. Reader and
@@ -1640,7 +1630,9 @@ impl Room {
     pub async fn broadcast_editors_except(&self, skip: Option<u64>, payload: &Value) {
         let message = payload.to_string();
         let mut state = self.state.lock().await;
-        send_to_editors(&mut state, skip, Outgoing::shared_text(message));
+        send_to(&mut state, skip, Outgoing::shared_text(message), |peer| {
+            peer.may_edit
+        });
     }
 
     /// Counts comment actions per caller per clock hour. A live link is the
@@ -1863,7 +1855,9 @@ impl Room {
         if let Some(correction) = correction {
             let payload =
                 json!({"type": "y-update", "update": encode_update(&correction)}).to_string();
-            send_to_editors(&mut state, None, Outgoing::shared_text(payload));
+            send_to(&mut state, None, Outgoing::shared_text(payload), |peer| {
+                peer.may_edit
+            });
         }
         // Counted only once the update is one this document actually took. A
         // refused update must not be acknowledged by the next write, and it
@@ -2339,25 +2333,23 @@ pub fn decode_update(text: &str) -> Option<Vec<u8>> {
 /// Sends to every socket but one, dropping any that has fallen too far behind
 /// to take another frame. A dropped socket is not a lost edit: the browser
 /// reconnects and asks for what it is missing by state vector.
-fn send_to_all(state: &mut RoomState, skip: Option<u64>, message: Outgoing) {
-    let mut behind = Vec::new();
-    for (id, peer) in &state.sockets {
-        if Some(*id) == skip {
-            continue;
-        }
-        if peer.tx.try_send(message.clone()).is_err() {
-            behind.push(*id);
-        }
-    }
-    for id in behind {
-        state.sockets.remove(&id);
-    }
+fn comment_views(comments: &[Comment], author: &str, is_owner: bool) -> Vec<CommentView> {
+    comments
+        .iter()
+        .filter(|item| is_owner || crate::room::comments::visible_to_reader(item))
+        .map(|item| CommentView::for_viewer(item, author, is_owner))
+        .collect()
 }
 
-pub(super) fn send_to_editors(state: &mut RoomState, skip: Option<u64>, message: Outgoing) {
+fn send_to(
+    state: &mut RoomState,
+    skip: Option<u64>,
+    message: Outgoing,
+    include: impl Fn(&Peer) -> bool,
+) {
     let mut behind = Vec::new();
     for (id, peer) in &state.sockets {
-        if Some(*id) == skip || !peer.may_edit {
+        if Some(*id) == skip || !include(peer) {
             continue;
         }
         if peer.tx.try_send(message.clone()).is_err() {

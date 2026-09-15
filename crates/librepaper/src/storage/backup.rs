@@ -47,7 +47,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
             destination.display()
         ));
     }
-    create_private_dir(destination)?;
+    super::create_private_dir(destination, "backup destination")?;
     let started_at = now()?;
     let catalog = PostgresCatalog::connect(PostgresOptions::new(&options.database_url))
         .await
@@ -125,7 +125,7 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
         }
         let target = safe_target(&object_root, &reference.key)?;
         if let Some(parent) = target.parent() {
-            create_private_dir(parent)?;
+            super::create_private_dir(parent, "backup object directory")?;
         }
         write_private_file(&target, &body)?;
     }
@@ -186,7 +186,7 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
     if occupied {
         return Err("restore requires an empty PostgreSQL database".into());
     }
-    create_private_dir(&destination.join("objects"))?;
+    super::create_private_dir(&destination.join("objects"), "restored objects directory")?;
     for reference in &manifest.references {
         let source = safe_target(&backup.join(&manifest.objects), &reference.key)?;
         let body = std::fs::read(&source)
@@ -199,7 +199,7 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
         }
         let target = safe_target(&destination.join("objects"), &reference.key)?;
         if let Some(parent) = target.parent() {
-            create_private_dir(parent)?;
+            super::create_private_dir(parent, "restored object directory")?;
         }
         write_private_file(&target, &body)?;
     }
@@ -222,17 +222,6 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
         return Err("restored migration version does not match backup".into());
     }
     println!("restored verified backup {}", manifest.id);
-    Ok(())
-}
-
-fn create_private_dir(path: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(path).map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| error.to_string())?;
-    }
     Ok(())
 }
 

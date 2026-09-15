@@ -54,16 +54,15 @@ impl Server {
         if ws_origin_refused(request.headers(), arrival) {
             return plain(403, "cross-site request refused");
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
-            Err(response) => return response,
-        };
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let who = self
-            .viewer(&entry, &headers, arrival, query.as_deref())
-            .await;
+        let (entry, who) = match self
+            .entry_viewer(slug, &headers, arrival, query.as_deref())
+            .await
+        {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
         if who.auth_failed {
             return plain(401, "authentication expired or was revoked");
         }
@@ -244,14 +243,13 @@ impl Server {
         }
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return write_json(404, &json!({"error":"not found"})),
+        let (entry, who) = match self
+            .entry_viewer(slug, &headers, arrival, query.as_deref())
+            .await
+        {
+            Ok(result) => result,
             Err(response) => return response,
         };
-        let who = self
-            .viewer(&entry, &headers, arrival, query.as_deref())
-            .await;
         if who.auth_failed {
             return write_json(
                 401,

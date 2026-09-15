@@ -1078,15 +1078,13 @@ impl Server {
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return plain(404, "not found"),
+        let (entry, who) = match self.entry_viewer(slug, headers, arrival, query).await {
+            Ok(result) => result,
             Err(response) => return response,
         };
         // The signature says this link was minted here; it does not say who is
         // holding it. Who may read is asked again, from the request itself,
         // which is the same rule the socket answers `y-open` under.
-        let who = self.viewer(&entry, headers, arrival, query).await;
         // Full Yjs state is a source synchronization transport. Readers and
         // commenters receive the rendered publication and annotation channel.
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {

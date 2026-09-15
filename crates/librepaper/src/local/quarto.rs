@@ -22,7 +22,8 @@ use super::engine_adapter::{self, QuartoInvocationPlan};
 use super::protocol::{
     self, BuildProvenance, JobOutcome, JobRequest, JobStatus, OutputEntry, QuartoBundleSummary,
     QuartoCoverage, QuartoJobOptions, QuartoRenderPolicy, Tool, ToolVersions, Workspace,
-    MAX_LOG_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_QUARTO_OUTPUT_FILES, QUARTO_COLLECTOR_VERSION,
+    MAX_LOG_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_QUARTO_OUTPUT_FILES, MAX_UPLOAD_BYTES,
+    QUARTO_COLLECTOR_VERSION,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2333,6 +2334,33 @@ fn invalidate_hosted_preprocess_cache(root: &Path) -> Result<(), String> {
 /// previous sync wrote that is no longer in the inventory. Unchanged files
 /// are left untouched so their timestamps, and Quarto's caches keyed on
 /// them, survive.
+fn read_verified_manifest(
+    root: &Path,
+    manifest: &[protocol::ManifestEntry],
+    limit: usize,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut seen = BTreeSet::new();
+    let mut files = Vec::with_capacity(manifest.len());
+    for entry in manifest {
+        if !protocol::safe_relative_path(&entry.path) {
+            return Err(format!("unsafe manifest path: {}", entry.path));
+        }
+        if !seen.insert(entry.path.as_str()) {
+            return Err(format!("duplicate manifest path: {}", entry.path));
+        }
+        let bytes = read_file_bounded_to(
+            &root.join(&entry.path),
+            &format!("read {}", entry.path),
+            limit,
+        )?;
+        if bytes.len() as u64 != entry.size || sha256(&bytes) != entry.sha256 {
+            return Err(format!("manifest digest mismatch: {}", entry.path));
+        }
+        files.push((entry.path.clone(), bytes));
+    }
+    Ok(files)
+}
+
 pub(crate) fn sync_hosted_workspace(
     staged: &Path,
     root: &Path,
@@ -2340,19 +2368,15 @@ pub(crate) fn sync_hosted_workspace(
 ) -> Result<(), String> {
     let tracked_path = root.join(HOSTED_TRACKED);
     let previous = read_hosted_tracking(&tracked_path)?;
-    let mut uploads = Vec::with_capacity(manifest.len());
+    let files = read_verified_manifest(staged, manifest, MAX_UPLOAD_BYTES)?;
+    let mut uploads = Vec::with_capacity(files.len());
     let mut changed = false;
-    for entry in manifest {
-        if !protocol::safe_relative_path(&entry.path) {
-            return Err("quarto input inventory contains an unsafe path".into());
-        }
-        let bytes = std::fs::read(staged.join(&entry.path))
-            .map_err(|_| format!("hosted workspace is missing upload: {}", entry.path))?;
-        let target = root.join(&entry.path);
+    for (path, bytes) in files {
+        let target = root.join(&path);
         let current = read_hosted_input(&target);
         let same = current.as_deref().is_some_and(|current| current == bytes);
         changed |= !same;
-        uploads.push((entry.path.clone(), bytes, same));
+        uploads.push((path, bytes, same));
     }
     for stale in previous.files.iter().filter(|path| {
         !manifest
@@ -2632,21 +2656,17 @@ pub(crate) fn inventory_manifest(
     let mut hasher = Sha256::new();
     let mut files = Vec::with_capacity(manifest.len());
     let mut total_bytes = 0usize;
-    for entry in manifest {
-        let bytes = read_file_bounded(&root.join(&entry.path), &format!("read {}", entry.path))?;
-        if bytes.len() as u64 != entry.size || sha256(&bytes) != entry.sha256 {
-            return Err(format!("bound shared input changed: {}", entry.path));
-        }
+    for (path, bytes) in read_verified_manifest(root, manifest, MAX_QUARTO_OUTPUT_BYTES)? {
         total_bytes = total_bytes
             .checked_add(bytes.len())
             .ok_or("Quarto input inventory is too large")?;
         if total_bytes > MAX_QUARTO_OUTPUT_BYTES {
             return Err("Quarto input inventory exceeds its aggregate size limit".into());
         }
-        hasher.update(entry.path.as_bytes());
+        hasher.update(path.as_bytes());
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
-        files.push(entry.path.clone());
+        files.push(path);
     }
     Ok(SourceInventory {
         tree_sha256: hex::encode(hasher.finalize()),
@@ -3497,12 +3517,16 @@ fn verify_frozen_cache_identity(
 }
 
 fn read_file_bounded(path: &Path, description: &str) -> Result<Vec<u8>, String> {
+    read_file_bounded_to(path, description, MAX_QUARTO_OUTPUT_BYTES)
+}
+
+fn read_file_bounded_to(path: &Path, description: &str, limit: usize) -> Result<Vec<u8>, String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|error| format!("{description}: {error}"))?;
     if !metadata.file_type().is_file() {
         return Err(format!("{description} is not a file"));
     }
-    if metadata.len() > MAX_QUARTO_OUTPUT_BYTES as u64 {
+    if metadata.len() > limit as u64 {
         return Err(format!("{description} exceeds its size limit"));
     }
     let file = File::open(path).map_err(|error| format!("{description}: {error}"))?;

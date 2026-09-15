@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -1568,6 +1568,103 @@ async fn handle_capabilities(
     write_json(200, &response)
 }
 
+struct MultipartUpload {
+    metadata: String,
+    files: Vec<(String, Vec<u8>)>,
+}
+
+fn stage_uploads(root: &Path, uploads: &[(String, Vec<u8>)]) -> Result<(), String> {
+    for (path, bytes) in uploads {
+        let destination = root.join(path);
+        destination
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| {
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                let mut file = options.open(&destination)?;
+                use std::io::Write;
+                file.write_all(bytes)
+            })
+            .map_err(|_| format!("could not stage {path}"))?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+async fn read_multipart_upload(
+    request: Request<Body>,
+    metadata_name: &str,
+    metadata_part_error: &str,
+    metadata_size_error: &str,
+    metadata_missing_error: &str,
+) -> Result<MultipartUpload, Reply> {
+    let content_type = header_str(request.headers(), "content-type").unwrap_or_default();
+    if !content_type.contains("multipart/form-data") {
+        return Err(write_json(
+            400,
+            &json!({"error": "expected a multipart upload"}),
+        ));
+    }
+    let ceiling = MAX_UPLOAD_BYTES + MAX_JSON_BYTES + 64 * 1024;
+    let (parts, body) = request.into_parts();
+    let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
+    let mut multipart = Multipart::from_request(limited, &())
+        .await
+        .map_err(|_| write_json(400, &json!({"error": "bad upload"})))?;
+    let mut metadata = None;
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(error) => {
+                return Err(if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                    write_json(413, &json!({"error": "that upload is too large"}))
+                } else {
+                    write_json(400, &json!({"error": "bad upload"}))
+                })
+            }
+        };
+        match field.name().unwrap_or_default() {
+            name if name == metadata_name => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|_| write_json(400, &json!({"error": metadata_part_error})))?;
+                if text.len() > MAX_JSON_BYTES {
+                    return Err(write_json(413, &json!({"error": metadata_size_error})));
+                }
+                metadata = Some(text);
+            }
+            "file" => {
+                let name = field.file_name().unwrap_or_default().to_string();
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|_| write_json(400, &json!({"error": "bad upload"})))?;
+                total = total.saturating_add(bytes.len() as u64);
+                if total > MAX_UPLOAD_BYTES as u64 {
+                    return Err(write_json(
+                        413,
+                        &json!({"error": "that upload is too large"}),
+                    ));
+                }
+                if files.len() >= MAX_FILES {
+                    return Err(write_json(413, &json!({"error": "too many files"})));
+                }
+                files.push((name, bytes.to_vec()));
+            }
+            _ => {}
+        }
+    }
+    let Some(metadata) = metadata else {
+        return Err(write_json(400, &json!({"error": metadata_missing_error})));
+    };
+    Ok(MultipartUpload { metadata, files })
+}
+
 /* ---------------------------------------------------------------- jobs */
 
 /* ------------------------------------------------------------ workspace */
@@ -1589,74 +1686,26 @@ async fn handle_workspace_put(
     };
     let origin = origin.unwrap_or_default().to_string();
 
-    let content_type = header_str(headers, "content-type").unwrap_or_default();
-    if !content_type.contains("multipart/form-data") {
-        return write_json(400, &json!({"error": "expected a multipart upload"}));
-    }
-
-    let ceiling = MAX_UPLOAD_BYTES + MAX_JSON_BYTES + 64 * 1024;
-    let (parts, body) = request.into_parts();
-    let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
-    let mut multipart = match Multipart::from_request(limited, &()).await {
-        Ok(multipart) => multipart,
-        Err(_) => return write_json(400, &json!({"error": "bad upload"})),
+    let upload = match read_multipart_upload(
+        request,
+        "manifest",
+        "bad manifest part",
+        "manifest is too large",
+        "missing the manifest part",
+    )
+    .await
+    {
+        Ok(upload) => upload,
+        Err(response) => return response,
     };
-
-    let mut manifest_text: Option<String> = None;
-    let mut uploads: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut total: u64 = 0;
-
-    loop {
-        let field = match multipart.next_field().await {
-            Ok(Some(field)) => field,
-            Ok(None) => break,
-            Err(err) => {
-                return if err.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                    write_json(413, &json!({"error": "that upload is too large"}))
-                } else {
-                    write_json(400, &json!({"error": "bad upload"}))
-                };
-            }
-        };
-        match field.name().unwrap_or_default() {
-            "manifest" => {
-                let text = match field.text().await {
-                    Ok(text) => text,
-                    Err(_) => return write_json(400, &json!({"error": "bad manifest part"})),
-                };
-                if text.len() > MAX_JSON_BYTES {
-                    return write_json(413, &json!({"error": "manifest is too large"}));
-                }
-                manifest_text = Some(text);
-            }
-            "file" => {
-                let name = field.file_name().unwrap_or_default().to_string();
-                let bytes = match field.bytes().await {
-                    Ok(bytes) => bytes,
-                    Err(_) => return write_json(400, &json!({"error": "bad upload"})),
-                };
-                total += bytes.len() as u64;
-                if total > MAX_UPLOAD_BYTES as u64 {
-                    return write_json(413, &json!({"error": "that upload is too large"}));
-                }
-                if uploads.len() >= MAX_FILES {
-                    return write_json(413, &json!({"error": "too many files"}));
-                }
-                uploads.push((name, bytes.to_vec()));
-            }
-            _ => {}
-        }
-    }
-
-    let Some(manifest_text) = manifest_text else {
-        return write_json(400, &json!({"error": "missing the manifest part"}));
-    };
+    let uploads = upload.files;
+    let manifest_text = upload.metadata;
     let manifest: Vec<ManifestEntry> = match serde_json::from_str(&manifest_text) {
         Ok(manifest) => manifest,
         Err(_) => return write_json(400, &json!({"error": "bad manifest"})),
     };
-    if manifest.len() > MAX_FILES {
-        return write_json(413, &json!({"error": "too many files"}));
+    if let Err(response) = validate_manifest_shape(&manifest) {
+        return response;
     }
     if let Err(response) = validate_manifest(&manifest, &uploads) {
         return response;
@@ -1676,23 +1725,8 @@ async fn handle_workspace_put(
         Ok(dir) => dir,
         Err(_) => return write_json(500, &json!({"error": "could not create a workspace"})),
     };
-    for (path, bytes) in &uploads {
-        let dest = staged.path().join(path);
-        // Same `create_new` staging as `jobs`: a path colliding with one
-        // already staged fails here instead of quietly following it.
-        let write = dest
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| {
-                let mut options = std::fs::OpenOptions::new();
-                options.write(true).create_new(true);
-                let mut file = options.open(&dest)?;
-                use std::io::Write;
-                file.write_all(bytes)
-            });
-        if write.is_err() {
-            return write_json(400, &json!({"error": format!("could not stage {path}")}));
-        }
+    if let Err(error) = stage_uploads(staged.path(), &uploads) {
+        return write_json(400, &json!({"error": error}));
     }
 
     match sync_hosted_workspace(staged.path(), &binding.root, &manifest) {
@@ -1713,68 +1747,20 @@ async fn handle_jobs_post(
     };
     let origin = origin.unwrap_or_default().to_string();
 
-    let content_type = header_str(headers, "content-type").unwrap_or_default();
-    if !content_type.contains("multipart/form-data") {
-        return write_json(400, &json!({"error": "expected a multipart upload"}));
-    }
-
-    let ceiling = MAX_UPLOAD_BYTES + MAX_JSON_BYTES + 64 * 1024;
-    let (parts, body) = request.into_parts();
-    let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
-    let mut multipart = match Multipart::from_request(limited, &()).await {
-        Ok(multipart) => multipart,
-        Err(_) => return write_json(400, &json!({"error": "bad upload"})),
+    let upload = match read_multipart_upload(
+        request,
+        "job",
+        "bad job part",
+        "job description is too large",
+        "missing the job part",
+    )
+    .await
+    {
+        Ok(upload) => upload,
+        Err(response) => return response,
     };
-
-    let mut job_text: Option<String> = None;
-    let mut uploads: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut total: u64 = 0;
-
-    loop {
-        let field = match multipart.next_field().await {
-            Ok(Some(field)) => field,
-            Ok(None) => break,
-            Err(err) => {
-                return if err.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                    write_json(413, &json!({"error": "that upload is too large"}))
-                } else {
-                    write_json(400, &json!({"error": "bad upload"}))
-                };
-            }
-        };
-        match field.name().unwrap_or_default() {
-            "job" => {
-                let text = match field.text().await {
-                    Ok(text) => text,
-                    Err(_) => return write_json(400, &json!({"error": "bad job part"})),
-                };
-                if text.len() > MAX_JSON_BYTES {
-                    return write_json(413, &json!({"error": "job description is too large"}));
-                }
-                job_text = Some(text);
-            }
-            "file" => {
-                let name = field.file_name().unwrap_or_default().to_string();
-                let bytes = match field.bytes().await {
-                    Ok(bytes) => bytes,
-                    Err(_) => return write_json(400, &json!({"error": "bad upload"})),
-                };
-                total += bytes.len() as u64;
-                if total > MAX_UPLOAD_BYTES as u64 {
-                    return write_json(413, &json!({"error": "that upload is too large"}));
-                }
-                if uploads.len() >= MAX_FILES {
-                    return write_json(413, &json!({"error": "too many files"}));
-                }
-                uploads.push((name, bytes.to_vec()));
-            }
-            _ => {}
-        }
-    }
-
-    let Some(job_text) = job_text else {
-        return write_json(400, &json!({"error": "missing the job part"}));
-    };
+    let mut uploads = upload.files;
+    let job_text = upload.metadata;
     let raw_job: Value = match serde_json::from_str(&job_text) {
         Ok(job) => job,
         Err(_) => return write_json(400, &json!({"error": "bad job description"})),
@@ -1930,23 +1916,8 @@ async fn handle_jobs_post(
             &json!({"error": "job scope does not match the connected token"}),
         );
     }
-    if job.manifest.len() > MAX_FILES {
-        return write_json(413, &json!({"error": "too many manifest entries"}));
-    }
-    if job
-        .manifest
-        .iter()
-        .any(|entry| !protocol::safe_relative_path(&entry.path))
-    {
-        return write_json(400, &json!({"error": "unsafe manifest path"}));
-    }
-    if job
-        .manifest
-        .iter()
-        .try_fold(0u64, |total, entry| total.checked_add(entry.size))
-        .is_none_or(|total| total > MAX_UPLOAD_BYTES as u64)
-    {
-        return write_json(413, &json!({"error": "manifest exceeds upload limits"}));
+    if let Err(response) = validate_manifest_shape(&job.manifest) {
+        return response;
     }
     if let Some(source) = &job.source {
         if let Err(error) = source.validate() {
@@ -2083,25 +2054,8 @@ async fn handle_jobs_post(
             &json!({"error": "origin does not match the connected token"}),
         );
     }
-    if job.manifest.len() > MAX_FILES
-        || job
-            .manifest
-            .iter()
-            .any(|entry| !protocol::safe_relative_path(&entry.path))
-    {
-        return write_json(
-            413,
-            &json!({"error": "invalid or too many manifest entries"}),
-        );
-    }
-    if job
-        .manifest
-        .iter()
-        .map(|entry| entry.size)
-        .try_fold(0u64, |total, size| total.checked_add(size))
-        .is_none_or(|total| total > MAX_UPLOAD_BYTES as u64)
-    {
-        return write_json(413, &json!({"error": "manifest exceeds upload limits"}));
+    if let Err(response) = validate_manifest_shape(&job.manifest) {
+        return response;
     }
     if job.protocol != 2 {
         if let Err(error) = crate::local::engine_adapter::select(&job) {
@@ -2195,26 +2149,9 @@ async fn handle_jobs_post(
     if std::fs::create_dir_all(&project_dir).is_err() {
         return write_json(500, &json!({"error": "could not create a workspace"}));
     }
-    for (path, bytes) in &uploads {
-        let dest = project_dir.join(path);
-        let staged = dest
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| {
-                // `create_new` refuses to write through a name that already
-                // exists -- file, directory or symlink -- so a path that
-                // tried to reuse or hijack an entry another part just staged
-                // fails here instead of quietly following it.
-                let mut options = std::fs::OpenOptions::new();
-                options.write(true).create_new(true);
-                let mut file = options.open(&dest)?;
-                use std::io::Write;
-                file.write_all(bytes)
-            });
-        if staged.is_err() {
-            let _ = std::fs::remove_dir_all(&root);
-            return write_json(400, &json!({"error": format!("could not stage {path}")}));
-        }
+    if let Err(error) = stage_uploads(&project_dir, &uploads) {
+        let _ = std::fs::remove_dir_all(&root);
+        return write_json(400, &json!({"error": error}));
     }
 
     let workspace = Workspace { root: root.clone() };
@@ -2336,10 +2273,33 @@ async fn handle_jobs_post(
     write_json(202, &json!({"id": id, "status": "queued"}))
 }
 
-/// Every manifest entry is a safe path, listed once, uploaded exactly once,
-/// and matches the bytes actually sent; every uploaded part is on the
-/// manifest. Any mismatch refuses the whole job -- nothing is staged from a
-/// request this returns an error for.
+/// Every manifest entry has a bounded count, safe path, and total size.
+#[allow(clippy::result_large_err)]
+fn validate_manifest_shape(manifest: &[ManifestEntry]) -> Result<(), Reply> {
+    if manifest.len() > MAX_FILES {
+        return Err(write_json(
+            413,
+            &json!({"error": "too many manifest entries"}),
+        ));
+    }
+    if manifest
+        .iter()
+        .any(|entry| !protocol::safe_relative_path(&entry.path))
+    {
+        return Err(write_json(400, &json!({"error": "unsafe manifest path"})));
+    }
+    let total = manifest
+        .iter()
+        .try_fold(0u64, |total, entry| total.checked_add(entry.size));
+    if total.is_none_or(|total| total > MAX_UPLOAD_BYTES as u64) {
+        return Err(write_json(
+            413,
+            &json!({"error": "manifest exceeds upload limits"}),
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::result_large_err)] // as `server.rs`'s `read_upload`: the error is a response
 fn validate_manifest(
     manifest: &[ManifestEntry],
