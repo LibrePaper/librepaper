@@ -730,6 +730,50 @@ impl Server {
                             })
                         };
                         let payload = match incoming.kind.as_str() {
+                            // Somebody proposes different words for a passage.
+                            // The passage is named the way a comment names one
+                            // -- by quoting it -- and what comes back is a
+                            // proposal id, because a suggested change is a
+                            // branch like any other from here on (§1.2).
+                            "proposal-suggest" => {
+                                let Some(anchor) = incoming.source.as_ref() else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"a suggestion has to say which passage it is about","request_id":incoming.request_id}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                let proposed = incoming.proposed.clone().unwrap_or_default();
+                                // Where the passage currently is. Found by
+                                // reading the file, so a suggestion made
+                                // against text that has since moved is refused
+                                // rather than placed somewhere plausible.
+                                let placed = {
+                                    let state = room.state.lock().await;
+                                    crate::document::session::texts_of(&state.session.doc)
+                                        .get(&anchor.path)
+                                        .and_then(|body| {
+                                            crate::room::comments::locate_anchor(body, anchor)
+                                        })
+                                };
+                                let Some(at) = placed else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","stale":true,"message":"that passage is not where it was","request_id":incoming.request_id}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                match room
+                                    .open_suggestion(&by, &anchor.path, at, &anchor.exact, &proposed)
+                                    .await
+                                {
+                                    Ok(id) => json!({
+                                        "type": "proposal-opened", "proposal_id": id,
+                                        "suggested": true,
+                                        "request_id": incoming.request_id,
+                                        "version": 1, "protocol": "librepaper.room.v1",
+                                    }),
+                                    Err(error) => refuse(error),
+                                }
+                            }
                             "proposal-open" => match room.open_proposal(&by).await {
                                 Ok(id) => json!({
                                     "type": "proposal-opened", "proposal_id": id,

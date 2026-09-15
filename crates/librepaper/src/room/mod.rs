@@ -34,7 +34,7 @@ mod agent_view;
 mod catalog;
 pub(crate) mod checkpoint;
 mod command;
-mod comments;
+pub(crate) mod comments;
 pub(crate) mod error;
 mod figures;
 #[cfg(test)]

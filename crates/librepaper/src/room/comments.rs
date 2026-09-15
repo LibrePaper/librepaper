@@ -383,7 +383,7 @@ pub fn valid_quarto_output_anchor(
 /// suffix -- ties broken by distance from `source.position`. `None` when the
 /// passage does not occur at all, which is the caller's cue to fall back to a
 /// three-way merge.
-pub(super) fn locate_anchor(text: &str, anchor: &SourceAnchor) -> Option<usize> {
+pub(crate) fn locate_anchor(text: &str, anchor: &SourceAnchor) -> Option<usize> {
     if anchor.exact.is_empty() {
         return None;
     }
