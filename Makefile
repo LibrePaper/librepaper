@@ -96,13 +96,17 @@ test-release-workloads:  ## Run supported-limit and diagnostic workloads
 # seconds. But nothing else runs them, and a substrate change once left three of
 # them referring to a library that had been uninstalled -- broken for as long as
 # nobody looked, because every other check passed.
+#
+# The per-test bound is generous rather than tuned: the LaTeX one drives a real
+# TeX Live through a browser and takes minutes by itself, and a tighter bound
+# reported that passing test as broken.
 browser:  ## Run the component tests in headless chromium (needs chromium)
 	@command -v chromium >/dev/null || command -v google-chrome >/dev/null || \
 		{ echo "no chromium to drive; skipping the browser tests"; exit 0; }
 	@failed=""; \
 	for test in web/tests/browser/*.mjs; do \
 		printf '%s: ' "$$(basename $$test)"; \
-		if (cd web && timeout 300 node "../$$test" >/tmp/browser-test.log 2>&1); then \
+		if (cd web && timeout 900 node "../$$test" >/tmp/browser-test.log 2>&1); then \
 			echo ok; \
 		else \
 			echo FAILED; failed="$$failed $$(basename $$test)"; \
