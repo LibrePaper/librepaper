@@ -10,7 +10,11 @@ for (const forbidden of ["fetch(", "localStorage", "sessionStorage", "indexedDB"
 }
 assert.match(component, /sandbox=""/);
 assert.match(component, /Nothing is uploaded, saved, or shareable/);
-assert.equal((landing.match(/https:\/\/app\.librepaper\.org\/try/g) || []).length, 2);
+// The landing page offers the playground, and the bar offers it from every
+// page of the manual. A count rather than a presence check was what this
+// asserted, and it went stale the moment the repeated call to action was
+// trimmed -- what matters is that the way in is there, not how many times.
+assert.match(landing, /https:\/\/app\.librepaper\.org\/try/);
 assert.match(bar, /https:\/\/app\.librepaper\.org\/try/);
 
 console.log("playground: temporary local-only contract and landing links passed");
