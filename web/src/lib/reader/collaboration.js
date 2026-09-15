@@ -5,6 +5,7 @@ import { openRoom as defaultOpenRoom } from "../room.js";
 import * as defaultCollab from "../collab.js";
 import { keyHeaders } from "../api.js";
 import { assertSameProject, projectIdentity } from "../project-identity.js";
+import { createGeneration } from "./generation.js";
 
 const capability = (document_) => JSON.stringify([
   document_?.role ?? null,
@@ -40,7 +41,7 @@ export function createReaderCollaboration({
   let session = null;
   let document_ = null;
   let disposed = false;
-  let reconnectGeneration = 0;
+  const reconnects = createGeneration();
   let retryTimer = null;
   let filesCleanup = null;
   let awarenessHandler = null;
@@ -103,7 +104,7 @@ export function createReaderCollaboration({
 
   async function reconnect(up) {
     if (disposed) return;
-    const current = ++reconnectGeneration;
+    const stale = reconnects.begin();
     clearRetry();
     if (!up) {
       session?.disconnected();
@@ -115,10 +116,10 @@ export function createReaderCollaboration({
     active?.disconnected();
     try {
       const response = await fetcher(`/api/documents/${slug}`, { headers: keyHeaders(key) });
-      if (disposed || current !== reconnectGeneration || session !== active) return;
+      if (disposed || stale() || session !== active) return;
       if (!response.ok) return changed("document");
       const latest = await response.json();
-      if (disposed || current !== reconnectGeneration || session !== active) return;
+      if (disposed || stale() || session !== active) return;
       if (document_.created_at || latest.created_at) {
         try {
           assertSameProject(
@@ -133,11 +134,11 @@ export function createReaderCollaboration({
       if (sourceSync) room?.send(active.open());
       onConnected(true);
     } catch (error) {
-      if (disposed || current !== reconnectGeneration || session !== active) return;
+      if (disposed || stale() || session !== active) return;
       clearRetry();
       retryTimer = setTimer(() => {
         retryTimer = null;
-        if (!disposed && current === reconnectGeneration && session === active) void reconnect(true);
+        if (!disposed && !stale() && session === active) void reconnect(true);
       }, retryMs);
     }
   }
@@ -170,7 +171,7 @@ export function createReaderCollaboration({
   function close() {
     if (disposed) return;
     disposed = true;
-    reconnectGeneration += 1;
+    reconnects.cancel();
     clearRetry();
     filesCleanup?.();
     filesCleanup = null;

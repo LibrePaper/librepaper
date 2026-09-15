@@ -15,6 +15,7 @@
 
 import * as defaultHistory from "../history.js";
 import { authHeaders, keyHeaders } from "../api.js";
+import { createGeneration } from "./generation.js";
 
 export function createTimeline({
   slug,
@@ -42,7 +43,7 @@ export function createTimeline({
     canEdit: false,
   });
 
-  let generation = 0;
+  const reads = createGeneration();
   // The project as it stood when this restore was put to the reader. Not
   // state: nothing draws it, and it is compared rather than shown.
   let baseline = "";
@@ -50,15 +51,15 @@ export function createTimeline({
   /// Read the manifest. Only the newest read may write what it found: a
   /// slower earlier one finishing later would otherwise replace it.
   async function load() {
-    const mine = ++generation;
+    const stale = reads.begin();
     try {
       const loaded = await history.loadWithStatus(slug, keyHeaders(key));
-      if (disposed() || mine !== generation) return;
+      if (disposed() || stale()) return;
       state.checkpoints = loaded.checkpoints;
       state.durability = loaded.durability;
       state.problem = "";
     } catch (error) {
-      if (disposed() || mine !== generation) return;
+      if (disposed() || stale()) return;
       // A failed refresh is not evidence that the previous save state still
       // applies; keep the old rows for selection but make status unknown.
       state.durability = null;

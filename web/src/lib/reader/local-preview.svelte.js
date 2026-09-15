@@ -11,6 +11,8 @@
 // `web/tests/integration/local-preview.mjs` can drive the whole thing under Node with no
 // browser and no real clock.
 
+import { createGeneration } from "./generation.js";
+
 const POLL_FAST_MS = 500;
 const POLL_SLOW_MS = 1000;
 const STATUS_POLL_MS = 5000;
@@ -61,11 +63,11 @@ export function createLocalPreview({
   let syncBusy = false;
   let syncQueued = false;
   let errorShown = false;
-  let lifecycle = 0;
+  const lifecycle = createGeneration();
   let pendingStart = null;
   let pendingStop = null;
   let target = null;
-  let reconciliation = 0;
+  const reconciliations = createGeneration();
 
   function setRendering(value) {
     state.rendering = !!value;
@@ -168,10 +170,10 @@ export function createLocalPreview({
   }
 
   async function start() {
-    const mine = lifecycle;
+    const stopped = lifecycle.mark();
     if (pendingStop) await pendingStop;
     if (pendingStart) await pendingStart;
-    if (mine !== lifecycle || state.session || isDisposed()) return;
+    if (stopped() || state.session || isDisposed()) return;
     pendingStart = runStart();
     try { await pendingStart; }
     finally { pendingStart = null; }
@@ -179,8 +181,8 @@ export function createLocalPreview({
 
   async function runStart() {
     if (state.session || state.starting || isDisposed()) return;
-    const mine = lifecycle;
-    const cancelled = () => isDisposed() || lifecycle !== mine;
+    const stopped = lifecycle.mark();
+    const cancelled = () => isDisposed() || stopped();
     state.error = "";
     setStarting(true);
     try {
@@ -213,7 +215,7 @@ export function createLocalPreview({
   }
 
   async function stop() {
-    lifecycle += 1;
+    lifecycle.cancel();
     syncQueued = false;
     const active = state.session;
     if (!active) { await Promise.all([pendingStart, pendingStop]); return; }
@@ -263,13 +265,13 @@ export function createLocalPreview({
   // moment it stops holding. The whole of what a caller's own `$effect` needs
   // to drive automatic start/stop.
   async function reconcile(active) {
-    const mine = ++reconciliation;
+    const stale = reconciliations.begin();
     const next = active || null;
     if (target !== next) {
       target = next;
       const wasActive = state.session || state.starting;
       if (wasActive || pendingStop) await stop();
-      if (mine !== reconciliation) return;
+      if (stale()) return;
       if (!active && wasActive) { onEnded?.(); return; }
     }
     if (active) {

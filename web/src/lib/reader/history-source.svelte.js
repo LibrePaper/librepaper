@@ -4,9 +4,11 @@
 // There is one comparison: the selected version against the project as it
 // stands, captured when the comparison opens and again on request. It
 // deliberately has no dependency on preview rendering or the live editor.
+import { createGeneration } from "./generation.js";
+
 export function createHistorySource({ checkpoint, currentTree, checkpoints = () => [], preferredPath = () => "" }) {
   const state = $state({ selected: "", path: "", loading: false, problem: "", result: null });
-  let generation = 0;
+  const selections = createGeneration();
   let disposed = false;
 
   const snapshot = tree => ({ ...tree, texts: { ...tree.texts }, files: { ...tree.files } });
@@ -46,7 +48,7 @@ export function createHistorySource({ checkpoint, currentTree, checkpoints = () 
 
   async function select(sha = state.selected, path = state.path || preferredPath()) {
     if (disposed) return;
-    const mine = ++generation;
+    const stale = selections.begin();
     state.selected = sha;
     state.path = path;
     state.result = null;
@@ -57,9 +59,9 @@ export function createHistorySource({ checkpoint, currentTree, checkpoints = () 
       // awaits, and always from the collaborative tree.
       const available = currentTree();
       const live = snapshot(available?.then ? await available : available);
-      if (disposed || mine !== generation) return;
+      if (disposed || stale()) return;
       const point = sha ? await readPoint(sha) : null;
-      if (disposed || mine !== generation) return;
+      if (disposed || stale()) return;
       const oldTree = point || live;
       const newTree = live;
       const paths = [...new Set([
@@ -87,9 +89,9 @@ export function createHistorySource({ checkpoint, currentTree, checkpoints = () 
         diff: Boolean(sha),
       };
     } catch (error) {
-      if (!disposed && mine === generation) state.problem = error.message || "Could not load checkpoint source.";
+      if (!disposed && !stale()) state.problem = error.message || "Could not load checkpoint source.";
     } finally {
-      if (!disposed && mine === generation) state.loading = false;
+      if (!disposed && !stale()) state.loading = false;
     }
   }
 
@@ -97,7 +99,7 @@ export function createHistorySource({ checkpoint, currentTree, checkpoints = () 
     if (state.result?.paths.includes(path)) state.path = path;
   }
   function close() {
-    ++generation;
+    selections.cancel();
     state.selected = "";
     state.result = null;
     state.loading = false;

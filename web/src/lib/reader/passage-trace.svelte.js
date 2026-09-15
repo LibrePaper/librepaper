@@ -16,6 +16,7 @@
 
 import * as defaultPassages from "../passages.js";
 import { keyHeaders } from "../api.js";
+import { createGeneration } from "./generation.js";
 
 export function createPassageTrace({
   slug,
@@ -28,7 +29,7 @@ export function createPassageTrace({
 }) {
   const state = $state({ went: {}, replacements: {} });
 
-  let generation = 0;
+  const walks = createGeneration();
   // What the last completed walk was of. A walk with the same source, the
   // same visible text and the same comments would reach the same answers, so
   // it is not made.
@@ -40,14 +41,14 @@ export function createPassageTrace({
     const ids = lost.map((comment) => `${comment.id}:${comment.revision}`).join("|");
     if (last?.source === source && last?.visible === visible && last?.ids === ids) return;
     last = { source, visible, ids };
-    const mine = ++generation;
+    const stale = walks.begin();
     const went = {};
     const replacements = {};
     let list = checkpoints;
     if (lost.length && !list.length) list = await loadCheckpoints();
     const current = () => {
       const state_ = now();
-      return mine === generation && state_.source === source && state_.visible === visible;
+      return !stale() && state_.source === source && state_.visible === visible;
     };
     for (const comment of lost) {
       if (!current()) return;
@@ -64,7 +65,7 @@ export function createPassageTrace({
       } catch {
         // A missing checkpoint cannot establish a replacement. The walk is
         // forgotten rather than recorded, so the next one tries again.
-        if (mine === generation) last = null;
+        if (!stale()) last = null;
       }
     }
     if (current()) {

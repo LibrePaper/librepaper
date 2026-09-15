@@ -79,6 +79,7 @@
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
+  import { createGeneration } from "../lib/reader/generation.js";
   import { createRenderStatus } from "../lib/reader/render-status.svelte.js";
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
@@ -1250,11 +1251,11 @@
   // preview the moment its conditions are met, and tears it down (falling
   // back to the ordinary rendering, no retry) the moment any of them stop
   // holding.
-  let localPreviewGeneration = 0;
+  const localPreviewSwitches = createGeneration();
   $effect(() => {
     const quartoTarget = quartoLiveActive && previewMain;
     const calepinTarget = calepinActive && previewMain;
-    const mine = ++localPreviewGeneration;
+    const stale = localPreviewSwitches.begin();
     untrack(async () => {
       // Both engines use the same workspace. Release its old watcher before
       // asking the other engine to watch it, including during rapid switches.
@@ -1262,7 +1263,7 @@
         quartoTarget ? Promise.resolve() : quartoPreviewController.reconcile(false),
         calepinTarget ? Promise.resolve() : calepinPreviewController.reconcile(false),
       ]);
-      if (readerDisposed || mine !== localPreviewGeneration) return;
+      if (readerDisposed || stale()) return;
       if (quartoTarget) await quartoPreviewController.reconcile(quartoTarget);
       if (calepinTarget) await calepinPreviewController.reconcile(calepinTarget);
     });
