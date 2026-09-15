@@ -114,9 +114,10 @@
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
   import { bibliographyCache, bibliographyCacheKey, bibliographyCompletion, bibliographyNeedsAnalysis, citationContext, planZoteroImport } from "../lib/bibliography.js";
   import { hasPairing, searchZotero, zoteroItem } from "../lib/companion/client.js";
+  import { createProposals } from "../lib/proposals.js";
   import { untrack } from "svelte";
 
-  let { session, format = "", file = "", keys = "default", editable = true, tracking = null, selectedRevision = null, analyze = analyzeBibliography, onchange, oncaret, onfilechange, onbibliography, onrevision, onsave, onquit } = $props();
+  let { session, format = "", file = "", keys = "default", editable = true, tracking = null, selectedRevision = null, analyze = analyzeBibliography, send = null, onproposal = null, onchange, oncaret, onfilechange, onbibliography, onrevision, onsave, onquit } = $props();
 
   const selectedRevisionEffect = StateEffect.define();
   class DeletedRevisionWidget extends WidgetType {
@@ -155,6 +156,44 @@
   let parsedBibliography = $state(null);
   const insertTargets = new Map();
   const undoManagers = new Map();
+
+  // Proposals API for tracked editing. When tracking is on, the editor binds to
+  // the proposal's text instead of the room document's text. The send function
+  // is passed from the Reader and routes messages through the room socket.
+  let proposals = null;
+  $effect(() => {
+    if (!send || !session) return;
+    proposals = createProposals({
+      session,
+      send: (message) => send?.(message),
+      mayEdit: editable,
+    });
+  });
+
+  // Start tracking changes as a proposal. Opens a branch and starts sending
+  // edits to the server.
+  export function startTracking() {
+    if (!proposals) return;
+    proposals.start();
+    // Trigger a rebuild of the editor state to bind to the proposal's text
+    if (showing && states.has(showing)) {
+      states.delete(showing);
+    }
+  }
+
+  // When proposal messages arrive, apply them. The Reader's receive function
+  // routes them here. On stale error, do not silently retry: the hunks may have
+  // changed and the reviewer needs to recompute.
+  export function receiveProposal(message) {
+    if (!proposals) return;
+    const error = message.type === "error" && message.stale;
+    if (error) {
+      // The proposal has moved on. Recompute and let the reviewer decide again.
+      return;
+    }
+    proposals.apply?.(message);
+  }
+
   let bibliographyGeneration = 0;
   let bibliographyTimer = null;
   let lastBibliographyKey = "";
@@ -276,6 +315,7 @@
       }
       target.view.dispatch({ changes, selection: { anchor: Math.min(start_utf16, end_utf16) + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
       session.doc.commit();
+      proposals?.flush?.();
       scheduleBibliography();
       return true;
     } catch (error) {
@@ -627,6 +667,7 @@
       }
     }
     session.doc.commit();
+    proposals?.flush?.();
     releaseInsertContext(capturedContext);
     view.focus();
     return true;
@@ -649,8 +690,9 @@
   }
 
   /// Builds the state for one file, bound to its own LoroText.
+  /// When tracking is on, binds to the proposal's text; otherwise binds to the room's.
   function stateFor(id) {
-    const text = session.textOf?.(id) || session.text;
+    const text = getTextFromDoc(id);
     const path = session.paths?.get(id) || "";
     const undoManager = undoManagers.get(text) || new UndoManager(text);
     undoManagers.set(text, undoManager);
@@ -769,6 +811,18 @@
     });
   }
 
+  // Get the text for a file, from either the proposal or the room document
+  // depending on whether tracking is enabled.
+  function getTextFromDoc(id) {
+    // When tracking is on and a proposal is active, get the text from the proposal
+    if (tracking && proposals) {
+      const proposalText = proposals.text(id);
+      if (proposalText) return proposalText;
+    }
+    // Otherwise get from the room document
+    return session.textOf?.(id) || (id === session.mainId?.() ? session.text : null);
+  }
+
   /// Shows a file, keeping the state of the one being left. The view is made
   /// once and re-stated, rather than destroyed and rebuilt, so that switching
   /// files does not flash.
@@ -778,7 +832,7 @@
     if (showing) states.set(showing, view.state);
     if (!states.has(id)) states.set(id, stateFor(id));
     const state = states.get(id);
-    const text = session.textOf?.(id) || (id === session.mainId?.() ? session.text : null);
+    const text = getTextFromDoc(id);
     // While a file is inactive its LoroText can still receive remote edits, but
     // its CodeMirror binding is not mounted to dispatch those edits. Reconcile
     // the cached state before showing it, preserving its history and selection.

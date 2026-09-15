@@ -473,6 +473,43 @@ mod tests {
     ///
     /// This test pins the server's answer. If it ever starts failing, Loro has
     /// changed the basis and `document::hunks`' offsets mean something new.
+    /// The gap at which two changes stop being one decision, pinned on both
+    /// sides of the wire.
+    ///
+    /// `web/tests/unit/proposals.mjs` asserts the same two cases against the
+    /// browser's grouping. They have to agree exactly: a decision names a hunk
+    /// by index, so a server that saw two hunks where the browser saw one would
+    /// revert the wrong text when a reviewer declined the second.
+    #[test]
+    fn eight_characters_apart_is_one_decision_and_nine_is_two() {
+        fn gap_of(n: usize) -> usize {
+            let doc = LoroDoc::new();
+            let filler = "-".repeat(n);
+            doc.get_text("f")
+                .insert_utf16(0, &format!("AAA{filler}BBB"))
+                .unwrap();
+            doc.commit();
+            let base = doc.state_frontiers();
+            let branch = doc.fork();
+            // Later edit first, so the earlier one's offsets still hold.
+            let t = branch.get_text("f");
+            t.delete_utf16(3 + n, 3).unwrap();
+            t.insert_utf16(3 + n, "YYY").unwrap();
+            t.delete_utf16(0, 3).unwrap();
+            t.insert_utf16(0, "XXX").unwrap();
+            branch.commit();
+            let batch = branch.diff(&base, &branch.state_frontiers()).unwrap();
+            hunks(&text_deltas(&batch)).len()
+        }
+
+        assert_eq!(
+            gap_of(8),
+            1,
+            "eight retained characters bridge one decision"
+        );
+        assert_eq!(gap_of(9), 2, "nine do not");
+    }
+
     #[test]
     fn diff_offsets_are_code_points_on_this_side_of_the_wire() {
         let doc = LoroDoc::new();

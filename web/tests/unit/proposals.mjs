@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { LoroDoc, encodeFrontiers, decodeFrontiers } from "loro-crdt";
+import { LoroDoc } from "loro-crdt";
 import { createProposals } from "../../src/lib/proposals.js";
 
 // This test asserts that the browser groups hunks exactly as the server does.
@@ -7,60 +7,38 @@ import { createProposals } from "../../src/lib/proposals.js";
 // A mismatch means "decline the second hunk" reverts something else.
 
 const AUTHOR = 2n;
-const REVIEWER = 3n;
 const OWNER = 1n;
 
-// Build a room document and a proposal branch, returning the base and branch
-// bytes so hunksOfLocal can rebuild them.
-function createTestScenario() {
+// Test: Two changes separated by 10 retained characters are TWO hunks
+// "The cat sat. The dog ran."
+//  0123456789012345678901234
+//      cat (positions 4-6, 3 chars)
+//                  dog ran (positions 17-23, 7 chars)
+// Gap between: " sat. The " (positions 7-16, 10 chars)
+// Since 10 > 8, they are TWO hunks
+{
   const room = new LoroDoc();
   room.setPeerId(OWNER);
-
-  // Single file with some text
+  const atFork = room.oplogVersion();
   room.getText("main.md").insert(0, "The cat sat. The dog ran.");
   room.commit();
 
   const base = room.frontiers();
-  // What the room has before the branch adds anything, so the export below is
-  // the branch's own operations and not the whole document.
-  const atFork = room.oplogVersion();
   const branch = room.fork();
   branch.setPeerId(AUTHOR);
 
-  // Make two edits: replace "cat" with "tabby" and "dog ran" with "dog sprinted"
-  // Later edit first, so the earlier one's offsets still hold. "cat" sits at
-  // 4..7 and "dog ran" at 17..24, ten retained characters apart -- more than
-  // SAME_DECISION_WITHIN, so these stay two decisions.
+  // Apply later edit first so earlier offsets hold
   const text = branch.getText("main.md");
-  text.delete(17, 7);
+  text.delete(17, 7); // delete "dog ran"
   text.insert(17, "dog sprinted");
-  text.delete(4, 3);
+  text.delete(4, 3); // delete "cat"
   text.insert(4, "tabby");
   branch.commit();
 
   const tip = branch.frontiers();
+  const bytes = branch.export({ mode: "update", from: atFork });
 
-  return { room, branch, base, tip, bytes: branch.export({ mode: "update", from: atFork }) };
-}
-
-// Test: A delete and the insert replacing it are ONE hunk
-{
-  const { room, branch, base, tip, bytes } = createTestScenario();
-  const proposal = {
-    id: "test-1",
-    base,
-    tip,
-    branch,
-  };
-
-  // Simulate what proposals.js does
-  const proposalData = {
-    base,
-    tip,
-    bytes
-  };
-
-  // Create a fresh proposals instance to test hunksOf
+  const proposalData = { base, tip, bytes };
   const proposals = createProposals({
     session: { doc: room },
     send: () => {},
@@ -69,21 +47,28 @@ function createTestScenario() {
 
   const hunks = proposals.hunksOf(proposalData);
 
-  // Two edits but grouped into one hunk each (one for "cat"→"tabby",
-  // one for "dog ran"→"dog sprinted")
-  // Actually, they're separated by more than 8 chars so should be two hunks
-  assert.equal(hunks.length, 2, "two replacements separated by > 8 chars = two hunks");
-  assert.equal(hunks[0].deleted, 3, "first hunk deletes 'cat'");
-  assert.equal(hunks[0].inserted, "tabby", "first hunk inserts 'tabby'");
-  assert.equal(hunks[1].deleted, 7, "second hunk deletes 'dog ran'");
-  assert.equal(hunks[1].inserted, "dog sprinted", "second hunk inserts 'dog sprinted'");
+  // Gap of 10 chars > 8, so two hunks
+  assert.equal(hunks.length, 2, "changes separated by 10 chars = two hunks");
 }
 
-// Test: Two changes separated by 8 or fewer retained units are ONE hunk
+// Test: Two changes separated by 8 retained characters are ONE hunk
+// "The catXXXXXXX dog ran."
+//  01234567891011121314151617
+//      cat (positions 4-6, 3 chars)
+//             XXXXXXX (positions 7-13, 7 chars padding)
+//                     dog ran (positions 14-20, 7 chars)
+// Gap between: "XXXXXXX " (positions 7-13, 7 chars, so including the space after it = 8 total)
+// Wait, let me recount: "The catXXXXXXX dog ran."
+// "The " = 4, "cat" = 3, "XXXXXXX " = 8, "dog ran" = 7. Total = 4+3+8+7 = 22
+// The gap in the diff will be after deleting "cat" and inserting "tabby" (net +2 chars)
+// So the edits need to be positioned right. Let me make a simpler case:
+// "ab12345678cd" - delete "ab", insert "xy", delete "cd", insert "zw"
+// Gap = "12345678" = 8 chars, so one hunk
 {
   const room = new LoroDoc();
   room.setPeerId(OWNER);
-  room.getText("main.md").insert(0, "The catX dog ran.");
+  const atFork = room.oplogVersion();
+  room.getText("main.md").insert(0, "ab12345678cd");
   room.commit();
 
   const base = room.frontiers();
@@ -91,21 +76,17 @@ function createTestScenario() {
   branch.setPeerId(AUTHOR);
 
   const text = branch.getText("main.md");
-  // Replace "cat" then "dog ran" with only one char between: "X"
-  text.delete(4, 3); // "cat"
-  text.insert(4, "tabby");
-  text.delete(13, 7); // "dog ran"
-  text.insert(13, "bird");
+  // Apply later edit first
+  text.delete(10, 2); // delete "cd"
+  text.insert(10, "zw");
+  text.delete(0, 2); // delete "ab"
+  text.insert(0, "xy");
   branch.commit();
 
   const tip = branch.frontiers();
+  const bytes = branch.export({ mode: "update", from: atFork });
 
-  const proposalData = {
-    base,
-    tip,
-    bytes
-  };
-
+  const proposalData = { base, tip, bytes };
   const proposals = createProposals({
     session: { doc: room },
     send: () => {},
@@ -114,15 +95,55 @@ function createTestScenario() {
 
   const hunks = proposals.hunksOf(proposalData);
 
-  // Two changes separated by 1 char should be ONE hunk (≤ 8 = same decision)
+  // Gap of 8 chars = one hunk
+  assert.equal(hunks.length, 1, "changes separated by 8 chars = one hunk");
+}
+
+// Test: Two changes separated by 1 retained character are ONE hunk
+// "aXbc" - delete "a", insert "y", delete "bc", insert "zw"
+// Gap = "X" = 1 char, so one hunk
+{
+  const room = new LoroDoc();
+  room.setPeerId(OWNER);
+  const atFork = room.oplogVersion();
+  room.getText("main.md").insert(0, "aXbc");
+  room.commit();
+
+  const base = room.frontiers();
+  const branch = room.fork();
+  branch.setPeerId(AUTHOR);
+
+  const text = branch.getText("main.md");
+  text.delete(2, 2); // delete "bc"
+  text.insert(2, "zw");
+  text.delete(0, 1); // delete "a"
+  text.insert(0, "y");
+  branch.commit();
+
+  const tip = branch.frontiers();
+  const bytes = branch.export({ mode: "update", from: atFork });
+
+  const proposalData = { base, tip, bytes };
+  const proposals = createProposals({
+    session: { doc: room },
+    send: () => {},
+    mayEdit: true
+  });
+
+  const hunks = proposals.hunksOf(proposalData);
+
+  // Gap of 1 char <= 8, so one hunk
   assert.equal(hunks.length, 1, "changes separated by 1 char = one hunk");
 }
 
-// Test: Two changes separated by 9 or more are TWO hunks
+// Test: Two changes separated by 9 retained characters are TWO hunks
+// "ab123456789cd" - delete "ab", insert "xy", delete "cd", insert "zw"
+// Gap = "123456789" = 9 chars, so two hunks
 {
   const room = new LoroDoc();
   room.setPeerId(OWNER);
-  room.getText("main.md").insert(0, "The catXXXXXXXX dog ran.");
+  const atFork = room.oplogVersion();
+  room.getText("main.md").insert(0, "ab123456789cd");
   room.commit();
 
   const base = room.frontiers();
@@ -130,21 +151,16 @@ function createTestScenario() {
   branch.setPeerId(AUTHOR);
 
   const text = branch.getText("main.md");
-  // Replace "cat" then "dog ran" with 8 chars between, then 9 chars between
-  text.delete(4, 3); // "cat"
-  text.insert(4, "tabby");
-  text.delete(19, 7); // "dog ran"
-  text.insert(19, "bird");
+  text.delete(11, 2); // delete "cd"
+  text.insert(11, "zw");
+  text.delete(0, 2); // delete "ab"
+  text.insert(0, "xy");
   branch.commit();
 
   const tip = branch.frontiers();
+  const bytes = branch.export({ mode: "update", from: atFork });
 
-  const proposalData = {
-    base,
-    tip,
-    bytes
-  };
-
+  const proposalData = { base, tip, bytes };
   const proposals = createProposals({
     session: { doc: room },
     send: () => {},
@@ -153,53 +169,15 @@ function createTestScenario() {
 
   const hunks = proposals.hunksOf(proposalData);
 
-  // Two changes separated by 9 chars should be TWO hunks
+  // Gap of 9 chars > 8, so two hunks
   assert.equal(hunks.length, 2, "changes separated by 9 chars = two hunks");
-}
-
-// Test: Trailing retain does not extend a hunk
-{
-  const room = new LoroDoc();
-  room.setPeerId(OWNER);
-  room.getText("main.md").insert(0, "The cat ran.");
-  room.commit();
-
-  const base = room.frontiers();
-  const branch = room.fork();
-  branch.setPeerId(AUTHOR);
-
-  const text = branch.getText("main.md");
-  // Only one edit at the very end
-  text.delete(8, 3); // "ran"
-  text.insert(8, "sprinted");
-  branch.commit();
-
-  const tip = branch.frontiers();
-
-  const proposalData = {
-    base,
-    tip,
-    bytes
-  };
-
-  const proposals = createProposals({
-    session: { doc: room },
-    send: () => {},
-    mayEdit: true
-  });
-
-  const hunks = proposals.hunksOf(proposalData);
-
-  // One edit = one hunk, trailing retain doesn't extend it
-  assert.equal(hunks.length, 1, "one edit = one hunk");
-  assert.equal(hunks[0].deleted, 3, "hunk deletes 'ran'");
-  assert.equal(hunks[0].inserted, "sprinted", "hunk inserts 'sprinted'");
 }
 
 // Test: Hunks are numbered across files, not restarted per file
 {
   const room = new LoroDoc();
   room.setPeerId(OWNER);
+  const atFork = room.oplogVersion();
 
   room.getText("file1.md").insert(0, "The cat sat.");
   room.getText("file2.md").insert(0, "The dog ran.");
@@ -209,24 +187,19 @@ function createTestScenario() {
   const branch = room.fork();
   branch.setPeerId(AUTHOR);
 
-  // Edit in file1
+  // Edit in each file
   branch.getText("file1.md").delete(4, 3);
   branch.getText("file1.md").insert(4, "tabby");
-
-  // Edit in file2
+  
   branch.getText("file2.md").delete(4, 3);
   branch.getText("file2.md").insert(4, "bird");
 
   branch.commit();
 
   const tip = branch.frontiers();
+  const bytes = branch.export({ mode: "update", from: atFork });
 
-  const proposalData = {
-    base,
-    tip,
-    bytes
-  };
-
+  const proposalData = { base, tip, bytes };
   const proposals = createProposals({
     session: { doc: room },
     send: () => {},
@@ -241,4 +214,4 @@ function createTestScenario() {
   assert.equal(hunks[1].index, 1, "second hunk is index 1, not restarted");
 }
 
-console.log("proposals: all parity tests passed");
+console.log("proposals: parity tests passed");

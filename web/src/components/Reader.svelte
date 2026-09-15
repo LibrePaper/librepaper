@@ -901,6 +901,12 @@
   }
 
   function receive(event) {
+    // Route proposal messages to the editor component if it's active
+    if (event.type?.startsWith("proposal-") || (event.type === "error" && event.stale)) {
+      editor?.receiveProposal?.(event);
+      return;
+    }
+
     const pendingSuggestion = event?.request_id && suggestionDecisions.get(event.request_id);
     if (pendingSuggestion && (event.type === "accept" || event.type === "reject")) {
       if (String(event.comment_id) === String(pendingSuggestion.commentId)) {
@@ -3148,6 +3154,7 @@
       {:else if Editor && session?.text}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} editable={mayEdit}
+                  send={collaboration?.sendLive}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; }} />
         {/key}
