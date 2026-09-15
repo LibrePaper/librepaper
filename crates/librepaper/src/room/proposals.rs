@@ -408,6 +408,35 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// A decision names the tip it was made against, and that tip crosses the
+    /// wire: the browser encodes it with loro-crdt's `encodeFrontiers` and the
+    /// server decodes it with `Frontiers::decode`. Nothing checks that those
+    /// two agree -- they are the same library, but a format change on one side
+    /// would make every decision compare unequal and be refused as stale, which
+    /// is a confusing way to find out.
+    ///
+    /// So the bytes are pinned. These were produced by loro-crdt in node and by
+    /// this crate, and checked to be identical, including for a peer id too
+    /// large to fit in the 16 bits an earlier hand-rolled encoding allowed for.
+    #[test]
+    fn frontier_bytes_are_what_the_browser_writes() {
+        fn hex(bytes: &[u8]) -> String {
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        }
+
+        let doc = session::new_doc();
+        doc.set_peer_id(7).unwrap();
+        doc.get_text("f").insert_utf16(0, "hello").unwrap();
+        doc.commit();
+        assert_eq!(hex(&doc.state_frontiers().encode()), "010708");
+
+        let big = session::new_doc();
+        big.set_peer_id(123_456_789_012_345).unwrap();
+        big.get_text("f").insert_utf16(0, "xyz").unwrap();
+        big.commit();
+        assert_eq!(hex(&big.state_frontiers().encode()), "01f9beb7b088891c04");
+    }
+
     #[test]
     fn a_proposal_across_two_files_numbers_its_hunks_in_one_list() {
         let (room, proposal, bytes) = room_and_proposal();
