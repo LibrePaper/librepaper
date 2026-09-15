@@ -18,6 +18,7 @@
   import * as latex from "../lib/latex.js";
   import { parse as parseSynctex, lineAt as synctexLineAt } from "../lib/synctex.js";
   import * as localQuarto from "../lib/companion/client.js";
+  import { companion } from "../lib/companion/status.svelte.js";
   import { basename } from "../lib/file-manager.js";
   import { snapshotDigest } from "../lib/tree-digest.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
@@ -201,7 +202,7 @@
   // that still carry one are ignored.
   let quartoOptions = $state({ profile: null, parameters: {} });
   let quartoBindingId = $state("");
-  let localAppStatus = $state(localQuarto.status());
+  const localAppStatus = $derived(companion.status);
 
   /// Points the local-app pairing at this document and picks up whatever
   /// binding it already remembers for it. A pairing this browser already
@@ -2741,7 +2742,7 @@
 
   $effect(() => {
     markViewed(SLUG);
-    const stopQuartoStatus = localQuarto.subscribe((status) => { localAppStatus = status; });
+    const stopQuartoStatus = companion.watch();
     pendingChat = createPendingChat({
       send: (message) => collaboration?.sendLive(message) || { ok: false },
     });

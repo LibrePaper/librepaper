@@ -15,7 +15,10 @@ const rendering = await read("RenderingSettings.svelte");
 assert.match(registry, /const local = \(\{ format, mayEdit \}\) => \["typst", "markdown", "quarto"\]\.includes\(format\) && mayEdit;/);
 assert.match(registry, /id: "local", says: "Local app", offered: local,/);
 assert.match(local, /import \* as localBridge from "\.\.\/\.\.\/lib\/companion\/client\.js"/);
-assert.match(local, /localBridge\.subscribe\(\(status\) => \(local = status\)\)/);
+// The panel shows the status rather than keeping its own copy of it: the
+// shared module owns that state, and this panel is one of its watchers.
+assert.match(local, /const local = \$derived\(companion\.status\);/);
+assert.match(local, /\$effect\(\(\) => companion\.watch\(\)\);/);
 assert.doesNotMatch(local, /latex\.local\.(status|address|connect|disconnect|retry|capabilities)/);
 assert.match(local, /\["quarto", "typst", "markdown"\]\.includes\(sourceFormat\)/);
 assert.match(local, /placeholder=\{quarto \? "main\.qmd" : sourceFormat === "typst" \? "main\.typ" : "main\.md"\}/);

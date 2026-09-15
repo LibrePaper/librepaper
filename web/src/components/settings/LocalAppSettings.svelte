@@ -4,13 +4,14 @@
   // an installed TeX, and Quarto, which uses it for every local render.
   import SettingRow from "./SettingRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
+  import { companion } from "../../lib/companion/status.svelte.js";
 
   let { sourceFormat = "", main = "", bindingId = "", onbindingid } = $props();
   const quarto = $derived(sourceFormat === "quarto");
   const projectBinding = $derived(["quarto", "typst", "markdown"].includes(sourceFormat));
 
-  let local = $state(localBridge.status());
-  $effect(() => localBridge.subscribe((status) => (local = status)));
+  const local = $derived(companion.status);
+  $effect(() => companion.watch());
 
   let address = $state(localBridge.address());
   let pairingCode = $state("");

@@ -1,12 +1,13 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
+  import { companion } from "../../lib/companion/status.svelte.js";
   import { buildersFor, capabilityFor, supportsOperation } from "../../lib/build-catalog.js";
   import { update } from "../../lib/build-preferences.js";
 
   let { format = "", documentId = "", userId = "anonymous", preferences = {}, onpreferences } = $props();
-  let local = $state(localBridge.status());
-  $effect(() => localBridge.subscribe((status) => (local = status)));
+  const local = $derived(companion.status);
+  $effect(() => companion.watch());
   const builders = $derived(buildersFor(format));
   const localBuilders = $derived(builders.filter((entry) => entry.backend.includes("local")));
   const browserBuilders = $derived(builders.filter((entry) => entry.backend.includes("browser")));
