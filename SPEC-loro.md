@@ -427,96 +427,46 @@ the dependency list in this phase, not later.
 round-trip rather than cross-implementation agreement; the suite passes; and
 `yrs` appears nowhere in the tree, not in a manifest and not in a comment.
 
-### Phase 2 — Editor binding — **not done; two runtime faults found**
+### Phase 2 — Editor binding — **done, by forking the binding**
 
-Replace `yCollab` with `loro-codemirror` in `components/Editor.svelte`, and
-write the IndexedDB persistence that replaces `y-indexeddb` — no such package
-exists for Loro, and contracts 1 and 7 rest on it. `MergeEditor.svelte`
-follows.
+`yCollab` is replaced in `components/Editor.svelte`, `MergeEditor.svelte`
+follows it, and the IndexedDB persistence that `y-indexeddb` used to provide —
+no such package exists for Loro, and contracts 1 and 7 rest on it — is written
+here.
 
-The current integration reaches into `ySyncFacet`, `ySyncAnnotation` and
-`yUndoManagerKeymap`, including a Vim `u` remap through `vimUndoKeymap[0].run`.
-`loro-codemirror` is younger and has sat at 0.3.3 since October 2025, so some
-of that reach has no equivalent.
+The binding itself cost less than feared: `loroSyncAnnotation` stands in for
+`ySyncAnnotation`, and `ySyncFacet` needed no equivalent because the component
+already holds the document rather than fetching it from editor state. What it
+cost is named: `UndoManager` takes only the text, so it cannot be handed the
+tracking state the old one was; and `MergeEditor` now needs the document and
+the presence store passed in.
 
-*Gate: NOT passed, and it was wrongly marked passed before.* Everything the
-unit tests and the offline check could see was fine, and neither of them mounts
-the editor. A browser test does, and it does not come up:
+*Gate: passed, on the second attempt.* It was wrongly marked passed once
+before. Everything the unit tests and the offline check could see was fine, and
+neither of them mounts the editor; a browser test does, and it did not come up.
+That is the lesson worth keeping from this phase — the gate asks that cursors,
+remote edits, undo grouping and multi-file switching behave as today, and
+nothing that ran was capable of telling us whether they did. A suite that is
+green while the editor cannot mount is measuring the wrong thing.
 
-- `new UndoManager(text)` — the binding takes `(LoroDoc, UndoConfig)`, so this
-  was a type error reported as a failure to mount, with nothing said about
-  which argument was wrong. Fixed; an undo manager belongs to a document rather
-  than to one of its files, which is also why keying them per text was wrong.
-- `session.doc.transact(...)` survived in the editor's own browser test. Loro
-  has no transaction wrapper; the commit boundary is the transaction.
-- Past both, a remote edit arriving during the test raises `Invalid position 15
-  in document of length 10` from CodeMirror. **Unresolved.** It is the sync
-  plugin applying a position against a document that has moved, which is either
-  a real fault in how the editor is wired or a test that edits before the view
-  has caught up. Until that is known, the binding is not shown to work.
+**The fork.** `loro-codemirror` 0.3.3 cannot keep several editors on one
+document in step, and the fault is inside a private loop, so no caller can work
+around it. A LibrePaper document is a map of files, so this is not an edge case
+here — it is every update. The package has not moved since October 2025 while
+its ProseMirror sibling has, so §10's "adopted as-is" met something it could
+not give up, and the package now lives at `web/vendor/loro-codemirror/` with
+upstream's MIT licence beside it. Its README records the three faults and the
+fix; briefly, the import loop `return`s where it should `continue` and
+dispatches inside the loop rather than once for the batch, and the undo plugin
+repeats the first of those.
 
-### 2.1 The binding is where this now stands
-
-`loro-codemirror` 0.3.3 cannot keep several editors on one document in step,
-and the fault is in the package rather than in how it is called. Its sync
-plugin, on an imported change (`dist/sync.js`):
-
-```js
-for (let { diff, target } of e.events) {
-    const text = this.getTextFromDoc(this.doc);
-    if (diff.type !== "text") return;      // not `continue`
-    if (target !== text.id) return;        // not `continue`
-    ...
-    this.view.dispatch({ changes, ... });  // inside the loop
-}
-```
-
-Three problems, in order of how much they matter:
-
-1. **`return` where `continue` belongs.** An import that touches anything other
-   than this editor's own text abandons the whole batch. Our documents are a
-   map of files, so almost every real update carries a map event alongside the
-   text one — and the text change is dropped.
-2. **The dispatch is inside the loop**, while `changes` and `pos` are declared
-   outside it. Two events for one text dispatch the accumulated list twice, so
-   the second application lands past the end of the document. That is the
-   `Invalid position 22 in document of length 17` the editor's browser test
-   still fails with.
-3. **`getTextFromDoc` is consulted per event but the plugin is not rebuilt when
-   the editor changes file**, so a view that has switched files can hold a
-   closure over the text it used to show.
-
-None of this is reachable from outside the package: the loop is private to the
-plugin. So §10's "adopted as-is, and the editor gives up what it cannot do" has
-met something it cannot give up — several editors on one document, in step, is
-the feature.
-
-The choice is the one §6 Phase 2's original gate named and that §10 tried to
-avoid: patch it and upstream, or fork it deliberately. It should be taken with
-the knowledge that the package has not moved since October 2025 while its
-ProseMirror sibling has, so an upstream fix may be slow to arrive even if it is
-accepted.
-
-The lesson is worth keeping: the gate says cursors, remote edits, undo grouping
-and multi-file switching behave as today, and nothing that ran was capable of
-telling us whether they did. A suite that is green while the editor cannot
-mount is measuring the wrong thing.
-
-*Once this is fixed, the rest of the gate:* the binding turned out to cost less than feared:
-`loroSyncAnnotation` stands in for `ySyncAnnotation`, and `ySyncFacet` needed no
-equivalent because the component already holds the document rather than
-fetching it from editor state. What it does cost is named: `UndoManager` takes
-only the text, so it cannot be handed the tracking state the old one was; and
-`MergeEditor` now needs the document and the presence store passed in.
-
-Offline edits do survive a reload, and that is now checked in a real browser
-rather than argued from a unit test:
-`web/tests/browser/offline-reload-browser.mjs` types into a document, reloads,
-and reads the words back. The room it runs against never sends any document
-state, so there is genuinely nothing to receive and the text on the page can
-only have come from IndexedDB -- a test that let a server answer would pass
-whether or not persistence worked. It was checked to fail, with the local cache
-turned off, before being believed.
+Offline edits survive a reload, and that is checked in a real browser rather
+than argued from a unit test: `web/tests/browser/offline-reload-browser.mjs`
+types into a document, reloads, and reads the words back. The room it runs
+against never sends any document state, so there is genuinely nothing to
+receive and the text on the page can only have come from IndexedDB — a test
+that let a server answer would pass whether or not persistence worked. It was
+checked to fail, with the local cache turned off, before being believed.
 
 ### Phase 3 — Proposal model — **done**
 
@@ -746,8 +696,8 @@ means there is no unreviewed work to preserve.
 changes cost nothing and there is no reason to pay for a migration window.
 `yrs`, `yjs`, `y-protocols`, `y-codemirror.next` and `y-indexeddb` are removed
 in the same change that adds Loro. No feature flag gates the proposal model, no
-adapter translates between the two encodings, and no code path survives to read
-a `yrs` base outside the one-shot migration in Phase 5. This is what §6's phases
+adapter translates between the two encodings, and no code path survives to read a
+`yrs` base at all — Phase 5 drops the bases rather than migrating them. This is what §6's phases
 are now sequenced against, and it is why §5 renames the wire messages
 immediately rather than sweeping later.
 
@@ -763,12 +713,15 @@ need not walk through it.
 exist. Loro exports and imports update blobs, so the shim is small, and
 contracts 1 and 7 are not worth regressing in the meantime.
 
-**`loro-codemirror` is adopted as-is, and the editor gives up what it cannot
-do.** Phase 1's gate is relaxed accordingly: rather than requiring that every
-current behaviour survive without patching the binding, it requires that what
-the binding cannot support is *deliberately dropped and named*, not silently
-lost. The reach into `ySyncFacet`, `ySyncAnnotation` and `yUndoManagerKeymap` —
-including the Vim `u` remap — is where that bill comes due.
+**`loro-codemirror` is forked, not adopted as-is.** The decision was first taken
+the other way, with Phase 2's gate relaxed to require only that what the binding
+cannot support be *deliberately dropped and named* rather than silently lost.
+That held until the thing it could not support turned out to be several editors
+on one document, in step — which is the feature, not a behaviour to drop. The
+fork lives at `web/vendor/loro-codemirror/`; Phase 2 records why. What the
+binding genuinely costs, rather than what a bug cost, is the reach into
+`ySyncFacet`, `ySyncAnnotation` and `yUndoManagerKeymap`, including the Vim `u`
+remap.
 
 ## 11. Phase 0 results
 

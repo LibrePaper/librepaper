@@ -26,13 +26,13 @@ The production mutation paths already converge at useful boundaries:
 
 - Browser and filesystem peers make local CRDT transactions. The server admits
   every peer-authored source update through `Room::receive_update`.
-- Native source operations use `document/session.rs`.
+- Native source operations use `document/session/`.
 - HTTP and WebSocket annotation operations share `Message::into_command` and
   `Room::apply_command_with_actor`.
 - Restore and source replacement share stable-identity reconciliation through
   `session::restore`.
 - Agent edits, suggestion acceptance, tracked-change decisions, and
-  restore ultimately mutate yrs documents through `document/session.rs` and
+  restore ultimately mutate Loro documents through `document/session/` and
   the room's checked-edit path.
 - Rust edit paths share the `wasm_helpers::text::Edit` representation and its
   UTF-16 coordinate convention.
@@ -40,8 +40,8 @@ The production mutation paths already converge at useful boundaries:
 The detailed inventory is in [`docs/mutation-paths.md`](docs/mutation-paths.md).
 
 The remaining browser/server similarities are mostly compatibility and trust
-boundaries, not redundant application engines. The browser uses Yjs and
-CodeMirror for responsive local transactions. The server uses yrs to validate,
+boundaries, not redundant application engines. The browser uses Loro and
+CodeMirror for responsive local transactions. The server uses the same Loro core to validate,
 repair, persist, and authorize state. Both must understand the CRDT schema.
 Both must perform some path checks: the browser for immediate feedback and the
 server because clients are untrusted and can be obsolete.
@@ -63,7 +63,7 @@ not one implementation of every operation.
 Every mutation belongs to one of three classes:
 
 1. **Local CRDT transaction.** A browser or filesystem peer changes local
-   Yjs/yrs state. It becomes authoritative only after server admission and
+   Loro state. It becomes authoritative only after server admission and
    durable acknowledgement.
 2. **Authoritative command.** The server checks current permissions, limits,
    identity, and conflicts before committing the operation.
@@ -84,7 +84,7 @@ state as authority.
 Keep one authoritative implementation for:
 
 - peer update admission and structural repair;
-- revision authorship and legal state transitions;
+- proposal authorship and decisions;
 - annotation validation and permissions;
 - guarded source-edit conflicts;
 - stable file identity during restore and source replacement;
@@ -249,8 +249,9 @@ a prerequisite for decomposing UI workflows or converging result vocabulary.
 Use tests appropriate to each boundary:
 
 - Browser controller tests assert workflow behavior without the full reader.
-- Yjs/yrs interoperability tests assert the shared encoded document contract.
-- Server tests assert hostile clients cannot bypass path, revision, quota, or
+- Fixtures pin the CRDT map names and the frontier bytes both hosts exchange,
+  since browser and server reach one Loro core through two bindings.
+- Server tests assert hostile clients cannot bypass path, proposal, quota, or
   permission checks.
 - Mutation-path integration tests assert persistence precedes acknowledgement
   and authoritative compound operations commit or roll back coherently.
@@ -277,8 +278,8 @@ before adding another abstraction.
 ## Expected outcome
 
 LibrePaper remains a modular monolith with a collaboration-first editor. The
-browser retains native Yjs and CodeMirror integration. The Rust server retains
-native yrs validation and authoritative document responsibilities. Snapshots
+browser retains native Loro and CodeMirror integration. The Rust server retains
+native Loro validation and authoritative document responsibilities. Snapshots
 remain explicit boundaries for history, rendering, automation candidates, and
 publication.
 

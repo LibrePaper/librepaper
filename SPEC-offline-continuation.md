@@ -39,8 +39,9 @@ ordinary source-and-asset export. A custom archive format is not required.
 
 ## Current foundations and gaps
 
-`web/src/lib/collab.js` already uses Yjs, IndexedDB persistence, and server
-acknowledgements. `web/src/lib/reader/collaboration.js` owns the room lifetime
+`web/src/lib/collab.js` already uses Loro, IndexedDB persistence, and server
+acknowledgements. The persistence layer is ours -- `loro-indexeddb` does not
+exist -- so nothing about it is inherited from a package. `web/src/lib/reader/collaboration.js` owns the room lifetime
 and checks metadata on reconnection. `collab-cache.js` includes document
 creation identity in cache names. Assets are referenced by digest, with their
 bytes held outside the CRDT.
@@ -125,7 +126,7 @@ session. It coordinates hydration, persistence, connection, reconciliation,
 and recovery independently of `Reader.svelte`. The reader renders state and
 invokes operations; it does not own a second copy of mutable source.
 
-Keep browser Yjs and server yrs. Reuse existing tree, asset, diagnostic, and
+Keep one Loro core on both sides. Reuse existing tree, asset, diagnostic, and
 render-result contracts. Add only the offline availability manifest and storage
 metadata required by this new lifecycle; do not invent another source model.
 
@@ -192,7 +193,8 @@ for validating browser behavior.
 ## Acceptance and release evidence
 
 Automated tests must exercise actual browser persistence and offline startup,
-in addition to controller and Yjs/yrs interoperability tests:
+in addition to controller tests and the fixtures that pin the CRDT schema across the two
+bindings:
 
 - Prepare a project, close all tabs, disable the network, restart the browser,
   open from the offline start page, edit, and restart again.

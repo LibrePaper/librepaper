@@ -20,7 +20,7 @@ directory before renaming it to a destination that must not exist.
 
 The following representations still have distinct responsibilities:
 
-- The live Yjs session is the collaborative and offline-compatible editing
+- The live Loro session is the collaborative and offline-compatible editing
   state.
 - A history tree identifies a recoverable source version and its immutable
   assets.

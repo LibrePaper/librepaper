@@ -57,9 +57,9 @@ status and LibrePaper synchronization status remain distinct.
 
 ## Architecture and ownership
 
-Use the existing encoded document schema and room admission path. Yjs is the
-initial client implementation to evaluate in the extension host; the Rust server
-retains yrs and authoritative validation. Do not introduce a new editing engine
+Use the existing encoded document schema and room admission path. The extension
+host runs the same Loro build the browser does; the Rust server links the same
+core natively and retains authoritative validation. Do not introduce a new editing engine
 or a snapshot-upload path for each save.
 
 Separate three owners:
@@ -208,7 +208,7 @@ reliable, retain the explicit file import/comparison workflow as the fallback.
 
 ## Required verification
 
-Use shared Yjs/yrs fixtures and session tests plus real VS Code integration
+Use shared Loro fixtures and session tests plus real VS Code integration
 tests; a mock editor alone cannot validate event ordering or undo behavior.
 
 - Concurrent inserts/deletes, non-BMP characters, mixed line endings, multi-cursor

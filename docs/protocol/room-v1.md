@@ -56,7 +56,7 @@ include a UUID-shaped `temp_id`, kept unchanged across retries.
 | `reject` | `comment_id` | — |
 
 Readers and commenters connect for annotation events only. They must not send
-`y-open`, `y-sync`, or source updates; the server refuses source synchronization
+`doc-open`, `doc-sync`, or source updates; the server refuses source synchronization
 and sends source-bearing updates only to editor peers. Source suggestions and
 source selectors are private to editors.
 
@@ -118,14 +118,14 @@ recorded outcome with `noop: true`.
 
 ## Checkpoints
 
-Send the existing `y-checkpoint` message on `/ws/{slug}`:
+Send the `doc-checkpoint` message on `/ws/{slug}`:
 
-    {"type": "y-checkpoint", "why": "sync", "request_id": "checkpoint-123"}
+    {"type": "doc-checkpoint", "why": "sync", "request_id": "checkpoint-123"}
 
 An editor receives either a durable checkpoint:
 
     {
-      "type": "y-checkpoint",
+      "type": "doc-checkpoint",
       "sha": "checkpoint-tree-sha",
       "request_id": "checkpoint-123",
       "durable": true,
@@ -147,20 +147,26 @@ with a fresh snapshot when recovering from a lost response.
 ## WebSocket messages
 
 Automation peers connect to /ws/{slug} with the same key header and automation
-marker. The existing Yjs messages remain the synchronization transport:
+marker. The document messages carry the synchronization transport:
 
-- `y-open` or `y-sync` sends a base64-encoded Yjs state `vector` and receives
-  `y-state` with `update`, `vector`, and peer `count`. Large state is returned
-  as `ref` instead of `update`: fetch that same-origin URL with the document
-  credentials, apply its bytes, then send `y-sync` to catch up.
-- `y-update` sends a base64-encoded Yjs v1 `update` and an increasing `seq`
-  scoped to the socket. It receives `y-ack` with the durable `seq` only after
-  persistence. Acknowledgements through a sequence cover earlier updates on
-  that socket. Incoming `y-update` frames from other peers must also be
+- `doc-open` or `doc-sync` sends a base64-encoded Loro version `vector` and
+  receives `doc-state` with `update`, `vector`, and peer `count`. Large state
+  is returned as `ref` instead of `update`: fetch that same-origin URL with the document
+  credentials, apply its bytes, then send `doc-sync` to catch up.
+- `doc-update` sends a base64-encoded Loro `update` and an increasing `seq`
+  scoped to the socket. It receives `doc-ack` with the durable `seq` only after
+  persistence. An update too large for one frame is split across
+  `doc-update-start`, `doc-update-chunk` and `doc-update-end` under one `seq`.
+  Acknowledgements through a sequence cover earlier updates on that socket. Incoming `doc-update` frames from other peers must also be
   applied locally.
-- y-checkpoint receives the checkpoint result shapes above.
-- comment, reply, resolve, delete, anchor, refine, accept, and reject receive
-  the annotation result shapes above.
+- `doc-checkpoint` receives the checkpoint result shapes above.
+- comment, reply, resolve, delete, anchor, and refine receive the annotation
+  result shapes above.
+- A change awaiting an accept or reject is a proposal branch:
+  `proposal-open`, `proposal-update`, `proposal-suggest`, `proposal-list` and
+  `proposal-decide` are answered by `proposal-opened`, `proposal-updated`,
+  `proposals` and `proposal-decided`. A decision names a `hunk`; the room
+  document moves only when the proposal resolves.
 
 Every requested room operation must carry a request_id when the caller needs
 correlation. Errors are explicit and are never silently dropped for an
