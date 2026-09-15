@@ -19,7 +19,7 @@ writeFileSync(entry, `
 import { tick } from ${imp("node_modules/svelte/src/index-client.js")};
 import { createClassComponent } from ${imp("node_modules/svelte/src/legacy/legacy-client.js")};
 import { EditorView } from ${imp("node_modules/@codemirror/view/dist/index.js")};
-import { undo as loroUndo } from ${imp("node_modules/loro-codemirror/dist/undo.js")};
+import { undo as loroUndo } from ${imp("vendor/loro-codemirror/undo.ts")};
 import Editor from ${imp("src/components/Editor.svelte")};
 import InsertMenu from ${imp("src/components/InsertMenu.svelte")};
 import { join as joinSession } from ${imp("src/lib/collab.js")};

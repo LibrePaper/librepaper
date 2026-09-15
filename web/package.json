@@ -59,7 +59,6 @@
     "@skeletonlabs/skeleton-svelte": "5",
     "@tailwindcss/vite": "4",
     "katex": "^0.18.7",
-    "loro-codemirror": "0.3.3",
     "loro-crdt": "1.16.1",
     "pdfjs-dist": "5.4.149",
     "svelte": "^5.57.0",

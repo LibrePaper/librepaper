@@ -6,7 +6,7 @@
   import { EditorView, lineNumbers, keymap } from "@codemirror/view";
   import { defaultKeymap, indentWithTab } from "@codemirror/commands";
   import { MergeView } from "@codemirror/merge";
-  import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "loro-codemirror";
+  import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "../../vendor/loro-codemirror/index.ts";
   import { UndoManager } from "loro-crdt";
   import IconButton from "./IconButton.svelte";
 

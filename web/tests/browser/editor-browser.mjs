@@ -26,7 +26,7 @@ const source = `
 import { LoroDoc } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
-import { undoManagerStateField } from ${JSON.stringify(join(root, "web/node_modules/loro-codemirror/dist/undo.js"))};
+import { undoManagerStateField } from ${JSON.stringify(join(root, "web/vendor/loro-codemirror/undo.ts"))};
 // The binding offers whether an undo is available, not how many are stacked
 // up. What these checks are really about is whether the history survived, so
 // they ask that instead.
