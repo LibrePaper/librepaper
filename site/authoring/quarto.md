@@ -15,10 +15,13 @@ The Tools menu offers exactly one active preview mode at a time, remembered
 per document (default: **Quarto preview**):
 
 - **Markdown preview** renders the source as Markdown in the browser — front
-  matter dropped, `:::` divs and code chunks shown verbatim — and never runs
-  code.
+  matter dropped and code chunks shown verbatim — and never runs code.
+  Quarto fenced divs such as callouts, columns, and tabsets are shown as
+  whitespace-preserving code blocks rather than partially interpreted HTML;
+  unsupported shortcodes are treated the same way.
 - **Quarto preview** runs the document with Quarto on your own computer,
-  through the local app.
+  through the local app. Document previews may produce HTML, RevealJS, or
+  PDF; DOCX is available only as an export.
 
 Rendering runs on your own computer, with Quarto and R or Python installed
 there. Enable local rendering from the preview banner, or start the companion
@@ -39,7 +42,16 @@ with a **Connect** button in the banner. These run the document's code,
 filters, and scripts on your machine, so allow only sites you trust. The
 pairing code the app prints still works as a fallback under Tools, **Local
 app settings…**. Nothing rendered is ever uploaded: the server holds only the
-`.qmd` source and its declared shared resources.
+`.qmd` source and its declared shared resources. Website and book project
+renders are not supported; LibrePaper previews one document at a time.
+
+Executable previews and renders require operating-system confinement:
+Bubblewrap on Linux or `sandbox-exec` on macOS. LibrePaper refuses to run
+Quarto code when confinement is unavailable. The renderer can see the
+connected project or synchronized preview workspace, but paths outside that
+scope are hidden and network access is disabled. For an isolated one-shot
+render, additional local data must be named explicitly as a project-relative
+input; only those inputs are copied into the temporary workspace.
 
 When `librepaper admin serve` runs on the machine you browse from, it runs the
 local app itself: nothing to start. Pass `--no-local` to turn that off.

@@ -51,6 +51,10 @@ export const nav = [
     ],
   },
   {
+    title: "Privacy",
+    pages: [{ path: "privacy", label: "Privacy" }],
+  },
+  {
     title: "Internals",
     pages: [{ path: "internals", label: "Internals" }],
   },
