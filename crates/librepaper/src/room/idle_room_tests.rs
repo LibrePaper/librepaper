@@ -189,7 +189,7 @@ async fn a_checkpoint_records_the_paths_it_moved() {
     }
     let sha = room.checkpoint("quiet", "Owner").await.unwrap().unwrap();
     let point = room.checkpoint_by_sha(&sha).await.unwrap().unwrap();
-    assert_eq!(point.changed, vec!["references.bib".to_string()]);
+    assert_eq!(point.changed, Some(vec!["references.bib".to_string()]));
     assert!(
         !point.tree_sha.is_empty(),
         "a checkpoint must name the tree it holds"

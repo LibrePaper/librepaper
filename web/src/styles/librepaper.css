@@ -363,6 +363,15 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 .timeline-who {
   color: var(--color-surface-700-300);
 }
+/* What the version moved, under who moved it: the row's second line, and the
+   reason a column of identical-looking autosaves can be told apart. */
+.timeline-moved {
+  color: var(--panel-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* A name is the one thing in the column somebody wrote on purpose. */
 .timeline-named .timeline-what strong {
   color: var(--color-surface-950-50);

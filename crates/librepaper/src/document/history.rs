@@ -56,8 +56,13 @@ pub struct Checkpoint {
     pub tree: bool,
     /// The paths whose digest differs from the parent's, so the timeline can
     /// say what moved without opening two trees.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub changed: Vec<String>,
+    ///
+    /// `None` is "never asked" and an empty list is "asked, and no file
+    /// moved". They are different answers and the timeline says different
+    /// things about them, so they must not collapse into one value on the
+    /// wire: `None` is absent from the JSON, `Some(vec![])` is `[]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<Vec<String>>,
     /// Catalogue sequence used as a stable tie breaker during retention.
     #[serde(default)]
     pub seq: i64,
@@ -277,6 +282,40 @@ mod tests {
         assert_eq!(
             before.changed_from(&after),
             vec!["sections/one.tex".to_string()]
+        );
+    }
+
+    /// "No file moved" and "nobody recorded what moved" are different facts
+    /// and the timeline says different things about them, so the wire format
+    /// has to keep them apart. An absent `changed` is the unknown; `[]` is
+    /// the answer that no file differs -- which is what a version whose main
+    /// file or compile settings changed looks like.
+    #[test]
+    fn an_unanswered_change_list_is_not_an_empty_one() {
+        let unknown = Checkpoint {
+            changed: None,
+            ..Default::default()
+        };
+        let nothing = Checkpoint {
+            changed: Some(Vec::new()),
+            ..Default::default()
+        };
+        let encoded = serde_json::to_value(&unknown).unwrap();
+        assert!(
+            encoded.get("changed").is_none(),
+            "an unrecorded change list says nothing on the wire"
+        );
+        assert_eq!(
+            serde_json::to_value(&nothing).unwrap()["changed"],
+            serde_json::json!([]),
+            "a version that moved no file says so"
+        );
+        assert_eq!(
+            serde_json::from_value::<Checkpoint>(encoded)
+                .unwrap()
+                .changed,
+            None,
+            "and the absence survives the round trip as an absence"
         );
     }
 

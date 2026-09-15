@@ -29,15 +29,27 @@ const otherFilePoint = {
   why: "quiet", label: "", changed: ["references.bib"], parent: points[4].sha,
 };
 
+// The three answers the manifest gives about what a version moved, which the
+// row has to tell apart: named paths, an answered "no file", and no answer at
+// all. The last is every version written before the catalogue recorded one.
+const movedPoints = [
+  { sha: "a".repeat(64), at: "2026-09-11T10:00:00Z", by: "Vincent", why: "quiet", label: "",
+    changed: ["chapters/intro.tex", "references.bib", "figures/plot.png"] },
+  { sha: "b".repeat(64), at: "2026-09-11T10:01:00Z", by: "Vincent", why: "quiet", label: "",
+    changed: [] },
+  { sha: "c".repeat(64), at: "2026-09-11T10:02:00Z", by: "Vincent", why: "quiet", label: "" },
+];
+
 const source = `
 import History from ${JSON.stringify(join(root, "web/src/components/reader/History.svelte"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 const points = ${JSON.stringify(points)};
 const otherFilePoint = ${JSON.stringify(otherFilePoint)};
+const movedPoints = ${JSON.stringify(movedPoints)};
 const events = [];
 const component = createClassComponent({ component: History, target: document.body, props: {
-  checkpoints: [...points, otherFilePoint], canEdit: true, currentLabel: "",
+  checkpoints: [...points, otherFilePoint, ...movedPoints], canEdit: true, currentLabel: "",
   onview: (sha) => events.push(["view", sha]),
   onname: (sha, label) => events.push(["name", sha, label]),
 } });
@@ -49,8 +61,19 @@ window.historyPanelCheck = async () => {
   // moved references.bib is still a version of this project.
   check(document.querySelector('li[data-sha="' + otherFilePoint.sha + '"]'),
     'the timeline is project-wide');
-  check(document.querySelectorAll('li[data-sha]').length === points.length + 1,
+  check(document.querySelectorAll('li[data-sha]').length === points.length + 1 + movedPoints.length,
     'every version is a row of its own');
+  // What a version moved, on the row, so that a column of autosaves is not a
+  // column of identical rows. Three answers, told apart.
+  const movedText = (sha) => document.querySelector('li[data-sha="' + sha + '"] .timeline-moved')?.textContent ?? null;
+  check(movedText(movedPoints[0].sha) === '3 files',
+    'a version that moved several files counts them');
+  check(movedText(movedPoints[1].sha) === 'No files changed',
+    'a version that moved no file says so, rather than leaving the row blank');
+  check(movedText(movedPoints[2].sha) === null,
+    'a version that never recorded what it moved claims nothing');
+  check(movedText(otherFilePoint.sha) === 'references.bib',
+    'one moved file is named, without its directory');
   check(!document.querySelector('.timeline-folded'),
     'no row stands for several versions');
   const namedRow = document.querySelector('li[data-sha="' + points[4].sha + '"]');

@@ -413,9 +413,11 @@ pub(crate) fn checkpoint_from_version(v: &crate::storage::postgres::VersionRecor
         why: v.reason.clone(),
         source_format: String::new(),
         size: v.logical_bytes,
-        // Empty means either "moved nothing" or "never asked"; the timeline
-        // reads both the same way, as no evidence to scope this row by.
-        changed: v.changed_paths.clone().unwrap_or_default(),
+        // Carried through as it was stored. `None` is a row written before
+        // the column existed, or one whose change list was too long to be
+        // worth keeping; an empty list is a version that moved no file, which
+        // is a thing the timeline can say out loud.
+        changed: v.changed_paths.clone(),
         label: v.label.clone().unwrap_or_default(),
         seq: v.sequence,
         tree: true,

@@ -107,6 +107,22 @@
     if (!point?.by || point.by === "system") return "Autosaved";
     return uuid.test(point.by) ? "Unknown editor" : point.by;
   };
+  // What a version moved. The manifest answers this in three ways and they
+  // are three different things: a list of paths, an empty list, and no answer
+  // at all. No answer -- every row written before the catalogue recorded one,
+  // and any whose list was too long to be worth keeping -- says nothing here,
+  // because a row that cannot account for itself should not claim to. An
+  // empty list is an answer: no file differs from the version before, so what
+  // this one holds differently is outside the files, which today means the
+  // main file or the engine the document compiles under.
+  const moved = (point) => {
+    const paths = point?.changed;
+    if (!Array.isArray(paths)) return "";
+    if (paths.length === 0) return "No files changed";
+    if (paths.length <= 2) return paths.map((path) => path.split("/").pop()).join(", ");
+    return `${paths.length} files`;
+  };
+
   // A name already makes its checkpoint prominent through bold type. Reserve
   // the marker for notable unnamed events, so a named row is not emphasized
   // twice for the same reason.
@@ -226,6 +242,7 @@
            over the list: what is being named is the row under the cursor. -->
       {@render nameField("sent to the journal", "Name this point")}
     {:else}
+      {@const what = moved(point)}
       <button
         type="button"
         class="timeline-point"
@@ -240,6 +257,7 @@
         <span class="timeline-what">
           {#if point.label}<strong>{point.label}</strong>{/if}
           {#if actor(point)}<span class="timeline-who">{actor(point)}{#if said(point)} · {said(point)}{/if}</span>{/if}
+          {#if what}<span class="timeline-moved">{what}</span>{/if}
         </span>
       </button>
       {#if viewing === point.sha}
