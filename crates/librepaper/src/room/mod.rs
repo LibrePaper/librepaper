@@ -971,17 +971,14 @@ impl Room {
     where
         E: From<WriteError>,
     {
-        let before = session::encode_state(doc);
         let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-        let staging = before
-            .len()
-            .saturating_add(self.config.max_document)
-            .saturating_add(4096)
-            .min(ceiling);
-        let _ = staging;
+        // A fork already carries the document's history, so the edit is tried on
+        // one directly. What stood here encoded the whole document and imported
+        // it back into the fork -- a full-history encode on every edit, to
+        // arrive at the state the fork was already in. It also computed a
+        // staging bound and threw it away, which is what was left of the
+        // speculative sizing this no longer does (§9).
         let candidate = doc.fork();
-        session::apply_update(&candidate, &before)
-            .map_err(|error| E::from(WriteError::Storage(error)))?;
         let value = edit(&candidate)?;
         let bytes = session::encode_state(&candidate).len();
         if bytes > ceiling {

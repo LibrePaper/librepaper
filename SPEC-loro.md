@@ -709,7 +709,8 @@ is worth knowing before trusting a number out of a harness like this one.
 
 1. ~~Land the measurement harness under `tools/`~~ -- done, and §7.4 records
    where it disagrees with §7.2.
-2. Rename the `y-*` wire messages (§5).
+2. ~~Rename the `y-*` wire messages~~ -- done with the substrate change rather
+   than swept later, since a hard cutover made them one change anyway.
 3. Evaluate `LoroTree` to collapse `files` + `paths`.
 4. Reconsider checkpoint density now that contract 6 makes every intermediate
    state reachable; archives may be needed less densely.

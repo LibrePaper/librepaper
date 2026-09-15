@@ -26,7 +26,7 @@ const source = `
 import { LoroDoc } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import { EditorView } from ${JSON.stringify(join(root, "web/node_modules/@codemirror/view/dist/index.js"))};
-import { undoManagerStateField } from ${JSON.stringify(join(root, "web/node_modules/loro-codemirror/dist/undo.js"))};
+import { undoManagerStateField } from ${JSON.stringify(join(root, "web/vendor/loro-codemirror/undo.ts"))};
 // The binding offers whether an undo is available, not how many are stacked
 // up. What these checks are really about is whether the history survived, so
 // they ask that instead.
@@ -99,13 +99,18 @@ window.remoteUndoCheck = async () => {
   const textId = value.addText("undo.md", "alpha");
   const text = value.textOf(textId);
   value.setMain(textId);
+  // Its own host, so this scenario finds its own editor. Counting editors in
+  // the body means every scenario that mounted earlier and did not tidy up
+  // shifts the index, and the one found belongs to a different document.
+  const host = document.createElement("section");
+  document.body.append(host);
   const localComponent = createClassComponent({
     component: Editor,
-    target: document.body,
+    target: host,
     props: { session: value, format: "markdown", file: textId },
   });
   await tick();
-  const view = EditorView.findFromDOM(document.querySelectorAll(".cm-editor")[1]);
+  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
   fromAPeer(value.doc, (peer) => peer.getMap("files").get(textId).insert(0, "REMOTE "));
   await tick();
   view.focus();
@@ -115,7 +120,11 @@ window.remoteUndoCheck = async () => {
   press("z", { ctrlKey: true });
   await tick();
   const remoteOnly = text.toString();
-  view.dispatch({ changes: { from: text.length, insert: "LOCAL" } });
+  // A dispatch into a view is in the view's coordinates. Reaching for the
+  // document's length instead only worked while the two were kept in exact
+  // step, which is an assumption about the binding rather than about the
+  // editor.
+  view.dispatch({ changes: { from: view.state.doc.length, insert: "LOCAL" } });
   press("z", { ctrlKey: true });
   await tick();
   const localUndone = text.toString();
@@ -154,17 +163,19 @@ window.vimUndoCheck = async () => {
   const textId = value.addText("vim-undo.md", "alpha");
   const text = value.textOf(textId);
   value.setMain(textId);
+  const host = document.createElement("section");
+  document.body.append(host);
   const vimComponent = createClassComponent({
     component: Editor,
-    target: document.body,
+    target: host,
     props: { session: value, format: "markdown", file: textId, keys: "vim" },
   });
   await tick();
-  for (let attempt = 0; attempt < 100 && !document.querySelector(".cm-vim-panel"); attempt++) {
+  for (let attempt = 0; attempt < 100 && !host.querySelector(".cm-vim-panel"); attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  const view = EditorView.findFromDOM(document.querySelectorAll(".cm-editor")[1]);
-  view.dispatch({ changes: { from: text.length, insert: "LOCAL" } });
+  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  view.dispatch({ changes: { from: view.state.doc.length, insert: "LOCAL" } });
   view.focus();
   view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
     key: "u", code: "KeyU", bubbles: true, cancelable: true,
@@ -206,7 +217,7 @@ window.mergeUndoCheck = async () => {
   press(views[0], "z");
   press(views[1], "z");
   const remoteOnly = text.toString();
-  views[1].dispatch({ changes: { from: text.length, insert: "LOCAL" } });
+  views[1].dispatch({ changes: { from: views[1].state.doc.length, insert: "LOCAL" } });
   press(views[1], "z");
   const undone = text.toString();
   press(views[1], "z", { shiftKey: true });

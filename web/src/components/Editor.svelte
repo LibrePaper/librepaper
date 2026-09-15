@@ -4,7 +4,7 @@
   // reconfigures the live editor without dropping the caret, the scroll
   // position or the undo history.
   import { Compartment } from "@codemirror/state";
-  import { undo as undoFn, redo as redoFn } from "loro-codemirror";
+  import { undo as undoFn, redo as redoFn } from "../../vendor/loro-codemirror/index.ts";
   import { keymap } from "@codemirror/view";
 
   // The keys the editor answers to: Vim's, Emacs's, or nothing extra. One
@@ -106,13 +106,11 @@
     setDiagnostics as setLintDiagnostics,
     openLintPanel,
   } from "@codemirror/lint";
-  import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "loro-codemirror";
-  // The annotation loro-codemirror stamps on the transactions it applies
-  // itself, which is how a person's typing is told apart from a change
-  // arriving from a peer. The package publishes it from `dist/sync.js` alone
-  // and its `exports` map does not list that path, so it is reached by file
-  // rather than by name: `exports` gates bare specifiers, not paths.
-  import { loroSyncAnnotation } from "../../node_modules/loro-codemirror/dist/sync.js";
+  import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "../../vendor/loro-codemirror/index.ts";
+  // The annotation the binding stamps on the transactions it applies itself,
+  // which is how a person's typing is told apart from a change arriving from
+  // a peer.
+  import { loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
   import { UndoManager } from "loro-crdt";
 
   import { typstLanguage } from "../lib/typst-mode.js";

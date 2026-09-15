@@ -54,6 +54,26 @@ jobs:
       - run: python -m pip install jupyter ipython nbformat
       - run: make test-external
 
+  # The components, in a real browser. Its own job because it is minutes rather
+  # than seconds, and because nothing else covers this: a substrate change once
+  # left three of these importing a library that had been uninstalled, and they
+  # stayed broken for as long as nobody looked, since every other check passed.
+  #
+  # The editor not mounting at all was invisible the same way. A suite that
+  # stays green while the editor cannot come up is measuring the wrong thing,
+  # which is the whole reason this job exists.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@v2
+      # Each test bundles its own page with vite and drives it through the
+      # Chrome DevTools Protocol, so chromium is the whole of what it needs --
+      # no binary, no database.
+      - run: sudo apt-get install -y --no-install-recommends chromium-browser
+      - run: cd web && bun install --frozen-lockfile
+      - run: make browser
+
   # The fuzz targets, briefly: long enough to catch a regression on an
   # invariant, not long enough to explore. `make fuzz` locally runs them for
   # as long as FUZZ_SECONDS says.
