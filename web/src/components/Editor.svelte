@@ -108,7 +108,7 @@
   } from "@codemirror/lint";
   import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "loro-codemirror";
   import { loroSyncAnnotation } from "loro-codemirror/dist/sync.js";
-  import { UndoManager, PosType, Side } from "loro-crdt";
+  import { UndoManager } from "loro-crdt";
 
   import { typstLanguage } from "../lib/typst-mode.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
@@ -233,22 +233,24 @@
   async function importZotero(entry, target) {
     if (!editable || !session || target.view !== view || !showing) return false;
     const active = session.textOf(showing);
-    const fromUnicode = active.convert_pos(target.from, PosType.Utf16, PosType.Unicode) ?? target.from;
-    const toUnicode = active.convert_pos(target.to, PosType.Utf16, PosType.Unicode) ?? target.to;
-    const fromCursor = active.get_cursor(fromUnicode, Side.Before);
-    const toCursor = active.get_cursor(toUnicode, Side.Before);
+    const fromUnicode = active.convertPos(target.from, "utf16", "unicode") ?? target.from;
+    const toUnicode = active.convertPos(target.to, "utf16", "unicode") ?? target.to;
+    const fromCursor = active.getCursor(fromUnicode, 0);
+    const toCursor = active.getCursor(toUnicode, 0);
     const activeSession = session, activeFile = showing;
     try {
       const fetched = await zoteroItem(entry.zotero_item);
       if (session !== activeSession || showing !== activeFile || view !== target.view || !editable) return false;
 
-      const fromResult = session.doc.get_cursor_pos(fromCursor);
+      const fromResult = session.doc.getCursorPos(fromCursor);
+      if (!fromResult) return false;
       if (fromResult.update) fromCursor = fromResult.update;
-      const toResult = session.doc.get_cursor_pos(toCursor);
+      const toResult = session.doc.getCursorPos(toCursor);
+      if (!toResult) return false;
       if (toResult.update) toCursor = toResult.update;
 
-      const start_utf16 = active.convert_pos(fromResult.current.pos, PosType.Unicode, PosType.Utf16) ?? 0;
-      const end_utf16 = active.convert_pos(toResult.current.pos, PosType.Unicode, PosType.Utf16) ?? 0;
+      const start_utf16 = active.convertPos(fromResult.offset, "unicode", "utf16") ?? 0;
+      const end_utf16 = active.convertPos(toResult.offset, "unicode", "utf16") ?? 0;
 
       const tree = session.tree();
       const mainPath = tree.main;
@@ -265,16 +267,15 @@
       changes.sort((a, b) => a.from - b.from || a.to - b.to);
       const setupShift = plan.registration && main === active && plan.registration.from <= Math.min(start_utf16, end_utf16)
         ? plan.registration.insert.length - (plan.registration.to - plan.registration.from) : 0;
-      session.doc.transact(() => {
-        if (bib) {
-          if (plan.addition) bib.insert_utf16(bib.len_utf16(), plan.addition);
-        } else session.addText(plan.path, plan.bibtex);
-        if (plan.registration && main && main !== active) {
-          if (plan.registration.to > plan.registration.from) main.delete_utf16(plan.registration.from, plan.registration.to - plan.registration.from);
-          main.insert_utf16(plan.registration.from, plan.registration.insert);
-        }
-        target.view.dispatch({ changes, selection: { anchor: Math.min(start_utf16, end_utf16) + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
-      });
+      if (bib) {
+        if (plan.addition) bib.insert(bib.toString().length, plan.addition);
+      } else session.addText(plan.path, plan.bibtex);
+      if (plan.registration && main && main !== active) {
+        if (plan.registration.to > plan.registration.from) main.delete(plan.registration.from, plan.registration.to - plan.registration.from);
+        main.insert(plan.registration.from, plan.registration.insert);
+      }
+      target.view.dispatch({ changes, selection: { anchor: Math.min(start_utf16, end_utf16) + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
+      session.doc.commit();
       scheduleBibliography();
       return true;
     } catch (error) {
@@ -508,13 +509,13 @@
     if (!loroText) return null;
     const { from, to } = view.state.selection.main;
     // Convert UTF-16 offsets to Unicode code points for cursor creation.
-    const fromUnicode = loroText.convert_pos(from, PosType.Utf16, PosType.Unicode) ?? from;
-    const toUnicode = loroText.convert_pos(to, PosType.Utf16, PosType.Unicode) ?? to;
+    const fromUnicode = loroText.convertPos(from, "utf16", "unicode") ?? from;
+    const toUnicode = loroText.convertPos(to, "utf16", "unicode") ?? to;
     return {
       session,
       file: showing,
-      fromCursor: loroText.get_cursor(fromUnicode, Side.Before),
-      toCursor: loroText.get_cursor(toUnicode, Side.Before),
+      fromCursor: loroText.getCursor(fromUnicode, 0),
+      toCursor: loroText.getCursor(toUnicode, 0),
       capturedText: view.state.sliceDoc(from, to),
     };
   }
@@ -569,20 +570,22 @@
     let fromPos = null, toPos = null;
 
     try {
-      const fromResult = doc.get_cursor_pos(fromCursor);
+      const fromResult = doc.getCursorPos(fromCursor);
+      if (!fromResult) return false;
       if (fromResult.update) fromCursor = fromResult.update;
-      fromPos = fromResult.current.pos;
+      fromPos = fromResult.offset;
 
-      const toResult = doc.get_cursor_pos(toCursor);
+      const toResult = doc.getCursorPos(toCursor);
+      if (!toResult) return false;
       if (toResult.update) toCursor = toResult.update;
-      toPos = toResult.current.pos;
+      toPos = toResult.offset;
     } catch (e) {
       return false;
     }
 
     // Convert back to UTF-16 for CodeMirror use.
-    const from = loroText.convert_pos(Math.min(fromPos, toPos), PosType.Unicode, PosType.Utf16) ?? 0;
-    const to = loroText.convert_pos(Math.max(fromPos, toPos), PosType.Unicode, PosType.Utf16) ?? 0;
+    const from = loroText.convertPos(Math.min(fromPos, toPos), "unicode", "utf16") ?? 0;
+    const to = loroText.convertPos(Math.max(fromPos, toPos), "unicode", "utf16") ?? 0;
 
     if (loroText.toString().slice(from, to) !== target.capturedText) return false;
     const plans = new Map([[loroText, []]]);
@@ -616,15 +619,14 @@
     const selection = result.selection;
     const offset = value => from + shift + Math.max(0, Math.min(result.text.length, Number.isInteger(value) ? value : result.text.length));
     const anchor = offset(selection?.anchor), head = offset(selection?.head);
-    session.doc.transact(() => {
-      view.dispatch({ changes, selection: { anchor, head }, effects: EditorView.scrollIntoView(head) });
-      for (const [text, edits] of plans) if (text !== loroText) {
-        for (const edit of [...edits].reverse()) {
-          if (edit.to > edit.from) text.delete_utf16(edit.from, edit.to - edit.from);
-          if (edit.insert) text.insert_utf16(edit.from, edit.insert);
-        }
+    view.dispatch({ changes, selection: { anchor, head }, effects: EditorView.scrollIntoView(head) });
+    for (const [text, edits] of plans) if (text !== loroText) {
+      for (const edit of [...edits].reverse()) {
+        if (edit.to > edit.from) text.delete(edit.from, edit.to - edit.from);
+        if (edit.insert) text.insert(edit.from, edit.insert);
       }
-    });
+    }
+    session.doc.commit();
     releaseInsertContext(capturedContext);
     view.focus();
     return true;
@@ -653,6 +655,19 @@
     const undoManager = undoManagers.get(text) || new UndoManager(text);
     undoManagers.set(text, undoManager);
     tracking?.registerUndoManager?.(undoManager, id);
+
+    // Who the caret belongs to. The session publishes {name, color, tab}; the
+    // binding wants {name, colorClassName}, and paints through a class rather
+    // than a value. The palette in lib/collab.js is six fixed colours with a
+    // rule apiece in the stylesheet, so the class is the colour with its hash
+    // dropped. Somebody with no colour yet gets no class, and the stylesheet
+    // falls back to a theme token rather than to a colour written down here.
+    const who = session.ephemeral?.get("user");
+    const userName = who?.name || "Anonymous";
+    const colorClassName = typeof who?.color === "string" && who.color.startsWith("#")
+      ? `user-color-${who.color.slice(1).toLowerCase()}`
+      : "";
+
     return EditorState.create({
       doc: text.toString(),
       extensions: [
@@ -714,7 +729,7 @@
         // is bound to one text at a time (the one in 'showing'), and the
         // getTextFromDoc function returns that text. Multiple editors may be
         // open on different files at once; they all share the same LoroDoc.
-        LoroExtensions(session.doc, session.ephemeral && { user: session.user, ephemeral: session.ephemeral }, undoManager, () => text),
+        LoroExtensions(session.doc, session.ephemeral && { user: { name: userName, colorClassName }, ephemeral: session.ephemeral }, undoManager, () => text),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onchange?.();
           // Only a deliberate move counts: typing moves the caret constantly,

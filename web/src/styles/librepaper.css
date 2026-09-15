@@ -668,20 +668,33 @@ main.reader.source-right .editorpane {
 
 /* Somebody else's caret, and their name beside it.
  *
- * The binding draws the caret as an absolutely positioned element and hands
- * the name through a `--name` custom property, in whatever colour that person
- * picked when they joined. What is left to the page is the shape of it, and
- * where the name goes: above the line rather than in it, so that nobody's
- * name pushes anyone's text around. The binding's own base theme puts the
- * label below the line, which these rules override.
+ * The binding draws the caret as an absolutely positioned element, hands the
+ * name through a `--name` custom property, and puts a colour class on it. What
+ * is left to the page is the shape of it, and where the name goes: above the
+ * line rather than in it, so that nobody's name pushes anyone's text around.
+ * The binding's own base theme puts the label below the line, which these
+ * rules override.
  *
- * `currentColor` carries the person's colour through from the class the
- * session puts on the element, so the caret and its label cannot disagree
- * about whose they are. */
+ * The class names are generated from the palette in `lib/collab.js`, one per
+ * colour somebody can be given when they join. They are written out rather
+ * than injected at runtime because the palette is fixed and short: a person's
+ * colour is chosen from six, not from anywhere. Adding a colour there means
+ * adding a rule here, which is the coupling worth having -- the alternative is
+ * building stylesheets in JavaScript to serve six values. */
+.user-color-2f5bd0 { --presence: #2f5bd0; }
+.user-color-c2410c { --presence: #c2410c; }
+.user-color-15803d { --presence: #15803d; }
+.user-color-7c3aed { --presence: #7c3aed; }
+.user-color-be123c { --presence: #be123c; }
+.user-color-0e7490 { --presence: #0e7490; }
+
 .loro-cursor {
-  background: currentColor;
+  background: var(--presence, var(--color-primary-500));
   box-sizing: border-box;
 }
+/* The label takes its background from `--presence` rather than `currentColor`,
+ * because the rule below sets `color` to white for the name itself: read in
+ * the other order, the label would be white on white. */
 .loro-cursor::before {
   content: var(--name);
   position: absolute;
@@ -692,7 +705,7 @@ main.reader.source-right .editorpane {
   line-height: 1.4;
   font-family: var(--typo-base--font-family);
   color: white;
-  background: currentColor;
+  background: var(--presence, var(--color-primary-500));
   white-space: nowrap;
   border-radius: var(--radius-base);
   opacity: 0.85;
@@ -709,7 +722,7 @@ main.reader.source-right .editorpane {
  * prose that has to stay readable while they are choosing what to do with
  * it. */
 .loro-selection {
-  background: currentColor;
+  background: var(--presence, var(--color-primary-500));
   opacity: 0.25;
 }
 

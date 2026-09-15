@@ -29,7 +29,7 @@ try {
 
   session.addText("paper.md", "offline");
   assert.equal(states.at(-1).pending, 1);
-  assert.equal(sent.at(-1).type, "y-update");
+  assert.equal(sent.at(-1).type, "doc-update");
   session.acknowledge(sent.at(-1).seq);
   assert.equal(states.at(-1).pending, 0);
 

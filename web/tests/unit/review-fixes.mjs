@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import * as Y from "yjs";
 import { documentPlaceFor } from "../../src/lib/sync.js";
 import { zip } from "../../src/lib/zip.js";
 import { gather, release } from "../../src/lib/figures.js";
@@ -67,29 +66,30 @@ try {
   globalThis.fetch = oldFetch;
 }
 
-// #1: a large Yjs update is split into bounded JSON frames and retains one
+// #1: a large Loro update is split into bounded JSON frames and retains one
 // logical sequence number for the server's eventual durability ack.
 const frames = [];
 const session = join({ send: (message) => frames.push(message), slug: "review", mayEdit: true });
 const id = session.addText("main.typ", "x".repeat(700_000));
 session.setMain(id);
-const start = frames.find((message) => message.type === "y-update-start");
+const start = frames.find((message) => message.type === "doc-update-start");
 assert.ok(start);
-const chunks = frames.filter((message) => message.type === "y-update-chunk");
+const chunks = frames.filter((message) => message.type === "doc-update-chunk");
 assert.equal(chunks.length, start.chunks);
 assert.ok(chunks.every((message) => JSON.stringify(message).length < 1_048_576));
-assert.equal(frames.filter((message) => message.type === "y-update-end" && message.seq === start.seq).length, 1);
+assert.equal(frames.filter((message) => message.type === "doc-update-end" && message.seq === start.seq).length, 1);
 // The server's vector keeps an unchanged rejoin small even for a large tree.
 frames.length = 0;
-await session.start({ vector: Buffer.from(Y.encodeStateVector(session.doc)).toString("base64") });
-const catchup = frames.find((message) => message.type === "y-update");
+const encodeVersion = (bytes) => Buffer.from(bytes).toString("base64");
+await session.start({ vector: encodeVersion(session.doc.oplogVersion()) });
+const catchup = frames.find((message) => message.type === "doc-update");
 assert.ok(catchup);
 assert.ok(JSON.stringify(catchup).length < 1024);
-assert.ok(!frames.some((message) => message.type === "y-update-start"));
+assert.ok(!frames.some((message) => message.type === "doc-update-start"));
 let fileEvents = 0;
 session.onFiles(() => fileEvents++);
 session.textOf(id).insert(0, "remote edit");
-assert.equal(fileEvents, 1); // #6: nested Y.Text changes invalidate the directory watcher.
+assert.equal(fileEvents, 1); // #6: nested LoroText changes invalidate the directory watcher.
 session.putAsset("figure.png", "digest");
 session.renameFile("figure.png", "renamed.png", "asset");
 assert.deepEqual({ ...session.tree().digests }, { "renamed.png": "digest" }); // #12

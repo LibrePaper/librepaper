@@ -564,14 +564,15 @@ export function createProjectSession({
       const assetsId = assets.id;
       const metaId = meta.id;
       const unsub = doc.subscribe((eventBatch) => {
-        // Call the watcher for each event affecting our containers of interest
-        for (const event of eventBatch.events) {
-          if (event.target === filesId ||
-              event.target === pathsId ||
-              event.target === assetsId ||
-              event.target === metaId) {
-            watcher(event);
-          }
+        // Call the watcher once per batch with all relevant events from that batch
+        const relevantEvents = eventBatch.events.filter((event) =>
+          event.target === filesId ||
+          event.target === pathsId ||
+          event.target === assetsId ||
+          event.target === metaId
+        );
+        if (relevantEvents.length > 0) {
+          watcher(relevantEvents);
         }
       });
       return unsub;

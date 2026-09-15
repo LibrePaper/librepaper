@@ -102,7 +102,7 @@ assert.equal(view.comments.find((item) => item.id === draft.id)?.body, "Refined 
 assert.equal(view.comments.find((item) => item.id === draft.id)?.pending, false);
 annotations.receive({ type: "delete", comment_id: "remote" });
 assert.equal(view.comments.length, 1);
-assert.equal(annotations.receive({ type: "y-state" }), false);
+assert.equal(annotations.receive({ type: "doc-state" }), false);
 
 // Annotation appearance and zero-width anchors survive the optimistic write,
 // retry payload, and authoritative confirmation without creating a second row.

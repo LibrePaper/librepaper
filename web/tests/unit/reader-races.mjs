@@ -49,7 +49,7 @@ function fakeSession(joinOptions) {
     joined: false,
     awareness: { on: (_name, fn) => observers.add(fn), off: (_name, fn) => observers.delete(fn) },
     watchSource: () => {}, onSwap: () => {}, onFiles: () => () => {},
-    open: () => ({ type: "y-open" }), disconnected() { this.joined = false; },
+    open: () => ({ type: "doc-open" }), disconnected() { this.joined = false; },
     leave() { this.left = true; observers.clear(); },
     joinOptions,
   };
@@ -795,7 +795,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   });
   collaboration.start({ created_at: "first", role: "editor" });
   const active = fake.session;
-  active.joinOptions.send({ type: "y-update", update: "held" });
+  active.joinOptions.send({ type: "doc-update", update: "held" });
   assert.equal(sent.length, 1, "the initial y-open is sent");
   rooms[0].onConnected(false);
   const stale = rooms[0].onConnected(true);
@@ -804,7 +804,7 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   await current;
   first.resolve({ ok: true, json: async () => ({ created_at: "first", role: "editor" }) });
   await stale;
-  assert.equal(sent.filter((message) => message.type === "y-open").length, 2, "only the current reconnect re-opens");
+  assert.equal(sent.filter((message) => message.type === "doc-open").length, 2, "only the current reconnect re-opens");
   collaboration.close();
   assert.equal(active.left, true);
 }
@@ -834,7 +834,7 @@ for (const latest of [
   await roomOptions.onConnected(true);
   collaboration.close();
   assert.equal(changed, 1, "changed metadata invalidates the old session");
-  assert.equal(sent.filter((message) => message.type === "y-open").length, 1);
+  assert.equal(sent.filter((message) => message.type === "doc-open").length, 1);
 }
 
 // A metadata retry and a pending chat timeout are both cancelled by teardown.
