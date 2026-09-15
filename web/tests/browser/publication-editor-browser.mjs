@@ -16,7 +16,7 @@ const temp = mkdtempSync(join(tmpdir(), "librepaper-publication-editor-"));
 const entry = join(temp, "entry.js"), room = join(temp, "room.js"), out = join(temp, "build");
 
 writeFileSync(room, `
-import { LoroDoc, LoroText } from "loro-crdt";
+import { LoroDoc, LoroText } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 const decode = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
 const server = new LoroDoc(), files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");

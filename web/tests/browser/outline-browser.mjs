@@ -26,7 +26,7 @@ const out = join(temp, "build");
 // a child heading, and a later top-level heading to exercise active-heading
 // resets as well as parsing.
 writeFileSync(room, `
-import { LoroDoc, LoroText } from "loro-crdt";
+import { LoroDoc, LoroText } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 const decode = text => Uint8Array.from(atob(text), c => c.charCodeAt(0));
 const rooms = new Map();

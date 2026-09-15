@@ -25,7 +25,7 @@ const points = sources.map((text, i) => ({
 for (let i = 1; i < points.length; i++) points[i].parent = points[i - 1].sha;
 
 writeFileSync(room, `
-import { LoroDoc, LoroText } from "loro-crdt";
+import { LoroDoc, LoroText } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
 const encode = bytes => btoa(String.fromCharCode(...bytes));
 const decode = value => Uint8Array.from(atob(value), char => char.charCodeAt(0));
 const server = new LoroDoc();
