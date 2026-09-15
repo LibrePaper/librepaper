@@ -399,6 +399,27 @@ impl Server {
                         break 'reader;
                     }
 
+                    // A socket that has quietly died -- a NAT table that
+                    // dropped the mapping, a laptop that slept -- never
+                    // reports a close. It simply stops delivering, and the
+                    // browser goes on believing it is connected while comments
+                    // and presence stop arriving. There is no way for a page
+                    // to send a protocol-level ping, so the liveness check is
+                    // an ordinary frame with an ordinary answer, and the
+                    // client concludes the socket is gone when the answer
+                    // does not come.
+                    //
+                    // It is deliberately below reauthorization: a revoked
+                    // session is closed above rather than kept alive here.
+                    if incoming.kind == "ping" {
+                        let _ = send_outgoing(
+                            &tx,
+                            Outgoing::Text(json!({"type": "pong"}).to_string()),
+                        )
+                        .await;
+                        continue 'reader;
+                    }
+
                     // Chat is live room traffic, never document state. It is
                     // deliberately absent from hello/reconnect and storage.
                     if incoming.kind == "chat" {
