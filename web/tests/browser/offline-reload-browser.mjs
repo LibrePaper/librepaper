@@ -28,9 +28,10 @@ const serverAddress = `http://127.0.0.1:${serverPort}`;
 
 // Start the librepaper server with anyone able to publish and comment.
 const server = spawn(binary, [
+  "admin",
   "serve",
   "--port", String(serverPort),
-  "--publishers", "anyone",
+  "--publishers", "any",
   "--commenters", "anyone",
 ], {
   env: { ...process.env, HOME: temporary },

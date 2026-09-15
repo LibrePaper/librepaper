@@ -69,6 +69,54 @@ impl std::fmt::Display for ProposalError {
     }
 }
 
+/// Turns a suggestion into a branch: one hunk putting the proposed text where
+/// the comment's passage is.
+///
+/// This is §1.2's consolidation. A comment that suggests a change used to carry
+/// both the replacement text and its accept/reject state on itself, which made
+/// it a second implementation of "a change awaiting a decision". As a branch it
+/// is reviewed and decided exactly like a change anyone typed.
+///
+/// `at` is a BYTE offset, because `locate_anchor` finds the passage by
+/// searching the file as a string. Rather than convert it to the UTF-16 offsets
+/// the rest of this module speaks, the replacement is made on the string and
+/// the result handed to `put_text`, which diffs it. So no offset crosses from
+/// one counting system to the other -- the mistake §3.2 exists to prevent --
+/// and the hunk that comes out is whatever actually changed rather than
+/// whatever we calculated ought to have.
+pub fn from_suggestion(
+    doc: &LoroDoc,
+    path: &str,
+    at: usize,
+    exact: &str,
+    proposed: &str,
+) -> Result<(LoroDoc, Frontiers, Frontiers, PeerID), ProposalError> {
+    let body = session::texts_of(doc).get(path).cloned().ok_or_else(|| {
+        ProposalError::Failed("that suggestion names a file that is not here".into())
+    })?;
+    let end = at.saturating_add(exact.len());
+    // The anchor was found against some reading of this file. If the file no
+    // longer says there what it said then, the passage has moved or changed and
+    // the suggestion is about text that is not there -- which is a refusal,
+    // not something to place approximately.
+    if body.get(at..end) != Some(exact) {
+        return Err(ProposalError::Stale);
+    }
+
+    let base = doc.state_frontiers();
+    let branch = doc.fork();
+    let peer = fresh_peer();
+    branch
+        .set_peer_id(peer)
+        .map_err(|error| ProposalError::Failed(error.to_string()))?;
+    let mut wanted = body.clone();
+    wanted.replace_range(at..end, proposed);
+    session::put_text(&branch, path, &wanted);
+    branch.commit();
+    let tip = branch.state_frontiers();
+    Ok((branch, base, tip, peer))
+}
+
 /// Rebuilds a branch from the room document and the operations it added.
 ///
 /// A branch is stored as its own operations only, so reading it back means
@@ -244,6 +292,50 @@ impl super::Room {
                 base_frontiers: base.encode(),
                 tip_frontiers: base.encode(),
                 branch_bytes: Vec::new(),
+            })
+            .await
+            .map_err(|error| ProposalError::Failed(error.to_string()))?;
+        Ok(id.to_string())
+    }
+
+    /// Opens a proposal for a suggestion, and returns its id for the comment to
+    /// carry.
+    ///
+    /// A suggestion arrives as a passage and the text somebody wants in its
+    /// place. That is a one-hunk branch, so this makes one: the comment ends up
+    /// holding an id, and the change it offers is reviewed and decided like any
+    /// other (§1.2).
+    pub(crate) async fn open_suggestion(
+        &self,
+        author: &str,
+        path: &str,
+        at: usize,
+        exact: &str,
+        proposed: &str,
+    ) -> Result<String, ProposalError> {
+        let (catalog, document) = self.catalog_and_document()?;
+        let (branch, base, tip, peer, bytes) = {
+            let state = self.state.lock().await;
+            let (branch, base, tip, peer) =
+                from_suggestion(&state.session.doc, path, at, exact, proposed)?;
+            // The branch's own operations, which is all that is stored:
+            // rebuilding it means forking the room at the base and replaying
+            // these.
+            let bytes = session::encode_diff(&branch, &session::encode_vector(&state.session.doc))
+                .map_err(ProposalError::Failed)?;
+            (branch, base, tip, peer, bytes)
+        };
+        let _ = branch;
+        let id = crate::storage::postgres::new_id();
+        catalog
+            .open_proposal(crate::storage::postgres::NewProposal {
+                document_id: document,
+                id,
+                author: author.to_string(),
+                author_peer: peer as i64,
+                base_frontiers: base.encode(),
+                tip_frontiers: tip.encode(),
+                branch_bytes: bytes,
             })
             .await
             .map_err(|error| ProposalError::Failed(error.to_string()))?;
@@ -671,5 +763,107 @@ mod peer_tests {
         for _ in 0..64 {
             assert_ne!(fresh_peer(), 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod suggestion_tests {
+    use super::*;
+
+    const OWNER: PeerID = 1;
+    const REVIEWER: PeerID = 3;
+
+    fn room_with(body: &str) -> LoroDoc {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", body);
+        room.commit();
+        room
+    }
+
+    fn decide(room: &LoroDoc, made: (LoroDoc, Frontiers, Frontiers, PeerID), declined: bool) {
+        let (branch, base, tip, _) = made;
+        let bytes = session::encode_diff(&branch, &session::encode_vector(room)).unwrap();
+        let declined = if declined {
+            HashSet::from([0])
+        } else {
+            HashSet::new()
+        };
+        let proposal = Proposal {
+            base,
+            tip: tip.clone(),
+        };
+        resolve(room, &proposal, &bytes, &declined, &tip, REVIEWER).unwrap();
+    }
+
+    fn text_of(room: &LoroDoc) -> String {
+        session::texts_of(room).get("main.md").cloned().unwrap()
+    }
+
+    #[test]
+    fn a_suggestion_is_one_decision() {
+        let room = room_with("The cat sat on the mat.");
+        let made = from_suggestion(&room, "main.md", 4, "cat", "tabby").unwrap();
+        let bytes = session::encode_diff(&made.0, &session::encode_vector(&room)).unwrap();
+        let proposal = Proposal {
+            base: made.1.clone(),
+            tip: made.2.clone(),
+        };
+        let found = hunks(&room, &proposal, &bytes).unwrap();
+        assert_eq!(found.len(), 1, "one passage, one answer, got {found:?}");
+    }
+
+    #[test]
+    fn accepting_a_suggestion_keeps_it_the_suggesters_words() {
+        let room = room_with("The cat sat on the mat.");
+        let made = from_suggestion(&room, "main.md", 4, "cat", "tabby").unwrap();
+        let suggester = made.3;
+        decide(&room, made, false);
+        assert_eq!(text_of(&room), "The tabby sat on the mat.");
+        assert!(
+            room.oplog_vv().get(&suggester).is_some(),
+            "the words that stayed are still whoever suggested them"
+        );
+    }
+
+    #[test]
+    fn a_suggestion_proposing_nothing_cuts_the_passage() {
+        let room = room_with("The very cat sat.");
+        let made = from_suggestion(&room, "main.md", 4, "very ", "").unwrap();
+        decide(&room, made, false);
+        assert_eq!(
+            text_of(&room),
+            "The cat sat.",
+            "proposing the empty string is how a suggestion says to cut something"
+        );
+    }
+
+    #[test]
+    fn declining_a_suggestion_leaves_the_passage_alone() {
+        let room = room_with("The cat sat.");
+        let made = from_suggestion(&room, "main.md", 4, "cat", "tabby").unwrap();
+        decide(&room, made, true);
+        assert_eq!(text_of(&room), "The cat sat.");
+    }
+
+    #[test]
+    fn a_suggestion_about_text_that_is_not_there_is_refused() {
+        let room = room_with("The cat sat.");
+        // The anchor was recorded when the file said something else.
+        let refused = from_suggestion(&room, "main.md", 4, "dog", "tabby");
+        assert!(
+            matches!(refused, Err(ProposalError::Stale)),
+            "placing it approximately would edit a passage nobody reviewed, got {refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_suggestion_against_a_file_that_is_gone_is_refused() {
+        let room = room_with("The cat sat.");
+        let refused = from_suggestion(&room, "chapters/two.md", 0, "x", "y");
+        assert!(
+            matches!(refused, Err(ProposalError::Failed(_))),
+            "got {refused:?}"
+        );
     }
 }
