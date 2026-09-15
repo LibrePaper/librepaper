@@ -42,7 +42,9 @@ const persist = () => localStorage.setItem('history-test-source', encode(server.
 persist();
 let updateSub = server.subscribeLocalUpdates(() => persist());
 export function openRoom(_slug, {onMessage, onConnected}) {
-  window.historyLive = { source: () => text.toString(), append: value => text.insert(text.length, value) };
+  // The commit is not a formality: updates leave on a commit, so an append
+  // without one changes the mock and tells nobody.
+  window.historyLive = { source: () => text.toString(), append: value => { text.insert(text.length, value); server.commit(); } };
   let updateSub2 = server.subscribeLocalUpdates(update => onMessage({type:'doc-update', update:encode(update)}));
   queueMicrotask(() => onConnected(true));
   return { send(message) {
