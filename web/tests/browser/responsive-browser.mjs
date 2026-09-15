@@ -17,7 +17,7 @@ const entry = join(temp, "entry.js");
 const room = join(temp, "room.js");
 const out = join(temp, "build");
 writeFileSync(room, `
-import { LoroDoc, LoroText } from "loro-crdt";
+import { LoroDoc, LoroText } from ${JSON.stringify(join(root, "web/node_modules/loro-crdt/bundler/index.js"))};
 const encode = b => btoa(String.fromCharCode(...b));
 const server = new LoroDoc();
 const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
