@@ -6,7 +6,8 @@
   import { EditorView, lineNumbers, keymap } from "@codemirror/view";
   import { defaultKeymap, indentWithTab } from "@codemirror/commands";
   import { MergeView } from "@codemirror/merge";
-  import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
+  import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "loro-codemirror";
+  import { UndoManager } from "loro-crdt";
   import IconButton from "./IconButton.svelte";
 
   let {
@@ -14,7 +15,8 @@
     oldText = "",
     newText = "",
     liveText = null,
-    awareness = null,
+    ephemeral = null,
+    loroDoc = null,
     editable = false,
     diff = true,
     baselineLabel = "checkpoint",
@@ -33,12 +35,20 @@
   // `side` names the pane a screen reader has landed in: CodeMirror's editable
   // is a textbox, and two unnamed textboxes side by side are two of "edit
   // text" with nothing to tell them apart.
-  function extensions(readOnly = false, collaborative = false, side = "") {
+  function extensions(readOnly = false, collaborative = false, side = "", loroDoc = null, loroText = null, undoManager = null) {
+    const keyboardExtensions = collaborative && loroDoc && loroText && undoManager
+      ? [{ key: "Mod-z", run: undoCommand, preventDefault: true },
+         { key: "Mod-Shift-z", run: redoCommand, preventDefault: true }]
+      : [];
+    const collaborativeExtensions = collaborative && loroDoc && loroText && undoManager
+      ? [LoroExtensions(loroDoc, undefined, undoManager, () => loroText)]
+      : [];
     return [
       EditorView.contentAttributes.of({ "aria-label": side || "Source" }),
       lineNumbers(),
-      keymap.of([indentWithTab, ...defaultKeymap, ...(collaborative ? yUndoManagerKeymap : [])]),
+      keymap.of([indentWithTab, ...defaultKeymap, ...keyboardExtensions]),
       EditorView.lineWrapping,
+      ...collaborativeExtensions,
       ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
     ];
   }
@@ -49,18 +59,13 @@
     // the permission and no stale revert control remains actionable.
     void editable;
     if (!host) return;
+    const undoManager = editable && liveText && loroDoc ? new UndoManager(liveText) : null;
     merge = diff
       ? new MergeView({
         a: { doc: String(oldText || ""), extensions: extensions(true, false, baselineLabel) },
         b: {
           doc: liveText?.toString() ?? String(newText || ""),
-          extensions: [
-            ...extensions(!editable, Boolean(editable && liveText), targetLabel),
-            // Binding the editable side to the live Y.Text means a revert
-            // button inserts only its hunk and preserves a coauthor's update
-            // that landed while this view was open.
-            ...(editable && liveText ? [yCollab(liveText, awareness)] : []),
-          ],
+          extensions: extensions(!editable, Boolean(editable && liveText), targetLabel, editable && liveText ? loroDoc : null, editable && liveText ? liveText : null, undoManager),
         },
         orientation: "a-b",
         ...(editable ? { revertControls: "a-to-b" } : {}),

@@ -96,7 +96,6 @@
   import Diagnostics from "./reader/Diagnostics.svelte";
   import History from "./reader/History.svelte";
   import PendingAnnotations from "./reader/PendingAnnotations.svelte";
-  import { createRevisionController } from "../lib/track-changes.js";
 
   const SLUG = location.pathname.split("/").pop();
 
@@ -911,7 +910,6 @@
       suggestionDecisions.delete(event.request_id);
       pendingSuggestion.reject(new Error(event.message || event.error || "Suggestion decision failed."));
     }
-    if (tracking?.receive(event)) return;
     if (annotations.receive(event)) return;
     if (event.type === "chat") {
       if (!liveChat.some((message) => message.id === event.id)) {
@@ -990,7 +988,7 @@
     // change to it, what the server has written, who else is in it, or where
     // their carets are. A reader receives all of this too -- that is how they
     // see the current text -- and sends none of it.
-    if (event.type === "y-state") {
+    if (event.type === "doc-state") {
       session
         ?.start(event)
         .then(() => {
@@ -1004,21 +1002,21 @@
       peers = event.count || 1;
       return;
     }
-    if (event.type === "y-update") {
+    if (event.type === "doc-update") {
       session?.apply(event.update);
       return;
     }
-    if (event.type === "y-awareness") {
-      session?.applyAwareness(event.update);
+    if (event.type === "doc-presence") {
+      session?.applyPresence(event.update);
       return;
     }
-    if (event.type === "y-ack") {
+    if (event.type === "doc-ack") {
       // The server has written this far. Relaying was never durability; this
       // is, and it is what the badge is allowed to speak from.
       session?.acknowledge(event.seq || 0);
       return;
     }
-    if (event.type === "y-peers") {
+    if (event.type === "doc-peers") {
       peers = event.count || 1;
       return;
     }
@@ -1069,30 +1067,6 @@
   // collaboration module hands the same object back in its callbacks, which
   // are compared to this by identity. A deep proxy would never be equal to it.
   let session = $state.raw(null);
-  let tracking = $state.raw(null);
-  let trackingState = $state.raw({ revisions: [], enabled: false, showMarkup: true, session: "" });
-  let selectedRevision = $state("");
-  let stopTracking = null;
-  const pendingRevisionCount = $derived(trackingState.revisions.filter((item) => item.status === "pending").length);
-
-  function setTrackingEnabled(value) {
-    if (!mayEdit) return;
-    tracking?.setEnabled(value);
-  }
-
-  async function revealRevision(revision) {
-    selectedRevision = revision.id;
-    const location = tracking?.locate(revision);
-    if (!location || location.offset == null || !session?.textOf(location.file_id)) {
-      toastProblem("This change cannot be located in the current source. Its retained text is available in Changes.");
-      return;
-    }
-    await startEditing();
-    showMobileView("source");
-    openTheFile({ id: location.file_id, kind: "text" });
-    await tick();
-    editor?.goToIn(location.file_id, location.offset);
-  }
   let editing = $state(false);
   // Which text the editor is bound to. Keying the component on this binds it
   // to the current main file when another file becomes main.
@@ -1513,10 +1487,7 @@
           ].filter(Boolean)
         : [],
     },
-    changes: {
-      says: trackingState.enabled ? "Changes — tracking on" : "",
-      dot: trackingState.enabled,
-    },
+    changes: {},
   });
 
   // A reader is told nothing about live editor diagnostics. They cannot fix
@@ -2564,8 +2535,6 @@
   }
 
   function startCollaboration(document_, { sourceSync = true } = {}) {
-    stopTracking?.();
-    tracking?.dispose();
     collaboration?.close();
     collaboration = createReaderCollaboration({
       slug: SLUG,
@@ -2590,22 +2559,6 @@
       onSession: (active) => {
         session = active;
         workspace.attach(active);
-        tracking = createRevisionController({
-          doc: active.doc,
-          author: identity || document_.commenting_as || "Anonymous",
-          documentId: `${SLUG}:${document_.created_at || ""}`,
-          mayEdit,
-          fileOf: (id) => active.paths.get(id) || "",
-          textOf: (id) => active.textOf(id),
-          send: (message) => {
-            if (!connected || !active.joined) throw new Error("Reconnect before reviewing changes.");
-            const sent = collaboration.sendLive(message);
-            if (!sent.ok) throw sent.error;
-          },
-        });
-        const refreshTracking = () => { trackingState = tracking.snapshot(); };
-        stopTracking = tracking.onChange(refreshTracking);
-        refreshTracking();
         handledFileTransactions = new WeakSet();
         refreshFiles();
         refreshPeers();
@@ -2802,8 +2755,6 @@
       pendingChat?.dispose();
       for (const pendingDecision of suggestionDecisions.values()) pendingDecision.reject(new Error("The review context was closed."));
       suggestionDecisions.clear();
-      stopTracking?.();
-      tracking?.dispose();
       collaboration?.close();
     };
   });
@@ -2883,9 +2834,6 @@
       {offlinePrepared ? "Available offline" : preparingOffline ? "Preparing offline copy…" : "Make available offline"}
     </Menu.Item>
     <Menu.Item value="download" class="menuitem">Download project</Menu.Item>
-  {/if}
-  {#if mayEdit && pendingRevisionCount}
-    <div class="menu-section-label">Project downloads include {pendingRevisionCount} pending {pendingRevisionCount === 1 ? "change" : "changes"}.</div>
   {/if}
   <hr class="hr my-1" />
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
@@ -3108,11 +3056,6 @@
   {#snippet changesPanel()}
     <Changes {comments} {files} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"}
       {canModerate} canReview={mayEdit} {tool}
-      revisions={trackingState.revisions} tracking={trackingState.enabled}
-      showMarkup={trackingState.showMarkup} canTrack={mayEdit} {selectedRevision}
-      ontracking={setTrackingEnabled} onmarkup={(value) => tracking?.setShowMarkup(value)}
-      onrevisionreveal={revealRevision} onrevisiondecide={(id, action) => tracking.decide(id, action)}
-      onrevisionundo={(id) => tracking.undo(id)}
       {went} {replacements} canComment={mayChat} ontool={chooseTool} onreveal={revealAnnotation}
       selected={selectedAnnotation} onresolve={resolve} ondelete={askDelete}
       ondeletemany={askDeleteMany} onreply={reply}
@@ -3202,7 +3145,7 @@
         </div>
       {:else if Editor && session?.text}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} {tracking} {selectedRevision} onrevision={(revision) => { selectedRevision = revision.id; void showPanel("changes"); }} format={editorFormat} file={openFile} {keys} editable={mayEdit}
+          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} editable={mayEdit}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; }} />
         {/key}

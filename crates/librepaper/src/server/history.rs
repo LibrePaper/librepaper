@@ -362,7 +362,7 @@ impl Server {
         room.broadcast_editors_except(
             None,
             &json!({
-                "type": "y-update",
+                "type": "doc-update",
                 "update": encode_update(&update),
             }),
         )

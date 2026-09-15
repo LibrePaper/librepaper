@@ -15,11 +15,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use futures_util::{stream, StreamExt};
+use loro::LoroDoc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest;
 use tokio::sync::{Mutex, RwLock};
-use yrs::Transact;
 
 use crate::config::{Configuration, CHECKPOINT_DEFER_SECONDS};
 use crate::document::history::{Checkpoint, Manifest};
@@ -41,8 +41,6 @@ mod figures;
 mod idle_room_tests;
 pub(crate) mod outgoing;
 mod resident;
-pub(crate) mod revisions;
-mod suggestions;
 pub(crate) mod text;
 
 use catalog::*;
@@ -183,7 +181,7 @@ pub struct Peer {
 /// draft of it: it is persisted, it outlives every socket, and it is seeded
 /// once from the source the document was created with.
 pub struct Session {
-    pub doc: yrs::Doc,
+    pub doc: LoroDoc,
     /// Highest PostgreSQL collaboration sequence merged into this room.
     pub durable_sequence: i64,
     /// Whether the document has changed since `sessions/<slug>` was written.
@@ -405,33 +403,6 @@ pub enum Applied {
 pub(crate) const ENCODED_CEILING_REFUSAL: &str =
     "this document's saved state has reached the largest size this deployment can durably \
      save; its edit history counts towards that as well as its text";
-
-/// What accepting a suggestion did.
-pub enum Accepted {
-    /// The edit landed: `update` is the Yjs update every socket is sent,
-    /// `sha` the checkpoint it was recorded in.
-    Applied {
-        update: Vec<u8>,
-        sha: String,
-        resolved_at: String,
-    },
-    /// A retry of a request already applied. Nothing changed this time;
-    /// the caller answers with what happened the first time.
-    Noop { sha: String, resolved_at: String },
-}
-
-/// Why `accept_suggestion` refused, so the dispatch sites -- the socket loop
-/// and the REST comments route -- can shape the exact JSON the spec promises
-/// for each.
-pub enum AcceptError {
-    /// The exact refusal text a client is shown.
-    Refused(String),
-    /// The passage could not be placed, even against the checkpoint the
-    /// suggestion was made on. The browser opens the merge editor on this.
-    Stale,
-    /// Storage, or the room itself, failed.
-    Failed(String),
-}
 
 /// A slug's own loading slot: `None` while its load is in flight, `Some` once
 /// it has landed. One `Mutex` per slug rather than one shared with `rooms`
@@ -972,8 +943,8 @@ impl Room {
     /// generated file IDs and makes the measured change the committed change.
     pub(crate) fn checked_edit<T, E>(
         &self,
-        doc: &yrs::Doc,
-        edit: impl FnOnce(&yrs::Doc) -> Result<T, E>,
+        doc: &LoroDoc,
+        edit: impl FnOnce(&LoroDoc) -> Result<T, E>,
     ) -> Result<T, E>
     where
         E: From<WriteError>,
@@ -986,7 +957,7 @@ impl Room {
             .saturating_add(4096)
             .min(ceiling);
         let _ = staging;
-        let candidate = session::edit_candidate(doc);
+        let candidate = doc.fork();
         session::apply_update(&candidate, &before)
             .map_err(|error| E::from(WriteError::Storage(error)))?;
         let value = edit(&candidate)?;
@@ -1009,173 +980,6 @@ impl Room {
         &self.storage_id
     }
 
-    /// Decides a live tracked revision. The decision is serialized with all
-    /// publication writes and persisted before it is announced. Text rollback
-    /// is guarded by the proposed content: if concurrent work changed the
-    /// affected span, the operation remains pending and reports a conflict.
-    pub async fn decide_revision(
-        &self,
-        revision_id: &str,
-        action: &str,
-        actor: &str,
-        can_review: bool,
-        request_id: &str,
-    ) -> Value {
-        let _publication = self.publication_write.lock().await;
-        if self.read_only() {
-            return json!({"type":"error","message":"editing is not permitted","revision_id":revision_id,"request_id":request_id});
-        }
-        if !can_review {
-            return json!({"type":"error","message":"revision review is not permitted","revision_id":revision_id,"request_id":request_id});
-        }
-        if request_id.trim().is_empty() {
-            return json!({"type":"error","message":"revision decision requires request_id","revision_id":revision_id,"request_id":request_id});
-        }
-        let before_vector;
-        let revision;
-        let before_state;
-        let before_session;
-        {
-            let mut state = self.state.lock().await;
-            before_state = session::encode_state(&state.session.doc);
-            before_session = (
-                state.session.dirty,
-                state.session.dirty_since,
-                state.session.pending_checkpoint_since,
-                state.session.last_persist_at,
-                state.session.generation,
-                state.session.encoded_size,
-                state.session.encoded_bound,
-                state.session.checkpoint_generation,
-                state.session.updated_at,
-                state.session.by.clone(),
-            );
-            before_vector = session::encode_vector(&state.session.doc);
-            let mut records = match revisions::records(&state.session.doc) {
-                Ok(records) => records,
-                Err(error) => {
-                    return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id});
-                }
-            };
-            let Some(record_index) = records.iter().position(|record| record.id == revision_id)
-            else {
-                return json!({"type":"error","message":"unknown revision","revision_id":revision_id,"request_id":request_id});
-            };
-            if !request_id.is_empty()
-                && records.iter().any(|other| {
-                    other.id != revision_id
-                        && other.history.iter().any(|item| {
-                            item.get("request_id").and_then(Value::as_str) == Some(request_id)
-                        })
-                })
-            {
-                return json!({"type":"error","message":"request id was already used for another revision","revision_id":revision_id,"request_id":request_id});
-            }
-            let record = &records[record_index];
-            if !request_id.is_empty() {
-                if let Some(previous) = record
-                    .history
-                    .iter()
-                    .find(|item| item.get("request_id").and_then(Value::as_str) == Some(request_id))
-                {
-                    if previous.get("action").and_then(Value::as_str) != Some(action) {
-                        return json!({"type":"error","message":"request id was already used for another revision action","revision_id":revision_id,"request_id":request_id});
-                    }
-                    if previous.get("actor").and_then(Value::as_str) != Some(actor) {
-                        return json!({"type":"error","message":"request id belongs to another reviewer","revision_id":revision_id,"request_id":request_id});
-                    }
-                    return json!({
-                        "type":"revision-decision", "revision_id":revision_id,
-                        "status": previous.get("to").and_then(Value::as_str).unwrap_or(&record.status),
-                        "request_id":request_id, "noop":true, "durable":true,
-                    });
-                }
-            }
-            if let Some(error) = revisions::dependency_error(record, &records) {
-                return json!({
-                    "type":"error", "message":error, "conflict":true,
-                    "revision_id":revision_id, "dependencies":record.dependencies.clone(),
-                    "request_id":request_id,
-                });
-            }
-            if action != "undo" && !record.pending() {
-                return json!({"type":"revision-decision","revision_id":revision_id,"status":record.status,"request_id":request_id,"noop":true});
-            }
-            let record = &mut records[record_index];
-            let old_status = record.status.clone();
-            let at = crate::util::timestamp();
-            if let Err(error) = record.decision(action, actor, &at) {
-                return json!({"type":"error","message":error,"revision_id":revision_id,"request_id":request_id});
-            }
-            if let Some(history) = record.history.last_mut() {
-                history["request_id"] = json!(request_id);
-            }
-            // Apply a guarded inverse at the CRDT anchors. This handles
-            // insertions, replacements, and deletions without searching for
-            // repeated text. Undoing an accepted revision only reopens its
-            // status; undoing a rejection reapplies the proposal.
-            let inverse = if action == "reject" && old_status == "pending" {
-                Some((record.after.clone(), record.before.clone()))
-            } else if action == "undo" {
-                let rejected = record
-                    .history
-                    .iter()
-                    .rev()
-                    .nth(1)
-                    .and_then(|item| item.get("to"))
-                    .and_then(Value::as_str)
-                    == Some("rejected");
-                rejected.then(|| (record.before.clone(), record.after.clone()))
-            } else {
-                None
-            };
-            if let Err(error) = self.checked_edit(&state.session.doc, |candidate| {
-                if let Some((expected, replacement)) = inverse {
-                    revisions::guarded_inverse(candidate, record, &expected, &replacement)
-                        .map_err(WriteError::Invalid)?;
-                }
-                let map = revisions::revision_map(candidate);
-                let mut txn = candidate.transact_mut();
-                revisions::put(&mut txn, &map, record).map_err(WriteError::Invalid)?;
-                Ok::<_, WriteError>(())
-            }) {
-                return json!({"type":"error","message":error.client_message(),"revision_id":revision_id,"request_id":request_id});
-            }
-            state.session.mark_dirty(crate::util::now_unix());
-            state.session.generation += 1;
-            state.session.updated_at = crate::util::now_unix();
-            revision = record.clone();
-        }
-        if let Err(error) = self.persist().await {
-            let restored = session::new_doc();
-            if session::apply_update(&restored, &before_state).is_ok() {
-                let mut state = self.state.lock().await;
-                state.session.doc = restored;
-                state.session.dirty = before_session.0;
-                state.session.dirty_since = before_session.1;
-                state.session.pending_checkpoint_since = before_session.2;
-                state.session.last_persist_at = before_session.3;
-                state.session.generation = before_session.4;
-                state.session.encoded_size = before_session.5;
-                state.session.encoded_bound = before_session.6;
-                state.session.checkpoint_generation = before_session.7;
-                state.session.updated_at = before_session.8;
-                state.session.by = before_session.9;
-            }
-            return json!({"type":"error","message":format!("could not save revision: {error}"),"revision_id":revision_id,"request_id":request_id});
-        }
-        let update = {
-            let state = self.state.lock().await;
-            session::encode_diff(&state.session.doc, &before_vector)
-                .unwrap_or_else(|_| session::encode_state(&state.session.doc))
-        };
-        self.broadcast_editors_except(
-            None,
-            &json!({"type":"y-update","update":encode_update(&update)}),
-        )
-        .await;
-        json!({"type":"revision-decision","revision_id":revision_id,"revision":revision,"request_id":request_id,"durable":true})
-    }
     /// Reports the independently observable live-save and history-version
     /// boundaries without forcing either operation.  `dirty` is cleared only
     /// after the session snapshot has been accepted by storage; generation
@@ -1749,19 +1553,6 @@ impl Room {
                 Ok(decoded) => decoded,
                 Err(_) => return Applied::Ignored,
             };
-            // Revision decisions and history are server-owned. A browser may
-            // create pending capture records, but a raw Yjs update cannot
-            // rewrite status/history or remove a record. Rehearse the exact
-            // update on a scratch document before admission so a rejected
-            // metadata mutation never reaches the live document or peers.
-            let revision_base_len = match revisions::client_update_safe_after_as_with_len(
-                &state.session.doc,
-                update,
-                Some(by.display()),
-            ) {
-                Some(len) => len,
-                None => return Applied::Ignored,
-            };
             let decoded = match session::admit_decoded_update(
                 &state.session.doc,
                 decoded,
@@ -1783,42 +1574,7 @@ impl Room {
                 session::DecodedAdmission::Fits(decoded) => decoded,
             };
             drop(decoded);
-            // `S` bounds what a person can see; `E` bounds what persistence has
-            // to write, and the two move independently -- a document whose text
-            // never grows still accumulates CRDT history and metadata. A
-            // candidate that would carry the snapshot past `E` is refused here,
-            // before it is applied and before it is relayed, because a snapshot
-            // that cannot be persisted could never be acknowledged and relaying
-            // it would show every peer a document this server cannot save.
-            let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-            {
-                let known = match state.session.encoded_bound {
-                    Some(bound) => bound,
-                    None => {
-                        state.session.encoded_bound = Some(revision_base_len);
-                        revision_base_len
-                    }
-                };
-                let bound = known.saturating_add(update.len());
-                if bound <= ceiling {
-                    bound
-                } else {
-                    // The cheap bound cannot decide, so buy the exact answer on a
-                    // scratch copy. That copy is a large allocation, so it is
-                    // admitted against the same memory budget persistence uses.
-                    let _ = bound;
-                    let Some(exact) = session::rehearsed_encoded_len(&state.session.doc, update)
-                    else {
-                        return Applied::Ignored;
-                    };
-                    if exact > ceiling {
-                        return Applied::Refuse(WriteError::Document(
-                            crate::room::error::DocumentLimit::Encoded,
-                        ));
-                    }
-                    exact
-                }
-            }
+            update.len()
         };
         // Read before the update is applied, so a change to the shared
         // main-file pointer can be told from a document that already opened
@@ -1854,7 +1610,7 @@ impl Room {
         let repaired_bytes = correction.as_ref().map_or(0, Vec::len);
         if let Some(correction) = correction {
             let payload =
-                json!({"type": "y-update", "update": encode_update(&correction)}).to_string();
+                json!({"type": "doc-update", "update": encode_update(&correction)}).to_string();
             send_to(&mut state, None, Outgoing::shared_text(payload), |peer| {
                 peer.may_edit
             });
@@ -2022,7 +1778,7 @@ impl Room {
                     continue;
                 }
                 peer.acked = seq;
-                let payload = json!({"type": "y-ack", "seq": seq}).to_string();
+                let payload = json!({"type": "doc-ack", "seq": seq}).to_string();
                 if peer.tx.try_send_durable(Outgoing::Text(payload)).is_err() {
                     state.sockets.remove(&id);
                 }
@@ -2193,7 +1949,7 @@ fn starter_bibliography(
 }
 
 fn hydrate_project(
-    doc: &yrs::Doc,
+    doc: &LoroDoc,
     archive: &crate::storage::source_archive::SourceArchive,
     missing_only: bool,
 ) -> bool {
@@ -2249,7 +2005,7 @@ fn hydrate_project(
 /// a version whose tree digest already names the newest one, and `commit_archive`
 /// reuses an existing blob when the encoded archive is byte-identical.
 pub fn tree_of(
-    doc: &yrs::Doc,
+    doc: &LoroDoc,
     asset_sizes: &HashMap<String, i64>,
 ) -> (crate::document::history::Tree, HashMap<String, String>) {
     use crate::document::history::{Tree, TreeEntry};

@@ -668,20 +668,22 @@ main.reader.source-right .editorpane {
 
 /* Somebody else's caret, and their name beside it.
  *
- * y-codemirror draws the caret in the colour that person picked when they
- * joined and leaves the shape of it to the page. The label sits above the line
- * rather than in it, so nobody's name pushes anyone's text around. */
-.cm-ySelectionCaret {
-  position: relative;
-  border-left: 2px solid;
-  border-right: none;
-  margin-left: -1px;
+ * The binding draws the caret as an absolutely positioned element and hands
+ * the name through a `--name` custom property, in whatever colour that person
+ * picked when they joined. What is left to the page is the shape of it, and
+ * where the name goes: above the line rather than in it, so that nobody's
+ * name pushes anyone's text around. The binding's own base theme puts the
+ * label below the line, which these rules override.
+ *
+ * `currentColor` carries the person's colour through from the class the
+ * session puts on the element, so the caret and its label cannot disagree
+ * about whose they are. */
+.loro-cursor {
+  background: currentColor;
   box-sizing: border-box;
 }
-.cm-ySelectionCaretDot {
-  display: none;
-}
-.cm-ySelectionInfo {
+.loro-cursor::before {
+  content: var(--name);
   position: absolute;
   top: -1.4em;
   left: -2px;
@@ -690,6 +692,7 @@ main.reader.source-right .editorpane {
   line-height: 1.4;
   font-family: var(--typo-base--font-family);
   color: white;
+  background: currentColor;
   white-space: nowrap;
   border-radius: var(--radius-base);
   opacity: 0.85;
@@ -698,8 +701,16 @@ main.reader.source-right .editorpane {
   pointer-events: none;
   z-index: 5;
 }
-.cm-ySelectionCaret:hover .cm-ySelectionInfo {
+.loro-cursor:hover::before {
   opacity: 1;
+}
+
+/* The run of text somebody else has selected. Kept faint: it sits behind
+ * prose that has to stay readable while they are choosing what to do with
+ * it. */
+.loro-selection {
+  background: currentColor;
+  opacity: 0.25;
 }
 
 /* -------------------------------------------------------------- annotating */

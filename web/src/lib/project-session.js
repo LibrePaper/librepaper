@@ -1,10 +1,10 @@
 // A document as one client holds it.
 //
-// The source is a Yjs document -- a CRDT -- so two people typing in the same
+// The source is a Loro document -- a CRDT -- so two people typing in the same
 // sentence converge on the same text without either of them waiting for the
 // other. What travels is a small binary update per change.
 //
-// The server is not a relay. It holds the same document, with `yrs`, and it is
+// The server is not a relay. It holds the same document, with `loro`, and it is
 // the durable copy: the session outlives every socket, so a tab closed by
 // mistake, a laptop that dies or a browser that restarts loses nothing. Three
 // things follow, and they are the whole of what is new here.
@@ -15,7 +15,7 @@
 //
 // **Relaying is not durability.** An update is relayed the moment it lands and
 // acknowledged only once the server has written it. Every update this browser
-// makes is held until its `y-ack` arrives, so `pending` is the honest answer
+// makes is held until its `doc-ack` arrives, so `pending` is the honest answer
 // to "is my work safe", and the toolbar says that rather than saying "saved"
 // because a socket happens to be open.
 //
@@ -23,8 +23,7 @@
 // CRDT across client restarts; on reconnect the whole local state is sent and
 // merged, so changes made on either side of the gap reach the other.
 
-import * as Y from "yjs";
-import { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate } from "y-protocols/awareness.js";
+import { LoroDoc, LoroText, EphemeralStore } from "loro-crdt";
 import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
 
 // Keep each JSON WebSocket frame comfortably below the server's one-megabyte
@@ -92,8 +91,8 @@ export function createProjectSession({
   setTimer = globalThis.setTimeout,
   clearTimer = globalThis.clearTimeout,
 }) {
-  const doc = new Y.Doc();
-  // A document is a directory: `files` holds one Y.Text per file under an id
+  const doc = new LoroDoc();
+  // A document is a directory: `files` holds one LoroText per file under an id
   // of its own, `paths` says what each of them is called, and `meta.main`
   // names the one the renderer is run on. Keying the texts by id rather than
   // by path is what makes a rename free -- the name moves and the text stays
@@ -106,7 +105,7 @@ export function createProjectSession({
   // name somebody gave it and what is at that name.
   const assets = doc.getMap("assets");
   const meta = doc.getMap("meta");
-  const awareness = new Awareness(doc);
+  const store = new EphemeralStore(30000);
 
   // The text the editor and the preview are following, and who is following
   // it. Which text that is can change under them -- when the maps arrive from
@@ -116,26 +115,45 @@ export function createProjectSession({
   let bound = null;
   const watchers = new Set();
   const swaps = new Set();
+  // Track subscriptions: Map from text.id -> Map from watcher -> unsub function
+  const textSubs = new Map();
 
   function mainText() {
     const id = meta.get("main");
     const text = id ? files.get(id) : null;
-    return text instanceof Y.Text ? text : null;
+    // Check if the value is a LoroText by checking its kind
+    return text?.kind?.() === "Text" ? text : null;
   }
 
   function rebind() {
     const next = mainText();
     if (next === bound) return;
-    for (const watcher of watchers) {
-      bound?.unobserve(watcher);
-      next?.observe(watcher);
+    // Unsubscribe all watchers from the old bound text
+    if (bound && textSubs.has(bound.id)) {
+      const subs = textSubs.get(bound.id);
+      for (const unsub of subs.values()) {
+        unsub();
+      }
+      textSubs.delete(bound.id);
     }
     bound = next;
+    // Subscribe all current watchers to the new bound text
+    if (bound) {
+      const subs = new Map();
+      for (const watcher of watchers) {
+        const unsub = bound.subscribe((event) => watcher(event));
+        subs.set(watcher, unsub);
+      }
+      textSubs.set(bound.id, subs);
+    }
     for (const swap of swaps) swap();
   }
 
-  files.observe(rebind);
-  meta.observe(rebind);
+  // Subscribe to document changes to detect when main file or files/paths change.
+  // Each subscription will trigger rebind to update the bound text if needed.
+  doc.subscribe(() => {
+    rebind();
+  });
   rebind();
 
   // Updates this browser has made and the server has not yet said are durable,
@@ -145,9 +163,9 @@ export function createProjectSession({
   // Whether this browser has been given the server's copy since the socket
   // last came up. Until it has, what is here may be behind.
   let joined = false;
-  let awarenessTimer = null;
-  const pendingAwareness = new Set();
-  let awarenessConnection = 0;
+  let presenceTimer = null;
+  const pendingPresence = new Set();
+  let presenceConnection = 0;
   let announcedConnection = -1;
   let left = false;
   // Whether the document is in this client's own storage, which is what makes
@@ -159,10 +177,10 @@ export function createProjectSession({
   // A read-only client keeps nothing: it has no local changes to lose. An
   // editor can still work when storage is unavailable, but `local` remains
   // false so its UI does not call those changes safe on this device.
-  let store = null;
+  let persister = null;
   const report = () => onState?.({ pending: unacknowledged.size, local, localPending, localError, joined });
   try {
-    store = persistence?.open?.(doc, {
+    persister = persistence?.open?.(doc, {
       hydrated() { local = true; report(); },
       writing(count = 1) {
         localPending = Math.max(0, Number(count) || 0);
@@ -187,95 +205,105 @@ export function createProjectSession({
   }
   report();
 
-  awareness.setLocalStateField("user", {
+  store.set("user", {
     name: name || "Anonymous",
     color: presenceColor,
     tab: presenceId(),
   });
 
   // Anything this browser changes is sent on and held until it is
-  // acknowledged; anything that arrives is applied with an origin that stops
-  // it being sent straight back out. An update out of indexeddb is this
+  // acknowledged; subscribeLocalUpdates only fires for local changes, so the
+  // origin check is not needed. An update out of indexeddb is this
   // browser's own past work, and is sent on for the same reason a keystroke
   // is: the server may never have seen it.
   function sendUpdate(update, mine) {
     if (update.byteLength <= UPDATE_CHUNK_BYTES) {
-      send({ type: "y-update", update: encode(update), seq: mine });
+      send({ type: "doc-update", update: encode(update), seq: mine });
       return;
     }
     const chunks = Math.ceil(update.byteLength / UPDATE_CHUNK_BYTES);
-    send({ type: "y-update-start", seq: mine, size: update.byteLength, chunks });
+    send({ type: "doc-update-start", seq: mine, size: update.byteLength, chunks });
     for (let index = 0; index < chunks; index++) {
       const from = index * UPDATE_CHUNK_BYTES;
       send({
-        type: "y-update-chunk",
+        type: "doc-update-chunk",
         seq: mine,
         index,
         update: encode(update.subarray(from, Math.min(update.byteLength, from + UPDATE_CHUNK_BYTES))),
       });
     }
-    send({ type: "y-update-end", seq: mine });
+    send({ type: "doc-update-end", seq: mine });
   }
 
-  doc.on("update", (update, origin) => {
-    if (origin === "remote" || !mayEdit) return;
-    const mine = ++seq;
-    unacknowledged.set(mine, update);
-    report();
-    sendUpdate(update, mine);
-  });
-
-  function clearAwarenessTimer() {
-    if (awarenessTimer !== null) clearTimer(awarenessTimer);
-    awarenessTimer = null;
+  if (mayEdit) {
+    doc.subscribeLocalUpdates((update) => {
+      const mine = ++seq;
+      unacknowledged.set(mine, update);
+      report();
+      sendUpdate(update, mine);
+    });
   }
 
-  function sendAwareness(changed) {
-    if (!changed.length || left) return;
-    send({ type: "y-awareness", update: encode(encodeAwarenessUpdate(awareness, changed)) });
-    if (joined && changed.includes(doc.clientID)) announcedConnection = awarenessConnection;
+  function clearPresenceTimer() {
+    if (presenceTimer !== null) clearTimer(presenceTimer);
+    presenceTimer = null;
   }
 
-  function flushAwareness() {
-    awarenessTimer = null;
-    if (!pendingAwareness.size || left) return;
-    const changed = [...pendingAwareness];
-    pendingAwareness.clear();
-    // Encode at flush time. A burst may have advanced the awareness clock
-    // several times, and peers only need the latest state.
-    sendAwareness(changed);
+  function sendPresence(bytes) {
+    if (!bytes.byteLength || left) return;
+    send({ type: "doc-presence", update: encode(bytes) });
+    announcedConnection = presenceConnection;
   }
 
-  awareness.on("update", ({ added, updated, removed }, origin) => {
-    // Awareness changes from peers (and expiry of stale peers) are for local
-    // rendering only. Relaying them would create a broadcast echo loop.
-    if (!mayEdit) return;
-    onPeers?.(awareness.getStates().size);
-    if (left || origin !== "local") return;
-
-    const changed = added.concat(updated, removed);
-    for (const client of changed) pendingAwareness.add(client);
-
-    // A departure must reach peers before a coalescing delay can hide it.
-    // The state encoded here is null for a local destroy/removal.
-    if (removed.length) {
-      clearAwarenessTimer();
-      flushAwareness();
-      return;
+  function flushPresence() {
+    presenceTimer = null;
+    if (!pendingPresence.size || left) return;
+    const keys = [...pendingPresence];
+    pendingPresence.clear();
+    // Encode only changed keys, not the full state. A burst may have advanced
+    // the presence state several times, and peers only need the latest state
+    // for each key. Encoding per key avoids sending redundant full-state updates.
+    let bytes = new Uint8Array();
+    for (const key of keys) {
+      const keyBytes = store.encode(key);
+      if (keyBytes) {
+        bytes = new Uint8Array([...bytes, ...keyBytes]);
+      }
     }
+    sendPresence(bytes);
+  }
 
-    // Keep local changes made while disconnected for the next join, where the
-    // current state is announced once the socket is usable.
-    if (!joined || awarenessTimer !== null) return;
-    awarenessTimer = setTimer(flushAwareness, AWARENESS_THROTTLE_MS);
-  });
+  if (mayEdit) {
+    store.subscribe((event) => {
+      // Presence changes from peers (and expiry of stale peers) are for local
+      // rendering only. Relaying them would create a broadcast echo loop.
+      onPeers?.(Object.keys(store.getAllStates()).length);
+      if (left || event.by !== "local") return;
 
-  function announceAwareness() {
+      const changed = event.added.concat(event.updated, event.removed);
+      for (const key of changed) pendingPresence.add(key);
+
+      // A departure must reach peers before a coalescing delay can hide it.
+      if (event.removed.length) {
+        clearPresenceTimer();
+        flushPresence();
+        return;
+      }
+
+      // Keep local changes made while disconnected for the next join, where the
+      // current state is announced once the socket is usable.
+      if (!joined || presenceTimer !== null) return;
+      presenceTimer = setTimer(flushPresence, AWARENESS_THROTTLE_MS);
+    });
+  }
+
+  function announcePresence() {
     if (!mayEdit || left) return;
-    clearAwarenessTimer();
-    flushAwareness();
-    if (awareness.getLocalState() && announcedConnection !== awarenessConnection) {
-      sendAwareness([doc.clientID]);
+    clearPresenceTimer();
+    flushPresence();
+    if (store.get("user") && announcedConnection !== presenceConnection) {
+      const bytes = store.encode("user") || new Uint8Array();
+      sendPresence(bytes);
     }
   }
 
@@ -283,10 +311,19 @@ export function createProjectSession({
   /// how the changes made while the socket was down reach the server: applying
   /// it is idempotent, so it costs nothing when there were none.
   function catchUp(vector) {
-    // A server can include the state vector used for its y-state response. In
-    // that case only this browser's missing structs are sent back; older
-    // servers omit it, so the bounded full-state path remains compatible.
-    const whole = vector ? Y.encodeStateAsUpdate(doc, decode(vector)) : Y.encodeStateAsUpdate(doc);
+    // A server can include the state vector used for its state response. In
+    // that case only this browser's missing operations are sent back; older
+    // servers omit it, so the bounded full-history path remains compatible.
+    let whole;
+    if (vector) {
+      const decodedVector = decode(vector);
+      // Import the server's state vector to decode which operations are needed
+      // Then export only the missing operations
+      whole = doc.export({ mode: "update", from: decodedVector });
+    } else {
+      // Export the full history from an empty version vector
+      whole = doc.export({ mode: "update" });
+    }
     const mine = ++seq;
     // One entry stands for every update it contains: the acknowledgment of
     // this send is the acknowledgment of all of them.
@@ -301,7 +338,7 @@ export function createProjectSession({
     files,
     paths,
     meta,
-    awareness,
+    awareness: store,
     /// The main file's text as it stands. A getter rather than a field,
     /// because which text that is is not known until the session arrives.
     get text() {
@@ -330,7 +367,12 @@ export function createProjectSession({
     /// main file.
     watchSource(watcher) {
       watchers.add(watcher);
-      bound?.observe(watcher);
+      if (bound) {
+        // Subscribe this new watcher to the currently bound text
+        const unsub = bound.subscribe((event) => watcher(event));
+        if (!textSubs.has(bound.id)) textSubs.set(bound.id, new Map());
+        textSubs.get(bound.id).set(watcher, unsub);
+      }
     },
 
     /* --------------------------------------------------------- the directory */
@@ -346,22 +388,22 @@ export function createProjectSession({
       if (!mayEdit) throw new Error("This project is read-only.");
       path = checkPlacement(rules, { kind: "folder", path }, this.list(), this.folders());
       meta.set(`folder:${path}`, true);
+      doc.commit();
       return path;
     },
 
     relocate(entries, destination, rules, rename = false) {
       if (!mayEdit) throw new Error("This project is read-only.");
       const plan = relocation(this.list(), this.folders(), entries, destination, rules, rename);
-      doc.transact(() => {
-        // Remove asset keys first, so a batch move never overwrites a source.
-        for (const file of plan.files) if (file.kind === "asset") assets.delete(file.previousPath);
-        for (const file of plan.files) {
-          if (file.kind === "asset") assets.set(file.path, file.sha);
-          else paths.set(file.id, file.path);
-        }
-        for (const path of plan.oldFolders) meta.delete(`folder:${path}`);
-        for (const path of [...plan.folders, ...plan.parents]) meta.set(`folder:${path}`, true);
-      });
+      // Remove asset keys first, so a batch move never overwrites a source.
+      for (const file of plan.files) if (file.kind === "asset") assets.delete(file.previousPath);
+      for (const file of plan.files) {
+        if (file.kind === "asset") assets.set(file.path, file.sha);
+        else paths.set(file.id, file.path);
+      }
+      for (const path of plan.oldFolders) meta.delete(`folder:${path}`);
+      for (const path of [...plan.folders, ...plan.parents]) meta.set(`folder:${path}`, true);
+      doc.commit();
       return plan;
     },
 
@@ -377,17 +419,16 @@ export function createProjectSession({
       const selected = (path) => roots.some((entry) => path === entry.path || (entry.kind === "folder" && inside(path, entry.path)));
       const removed = current.filter((file) => selected(file.path));
       if (removed.some((file) => file.main)) throw new Error("Choose another main file before deleting this file or its folder.");
-      doc.transact(() => {
-        for (const file of removed) {
-          if (file.kind === "asset") assets.delete(file.path);
-          else { files.delete(file.id); paths.delete(file.id); }
-        }
-        for (const path of this.folders()) if (selected(path)) meta.delete(`folder:${path}`);
-        for (const entry of roots) {
-          const parent = parentPath(entry.path);
-          if (parent) meta.set(`folder:${parent}`, true);
-        }
-      });
+      for (const file of removed) {
+        if (file.kind === "asset") assets.delete(file.path);
+        else { files.delete(file.id); paths.delete(file.id); }
+      }
+      for (const path of this.folders()) if (selected(path)) meta.delete(`folder:${path}`);
+      for (const entry of roots) {
+        const parent = parentPath(entry.path);
+        if (parent) meta.set(`folder:${parent}`, true);
+      }
+      doc.commit();
     },
 
     duplicateEntry(entry, path, rules) {
@@ -407,7 +448,10 @@ export function createProjectSession({
     list() {
       const id = meta.get("main");
       const texts = [...paths.entries()]
-        .filter(([file]) => files.get(file) instanceof Y.Text)
+        .filter(([file]) => {
+          const val = files.get(file);
+          return val?.kind?.() === "Text";
+        })
         .map(([file, path]) => ({ id: file, path, kind: "text", main: file === id }));
       const figures = [...assets.entries()].map(([path, sha]) => ({
         id: path,
@@ -430,7 +474,7 @@ export function createProjectSession({
       const entries = Object.create(null);
       for (const [file, text] of files.entries()) {
         const path = paths.get(file);
-        if (path && text instanceof Y.Text) {
+        if (path && text?.kind?.() === "Text") {
           texts[path] = text.toString();
           entries[path] = { kind: "text", id: file };
         }
@@ -452,17 +496,20 @@ export function createProjectSession({
 
     textOf(id) {
       const text = files.get(id);
-      return text instanceof Y.Text ? text : null;
+      return text?.kind?.() === "Text" ? text : null;
     },
 
     /// Makes a file. One transaction, so no peer ever sees a text without the
     /// name it is known by.
     addText(path, body = "") {
       const id = mintId();
-      doc.transact(() => {
-        files.set(id, new Y.Text(body));
-        paths.set(id, path);
-      });
+      const text = new LoroText();
+      if (body) {
+        text.insert(0, body);
+      }
+      files.setContainer(id, text);
+      paths.set(id, path);
+      doc.commit();
       return id;
     },
 
@@ -473,22 +520,23 @@ export function createProjectSession({
       if (kind === "asset" || (kind === undefined && assets.has(id))) {
         if (!assets.has(id)) return;
         const sha = assets.get(id);
-        doc.transact(() => {
-          assets.delete(id);
-          assets.set(path, sha);
-        });
+        assets.delete(id);
+        assets.set(path, sha);
+        doc.commit();
         return;
       }
-      if (kind === "text" || (kind === undefined && paths.has(id))) paths.set(id, path);
+      if (kind === "text" || (kind === undefined && paths.has(id))) {
+        paths.set(id, path);
+        doc.commit();
+      }
     },
 
     /// Removes a file, its name with it. The main file is never removed here;
     /// the file list refuses it, because a document has to be something.
     removeFile(id) {
-      doc.transact(() => {
-        files.delete(id);
-        paths.delete(id);
-      });
+      files.delete(id);
+      paths.delete(id);
+      doc.commit();
     },
 
     removeAsset(path) {
@@ -508,54 +556,76 @@ export function createProjectSession({
     /// Called whenever the directory changes -- a file added, renamed,
     /// removed, or made the main one -- so the list can be redrawn.
     onFiles(watcher) {
-      // A Y.Text is nested below the files map. A shallow observer sees a new
-      // file but not edits to an existing one, leaving readers of another file
-      // with a stale preview. Deep observation covers both cases.
-      files.observeDeep(watcher);
-      paths.observe(watcher);
-      assets.observe(watcher);
-      meta.observe(watcher);
-      return () => {
-        files.unobserveDeep(watcher);
-        paths.unobserve(watcher);
-        assets.unobserve(watcher);
-        meta.unobserve(watcher);
-      };
+      // In Loro, we use document-level subscription to watch for changes to
+      // the relevant containers. Each event batch includes changes to all
+      // containers, so we filter for events affecting files, paths, assets, and meta.
+      const filesId = files.id;
+      const pathsId = paths.id;
+      const assetsId = assets.id;
+      const metaId = meta.id;
+      const unsub = doc.subscribe((eventBatch) => {
+        // Call the watcher for each event affecting our containers of interest
+        for (const event of eventBatch.events) {
+          if (event.target === filesId ||
+              event.target === pathsId ||
+              event.target === assetsId ||
+              event.target === metaId) {
+            watcher(event);
+          }
+        }
+      });
+      return unsub;
     },
 
     /// Says which file this browser's caret is in, so the file list can show
-    /// who is where. The caret's own position is published by y-codemirror
+    /// who is where. The caret's own position is published by editor binding
     /// against the text it was made in, so it already paints in the right
     /// file; this is for the list.
     inFile(id) {
-      awareness.setLocalStateField("file", id);
+      const user = store.get("user") || {};
+      store.set("user", { ...user, file: id });
     },
 
     /// Who is in which file: an id to the initials of the people in it.
     whereEveryoneIs() {
       const by = new Map();
-      const localTab = awareness.getLocalState()?.user?.tab || "";
-      for (const { state } of uniquePresences(awareness.getStates(), { localClient: doc.clientID, localTab })) {
-        if (!state.file) continue;
-        const name = state?.user?.name || "?";
-        const initials = name
-          .split(/\s+/)
-          .filter(Boolean)
-          .slice(0, 2)
-          .map((word) => word[0].toUpperCase())
-          .join("");
-        by.set(state.file, [...(by.get(state.file) || []), initials]);
+      const localUser = store.get("user");
+      const localTab = localUser?.tab || "";
+      const states = store.getAllStates();
+      for (const [key, state] of Object.entries(states)) {
+        // Skip if this is the local user's own state or if it's the same tab
+        if (key === "user" && state.tab === localTab) continue;
+        // Only process user states that have file information
+        if (key === "user" && state.file) {
+          const name = state?.name || "?";
+          const initials = name
+            .split(/\s+/)
+            .filter(Boolean)
+            .slice(0, 2)
+            .map((word) => word[0].toUpperCase())
+            .join("");
+          by.set(state.file, [...(by.get(state.file) || []), initials]);
+        }
       }
       return by;
     },
 
     participants() {
-      const localTab = awareness.getLocalState()?.user?.tab || "";
-      return uniquePresences(awareness.getStates(), { localClient: doc.clientID, localTab })
-        .map(({ key: presence, state }) => ({
-          key: presence,
-          name: state.user.name || "Anonymous",
-        }));
+      const localUser = store.get("user");
+      const localTab = localUser?.tab || "";
+      const states = store.getAllStates();
+      const result = [];
+      for (const [key, state] of Object.entries(states)) {
+        if (key === "user") {
+          // Skip the local user's own presence
+          if (state.tab === localTab) continue;
+          result.push({
+            key: state.tab || key,
+            name: state.name || "Anonymous",
+          });
+        }
+      }
+      return result;
     },
 
     /// Called when the text being followed is a different text, so whoever is
@@ -567,10 +637,12 @@ export function createProjectSession({
     /// What to send to join, or to rejoin: what this browser already has, so
     /// the server answers with the rest and nothing more.
     open() {
-      return { type: "y-open", vector: encode(Y.encodeStateVector(doc)) };
+      // Get the operation log version vector and encode it for transport
+      const vv = doc.oplogVersion();
+      return { type: "doc-open", vector: encode(vv) };
     },
 
-    /// The server's answer to `y-open`: the document, or -- when it is too
+    /// The server's answer to `doc-open`: the document, or -- when it is too
     /// large for a text frame -- somewhere to fetch it from.
     async start(state) {
       if (state.ref) {
@@ -585,12 +657,12 @@ export function createProjectSession({
         // arrived with. Without them a document too large to send inline was
         // refused, which is what the notebook examples were doing.
         if (!fetchReference) throw new Error("this client cannot fetch referenced document state");
-        Y.applyUpdate(doc, await fetchReference(state.ref), "remote");
+        doc.import(await fetchReference(state.ref));
       } else if (state.update) {
-        Y.applyUpdate(doc, decode(state.update), "remote");
+        doc.import(decode(state.update));
       }
       joined = true;
-      announceAwareness();
+      announcePresence();
       // Whatever this browser has that the server may not: its own unsent
       // work, and -- after a reference fetch -- anything that landed while it
       // was in flight.
@@ -599,11 +671,11 @@ export function createProjectSession({
     },
 
     apply(update) {
-      Y.applyUpdate(doc, decode(update), "remote");
+      doc.import(decode(update));
     },
 
-    applyAwareness(update) {
-      applyAwarenessUpdate(awareness, decode(update), "remote");
+    applyPresence(update) {
+      store.apply(decode(update));
     },
 
     /// The server has written everything up to this number. Relaying was never
@@ -619,10 +691,10 @@ export function createProjectSession({
     /// is still held, and goes again on the next join.
     disconnected() {
       joined = false;
-      awarenessConnection++;
+      presenceConnection++;
       // Keep a pending local state for the next join, but do not leave a
       // timer running while the socket is unavailable.
-      clearAwarenessTimer();
+      clearPresenceTimer();
       report();
     },
 
@@ -632,22 +704,22 @@ export function createProjectSession({
 
     /// Says who this is, for the label on their caret.
     rename(who) {
-      awareness.setLocalStateField("user", { ...awareness.getLocalState()?.user, name: who });
+      const user = store.get("user") || {};
+      store.set("user", { ...user, name: who });
     },
 
     /// Resolves after the persistence adapter has committed the latest local
     /// state. A client without durable storage resolves immediately.
     persist() {
-      return store?.flush?.() || Promise.resolve();
+      return persister?.flush?.() || Promise.resolve();
     },
 
     leave() {
-      clearAwarenessTimer();
-      pendingAwareness.clear();
-      awareness.destroy();
+      clearPresenceTimer();
+      pendingPresence.clear();
       left = true;
-      store?.close?.();
-      doc.destroy();
+      persister?.close?.();
+      doc.destroy?.();
     },
   };
 }

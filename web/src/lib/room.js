@@ -81,7 +81,7 @@ export function openRoom(slug, { onMessage, onConnected, key = "" }) {
       // Yjs messages must be delivered by the room socket. Sending a Yjs
       // update through the comments endpoint would return an error and, more
       // dangerously, make callers believe that the document was persisted.
-      if (message.type?.startsWith("y-")) {
+      if (message.type?.startsWith("doc-")) {
         return { ok: false, error: new Error("room is disconnected") };
       }
       return fetch(`/api/documents/${slug}/comments`, {

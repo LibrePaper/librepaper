@@ -1,15 +1,17 @@
-//! Repair of malformed documents, using Loro.
+//! Repair of malformed documents and restoration from checkpoints.
 //!
-//! A document can arrive with paths the rules refuse, duplicate paths, assets
+//! A document may arrive with paths the rules refuse, duplicate paths, assets
 //! the rules refuse, files with no path, or a main pointer that does not exist.
 //! Each case is caught and fixed in one transaction, so the document is either
-//! wholly right or wholly as it was.
+//! wholly right or wholly as it was before the repair.
 //!
-//! A restore applies a checkpoint, preserving file identity and blame by
+//! A restore applies a checkpoint, preserving file identity and authorship by
 //! keeping texts that exist and applying word-level diffs rather than
-//! wholesale replacement.
+//! wholesale replacement. This way concurrent editors see words change under
+//! their carets rather than files disappearing and reappearing, and the
+//! version vector retains the identity of everyone who touched the text.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use loro::LoroDoc;
 
@@ -131,7 +133,8 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
     }
 
     // A text with no path at all -- a `files` entry somebody set without one --
-    // is named, so that it is a file rather than an orphan.
+    // is named, so that it is a file rather than an orphan. The file already
+    // exists with its content; only the path entry is added.
     let ids: Vec<String> = files.keys().cloned().collect();
     for id in &ids {
         if super::shape::paths_of(doc).contains_key(id) {
@@ -144,10 +147,11 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
             nth += 1;
         }
         taken.insert(paths::collision_key(&placeholder));
-        // An orphaned file (in files map but not in paths map) is given a path.
-        // This assumes the edits module can assign a path to an existing id
-        // without creating a duplicate file or losing its content.
-        super::edits::put_text(doc, &placeholder, &files[&id]);
+        // The orphan already has a text in `files`; it is only its name that is
+        // missing. Naming it directly, rather than through `put_text`, is what
+        // keeps its existing id -- and so the carets and concurrent edits that
+        // still point at it.
+        super::shape::put_path(doc, id, &placeholder);
         done.push(Repair::Renamed {
             id: id.clone(),
             to: placeholder,
@@ -196,14 +200,14 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
     done
 }
 
-/// Sets the document to a tree that was checkpointed, in one transaction: a
-/// restore is one moment, and a chapter and the file that includes it can
-/// never come back out of step.
+/// Sets the document to a tree that was checkpointed, in one transaction.
+/// A restore is one moment in time: a file and the document that holds it
+/// cannot drift between them.
 ///
-/// A file present on both sides keeps its id and takes word-level edits rather
-/// than being deleted and made again, so an editor watching a restore sees the
-/// words change under their caret instead of their file disappearing and a new
-/// one arriving in its place.
+/// A file present in both the checkpoint and the live document keeps its id
+/// and receives word-level edits rather than being deleted and recreated.
+/// This way concurrent editors see words change under their carets, and the
+/// version vector preserves the identity of the text's original authors.
 pub fn restore(
     doc: &LoroDoc,
     tree: &crate::document::history::Tree,
@@ -291,8 +295,9 @@ fn restore_with(
         }
         let body = body_for(path, entry);
         let id = if let Some(id) = by_path.get(path).cloned() {
-            // File exists at this path. Apply word-level edits to preserve blame.
-            apply_text_edits(doc, &id, &body);
+            // The file is already here, so make it match rather than replacing it:
+            // someone typing elsewhere in it keeps their words and their caret.
+            super::edits::replace_text(doc, path, &body);
             id
         } else if !entry.id.is_empty() && by_id.contains(&entry.id) {
             // A file may have been renamed since this checkpoint. Reuse the
@@ -300,8 +305,9 @@ fn restore_with(
             // the map value with a new LoroText at the same key would sever
             // the identity that concurrent peers and their carets still hold.
             let id = entry.id.clone();
-            apply_text_edits(doc, &id, &body);
-            super::edits::rename_path(doc, &path_by_id[&id], path);
+            let old_path = path_by_id[&id].clone();
+            super::edits::replace_text(doc, &old_path, &body);
+            super::edits::rename_path(doc, &old_path, path);
             id
         } else {
             // The id the tree recorded, so that restoring twice does not
@@ -330,9 +336,7 @@ fn restore_with(
     }
 
     let assets = super::shape::assets_of(doc);
-    let stale: Vec<String> = assets
-        .into_iter()
-        .filter_map(|(path, _)| {
+    let stale: Vec<String> = assets.into_keys().filter_map(|path| {
             if !matches!(tree.files.get(&path), Some(entry) if entry.kind == "asset") {
                 Some(path)
             } else {
@@ -346,68 +350,5 @@ fn restore_with(
 
     if !main.is_empty() {
         super::shape::set_main(doc, &main);
-    }
-}
-
-/// Apply word-level edits to preserve blame when restoring a file.
-/// The text is identified by its id. This uses character boundaries and
-/// UTF-16 offsets to avoid splitting surrogate pairs, preserving concurrent
-/// edits and attribution better than wholesale replacement.
-fn apply_text_edits(doc: &LoroDoc, id: &str, wanted: &str) {
-    // Look up the path for this id to get the current text
-    let paths = super::shape::paths_of(doc);
-    let Some(path) = paths.get(id) else {
-        return;
-    };
-
-    let texts = super::shape::texts_of(doc);
-    let Some(current) = texts.get(path) else {
-        return;
-    };
-
-    if current == wanted {
-        return;
-    }
-
-    // Compute the diff between current and wanted text, preserving blame
-    // by only changing what is different, using character boundaries.
-    let current_chars: Vec<char> = current.chars().collect();
-    let wanted_chars: Vec<char> = wanted.chars().collect();
-
-    // Find common prefix
-    let mut head = 0;
-    while head < current_chars.len()
-        && head < wanted_chars.len()
-        && current_chars[head] == wanted_chars[head]
-    {
-        head += 1;
-    }
-
-    // Find common suffix
-    let mut tail = 0;
-    while tail < current_chars.len() - head
-        && tail < wanted_chars.len() - head
-        && current_chars[current_chars.len() - 1 - tail] == wanted_chars[wanted_chars.len() - 1 - tail]
-    {
-        tail += 1;
-    }
-
-    // Translate the retained prefix/suffix, counted in characters, into the
-    // UTF-16 offsets Loro counts in. Each is a sum of `char::len_utf16` rather
-    // than a slice of the code-unit vector, so a boundary chosen above can
-    // never land inside a surrogate pair.
-    let head_units: usize = current_chars[..head].iter().map(|c| c.len_utf16()).sum();
-    let tail_units: usize = current_chars[current_chars.len() - tail..]
-        .iter()
-        .map(|c| c.len_utf16())
-        .sum();
-    let current_units: usize = current_chars.iter().map(|c| c.len_utf16()).sum();
-    let removed = current_units - head_units - tail_units;
-    let inserted: String = wanted_chars[head..wanted_chars.len() - tail]
-        .iter()
-        .collect();
-
-    if removed > 0 || !inserted.is_empty() {
-        super::edits::replace_text(doc, path, head_units, removed, &inserted);
     }
 }

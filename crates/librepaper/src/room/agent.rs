@@ -650,7 +650,7 @@ impl Room {
         }
         self.broadcast_editors_except(
             None,
-            &serde_json::json!({"type":"y-update","update":super::encode_update(&update)}),
+            &serde_json::json!({"type":"doc-update","update":super::encode_update(&update)}),
         )
         .await;
         Ok(AgentReceipt {

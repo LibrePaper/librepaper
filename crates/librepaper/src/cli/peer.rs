@@ -554,27 +554,6 @@ pub fn source_sha(source: &str) -> String {
     hex::encode(digest.finalize())
 }
 
-/// Standard Yjs awareness update containing a single provider-neutral user
-/// state. The browser consumes this using y-protocols' awareness decoder.
-pub fn awareness_update(client_id: u32, clock: u32, name: &str, color: &str) -> Vec<u8> {
-    let state =
-        serde_json::to_vec(&json!({"user":{"name":name,"color":color}})).unwrap_or_default();
-    let mut out = Vec::new();
-    put_varuint(&mut out, 1);
-    put_varuint(&mut out, client_id);
-    put_varuint(&mut out, clock);
-    put_varuint(&mut out, state.len() as u32);
-    out.extend_from_slice(&state);
-    out
-}
-
-/// Derive the awareness client id from a Yrs replica id. It stays stable over
-/// reconnects while the peer owns its document, so reconnects update one
-/// presence entry instead of leaving ghosts behind.
-pub fn awareness_client_id(doc: &yrs::Doc) -> u32 {
-    let digest = Sha256::digest(doc.client_id().to_string().as_bytes());
-    u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]])
-}
 
 /// Provider-neutral automation commands. Every command accepts the pasted
 /// document link as its first argument and prints one JSON object, making the
@@ -788,14 +767,6 @@ pub async fn run_cli(
     Ok(())
 }
 
-fn put_varuint(out: &mut Vec<u8>, mut value: u32) {
-    while value > 0x7f {
-        out.push((value as u8 & 0x7f) | 0x80);
-        value >>= 7;
-    }
-    out.push(value as u8);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,13 +790,6 @@ mod tests {
         let credential = link.credential_url();
         assert!(credential
             .starts_with("https://docs.example/docs/paper?file=chapters%2Fintro.md#k=secret"));
-    }
-
-    #[test]
-    fn awareness_contains_sync_identity() {
-        let bytes = awareness_update(4, 1, "agent (sync)", "#3366cc");
-        assert!(bytes.len() > 10);
-        assert!(String::from_utf8_lossy(&bytes).contains("agent (sync)"));
     }
 
     #[test]

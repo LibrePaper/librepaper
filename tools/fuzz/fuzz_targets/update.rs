@@ -33,10 +33,10 @@ struct Input {
 }
 
 fuzz_target!(|input: Input| {
-    // libFuzzer's harness aborts the process from the panic hook, before any
-    // `catch_unwind` runs, and `session::decode` catches the panics yrs makes
-    // on a damaged update. A hook that only prints leaves the catch working;
-    // a panic that does escape still aborts at the C boundary and is a crash.
+    // Loro's `import` returns a `Result` instead of panicking on malformed
+    // input, so `session::apply_update` handles errors cleanly. A panic hook
+    // is still set for any unexpected panics from the fuzzer infrastructure;
+    // a panic that escapes still aborts at the C boundary and is a crash.
     static HOOK: std::sync::Once = std::sync::Once::new();
     HOOK.call_once(|| {
         std::panic::set_hook(Box::new(|info| {
@@ -44,7 +44,6 @@ fuzz_target!(|input: Input| {
         }))
     });
 
-    // The peer's document, encoded whole.|input: Input| {
     // The peer's document, encoded whole.
     let theirs = session::new_doc();
     for (path, body) in input.files.iter().take(8) {

@@ -1,4 +1,3 @@
-import * as Y from "yjs";
 import { projectIdentity, projectIdentityKey } from "./project-identity.js";
 
 const DATABASE = "librepaper-offline-v1";
@@ -104,6 +103,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       let writing = false;
       let stored = false;
       let pendingFlush = Promise.resolve();
+      let unsubscribe;
 
       async function putState() {
         if (closed || writing || !dirty) return pendingFlush;
@@ -113,7 +113,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         pendingFlush = (async () => {
           try {
             database ||= await openOfflineDatabase(indexedDB_);
-            const update = Y.encodeStateAsUpdate(doc);
+            const update = doc.export({ mode: "update" });
             const transaction = database.transaction(STATES, "readwrite");
             transaction.objectStore(STATES).put(update, key);
             await transactionDone(transaction);
@@ -131,8 +131,10 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         return pendingFlush;
       }
 
-      function changed(_update, origin) {
-        if (origin === "offline-hydration") return;
+      // Only local edits need persisting, and `subscribeLocalUpdates` reports
+      // only those -- so hydrating the document below cannot re-trigger a write
+      // of what we just read.
+      function changed() {
         dirty = true;
         void putState();
       }
@@ -143,9 +145,9 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
           const saved = await requestResult(database.transaction(STATES, "readonly").objectStore(STATES).get(key));
           if (saved) {
             stored = true;
-            Y.applyUpdate(doc, new Uint8Array(saved), "offline-hydration");
+            doc.import(new Uint8Array(saved));
           }
-          doc.on("update", changed);
+          unsubscribe = doc.subscribeLocalUpdates(changed);
           events.hydrated();
         } catch (error) {
           events.failed(error);
@@ -162,7 +164,7 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         },
         close() {
           closed = true;
-          doc.off("update", changed);
+          unsubscribe?.();
           database?.close();
         },
       };

@@ -1,4 +1,10 @@
 //! Durable collaboration as one compressed base plus ordered PostgreSQL updates.
+//!
+//! A base is Loro's full operation history -- `ExportMode::Updates` from an
+//! empty version vector -- and not `ExportMode::Snapshot`, which additionally
+//! stores a materialised state and measures about twice the size for no gain
+//! here (SPEC-loro.md §4, §7.1). The parameter is named `base` rather than
+//! `snapshot` so that the wrong export mode is not the obvious thing to pass.
 
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read};
@@ -89,12 +95,12 @@ impl CollaborationStorage {
         document_id: Uuid,
         through: i64,
         project_generation: i64,
-        snapshot: &[u8],
+        base: &[u8],
     ) -> Result<Option<CollaborationBase>, Error> {
-        if snapshot.len() > MAX_EXPANDED_BASE_BYTES {
+        if base.len() > MAX_EXPANDED_BASE_BYTES {
             return Err(Error::Invalid("collaboration base exceeds limit".into()));
         }
-        let encoded = zstd::stream::encode_all(Cursor::new(snapshot), 3)?;
+        let encoded = zstd::stream::encode_all(Cursor::new(base), 3)?;
         if encoded.len() > MAX_BASE_BYTES {
             return Err(Error::Invalid(
                 "compressed collaboration base exceeds limit".into(),
@@ -102,7 +108,7 @@ impl CollaborationStorage {
         }
         let digest: [u8; 32] = Sha256::digest(&encoded).into();
         let base_id = super::postgres::new_id();
-        let key = format!("documents/{document_id}/collaboration/{base_id}.yrs.zst");
+        let key = format!("documents/{document_id}/collaboration/{base_id}.loro.zst");
         self.blobs
             .put_new(&key, encoded.clone(), "application/zstd")
             .await?;

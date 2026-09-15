@@ -59,7 +59,7 @@ impl UpdateAssembly {
     ) -> Result<Option<Vec<u8>>, &'static str> {
         const INVALID: &str = "invalid multipart document update";
         match message.kind.as_str() {
-            "y-update-start" => {
+            "doc-update-start" => {
                 if self.pending.is_some()
                     || message.size == 0
                     || message.size > ceiling
@@ -72,7 +72,7 @@ impl UpdateAssembly {
                 self.pending = Some((message.seq, message.size, message.chunks, 0, Vec::new()));
                 Ok(None)
             }
-            "y-update-chunk" => {
+            "doc-update-chunk" => {
                 let Some((seq, size, chunks, next, bytes)) = self.pending.as_mut() else {
                     return Err(INVALID);
                 };
@@ -87,7 +87,7 @@ impl UpdateAssembly {
                 *next += 1;
                 Ok(None)
             }
-            "y-update-end" => {
+            "doc-update-end" => {
                 let Some((seq, size, chunks, next, bytes)) = self.pending.take() else {
                     return Err(INVALID);
                 };
@@ -340,7 +340,7 @@ impl Server {
             let _ = writer.await;
             self.connections.lock().await.remove(&socket_id);
             room.detach(socket_id).await;
-            room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
+            room.broadcast(&json!({"type": "doc-peers", "count": room.editors().await}))
                 .await;
             return;
         }
@@ -447,7 +447,7 @@ impl Server {
 
                     if matches!(
                         incoming.kind.as_str(),
-                        "y-update-start" | "y-update-chunk" | "y-update-end"
+                        "doc-update-start" | "doc-update-chunk" | "doc-update-end"
                     ) {
                         if !may_edit {
                             let _ = tx
@@ -467,7 +467,7 @@ impl Server {
                         match assembly.receive(&incoming, update_ceiling) {
                             Ok(None) => continue 'reader,
                             Ok(Some(update)) => {
-                                incoming.kind = "y-update".to_string();
+                                incoming.kind = "doc-update".to_string();
                                 incoming.update = encode_update(&update);
                             }
                             Err(reason) => {
@@ -483,10 +483,10 @@ impl Server {
                     // the document -- that is how a reader renders the
                     // current text -- and writing it is the editor rung, the
                     // same gate the source has always been under.
-                    if incoming.kind.starts_with("y-") {
+                    if incoming.kind.starts_with("doc-") {
                         match incoming.kind.as_str() {
                             // What the socket already has, or nothing on a cold join.
-                            "y-open" | "y-sync" => {
+                            "doc-open" | "doc-sync" => {
                                 if !may_edit {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
                                         json!({
@@ -519,14 +519,14 @@ impl Server {
                                     // the fetch by sending its state vector
                                     // back as `y-sync`.
                                     json!({
-                                        "type": "y-state",
+                                        "type": "doc-state",
                                         "ref": self.state_reference(&room.slug),
                                         "vector": encode_update(&server_vector),
                                         "count": count,
                                     })
                                 } else {
                                     json!({
-                                        "type": "y-state",
+                                        "type": "doc-state",
                                         "update": encode_update(&update),
                                         "vector": encode_update(&server_vector),
                                         "count": count,
@@ -541,24 +541,24 @@ impl Server {
                                 if send_outgoing(&tx, Outgoing::Text(payload_text)).await.is_err() {
                                     break 'reader;
                                 }
-                                room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
+                                room.broadcast(&json!({"type": "doc-peers", "count": room.editors().await}))
                                     .await;
                             }
                             // Where everyone's caret is, and what they are called.
                             // Relayed and not remembered: it describes who is here
                             // now, so it is worth nothing to whoever arrives next, and
                             // a session that kept it would be keeping a list of ghosts.
-                            "y-awareness" => {
+                            "doc-presence" => {
                                 if !may_edit || incoming.update.is_empty() {
                                     continue 'reader;
                                 }
                                 room.broadcast_editors_except(
                                     Some(socket_id),
-                                    &json!({"type": "y-awareness", "update": incoming.update}),
+                                    &json!({"type": "doc-presence", "update": incoming.update}),
                                 )
                                 .await;
                             }
-                            "y-update" => {
+                            "doc-update" => {
                                 if !may_edit {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
                                             json!({
@@ -611,14 +611,14 @@ impl Server {
                                 // storage has it, that it is durable.
                                 room.broadcast_editors_except(
                                     Some(socket_id),
-                                    &json!({"type": "y-update", "update": incoming.update}),
+                                    &json!({"type": "doc-update", "update": incoming.update}),
                                 )
                                 .await;
                             }
                             // A deliberate act by the author, and so a mark in the
                             // timeline. The requester is told which checkpoint it
                             // became, so peers can report the accepted revision.
-                            "y-checkpoint" => {
+                            "doc-checkpoint" => {
                                 if !may_edit {
                                     let payload = json!({
                                         "type": "error",
@@ -644,7 +644,7 @@ impl Server {
                                 };
                                 let payload = match result {
                                     Ok(Some(sha)) => json!({
-                                        "type": "y-checkpoint", "sha": sha,
+                                        "type": "doc-checkpoint", "sha": sha,
                                         "request_id": incoming.request_id,
                                         "durable": true,
                                         "version": 1,
@@ -652,7 +652,7 @@ impl Server {
                                     }),
                                     Ok(None) if !immediate => continue 'reader,
                                     Ok(None) => json!({
-                                        "type": "y-checkpoint", "noop": true,
+                                        "type": "doc-checkpoint", "noop": true,
                                         "request_id": incoming.request_id,
                                         "durable": true,
                                         "version": 1,
@@ -733,35 +733,8 @@ impl Server {
                             continue 'reader;
                         }
                     }
-                    if incoming.kind == "revision-decide" {
-                        // `decide_revision` owns the publication gate for its
-                        // complete validate, persist, and broadcast sequence.
-                        // Taking it here as well deadlocks this socket because
-                        // Tokio's mutex is not reentrant, leaving the browser's
-                        // review action pending forever.
-                        let result = room
-                            .decide_revision(
-                                &incoming.revision_id,
-                                &incoming.action,
-                                &author,
-                                may_edit,
-                                &incoming.request_id,
-                            )
-                            .await;
-                        if send_outgoing(&tx, Outgoing::Text(result.to_string())).await.is_err() {
-                            break 'reader;
-                        }
-                        continue 'reader;
-                    }
                     let _publication_guard = room.publication_write.lock().await;
-                    let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
-                        let by = who.attribution();
-                        self.decide_suggestion(&room, &incoming, may_edit, &by, self.annotation_mutation_actor(&who,true))
-                            .await
-                    } else {
-                        self.apply_from(&room, incoming, &address, &who, &author)
-                            .await
-                    };
+                    let (result, ok) = self.apply_from(&room, incoming, &address, &who, &author).await;
                     if !ok {
                         if send_outgoing(&tx, Outgoing::Text(result.to_string())).await.is_err() {
                             break 'reader;
@@ -824,7 +797,7 @@ impl Server {
                 let _ = room.checkpoint("left", who.attributed_as(&author)).await;
             }
         }
-        room.broadcast(&json!({"type": "y-peers", "count": room.editors().await}))
+        room.broadcast(&json!({"type": "doc-peers", "count": room.editors().await}))
             .await;
         if !writer_done {
             if send_outgoing(&tx, Outgoing::Close("".into()))
@@ -1066,25 +1039,25 @@ mod multipart_update_tests {
     }
     #[test]
     fn multipart_updates_reject_unbounded_incomplete_and_reordered_input() {
-        let start = message(json!({"type":"y-update-start","seq":7,"size":4,"chunks":2}));
+        let start = message(json!({"type":"doc-update-start","seq":7,"size":4,"chunks":2}));
         let mut assembly = UpdateAssembly::default();
         assert!(assembly.receive(&start, 3).is_err());
         assert!(assembly.receive(&start, 4).unwrap().is_none());
         assert!(assembly
             .receive(
-                &message(json!({"type":"y-update-chunk","seq":7,"index":1,"update":"YWI="})),
+                &message(json!({"type":"doc-update-chunk","seq":7,"index":1,"update":"YWI="})),
                 4
             )
             .is_err());
         assert!(assembly
-            .receive(&message(json!({"type":"y-update-end","seq":7})), 4)
+            .receive(&message(json!({"type":"doc-update-end","seq":7})), 4)
             .is_err());
         assembly.receive(&start, 4).unwrap();
         for index in 0..2 {
             assembly
                 .receive(
                     &message(
-                        json!({"type":"y-update-chunk","seq":7,"index":index,"update":"YWI="}),
+                        json!({"type":"doc-update-chunk","seq":7,"index":index,"update":"YWI="}),
                     ),
                     4,
                 )
@@ -1092,7 +1065,7 @@ mod multipart_update_tests {
         }
         assert_eq!(
             assembly
-                .receive(&message(json!({"type":"y-update-end","seq":7})), 4)
+                .receive(&message(json!({"type":"doc-update-end","seq":7})), 4)
                 .unwrap(),
             Some(b"abab".to_vec())
         );

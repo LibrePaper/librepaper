@@ -57,10 +57,8 @@ url = "2"
 percent-encoding = "2"
 # What a browser shows of a document, for anchoring seeded annotations.
 html-escape = "0.2"
-yrs = "0.27"
-# Loro is the collaboration substrate replacing yrs (SPEC-loro.md). Both are
-# present during the migration; `yrs` goes when Phase 5 lands. The version here
-# and `loro-crdt` in web/package.json are one pin: see tools/check-loro-pin.sh.
+# The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in
+# web/package.json are one pin: see tools/check-loro-pin.sh.
 loro = "1.16.0"
 unicode-normalization = "0.1.25"
 # Source versions are deterministic tar streams stored as zstd blobs.

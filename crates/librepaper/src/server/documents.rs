@@ -197,23 +197,15 @@ impl Server {
                 // rendered-publication gate; activation never takes this
                 // room-local lock, so this order cannot invert.
                 let _publication_guard = room.publication_write.lock().await;
-                let (result, ok) = if incoming.kind == "accept" || incoming.kind == "reject" {
-                    if who.at_least(Role::Editor) && !current_who.at_least(Role::Editor) {
-                        return write_json(403, &json!({"error": "edit access changed"}));
-                    }
-                    let by = current_who.attribution();
-                    self.decide_suggestion(
-                        &room,
-                        &incoming,
-                        current_who.at_least(Role::Editor),
-                        &by,
-                        self.annotation_mutation_actor(&current_who, true),
-                    )
-                    .await
-                } else {
-                    self.apply_from(&room, incoming, &address, &current_who, &author)
-                        .await
-                };
+                if incoming.kind == "accept" || incoming.kind == "reject" {
+                    return write_json(
+                        410,
+                        &json!({"error": "suggestion decisions are not supported"}),
+                    );
+                }
+                let (result, ok) = self
+                    .apply_from(&room, incoming, &address, &current_who, &author)
+                    .await;
                 if ok {
                     let shared = room.comment_event_for(&result, "", false).await;
                     room.broadcast(&shared).await;
@@ -632,7 +624,7 @@ impl Server {
         };
         room.broadcast_editors_except(
             None,
-            &json!({"type": "y-update", "update": encode_update(&update)}),
+            &json!({"type": "doc-update", "update": encode_update(&update)}),
         )
         .await;
         self.store

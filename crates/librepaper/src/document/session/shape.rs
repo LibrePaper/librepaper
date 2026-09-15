@@ -32,10 +32,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use loro::ValueOrContainer;
-use loro::LoroDoc;
-
-use crate::document::paths::{self, Rules};
+use loro::{Container, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer};
 
 pub const FILES: &str = "files";
 pub const PATHS: &str = "paths";
@@ -53,7 +50,7 @@ pub const LATEX_ENGINE: &str = "latex.engine";
 pub fn new_doc() -> LoroDoc {
     let doc = LoroDoc::new();
     // Named up front: a type that has never been asked for cannot receive an
-    // update into it. This mirrors the yrs pattern (session.rs:103–113).
+    // update into it.
     let _ = doc.get_map(FILES);
     let _ = doc.get_map(PATHS);
     let _ = doc.get_map(ASSETS);
@@ -102,6 +99,14 @@ pub fn set_main(doc: &LoroDoc, id: &str) {
     meta.insert(MAIN, id).ok();
 }
 
+/// Names an existing text. Unlike `put_text`, this does not mint an id --
+/// it writes the path for a text that is already in `files`, which is what
+/// repairing an orphaned file needs.
+pub fn put_path(doc: &LoroDoc, id: &str, path: &str) {
+    let paths = doc.get_map(PATHS);
+    paths.insert(id, path).ok();
+}
+
 /// The selected engine.
 pub fn latex_engine(doc: &LoroDoc) -> String {
     let meta = doc.get_map(META);
@@ -118,14 +123,12 @@ pub fn texts_of(doc: &LoroDoc) -> BTreeMap<String, String> {
     let path_map = doc.get_map(PATHS);
     let mut out = BTreeMap::new();
 
-    for (id, value) in files.iter() {
-        let ValueOrContainer::Container(container) = value else {
+    for key in files.keys() {
+        let id = key.to_string();
+        let Some(ValueOrContainer::Container(Container::Text(text))) = files.get(&id) else {
             continue;
         };
-        let Some(text) = container.as_text() else {
-            continue;
-        };
-        let Some(path) = string_at(&path_map, &id.to_string()) else {
+        let Some(path) = string_at(&path_map, &id) else {
             continue;
         };
         out.insert(path, text.to_string());
@@ -138,19 +141,16 @@ pub fn assets_of(doc: &LoroDoc) -> BTreeMap<String, String> {
     let assets = doc.get_map(ASSETS);
     let mut out = BTreeMap::new();
 
-    for (path, value) in assets.iter() {
-        let path_str = path.to_string();
+    for key in assets.keys() {
+        let path = key.to_string();
+        let Some(ValueOrContainer::Value(value)) = assets.get(&path) else {
+            continue;
+        };
         let string_value = match value {
-            ValueOrContainer::Value(v) => {
-                // Extract the string representation of the value.
-                match v {
-                    loro::Value::String(s) => s.to_string(),
-                    _ => v.to_string(),
-                }
-            }
+            LoroValue::String(s) => s.to_string(),
             _ => continue,
         };
-        out.insert(path_str, string_value);
+        out.insert(path, string_value);
     }
     out
 }
@@ -161,18 +161,16 @@ pub fn paths_of(doc: &LoroDoc) -> HashMap<String, String> {
     let path_map = doc.get_map(PATHS);
     let mut out = HashMap::new();
 
-    for (id, value) in path_map.iter() {
-        let id_str = id.to_string();
+    for key in path_map.keys() {
+        let id = key.to_string();
+        let Some(ValueOrContainer::Value(value)) = path_map.get(&id) else {
+            continue;
+        };
         let string_value = match value {
-            ValueOrContainer::Value(v) => {
-                match v {
-                    loro::Value::String(s) => s.to_string(),
-                    _ => v.to_string(),
-                }
-            }
+            LoroValue::String(s) => s.to_string(),
             _ => continue,
         };
-        out.insert(id_str, string_value);
+        out.insert(id, string_value);
     }
     out
 }
@@ -191,22 +189,17 @@ pub fn text_of(doc: &LoroDoc) -> String {
 }
 
 /// Helper: extract a string value from a map by key.
-fn string_at(map: &loro::LoroMap, key: &str) -> Option<String> {
+fn string_at(map: &LoroMap, key: &str) -> Option<String> {
     match map.get(key) {
-        Some(ValueOrContainer::Value(v)) => {
-            match v {
-                loro::Value::String(s) => Some(s.to_string()),
-                _ => Some(v.to_string()),
-            }
-        }
+        Some(ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),
         _ => None,
     }
 }
 
 /// Helper: extract a text container from a map by id.
-fn text_at(files: &loro::LoroMap, id: &str) -> Option<loro::LoroText> {
+fn text_at(files: &LoroMap, id: &str) -> Option<LoroText> {
     match files.get(id) {
-        Some(ValueOrContainer::Container(container)) => container.as_text(),
+        Some(ValueOrContainer::Container(Container::Text(text))) => Some(text),
         _ => None,
     }
 }

@@ -265,30 +265,3 @@ impl From<CatalogError> for WriteError {
     }
 }
 
-/// A suggestion acceptance keeps its own error type because one of its
-/// outcomes -- a passage that no longer places -- is what opens the merge
-/// editor in the browser, and no other write has that outcome. It converts
-/// both ways so that a handler classifies exactly one kind of error.
-impl From<WriteError> for super::AcceptError {
-    fn from(error: WriteError) -> Self {
-        match error {
-            // A storage failure is the room failing, not the caller being
-            // refused, and the caller is told so with its context kept for
-            // the log.
-            WriteError::Storage(context) => Self::Failed(context),
-            other => Self::Refused(other.client_message()),
-        }
-    }
-}
-
-impl From<super::AcceptError> for WriteError {
-    fn from(error: super::AcceptError) -> Self {
-        match error {
-            super::AcceptError::Refused(text) => Self::Invalid(text),
-            super::AcceptError::Stale => {
-                Self::Conflict("the passage has changed since this was suggested".into())
-            }
-            super::AcceptError::Failed(context) => Self::Storage(context),
-        }
-    }
-}

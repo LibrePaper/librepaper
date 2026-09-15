@@ -2,9 +2,9 @@
   // Vim is switched on for every file at once, held in one compartment per
   // view rather than baked into a file's state, so flipping the setting
   // reconfigures the live editor without dropping the caret, the scroll
-  // position or the undo history -- and without tearing down `yCollab`.
+  // position or the undo history.
   import { Compartment } from "@codemirror/state";
-  import { yUndoManagerKeymap as vimUndoKeymap } from "y-codemirror.next";
+  import { undo as undoFn, redo as redoFn } from "loro-codemirror";
   import { keymap } from "@codemirror/view";
 
   // The keys the editor answers to: Vim's, Emacs's, or nothing extra. One
@@ -30,14 +30,16 @@
     return vimPromise;
   }
 
-  // Emacs undoes with C-/ (and C-_ and C-x u), which the package points at
-  // CodeMirror's own history. Routed to the Yjs manager first, so an undo
-  // stays this collaborator's, as Vim's `u` is above.
+  // Emacs undoes with C-/ (and C-_ and C-x u), which route through the Loro
+  // undo manager so an undo stays this collaborator's, as Vim's `u` is above.
   function loadEmacs() {
     if (!emacsPromise) {
       emacsPromise = import("@replit/codemirror-emacs").then(({ emacs }) => {
-        const undo = vimUndoKeymap[0].run;
-        resolvedEmacs = [keymap.of([{ key: "Ctrl-/", run: undo }, { key: "Ctrl-_", run: undo }, { key: "Ctrl-x u", run: undo }]), emacs()];
+        resolvedEmacs = [keymap.of([
+          { key: "Ctrl-/", run: undoFn, preventDefault: true },
+          { key: "Ctrl-_", run: undoFn, preventDefault: true },
+          { key: "Ctrl-x u", run: undoFn, preventDefault: true }
+        ]), emacs()];
         return resolvedEmacs;
       });
     }
@@ -75,23 +77,21 @@
       save(cm);
       quit(cm);
     });
-    // Vim's built-in `u` and Ctrl-R use CodeMirror's native history. Route
-    // them through the Yjs manager so they remain local to this collaborator.
-    Vim.defineAction("yUndo", (cm) => vimUndoKeymap[0].run(cm.cm6));
-    Vim.defineAction("yRedo", (cm) => vimUndoKeymap[1].run(cm.cm6));
-    Vim.mapCommand("u", "action", "yUndo", {}, {});
-    Vim.mapCommand("<C-r>", "action", "yRedo", {}, {});
+    // Vim's built-in `u` and Ctrl-R route through their respective handlers.
+    Vim.defineAction("loroUndo", (cm) => undoFn(cm.cm6));
+    Vim.defineAction("loroRedo", (cm) => redoFn(cm.cm6));
+    Vim.mapCommand("u", "action", "loroUndo", {}, {});
+    Vim.mapCommand("<C-r>", "action", "loroRedo", {}, {});
   }
 </script>
 
 <script>
   // The source, in CodeMirror, shared with everyone else editing it.
   //
-  // The binding is y-codemirror: the editor's document *is* the Yjs text, so
-  // two people typing in the same sentence converge without either waiting for
-  // the other, and each of them keeps their own caret, selection and undo
-  // history. Everyone else's caret is drawn where they are, labelled with
-  // their name.
+  // The binding is loro-codemirror: multiple editors across files share the
+  // same LoroDoc, and each file has a LoroText within it. Two people typing
+  // in the same sentence converge without either waiting for the other, and
+  // each of them keeps their own caret, selection and undo history.
   import { EditorState, Transaction, StateField, StateEffect } from "@codemirror/state";
   import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, dropCursor, rectangularSelection, drawSelection, Decoration, WidgetType } from "@codemirror/view";
   import { defaultKeymap, indentWithTab, selectAll } from "@codemirror/commands";
@@ -106,8 +106,9 @@
     setDiagnostics as setLintDiagnostics,
     openLintPanel,
   } from "@codemirror/lint";
-  import { yCollab, yUndoManagerKeymap, ySyncFacet, ySyncAnnotation } from "y-codemirror.next";
-  import * as Y from "yjs";
+  import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "loro-codemirror";
+  import { loroSyncAnnotation } from "loro-codemirror/dist/sync.js";
+  import { UndoManager, PosType, Side } from "loro-crdt";
 
   import { typstLanguage } from "../lib/typst-mode.js";
   import { analyzeBibliography } from "../lib/bibliography-engine.js";
@@ -232,15 +233,23 @@
   async function importZotero(entry, target) {
     if (!editable || !session || target.view !== view || !showing) return false;
     const active = session.textOf(showing);
-    const from = Y.createRelativePositionFromTypeIndex(active, target.from);
-    const to = Y.createRelativePositionFromTypeIndex(active, target.to);
+    const fromUnicode = active.convert_pos(target.from, PosType.Utf16, PosType.Unicode) ?? target.from;
+    const toUnicode = active.convert_pos(target.to, PosType.Utf16, PosType.Unicode) ?? target.to;
+    const fromCursor = active.get_cursor(fromUnicode, Side.Before);
+    const toCursor = active.get_cursor(toUnicode, Side.Before);
     const activeSession = session, activeFile = showing;
     try {
       const fetched = await zoteroItem(entry.zotero_item);
       if (session !== activeSession || showing !== activeFile || view !== target.view || !editable) return false;
-      const start = Y.createAbsolutePositionFromRelativePosition(from, session.doc);
-      const end = Y.createAbsolutePositionFromRelativePosition(to, session.doc);
-      if (!start || !end || start.type !== active || end.type !== active) return false;
+
+      const fromResult = session.doc.get_cursor_pos(fromCursor);
+      if (fromResult.update) fromCursor = fromResult.update;
+      const toResult = session.doc.get_cursor_pos(toCursor);
+      if (toResult.update) toCursor = toResult.update;
+
+      const start_utf16 = active.convert_pos(fromResult.current.pos, PosType.Unicode, PosType.Utf16) ?? 0;
+      const end_utf16 = active.convert_pos(toResult.current.pos, PosType.Unicode, PosType.Utf16) ?? 0;
+
       const tree = session.tree();
       const mainPath = tree.main;
       const mainId = session.idOf(mainPath);
@@ -251,21 +260,21 @@
       });
       const bibId = session.idOf(plan.path);
       const bib = bibId ? session.textOf(bibId) : null;
-      const changes = [{ from: start.index, to: end.index, insert: plan.key }];
+      const changes = [{ from: Math.min(start_utf16, end_utf16), to: Math.max(start_utf16, end_utf16), insert: plan.key }];
       if (plan.registration && main === active) changes.push(plan.registration);
       changes.sort((a, b) => a.from - b.from || a.to - b.to);
-      const setupShift = plan.registration && main === active && plan.registration.from <= start.index
+      const setupShift = plan.registration && main === active && plan.registration.from <= Math.min(start_utf16, end_utf16)
         ? plan.registration.insert.length - (plan.registration.to - plan.registration.from) : 0;
       session.doc.transact(() => {
         if (bib) {
-          if (plan.addition) bib.insert(bib.length, plan.addition);
+          if (plan.addition) bib.insert_utf16(bib.len_utf16(), plan.addition);
         } else session.addText(plan.path, plan.bibtex);
         if (plan.registration && main && main !== active) {
-          if (plan.registration.to > plan.registration.from) main.delete(plan.registration.from, plan.registration.to - plan.registration.from);
-          main.insert(plan.registration.from, plan.registration.insert);
+          if (plan.registration.to > plan.registration.from) main.delete_utf16(plan.registration.from, plan.registration.to - plan.registration.from);
+          main.insert_utf16(plan.registration.from, plan.registration.insert);
         }
-        target.view.dispatch({ changes, selection: { anchor: start.index + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
-      }, target.view.state.facet(ySyncFacet));
+        target.view.dispatch({ changes, selection: { anchor: Math.min(start_utf16, end_utf16) + setupShift + plan.key.length }, annotations: Transaction.userEvent.of("input.complete") });
+      });
       scheduleBibliography();
       return true;
     } catch (error) {
@@ -454,10 +463,11 @@
   export function editAvailability() {
     if (!view) return {};
     const selected = !view.state.selection.main.empty;
-    const manager = undoManagers.get(view.state.facet(ySyncFacet).ytext);
+    const text = session.textOf?.(showing) || session.text;
+    const manager = undoManagers.get(text);
     return {
-      undo: editable && manager?.undoStack.length > 0,
-      redo: editable && manager?.redoStack.length > 0,
+      undo: editable && (manager?.canUndo?.() ?? false),
+      redo: editable && (manager?.canRedo?.() ?? false),
       cut: editable && selected, copy: selected,
       paste: editable, "select-all": true, find: true, replace: editable,
     };
@@ -468,8 +478,8 @@
     const target = view;
     const state = target.state;
     target.focus();
-    if (command === "undo") yUndoManagerKeymap[0].run(target);
-    else if (command === "redo") yUndoManagerKeymap[1].run(target);
+    if (command === "undo") undoCommand(target);
+    else if (command === "redo") redoCommand(target);
     else if (command === "select-all") selectAll(target);
     else if (command === "find" || command === "replace") {
       openSearchPanel(target);
@@ -488,20 +498,23 @@
     }
   }
 
-  // Capture the target as Yjs relative positions. Unlike raw CodeMirror
-  // offsets, these survive edits made by collaborators while an Insert dialog
-  // is open. The session and file identity are retained so a late dialog
-  // result cannot write into a different document.
+  // Capture the target using Loro cursors. Unlike raw CodeMirror offsets, these
+  // survive edits made by collaborators while an Insert dialog is open. The
+  // session and file identity are retained so a late dialog result cannot
+  // write into a different document.
   export function captureInsertTarget() {
     if (!view || !session || !showing || editable === false) return null;
-    const ytext = session.textOf?.(showing) || session.text;
-    if (!ytext?.doc) return null;
+    const loroText = session.textOf?.(showing) || session.text;
+    if (!loroText) return null;
     const { from, to } = view.state.selection.main;
+    // Convert UTF-16 offsets to Unicode code points for cursor creation.
+    const fromUnicode = loroText.convert_pos(from, PosType.Utf16, PosType.Unicode) ?? from;
+    const toUnicode = loroText.convert_pos(to, PosType.Utf16, PosType.Unicode) ?? to;
     return {
       session,
       file: showing,
-      from: Y.createRelativePositionFromTypeIndex(ytext, from),
-      to: Y.createRelativePositionFromTypeIndex(ytext, to),
+      fromCursor: loroText.get_cursor(fromUnicode, Side.Before),
+      toCursor: loroText.get_cursor(toUnicode, Side.Before),
       capturedText: view.state.sliceDoc(from, to),
     };
   }
@@ -542,18 +555,37 @@
   }
 
   // Validate every change before touching shared text. Main-file setup and the
-  // snippet share the active editor's Yjs transaction and undo entry.
+  // snippet share the active editor's Loro transaction and undo entry.
   export function applyInsertResult(result, capturedContext = null) {
     if (!result || typeof result.text !== "string" || !view || !session || !editable) return false;
     const target = insertTargets.get(capturedContext?.targetId);
     if (!target || target.session !== session || target.file !== showing || session.paths.get(showing) !== capturedContext.path) return false;
-    const ytext = session.textOf(showing);
-    const start = Y.createAbsolutePositionFromRelativePosition(target.from, session.doc);
-    const end = Y.createAbsolutePositionFromRelativePosition(target.to, session.doc);
-    if (!start || !end || start.type !== ytext || end.type !== ytext) return false;
-    const from = Math.min(start.index, end.index), to = Math.max(start.index, end.index);
-    if (ytext.toString().slice(from, to) !== target.capturedText) return false;
-    const plans = new Map([[ytext, []]]);
+    const loroText = session.textOf(showing);
+    const doc = session.doc;
+
+    // Resolve cursors to current positions, updating them if Loro indicates staleness.
+    let fromCursor = target.fromCursor;
+    let toCursor = target.toCursor;
+    let fromPos = null, toPos = null;
+
+    try {
+      const fromResult = doc.get_cursor_pos(fromCursor);
+      if (fromResult.update) fromCursor = fromResult.update;
+      fromPos = fromResult.current.pos;
+
+      const toResult = doc.get_cursor_pos(toCursor);
+      if (toResult.update) toCursor = toResult.update;
+      toPos = toResult.current.pos;
+    } catch (e) {
+      return false;
+    }
+
+    // Convert back to UTF-16 for CodeMirror use.
+    const from = loroText.convert_pos(Math.min(fromPos, toPos), PosType.Unicode, PosType.Utf16) ?? 0;
+    const to = loroText.convert_pos(Math.max(fromPos, toPos), PosType.Unicode, PosType.Utf16) ?? 0;
+
+    if (loroText.toString().slice(from, to) !== target.capturedText) return false;
+    const plans = new Map([[loroText, []]]);
     const mapOffset = (offset, snapshot, current) => {
       if (snapshot === current) return offset;
       let prefix = 0, suffix = 0;
@@ -570,11 +602,11 @@
       const snapshot = path === capturedContext.path ? capturedContext.text : capturedContext.files?.find(file => file.path === path)?.text;
       if (!fileText || typeof snapshot !== "string" || edit.from < 0 || edit.to < edit.from || edit.to > snapshot.length) return false;
       const editFrom = mapOffset(edit.from, snapshot, fileText.toString()), editTo = mapOffset(edit.to, snapshot, fileText.toString());
-      if (editFrom == null || editTo == null || (fileText === ytext && editFrom < to && editTo > from)) return false;
+      if (editFrom == null || editTo == null || (fileText === loroText && editFrom < to && editTo > from)) return false;
       if (!plans.has(fileText)) plans.set(fileText, []);
       plans.get(fileText).push({ from: editFrom, to: editTo, insert: edit.insert });
     }
-    const changes = plans.get(ytext);
+    const changes = plans.get(loroText);
     const shift = changes.filter(edit => edit.to <= from).reduce((sum, edit) => sum + edit.insert.length - (edit.to - edit.from), 0);
     changes.push({ from, to, insert: result.text });
     for (const edits of plans.values()) {
@@ -584,19 +616,15 @@
     const selection = result.selection;
     const offset = value => from + shift + Math.max(0, Math.min(result.text.length, Number.isInteger(value) ? value : result.text.length));
     const anchor = offset(selection?.anchor), head = offset(selection?.head);
-    const manager = undoManagers.get(ytext);
-    for (const text of plans.keys()) manager.addToScope(text);
-    manager.stopCapturing();
     session.doc.transact(() => {
       view.dispatch({ changes, selection: { anchor, head }, effects: EditorView.scrollIntoView(head) });
-      for (const [text, edits] of plans) if (text !== ytext) {
+      for (const [text, edits] of plans) if (text !== loroText) {
         for (const edit of [...edits].reverse()) {
-          if (edit.to > edit.from) text.delete(edit.from, edit.to - edit.from);
-          if (edit.insert) text.insert(edit.from, edit.insert);
+          if (edit.to > edit.from) text.delete_utf16(edit.from, edit.to - edit.from);
+          if (edit.insert) text.insert_utf16(edit.from, edit.insert);
         }
       }
-    }, view.state.facet(ySyncFacet));
-    manager.stopCapturing();
+    });
     releaseInsertContext(capturedContext);
     view.focus();
     return true;
@@ -618,14 +646,11 @@
     return language(fallback);
   }
 
-  /// Builds the state for one file, bound to its own `Y.Text`.
+  /// Builds the state for one file, bound to its own LoroText.
   function stateFor(id) {
     const text = session.textOf?.(id) || session.text;
     const path = session.paths?.get(id) || "";
-    const undoManager = undoManagers.get(text) || new Y.UndoManager(
-      tracking?.revisions ? [text, tracking.revisions] : text,
-      tracking?.undoOptions || {},
-    );
+    const undoManager = undoManagers.get(text) || new UndoManager(text);
     undoManagers.set(text, undoManager);
     tracking?.registerUndoManager?.(undoManager, id);
     return EditorState.create({
@@ -674,22 +699,22 @@
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
+          { key: "Mod-z", run: undoCommand, preventDefault: true },
+          { key: "Mod-Shift-z", run: redoCommand, preventDefault: true },
           ...closeBracketsKeymap,
           ...foldKeymap,
           indentWithTab,
           ...completionKeymap,
           ...defaultKeymap,
-          ...yUndoManagerKeymap,
           ...searchKeymap,
           // Ctrl-Shift-M opens the list of what the compiler said.
           ...lintKeymap,
         ]),
-        // The shared document, and everyone else's cursors in it. The
-        // positions y-codemirror publishes are relative to the text they were
-        // made in, so a caret already paints only in the file it is in; what
-        // says *which* file that is, for the file list, is the awareness field
-        // the reader sets beside it.
-        yCollab(text, session.awareness, { undoManager }),
+        // The shared document, and everyone else's cursors in it. The editor
+        // is bound to one text at a time (the one in 'showing'), and the
+        // getTextFromDoc function returns that text. Multiple editors may be
+        // open on different files at once; they all share the same LoroDoc.
+        LoroExtensions(session.doc, session.ephemeral && { user: session.user, ephemeral: session.ephemeral }, undoManager, () => text),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onchange?.();
           // Only a deliberate move counts: typing moves the caret constantly,
@@ -739,7 +764,7 @@
     if (!states.has(id)) states.set(id, stateFor(id));
     const state = states.get(id);
     const text = session.textOf?.(id) || (id === session.mainId?.() ? session.text : null);
-    // While a file is inactive its Y.Text can still receive remote edits, but
+    // While a file is inactive its LoroText can still receive remote edits, but
     // its CodeMirror binding is not mounted to dispatch those edits. Reconcile
     // the cached state before showing it, preserving its history and selection.
     if (text && state.doc.toString() !== text.toString()) {
@@ -793,16 +818,15 @@
         state: initial.state,
         parent: host,
         dispatchTransactions(transactions) {
-          const editableChanges = transactions.filter((transaction) => transaction.docChanged && !transaction.annotation(ySyncAnnotation));
+          const editableChanges = transactions.filter((transaction) => transaction.docChanged && !transaction.annotation(loroSyncAnnotation));
           const changes = editableChanges.flatMap((transaction) => {
             const entries = [];
             transaction.changes.iterChanges((from, to, _fromB, _toB, insert) => entries.push({ from, to, insert: insert.toString() }));
             return entries;
           });
           const userEvent = editableChanges.map((transaction) => transaction.annotation(Transaction.userEvent)).find(Boolean) || "input";
-          const origin = initial.state.facet(ySyncFacet);
           const apply = () => view.update(transactions);
-          if (tracking?.capture && changes.length) tracking.capture(showing, changes, apply, { userEvent, origin });
+          if (tracking?.capture && changes.length) tracking.capture(showing, changes, apply, { userEvent });
           else apply();
           if (transactions.some((transaction) => transaction.selectionSet && !transaction.docChanged)) tracking?.breakGroup?.();
         },

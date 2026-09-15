@@ -63,10 +63,6 @@
     "loro-crdt": "1.16.1",
     "pdfjs-dist": "5.4.149",
     "svelte": "^5.57.0",
-    "tailwindcss": "4",
-    "y-codemirror.next": "^0.3.6",
-    "y-indexeddb": "^9.0.12",
-    "y-protocols": "^1.0.6",
-    "yjs": "^13.6.32"
+    "tailwindcss": "4"
   }
 }

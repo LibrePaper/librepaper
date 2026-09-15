@@ -1,9 +1,7 @@
 // Browser adapter for the reusable project session. CodeMirror and Reader keep
 // this compatibility API; editor integrations supply their own persistence,
 // reference fetcher, and presence identity to project-session.js.
-import { IndexeddbPersistence } from "y-indexeddb";
 import { authHeaders } from "./api.js";
-import { cacheName } from "./collab-cache.js";
 import { durableProjectPersistence } from "./offline-projects.js";
 import { projectIdentity } from "./project-identity.js";
 import { createProjectSession, randomPresenceId } from "./project-session.js";
@@ -27,25 +25,11 @@ function browserPresenceId() {
   }
 }
 
-function indexedDbPersistence(name, identity) {
-  return {
-    open(doc, events) {
-      const store = new IndexeddbPersistence(name, doc);
-      const durable = identity ? durableProjectPersistence(identity).open(doc, {
-        ...events,
-        hydrated() {},
-      }) : null;
-      Promise.all([store.whenSynced, durable?.hydration]).then(events.hydrated, events.failed);
-      return {
-        flush: () => durable?.flush?.() || Promise.resolve(),
-        close() {
-          durable?.close?.();
-          store.destroy();
-        },
-      };
-    },
-  };
-}
+// One local cache, keyed by project identity. A slug alone is not a safe key:
+// a URL can be reused when a document is deleted and recreated, and the old
+// document's CRDT must not become part of the new one. Identity carries the
+// creation time and the origin, so it cannot collide that way -- and a project
+// without one simply goes uncached rather than risking the wrong history.
 
 function browserReferenceFetcher({ slug, key = "", fetcher = globalThis.fetch }) {
   return async (reference) => {
@@ -62,9 +46,9 @@ export function join({ slug, createdAt = "", key = "", persistence, fetchReferen
   const identity = slug && createdAt
     ? projectIdentity({ server: globalThis.location?.origin, slug, createdAt })
     : null;
-  const browserStore = persistence === undefined && slug && options.mayEdit !== false
+  const browserStore = persistence === undefined && identity && options.mayEdit !== false
     && typeof indexedDB !== "undefined"
-    ? indexedDbPersistence(cacheName(slug, createdAt), identity)
+    ? durableProjectPersistence(identity)
     : persistence;
   return createProjectSession({
     ...options,

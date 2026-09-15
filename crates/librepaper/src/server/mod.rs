@@ -36,8 +36,7 @@ use crate::document::store::{
     Role, Store,
 };
 use crate::room::{
-    decode_update, encode_update, AcceptError, Accepted, Applied, Command, Message as RoomMessage,
-    Outgoing, Room, RoomSet, Sender,
+    decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet, Sender,
 };
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
@@ -1012,104 +1011,6 @@ impl Server {
                 ceiling.comment
             },
             unowned_publisher: false,
-        }
-    }
-
-    async fn decide_suggestion(
-        &self,
-        room: &Room,
-        incoming: &RoomMessage,
-        may_edit: bool,
-        by: &crate::room::Attribution,
-        actor: crate::document::store::MutationActor,
-    ) -> (Value, bool) {
-        let fail = |text: &str| -> (Value, bool) {
-            (
-                json!({
-                    "type": "error", "message": text,
-                    "comment_id": incoming.comment_id, "request_id": incoming.request_id,
-                    "version": 1, "protocol": "librepaper.room.v1",
-                }),
-                false,
-            )
-        };
-        if !may_edit {
-            return fail("only an editor may decide a suggestion");
-        }
-        let command = match incoming.clone().into_command() {
-            Ok(command) => command,
-            Err(error) => return (error.response(), false),
-        };
-        match command {
-            Command::Accept {
-                comment_id,
-                request_id,
-                ..
-            } => {
-                return match room
-                    .accept_suggestion_with_actor(&comment_id, &request_id, by, actor.clone())
-                    .await
-                {
-                    Ok(Accepted::Applied {
-                        update,
-                        sha,
-                        resolved_at,
-                    }) => {
-                        room.broadcast_editors_except(
-                            None,
-                            &json!({"type": "y-update", "update": encode_update(&update)}),
-                        )
-                        .await;
-                        (
-                            json!({
-                                "type": "accept", "comment_id": comment_id,
-                                "resolved_in": sha, "resolved_at": resolved_at,
-                                "request_id": request_id,
-                                "version": 1, "protocol": "librepaper.room.v1",
-                            }),
-                            true,
-                        )
-                    }
-                    Ok(Accepted::Noop { sha, resolved_at }) => (
-                        // Still a success -- `ok` is what the caller's status
-                        // code and the room-wide broadcast key off of, and a
-                        // retry answering with what already happened is exactly
-                        // that, not a refusal.
-                        json!({
-                            "type": "accept", "comment_id": comment_id,
-                            "resolved_in": sha, "resolved_at": resolved_at,
-                            "request_id": request_id, "noop": true,
-                            "version": 1, "protocol": "librepaper.room.v1",
-                        }),
-                        true,
-                    ),
-                    Err(AcceptError::Refused(text)) => fail(&text),
-                    Err(AcceptError::Stale) => (
-                        json!({
-                            "type": "error", "stale": true, "comment_id": comment_id,
-                            "message": "the passage has changed since this was suggested",
-                            "request_id": request_id,
-                            "version": 1, "protocol": "librepaper.room.v1",
-                        }),
-                        false,
-                    ),
-                    Err(AcceptError::Failed(text)) => fail(&text),
-                };
-            }
-            Command::Reject {
-                comment_id,
-                request_id,
-                ..
-            } => match room.reject_suggestion_with_actor(&comment_id, actor).await {
-                Ok(mut result) => {
-                    result["request_id"] = json!(request_id);
-                    result["version"] = json!(1);
-                    result["protocol"] = json!("librepaper.room.v1");
-                    (result, true)
-                }
-                Err(text) => fail(&text),
-            },
-            _ => fail("that command is not a suggestion decision"),
         }
     }
 }

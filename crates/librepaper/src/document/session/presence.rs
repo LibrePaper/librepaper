@@ -6,9 +6,14 @@
 //! transient metadata — not stored with the document, not replayed to new
 //! arrivals, only broadcast to live peers.
 
-use loro::awareness::{EphemeralStore, LocalEphemeralCallback, EphemeralSubscriber};
-use loro::sync::Subscription;
-use loro_common::LoroValue;
+use loro::awareness::{EphemeralStore, EphemeralSubscriber, LocalEphemeralCallback};
+use loro::{LoroValue, Subscription};
+use std::collections::HashMap;
+
+/// Peer presence timeout in milliseconds. Matches y-protocols' `outdatedTimeout` constant
+/// used in the browser's Awareness implementation. Entries are considered stale 30 seconds
+/// after their last update.
+const PRESENCE_TIMEOUT_MS: i64 = 30_000;
 
 /// Ephemeral presence state for peers in a document room.
 ///
@@ -29,7 +34,7 @@ impl Presence {
     /// is called.
     pub fn new() -> Self {
         Self {
-            store: EphemeralStore::new(30000),
+            store: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
         }
     }
 
@@ -93,8 +98,12 @@ impl Presence {
     /// Returns a map from peer ID (as string) to LoroValue. Includes expired
     /// but not-yet-purged entries. Call `remove_outdated` first if you want to
     /// exclude those.
-    pub fn all_states(&self) -> std::collections::HashMap<String, LoroValue> {
-        self.store.get_all_states()
+    pub fn all_states(&self) -> HashMap<String, LoroValue> {
+        self.store
+            .get_all_states()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     /// Get all peer IDs currently in the store, in the order they appear.
@@ -118,10 +127,7 @@ impl Presence {
     ///
     /// This is typically used by the room to broadcast presence updates to all
     /// other connected peers.
-    pub fn subscribe_local_updates(
-        &self,
-        callback: LocalEphemeralCallback,
-    ) -> Subscription {
+    pub fn subscribe_local_updates(&self, callback: LocalEphemeralCallback) -> Subscription {
         self.store.subscribe_local_updates(callback)
     }
 
@@ -132,10 +138,7 @@ impl Presence {
     /// from a local update, an import, or a timeout expiration. The callback
     /// should return `true` to keep the subscription active, or `false` to
     /// unsubscribe.
-    pub fn subscribe(
-        &self,
-        callback: EphemeralSubscriber,
-    ) -> Subscription {
+    pub fn subscribe(&self, callback: EphemeralSubscriber) -> Subscription {
         self.store.subscribe(callback)
     }
 }

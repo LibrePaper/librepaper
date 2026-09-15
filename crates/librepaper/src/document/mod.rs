@@ -8,6 +8,7 @@
 pub mod history;
 pub mod html;
 pub mod hunks;
+
 #[cfg(test)]
 pub mod needs;
 pub mod paths;

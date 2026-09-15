@@ -54,7 +54,7 @@ export function createReaderCollaboration({
   function send(message) {
     // Y updates made while a socket is reconnecting remain in the local Yjs
     // document. `start()` catches them up after the server identity check.
-    if (message.type?.startsWith("y-update") && !session?.joined) return undefined;
+    if (message.type?.startsWith("doc-update") && !session?.joined) return undefined;
     return room?.send(message);
   }
 
