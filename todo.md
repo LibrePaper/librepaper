@@ -5,44 +5,35 @@ this is only the queue of what has not been done.
 
 ## Done since the last version of this file
 
-**The client→server proposal round trip has coverage.**
-`room::proposal_round_trip_tests` drives a real `Room` against a real
-catalogue through open → update → decide → resolve, with a second writer
-typing throughout. Four cases, `#[ignore]`d like the rest of the Postgres
-coverage:
+**The three §9 follow-ups are settled.** Two were questions and are now
+answered in the spec rather than left standing; one was code and is deleted.
 
-```sh
-LIBREPAPER_TEST_POSTGRES_URL=... \
-  cargo test -p librepaper --lib proposal_round_trip -- --ignored --test-threads=1
-```
+- **§9.3, `LoroTree`: no.** The collapse would buy the identity-preserving
+  rename that two maps already give. What a tree is uniquely good at is
+  resolving concurrent *moves*, and there is no move here to resolve --
+  `rename_path` writes one string, and directories exist only as text inside
+  path strings. Adopting it means modelling directories and migrating the wire
+  format across three implementations to arrive at today's behaviour. Revisit
+  if moving a directory becomes something a user can do.
+- **§9.4, checkpoint density: unchanged.** Contract 6 does make every
+  intermediate state reachable, but *through the Loro oplog*; archives are what
+  make recovery format-independent (contract 8), so thinning them thins the one
+  record that does not depend on the CRDT. §7.3 also has an archive fetch at
+  0.08 ms against 3.9 ms to check out an old version. The cadence is already
+  bounded at both ends.
+- **§9.5, speculative-encode machinery: deleted.** `checked_edit` had already
+  stopped speculating; what remained was `Session::encoded_bound`, written in
+  four places and read in none, with `admitted_bound` and `repaired_bytes`
+  feeding it and nothing else. The `max_encoded_snapshot_bytes` ceiling stays
+  -- it is §3.6's escape valve, enforced against a real encode.
 
-**`proposal-open` honours the base it is sent.** §5.1 said the message carries
-the branch's base frontier; `open_proposal` recorded the room's own
-`state_frontiers()` instead, so between an author's fork and their open,
-anybody else's commit moved the proposal's recorded fork point. It now takes
-the client's base, forks at it as the check that it can, and refuses an
-unreachable one (`UnknownBase`, `retry: true`) rather than substituting its
-own. The client commits before reading its frontier, so the base names only
-operations already sent ahead of the open on the same socket.
-
-Worth being accurate about the severity, having claimed worse earlier: this
-was a divergence from the spec and from where the author is actually typing,
-**not** a demonstrated case of lost or misattributed text.
-`declining_a_proposal_does_not_revert_a_concurrent_writer` reproduces the race
-and passes either way -- Loro's merge converges, because both sides'
-operations are concurrent and both stay in the graph.
+**A green `make test` no longer reads as "everything passes".** It now ends by
+naming what it did not run, and `make check-all` runs the suite and the browser
+components together. The Postgres cases stay out of both: they want a database
+to point at and they TRUNCATE it.
 
 ## What is actually left
 
-1. **Three §9 follow-ups**, still deliberately deferred: evaluate `LoroTree`
-   to collapse `files` + `paths`; reconsider checkpoint density now that
-   contract 6 makes every intermediate state reachable; and delete
-   `max_encoded_snapshot_bytes`'s speculative-encode machinery.
-
-2. **The fork has not been sent upstream.** `web/vendor/loro-codemirror/`
+1. **The fork has not been sent upstream.** `web/vendor/loro-codemirror/`
    carries five fixes, and its README says what to delete when a release
    contains them. Pushing to someone else's repository is yours to decide.
-
-3. **The browser tests are not in `make test`.** They are `make browser`, and
-   the Makefile says why. Nothing is wrong with that, but a green `make test`
-   is not "everything passes" and has been read that way at least once.

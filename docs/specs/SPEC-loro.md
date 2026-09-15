@@ -93,9 +93,10 @@ One `LoroDoc` per document, with root containers mirroring the current layout
 status lives in Postgres (§3.4).
 
 Renames stay identity-preserving: a rename moves a string in `paths` and leaves
-the `LoroText` alone. `LoroTree` is deliberately not adopted in this phase —
-it would collapse `files`+`paths` into one container, but that is a second
-migration and is out of scope.
+the `LoroText` alone. `LoroTree` would collapse `files`+`paths` into one
+container; it was evaluated and rejected (§9.3), because the rename property is
+already here and the concurrent-move resolution a tree is for has no operation
+to resolve — there is no move in this product, only a string write.
 
 ### 3.2 Text indexing is UTF-16, almost everywhere
 
@@ -696,11 +697,39 @@ is worth knowing before trusting a number out of a harness like this one.
    where it disagrees with §7.2.
 2. ~~Rename the `y-*` wire messages~~ -- done with the substrate change rather
    than swept later, since a hard cutover made them one change anyway.
-3. Evaluate `LoroTree` to collapse `files` + `paths`.
-4. Reconsider checkpoint density now that contract 6 makes every intermediate
-   state reachable; archives may be needed less densely.
-5. Delete `max_encoded_snapshot_bytes`'s speculative-encode machinery
-   (`room/mod.rs:210-284`) if Loro's bounds make it unnecessary.
+3. ~~Evaluate `LoroTree` to collapse `files` + `paths`~~ -- evaluated, and the
+   answer is no. The property the collapse would buy is the one two maps
+   already give: a rename moves a string in `paths` and leaves the `LoroText`
+   alone, so a keystroke racing a rename lands in the text it was always going
+   to land in. What `LoroTree` is uniquely good at is resolving concurrent
+   *moves* without cycles, and there is no move here to resolve --
+   `session::rename_path` writes one string, and directories exist only as
+   text inside path strings, with no directory object, no parent/child edge
+   and no subtree operation anywhere in the product. Adopting it would mean
+   modelling directories (a product change, not a representation change) and a
+   wire migration across three implementations -- the Rust `loro`, the
+   browser's `loro-crdt`, and the vendored loro-codemirror binding -- to
+   arrive at the behaviour already in place. Revisit only if moving a
+   directory becomes a thing a user can do.
+4. ~~Reconsider checkpoint density~~ -- reconsidered, and the cadence stands.
+   The premise was that contract 6 makes every intermediate state reachable,
+   so archives could be sparser. It does, but not by the same means: contract
+   6 is satisfied *by the Loro oplog*, and archives are what make recovery
+   format-independent and Loro-independent (contract 8). Thinning them would
+   thin the only record that does not depend on the CRDT, in exchange for
+   space the measurements do not show being spent -- §7.3 puts an archive
+   fetch at 0.08 ms against 3.9 ms to check out an old version, so archives
+   are also the fastest point-in-time retrieval by a factor of about fifty,
+   which §7.3 already gives as the reason to keep them. The cadence is bounded
+   at both ends besides: `CHECKPOINT_DEFER_SECONDS` caps a burst at two marks
+   a minute, and a quiet document takes none at all.
+5. ~~Delete `max_encoded_snapshot_bytes`'s speculative-encode machinery~~ --
+   done. `checked_edit` had already stopped speculating and now encodes the
+   candidate fork exactly; what was left was `Session::encoded_bound`, written
+   in four places and read in none, with `admitted_bound` and `repaired_bytes`
+   existing only to feed it. All three are gone. The ceiling itself stays: it
+   is §3.6's escape valve for a pathological document, and it is enforced
+   against a real encode rather than an estimate.
 
 ## 10. Decisions taken
 

@@ -31,7 +31,7 @@ WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html 
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
 
 .DEFAULT_GOAL := help
-.PHONY: help build install test test-external test-release-workloads smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
+.PHONY: help build install test check-all browser test-external test-release-workloads smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -75,6 +75,17 @@ test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 		&& LIBREPAPER_FSYNC=false cargo nextest run --workspace \
 		|| { echo "cargo-nextest not installed (cargo install cargo-nextest); using cargo test"; \
 		     LIBREPAPER_FSYNC=false cargo test --workspace; }
+# Said out loud because a silent green `test` reads as "everything passes", and
+# it is not: the browser components and the Postgres-gated cases are both out
+# of this target on purpose, and both have hidden real faults while every
+# other check was green.
+	@echo
+	@echo "test: passed -- NOT everything. Still to run:"
+	@echo "  make browser                              the components in a real chromium"
+	@echo "  LIBREPAPER_TEST_POSTGRES_URL=... \\"
+	@echo "    cargo test -p librepaper --lib -- --ignored --test-threads=1 \\"
+	@echo "      --skip catalog_v3_release_benchmark   (that one wants its own database)"
+	@echo "  make check-all                            test + browser in one go"
 
 # Explicit suites kept out of the default inventory because they require
 # host tools or intentionally exercise release-sized resource ceilings.
@@ -90,6 +101,11 @@ test-release-workloads:  ## Run supported-limit and diagnostic workloads
 	@cargo test -p librepaper persistence_capacity_workload -- --ignored --nocapture
 	@cargo test -p librepaper persistence_default_limits_refuse_without_discarding_dirty_rooms -- --ignored --nocapture
 	@cargo test -p librepaper mcp_protocol_transfer_benchmark -- --ignored --nocapture
+
+# One command that means what a green `test` looks like it means. The Postgres
+# cases stay out even here: they want a database to point at and they TRUNCATE
+# it, which is not something a default target should assume it may do.
+check-all: test browser  ## Run the test suite AND the browser components
 
 # The components, in a real browser. Not part of `test`: each one builds a
 # bundle with vite and drives a headless chromium, which is minutes rather than

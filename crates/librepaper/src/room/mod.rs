@@ -230,17 +230,6 @@ pub struct Session {
     pub generation: u64,
     /// Encoded size for one exact generation; quota checks reuse it until an edit.
     encoded_size: Option<(u64, i64)>,
-    /// An upper bound on `encode_state(doc).len()`, or `None` when nothing has
-    /// established one yet.
-    ///
-    /// A v1 update carries every block it inserts, so the snapshot after
-    /// applying an update is at most the snapshot before plus that update's
-    /// own length; deletions only shrink it. Keeping it here is what lets the
-    /// encoded ceiling be decided on every keystroke without encoding the
-    /// whole document each time. Any mutation that is not a measured update
-    /// clears it through `mark_dirty`, and the next exact encode -- a persist,
-    /// a checkpoint, a resident estimate -- re-establishes it.
-    encoded_bound: Option<usize>,
     /// The generation the newest checkpoint's tree actually covers. Compared
     /// against `generation` to say whether the document has changed since
     /// then, so an idle room is not re-hashed every second to answer that.
@@ -281,12 +270,6 @@ impl Session {
             self.dirty_since = at;
         }
         self.dirty = true;
-        // Every mutation reaches here, so forgetting the bound here is what
-        // makes it safe by default: a caller that grows the document without
-        // saying by how much leaves no stale bound behind, only an unknown
-        // one. `receive_update` re-establishes it explicitly after this, with
-        // the bytes it actually admitted.
-        self.encoded_bound = None;
     }
 
     /// Record that the newest checkpoint covers what the document says now.
@@ -302,9 +285,6 @@ impl Session {
     /// The exact encoded length, learned from an encode that just happened.
     fn note_encoded_len(&mut self, generation: u64, bytes: usize) {
         self.encoded_size = Some((generation, bytes as i64));
-        if generation == self.generation {
-            self.encoded_bound = Some(bytes);
-        }
     }
 }
 
@@ -728,7 +708,6 @@ impl RoomSet {
                     last_persist_at: 0,
                     generation: 0,
                     encoded_size: None,
-                    encoded_bound: None,
                     checkpoint_generation: 0,
                     checkpoint_tree: None,
                     updated_at: 0,
@@ -1566,10 +1545,10 @@ impl Room {
                 return Applied::Refuse(WriteError::RateLimited);
             }
         }
-        // Validate and bound the candidate while holding room state. Durable
-        // quota is charged when an immutable version or asset is committed;
-        // live CRDT updates do not reserve estimated physical bytes.
-        let admitted_bound = {
+        // Validate the candidate while holding room state. Durable quota is
+        // charged when an immutable version or asset is committed; live CRDT
+        // updates do not reserve estimated physical bytes.
+        {
             let decoded = match session::decode_update(update) {
                 Ok(decoded) => decoded,
                 Err(_) => return Applied::Ignored,
@@ -1595,8 +1574,7 @@ impl Room {
                 session::DecodedAdmission::Fits(decoded) => decoded,
             };
             drop(decoded);
-            update.len()
-        };
+        }
         // Read before the update is applied, so a change to the shared
         // main-file pointer can be told from a document that already opened
         // with this main file.
@@ -1628,7 +1606,6 @@ impl Room {
                 };
             }
         };
-        let repaired_bytes = correction.as_ref().map_or(0, Vec::len);
         if let Some(correction) = correction {
             let payload =
                 json!({"type": "doc-update", "update": encode_update(&correction)}).to_string();
@@ -1657,10 +1634,6 @@ impl Room {
             }
         }
         state.session.mark_dirty(now);
-        // `mark_dirty` forgets the bound, because most mutations cannot say
-        // how much they grew the snapshot by. This one can: what was admitted
-        // above, plus whatever the path repair relayed on top of it.
-        state.session.encoded_bound = Some(admitted_bound.saturating_add(repaired_bytes));
         state.session.generation += 1;
         state.session.updated_at = now;
         state.session.by = by.clone();
