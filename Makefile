@@ -231,6 +231,34 @@ postgres-dev:  ## Start the persistent PostgreSQL used by an unconfigured local 
 		sleep 1; \
 	done; echo "PostgreSQL did not become ready"; exit 1
 
+# Starting over. The local deployment is seeded state and nothing else -- the
+# accounts, the five example copies per account and the CRDT history behind
+# them -- so the way out of a document the current code cannot read is to
+# throw it away rather than to migrate it. That is what an unreleased
+# substrate change leaves behind: the documents in a deploy from before the
+# swap are encoded for the engine that was replaced, and the reader says so
+# ("Invalid magic bytes") instead of opening them.
+#
+# Only the Docker deployment this Makefile owns. A configured
+# LIBREPAPER_DATABASE_URL points somewhere this target has no business
+# dropping, so it refuses rather than guessing.
+.PHONY: wipe
+wipe:  ## Delete the local deployment -- database and data directory -- and start over
+	@if [ -n "$(LIBREPAPER_DATABASE_URL)" ]; then \
+		echo "LIBREPAPER_DATABASE_URL is set: wipe that database yourself."; exit 1; \
+	fi
+	@$(MAKE) --no-print-directory kill >/dev/null
+	@$(MAKE) --no-print-directory postgres-dev
+	@# FORCE, because a server that outlived `kill` still holds a connection
+	@# and DROP DATABASE waits for it otherwise.
+	@docker exec $(DEV_POSTGRES_CONTAINER) psql -U postgres -c \
+		'DROP DATABASE IF EXISTS librepaper WITH (FORCE)' >/dev/null
+	@docker exec $(DEV_POSTGRES_CONTAINER) psql -U postgres -c 'CREATE DATABASE librepaper' >/dev/null
+	@# The blobs and the session key. The schema comes back from the
+	@# migrations on the next start, and the directory with it.
+	@rm -rf "$(DATA)"
+	@echo "Wiped: database librepaper, $(DATA)/ -- sign in again for a fresh set of examples"
+
 # Use the ordinary sign-in flow: each new account receives five private
 # examples and owns its copies. Guest roles come from links created in Share.
 deploy: latex-check $(BIN)  ## Serve locally; sign in for your five examples and share links to test roles

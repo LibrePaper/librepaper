@@ -1,6 +1,11 @@
 import { projectIdentity, projectIdentityKey } from "./project-identity.js";
 
-const DATABASE = "librepaper-offline-v1";
+// Named for the substrate, not only the schema: the v1 database holds Yjs
+// updates, and a Loro document cannot import those -- it rejects them as
+// invalid magic bytes, and the project then reads as unsaved on this device.
+// The cutover left nothing worth translating, so the old database is
+// abandoned rather than migrated.
+const DATABASE = "librepaper-offline-v2";
 const VERSION = 1;
 const PROJECTS = "projects";
 const STATES = "states";
