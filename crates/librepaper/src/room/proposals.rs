@@ -298,6 +298,38 @@ impl super::Room {
         Ok(id.to_string())
     }
 
+    /// Writes a branch down as a proposal, and returns its id.
+    ///
+    /// Split from [`Room::open_suggestion`] because the callers that make a
+    /// suggestion while holding the room state cannot take that lock again --
+    /// it is not reentrant, and asking for it twice is a deadlock rather than
+    /// an error. So they build the branch under the lock they already hold,
+    /// where the document is, and store it here after letting it go.
+    pub(crate) async fn store_proposal(
+        &self,
+        author: &str,
+        peer: PeerID,
+        base: &Frontiers,
+        tip: &Frontiers,
+        branch: Vec<u8>,
+    ) -> Result<String, ProposalError> {
+        let (catalog, document) = self.catalog_and_document()?;
+        let id = crate::storage::postgres::new_id();
+        catalog
+            .open_proposal(crate::storage::postgres::NewProposal {
+                document_id: document,
+                id,
+                author: author.to_string(),
+                author_peer: peer as i64,
+                base_frontiers: base.encode(),
+                tip_frontiers: tip.encode(),
+                branch_bytes: branch,
+            })
+            .await
+            .map_err(|error| ProposalError::Failed(error.to_string()))?;
+        Ok(id.to_string())
+    }
+
     /// Opens a proposal for a suggestion, and returns its id for the comment to
     /// carry.
     ///
@@ -361,6 +393,49 @@ impl super::Room {
             .update_proposal_branch(id, tip.to_vec(), branch.to_vec())
             .await
             .map_err(|error| ProposalError::Failed(error.to_string()))
+    }
+
+    /// What a suggestion proposes, read from its branch.
+    ///
+    /// The text is not stored beside the comment any more, so this is how the
+    /// places that show it -- a reader's view, an export, an agent asking what
+    /// is pending -- get it. A suggestion is one hunk, and the words it wants
+    /// are that hunk's insertion.
+    ///
+    /// `None` when the comment is not a suggestion. An error only when the
+    /// proposal it names cannot be read, which means something is wrong rather
+    /// than absent.
+    pub(crate) async fn proposed_text(
+        &self,
+        proposal: &str,
+    ) -> Result<Option<String>, ProposalError> {
+        if proposal.is_empty() {
+            return Ok(None);
+        }
+        let (catalog, _) = self.catalog_and_document()?;
+        let id = uuid::Uuid::parse_str(proposal)
+            .map_err(|_| ProposalError::Failed("that is not a proposal".into()))?;
+        let Some(stored) = catalog
+            .proposal(id)
+            .await
+            .map_err(|error| ProposalError::Failed(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let proposal = Proposal {
+            base: Frontiers::decode(&stored.base_frontiers)
+                .map_err(|error| ProposalError::Failed(error.to_string()))?,
+            tip: Frontiers::decode(&stored.tip_frontiers)
+                .map_err(|error| ProposalError::Failed(error.to_string()))?,
+        };
+        let found = {
+            let state = self.state.lock().await;
+            hunks(&state.session.doc, &proposal, &stored.branch_bytes)?
+        };
+        // A suggestion is one hunk by construction. More than one means the
+        // branch has grown beyond what a suggestion is, and joining them would
+        // read as a single replacement that nobody proposed.
+        Ok(found.first().map(|hunk| hunk.inserted.clone()))
     }
 
     /// The proposals a joining client needs to know about.

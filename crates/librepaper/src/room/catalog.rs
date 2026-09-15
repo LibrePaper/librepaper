@@ -296,7 +296,7 @@ pub(super) fn annotation_input(
     document_id: Uuid,
     comment: &Comment,
 ) -> Result<NewAnnotation, WriteError> {
-    let kind = if comment.proposed.is_some() {
+    let kind = if !comment.proposal.is_empty() {
         "suggestion"
     } else if comment.motivation == "highlighting" {
         "highlight"
@@ -304,7 +304,7 @@ pub(super) fn annotation_input(
         "comment"
     };
     let selector = json!({"exact":comment.exact,"prefix":comment.prefix,"suffix":comment.suffix,"position":comment.position,"point":comment.point,"color":comment.color,"region":comment.region,"output_anchor":comment.output_anchor,"source":comment.source});
-    let context = json!({"motivation":comment.motivation,"creator":comment.creator,"via":comment.via,"pass":comment.pass,"outcome":comment.outcome,"accept_request":comment.accept_request,"revision":comment.revision,"resolved_in":comment.resolved_in});
+    let context = json!({"motivation":comment.motivation,"creator":comment.creator,"via":comment.via,"pass":comment.pass,"proposal":comment.proposal,"accept_request":comment.accept_request,"revision":comment.revision,"resolved_in":comment.resolved_in});
     Ok(NewAnnotation {
         document_id,
         kind: kind.into(),
@@ -330,7 +330,6 @@ pub(super) fn annotation_input(
         source_project_generation: None,
         source_state_vector: None,
         publication_id: Uuid::parse_str(&comment.publication_id).ok(),
-        proposed_text: comment.proposed.clone(),
     })
 }
 
@@ -377,14 +376,17 @@ pub(crate) fn room_comment_from_catalog_row(
         region: parse::<Region>(selector, "region"),
         output_anchor: parse::<QuartoOutputAnchor>(selector, "output_anchor"),
         source: parse::<SourceAnchor>(selector, "source"),
-        proposed: row.proposed_text,
-        pass: context
-            .get("pass")
+        proposal: context
+            .get("proposal")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .into(),
-        outcome: context
-            .get("outcome")
+        // Projections. A row does not carry them; whoever serves this comment
+        // fills them in from the proposal named above.
+        proposed: None,
+        outcome: String::new(),
+        pass: context
+            .get("pass")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .into(),

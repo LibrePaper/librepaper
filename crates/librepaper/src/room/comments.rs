@@ -139,21 +139,35 @@ pub struct Comment {
     /// against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceAnchor>,
-    /// The text a suggestion (a comment whose motivation is `editing`) wants
-    /// in place of the passage `source.exact` names. `Some("")` proposes
-    /// deleting it outright. Absent on every other motivation: a suggestion
-    /// is the one kind of comment that is inert until an editor acts on it,
-    /// rather than a remark in its own right.
+    /// The proposal this comment offers, when its motivation is `editing`.
+    ///
+    /// A suggestion is a proposed change with a remark attached, and the change
+    /// is a branch like any other (§1.2). This id is the whole of what the
+    /// comment knows about it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub proposal: String,
+
+    /// What that proposal wants in place of the passage, and whether it was
+    /// taken. **Both are projections and neither is stored.**
+    ///
+    /// The branch owns the text and `document_proposal_hunks` owns the verdict.
+    /// These are filled in when a comment is served, so that a reader, an
+    /// export or an agent can see a suggestion without going and assembling it
+    /// from the branch itself. Nothing writes them back, and the persistence
+    /// layer does not look at them -- the columns that used to hold them are
+    /// dropped in migration 0010.
+    ///
+    /// The distinction is the point of §1.2: one of these being wrong is a
+    /// stale display, where before it was a second answer to "was this
+    /// accepted" that could disagree with the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub outcome: String,
     /// Batch identifier for assistant suggestions. Empty means this comment
     /// was created independently of a batch.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pass: String,
-    /// `accepted` or `rejected` once an editor has decided a suggestion;
-    /// empty while pending and on every comment that is not one.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub outcome: String,
     #[serde(default)]
     pub body: String,
     #[serde(default)]
@@ -274,7 +288,11 @@ impl CommentView {
         // source edits through the annotation channel.
         if !is_owner {
             comment.source = None;
+            // Everything about a proposed source change: the id, and the two
+            // projections of it. A reader sees the remark, not the edit.
+            comment.proposal.clear();
             comment.proposed = None;
+            comment.outcome.clear();
             comment.revision.clear();
             comment.resolved_in.clear();
         }
@@ -555,7 +573,11 @@ impl Room {
         // The whole pass is prepared under state and persisted without it.
         // Each entry remembers which slot in `results` its outcome belongs to,
         // so an item refused during preparation keeps its place in the reply.
-        let mut prepared: Vec<(usize, Comment)> = Vec::new();
+        // Each entry carries the branch its suggestion makes, because the branch
+        // is built here where the document is, and written down after the lock
+        // goes -- the room state cannot be taken twice.
+        type PreparedBranch = (loro::Frontiers, loro::Frontiers, Vec<u8>, loro::PeerID);
+        let mut prepared: Vec<(usize, Comment, PreparedBranch)> = Vec::new();
         let mut next_seq = state.seq;
         for item in items {
             let Some(source) = valid_source(&config, Some(&item.source)) else {
@@ -590,6 +612,33 @@ impl Room {
                 continue;
             }
             let body = clean(&item.body, config.caps.body).trim().to_string();
+            // The suggested words become a branch here, under the lock, because
+            // this is where the document is. It is written down after the lock
+            // goes. A passage that is not where the anchor says refuses the
+            // item rather than being placed somewhere plausible.
+            let branch = texts
+                .get(&source.path)
+                .and_then(|body| locate_anchor(body, &source))
+                .and_then(|at| {
+                    crate::room::proposals::from_suggestion(
+                        &state.session.doc,
+                        &source.path,
+                        at,
+                        &source.exact,
+                        &proposed,
+                    )
+                    .ok()
+                })
+                .and_then(|(made, base, tip, peer)| {
+                    session::encode_diff(&made, &session::encode_vector(&state.session.doc))
+                        .ok()
+                        .map(|bytes| (base, tip, bytes, peer))
+                });
+            let Some(branch) = branch else {
+                results
+                    .push(json!({"status":"refused","reason":"that passage is not where it was"}));
+                continue;
+            };
             next_seq = next_seq.saturating_add(1);
             let added = Comment {
                 id: new_id(),
@@ -605,9 +654,11 @@ impl Room {
                 region: None,
                 output_anchor: None,
                 source: Some(source),
-                proposed: Some(proposed),
-                pass: pass.clone(),
+                proposal: String::new(),
+                // Projections, filled in when this is served rather than stored.
+                proposed: Some(proposed.clone()),
                 outcome: String::new(),
+                pass: pass.clone(),
                 body,
                 creator: caller.creator.to_string(),
                 created: timestamp(),
@@ -621,7 +672,7 @@ impl Room {
                 accept_request: String::new(),
             };
             results.push(Value::Null);
-            prepared.push((results.len() - 1, added));
+            prepared.push((results.len() - 1, added, branch));
         }
         drop(state);
         if let Some(catalog) = self.catalog.as_ref().get() {
@@ -629,7 +680,20 @@ impl Room {
             // released for the whole pass: a hundred inserts used to hold the
             // document's lock from the first to the last.
             let mut stored_rows = Vec::new();
-            for (slot, added) in prepared {
+            for (slot, mut added, branch) in prepared {
+                // The branch becomes a proposal, and the comment carries its id.
+                // A suggestion whose branch cannot be stored is refused rather
+                // than kept as a remark with nothing behind it.
+                match self
+                    .store_proposal(&added.creator, branch.3, &branch.0, &branch.1, branch.2)
+                    .await
+                {
+                    Ok(id) => added.proposal = id,
+                    Err(error) => {
+                        results[slot] = json!({"status":"refused","reason":error.to_string()});
+                        continue;
+                    }
+                }
                 let persisted = match catalog_comment_row(&self.slug, &added) {
                     Ok(row) => {
                         let key = crate::util::new_request_key();
@@ -899,7 +963,7 @@ impl Room {
                 if !is_owner && (author.is_empty() || target.author != author) {
                     return fail("only the suggestion author or an editor may refine it");
                 }
-                if target.motivation != "editing" || target.resolved || !target.outcome.is_empty() {
+                if target.motivation != "editing" || target.resolved || target.proposal.is_empty() {
                     return fail("only a pending suggestion can be refined");
                 }
                 if target.revision != revision {
@@ -912,19 +976,52 @@ impl Room {
                 }
                 let proposed = clean(&proposed, config.caps.exact);
                 let body = clean(&body, config.caps.body).trim().to_string();
-                if target.proposed.as_deref() == Some(&proposed) && target.body == body {
-                    return (
-                        json!({"type":"refine","comment_id":comment_id,"comment":target,"request_id":request_id,"noop":true}),
-                        true,
-                    );
-                }
-                if target.proposed.as_deref() != Some(&expected_proposed) {
-                    return fail("suggestion changed; read it again before refining");
-                }
-                let mut refined = target.clone();
-                refined.proposed = Some(proposed);
-                refined.body = body;
+                let source = target.source.clone();
+                let was = target.proposal.clone();
+                let target = target.clone();
+                // Refining replaces the branch rather than editing it. The words
+                // somebody is refining away were proposed, and a proposal that
+                // quietly becomes a different proposal under the same id is one
+                // a reviewer could have agreed to without having seen it.
+                let rebuilt = source.as_ref().and_then(|anchor| {
+                    let texts = session::texts_of(&state.session.doc);
+                    let at = texts
+                        .get(&anchor.path)
+                        .and_then(|body| locate_anchor(body, anchor))?;
+                    let (made, base, tip, peer) = crate::room::proposals::from_suggestion(
+                        &state.session.doc,
+                        &anchor.path,
+                        at,
+                        &anchor.exact,
+                        &proposed,
+                    )
+                    .ok()?;
+                    let bytes =
+                        session::encode_diff(&made, &session::encode_vector(&state.session.doc))
+                            .ok()?;
+                    Some((base, tip, bytes, peer))
+                });
                 drop(state);
+                let Some((base, tip, bytes, peer)) = rebuilt else {
+                    return fail("that passage is not where it was; read it again before refining");
+                };
+                // What the reviewer last saw, so a refinement racing another
+                // refinement is refused rather than silently winning.
+                match self.proposed_text(&was).await {
+                    Ok(Some(current)) if current == expected_proposed => {}
+                    Ok(_) => return fail("suggestion changed; read it again before refining"),
+                    Err(error) => return fail(&error.to_string()),
+                }
+                let refreshed = match self
+                    .store_proposal(&target.creator, peer, &base, &tip, bytes)
+                    .await
+                {
+                    Ok(id) => id,
+                    Err(error) => return fail(&error.to_string()),
+                };
+                let mut refined = target;
+                refined.proposal = refreshed;
+                refined.body = body;
                 let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     match catalog_comment_row(&self.slug, &refined) {
                         Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
@@ -964,23 +1061,31 @@ impl Room {
                 if is_suggestion && !is_owner {
                     return fail("only an editor may decide a suggestion");
                 }
-                if is_suggestion && !resolved && state.comments[index].outcome == "accepted" {
-                    return fail(
-                        "an accepted suggestion cannot be reopened; restore the checkpoint instead",
-                    );
-                }
-                if is_suggestion && resolved && state.comments[index].outcome == "accepted" {
-                    // Already settled by acceptance; resolving it again is a
-                    // no-op rather than a second decision.
-                    let target = &state.comments[index];
-                    return (
-                        json!({
-                            "type": "resolve", "comment_id": target.id,
-                            "resolved": target.resolved, "resolved_at": target.resolved_at,
-                            "resolved_in": target.resolved_in,
-                        }),
-                        true,
-                    );
+                // Whether a suggestion was taken is not recorded here any more:
+                // it is the state of its proposal, which only the server writes.
+                // Settled means its hunks were decided and the words either
+                // landed or did not -- either way that is done, and resolving
+                // the remark again is a no-op rather than a second decision.
+                let settled = state.comments[index].proposal.clone();
+                if is_suggestion && !settled.is_empty() {
+                    let open = self.open_proposals().await.unwrap_or_default();
+                    let still_open = open.iter().any(|proposal| proposal["id"] == json!(settled));
+                    if !still_open {
+                        if !resolved {
+                            return fail(
+                                "a decided suggestion cannot be reopened; restore the checkpoint instead",
+                            );
+                        }
+                        let target = &state.comments[index];
+                        return (
+                            json!({
+                                "type": "resolve", "comment_id": target.id,
+                                "resolved": target.resolved, "resolved_at": target.resolved_at,
+                                "resolved_in": target.resolved_in,
+                            }),
+                            true,
+                        );
+                    }
                 }
                 let was_resolved = state.comments[index].resolved;
                 if was_resolved == resolved {
@@ -1010,13 +1115,6 @@ impl Room {
                 } else {
                     String::new()
                 };
-                if is_suggestion {
-                    decided.outcome = if resolved {
-                        "rejected".to_string()
-                    } else {
-                        String::new()
-                    };
-                }
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     match catalog_comment_row(&self.slug, &decided) {
@@ -1406,7 +1504,8 @@ impl Room {
                     source,
                     region: spot,
                     output_anchor,
-                    proposed,
+                    proposal: String::new(),
+                    proposed: proposed.clone(),
                     outcome: String::new(),
                     body,
                     creator,
@@ -1421,7 +1520,46 @@ impl Room {
                     via: via.to_string(),
                     accept_request: String::new(),
                 };
+                // A comment that proposes different words for a passage makes a
+                // branch for them, built here where the document is (§1.2).
+                let offered =
+                    added
+                        .source
+                        .clone()
+                        .zip(proposed.clone())
+                        .and_then(|(anchor, wanted)| {
+                            let texts = session::texts_of(&state.session.doc);
+                            let at = texts
+                                .get(&anchor.path)
+                                .and_then(|body| locate_anchor(body, &anchor))?;
+                            let (made, base, tip, peer) = crate::room::proposals::from_suggestion(
+                                &state.session.doc,
+                                &anchor.path,
+                                at,
+                                &anchor.exact,
+                                &wanted,
+                            )
+                            .ok()?;
+                            let bytes = session::encode_diff(
+                                &made,
+                                &session::encode_vector(&state.session.doc),
+                            )
+                            .ok()?;
+                            Some((base, tip, bytes, peer))
+                        });
                 drop(state);
+                if proposed.is_some() {
+                    let Some((base, tip, bytes, peer)) = offered else {
+                        return fail("that passage is not where it was");
+                    };
+                    match self
+                        .store_proposal(&added.creator, peer, &base, &tip, bytes)
+                        .await
+                    {
+                        Ok(id) => added.proposal = id,
+                        Err(error) => return fail(&error.to_string()),
+                    }
+                }
                 let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     let digest = request_digest(&json!({
                         "kind": "comment",

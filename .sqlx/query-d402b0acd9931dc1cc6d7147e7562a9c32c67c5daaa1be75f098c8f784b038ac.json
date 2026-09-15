@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context,source_version_id,source_update_sequence,source_project_generation,source_state_vector,publication_id,proposed_text,suggestion_state)\n             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)\n             ON CONFLICT(id) DO NOTHING\n             RETURNING id,document_id,kind,body,author_account_id,author_key,author_label,selector,\n                       context,source_version_id,source_update_sequence,source_project_generation,\n                       source_state_vector,publication_id,proposed_text,suggestion_state,\n                       resolved_at,created_at,updated_at",
+  "query": "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context,source_version_id,source_update_sequence,source_project_generation,source_state_vector,publication_id)\n             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)\n             ON CONFLICT(id) DO NOTHING\n             RETURNING id,document_id,kind,body,author_account_id,author_key,author_label,selector,\n                       context,source_version_id,source_update_sequence,source_project_generation,\n                       source_state_vector,publication_id,\n                       resolved_at,created_at,updated_at",
   "describe": {
     "columns": [
       {
@@ -75,26 +75,16 @@
       },
       {
         "ordinal": 14,
-        "name": "proposed_text",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 15,
-        "name": "suggestion_state",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 16,
         "name": "resolved_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 17,
+        "ordinal": 15,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 18,
+        "ordinal": 16,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -114,9 +104,7 @@
         "Int8",
         "Int8",
         "Bytea",
-        "Uuid",
-        "Text",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -135,11 +123,9 @@
       true,
       true,
       true,
-      true,
-      true,
       false,
       false
     ]
   },
-  "hash": "e87c0d3f77709da56866ba313fbdbc5e08e374ba28034f651b120310529e4d59"
+  "hash": "d402b0acd9931dc1cc6d7147e7562a9c32c67c5daaa1be75f098c8f784b038ac"
 }

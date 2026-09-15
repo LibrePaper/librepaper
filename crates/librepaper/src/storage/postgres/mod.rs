@@ -481,7 +481,6 @@ mod tests {
             source_project_generation: None,
             source_state_vector: None,
             publication_id: None,
-            proposed_text: None,
         };
         let collaborator_actor = MutationAuthorization {
             account_id: Some(collaborator.id),
@@ -533,7 +532,6 @@ mod tests {
                     source_project_generation: Some(0),
                     source_state_vector: None,
                     publication_id: None,
-                    proposed_text: None,
                 },
                 &owner_actor,
                 false,
@@ -566,63 +564,11 @@ mod tests {
             catalog.replies(&[annotation.id]).await.unwrap()[0].id,
             reply.id
         );
-        let suggestion_id = new_id();
-        let mut suggestion = NewAnnotation {
-            document_id: first.id,
-            kind: "suggestion".into(),
-            body: "Change this".into(),
-            author_account_id: Some(account.id),
-            author_key: format!("account:{}", account.id),
-            author_label: "Owner".into(),
-            selector: json!({"exact":"Paper"}),
-            context: json!({"version":1,"outcome":""}),
-            source_version_id: None,
-            source_update_sequence: Some(0),
-            source_project_generation: Some(0),
-            source_state_vector: None,
-            publication_id: None,
-            proposed_text: Some("Article".into()),
-        };
-        catalog
-            .put_annotation_authorized(suggestion_id, suggestion.clone(), &owner_actor, true)
-            .await
-            .unwrap();
-        suggestion.context = json!({"version":1,"outcome":"accepted"});
-        let accepted_sequence = catalog
-            .append_update_and_accept_suggestion(
-                suggestion_id,
-                suggestion.clone(),
-                b"accepted-suggestion-update",
-                &owner_actor,
-            )
-            .await
-            .unwrap();
-        assert_eq!(accepted_sequence, 1);
-        assert!(catalog
-            .append_update_and_accept_suggestion(
-                suggestion_id,
-                suggestion,
-                b"must-not-be-inserted",
-                &owner_actor,
-            )
-            .await
-            .is_err());
-        assert_eq!(
-            catalog
-                .annotations(first.id, None, None, 500)
-                .await
-                .unwrap()
-                .into_iter()
-                .find(|row| row.id == suggestion_id)
-                .unwrap()
-                .suggestion_state
-                .as_deref(),
-            Some("accepted")
-        );
-        assert_eq!(
-            catalog.updates_after(first.id, 0, 10).await.unwrap().len(),
-            1
-        );
+        // One update on the log, so the cap below is already reached and the
+        // next append has to refuse. This used to arrive as a side effect of
+        // accepting a suggestion here; suggestions are proposals now and do not
+        // write through this path, so the precondition is set up plainly.
+        assert_eq!(catalog.append_update(first.id, b"first").await.unwrap(), 1);
         let limited = PostgresCatalog {
             pool: catalog.pool.clone(),
             policy: StoragePolicy {
@@ -648,10 +594,7 @@ mod tests {
             "a refused update must not advance the stream"
         );
         assert_eq!(durable.uncompacted_update_count, 1);
-        assert_eq!(
-            durable.uncompacted_update_bytes,
-            b"accepted-suggestion-update".len() as i64
-        );
+        assert_eq!(durable.uncompacted_update_bytes, b"first".len() as i64);
         let byte_limited = PostgresCatalog {
             pool: catalog.pool.clone(),
             policy: StoragePolicy {

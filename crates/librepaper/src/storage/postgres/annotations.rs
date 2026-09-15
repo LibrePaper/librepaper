@@ -28,7 +28,6 @@ pub struct NewAnnotation {
     pub source_project_generation: Option<i64>,
     pub source_state_vector: Option<Vec<u8>>,
     pub publication_id: Option<Uuid>,
-    pub proposed_text: Option<String>,
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -47,8 +46,7 @@ pub struct AnnotationRecord {
     pub source_project_generation: Option<i64>,
     pub source_state_vector: Option<Vec<u8>>,
     pub publication_id: Option<Uuid>,
-    pub proposed_text: Option<String>,
-    pub suggestion_state: Option<String>,
+
     pub resolved_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -77,71 +75,6 @@ pub struct ReplyRecord {
 }
 
 impl PostgresCatalog {
-    /// Persists a collaboration update and accepts the suggestion that caused it in
-    /// one transaction. A failed or concurrent decision therefore cannot leave the
-    /// source changed while the suggestion remains proposed (or vice versa).
-    pub async fn append_update_and_accept_suggestion(
-        &self,
-        id: Uuid,
-        input: NewAnnotation,
-        bytes: &[u8],
-        actor: &MutationAuthorization,
-    ) -> Result<i64> {
-        validate(&input)?;
-        if input.kind != "suggestion"
-            || input.context.get("outcome").and_then(Value::as_str) != Some("accepted")
-            || bytes.is_empty()
-            || bytes.len() > 4 * 1024 * 1024
-        {
-            return Err(Error::Invalid("invalid suggestion acceptance".into()));
-        }
-        let mut tx = self.pool.begin().await?;
-        Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, true).await?;
-        self.lock_collaboration_capacity(&mut tx, input.document_id, bytes.len())
-            .await?;
-        let changed = sqlx::query!(
-            "UPDATE annotations SET body=$3,author_account_id=$4,author_key=$5,author_label=$6,
-             selector=$7,context=$8,publication_id=$9,proposed_text=$10,
-             suggestion_state='accepted',resolved_at=COALESCE(resolved_at,now()),updated_at=now()
-             WHERE id=$1 AND document_id=$2 AND kind='suggestion' AND suggestion_state='proposed'",
-            id,
-            input.document_id,
-            input.body,
-            input.author_account_id,
-            input.author_key,
-            input.author_label,
-            input.selector,
-            input.context,
-            input.publication_id,
-            input.proposed_text,
-        )
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        if changed != 1 {
-            return Err(Error::Conflict("suggestion changed".into()));
-        }
-        let sequence = sqlx::query_scalar!(
-            r#"WITH advanced AS (
-               UPDATE documents SET update_sequence=update_sequence+1,
-                 uncompacted_update_count=uncompacted_update_count+1,
-                 uncompacted_update_bytes=uncompacted_update_bytes+octet_length($2::bytea),
-                 updated_at=now()
-               WHERE id=$1 AND status='active' RETURNING id,update_sequence
-             ), inserted AS (
-               INSERT INTO document_updates(document_id,update_sequence,update_bytes)
-               SELECT id,update_sequence,$2 FROM advanced RETURNING update_sequence
-             ) SELECT update_sequence AS "update_sequence!" FROM inserted"#,
-            input.document_id,
-            bytes,
-        )
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(Error::NotFound)?;
-        tx.commit().await?;
-        Ok(sequence)
-    }
-
     async fn authorize_annotation_mutation(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
@@ -236,15 +169,14 @@ impl PostgresCatalog {
         let mut tx = self.pool.begin().await?;
         Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, require_editor)
             .await?;
-        let suggestion_state = (input.kind == "suggestion").then_some("proposed");
         let row = sqlx::query_as!(
             AnnotationRecord,
-            "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context,source_version_id,source_update_sequence,source_project_generation,source_state_vector,publication_id,proposed_text,suggestion_state)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+            "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context,source_version_id,source_update_sequence,source_project_generation,source_state_vector,publication_id)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
              ON CONFLICT(id) DO NOTHING
              RETURNING id,document_id,kind,body,author_account_id,author_key,author_label,selector,
                        context,source_version_id,source_update_sequence,source_project_generation,
-                       source_state_vector,publication_id,proposed_text,suggestion_state,
+                       source_state_vector,publication_id,
                        resolved_at,created_at,updated_at",
             id,
             input.document_id,
@@ -260,8 +192,6 @@ impl PostgresCatalog {
             input.source_project_generation,
             input.source_state_vector.as_deref(),
             input.publication_id,
-            input.proposed_text,
-            suggestion_state,
         )
         .fetch_optional(&mut *tx)
         .await?;
@@ -273,7 +203,7 @@ impl PostgresCatalog {
                     "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,
                             selector,context,source_version_id,source_update_sequence,
                             source_project_generation,source_state_vector,publication_id,
-                            proposed_text,suggestion_state,resolved_at,created_at,updated_at
+                            resolved_at,created_at,updated_at
                      FROM annotations WHERE id=$1",
                     id,
                 )
@@ -288,7 +218,6 @@ impl PostgresCatalog {
                     || existing.selector != input.selector
                     || existing.context != input.context
                     || existing.publication_id != input.publication_id
-                    || existing.proposed_text != input.proposed_text
                 {
                     return Err(Error::Conflict(
                         "annotation id was reused with different content".into(),
@@ -321,14 +250,10 @@ impl PostgresCatalog {
             .await?;
         let changed = sqlx::query!(
             "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,
-             author_label=$6,selector=$7,context=$8,publication_id=$9,proposed_text=$10,
-             suggestion_state=CASE WHEN $2::text='suggestion' THEN
-               CASE WHEN $11 AND $8::jsonb->>'outcome' IN ('accepted','rejected') THEN $8::jsonb->>'outcome'
-                    ELSE COALESCE(suggestion_state,'proposed') END
-               ELSE NULL END,
-             resolved_at=CASE WHEN $11 THEN COALESCE(resolved_at,now()) ELSE NULL END,
+             author_label=$6,selector=$7,context=$8,publication_id=$9,
+             resolved_at=CASE WHEN $10 THEN COALESCE(resolved_at,now()) ELSE NULL END,
              updated_at=now()
-             WHERE id=$1 AND document_id=$12 AND (NOT $13 OR suggestion_state='proposed')",
+             WHERE id=$1 AND document_id=$11",
             id,
             input.kind,
             input.body,
@@ -338,10 +263,8 @@ impl PostgresCatalog {
             input.selector,
             input.context,
             input.publication_id,
-            input.proposed_text,
             resolved,
             input.document_id,
-            deciding_suggestion,
         )
         .execute(&mut *tx)
         .await?
@@ -488,7 +411,7 @@ impl PostgresCatalog {
                     AnnotationRecord,
                     "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,selector,
                             context,source_version_id,source_update_sequence,source_project_generation,
-                            source_state_vector,publication_id,proposed_text,suggestion_state,resolved_at,
+                            source_state_vector,publication_id,resolved_at,
                             created_at,updated_at
                      FROM annotations
                      WHERE document_id=$1 AND publication_id=$2
@@ -509,7 +432,7 @@ impl PostgresCatalog {
                     AnnotationRecord,
                     "SELECT id,document_id,kind,body,author_account_id,author_key,author_label,selector,
                             context,source_version_id,source_update_sequence,source_project_generation,
-                            source_state_vector,publication_id,proposed_text,suggestion_state,resolved_at,
+                            source_state_vector,publication_id,resolved_at,
                             created_at,updated_at
                      FROM annotations
                      WHERE document_id=$1
@@ -551,11 +474,12 @@ impl PostgresCatalog {
 }
 
 fn validate(input: &NewAnnotation) -> Result<()> {
-    let suggestion = input.kind == "suggestion";
+    // A suggestion used to be recognisable here by carrying proposed text. It
+    // is not: what it proposes lives in its branch, and this table has no
+    // opinion any more about whether one exists.
     if !matches!(input.kind.as_str(), "comment" | "highlight" | "suggestion")
         || input.author_key.is_empty()
         || input.author_label.is_empty()
-        || suggestion != input.proposed_text.is_some()
     {
         return Err(Error::Invalid("invalid annotation".into()));
     }
