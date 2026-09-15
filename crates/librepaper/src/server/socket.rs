@@ -744,6 +744,10 @@ impl Server {
                                 "type": "error",
                                 "message": error.to_string(),
                                 "stale": matches!(error, crate::room::proposals::ProposalError::Stale),
+                                // Worth another go once the author's own
+                                // updates have landed, unlike the other
+                                // refusals, which are final.
+                                "retry": matches!(error, crate::room::proposals::ProposalError::UnknownBase),
                                 "proposal_id": incoming.proposal_id,
                                 "request_id": incoming.request_id,
                                 "version": 1,
@@ -795,14 +799,30 @@ impl Server {
                                     Err(error) => refuse(error),
                                 }
                             }
-                            "proposal-open" => match room.open_proposal(&by).await {
-                                Ok(id) => json!({
-                                    "type": "proposal-opened", "proposal_id": id,
-                                    "request_id": incoming.request_id,
-                                    "version": 1, "protocol": "librepaper.room.v1",
-                                }),
-                                Err(error) => refuse(error),
-                            },
+                            // §5.1: the message carries the frontier the author
+                            // forked at, and it is load-bearing -- see
+                            // `open_proposal`. A proposal whose base cannot be
+                            // read is refused rather than opened at the room's
+                            // own frontier, because that silently rebases it
+                            // onto somebody else's words.
+                            "proposal-open" => {
+                                let base = crate::room::decode_update(&incoming.base)
+                                    .and_then(|bytes| loro::Frontiers::decode(&bytes).ok());
+                                let Some(base) = base else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"a proposal must say which version it forked at","request_id":incoming.request_id}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                match room.open_proposal(&by, &base).await {
+                                    Ok(id) => json!({
+                                        "type": "proposal-opened", "proposal_id": id,
+                                        "request_id": incoming.request_id,
+                                        "version": 1, "protocol": "librepaper.room.v1",
+                                    }),
+                                    Err(error) => refuse(error),
+                                }
+                            }
                             "proposal-update" => {
                                 let (Some(branch), Some(tip)) = (
                                     crate::room::decode_update(&incoming.update),

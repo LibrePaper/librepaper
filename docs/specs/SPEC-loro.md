@@ -292,6 +292,16 @@ has since changed underneath the reviewer.
 **Main keeps moving too.** A proposal's base goes stale by design, which is the
 case `document::hunks`' stale-base test covers.
 
+**The base is the author's, not the room's.** `proposal-open` carries the
+frontier the client forked at, and the server records that one. It does not
+substitute its own frontier at the moment the message happens to be handled:
+between the fork and the open, anybody else may have committed, and those
+operations are not in the branch. The server forks at the base as it stores it,
+so a base the room cannot reach is refused (`UnknownBase`, `retry: true` on the
+wire) rather than quietly replaced -- the author is ahead of what they have
+sent, and the answer is to send it and ask again. `room::proposal_round_trip_tests`
+covers this end to end.
+
 ### 5.1a When a decision reaches the document
 
 A decision is **recorded** the moment it is made and broadcast to everyone

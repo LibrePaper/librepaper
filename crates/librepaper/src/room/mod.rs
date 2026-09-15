@@ -40,6 +40,8 @@ mod figures;
 #[cfg(test)]
 mod idle_room_tests;
 pub(crate) mod outgoing;
+#[cfg(test)]
+mod proposal_round_trip_tests;
 pub(crate) mod proposals;
 mod resident;
 pub(crate) mod text;

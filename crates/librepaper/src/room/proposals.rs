@@ -56,6 +56,11 @@ pub enum ProposalError {
     /// The author edited while the reviewer was reading, so the hunks the
     /// reviewer decided about are not the hunks that are there now.
     Stale,
+    /// The base a client forked at is not a frontier this room can reach, so
+    /// the branch cannot be rebuilt against it. The author is ahead of what
+    /// they have sent: their own operations have to arrive before a proposal
+    /// can be opened on top of them.
+    UnknownBase,
     /// The branch could not be read, or the room refused the result.
     Failed(String),
 }
@@ -64,6 +69,9 @@ impl std::fmt::Display for ProposalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Stale => f.write_str("this proposal has changed since it was reviewed"),
+            Self::UnknownBase => {
+                f.write_str("this proposal forked from work the server has not received yet")
+            }
             Self::Failed(text) => f.write_str(text),
         }
     }
@@ -272,14 +280,42 @@ impl super::Room {
         Ok((catalog.clone(), document))
     }
 
-    /// Opens a proposal against the room's current state.
-    pub(crate) async fn open_proposal(&self, author: &str) -> Result<String, ProposalError> {
+    /// Opens a proposal at the frontier the author forked their own copy at.
+    ///
+    /// The base comes from the client because only the client knows it. The
+    /// room's frontier at the moment this message is handled is a different
+    /// thing entirely: anything committed here since the author forked is not
+    /// in their branch, so recording the room's frontier as the base makes
+    /// every later read of this proposal -- `rebuild` forks at it, `hunks`
+    /// diffs from it -- describe a fork that never happened.
+    ///
+    /// Recording the wrong one is not known to lose or misattribute text:
+    /// `declining_a_proposal_does_not_revert_a_concurrent_writer` reproduces
+    /// the race and Loro's merge converges either way. What it does is put the
+    /// server's record of a proposal at odds with §5.1 and with where the
+    /// author is actually typing, which is a bad thing to be casual about in
+    /// the one structure the review model is built on.
+    ///
+    /// Forking here is also the check that we can fork at all. [`rebuild`]
+    /// forks at this frontier on every read of the proposal, so a base this
+    /// room cannot reach is refused now, at the one moment there is a client
+    /// waiting to be told, rather than on somebody's first attempt to review.
+    pub(crate) async fn open_proposal(
+        &self,
+        author: &str,
+        base: &Frontiers,
+    ) -> Result<String, ProposalError> {
         let peer = fresh_peer();
         let (catalog, document) = self.catalog_and_document()?;
-        let base = {
+        {
             let state = self.state.lock().await;
-            state.session.doc.state_frontiers()
-        };
+            state
+                .session
+                .doc
+                .fork_at(base)
+                .map_err(|_| ProposalError::UnknownBase)?;
+        }
+        let base = base.clone();
         let id = crate::storage::postgres::new_id();
         // A proposal opens empty. The author's first keystroke arrives as an
         // update, so there is nothing to store yet and the tip is the base.
@@ -621,6 +657,76 @@ mod tests {
         big.get_text("f").insert_utf16(0, "xyz").unwrap();
         big.commit();
         assert_eq!(hex(&big.state_frontiers().encode()), "01f9beb7b088891c04");
+    }
+
+    /// A proposal's base is where its author forked, and nowhere else.
+    ///
+    /// `open_proposal` used to record the room's frontier at the moment the
+    /// `proposal-open` message happened to be handled, ignoring the base the
+    /// client sent. The two agree in a quiet room, so this was invisible until
+    /// somebody else was typing -- which is the only time proposals matter.
+    ///
+    /// When they disagree the recorded base is *ahead* of the fork, and the
+    /// branch does not contain what the room did in between.
+    ///
+    /// This pins the property that makes the base worth getting right: given
+    /// the author's own fork point, the hunks of a proposal describe only what
+    /// its author did, and resolving it leaves a concurrent writer's sentence
+    /// alone. The existing `main_moving_on_does_not_disturb_a_proposal` covers
+    /// a concurrent edit to a different file; this one is the same file, which
+    /// is the case where a diff could actually confuse the two.
+    #[test]
+    fn a_proposal_holds_only_its_authors_work_when_the_room_moves_under_it() {
+        let room = session::new_doc();
+        room.set_peer_id(OWNER).unwrap();
+        session::put_text(&room, "main.md", "The cat sat.");
+        room.commit();
+
+        // Where the author forked, and what the room had at that moment.
+        let base = room.state_frontiers();
+        let at_fork = session::encode_vector(&room);
+
+        let branch = room.fork();
+        branch.set_peer_id(AUTHOR).unwrap();
+        session::put_text(&branch, "main.md", "The tabby sat.");
+        branch.commit();
+        let tip = branch.state_frontiers();
+        let bytes = session::encode_diff(&branch, &at_fork).unwrap();
+
+        // Somebody else writes into the room while the proposal is open. This
+        // is the operation that must not end up inside it.
+        session::put_text(&room, "main.md", "The cat sat. It purred.");
+        room.commit();
+        assert_ne!(
+            room.state_frontiers(),
+            base,
+            "the room has to have moved, or this test proves nothing"
+        );
+
+        let proposal = Proposal {
+            base,
+            tip: tip.clone(),
+        };
+        let found = hunks(&room, &proposal, &bytes).unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "only the author's own change is a hunk, got {found:?}"
+        );
+
+        // Accept it whole. The author's word lands; the other writer's
+        // sentence is still there, because it was never part of the diff.
+        let declined = HashSet::new();
+        resolve(&room, &proposal, &bytes, &declined, &tip, REVIEWER).unwrap();
+        let text = text_at(&room, "main.md");
+        assert!(
+            text.contains("tabby"),
+            "the accepted word is in, got {text:?}"
+        );
+        assert!(
+            text.contains("It purred."),
+            "the concurrent writer's sentence survives an unrelated proposal, got {text:?}"
+        );
     }
 
     #[test]

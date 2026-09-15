@@ -188,6 +188,13 @@ export function createProposals({ session, send, mayEdit }) {
       if (!mayEdit) return null;
 
       const doc = session.doc;
+      // Commit before reading the frontier, so the base names only operations
+      // that have already been handed to `subscribeLocalUpdates` -- and so
+      // sent, on this same socket, ahead of the `proposal-open` below. The
+      // server forks at this base and refuses a base it cannot reach; an
+      // uncommitted keystroke here would be exactly such a base, and the
+      // refusal would arrive as "tracking would not turn on", intermittently.
+      doc.commit();
       const base = doc.frontiers();
       const branch = doc.fork();
 
