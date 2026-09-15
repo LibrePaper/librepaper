@@ -857,7 +857,8 @@
         oldText,
         newText: tree.texts?.[path] ?? "",
         liveText: id ? session.textOf(id) : null,
-        awareness: session.awareness,
+        ephemeral: session.ephemeral,
+        loroDoc: session.doc,
         editable: mayEdit && editing && Boolean(id),
         targetLabel: "Live document",
         note: "this suggestion no longer applies cleanly",
@@ -3125,7 +3126,7 @@
         <HistoryWorkspace source={historySource} canEdit={mayEdit} onrestore={restoreCheckpoint} />
       {:else if mergeTarget && MergeEditor}
         <MergeEditor path={mergeTarget.path} oldText={mergeTarget.oldText} newText={mergeTarget.newText}
-                     liveText={mergeTarget.liveText} awareness={mergeTarget.awareness}
+                     liveText={mergeTarget.liveText} ephemeral={mergeTarget.ephemeral} loroDoc={mergeTarget.loroDoc}
                      diff
                      editable={mergeTarget.editable !== false && mayEdit && editing}
                      targetLabel={mergeTarget.targetLabel}

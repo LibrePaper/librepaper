@@ -44,7 +44,9 @@ export function createReaderCollaboration({
   const reconnects = createGeneration();
   let retryTimer = null;
   let filesCleanup = null;
-  let awarenessHandler = null;
+  // EphemeralStore hands back an unsubscribe function rather than taking a
+  // handler it can be asked to forget later, so what is kept is the way out.
+  let presenceCleanup = null;
 
   function clearRetry() {
     if (retryTimer !== null) clearTimer(retryTimer);
@@ -62,8 +64,8 @@ export function createReaderCollaboration({
     clearRetry();
     filesCleanup?.();
     filesCleanup = null;
-    if (session && awarenessHandler) session.awareness.off("change", awarenessHandler);
-    awarenessHandler = null;
+    presenceCleanup?.();
+    presenceCleanup = null;
     session?.leave();
     session = null;
   }
@@ -87,8 +89,7 @@ export function createReaderCollaboration({
     active.watchSource(() => onSource(active));
     active.onSwap(() => onSwap(active));
     filesCleanup = active.onFiles((events) => onFiles(events, active));
-    awarenessHandler = () => onAwareness(active);
-    active.awareness.on("change", awarenessHandler);
+    presenceCleanup = active.ephemeral.subscribe(() => onAwareness(active));
     onSession(active);
     // Reader/commenter sessions use this socket only for rendered
     // annotations. They receive the initial comment hello, but never send a
@@ -175,8 +176,8 @@ export function createReaderCollaboration({
     clearRetry();
     filesCleanup?.();
     filesCleanup = null;
-    if (session && awarenessHandler) session.awareness.off("change", awarenessHandler);
-    awarenessHandler = null;
+    presenceCleanup?.();
+    presenceCleanup = null;
     session?.leave();
     session = null;
     room?.close();

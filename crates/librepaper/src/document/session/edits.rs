@@ -99,8 +99,7 @@ fn apply_text_edits(text: &LoroText, edits: &[wasm_helpers::text::Edit]) -> bool
     let len = text.len_utf16();
     let mut end_of_previous = 0;
     for edit in edits {
-        let end = edit
-            .at.saturating_add(edit.delete);
+        let end = edit.at.saturating_add(edit.delete);
         if end > len || edit.at < end_of_previous {
             return false;
         }

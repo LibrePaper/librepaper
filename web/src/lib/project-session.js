@@ -338,7 +338,7 @@ export function createProjectSession({
     files,
     paths,
     meta,
-    awareness: store,
+    ephemeral: store,
     /// The main file's text as it stands. A getter rather than a field,
     /// because which text that is is not known until the session arrives.
     get text() {

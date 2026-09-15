@@ -336,7 +336,9 @@ fn restore_with(
     }
 
     let assets = super::shape::assets_of(doc);
-    let stale: Vec<String> = assets.into_keys().filter_map(|path| {
+    let stale: Vec<String> = assets
+        .into_keys()
+        .filter_map(|path| {
             if !matches!(tree.files.get(&path), Some(entry) if entry.kind == "asset") {
                 Some(path)
             } else {

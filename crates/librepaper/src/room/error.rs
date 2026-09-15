@@ -264,4 +264,3 @@ impl From<CatalogError> for WriteError {
         }
     }
 }
-

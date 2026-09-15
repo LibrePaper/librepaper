@@ -554,7 +554,6 @@ pub fn source_sha(source: &str) -> String {
     hex::encode(digest.finalize())
 }
 
-
 /// Provider-neutral automation commands. Every command accepts the pasted
 /// document link as its first argument and prints one JSON object, making the
 /// CLI suitable for an agent process without a shell parser.
