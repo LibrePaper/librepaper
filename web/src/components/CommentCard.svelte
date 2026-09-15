@@ -65,6 +65,7 @@
   // out of the way until someone clicks it open again. Resolving it again
   // closes it, however it was left.
   let expanded = $state(false);
+  let card = $state(null);
   let replying = $state(false);
   let replyBody = $state("");
   let replyField = $state(null);
@@ -97,12 +98,22 @@
       .join(" — ") || "Resolved",
   );
 
+  // Opening a resolved note replaces the summary button with the card, so the
+  // element that was activated stops existing. Focus would be dropped to the
+  // body there, losing a keyboard reader's place in the column; the card
+  // takes it instead, which is where the words they just asked for are.
+  async function open() {
+    expanded = true;
+    await tick();
+    card?.focus({ preventScroll: true });
+  }
+
   function click(event) {
     if (event.target.closest("button,input,textarea,a")) return;
     // Collapsed, the click is "show me this again"; open, it is "take me to
     // the place in the document this is about".
     if (collapsed) {
-      expanded = true;
+      open();
       return;
     }
     if (!comment.orphaned && !comment.regionUnplaceable) onreveal?.(comment);
@@ -145,13 +156,14 @@
     : 'preset-outlined-surface-300-700'}"
   class:collapsed
   class:selected
+  bind:this={card}
   tabindex="-1"
   onfocus={() => (expanded = true)}
   onclick={click}
 >
   {#if collapsed}
     <button type="button" class="summary" aria-expanded="false"
-            onclick={() => (expanded = true)}>{summary}</button>
+            onclick={open}>{summary}</button>
   {:else}
     <div class="flex flex-col gap-2">
       <Row gap={1} wrap>

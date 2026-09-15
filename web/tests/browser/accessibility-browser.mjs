@@ -28,7 +28,6 @@ const root = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const temp = mkdtempSync(join(tmpdir(), "librepaper-accessibility-"));
 const out = join(temp, "build");
 const axeSource = readFileSync(join(root, "web/node_modules/axe-core/axe.min.js"), "utf8");
-const yjs = join(root, "web/node_modules/yjs/dist/yjs.mjs");
 
 // The rules to hold the pages to: WCAG 2.0 and 2.1, A and AA. `best-practice`
 // is left out on purpose -- it is Deque's advice rather than the standard, and
@@ -51,20 +50,21 @@ const UNMEASURABLE = new Set(["color-contrast", "region"]);
 
 const room = join(temp, "room.js");
 writeFileSync(room, `
-import * as Y from ${JSON.stringify(yjs)};
+import { LoroDoc, LoroText } from "loro-crdt";
 const encode = b => btoa(String.fromCharCode(...b));
-const server = new Y.Doc();
+const server = new LoroDoc();
 const files = server.getMap("files"), paths = server.getMap("paths"), meta = server.getMap("meta");
-const text = new Y.Text(); text.insert(0, "A paragraph of source.");
-files.set("main", text); paths.set("main", "main.html"); meta.set("main", "main");
-const notes = new Y.Text(); notes.insert(0, "Notes");
-files.set("notes", notes); paths.set("notes", "notes.html");
-const update = encode(Y.encodeStateAsUpdate(server));
+const text = files.setContainer("main", new LoroText()); text.insert(0, "A paragraph of source.");
+paths.set("main", "main.html"); meta.set("main", "main");
+const notes = files.setContainer("notes", new LoroText()); notes.insert(0, "Notes");
+paths.set("notes", "notes.html");
+server.commit();
+const update = encode(server.export({ mode: "update" }));
 export function openRoom(slug, {onMessage, onConnected}) {
   window.roomReceive = onMessage;
   queueMicrotask(() => onConnected(true));
   return {
-    send(message) { if (message.type === "y-open") queueMicrotask(() => onMessage({type:"y-state", update, count:1})); return {ok:true}; },
+    send(message) { if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", update, count:1})); return {ok:true}; },
     sendLive() { return {ok:true}; },
     close() {},
   };

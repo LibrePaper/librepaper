@@ -427,7 +427,7 @@ the dependency list in this phase, not later.
 round-trip rather than cross-implementation agreement; the suite passes; and
 `yrs` appears nowhere in the tree, not in a manifest and not in a comment.
 
-### Phase 2 — Editor binding — **done, with one part of its gate unverified**
+### Phase 2 — Editor binding — **done**
 
 Replace `yCollab` with `loro-codemirror` in `components/Editor.svelte`, and
 write the IndexedDB persistence that replaces `y-indexeddb` — no such package
@@ -439,17 +439,21 @@ The current integration reaches into `ySyncFacet`, `ySyncAnnotation` and
 `loro-codemirror` is younger and has sat at 0.3.3 since October 2025, so some
 of that reach has no equivalent.
 
-*Gate: partly verified.* The binding turned out to cost less than feared:
+*Gate: passed.* The binding turned out to cost less than feared:
 `loroSyncAnnotation` stands in for `ySyncAnnotation`, and `ySyncFacet` needed no
 equivalent because the component already holds the document rather than
 fetching it from editor state. What it does cost is named: `UndoManager` takes
 only the text, so it cannot be handed the tracking state the old one was; and
 `MergeEditor` now needs the document and the presence store passed in.
 
-What is NOT verified is the last line of this gate -- that offline edits survive
-a reload. The persistence is written and its unit tests pass, but nothing has
-exercised a real browser reloading a real document, and a unit test is not
-evidence for that. It wants a browser test before this phase is called finished.
+Offline edits do survive a reload, and that is now checked in a real browser
+rather than argued from a unit test:
+`web/tests/browser/offline-reload-browser.mjs` types into a document, reloads,
+and reads the words back. The room it runs against never sends any document
+state, so there is genuinely nothing to receive and the text on the page can
+only have come from IndexedDB -- a test that let a server answer would pass
+whether or not persistence worked. It was checked to fail, with the local cache
+turned off, before being believed.
 
 ### Phase 3 — Proposal model — **done**
 
@@ -487,15 +491,33 @@ implementations of the same library — pinned in
 `room::proposals::tests::frontier_bytes_are_what_the_browser_writes`, because a
 drift there would surface as every decision being refused as stale.
 
-### Phase 4 — Fold in the other proposal paths
+### Phase 4 — Fold in the other proposal paths — **done**
 
-Migrate comment suggestions (`room/suggestions.rs`) and agent proposals
-(`room/agent.rs`) onto branches. Delete `room/revisions.rs` and the
-`revisions` container. This is where §1.2's consolidation is realized; Phases
-1 and 3 only make it possible.
+`revisions.rs` and `suggestions.rs` went with the substrate change, and the
+agent's pending-record path went with them — an agent run applies its edits
+through the ordinary path now rather than writing records into the document for
+the server to police.
 
-*Gate:* one proposal mechanism remains. `revisions.rs`, `suggestions.rs` and
-the agent's pending-record path are removed, not merely bypassed.
+The last one was the comment. A suggestion carried both the words it wanted and
+whether an editor had taken them, in columns of their own with a CHECK
+constraint holding the pair together, which is what made a comment a second
+implementation of "a change awaiting a decision". Making one, refining one and
+deciding one all go through the branch path now.
+
+Both fields survive on the wire as projections, filled in when a comment is
+served so a reader or an export need not assemble a suggestion out of its
+branch. Nothing writes them back and the columns are dropped (migration 0010),
+so one of them being wrong is a stale display rather than a second answer to
+"was this accepted" that can disagree with the first. That distinction is the
+whole of what this phase was for.
+
+Refining replaces the branch rather than editing it: words somebody is refining
+away were proposed, and a proposal that quietly becomes a different proposal
+under one id is one a reviewer could have agreed to without seeing it.
+
+*Gate: passed.* One mechanism remains. `revisions.rs`, `suggestions.rs`, the
+agent's pending-record path and the suggestion columns are removed rather than
+bypassed.
 
 ### Phase 5 — Existing documents are not carried across
 
