@@ -27,7 +27,7 @@ const body = (start, end) => {
 
 // `updatePreviewTarget` points the local app at this document through a small
 // helper now, so that helper is sliced in wherever the function is exercised.
-const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which of Quarto's own live preview");
+const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which engine draws each format");
 
 // Initial Quarto setup must configure the companion as active for an editor.
 // If permission is assigned afterwards, editable onboarding examples remain
@@ -443,30 +443,66 @@ console.log("reader-races: all checks passed");
 // later source changes own the rendering.
 {
   const interrupted = [];
-  const applied = [];
-  const settings = createBuildSettings({
+  const build = (read) => createBuildSettings({
     slug: "project",
     origin: "https://app.example",
-    read: (scope, format) => ({ selection: "tool", backend: "local", tool: "calepin", output: "pdf", user: scope.user, format }),
+    read,
     renderers: { available: () => true },
     latex: { configure: () => {}, cancel: () => {}, setSettings: () => {} },
     interrupt: (next) => interrupted.push(next),
-    apply: (preference, format, how) => applied.push({ format, how, tool: preference.tool }),
   });
+  const settings = build((scope, format) =>
+    ({ selection: "tool", backend: "local", tool: "calepin", output: "pdf", user: scope.user, format }));
   settings.follow({ format: "typst", user: "anonymous" });
   assert.deepEqual(interrupted, [], "the first load interrupts nothing");
   settings.follow({ format: "typst", user: "anonymous" });
   assert.deepEqual(interrupted, [], "the same reader's preference, again, interrupts nothing");
   settings.follow({ format: "typst", user: "google:ada" });
   assert.deepEqual(interrupted, [null], "signing in is a different reader");
-  assert.deepEqual(applied.map((entry) => entry.how), ["loaded", "loaded", "loaded"]);
   assert.equal(settings.state.preferences.user, "google:ada", "and their preference is the one loaded");
 
   // A preference chosen by hand interrupts with the choice itself, so a local
   // preview that the choice keeps using can survive it.
   settings.choose({ selection: "tool", backend: "local", tool: "calepin" }, "typst");
   assert.deepEqual(interrupted.at(-1), { selection: "tool", backend: "local", tool: "calepin" });
-  assert.equal(applied.at(-1).how, "chosen");
+}
+
+// What a preference says about the outputs and the preview modes, and the one
+// way the two paths differ: a preference *loaded* for a format speaks for that
+// format whether or not the document is in it -- the Typst mode is read when a
+// Typst file is opened later -- while one *chosen* by hand speaks only for the
+// document the reader was looking at when they chose it.
+{
+  const calepin = { selection: "tool", backend: "local", tool: "calepin", output: "pdf" };
+  const settings = createBuildSettings({
+    slug: "project", origin: "https://app.example",
+    read: () => calepin,
+    renderers: { available: () => true },
+    latex: { configure: () => {}, cancel: () => {}, setSettings: () => {} },
+  });
+
+  // Loading a Typst preference while a Markdown document is on screen still
+  // says what Typst will do.
+  settings.follow({ format: "markdown", user: "anonymous" });
+  assert.equal(settings.state.typstPreviewMode, "calepin", "a loaded preference speaks for its format");
+  assert.equal(settings.state.quartoPreviewMode, "markdown", "and for Quarto, when a tool was chosen");
+
+  // Choosing one while a Markdown document is on screen says nothing about
+  // Typst, because that is not what the reader was looking at.
+  settings.state.typstPreviewMode = "typst";
+  settings.choose(calepin, "markdown");
+  assert.equal(settings.state.typstPreviewMode, "typst", "a chosen preference speaks only for the document on screen");
+  settings.choose(calepin, "typst");
+  assert.equal(settings.state.typstPreviewMode, "calepin");
+
+  // The output each format produces follows the preference it was loaded or
+  // chosen with, and anything that is not HTML is a PDF.
+  settings.choose({ ...calepin, output: "html" }, "typst");
+  assert.equal(settings.state.typstOutput, "html");
+  settings.choose({ ...calepin, output: "docx" }, "typst");
+  assert.equal(settings.state.typstOutput, "pdf", "an output this format cannot page is still paged");
+  settings.choose({ selection: "tool", backend: "browser", tool: "tex", output: "html" }, "latex");
+  assert.equal(settings.state.latexOutput, "html");
 }
 
 // A worker result still advances the preview after a keystroke. Requests made

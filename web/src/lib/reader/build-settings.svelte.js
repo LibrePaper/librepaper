@@ -7,11 +7,11 @@
 // Yjs `meta` map, shared, and are mirrored into state here because that map
 // is not itself reactive.
 //
-// This owns both, and the bookkeeping that goes with them: which reader's
-// preferences are loaded, and which session's LaTeX configuration has been
-// installed. What it takes are the effects it cannot perform: interrupting
-// whatever is being rendered, telling the page which output and preview modes
-// the new preference implies, and asking for a repaint.
+// This owns both, the outputs and preview modes that follow from them, and
+// the bookkeeping that goes with all of it: which reader's preferences are
+// loaded, and which session's LaTeX configuration has been installed. What it
+// takes are the two effects it cannot perform -- interrupting whatever is
+// being rendered, and asking for a repaint.
 
 import { read as readPreferences } from "../build-preferences.js";
 import * as defaultLatex from "../latex.js";
@@ -27,11 +27,6 @@ export function createBuildSettings({
   // Takes the new preference, because which local preview may survive
   // depends on which tool was chosen.
   interrupt = () => {},
-  // The output and preview modes the preference implies. Told how the
-  // preference arrived -- "loaded" for the one this reader already had,
-  // "chosen" for one picked by hand -- because what each says about a format
-  // other than the one on screen is not the same.
-  apply = () => {},
   paint = () => {},
 }) {
   const state = $state({
@@ -39,7 +34,39 @@ export function createBuildSettings({
     // What the project says about its LaTeX engine. Redrawn when a change
     // arrives from another collaborator, not only when this browser writes.
     latex: { engine: "auto" },
+    // What each format is currently producing, and which engine is drawing
+    // it. These follow from the preference and are kept beside it: they used
+    // to live in the page, which meant this module had to hand them back
+    // through a callback to set values it had just worked out.
+    latexOutput: "pdf",
+    typstOutput: "pdf",
+    quartoPreviewMode: "quarto",
+    typstPreviewMode: "typst",
   });
+
+  const outputOf = (preference) => (preference.output === "html" ? "html" : "pdf");
+
+  /// What a preference says about the outputs and preview modes.
+  ///
+  /// The two paths differ, and deliberately. A preference *loaded* for a
+  /// format says what that format's preview mode is whether or not this
+  /// document is in it -- the Typst mode is read when a Typst file is opened
+  /// later. A preference *chosen* by hand only speaks for the document on
+  /// screen, because that is what the reader was looking at when they chose.
+  function apply(preference, format, how) {
+    if (format === "latex") state.latexOutput = outputOf(preference);
+    if (format === "typst") state.typstOutput = outputOf(preference);
+    if (how === "loaded") {
+      state.typstPreviewMode = preference.backend === "local" && preference.tool === "calepin" ? "calepin" : "typst";
+      if (preference.selection === "tool") {
+        state.quartoPreviewMode = preference.backend === "local" && preference.tool === "quarto" ? "quarto" : "markdown";
+      }
+      return;
+    }
+    const local = preference.selection === "tool" && preference.backend === "local";
+    if (format === "quarto") state.quartoPreviewMode = local && preference.tool === "quarto" ? "quarto" : "markdown";
+    if (format === "typst") state.typstPreviewMode = local && preference.tool === "calepin" ? "calepin" : "typst";
+  }
 
   // Which reader's preferences are loaded, and which session's LaTeX
   // configuration is installed. Neither is state: nothing draws them.
@@ -108,6 +135,7 @@ export function createBuildSettings({
     if (observedSession === session) return null;
     stopLatex();
     state.preferences = read(scope(user), format);
+    state.latexOutput = outputOf(state.preferences);
     state.latex = engineSettings(state.preferences);
     latex.configure({
       project: slug,

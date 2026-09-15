@@ -212,25 +212,20 @@
     quartoBindingId = localQuarto.bindingId();
     if (mayEdit) void localQuarto.probe({ pairedOnly: true });
   }
-  // Which of Quarto's own live preview, or this browser's own Markdown
-  // draft, a Quarto document shows. One person's choice, remembered per
-  // document, in this browser.
-  let quartoPreviewMode = $state("quarto");
+  // Which engine draws each format, and what it produces, belong to the
+  // build settings along with the preference they follow from; the aliases
+  // are further down, where that module is built. What stays here is the one
+  // thing that is not a preference: running a document's code is a gesture
+  // this page session asks for and never remembers.
+  //
   // Pairing grants the browser permission to ask, but never starts document
-  // code. Native Quarto execution begins only with this page-session gesture.
+  // code. Native Quarto execution begins only with that gesture.
   let quartoExecutionApproved = $state(false);
-  // Which of the browser's own Typst rendering, or Calepin running the same
-  // document's chunks on this computer through the local app, a Typst
-  // document shows. Same shape of choice as Quarto's, remembered separately.
-  let typstPreviewMode = $state("typst");
-  // Output is loaded from the same user-scoped record as the build tool.
-  let typstOutput = $state("pdf");
-  let latexOutput = $state("pdf");
 
   async function setLatexOutput(format) {
     const next = format === "html" ? "html" : "pdf";
     if (latexOutput === next) return;
-    latexOutput = next;
+    buildSettings.state.latexOutput = next;
     setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { ...(next === "html" ? { selection: "tool", backend: "browser", tool: "tex", preset: "" } : {}), output: next }));
     navigationGeneration += 1;
     renderers.cancelPreview({ keepWarm: true });
@@ -249,7 +244,7 @@
   async function setQuartoPreviewMode(mode) {
     setBuildPreferences(updateBuildPreferences(buildScope(), "quarto", { selection: "tool", backend: mode === "markdown" ? "browser" : "local", tool: mode === "markdown" ? "markdown" : "quarto", output: "html" }));
     navigationGeneration += 1;
-    quartoPreviewMode = mode === "markdown" ? "markdown" : "quarto";
+    buildSettings.state.quartoPreviewMode = mode === "markdown" ? "markdown" : "quarto";
     if (quartoPreviewMode === "markdown") {
       quartoExecutionApproved = false;
       await quartoPreviewController.stop();
@@ -273,7 +268,7 @@
   async function setTypstPreviewMode(mode) {
     setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { selection: "tool", backend: mode === "calepin" ? "local" : "browser", tool: mode === "calepin" ? "calepin" : "typst" }));
     navigationGeneration += 1;
-    typstPreviewMode = mode === "calepin" ? "calepin" : "typst";
+    buildSettings.state.typstPreviewMode = mode === "calepin" ? "calepin" : "typst";
     if (typstPreviewMode === "calepin") {
       if (await ensureLocalApp() && calepinActive) await calepinPreviewController.start();
     } else {
@@ -285,7 +280,7 @@
   async function setTypstOutput(format) {
     const next = format === "html" ? "html" : "pdf";
     if (typstOutput === next) return;
-    typstOutput = next;
+    buildSettings.state.typstOutput = next;
     setBuildPreferences(updateBuildPreferences(buildScope(), "typst", { output: typstOutput }));
     // Invalidate every pending delivery before stopping Calepin. A PDF that
     // finishes after this gesture must never replace the HTML frame.
@@ -1610,29 +1605,14 @@
       if (sourceFormat === "quarto" && !(local && next.tool === "quarto")) void quartoPreviewController?.stop?.();
       if (sourceFormat === "typst" && !(local && next.tool === "calepin")) void calepinPreviewController?.stop?.();
     },
-    // The two paths differ, and deliberately. A preference *loaded* for a
-    // format says what that format's preview mode is whether or not this
-    // document is in it -- the Typst mode is read when a Typst file is opened
-    // later. A preference *chosen* by hand only speaks for the document on
-    // screen, because that is what the reader was looking at when they chose.
-    apply: (preference, format, how) => {
-      if (format === "latex") latexOutput = preference.output === "html" ? "html" : "pdf";
-      if (format === "typst") typstOutput = preference.output === "html" ? "html" : "pdf";
-      if (how === "loaded") {
-        typstPreviewMode = preference.backend === "local" && preference.tool === "calepin" ? "calepin" : "typst";
-        if (preference.selection === "tool") {
-          quartoPreviewMode = preference.backend === "local" && preference.tool === "quarto" ? "quarto" : "markdown";
-        }
-        return;
-      }
-      const local = preference.selection === "tool" && preference.backend === "local";
-      if (format === "quarto") quartoPreviewMode = local && preference.tool === "quarto" ? "quarto" : "markdown";
-      if (format === "typst") typstPreviewMode = local && preference.tool === "calepin" ? "calepin" : "typst";
-    },
     paint: () => void paintPreview(),
   });
   const buildPreferences = $derived(buildSettings.state.preferences);
   const latexSettingsState = $derived(buildSettings.state.latex);
+  const latexOutput = $derived(buildSettings.state.latexOutput);
+  const typstOutput = $derived(buildSettings.state.typstOutput);
+  const quartoPreviewMode = $derived(buildSettings.state.quartoPreviewMode);
+  const typstPreviewMode = $derived(buildSettings.state.typstPreviewMode);
   const buildScope = () => buildSettings.scopeFor(buildUserId);
   $effect(() => {
     const format = sourceFormat;
@@ -1642,10 +1622,7 @@
   const setBuildPreferences = (next) => buildSettings.choose(next, sourceFormat);
   const stopLatex = () => buildSettings.stopLatex();
 
-  function configureLatex(format) {
-    const loaded = buildSettings.configureLatex(format, session, buildUserId);
-    if (loaded) latexOutput = loaded.output === "html" ? "html" : "pdf";
-  }
+  const configureLatex = (format) => buildSettings.configureLatex(format, session, buildUserId);
 
   // The most recent LaTeX compile result -- success or failure -- kept whole
   // for Diagnostics' "Compiled with" block and "Earlier attempts" list
