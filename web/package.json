@@ -16,7 +16,7 @@
     "check:render-coordinator": "node tests/unit/render-coordinator.mjs",
     "check:upload": "node tests/unit/zip.mjs && node tests/unit/project-upload.mjs && node tests/unit/landing.mjs && node tests/browser/upload-browser.mjs",
     "check:synctex": "node tests/unit/synctex.mjs",
-    "check": "node --test 'tests/unit/*.mjs' 'tests/unit/*.js' 'tests/integration/*.mjs' 'tests/integration/*.js'",
+    "check": "node --experimental-transform-types --test 'tests/unit/*.mjs' 'tests/unit/*.js' 'tests/integration/*.mjs' 'tests/integration/*.js'",
     "check:companion": "node tests/integration/local-companion.mjs && node tests/integration/companion-lifecycle.mjs && node tests/browser/local-consent-browser.mjs",
     "check:browser": "node --test --test-concurrency=4 'tests/browser/*.mjs'",
     "check:math-browser": "node tests/browser/math-browser.mjs",

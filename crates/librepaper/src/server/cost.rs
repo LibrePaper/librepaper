@@ -582,6 +582,21 @@ pub(super) async fn middleware(
     let path = request.uri().path().to_string();
     let method = request.method().clone();
     let class = classify(&path, &method);
+    // Before anything is reserved or read: this deployment answers on the two
+    // origins it was configured with and on loopback, and on nothing else. A
+    // request addressed elsewhere is a proxy rewriting `Host`, a stray DNS
+    // record, or a visitor naming a host we do not serve, and answering it on
+    // a guess is what collapses the boundary between reader and document.
+    let host = origins::header(request.headers(), "host").unwrap_or_default();
+    let Some(arrival) = server.origins.resolve(&host) else {
+        return metered(
+            server.cost.clone(),
+            plain(421, "this host is not served by this deployment"),
+            class,
+            true,
+            None,
+        );
+    };
     let small_source_write = path.ends_with("/source")
         && matches!(method, Method::PUT | Method::PATCH)
         && request
@@ -673,12 +688,6 @@ pub(super) async fn middleware(
         request.headers(),
         &server.config.cost.trusted_proxies,
     ));
-    // Keys stay internal and bounded; no identity becomes a metric label.
-    let arrival = Arrival::from_peer(
-        request.headers(),
-        peer.ip(),
-        &server.config.cost.trusted_proxies,
-    );
     if !server.cost.admit_request(&network, "", document, class)
         && !(is_emergency && server.cost.admit_emergency_request(&network))
     {

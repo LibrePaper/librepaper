@@ -10,7 +10,7 @@ use crate::auth::{session_key_file, GithubApp, GoogleApp, Policy};
 use crate::config::Configuration;
 use crate::document::retention::{describe_seconds, parse_expire_from, parse_retention};
 use crate::document::store::Store;
-use crate::server::origins::DOCS_PREFIX;
+use crate::server::origins::{Origins, DOCS_PREFIX};
 use crate::server::shell::load_shell;
 use crate::server::Server;
 use crate::storage::{open_storage, StorageOptions};
@@ -35,6 +35,11 @@ pub struct ServeOptions {
     pub publishers: Option<String>,
     pub commenters: Option<String>,
     pub no_listing: bool,
+    /// The reader origin browsers reach this deployment on, and the origin
+    /// documents are served from. Without the first, the deployment answers on
+    /// loopback alone.
+    pub origin: Option<String>,
+    pub docs_origin: Option<String>,
     pub expire_after: Option<String>,
     pub expire_from: Option<String>,
     /// HTTPS static mirror URL published to browsers. Distribution bytes are
@@ -134,7 +139,11 @@ pub fn sign_in_advice(
     google: bool,
     publishers: &Policy,
     commenters: &Policy,
-    address: &str,
+    // The origin a provider must have registered: the deployment's configured
+    // reader origin rather than whatever this process is bound to. An operator
+    // copying a callback URL out of this warning needs the one their users
+    // will actually arrive on.
+    reader_origin: &str,
     port: u16,
 ) -> SignInAdvice {
     let mut advice = SignInAdvice::default();
@@ -156,7 +165,7 @@ pub fn sign_in_advice(
     }
     if !github && !google {
         advice.warnings.push(format!(
-            "warning: neither Google nor GitHub sign-in is configured; publishing and source writes are unavailable. Set LIBREPAPER_GITHUB_CLIENT_ID and LIBREPAPER_GITHUB_CLIENT_SECRET, or LIBREPAPER_GOOGLE_CLIENT_ID and LIBREPAPER_GOOGLE_CLIENT_SECRET (callbacks use http://localhost{address}, or pass --port {port})."
+            "warning: neither Google nor GitHub sign-in is configured; publishing and source writes are unavailable. Set LIBREPAPER_GITHUB_CLIENT_ID and LIBREPAPER_GITHUB_CLIENT_SECRET, or LIBREPAPER_GOOGLE_CLIENT_ID and LIBREPAPER_GOOGLE_CLIENT_SECRET (callbacks use {reader_origin}/auth/callback, or pass --port {port})."
         ));
     }
     advice
@@ -172,6 +181,24 @@ pub async fn serve(options: ServeOptions) {
     let deployment_paths = storage.paths().unwrap_or_else(|err| die(err));
     let retention = parse_retention(options.expire_after.as_deref().unwrap_or(""))
         .unwrap_or_else(|err| die(format!("{err}; use a duration such as 24h or 30d")));
+    // The origin pair is settled before storage is opened or a port claimed.
+    // Two origins that share a host are not a deployment with a weaker
+    // boundary; they are a deployment with none, so this refuses to start
+    // rather than warn. It is a deployment diagnostic and not a claim that DNS
+    // proves browser isolation: what the browser enforces is the
+    // scheme/host/port tuple, and all startup can do is confirm the operator
+    // asked for two different hosts and name the record and certificate that
+    // have to exist for that to be true.
+    let origins = match options
+        .origin
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(reader) => Origins::configure(reader, options.docs_origin.as_deref())
+            .unwrap_or_else(|error| die(error)),
+        None => Origins::loopback_only(),
+    };
     // Read before anything is opened or a port is claimed: a mirror value
     // which cannot work is a typo the operator is still standing in front of.
     let latex = validate_latex_mirror(&options.latex_mirror).unwrap_or_else(|err| die(err));
@@ -222,13 +249,17 @@ pub async fn serve(options: ServeOptions) {
              --publishers any                    any authenticated Google or GitHub account");
     }
     let commenters = Policy::parse(options.commenters.as_deref().unwrap_or("anyone"));
+    let loopback_origin = format!("http://localhost{address}");
 
     let advice = sign_in_advice(
         app.configured(),
         google.configured(),
         &publishers,
         &commenters,
-        &address,
+        origins
+            .reader()
+            .map(|reader| reader.as_str())
+            .unwrap_or(&loopback_origin),
         port,
     );
     for warning in &advice.warnings {
@@ -278,6 +309,7 @@ pub async fn serve(options: ServeOptions) {
     // An operator who wants no public front page at all: the examples stop
     // being listed to people who hold nothing on them.
     instance.listing = !options.no_listing;
+    instance.origins = origins.clone();
     instance.latex = Some(latex);
     instance.fonts = fonts;
     // The local app for this machine: only a browser on this host can reach
@@ -302,8 +334,17 @@ pub async fn serve(options: ServeOptions) {
         eprintln!("warning: transfer checkpoint could not be restored: {error}");
     }
 
-    println!("librepaper serving http://localhost{address}");
-    println!("  documents on http://{DOCS_PREFIX}localhost{address}");
+    match (origins.reader(), origins.docs()) {
+        (Some(reader), Some(docs)) => {
+            println!("librepaper serving {}", reader.as_str());
+            println!("  documents on {}", docs.as_str());
+        }
+        _ => {
+            println!("librepaper serving http://localhost{address}");
+            println!("  documents on http://{DOCS_PREFIX}localhost{address}");
+            println!("  no --origin: this deployment answers on loopback only");
+        }
+    }
     println!("  data in {}", blobs.describe());
     println!("  publishing: {}", publishers.describe());
     println!("  commenting: {}", commenters.describe());

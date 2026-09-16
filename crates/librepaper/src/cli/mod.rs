@@ -204,6 +204,23 @@ pub(crate) struct ServiceFlags {
         value_name = "FROM"
     )]
     expire_from: Option<String>,
+    /// The origin browsers reach this deployment on, for example
+    /// https://paper.example. Documents are served from a second origin, by
+    /// default the same host behind "docs."; both must be configured for a
+    /// deployment that is not loopback-only, and the server answers on no
+    /// other name.
+    #[arg(long, env = "LIBREPAPER_ORIGIN", value_name = "URL")]
+    origin: Option<String>,
+    /// The origin published documents are served from, when it is not the
+    /// reader's host behind "docs.". A document is hostile code, so this must
+    /// be a different host from --origin, never merely a different port.
+    #[arg(
+        long = "docs-origin",
+        env = "LIBREPAPER_DOCS_ORIGIN",
+        value_name = "URL",
+        requires = "origin"
+    )]
+    docs_origin: Option<String>,
     /// HTTPS static mirror from which browsers fetch LaTeX distributions.
     #[arg(
         long,
@@ -857,6 +874,8 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                 publishers: service.publishers,
                 commenters: service.commenters,
                 no_listing: service.no_listing,
+                origin: service.origin,
+                docs_origin: service.docs_origin,
                 expire_after: service.expire_after,
                 expire_from: service.expire_from,
                 latex_mirror: service.latex_mirror,

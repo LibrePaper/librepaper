@@ -1,5 +1,33 @@
 # Self-managed hosting
 
+## Two origins
+
+A deployment answers on two hostnames and refuses every other. The reader is
+one; published documents are the other. An uploaded document is code, and what
+stops it reaching a reader's session is that the browser sees the two as
+different origins, so this is the first thing to get right and the one setting
+with no safe default.
+
+```sh
+librepaper admin serve --origin https://paper.example
+```
+
+That serves the reader on `paper.example` and documents on
+`docs.paper.example`. Both names need a DNS record pointing at this deployment
+and a certificate covering them; a wildcard or a SAN entry covers the second.
+Pass `--docs-origin` if documents belong on an unrelated name. The two must be
+different hosts. A different port is not enough, because cookies ignore ports,
+and the server refuses to start if both names resolve to one host.
+
+The origin also fixes the scheme the server believes it is on, which is what
+decides whether session cookies are marked `Secure` and carry the `__Host-`
+prefix, and it is the origin OAuth callbacks are built from. A request arriving
+with any other `Host` is answered with 421 rather than served on a guess.
+
+Without `--origin` the deployment answers on loopback only, which is what
+development uses. That is not a production configuration: a reverse proxy
+forwarding a public name to it will get 421 for every request.
+
 LibrePaper uses PostgreSQL for all relational and collaboration metadata. A
 small deployment can run PostgreSQL and LibrePaper on the same machine. The
 application does not install or supervise PostgreSQL and has no SQLite mode.
@@ -70,8 +98,13 @@ LIBREPAPER_DATABASE_URL=postgresql:///librepaper_restore \
   /var/lib/librepaper-restored
 ```
 
-Run LibrePaper behind an HTTPS reverse proxy and pass
-`X-Forwarded-Proto: https`. Start worker-capable LibrePaper processes before
+Run LibrePaper behind an HTTPS reverse proxy, and give it `--origin` with the
+public `https:` URL. The scheme comes from that origin rather than from a
+forwarded header, so the proxy does not have to send `X-Forwarded-Proto`; set
+`trusted_proxies` in the advanced configuration file if you want forwarded
+client addresses honored for rate limiting. The proxy must pass the original
+`Host` through unchanged, since a proxy that rewrites it will have its requests
+refused. Start worker-capable LibrePaper processes before
 admitting traffic after a restore. Horizontally scaled deployments use the same
 schema and object interface; use a bounded pool per process and route a
 document's WebSocket connections consistently to one application process.

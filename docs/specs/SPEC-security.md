@@ -1,7 +1,8 @@
 # LibrePaper security and privacy
 
-*2026-09-15. Threat model and proposed specification; the findings describe
-current behavior, the requirements do not.*
+*2026-09-15, finding 1 settled 2026-09-16. Threat model and proposed
+specification. A finding marked settled describes what the code now does;
+every other finding describes current behavior, and its requirements do not.*
 
 ## Purpose
 
@@ -12,9 +13,11 @@ dangers are structural: boundaries that are derived rather than asserted,
 trust relationships the product does not name, and defaults that hand a
 self-hoster a dependency they did not choose.
 
-This complements [REVIEW-architecture.md](REVIEW-architecture.md). Where that
-document explains how the parts fit, this one explains what happens when one of
-them is wrong.
+This complements the architecture review. Where that document explains how the
+parts fit, this one explains what happens when one of them is wrong. (The
+several specifications under `docs/specs/` that link to `REVIEW-architecture.md`
+all point at a file that is not in the repository; the link is left out here
+rather than repeated.)
 
 ## Trust model
 
@@ -35,29 +38,69 @@ because a document is code.
 
 ## Findings, by consequence
 
-### 1. The document origin is derived, not asserted
+### 1. The document origin is asserted, not derived — settled
 
-`server/origins.rs` builds the isolation hostname by prefixing `docs.` to
-whatever the `Host` header carries. Published documents are then served byte
-for byte (`document/html.rs`) under a CSP that permits `'unsafe-inline'`,
-`'unsafe-eval'` and `https:` (`server/routes.rs:1105`). The only thing between
-a document's scripts and the session cookie is that hostname.
+*Implemented. What follows describes the finding as it stood and the shape of
+the answer, because the reasoning is what the other findings lean on.*
 
-Nothing refuses to start when the hostname is wrong. A deployment on a bare
+`server/origins.rs` used to build the isolation hostname by prefixing `docs.`
+to whatever the `Host` header carried, and nothing checked that name against
+anything. Published documents are still served byte for byte
+(`document/html.rs`) under a CSP that permits `'unsafe-inline'`,
+`'unsafe-eval'` and `https:` (`server/routes.rs:1110`), which is finding 2.
+
+What that hostname is and is not holding back is worth stating precisely. Over
+HTTPS the session cookie carries the `__Host-` prefix, so it is host-only and a
+document on the sibling hostname never receives it, whatever the hostname
+arrangement. The real exposures are same-site request forgery, which is what
+rule A answers, and full same-origin DOM access if the two origins ever
+collapse into one, against which the cookie prefix is worth nothing. Over plain
+HTTP the prefix is dropped and a same-site document can plant a cookie under
+the bare name, which `auth/mod.rs:180` names in a comment and refuses to read.
+
+Nothing refused to start when the hostname was wrong. A deployment on a bare
 host or an IP address, a proxy that rewrites `Host`, or an operator who
-resolves a broken preview by pointing `docs.<host>` and `<host>` at one origin,
-collapses the boundary silently. The result is account takeover for anyone who
-opens a shared link. A different port would not help and the module says so;
-what it does not do is check.
+resolves a broken preview by pointing `docs.<host>` and `<host>` at one origin
+could make the deployment fail closed or serve the document shell from the
+wrong origin. The browser boundary is the scheme/host/port origin tuple; DNS
+alone does not prove it. Rule A also cannot repair a request that reaches the
+reader origin with a document response.
+
+The `Host` header escaped into one more security-relevant string: the OAuth
+redirect URI was built from it. A provider rejects an unregistered redirect
+URI, so that failed closed, but it was a second place where an unvalidated host
+reached somewhere it mattered.
 
 Rule A (`cross_site_refused`) is load-bearing for every state-changing route
 precisely because `docs.<host>` is same-site with the reader.
 
-**Required.** The server asserts its document origin at startup: the configured
-or derived document host must resolve to this deployment, must differ from the
-reader host, and must not be reachable as the reader host. Failure is a refusal
-to start with a message naming the DNS record and certificate to create, not a
-warning. A single-origin deployment is not a supported configuration.
+**Settled.** A deployment states its reader origin with `--origin`; the
+document origin defaults to that host behind `docs.` and `--docs-origin`
+overrides it. `Origins::configure` refuses at startup to accept two origins
+sharing a host, naming the DNS record and certificate to create. It is a
+deployment diagnostic and not a claim that DNS proves browser isolation. Every
+request resolves its `Host` against that pair in the outermost middleware,
+before anything is reserved or read, and an unrecognized host is answered 421
+rather than served on a guess.
+
+Three consequences beyond the refusal. Which side a request is on is now
+decided when the host is matched rather than by reading `docs.` off the name
+again, so a document origin on an unrelated host routes correctly. The scheme
+is the configured origin's rather than a forwarded header's, which is what
+decides `Secure` and the `__Host-` prefix, so `X-Forwarded-Proto` no longer
+has a say. And the OAuth callback is built from the validated origin, so a
+request cannot name its own redirect.
+
+A deployment given no `--origin` answers on loopback alone, which is what
+development and the test suite use. Loopback is accepted whatever the
+configuration says, because the operator's own `admin status`, container
+health checks and the tests all arrive that way, and a browser cannot be
+induced to send a loopback `Host` to a remote server.
+
+Published-document routes were already reachable only inside the document-side
+branch of the router, so the guarantee that hostile document HTML never reaches
+the reader origin reduces to the property the tests now assert directly:
+nothing but the configured document origin ever resolves to the document side.
 
 ### 2. A shared link is a web page, not a paper
 
@@ -70,10 +113,25 @@ close the classic versions; `fetch()` is open by design.
 For anonymous review this is a leak of the reviewer to the author, through a
 document the author wrote.
 
-**Required.** Documents a reader does not own render under a strict policy by
-default — no `connect-src`, images and fonts from the deployment and `data:`
-only — with the permissive policy an explicit, per-document choice the reader
-makes and can withdraw. The reader states which policy is in force.
+**Required.** Every document, including one its reader owns, renders under a
+strict policy by default. The policy is explicit and complete: it includes
+`default-src 'none'` and `connect-src 'none'`; scripts and styles are allowed
+only when required by the selected renderer, images and fonts are limited to
+the deployment and `data:`, and `form-action 'none'`, `base-uri 'none'`,
+`object-src 'none'`, explicit navigation rules, and the appropriate
+`frame-ancestors` rule remain present. No external script, media, worker,
+manifest, or navigation source is implicit. A permissive policy is an explicit,
+per-document choice the reader makes and can withdraw; the reader is told which
+policy is in force, and browser tests verify that the strict policy blocks
+outbound connections and third-party resources.
+
+The cost is real and belongs in the manual rather than in a reader's surprise.
+Under this policy a document loses remote images, web fonts, and any
+interactive widget that fetches its own data; the per-document permissive
+choice is the answer, and it has to be discoverable. The in-frame agent is
+unaffected: `web/src/agent/agent.js` makes no network calls of any kind and
+talks to the reader only over postMessage, so it survives `connect-src 'none'`
+intact.
 
 ### 3. The companion executes collaborator-authored code
 
@@ -86,20 +144,26 @@ and Origin plus `Sec-Fetch-Site` plus nonce on the management page.
 
 The risk is the sanctioned path. Document-level sharing is not a trust boundary
 for code execution: an editor on a Quarto project can put arbitrary code in a
-chunk, and it runs on every other editor's machine at the next preview. The
-grant is per document, thirty days, and silent after the first approval.
+chunk, and it runs on every other editor's machine at the next preview. Pairing
+tokens currently expire after thirty days; that is separate from an execution
+grant, which must have its own expiry and revocation semantics. Neither should
+silently authorize a newly arriving collaborator.
 
 **Required.**
 
-- A grant for an execution-capable format names the editors it trusts, not only
-  the document. A new editor on a granted project suspends execution until the
-  person who granted it approves again.
+- A grant for an execution-capable format names the authenticated editors it
+  trusts, the project and entrypoint, and the source revision or content
+  identity it approved. An editor link that is forwarded does not silently add
+  a trusted editor. A newly authenticated or newly granted editor, or a source
+  revision outside the approved identity, suspends execution until the person
+  who granted it approves again.
 - `Preset.environment` refuses loader and interpreter variables (`LD_PRELOAD`,
   `LD_LIBRARY_PATH`, `DYLD_*`, `PYTHONPATH`, `PERL5LIB`, `R_LIBS*`) at
   validation time, before any route that could set them exists.
 - Companion settings list live execution grants with their origin, document,
-  entrypoint and expiry, and revoke individually. This exists for pairings and
-  bindings; it must exist for execution.
+  trusted editor identities, approved source identity, entrypoint and expiry,
+  and revoke them individually. Pairing tokens and execution grants are shown
+  and revoked separately; a pairing does not imply permission to execute.
 
 ### 4. Content is plain at rest, including backups
 
@@ -167,11 +231,12 @@ pressure.
 `server/mcp.rs` and the chat relay feed document text and comments — hostile
 content by the definition above — to an agent that proposes edits and posts
 comments. The relay is well bounded in size and lifetime (`server/chat.rs`:
-16 KiB of context, one-hour channels, no stored transcript) and the model runs
-on the user's own machine under the user's own keys, which is the right privacy
-answer. Nothing bounds what instructions hidden in a document can direct the
-agent to do with its authority. That authority is already link-scoped
-(`server/assistant.rs:41`), which is the correct instinct and the actual
+16 KiB of context, channels that expire after an hour of idleness rather than
+an hour of life, no stored transcript) and the model runs on the user's own
+machine under the user's own keys, which is the right privacy answer. Nothing
+bounds what instructions hidden in a document can direct the agent to do with
+its authority. That authority is already link-scoped
+(`server/assistant.rs:42`), which is the correct instinct and the actual
 mitigation.
 
 **Required.** Link-scoped agent authority is documented as a security property
@@ -191,20 +256,30 @@ visible as one. LibrePaper does not claim to prevent injection.
 
 Recorded so the list above reads as a set of decisions rather than a verdict:
 HMAC with domain separation and constant-time verification, PKCE, state
-cookies, `__Host-` naming, POST-only logout behind rule A, path rules that
-refuse `..`, dotfiles, control characters and deep trees
-(`document/paths.rs`), capabilities stored only as digests, 0600 and 0700 on
-every secret and state directory, atomic key creation, `x-content-type-options`
-and `no-referrer` throughout, postMessage checked on both sides
-(`web/src/agent/agent.js:740`, `web/src/components/Preview.svelte:50`), inert
-`template` parsing with resource attributes stripped before the parser runs
-(`web/src/lib/diff-display.js:229`), no server-side process spawn, and no
-constructed SQL outside benchmark teardown.
+cookies, `__Host-` cookie naming wherever the deployment is HTTPS, POST-only
+logout behind rule A, path rules that refuse `..`, dotfiles, control characters
+and deep trees (`document/paths.rs`), capabilities stored only as digests, 0600
+and 0700 on every secret and state directory, atomic key creation,
+`x-content-type-options` and `no-referrer` throughout, postMessage
+authenticated at both ends — origin-checked inbound on the reader
+(`web/src/components/Preview.svelte:50`), source-checked inbound in the frame
+(`web/src/agent/agent.js:748`), and addressed to a named target origin rather
+than `*` on each side — inert `template` parsing with resource attributes
+stripped before the parser runs (`web/src/lib/diff-display.js:229`), no process
+spawn on any request path (the operator's `admin backup` shells out to
+`pg_dump`, which is not one), and no constructed SQL outside benchmark
+teardown.
 
 ## Order of work
 
-1. The startup assertion in finding 1. Worst failure, cheapest fix.
-2. The loader-variable denial in finding 3, before a route can reach presets.
+Finding 1 is done. What is left, in order:
+
+1. The loader-variable denial in finding 3, before a route can reach presets.
+   A few lines, purely additive, and awkward to add once a route depends on
+   the behavior.
+2. The strict document policy, finding 2. The largest piece of work here and
+   the only finding a hostile document author can act on with no operator
+   mistake at all.
 3. Backup encryption, finding 4.
-4. The strict document policy, finding 2.
+4. Release signing and the second secrets recipient, finding 7.
 5. Everything else, in the order the manual needs it.

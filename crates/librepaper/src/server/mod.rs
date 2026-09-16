@@ -131,6 +131,10 @@ pub struct Server {
     pub key: Vec<u8>,
     pub tokens: TokenCache,
     pub config: Arc<Configuration>,
+    /// The two origins this deployment answers on. Set at startup from
+    /// `--origin`; a deployment given none answers on loopback alone, which is
+    /// what development and the tests use.
+    pub origins: origins::Origins,
     pub publishers: Policy,
     pub commenters: Policy,
     /// Who a GitHub login is, for a grant by name. GitHub in a running
@@ -387,6 +391,7 @@ impl Server {
             key,
             tokens: TokenCache::new(),
             config,
+            origins: origins::Origins::loopback_only(),
             publishers,
             commenters,
             accounts,

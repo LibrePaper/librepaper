@@ -27,8 +27,13 @@ WASM_BR := $(WASM).br $(BIB).br $(CITES).br $(TYPST).br
 # nothing: what the pages are built from lives in web/src and web/public.
 SHELL_OUT := web/dist/index.html
 # The CodeMirror binding, fetched from the fork rather than vendored: see
-# loro-codemirror.lock and docs/loro-codemirror.md.
-LCM     := web/vendor/loro-codemirror/index.ts
+# loro-codemirror.lock and docs/loro-codemirror.md. Every fetched file is
+# named, not just the entry point: moving the pin to a commit that changes
+# only sync.ts must still re-bundle the pages, and listing one file meant it
+# did not -- the fetch corrected the file and vite was never asked again.
+LCM_DIR := web/vendor/loro-codemirror
+LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
+           $(LCM_DIR)/awareness.ts $(LCM_DIR)/ephemeral.ts $(LCM_DIR)/utils.ts
 WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
