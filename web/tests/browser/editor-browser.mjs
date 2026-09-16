@@ -47,6 +47,7 @@ const undoDepth = (state) => Boolean(state.field(undoManagerStateField, false)?.
 import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEditor.svelte"))};
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
+import History from ${JSON.stringify(join(root, "web/src/components/reader/History.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
 import { prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
@@ -308,7 +309,40 @@ window.diagnosticsCheck = async () => {
   links[0]?.click();
   component.$set({ diagnostics: [] });
   await tick();
-  const result = { text, links: links.length, link, chosen, empty: host.textContent };
+  const empty = host.textContent;
+  // The transcript itself: what a compile that stopped for a reason the
+  // parser has no line for leaves a person to read.
+  component.$set({
+    main: "librepaper.tex",
+    diagnostics: [{ severity: "error", message: "Emergency stop.", line: 0 }],
+    log: "This is pdfTeX\\n! Emergency stop.\\n<*> &pdflatex librepaper.tex\\nTranscript written on librepaper.log.",
+  });
+  await tick();
+  const logBlock = host.querySelector("pre[aria-label='Compile log']");
+  const downloadButton = [...host.querySelectorAll("button")].find((button) => button.textContent.includes("Download"));
+  const openByDefault = Boolean(host.querySelector("details[open] pre[aria-label='Compile log']"));
+  // A failure that stopped in a later stage leaves the engine's transcript on
+  // the attempt and nothing on the result. The panel showed only a download
+  // button from "Earlier attempts" then -- no box, nothing to copy.
+  component.$set({
+    log: "",
+    attempts: [
+      { stage: "browser", backend: "browser", log: "This is pdfTeX\\n! Emergency stop." },
+      { stage: "browser-biber", backend: "browser", log: "" },
+    ],
+  });
+  await tick();
+  const fromAttempt = host.querySelector("pre[aria-label='Compile log']")?.textContent || "";
+  const copyFromAttempt = [...host.querySelectorAll("button")].some((button) => button.textContent.trim() === "Copy");
+  const result = {
+    text, links: links.length, link, chosen, empty,
+    logShown: logBlock?.textContent || "",
+    logWhole: logBlock?.textContent.startsWith("This is pdfTeX") || false,
+    download: downloadButton?.textContent.trim() || "",
+    openByDefault,
+    fromAttempt,
+    copyFromAttempt,
+  };
   component.$destroy();
   host.remove();
   return result;
@@ -316,6 +350,95 @@ window.diagnosticsCheck = async () => {
 
 // Switching Vim keys on and off must reconfigure the view in place: the same
 // EditorView, with the undo history it had.
+// The history panel for a document nobody has checkpointed: the sittings its
+// writes fall into, the bars they become once one of those sittings is
+// opened, and arrow keys that move the month without a mouse. The version
+// side of the same panel is checked in history-panel-browser.mjs.
+window.activityCheck = async () => {
+  const host = document.createElement("aside");
+  document.body.append(host);
+  const opened = [];
+  const rows = [
+    { at: "2026-09-14T09:05:00Z", peer: "", changes: 2, state_bytes: 1000, frontier: "one" },
+    { at: "2026-09-14T09:40:00Z", peer: "", changes: 3, state_bytes: 1600, frontier: "two" },
+    { at: "2026-09-14T09:42:00Z", peer: "", changes: 1, state_bytes: 1700, frontier: "three" },
+    { at: "2026-09-15T15:00:00Z", peer: "", changes: 1, state_bytes: 1750, frontier: "four" },
+  ];
+  const component = createClassComponent({ component: History, target: host, props: {
+    checkpoints: [], activity: rows, viewingMoment: "",
+    onmoment: (frontier) => opened.push(frontier), onview: () => {},
+  } });
+  const sittings = () => [...host.querySelectorAll(".sitting")];
+  const bars = () => [...host.querySelectorAll(".day-bar")];
+  const back = async () => { host.querySelector(".crumb-back").click(); await tick(); };
+  const into = async (day) => {
+    host.querySelector('[data-history-day="' + day + '"]').click();
+    await tick();
+  };
+  const chosen = () => host.querySelector("[data-history-day][aria-pressed=true]")?.dataset.historyDay;
+  await tick();
+
+  // It opens on a day, and the day is its sittings -- no month beside them,
+  // and no clock at all until a sitting is opened.
+  const first = {
+    month: host.querySelectorAll("[data-history-day]").length,
+    axis: host.querySelectorAll(".axis").length,
+    sittings: sittings().length,
+    heading: host.querySelector(".sitting-when")?.textContent.trim() ?? null,
+  };
+
+  // Back to the month: for a document nobody saved from, two marked days and
+  // no number on any of them.
+  await back();
+  const month = {
+    cells: host.querySelectorAll("[data-history-day]").length,
+    marked: host.querySelectorAll(".cal-mark").length,
+    counted: host.querySelectorAll(".cal-count").length,
+    feed: host.querySelectorAll(".feed").length,
+    picked: chosen(),
+  };
+
+  // The other day worked: a five-and-thirty-minute gap in the middle of it,
+  // so two sittings rather than one, and the silence between them written
+  // rather than drawn.
+  await into("2026-09-14");
+  const busier = { sittings: sittings().length, gap: host.querySelector(".feed-gap")?.textContent.trim() ?? null };
+  // Opening the second gives it an axis of its own, and clicking a bar on it
+  // reaches a minute nobody saved a version of.
+  [...host.querySelectorAll(".sitting-open")].pop().click();
+  await tick();
+  bars()[0]?.click();
+  await tick();
+  const onAxis = { axis: host.querySelectorAll(".axis").length, bars: bars().length };
+
+  // A day at a time across the calendar, and a week at a time up it.
+  while (host.querySelector(".crumb-back")) await back();
+  const press = async (key) => {
+    host.querySelector(".cal-grid").dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    await tick();
+    return chosen();
+  };
+  const afterLeft = await press("ArrowLeft");
+  const afterUp = await press("ArrowUp");
+
+  // A day nobody worked has no sittings, and says so rather than drawing an
+  // empty clock.
+  await into("2026-09-07");
+  const emptyDay = sittings().length === 0 && host.querySelectorAll(".axis").length === 0;
+
+  // The document starts in September, so there is nowhere to the left of its
+  // first day to go.
+  await back();
+  await into("2026-09-01");
+  await back();
+  const atTheStart = await press("ArrowLeft");
+
+  const result = { ...first, ...month, busier, onAxis, opened, afterLeft, afterUp, emptyDay, atTheStart };
+  component.$destroy();
+  host.remove();
+  return result;
+};
+
 window.vimCheck = async () => {
   await tick();
   const view = EditorView.findFromDOM(document.querySelector(".cm-editor"));
@@ -484,7 +607,40 @@ try {
   assert.equal(diagnostics.link, "chapter.typ:4:2");
   assert.equal(diagnostics.chosen.file, "chapter.typ");
   assert.match(diagnostics.empty, /No warnings or errors/);
-  console.log("editor-browser: diagnostics, hints, source links and empty state passed");
+  // The engine's own transcript, whole, named as TeX names it, and open when
+  // the compile failed -- the parsed list cannot explain an Emergency stop.
+  assert.match(diagnostics.logShown, /Emergency stop/);
+  assert.equal(diagnostics.logWhole, true, "the panel showed a tail rather than the whole transcript");
+  assert.equal(diagnostics.download, "Download librepaper.log");
+  assert.equal(diagnostics.openByDefault, true, "a failed compile must not hide its transcript behind a twisty");
+  assert.match(diagnostics.fromAttempt, /Emergency stop/, "a transcript carried by the attempt was not shown");
+  assert.equal(diagnostics.copyFromAttempt, true, "the attempt's transcript was shown without a way to take it");
+  console.log("editor-browser: diagnostics, hints, source links, empty state and the compile log passed");
+  const activity = await evaluate("activityCheck()");
+  assert.equal(activity.month, 0, "the panel opens on a day, with the month nowhere on screen");
+  assert.equal(activity.axis, 0, "and no clock at all until a sitting asks for one");
+  assert.equal(activity.sittings, 1, "the day it opens on held one sitting");
+  assert.match(activity.heading, /3:00/, "named by when it ran");
+  assert.equal(activity.feed, 0, "the day stands down when the month comes back");
+  assert.equal(activity.cells % 7, 0, "the month draws whole weeks");
+  assert.equal(activity.marked, 2, "with the two days somebody wrote on marked");
+  assert.equal(activity.counted, 0, "and no version counted on any of them");
+  assert.equal(activity.picked, "2026-09-15", "the panel opened on the last day anything happened");
+  assert.equal(activity.busier.sittings, 2,
+    "a thirty-five-minute pause is where one sitting ends and the next begins");
+  assert.equal(activity.busier.gap, "35m later",
+    "and the silence between them is a sentence rather than empty space");
+  assert.equal(activity.onAxis.axis, 1, "opening a sitting gives it an axis of its own");
+  assert.equal(activity.onAxis.bars, 2, "with the writes in it as bars");
+  assert.deepEqual(activity.opened, ["two"],
+    "and clicking one asks for the document as it stood in that minute");
+  assert.equal(activity.afterLeft, "2026-09-13", "ArrowLeft moves the calendar a day back");
+  assert.equal(activity.afterUp, "2026-09-06", "ArrowUp moves a week");
+  assert.equal(activity.emptyDay, true,
+    "a day nobody worked has no sittings, rather than an empty clock");
+  assert.equal(activity.atTheStart, "2026-09-01",
+    "arrowing past the first month the document has must go nowhere");
+  console.log("editor-browser: the history panel's three steps, its sittings and its arrow keys passed");
   const cache = await evaluate("collabCacheCheck()");
   assert.equal(cache.recovered, "new offline server");
   assert.equal(cache.prepared, "Cached paper");

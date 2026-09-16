@@ -232,6 +232,45 @@ impl Room {
         let project = self.project_at(point).await?;
         Ok(crate::storage::source_archive::tree_of(&project.archive))
     }
+    /// The document as it stood at `frontier`: its main path, its text files,
+    /// and the digests of its assets.
+    ///
+    /// This is the other way to read the past, and it is not the checkpoint
+    /// way. A checkpoint is a source archive somebody's work was saved into;
+    /// this is a position in the operation history, which the activity index
+    /// hands out per bucket, and it can name a moment nobody checkpointed.
+    /// `fork_at` is what makes that cheap -- the base is the whole history, so
+    /// every frontier in it is reachable without replaying anything.
+    ///
+    /// A frontier this room's history does not contain is refused rather than
+    /// approximated: answering with the nearest state would be a different
+    /// document presented as the one that was asked for.
+    pub async fn project_at_frontier(
+        &self,
+        frontier: &[u8],
+    ) -> Result<
+        (
+            String,
+            std::collections::BTreeMap<String, String>,
+            std::collections::BTreeMap<String, String>,
+        ),
+        String,
+    > {
+        let at = loro::Frontiers::decode(frontier)
+            .map_err(|error| format!("invalid frontier: {error}"))?;
+        let state = self.state.lock().await;
+        let past = state
+            .session
+            .doc
+            .fork_at(&at)
+            .map_err(|error| format!("this document has no such version: {error}"))?;
+        Ok((
+            session::main_path(&past),
+            session::texts_of(&past),
+            session::assets_of(&past),
+        ))
+    }
+
     pub async fn checkpoint_by_sha(&self, sha: &str) -> Result<Option<Checkpoint>, String> {
         let Ok(id) = uuid::Uuid::parse_str(sha) else {
             return Ok(None);
@@ -311,12 +350,15 @@ impl Room {
             let state = self.state.lock().await;
             session::encode_vector(&state.session.doc)
         };
-        self.rollback_publication_memory(
-            &tree,
-            &bodies,
-            &self.state.lock().await.session.format.clone(),
-        )
-        .await?;
+        // The format is read into a local first: passing the guard's value as
+        // an argument keeps that guard alive for the whole call, and the call
+        // takes the same lock.
+        let format = {
+            let state = self.state.lock().await;
+            state.session.format.clone()
+        };
+        self.rollback_publication_memory(&tree, &bodies, &format)
+            .await?;
         let update = {
             let state = self.state.lock().await;
             session::encode_diff(&state.session.doc, &before).map_err(WriteError::Storage)?

@@ -145,6 +145,11 @@ pub struct Server {
     /// public front page, and the reserved examples -- the only documents
     /// that would be on one -- are then listed to nobody but their owner.
     pub listing: bool,
+    /// Days of invented history to write for each starter document a new
+    /// account is given, or nothing. A demonstration deployment asks for one;
+    /// every other deployment keeps the honest history of a document
+    /// published once. See `crate::seed::activity`.
+    pub simulate_activity: Option<u32>,
     /// The terminals waiting to be signed in. In memory only: a restart
     /// forgets them, and a `login` that was mid-flight starts again.
     pub pending: PendingCodes,
@@ -449,6 +454,7 @@ impl Server {
             commenters,
             accounts,
             listing: true,
+            simulate_activity: None,
             pending: PendingCodes::new(),
             onboarding: tokio::sync::Mutex::new(()),
             chat: chat::Hub::default(),

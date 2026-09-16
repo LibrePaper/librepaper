@@ -88,6 +88,13 @@ export function createPreviewRenderer({
     // Rendering that placeholder used to call the renderer registry with an
     // empty format and permanently consume the initial paint.
     if (!source.main || !format) return;
+    // A main file with nothing in it is not a document either. It is a project
+    // whose state has not finished arriving, or one nobody has typed into yet,
+    // and compiling it is how a person gets told "! Emergency stop." by pdfTeX
+    // over an empty file -- which reads as a broken compiler rather than as a
+    // page nobody has written. The pane keeps whatever it already shows, the
+    // way it does for a placeholder with no main path at all.
+    if (!String(source.texts?.[source.main] ?? "").trim()) return;
     // The paged formats produce a flow page unless this browser has asked for
     // pages. Whether the source pane is open does not come into it: HTML is
     // the default output, and a reader is shown what an author is shown.

@@ -1058,6 +1058,25 @@ impl PostgresCatalog {
         Ok(version)
     }
 
+    /// Move a version back in time, for a writer that has the moment in hand
+    /// rather than the clock -- today, the seeded examples, which are written
+    /// as a history rather than accumulated as one. See `seed::activity`: the
+    /// archive and everything named in it are real, and this column is the
+    /// one thing about them that is invented.
+    ///
+    /// Nothing else writes `created_at`; a version records when it was made,
+    /// and that is not a fact a caller gets to supply.
+    pub async fn backdate_version(&self, id: Uuid, at: OffsetDateTime) -> Result<()> {
+        sqlx::query!(
+            "UPDATE document_versions SET created_at=$2 WHERE id=$1",
+            id,
+            at,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn versions(&self, document_id: Uuid, limit: i64) -> Result<Vec<VersionRecord>> {
         if !(1..=1000).contains(&limit) {
             return Err(Error::Invalid("version page limit must be 1..=1000".into()));

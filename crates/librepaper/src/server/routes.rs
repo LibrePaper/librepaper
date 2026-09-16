@@ -18,6 +18,8 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents/{slug}/delete", post(delete_document))
         .route("/api/documents/{slug}/state", get(document_state))
         .route("/api/documents/{slug}/history", get(history))
+        .route("/api/documents/{slug}/activity", get(activity))
+        .route("/api/documents/{slug}/at", get(document_at))
         .route(
             "/api/documents/{slug}/history/{sha}",
             get(checkpoint).patch(label_checkpoint),
@@ -142,6 +144,38 @@ async fn document_state(
 ) -> Reply {
     server
         .handle_state(
+            request.headers(),
+            &ctx.arrival,
+            &slug,
+            request.uri().query(),
+        )
+        .await
+}
+
+async fn document_at(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_at(
+            request.headers(),
+            &ctx.arrival,
+            &slug,
+            request.uri().query(),
+        )
+        .await
+}
+
+async fn activity(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_activity(
             request.headers(),
             &ctx.arrival,
             &slug,

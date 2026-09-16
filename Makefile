@@ -199,9 +199,17 @@ OWNER      ?= $(if $(filter any,$(LIBREPAPER_PUBLISHERS)),,$(if $(findstring $(c
 LATEX_MIRROR      ?=
 LATEX_MIRROR_FLAG ?= $(if $(LATEX_MIRROR),--latex-mirror $(LATEX_MIRROR))
 
+# SIMULATE_ACTIVITY=<days> writes every starter document a new account is
+# given as though it had been typed over that many days, so the history panel
+# has a calendar in it rather than the one cell a document published once has.
+# The operations are real; only the clock is invented. See seed::activity.
+# 0 -- or nothing at all -- asks for no simulation, which is what `serve`
+# does on its own; `deploy` supplies a default below.
+SIMULATE_ACTIVITY_FLAG ?= $(if $(filter-out 0,$(SIMULATE_ACTIVITY)),--simulate-activity $(SIMULATE_ACTIVITY))
+
 serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX_MIRROR=; everything else through .env)
 	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(LATEX_MIRROR_FLAG)
+	@$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(LATEX_MIRROR_FLAG) $(SIMULATE_ACTIVITY_FLAG)
 
 # One tutorial project per source format LibrePaper accepts. Each project has
 # a source file and the same relative icon asset; no example is generated.
@@ -214,8 +222,14 @@ examples: $(EXAMPLES)
 # A deployment is seeded once. Resetting a nonempty catalogue is a `librepaper
 # admin seed --backup <verified-point>` the operator runs deliberately, so a second
 # `make deploy` serves what is there rather than refusing to start.
+# SIMULATE_ACTIVITY=<days> writes each example as though it had been typed
+# over that many days -- drafted, cut and rewritten, in sittings -- so a
+# demonstration deployment has a calendar of versions in the history panel
+# rather than the one cell a document published once has. The operations are
+# real and every version opens; only the times are invented.
 seed: $(BIN) $(EXAMPLES)
-	@$(BIN) admin seed --data-directory $(DATA) $(if $(OWNER),--owner $(OWNER))
+	@$(BIN) admin seed --data-directory $(DATA) $(if $(OWNER),--owner $(OWNER)) \
+		$(if $(SIMULATE_ACTIVITY),--simulate-activity $(SIMULATE_ACTIVITY))
 
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
@@ -290,12 +304,22 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 
 # Use the ordinary sign-in flow: each new account receives five private
 # examples and owns its copies. Guest roles come from links created in Share.
-deploy: latex-check $(BIN)  ## Serve locally; sign in for your five examples and share links to test roles
+#
+# A local deploy is a demonstration, so its examples are written with a past:
+# three weeks of drafting, so the history panel and the activity calendar have
+# something in them the first time they are opened. The operations are real
+# and every version opens; only the clock is invented (seed::activity).
+# SIMULATE_ACTIVITY=0 asks for the honest history of a document published
+# once, and any other number overrides the three weeks. It applies to the
+# examples an account is given at first sign-in, so changing it means `wipe`
+# and signing in again.
+deploy: SIMULATE_ACTIVITY ?= 21
+deploy: latex-check $(BIN)  ## Serve locally; sign in for your five examples (with three weeks of history) and share links to test roles
 	@if [ -n "$(LIBREPAPER_DATABASE_URL)" ]; then \
-		$(MAKE) serve LIBREPAPER_PUBLISHERS=any; \
+		$(MAKE) serve LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY); \
 	else \
 		$(MAKE) postgres-dev; \
-		LIBREPAPER_DATABASE_URL='$(DEV_POSTGRES_URL)' $(MAKE) serve LIBREPAPER_PUBLISHERS=any; \
+		LIBREPAPER_DATABASE_URL='$(DEV_POSTGRES_URL)' $(MAKE) serve LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY); \
 	fi
 
 # The deployment keys -- the Cloudflare token, the endpoints, the GitHub app

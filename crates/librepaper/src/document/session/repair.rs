@@ -386,7 +386,11 @@ fn restore_with(
         let id = if let Some(id) = by_path.get(path).cloned() {
             // The file is already here, so make it match rather than replacing it:
             // someone typing elsewhere in it keeps their words and their caret.
-            super::edits::replace_text(doc, path, &body);
+            // `put_text` names the file to write, and updates the LoroText
+            // already at it; `replace_text` writes into the main file whatever
+            // path it is handed, so a restore through it put every file's body
+            // into the entrypoint and left the rest untouched.
+            super::edits::put_text(doc, path, &body);
             id
         } else if !entry.id.is_empty() && by_id.contains(&entry.id) {
             // A file may have been renamed since this checkpoint. Reuse the
@@ -395,7 +399,7 @@ fn restore_with(
             // the identity that concurrent peers and their carets still hold.
             let id = entry.id.clone();
             let old_path = path_by_id[&id].clone();
-            super::edits::replace_text(doc, &old_path, &body);
+            super::edits::put_text(doc, &old_path, &body);
             super::edits::rename_path(doc, &old_path, path);
             id
         } else {

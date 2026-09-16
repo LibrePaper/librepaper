@@ -46,6 +46,10 @@ export function createPublication({
   /// every await, because publishing takes seconds and a reader can type
   /// through all of them.
   facts,
+  /// Said only to a link-holder, who is shown the published bundle itself:
+  /// when its metadata cannot be read there is nothing on their screen to
+  /// hang the reason on. An editor has the Share panel, which draws
+  /// `metadataFailed` with a Retry beside it, and is told nothing here.
   say = () => {},
   disposed = () => false,
 }) {
@@ -77,10 +81,9 @@ export function createPublication({
       slug,
       key,
       onPublication: (value) => { state.publication = value; },
-      onError: (error) => {
-        state.metadataFailed = true;
-        say(error.message || "Could not load the published version.", true);
-      },
+      // The Share panel draws `metadataFailed` as a line with a Retry
+      // button beside it, which is where an editor is when this matters.
+      onError: () => { state.metadataFailed = true; },
     });
     return reader;
   }
@@ -102,7 +105,10 @@ export function createPublication({
         state.update = false;
         onPublication?.(value);
       },
-      onError: (error) => say(error.message || "Could not load the published version.", true),
+      onError: (error) => {
+        state.metadataFailed = true;
+        say(error.message || "The published version of this document could not be loaded.");
+      },
     });
     return reader;
   }
@@ -185,7 +191,6 @@ export function createPublication({
     const gathered = await gather(tree.digests);
     tree.assets = { ...tree.assets, ...gathered.assets };
     tree.urls = { ...tree.urls, ...gathered.urls };
-    say("Preparing publication…");
     const rendered = await renderers.render(tree, await heading(tree), { format: "html", manual: true, configuration });
     if (!rendered?.html || rendered.ok === false || rendered.diagnostics?.some((item) => item.severity === "error")) {
       throw new Error("The captured document could not be rendered as HTML. Fix its render errors and publish again.");
@@ -198,7 +203,6 @@ export function createPublication({
         sourceRevision,
         renderConfig: configuration.identity,
         expectedPublicationId: state.publication?.id || null,
-        onProgress: ({ phase }) => say(phase === "published" ? "Published update." : `Publishing: ${phase}…`),
       });
     } catch (error) {
       if (error?.status === 409) {

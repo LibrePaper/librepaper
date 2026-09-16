@@ -13,7 +13,7 @@
   import Page from "./layout/Page.svelte";
   import Stack from "./layout/Stack.svelte";
   import Row from "./layout/Row.svelte";
-  import { problem } from "../lib/toast.svelte.js";
+  import { say } from "../lib/toast.svelte.js";
   import { SHELL_HEADERS, config as loadConfig, get, me as whoami, upload } from "../lib/api.js";
   import { FAVORITES, VIEWED, read, write } from "../lib/storage.js";
   import { day as isoDay } from "../lib/dates.js";
@@ -190,7 +190,7 @@
       counts = counted;
       paths = listed;
     } catch (error) {
-      if (navigator.onLine !== false) problem(error?.message || "Could not refresh projects.");
+      if (navigator.onLine !== false) say(error?.message || "The project list could not be refreshed, so what is shown here may be out of date.", { kind: "problem", id: "landing:refresh" });
       return false;
     }
     return true;
@@ -253,7 +253,7 @@
     selected = stillSelected;
     if (failed.length) {
       const plural = failed.length === 1 ? "" : "s";
-      problem(`Could not delete ${failed.length} project${plural}; failed selections remain selected.`);
+      say(`${failed.length} project${plural} could not be deleted and ${failed.length === 1 ? "is" : "are"} still here. ${failed.length === 1 ? "It stays" : "They stay"} selected, so Delete will try again.`, { kind: "problem", id: "landing:delete" });
     }
     await showList();
   }
@@ -393,7 +393,7 @@
       form.append("title", title);
       const response = await upload(form);
       if (!response.ok) {
-        problem((await response.json().catch(() => ({}))).error || "upload failed");
+        fileError = (await response.json().catch(() => ({}))).error || "The upload was refused.";
         return;
       }
       const doc = await response.json();
@@ -403,7 +403,7 @@
       shared = new URL(doc.url, location.origin).href;
       sharing = true;
     } catch (error) {
-      problem(error?.message || "upload failed");
+      fileError = error?.message || "The upload did not finish.";
     } finally {
       busy = false;
     }

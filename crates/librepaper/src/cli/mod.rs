@@ -190,6 +190,16 @@ pub(crate) struct ServiceFlags {
     /// Most checkpoints one document keeps (default unlimited); 0 keeps only the current text
     #[arg(long = "history-limit", env = "LIBREPAPER_HISTORY", value_name = "N")]
     history: Option<usize>,
+    /// Write each new account's starter documents as though they had been
+    /// typed over this many days, so a demonstration deployment has a history
+    /// panel with something in it. The operations are real; only the clock is
+    /// invented. See `crate::seed::activity`.
+    #[arg(
+        long = "simulate-activity",
+        env = "LIBREPAPER_SIMULATE_ACTIVITY",
+        value_name = "DAYS"
+    )]
+    simulate_activity: Option<u32>,
     /// Delete documents after this duration, for example 24h or 30d (default never)
     #[arg(
         long = "document-expire-after",
@@ -589,6 +599,13 @@ pub(crate) enum AdminCommand {
         owner: Option<String>,
         #[arg(long, value_name = "DIRECTORY")]
         backup: Option<String>,
+        /// Write each example as though it had been typed over this many
+        /// days -- drafted, cut and rewritten, in sittings -- so a fresh
+        /// deployment has a calendar of versions to look at. The operations
+        /// are real and reachable; only the times are invented. Capped at the
+        /// four weeks the store keeps versions for.
+        #[arg(long, value_name = "DAYS")]
+        simulate_activity: Option<u32>,
     },
     /// Create or restore verified deployment backups.
     Backup {
@@ -874,6 +891,7 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                 publishers: service.publishers,
                 commenters: service.commenters,
                 no_listing: service.no_listing,
+                simulate_activity: service.simulate_activity,
                 origin: service.origin,
                 docs_origin: service.docs_origin,
                 expire_after: service.expire_after,
@@ -926,6 +944,7 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
             storage,
             owner,
             backup,
+            simulate_activity,
         } => {
             let documents = crate::seed::examples::seed_documents();
             match server {
@@ -939,12 +958,19 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                             &owner.unwrap_or_default(),
                             &documents,
                             Some(std::path::Path::new(&backup)),
+                            simulate_activity,
                         )
                         .await
                     }
                     None => {
-                        crate::seed::seed(storage.options(), &owner.unwrap_or_default(), &documents)
-                            .await
+                        crate::seed::seed_with_backup(
+                            storage.options(),
+                            &owner.unwrap_or_default(),
+                            &documents,
+                            None,
+                            simulate_activity,
+                        )
+                        .await
                     }
                 },
             }

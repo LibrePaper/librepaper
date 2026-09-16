@@ -50,7 +50,7 @@ const context = (values) => vm.createContext({
       return { ok: true, json: async () => ({ documents: [{ slug: "duplicate" }, { slug: "last" }] }) };
     },
     get: async () => ({ comment_count: 0, files: [] }),
-    problem: (message) => problems.push(message),
+    say: (message) => problems.push(message),
   });
   vm.runInContext(showList, ctx);
   await vm.runInContext("showList()", ctx);
@@ -69,7 +69,7 @@ const context = (values) => vm.createContext({
   const forms = [];
   const ctx = context({
     chosen: { archive: true, main: "", files: [{ path: "paper.qmd", bytes: new Uint8Array([1]) }], name: "paper.zip" },
-    title: "Paper", busy: false, parsing: false, fileError: "", problem: () => {},
+    title: "Paper", busy: false, parsing: false, fileError: "", say: () => {},
     refuse: () => { throw new Error("archive selection was lost"); },
     upload: async (form) => { forms.push(form); return { ok: true, json: async () => ({ url: "/docs/paper" }) }; },
     showList: async () => {}, shared: null, sharing: false, location: { origin: "https://example.test" },
@@ -97,7 +97,7 @@ const context = (values) => vm.createContext({
         : { ok: false, status: 503 };
     },
     get: async () => ({ comment_count: 0, files: [] }),
-    problem: (message) => problems.push(message),
+    say: (message) => problems.push(message),
   });
   vm.runInContext(showList, ctx);
   await vm.runInContext("showList()", ctx);
@@ -115,7 +115,7 @@ const context = (values) => vm.createContext({
     navigator: { onLine: false },
     fetch: async () => { throw new TypeError("Failed to fetch"); },
     get: async () => ({ comment_count: 0, files: [] }),
-    problem: (message) => problems.push(message),
+    say: (message) => problems.push(message),
   });
   vm.runInContext(showList, ctx);
   assert.equal(await vm.runInContext("showList()", ctx), false);
@@ -142,7 +142,7 @@ const context = (values) => vm.createContext({
       return wait;
     },
     write: () => {},
-    problem: (message) => problems.push(message),
+    say: (message) => problems.push(message),
     showList: async () => {},
   });
   vm.runInContext(reallyDelete, ctx);
@@ -155,7 +155,24 @@ const context = (values) => vm.createContext({
   await deleting;
   assert.deepEqual([...ctx.favorites].sort(), ["http-failure", "network-failure"]);
   assert.deepEqual([...ctx.selected].sort(), ["http-failure", "network-failure", "selected-while-waiting"]);
-  assert.match(problems[0], /Could not delete 2 projects/);
+  assert.match(problems[0], /2 projects could not be deleted/);
 }
 
-console.log("landing: pagination, refresh preservation, silent offline refresh, and deletion failure checks passed");
+// A refused upload is reported under the form that sent it -- where the file
+// and title the person chose are still on screen -- rather than in a corner.
+{
+  const ctx = context({
+    chosen: new File(["# Paper"], "paper.qmd"), title: "Paper", busy: false, parsing: false, fileError: "",
+    say: () => { throw new Error("an upload failure belongs under the form"); },
+    refuse: () => {},
+    upload: async () => ({ ok: false, json: async () => ({ error: "that format is not accepted" }) }),
+    showList: async () => {}, shared: null, sharing: false, location: { origin: "https://example.test" },
+    URL, Blob, FormData,
+  });
+  vm.runInContext(submit, ctx);
+  await vm.runInContext("submit({ preventDefault() {} })", ctx);
+  assert.equal(ctx.fileError, "that format is not accepted");
+  assert.equal(ctx.chosen.name, "paper.qmd", "the chosen file is kept so it can be sent again");
+}
+
+console.log("landing: pagination, refresh preservation, silent offline refresh, upload and deletion failure checks passed");

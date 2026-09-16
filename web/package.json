@@ -20,7 +20,7 @@
     "check:companion": "node tests/integration/local-companion.mjs && node tests/integration/companion-lifecycle.mjs && node tests/browser/local-consent-browser.mjs",
     "check:browser": "node --test --test-concurrency=4 'tests/browser/*.mjs'",
     "check:math-browser": "node tests/browser/math-browser.mjs",
-    "check:history": "node tests/unit/timeline.mjs && node tests/integration/history-source.mjs && node tests/unit/reader-races.mjs",
+    "check:history": "node tests/unit/timeline.mjs && node tests/unit/history-calendar.mjs && node tests/unit/activity.mjs && node tests/integration/history-source.mjs && node tests/unit/reader-races.mjs",
     "check:history-browser": "node tests/browser/history-reader-browser.mjs && node tests/browser/history-panel-browser.mjs",
     "check:typst-pdf": "node tests/integration/typst-pdf.mjs",
     "check:typst-viewer": "node tests/browser/typst-viewer.mjs",

@@ -1,7 +1,8 @@
 <script>
   // The LibrePaper app on this computer: whether this browser is connected to
-  // it, how to connect, and what it can do. Shared by LaTeX, which uses it for
-  // an installed TeX, and Quarto, which uses it for every local render.
+  // it, how to connect, and what it can do. Offered for the formats that have
+  // a local tool -- Typst, Markdown, Quarto -- and never for LaTeX, which
+  // builds in the browser alone.
   import SettingRow from "./SettingRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";

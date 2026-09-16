@@ -27,6 +27,30 @@ pub struct CollaborationBase {
     pub updated_at: OffsetDateTime,
 }
 
+/// When a document was worked on, one bucket of time at a time.
+///
+/// `changes` counts persistence cycles in the bucket: the room writes the
+/// document's whole encoded history every couple of seconds while somebody is
+/// typing, so this is "how much of this minute was spent editing", not how
+/// many keystrokes landed.
+///
+/// `state_bytes` is the largest of those encoded histories, which measures the
+/// document rather than the edit. The work done in a bucket is the difference
+/// between its `state_bytes` and the previous bucket's -- differencing is the
+/// caller's job, because only the caller knows which buckets it is drawing.
+///
+/// `frontier` is the document's Loro frontier after the bucket's last write:
+/// the anchor `fork_at` needs to reproduce the document as it stood then.
+/// Empty for a bucket whose rows predate the column.
+#[derive(Clone, Debug)]
+pub struct ActivityBucket {
+    pub bucket: OffsetDateTime,
+    pub peer: String,
+    pub changes: i64,
+    pub state_bytes: i64,
+    pub frontier: Vec<u8>,
+}
+
 #[derive(Clone, Debug)]
 pub struct CollaborationState {
     pub base: Option<CollaborationBase>,
@@ -68,7 +92,16 @@ impl PostgresCatalog {
         Ok(())
     }
 
-    pub async fn append_update(&self, document_id: Uuid, bytes: &[u8]) -> Result<i64> {
+    /// `frontier` is the encoded Loro frontier this write leaves the document
+    /// at. It is carried here rather than derived later because the catalogue
+    /// never holds a document: only the room that produced `bytes` knows where
+    /// in the history they end.
+    pub async fn append_update(
+        &self,
+        document_id: Uuid,
+        bytes: &[u8],
+        frontier: &[u8],
+    ) -> Result<i64> {
         if bytes.is_empty() || bytes.len() > 4 * 1024 * 1024 {
             return Err(Error::Invalid("CRDT update size is outside limits".into()));
         }
@@ -83,12 +116,13 @@ impl PostgresCatalog {
                  updated_at=now()
                WHERE id=$1 AND status='active' RETURNING id,update_sequence
              ), inserted AS (
-               INSERT INTO document_updates(document_id,update_sequence,update_bytes)
-               SELECT id,update_sequence,$2 FROM advanced RETURNING update_sequence
+               INSERT INTO document_updates(document_id,update_sequence,update_bytes,frontier)
+               SELECT id,update_sequence,$2,$3 FROM advanced RETURNING update_sequence
              )
              SELECT update_sequence AS "update_sequence!" FROM inserted"#,
             document_id,
             bytes,
+            frontier,
         )
         .fetch_optional(&mut *tx)
         .await?
@@ -114,6 +148,89 @@ impl PostgresCatalog {
             document_id,
             after,
             limit,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// Record activity directly, for a writer that has the marks in hand
+    /// rather than rows to aggregate -- today, the seeded examples, which are
+    /// written as a history rather than persisted as one.
+    ///
+    /// Each mark is `(when, state bytes, frontier)` and counts as one write.
+    /// Minutes are accumulated exactly as compaction accumulates them, so a
+    /// document can be written this way and then edited for real without the
+    /// two disagreeing about a minute they share.
+    pub async fn record_activity(
+        &self,
+        document_id: Uuid,
+        marks: &[(OffsetDateTime, i64, Vec<u8>)],
+    ) -> Result<usize> {
+        if marks.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut written = 0;
+        for (at, state_bytes, frontier) in marks {
+            let affected = sqlx::query!(
+                "INSERT INTO document_activity(document_id,bucket,peer,changes,state_bytes,frontier)
+                 VALUES($1,date_trunc('minute',$2::timestamptz),'',1,$3,$4)
+                 ON CONFLICT (document_id,bucket,peer) DO UPDATE SET
+                   changes=document_activity.changes+1,
+                   state_bytes=GREATEST(document_activity.state_bytes,excluded.state_bytes),
+                   frontier=excluded.frontier",
+                document_id,
+                at,
+                *state_bytes,
+                frontier.as_slice(),
+            )
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            written += affected as usize;
+        }
+        tx.commit().await?;
+        Ok(written)
+    }
+
+    /// When this document was worked on, oldest bucket first.
+    ///
+    /// Two sources, one answer: the buckets compaction has already recorded,
+    /// and the updates that have not been compacted yet, which are still rows
+    /// and are counted here directly. The seam between them is the delete in
+    /// `activate_collaboration_base`, which is in the same transaction as the
+    /// insert that replaces those rows -- so a row is in exactly one of the
+    /// two sources and nothing is counted twice or dropped in between.
+    ///
+    /// `since` bounds the scan for a caller that only draws a recent window;
+    /// `None` is the document's whole life.
+    pub async fn document_activity(
+        &self,
+        document_id: Uuid,
+        since: Option<OffsetDateTime>,
+    ) -> Result<Vec<ActivityBucket>> {
+        sqlx::query_as!(
+            ActivityBucket,
+            r#"SELECT DISTINCT ON (bucket,peer)
+                      bucket AS "bucket!",peer AS "peer!",
+                      (sum(changes) OVER (PARTITION BY bucket,peer))::bigint AS "changes!",
+                      (max(state_bytes) OVER (PARTITION BY bucket,peer))::bigint AS "state_bytes!",
+                      frontier AS "frontier!"
+               FROM (
+                 SELECT bucket,peer,changes::bigint AS changes,state_bytes,frontier,
+                        0::bigint AS ordinal
+                 FROM document_activity WHERE document_id=$1
+                 UNION ALL
+                 SELECT date_trunc('minute',created_at) AS bucket,'' AS peer,
+                        1::bigint AS changes,octet_length(update_bytes)::bigint AS state_bytes,
+                        frontier,update_sequence AS ordinal
+                 FROM document_updates WHERE document_id=$1
+               ) counted
+               WHERE $2::timestamptz IS NULL OR bucket >= $2
+               ORDER BY bucket,peer,ordinal DESC"#,
+            document_id,
+            since,
         )
         .fetch_all(&self.pool)
         .await
@@ -227,6 +344,39 @@ impl PostgresCatalog {
         .fetch_optional(&mut *tx)
         .await?;
         if base.is_some() {
+            // Before the rows go: when this work happened, at minute
+            // resolution. Inside the same `base.is_some()` branch as the
+            // delete and the same transaction, so activity is recorded for
+            // exactly the updates that are removed -- a base that lost the
+            // race above deletes nothing and must record nothing.
+            //
+            // A minute that straddles two compactions arrives here twice, so
+            // the conflict accumulates rather than replaces.
+            // `DISTINCT ON` ordered by sequence descending takes the bucket's
+            // last write, which is the frontier that reproduces the document
+            // as the bucket left it; the window functions beside it count and
+            // measure the whole bucket.
+            sqlx::query!(
+                "INSERT INTO document_activity(document_id,bucket,peer,changes,state_bytes,frontier)
+                 SELECT DISTINCT ON (bucket) document_id,bucket,'',changes,state_bytes,frontier
+                 FROM (
+                   SELECT document_id,update_sequence,frontier,
+                          date_trunc('minute',created_at) AS bucket,
+                          count(*) OVER (PARTITION BY date_trunc('minute',created_at))::int AS changes,
+                          max(octet_length(update_bytes))
+                            OVER (PARTITION BY date_trunc('minute',created_at))::bigint AS state_bytes
+                   FROM document_updates WHERE document_id=$1 AND update_sequence <= $2
+                 ) measured
+                 ORDER BY bucket,update_sequence DESC
+                 ON CONFLICT (document_id,bucket,peer) DO UPDATE SET
+                   changes=document_activity.changes+excluded.changes,
+                   state_bytes=GREATEST(document_activity.state_bytes,excluded.state_bytes),
+                   frontier=excluded.frontier",
+                document_id,
+                through_update_sequence,
+            )
+            .execute(&mut *tx)
+            .await?;
             sqlx::query!(
                 "DELETE FROM document_updates WHERE document_id=$1 AND update_sequence <= $2",
                 document_id,

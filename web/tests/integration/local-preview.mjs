@@ -71,7 +71,7 @@ function notRendered(rendering) {
   const tree = { main: "main.qmd", assets: { "figure.png": new Uint8Array([1, 2, 3]) } };
   const ctl = createLocalPreview({
     local, engine: "quarto",
-    publish: () => {}, say: () => {},
+    publish: () => {},
     treeNow: async () => tree, entrypointOf: (t) => t.main,
     optionsOf: () => ({ format: "html" }), jobOf: () => ({ binding: "hosted" }),
     setTimer, clearTimer,
@@ -112,7 +112,7 @@ function notRendered(rendering) {
   const published = [];
   const ctl = createLocalPreview({
     local, engine: "calepin",
-    publish: (payload) => published.push(payload), say: () => {},
+    publish: (payload) => published.push(payload),
     treeNow: () => ({ main: "main.typ" }), entrypointOf: (t) => t.main,
     optionsOf: () => ({ format: "pdf" }),
     setTimer, clearTimer,
@@ -144,7 +144,7 @@ function notRendered(rendering) {
   const ended = [];
   const ctl = createLocalPreview({
     local, engine: "quarto",
-    publish: (payload) => published.push(payload), say: () => {},
+    publish: (payload) => published.push(payload),
     treeNow: () => ({ main: "main.qmd" }), entrypointOf: (t) => t.main,
     optionsOf: () => ({}),
     onEnded: () => ended.push(true),
@@ -173,11 +173,10 @@ function notRendered(rendering) {
     localPreviewStatus: async () => ({ state: "stopped", log_tail: "line one\nline two\n" }),
     localPreviewPage: async () => ({ rendering: false }),
   };
-  const said = [];
   const ended = [];
   const ctl = createLocalPreview({
     local, engine: "quarto",
-    publish: () => {}, say: (message, problem) => said.push({ message, problem }),
+    publish: () => {},
     treeNow: () => ({ main: "main.qmd" }), entrypointOf: (t) => t.main,
     optionsOf: () => ({}),
     onEnded: () => ended.push(true),
@@ -191,7 +190,7 @@ function notRendered(rendering) {
   await runTimer(statusTimer);
   assert.equal(ctl.running, false, "a non-running status ends the session");
   assert.deepEqual(stopped, ["p4"]);
-  assert.deepEqual(said, [{ message: "line two", problem: true }]);
+  assert.equal(ctl.state.error, "line two", "the last log line is what the panel reads");
   assert.deepEqual(ended, [true]);
   console.log("local-preview: a status other than running stops the poll, deletes the session, and calls onEnded");
 }
@@ -212,7 +211,7 @@ function notRendered(rendering) {
   let tree = { rev: 0 };
   const ctl = createLocalPreview({
     local, engine: "quarto",
-    publish: () => {}, say: () => {},
+    publish: () => {},
     treeNow: () => tree, entrypointOf: () => "main.qmd",
     optionsOf: () => ({}),
     setTimer, clearTimer,

@@ -198,7 +198,7 @@ function build(extra = {}) {
   const { workspace, said } = build();
   workspace.attach(fakeSession());
   workspace.relocate([{ path: "a.md" }], "folder", false);
-  assert.match(said[0], /References in source files are not changed automatically/);
+  assert.match(said[0], /were not rewritten/);
 }
 
 // Removing and re-maining both change what a compiler would produce.

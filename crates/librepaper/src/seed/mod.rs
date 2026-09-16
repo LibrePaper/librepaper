@@ -134,15 +134,17 @@ pub fn latex_prose(source: &str) -> String {
     space.replace_all(&text, " ").to_string()
 }
 
-pub async fn seed(options: StorageOptions, owner: &str, documents: &[SeedDocument]) {
-    seed_with_backup(options, owner, documents, None).await
-}
+pub mod activity;
 
 pub async fn seed_with_backup(
     options: StorageOptions,
     owner: &str,
     documents: &[SeedDocument],
     backup: Option<&std::path::Path>,
+    // Days of invented history to write for each example, if the operator
+    // asked for any. See `seed::activity`: the operations are real and only
+    // the clock is simulated.
+    simulate_activity: Option<u32>,
 ) {
     let blobs = open_storage(options.clone())
         .await
@@ -217,11 +219,25 @@ pub async fn seed_with_backup(
             policy_editor: true,
             unowned_publisher: false,
         };
-        store
+        let entry = store
             .put_directory_as_actor(publication, files, actor)
             .await
             .unwrap_or_else(|e| die(e));
         println!("  {:<28} {}", slug, document.title);
+        if let Some(days) = simulate_activity {
+            let id = uuid::Uuid::parse_str(&entry.storage_id).unwrap_or_else(|_| die("bad id"));
+            match activity::simulate(catalog.clone(), blobs.clone(), id, &slug, days).await {
+                Ok(written) => println!(
+                    "  {:<28} written in {} steps and {} versions over {} minutes, from {}",
+                    "",
+                    written.steps,
+                    written.versions,
+                    written.buckets,
+                    written.first.date()
+                ),
+                Err(error) => eprintln!("  {:<28} activity not simulated: {error}", ""),
+            }
+        }
     }
     catalog.close().await;
 }

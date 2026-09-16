@@ -9,11 +9,14 @@
   let { format = "", documentId = "", userId = "anonymous", preferences = {}, onpreferences } = $props();
   const local = $derived(companion.status);
   $effect(() => companion.watch());
-  // Opening this pane is a question about build tools, so it is the moment
-  // to look for the companion -- the page never does it on its own.
-  $effect(() => void localBridge.probe());
   const builders = $derived(buildersFor(format));
   const localBuilders = $derived(builders.filter((entry) => entry.backend.includes("local")));
+  // Opening this pane is a question about build tools, so it is the moment
+  // to look for the companion -- the page never does it on its own. Only for
+  // a format that has a local tool, though: LaTeX builds in the browser and
+  // nowhere else, so reaching loopback for it would ask this person for
+  // local-network access to answer a question this pane cannot even pose.
+  $effect(() => { if (localBuilders.length) void localBridge.probe(); });
   const browserBuilders = $derived(builders.filter((entry) => entry.backend.includes("browser")));
   const selected = $derived(preferences.selection === "tool" ? (preferences.preset ? `local:preset:${preferences.preset}` : preferences.tool === "tex" && preferences.engine ? `${preferences.backend || "browser"}:tex:${preferences.engine}` : optionValue(preferences.backend || "browser", preferences.tool || "")) : "automatic");
 
@@ -105,8 +108,8 @@
   </select>
 </SettingRow>
 
-<!-- LaTeX has no local builder to configure. Its companion use is the
-     automatic Biber and native fallback, which needs no pairing surface here. -->
+<!-- LaTeX has no local builder to configure, and nothing else about it is
+     local either, so this pane says nothing about the companion for it. -->
 {#if format !== "latex"}<SettingRow title="Local tools" description="Refresh installed tools and companion presets.">
   <span class="setting-description" role="status">{statusMessage}</span>
   {#if ["unknown", "unreachable", "denied"].includes(local?.state)}<button type="button" class="btn btn-sm preset-filled-primary-500" onclick={connect}>Open companion</button>{/if}

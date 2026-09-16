@@ -309,158 +309,21 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 
 /* ---------------------------------------------------------------- timeline */
 
-/* The history, in the column the comments otherwise have. What is written here
-   is the arrangement of a row -- the time, then what happened -- which is not
-   a thing the theme knows; every colour and every step of spacing in it comes
-   from the theme all the same. */
+/* The history, in the column the comments otherwise have. The panel is two
+   steps -- a month, then one day on a vertical time axis -- and both of them
+   are its own, in its own file. What is left here is the shape of the panel
+   and the one thing every selectable moment in it shares: which one is being
+   looked at. */
 .panel.timeline {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-.timeline-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  list-style: none;
-  padding: --spacing(1) --spacing(2) --spacing(3);
-  margin: 0;
-}
-.timeline-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: --spacing(1);
-}
-.timeline-marker {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  margin-inline: 3px;
-  border-radius: 50%;
-  background: transparent;
-}
-.timeline-marker-important { background: var(--color-primary-500); }
-.timeline-marker-current { box-shadow: inset 0 0 0 1.5px var(--panel-muted); }
-.timeline-point {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  align-items: center;
-  gap: --spacing(2);
-  padding: --spacing(1);
-  border-radius: var(--radius-container);
-  text-align: left;
-  cursor: pointer;
-}
-.timeline-point:hover {
-  background: var(--color-surface-100-900);
 }
 .timeline-here,
 .timeline-here:hover {
   background: var(--color-row-selected);
   box-shadow: inset 3px 0 0 var(--color-primary-500);
 }
-/* Every timestamp in one column: a history is scanned down the times, and
-   ragged ones make the reader find each one before reading it. */
-.timeline-when {
-  flex: none;
-  min-width: 4.15rem;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.timeline-what {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  line-height: 1.3;
-  color: var(--panel-muted);
-  overflow-wrap: anywhere;
-}
-.timeline-who {
-  color: var(--color-surface-700-300);
-}
-/* What the version moved, under who moved it: the row's second line, and the
-   reason a column of identical-looking autosaves can be told apart. */
-.timeline-moved {
-  color: var(--panel-muted);
-  font-size: 0.75rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* A name is the one thing in the column somebody wrote on purpose. */
-.timeline-named .timeline-what strong {
-  color: var(--color-surface-950-50);
-}
-.timeline-inline-action,
-.timeline-inline-actions {
-  flex: none;
-  display: flex;
-  align-items: center;
-}
-.timeline-inline-actions { gap: --spacing(0.5); }
-/* The actions on a row show for the row under the cursor and the row being
-   looked at: four icons on every row is a column of icons, not a history.
-   They sit over the end of the row rather than beside it, so the column
-   keeps its width for the words. A finger has no hover, so they stay put
-   there. */
-.timeline-actions {
-  position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  padding-left: --spacing(1);
-  border-radius: var(--radius-container);
-  background: var(--color-surface-100-900);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms;
-}
-.timeline-row:hover .timeline-actions,
-.timeline-row:focus-within .timeline-actions,
-.timeline-row:has(.timeline-here) .timeline-actions {
-  opacity: 1;
-  pointer-events: auto;
-}
-/* The row being looked at keeps its actions on a line of their own, under
-   the words rather than over them: it is the row somebody is about to name,
-   restore or link, and the one a finger can reach without a hover. */
-/* The day stays in view while its marks scroll under it, so it needs a ground
-   of its own -- the shell's, as the comment tools have. It sits in the text
-   column, past the dots, so the quiet gutter line runs beside it. A day separates runs of rows
-   rather than owning them, so it carries a hairline instead of weight. */
-.timeline-day-row {
-  display: block;
-  position: relative;
-}
-.timeline-day {
-  padding: --spacing(3) --spacing(1) --spacing(1) 22px;
-  font-size: var(--panel-meta-size);
-  font-weight: 400;
-  color: var(--panel-muted);
-  background: var(--color-sidebar);
-}
-.timeline-section h4 {
-  margin: 0;
-  padding: --spacing(2) --spacing(1) --spacing(1) 22px;
-  color: var(--panel-muted);
-  font-size: var(--panel-meta-size);
-  font-weight: 500;
-}
-.history-filter { display: flex; justify-content: space-between; gap: --spacing(2); }
-/* Both choices on the rail at once. The indicator is the moving pill Zag
-   measures and positions; the items sit above it, so the selected one reads
-   against the pill rather than behind it. */
-.history-filter-control { position: relative; display: flex; gap: --spacing(1); padding: --spacing(1); border-radius: var(--radius-container); background: var(--color-row-hover); font-size: var(--panel-meta-size); }
-/* Zag measures the checked item and publishes the rect as custom properties,
-   positioning the indicator's `left` itself; the other three are ours to
-   spend, so the pill takes the whole of the item it is under. */
-.history-filter-indicator { z-index: 0; top: var(--top); width: var(--width); height: var(--height); border-radius: var(--radius-base); background: var(--color-surface-50-950); box-shadow: var(--shadow-sm); }
-.history-filter-item { position: relative; z-index: 1; padding: --spacing(1) --spacing(3); border-radius: var(--radius-base); cursor: pointer; white-space: nowrap; color: var(--panel-muted); }
-.history-filter-item[data-state="checked"] { color: inherit; font-weight: 500; }
-.history-filter-item[data-focus-visible] { outline: 2px solid var(--color-primary-500); outline-offset: 1px; }
 
 /* Whatever is left when the document is not showing takes the room it would
    have had: the source if it is there, the comments otherwise. */
@@ -928,9 +791,15 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   white-space: nowrap;
   cursor: pointer;
 }
-.menuitem:hover,
-.menuitem[data-highlighted] {
+.menuitem:hover:not([data-disabled]),
+.menuitem[data-highlighted]:not([data-disabled]) {
   background: var(--color-primary-100-900);
+}
+/* An option that is not available now says so by going pale, so the reason a
+   click does nothing can be seen before the click. */
+.menuitem[data-disabled] {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* A separator holding one of the named ratios says so, so the split can be
@@ -1009,10 +878,15 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   cursor: default;
   user-select: none;
 }
-.menubar-item:hover,
+.menubar-item:hover:not(:disabled):not([data-disabled]),
 .menubar-item[data-state="open"] {
   background: var(--color-primary-100-900);
   color: var(--color-surface-950-50);
+}
+.menubar-item:disabled,
+.menubar-item[data-disabled] {
+  opacity: 0.5;
+  cursor: default;
 }
 .menubar-item:focus-visible {
   outline: 2px solid var(--color-primary-500);

@@ -24,6 +24,9 @@ export function createWorkspace({
   // the first time the directory is read and the reader turns out to be able
   // to edit -- a reader has no source pane to open it in.
   arrivedFile = "",
+  /// Said when a move has a consequence the file list cannot show: nothing on
+  /// screen looks wrong, and the break is in the source files that named the
+  /// old path.
   say = () => {},
   paint = () => {},
   // The preview follows the main file unless one was pinned, and which file
@@ -166,7 +169,7 @@ export function createWorkspace({
   function relocate(entries, destination, rename) {
     const plan = session.relocate(entries, destination, state.rules, rename);
     if (plan.files.some((file) => file.path !== file.previousPath)) {
-      say("Files moved. References in source files are not changed automatically.");
+      say("Files moved. Paths to them inside source files were not rewritten, so an include or an image that named the old location still names it.");
     }
   }
 

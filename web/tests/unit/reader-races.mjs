@@ -792,7 +792,9 @@ for (const invalidate of [null, "navigation", "main"]) {
 }
 console.log("reader-races: continuous preview, render coalescing and navigation guards passed");
 
-// Ctrl-S distinguishes server durability from an offline device save.
+// Ctrl-S names where the work is, and reserves "saved" for the server. This
+// browser's own storage is evictable and is one device, so an offline Ctrl-S
+// says what will happen to the typing rather than calling it saved.
 {
   const said = [];
   const ctx = context({
@@ -801,13 +803,21 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
   });
   vm.runInContext(body("  function reportPersistence()", "  // There is no save, so a close"), ctx);
   vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, []);
+  assert.deepEqual(said, [], "unacknowledged writes are not reported as anything");
   ctx.persistence.pending = 0;
   vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, ["saved on the server"]);
+  assert.deepEqual(said, ["Saved on the server."]);
   ctx.connected = false;
   vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, ["saved on the server", "saved on this device"]);
+  assert.match(said[1], /^Offline. Everything typed so far has already reached the server./);
+  ctx.persistence.pending = 2;
+  vm.runInContext("reportPersistence()", ctx);
+  assert.match(said[2], /in this browser only/, "work the server has not seen is not called saved");
+  assert.doesNotMatch(said[1] + said[2], /saved/i, "the word is the server's");
+  // A local write that failed says so through its own failure, not here.
+  ctx.persistence = { pending: 0, local: true, localError: "quota exceeded" };
+  vm.runInContext("reportPersistence()", ctx);
+  assert.equal(said.length, 3);
 }
 
 // Reconnect metadata is checked before the old session can send its CRDT.

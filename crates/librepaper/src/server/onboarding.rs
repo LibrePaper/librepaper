@@ -163,7 +163,8 @@ impl Server {
                     return Err("starter document belongs to another account".into());
                 }
             } else {
-                self.store
+                let entry = self
+                    .store
                     .put_directory_as_actor(
                         Publication {
                             slug: slug.clone(),
@@ -181,6 +182,27 @@ impl Server {
                     )
                     .await
                     .map_err(|e| e.to_string())?;
+                // A demonstration deployment asks for a history it can look
+                // at: the starter is rewritten as though it had been typed
+                // over the requested days. The operations are real and only
+                // the clock is invented; see `crate::seed::activity`. A
+                // failure here is cosmetic, so the account keeps its
+                // documents and the operator hears about it.
+                if let Some(days) = self.simulate_activity {
+                    if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
+                        if let Err(error) = crate::seed::activity::simulate(
+                            catalog.clone(),
+                            self.store.blobs.clone(),
+                            id,
+                            &slug,
+                            days,
+                        )
+                        .await
+                        {
+                            eprintln!("warning: {slug} activity not simulated: {error}");
+                        }
+                    }
+                }
             }
         }
         Ok(())

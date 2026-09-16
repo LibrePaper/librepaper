@@ -1,12 +1,12 @@
 // The timeline, against a history the test writes.
 //
-// The panel is a list of every version, newest first, grouped by the day the
-// reader is in. What a careless change would break silently is the order --
-// the panel would still render, and the history would just be wrong about
-// when things happened -- so that is what is checked here, along with the
-// paging and tie-breaking the list is built from.
+// What a careless change would break silently is the order -- the panel would
+// still render, and the history would just be wrong about when things
+// happened -- so that is what is checked here, along with the paging the
+// manifest is read through and the size bar a version's row carries. How the
+// order is then laid out as a calendar is checked in history-calendar.mjs.
 
-import { loadWithStatus, sizeDelta, timeline } from "../../src/lib/history.js";
+import { checkpointOrder, loadWithStatus, sizeDelta } from "../../src/lib/history.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -26,32 +26,28 @@ function marks(day, by, n, from = 0) {
   }));
 }
 
-const shas = (days) => days.flatMap((day) => day.points.map((point) => point.sha));
+const order = (points) => [...points].sort(checkpointOrder).map((point) => point.sha);
 
 /* --------------------------------------------------------------- the order */
 
 {
-  const days = timeline([...marks("03", "vincent", 2), ...marks("05", "anne", 2)]);
-  check("the newest day comes first", days.length === 2 && days[0].points[0].by === "anne");
-  check("the newest mark within a day comes first", shas(days)[0].startsWith("05-anne-1"));
-  check("every day keeps its own marks", days[0].points.length === 2 && days[1].points.length === 2);
+  // Oldest first, and a day apart is still an order: the calendar groups by
+  // day but every reading of the manifest starts from this one comparison.
+  const points = [...marks("05", "anne", 2), ...marks("03", "vincent", 2)];
+  const sorted = order(points);
+  check("the oldest comes first", sorted[0].startsWith("03-vincent-0"));
+  check("and the newest last", sorted[3].startsWith("05-anne-1"));
+  check("nothing is dropped", sorted.length === 4);
 }
 
 {
-  // Every version is a row of its own: a project's history is read as what
-  // happened and when, and a row standing for several moments is a row the
-  // reader has to open before it says anything.
-  const points = marks("05", "vincent", 30);
-  const days = timeline(points);
-  check("thirty quiet checkpoints are thirty rows", days.length === 1 && days[0].points.length === 30);
-  check("nothing is dropped", shas(days).length === 30);
-}
-
-{
-  const points = marks("05", "vincent", 9);
-  points[4].label = "sent to the journal";
-  const days = timeline(points);
-  check("a named checkpoint is a row like the others", days[0].points.filter((point) => point.label).length === 1);
+  // Two checkpoints taken in the same second are ordered by the sequence the
+  // server wrote, not by whichever the JSON happened to list first.
+  const tied = marks("05", "anne", 3).map((point, index) => ({
+    ...point, at: "2026-09-05T09:00:00Z", seq: index + 1,
+  }));
+  check("a timestamp tie is broken by sequence",
+    order([tied[2], tied[0], tied[1]]).join() === order(tied).join());
 }
 
 /* ---------------------------------------------------------------- the pages */
@@ -71,7 +67,6 @@ const shas = (days) => days.flatMap((day) => day.points.map((point) => point.sha
     check("history follows the server's page cursor", urls[1] === "/api/documents/paper/history?after=2");
     check("the manifest comes back oldest first across all pages", loaded.checkpoints.map(point => point.seq).join() === "1,2,3");
     check("the first page's durability is retained", loaded.durability.live_save === "saved");
-    check("timeline breaks timestamp ties by sequence", shas(timeline(loaded.checkpoints))[0] === points[2].sha);
   } finally { globalThis.fetch = originalFetch; }
 }
 
@@ -109,4 +104,4 @@ const shas = (days) => days.flatMap((day) => day.points.map((point) => point.sha
 }
 
 if (failures) process.exit(1);
-console.log("timeline: the newest first, one row per version, grouped by the reader's day");
+console.log("timeline: the manifest read oldest first, across pages, with its size bars");

@@ -96,3 +96,9 @@ assert.doesNotMatch(viewerSource, /parent\.postMessage\([\s\S]*?"\*"\)/);
 
 const agentSource = await readFile(new URL("../../src/agent/agent.js", import.meta.url), "utf8");
 assert.match(agentSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*?height: auto;/);
+
+// An empty main file is not a document to compile. pdfTeX answers an empty
+// `.tex` with "! Emergency stop." and "==> Fatal error occurred, no output PDF
+// file produced!", which is what a reader was shown while a project's state
+// was still arriving.
+assert.match(previewSource, /if \(!String\(source\.texts\?\.\[source\.main\] \?\? ""\)\.trim\(\)\) return;/);

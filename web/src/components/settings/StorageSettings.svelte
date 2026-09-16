@@ -4,7 +4,6 @@
   // here touches a document.
   import SettingRow from "./SettingRow.svelte";
   import * as latex from "../../lib/latex.js";
-  import { done } from "../../lib/toast.svelte.js";
   import { megabytes } from "./words.js";
 
   let cacheSize = $state(null);
@@ -15,10 +14,12 @@
       .catch(() => {});
   });
 
+  // Nothing is said when this finishes: the row's own description is
+  // re-measured and goes back to "Nothing downloaded yet.", which is the
+  // same news in the place the reader is already looking.
   async function clearCache() {
     await latex.resources.clear();
     cacheSize = await latex.resources.size().catch(() => cacheSize);
-    done("Downloaded LaTeX files removed");
   }
 </script>
 

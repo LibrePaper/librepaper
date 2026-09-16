@@ -69,9 +69,16 @@ impl CollaborationStorage {
         Self { catalog, blobs }
     }
 
-    pub async fn append(&self, document_id: Uuid, update: &[u8]) -> Result<i64, Error> {
+    /// `frontier` is where this write leaves the document, carried from the
+    /// room so the activity index can anchor a moment to a version.
+    pub async fn append(
+        &self,
+        document_id: Uuid,
+        update: &[u8],
+        frontier: &[u8],
+    ) -> Result<i64, Error> {
         self.catalog
-            .append_update(document_id, update)
+            .append_update(document_id, update, frontier)
             .await
             .map_err(Error::from)
     }

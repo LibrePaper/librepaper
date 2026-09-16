@@ -1,10 +1,11 @@
 // Canonical browser/local builder vocabulary. Capability responses only overlay
 // this catalog; they never create executable choices by themselves.
 //
-// LaTeX is a browser format. The companion's TeX adapters exist only for the
-// automatic Biber and native-fallback path in `latex.js`, which routes on its
-// own and never consults this catalog, so no local LaTeX builder is offered
-// here and `engines` is the browser engine choice.
+// LaTeX is a browser format, and only a browser format: it compiles in the
+// pinned WebAssembly engine and runs Biber in the browser beside it, so it
+// reaches the companion for nothing at all. No local LaTeX builder is offered
+// here, `engines` is the browser engine choice, and no surface that is about
+// LaTeX may look for the companion on its behalf.
 export const BUILDERS = Object.freeze([
   { id: "tex", label: "pdfLaTeX / XeLaTeX", formats: ["latex"], backend: ["browser"], engines: ["pdflatex", "xelatex"] },
   { id: "typst", label: "Typst", formats: ["typst"], backend: ["browser", "local"], engines: [] },

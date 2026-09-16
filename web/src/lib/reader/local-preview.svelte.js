@@ -28,7 +28,6 @@ function etagToSha(etag) {
 export function createLocalPreview({
   local,
   publish,
-  say,
   treeNow,
   entrypointOf,
   optionsOf,
@@ -71,10 +70,6 @@ export function createLocalPreview({
 
   function setRendering(value) {
     state.rendering = !!value;
-  }
-
-  function report(message, isProblem) {
-    if (message) say?.(message, isProblem);
   }
 
   function stopPagePoll() {
@@ -129,14 +124,13 @@ export function createLocalPreview({
   // finished cleanly or failed -- ends the session: the poller stops, the
   // bridge is told to drop it, the last log line is reported, and the
   // caller's `onEnded` gets a chance to repaint its own fallback preview.
-  function endSession(message, isProblem) {
+  function endSession(message) {
     const active = state.session;
     if (!active) return;
     state.session = null;
     stopPagePoll();
     stopStatusPoll();
     void local.stopLocalPreview(active.id).catch(() => {});
-    report(message, isProblem);
     state.error = message || "";
     onEnded?.();
   }
@@ -149,14 +143,14 @@ export function createLocalPreview({
           if (isDisposed() || state.session?.id !== id) return;
           if (status?.state && status.state !== "running") {
             const line = String(status.log_tail || "").trim().split("\n").filter(Boolean).pop();
-            endSession(line || `${label} preview ended`, true);
+            endSession(line || `${label} preview ended`);
             return;
           }
           if (state.session?.id === id) statusTimer = setTimer(tick, STATUS_POLL_MS);
         })
         .catch((error) => {
           if (isDisposed() || state.session?.id !== id) return;
-          endSession(`${label} preview ended: ${error.message}`, true);
+          endSession(`${label} preview ended: ${error.message}`);
         });
     };
     statusTimer = setTimer(tick, STATUS_POLL_MS);
@@ -206,7 +200,6 @@ export function createLocalPreview({
     } catch (error) {
       if (!cancelled()) {
         state.error = error.message || `${label} preview unavailable`;
-        report(state.error, true);
         errorShown = true;
       }
     } finally {
@@ -246,7 +239,6 @@ export function createLocalPreview({
     } catch (error) {
       if (!errorShown) {
         state.error = error.message || `${label} preview could not sync`;
-        report(state.error, true);
         errorShown = true;
       }
       await stop();

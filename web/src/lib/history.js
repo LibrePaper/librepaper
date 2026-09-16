@@ -2,15 +2,14 @@
 //
 // The server writes a manifest at every checkpoint and serves it whole. This
 // module is the reader's side of it: fetching the manifest and one
-// checkpoint's files, naming a checkpoint, and -- the only part with any
-// judgement in it -- turning a flat list of checkpoints into the list a person
-// reads.
+// checkpoint's files, naming a checkpoint, the word-level diff between two
+// versions, and the order the manifest is read in.
 //
-// That last part is a pure function, `timeline`, because it is the part worth
-// checking: a history of two hundred marks is not a list anybody scrolls.
+// The reading of it -- which day a checkpoint fell on, which month the panel
+// is showing -- lives next door in `history-calendar.js`, because it draws
+// the activity rows beside the checkpoints.
 
 import { SHELL_HEADERS } from "./api.js";
-import { day as isoDay } from "./dates.js";
 import * as renderers from "./renderers.js";
 
 const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
@@ -189,31 +188,12 @@ export function sizeDelta(point, checkpoints) {
   };
 }
 
-/// The day a checkpoint belongs to, in the reader's own timezone, because a
-/// history is read as "Tuesday" and Tuesday is where the reader is. Written
-/// the way every other date in the app is written -- see `dates.js`.
-const dayOf = isoDay;
-
-/// The newest-first manifest as a list somebody reads, grouped by day.
-///
-/// One row per version, in one project-wide timeline: a history is read as
-/// "what happened, when", and a row that stands for several moments is a row
-/// the reader has to open before it says anything at all.
-///
-/// Returns `[{ day, points }]`, newest day first, each day newest first.
-export function timeline(checkpoints, timeZone) {
-  const newest = [...(checkpoints || [])].sort((left, right) => checkpointOrder(right, left));
-  const days = [];
-  for (const point of newest) {
-    const day = dayOf(point.at, timeZone);
-    const last = days[days.length - 1];
-    if (last && last.day === day) last.points.push(point);
-    else days.push({ day, points: [point] });
-  }
-  return days;
-}
-
-function checkpointOrder(left, right) {
+/// The order the manifest is read in, oldest first. The server writes a
+/// sequence number and a timestamp, and two checkpoints can share a
+/// timestamp, so the sequence decides first and the digest breaks the last
+/// tie -- a history whose order depends on the order it arrived in is a
+/// history that is wrong about when things happened.
+export function checkpointOrder(left, right) {
   if (left.seq > 0 && right.seq > 0 && left.seq !== right.seq) return left.seq - right.seq;
   return (Date.parse(left.at) || 0) - (Date.parse(right.at) || 0) || String(left.sha).localeCompare(String(right.sha));
 }

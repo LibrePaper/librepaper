@@ -113,6 +113,12 @@ try {
   await tab.resize(1400, 900); await tab.navigate(`${origin}/docs/paper`);
   await until("initial current source", () => tab.evaluate(`document.querySelector('.cm-content')?.textContent.includes('current purple')`), 10000);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
+  // Six versions in five minutes is one sitting, and more of them than the
+  // day's feed will list, so it is opened onto its own axis first. That is
+  // the panel's own drill-down and is checked properly in
+  // history-panel-browser.mjs; here it is just the way to the rows.
+  await until("the day's sittings", () => tab.evaluate(`Boolean(document.querySelector('.sitting'))`), 10000);
+  await tab.evaluate(`document.querySelector('.sitting-open')?.click()`);
   await until("checkpoint timeline", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[1].sha}"]'))`), 10000);
   const select = async index => {
     const sha = points[index].sha;

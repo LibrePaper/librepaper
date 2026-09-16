@@ -33,7 +33,7 @@
 
 use std::borrow::Cow;
 
-use loro::{ExportMode, LoroDoc, LoroValue, ValueOrContainer, VersionVector};
+use loro::{Container, ExportMode, LoroDoc, LoroValue, ValueOrContainer, VersionVector};
 
 use super::shape::{new_doc, ASSETS, FILES, META, PATHS};
 
@@ -89,24 +89,46 @@ pub enum DecodedAdmission {
 /// text body, a metadata value, a path, a digest, or a value nested inside
 /// one of those -- is charged somewhere.
 ///
-/// A type this document's schema never uses (a container type or value type
-/// not in our schema) has no cheap notion of "its bytes"; rather than skip it
-/// for free, it is charged an amount past any ceiling this deployment sets, so
-/// admitting one always falls back to the exact rehearsal instead of silently
-/// passing it through.
+/// Every shape the schema does use is charged what it costs, exactly.
+/// `measure` is what the rehearsal in `admit_decoded_update` decides on, so a
+/// shape charged more than it costs is not a fallback to a slower answer --
+/// it is a refusal. The `folder:` markers in `meta` are booleans and a file's
+/// body is a `LoroText` container, and charging either of those past the
+/// ceiling refused every update to every ordinary document: the socket was
+/// closed with "this document has reached its size limit" the moment a
+/// browser sent anything, and the browser rejoined and was closed again.
+///
+/// A shape the schema never uses -- a tree, a counter, a container kind this
+/// build does not know -- has no honest byte cost here. Rather than retain it
+/// for free it is charged past any ceiling a deployment can set, which is a
+/// refusal, and that is the intended answer for a payload hidden in a shape
+/// no client of this document writes.
 fn value_bytes(value: &LoroValue) -> usize {
-    // The schema stores strings in maps (paths, metadata, asset digests).
-    // Everything else is either a text container or a type we don't expect.
     match value {
         LoroValue::String(s) => s.len(),
-        _ => {
-            // Any other type charges high to force rehearsal. This includes
-            // containers (which we don't nest in values), numbers, booleans,
-            // and any type a newer client might introduce.
-            usize::MAX / 64
-        }
+        LoroValue::Binary(bytes) => bytes.len(),
+        LoroValue::Null => 0,
+        LoroValue::Bool(_) => 1,
+        // What a number costs the store, whichever way it was written.
+        LoroValue::Double(_) | LoroValue::I64(_) => 8,
+        LoroValue::List(items) => items.iter().fold(0usize, |total, item| {
+            total.saturating_add(value_bytes(item))
+        }),
+        LoroValue::Map(entries) => entries.iter().fold(0usize, |total, (key, item)| {
+            total
+                .saturating_add(key.len())
+                .saturating_add(value_bytes(item))
+        }),
+        // A value that only names a container: the container itself is
+        // reached through `value_bytes_vc`, never here.
+        LoroValue::Container(_) => UNCHARGEABLE,
     }
 }
+
+/// More than any ceiling a deployment can configure, and small enough that a
+/// document full of them still sums without wrapping. What is charged this is
+/// refused.
+const UNCHARGEABLE: usize = usize::MAX / 64;
 
 /// What the document costs: the bytes of every retained string value plus the
 /// bytes of every key, and how many logical files there are. A paper split
@@ -130,44 +152,44 @@ struct Measurement {
 }
 
 fn measure(doc: &LoroDoc) -> Measurement {
-    let mut bytes = 0;
+    let mut bytes = 0usize;
     let mut files_count = 0;
 
     let files = doc.get_map(FILES);
     for id in files.keys() {
         let id_str = id.to_string();
-        bytes += id_str.len();
+        bytes = bytes.saturating_add(id_str.len());
         files_count += 1;
         if let Some(value) = files.get(&id_str) {
-            bytes += value_bytes_vc(&value);
+            bytes = bytes.saturating_add(value_bytes_vc(&value));
         }
     }
 
     let path_map = doc.get_map(PATHS);
     for id in path_map.keys() {
         let id_str = id.to_string();
-        bytes += id_str.len();
+        bytes = bytes.saturating_add(id_str.len());
         if let Some(value) = path_map.get(&id_str) {
-            bytes += value_bytes_vc(&value);
+            bytes = bytes.saturating_add(value_bytes_vc(&value));
         }
     }
 
     let assets = doc.get_map(ASSETS);
     for path in assets.keys() {
         let path_str = path.to_string();
-        bytes += path_str.len();
+        bytes = bytes.saturating_add(path_str.len());
         files_count += 1;
         if let Some(value) = assets.get(&path_str) {
-            bytes += value_bytes_vc(&value);
+            bytes = bytes.saturating_add(value_bytes_vc(&value));
         }
     }
 
     let meta = doc.get_map(META);
     for key in meta.keys() {
         let key_str = key.to_string();
-        bytes += key_str.len();
+        bytes = bytes.saturating_add(key_str.len());
         if let Some(value) = meta.get(&key_str) {
-            bytes += value_bytes_vc(&value);
+            bytes = bytes.saturating_add(value_bytes_vc(&value));
         }
     }
 
@@ -177,14 +199,34 @@ fn measure(doc: &LoroDoc) -> Measurement {
     }
 }
 
-/// Helper to charge a ValueOrContainer.
+/// Helper to charge a ValueOrContainer. A file's body arrives here: the
+/// `files` map holds a `LoroText` per file, and its cost is the text in it.
 fn value_bytes_vc(value: &ValueOrContainer) -> usize {
     match value {
         ValueOrContainer::Value(v) => value_bytes(v),
-        ValueOrContainer::Container(_) => {
-            // Nested containers charge high to force rehearsal
-            usize::MAX / 64
-        }
+        ValueOrContainer::Container(container) => container_bytes(container),
+    }
+}
+
+/// What a container nested in one of the four maps costs. Text -- a file body
+/// -- is the only one the schema puts there, and it costs the bytes of its
+/// text. A map or a list is not part of this schema but has an honest cost, so
+/// it is charged rather than refused; the rest have none and are refused.
+fn container_bytes(container: &Container) -> usize {
+    match container {
+        Container::Text(text) => text.len_utf8(),
+        Container::Map(map) => map.keys().fold(0usize, |total, key| {
+            let key = key.to_string();
+            let value = map.get(&key).map_or(0, |value| value_bytes_vc(&value));
+            total.saturating_add(key.len()).saturating_add(value)
+        }),
+        Container::List(list) => (0..list.len()).fold(0usize, |total, index| {
+            total.saturating_add(list.get(index).map_or(0, |value| value_bytes_vc(&value)))
+        }),
+        Container::MovableList(list) => (0..list.len()).fold(0usize, |total, index| {
+            total.saturating_add(list.get(index).map_or(0, |value| value_bytes_vc(&value)))
+        }),
+        _ => UNCHARGEABLE,
     }
 }
 
@@ -376,6 +418,64 @@ mod bound_tests {
             "500 files arrived in {} bytes; the file-count bound assumes at least one \
              byte each and would stop being sound",
             update.len(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    //! What `measure` charges is what the rehearsal decides on, so anything
+    //! charged more than it costs is a refusal rather than a slower answer.
+    //! These pin the shapes an ordinary document is made of.
+
+    use super::*;
+    use loro::LoroText;
+
+    /// One file, one path, a main-file pointer and a folder marker: the
+    /// document every project starts as. Charging the `LoroText` or the
+    /// boolean past the ceiling refused this, and the browser that was
+    /// refused rejoined and was refused again -- a reconnect loop that showed
+    /// in the reader as a preview flickering between "Not yet rendered" and
+    /// "Could not render".
+    #[test]
+    fn an_ordinary_document_admits_its_own_edits() {
+        let doc = new_doc();
+        doc.set_peer_id(1).unwrap();
+        let files = doc.get_map(FILES);
+        let text = files
+            .insert_container("f1", LoroText::new())
+            .expect("a file goes in");
+        text.insert(0, "\\documentclass{article}").unwrap();
+        doc.get_map(PATHS).insert("f1", "sections/one.tex").unwrap();
+        doc.get_map(META).insert("main", "f1").unwrap();
+        doc.get_map(META).insert("folder:sections", true).unwrap();
+        doc.commit();
+
+        let measured = measure(&doc);
+        assert!(
+            measured.bytes < 1024,
+            "a document of a few dozen characters measured {} bytes",
+            measured.bytes,
+        );
+        assert_eq!(measured.files, 1);
+
+        // The room holds the document as it was; the browser sends the
+        // keystroke it made on top of it.
+        let held = new_doc();
+        held.import(&encode_state(&doc))
+            .expect("a document imports");
+        let before = encode_vector(&doc);
+        text.insert(text.len_utf8(), "\n\\begin{document}").unwrap();
+        doc.commit();
+        let update = encode_diff(&doc, &before).expect("a document encodes");
+
+        let config = crate::config::Configuration::default();
+        assert!(
+            matches!(
+                admit_update(&held, &update, config.max_document, config.max_files),
+                Admission::Fits,
+            ),
+            "an ordinary keystroke must be admitted",
         );
     }
 }

@@ -28,6 +28,165 @@ fn checkpoint_wire(point: &crate::document::history::Checkpoint) -> serde_json::
 }
 
 impl Server {
+    /// When the document was worked on: one row per minute in which an update
+    /// was admitted, oldest first.
+    ///
+    /// Not the same question as the manifest above. A checkpoint is a moment
+    /// somebody's work was named or the room went quiet, and there are a few
+    /// dozen of them; this is the shape of the typing itself, and it is what a
+    /// calendar or a histogram is drawn from. Editor-only for the same reason
+    /// the manifest is: when a document was written is information about the
+    /// people writing it.
+    pub(super) async fn handle_activity(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
+        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        // `since` bounds the scan rather than the answer's meaning: a caller
+        // drawing one year asks for one year, and the buckets before it are
+        // not read at all.
+        let since = query.and_then(|raw| {
+            let values: HashMap<_, _> = url::form_urlencoded::parse(raw.as_bytes())
+                .into_owned()
+                .collect();
+            values.get("since").and_then(|value| {
+                time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                    .ok()
+            })
+        });
+        let catalog = self.store.catalog.clone();
+        let Ok(Some(document)) = catalog.document_by_slug(slug).await else {
+            return plain(404, "not found");
+        };
+        let buckets = match catalog.document_activity(document.id, since).await {
+            Ok(buckets) => buckets,
+            Err(error) => return write_json(503, &json!({"error": error.to_string()})),
+        };
+        let rows: Vec<_> = buckets
+            .iter()
+            .map(|bucket| {
+                json!({
+                    "at": bucket
+                        .bucket
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap_or_default(),
+                    // Empty for every row today: nothing records an author on
+                    // an update yet, and the browser must not draw one.
+                    "peer": bucket.peer,
+                    "changes": bucket.changes,
+                    // The document at this moment, for a reader that wants to
+                    // go there: what `fork_at` takes. Absent rather than empty
+                    // when a bucket predates the anchor.
+                    "frontier": (!bucket.frontier.is_empty())
+                        .then(|| crate::room::encode_update(&bucket.frontier)),
+                    // The document, not the edit: difference consecutive
+                    // buckets to see the work.
+                    "state_bytes": bucket.state_bytes,
+                })
+            })
+            .collect();
+        let mut response = write_json(
+            200,
+            &json!({
+                "slug": entry.slug,
+                // Said rather than assumed: a client that buckets by day or
+                // hour is summing these, and needs to know what one row is.
+                "resolution": "minute",
+                "activity": rows,
+            }),
+        );
+        set(&mut response, "cache-control", "private, no-store");
+        response
+    }
+
+    /// The document at one position in its own history.
+    ///
+    /// `frontier` is what the activity index hands out per bucket, so this is
+    /// how a moment on that timeline becomes something to look at. It answers
+    /// for moments nobody checkpointed, which is the whole point of keeping
+    /// the operation history rather than thinning it: the reader is not
+    /// limited to the versions somebody happened to save.
+    ///
+    /// Read-only and side-effect free -- it forks the room's document and
+    /// never writes. Restoring the document to one of these remains the
+    /// restore route's business, which asks for confirmation.
+    pub(super) async fn handle_at(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
+        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        let asked = query.and_then(|raw| {
+            let values: HashMap<_, _> = url::form_urlencoded::parse(raw.as_bytes())
+                .into_owned()
+                .collect();
+            values.get("frontier").cloned()
+        });
+        let Some(asked) = asked else {
+            return write_json(400, &json!({"error": "a frontier is required"}));
+        };
+        let Some(frontier) = crate::room::decode_update(&asked) else {
+            return write_json(400, &json!({"error": "the frontier is not base64"}));
+        };
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => return plain(503, &error.to_string()),
+        };
+        // A frontier this document never had is the caller's mistake, not a
+        // failure of the room: it is refused as a bad request rather than
+        // reported as one.
+        let (main, texts, assets) = match room.project_at_frontier(&frontier).await {
+            Ok(found) => found,
+            Err(error) => return write_json(400, &json!({"error": error})),
+        };
+        let mut response = write_json(
+            200,
+            &json!({
+                "slug": entry.slug,
+                "storage_id": entry.storage_id,
+                "frontier": asked,
+                "source_format": entry.source_format,
+                "main": main,
+                "texts": texts,
+                // Path to digest, as the tree holds them: the bytes are the
+                // asset routes' business, and a historical state names the
+                // same objects the live one does.
+                "assets": assets,
+            }),
+        );
+        set(&mut response, "cache-control", "private, no-store");
+        response
+    }
+
     /// The document's manifest: every checkpoint, oldest first, with the paths
     /// each of them changed.
     ///

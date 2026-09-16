@@ -22,9 +22,6 @@ export function createTimeline({
   key = "",
   history = defaultHistory,
   fetcher = globalThis.fetch,
-  // Reported rather than thrown: a failed restore leaves the dialog open and
-  // says why, and nothing above here has a better place to put it.
-  problem = () => {},
   // The restore succeeded, so whatever was being compared against is stale.
   onrestored = async () => {},
   disposed = () => false,
@@ -63,7 +60,7 @@ export function createTimeline({
       // A failed refresh is not evidence that the previous save state still
       // applies; keep the old rows for selection but make status unknown.
       state.durability = null;
-      state.problem = error.message || "the history could not be read";
+      state.problem = error.message || "The version history could not be read.";
     }
   }
 
@@ -99,13 +96,16 @@ export function createTimeline({
         body: JSON.stringify({ sha }),
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || "that checkpoint could not be restored");
+      if (!response.ok) throw new Error(payload.error || "That version could not be restored. The project is unchanged.");
       state.restoring = false;
       state.restoreMoved = false;
       await load();
       await onrestored();
     } catch (error) {
-      problem(error.message || "that checkpoint could not be restored");
+      // Reported rather than thrown: the restore dialog stays open and the
+      // history panel keeps the line, so both places the reader might be
+      // looking already say why. A toast would be a third.
+      state.problem = error.message || "That version could not be restored. The project is unchanged.";
     } finally {
       state.restoreBusy = false;
     }
@@ -116,7 +116,7 @@ export function createTimeline({
     try {
       await history.label(slug, sha, given, keyHeaders(key));
     } catch (error) {
-      problem(error.message || "that checkpoint could not be named");
+      state.problem = error.message || "That version could not be named.";
       return;
     }
     await load();

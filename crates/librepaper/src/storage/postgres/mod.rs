@@ -16,7 +16,7 @@ mod proposals;
 mod publications;
 mod repository;
 
-pub use collaboration::{CollaborationBase, CollaborationState, PersistedUpdate};
+pub use collaboration::{ActivityBucket, CollaborationBase, CollaborationState, PersistedUpdate};
 pub use jobs::{Job, JobClaim, JobStatus, NewJob};
 pub use proposals::{NewProposal, StoredDecision, StoredProposal};
 pub use publications::{
@@ -568,7 +568,13 @@ mod tests {
         // next append has to refuse. This used to arrive as a side effect of
         // accepting a suggestion here; suggestions are proposals now and do not
         // write through this path, so the precondition is set up plainly.
-        assert_eq!(catalog.append_update(first.id, b"first").await.unwrap(), 1);
+        assert_eq!(
+            catalog
+                .append_update(first.id, b"first", b"")
+                .await
+                .unwrap(),
+            1
+        );
         let limited = PostgresCatalog {
             pool: catalog.pool.clone(),
             policy: StoragePolicy {
@@ -578,7 +584,7 @@ mod tests {
             },
         };
         assert!(matches!(
-            limited.append_update(first.id, b"over-cap").await,
+            limited.append_update(first.id, b"over-cap", b"").await,
             Err(Error::Conflict(message)) if message.contains("requires compaction")
         ));
         let durable = sqlx::query!(
@@ -604,7 +610,7 @@ mod tests {
             },
         };
         assert!(matches!(
-            byte_limited.append_update(first.id, b"over-byte-cap").await,
+            byte_limited.append_update(first.id, b"over-byte-cap", b"").await,
             Err(Error::Conflict(message)) if message.contains("requires compaction")
         ));
 
@@ -825,14 +831,17 @@ mod tests {
             .unwrap());
 
         let collaboration = CollaborationStorage::new(Arc::new(catalog.clone()), blobs.clone());
-        let sequence = collaboration.append(first.id, b"update-one").await.unwrap();
+        let sequence = collaboration
+            .append(first.id, b"update-one", b"at-one")
+            .await
+            .unwrap();
         assert_eq!(sequence, 2);
         let before = collaboration.recover(first.id).await.unwrap();
         assert!(before.base.is_none());
         assert_eq!(before.updates[1].update_bytes, b"update-one");
         let (base, second_sequence) = tokio::join!(
             collaboration.compact(first.id, sequence, 0, b"base-state"),
-            collaboration.append(first.id, b"update-two")
+            collaboration.append(first.id, b"update-two", b"at-two")
         );
         assert!(base.unwrap().is_some());
         assert_eq!(second_sequence.unwrap(), 3);
@@ -1433,6 +1442,174 @@ mod tests {
             charged + changed.version.archive_bytes,
             "new bytes are still new bytes"
         );
+
+        catalog.close().await;
+    }
+
+    /// Compaction deletes the update rows; the activity they measured has to
+    /// outlive them, and the two sources must never disagree about a row.
+    ///
+    /// Account-scoped like the test above, so it makes no claim about rows
+    /// another test is moving.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn activity_outlives_the_updates_it_was_measured_from() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let unique = new_id().simple().to_string();
+        let account = catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some(format!("activity-{unique}")),
+                handle: format!("writer-{unique}"),
+                display_name: "Writer".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let document = catalog
+            .create_document(NewDocument {
+                slug: format!("activity-{unique}"),
+                owner_id: account.id,
+                ownership_mode: "owned".into(),
+                title: "A Paper".into(),
+                source_format: "latex".into(),
+                main_path: "paper.tex".into(),
+                settings: json!({"version":1}),
+            })
+            .await
+            .unwrap();
+
+        // Three writes in the same minute. A persisted row is the document's
+        // whole encoded history, so these stand for a document growing rather
+        // than for three separate edits -- which is why the bucket keeps the
+        // largest of them and not their sum.
+        let writes: [(&[u8], &[u8]); 3] = [
+            (b"one", b"frontier-1"),
+            (b"two-two", b"frontier-2"),
+            (b"three-three", b"frontier-3"),
+        ];
+        let largest = writes
+            .iter()
+            .map(|(body, _)| body.len() as i64)
+            .max()
+            .unwrap();
+        let last_anchor = b"frontier-3".to_vec();
+        for (body, frontier) in writes {
+            catalog
+                .append_update(document.id, body, frontier)
+                .await
+                .unwrap();
+        }
+        // What the minute says about itself: how much of it was worked in, how
+        // large the document got, and where to go to see it as it was left.
+        let shape = |buckets: &[ActivityBucket]| {
+            (
+                buckets.iter().map(|row| row.changes).sum::<i64>(),
+                buckets.iter().map(|row| row.state_bytes).max().unwrap_or(0),
+                buckets
+                    .last()
+                    .map(|row| row.frontier.clone())
+                    .unwrap_or_default(),
+            )
+        };
+
+        // Before any compaction the answer comes entirely from the live rows.
+        let live = catalog.document_activity(document.id, None).await.unwrap();
+        assert_eq!(shape(&live), (3, largest, last_anchor.clone()));
+
+        let compact = |through: i64, key: &'static str| {
+            let catalog = catalog.clone();
+            let id = document.id;
+            async move {
+                catalog
+                    .activate_collaboration_base(
+                        id,
+                        through,
+                        0,
+                        format!("documents/{id}/collaboration/{key}.loro.zst"),
+                        [7; 32],
+                        128,
+                        OffsetDateTime::now_utc() + Duration::days(1),
+                    )
+                    .await
+                    .unwrap()
+                    .expect("the base must be activated")
+            }
+        };
+
+        // Two of the three are now in the base. The rows are gone and the
+        // count is unchanged: one source handed those updates to the other.
+        compact(2, "first").await;
+        let after_first = catalog.document_activity(document.id, None).await.unwrap();
+        assert_eq!(
+            shape(&after_first),
+            (3, largest, last_anchor.clone()),
+            "compaction lost the updates it absorbed, or the anchor of the write still live"
+        );
+        let remaining = sqlx::query_scalar!(
+            "SELECT count(*) FROM document_updates WHERE document_id=$1",
+            document.id,
+        )
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(remaining, Some(1), "compaction kept an absorbed update row");
+
+        // The third lands in the same minute as the first two, so the bucket
+        // it already wrote must accumulate rather than be replaced.
+        compact(3, "second").await;
+        let after_second = catalog.document_activity(document.id, None).await.unwrap();
+        assert_eq!(
+            shape(&after_second),
+            (3, largest, last_anchor.clone()),
+            "a second compaction into a live bucket replaced it instead of adding to it"
+        );
+        let stored = sqlx::query_scalar!(
+            "SELECT COALESCE(sum(changes),0)::bigint FROM document_activity WHERE document_id=$1",
+            document.id,
+        )
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(stored, Some(3), "the whole history is in the buckets now");
+
+        // A base that lost the race writes nothing: it deletes no rows, so
+        // recording activity for them would count the same work twice.
+        let stale = catalog
+            .activate_collaboration_base(
+                document.id,
+                1,
+                0,
+                format!("documents/{}/collaboration/stale.loro.zst", document.id),
+                [9; 32],
+                128,
+                OffsetDateTime::now_utc() + Duration::days(1),
+            )
+            .await
+            .unwrap();
+        assert!(stale.is_none(), "a stale base must not be activated");
+        assert_eq!(
+            shape(&catalog.document_activity(document.id, None).await.unwrap()),
+            (3, largest, last_anchor),
+            "a base that deleted nothing still recorded activity"
+        );
+
+        // `since` bounds the scan, and a window after the work is empty
+        // rather than a total.
+        let later = catalog
+            .document_activity(
+                document.id,
+                Some(OffsetDateTime::now_utc() + Duration::days(1)),
+            )
+            .await
+            .unwrap();
+        assert!(later.is_empty(), "a window after the work reported some");
 
         catalog.close().await;
     }

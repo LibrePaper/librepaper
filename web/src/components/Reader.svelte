@@ -8,8 +8,9 @@
   import * as renderers from "../lib/renderers.js";
   import * as quarto from "../lib/engines/quarto.js";
   import * as figures from "../lib/figures.js";
+  import * as activity from "../lib/activity.js";
   import * as history from "../lib/history.js";
-  import { createHistorySource } from "../lib/reader/history-source.svelte.js";
+  import { anchorOf, createHistorySource, isMoment, MOMENT } from "../lib/reader/history-source.svelte.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import * as passages from "../lib/passages.js";
   import * as suggestions from "../lib/suggestions.js";
@@ -64,7 +65,7 @@
   import CopyLink from "./CopyLink.svelte";
   import Modal from "./Modal.svelte";
   import Toasts from "./Toasts.svelte";
-  import { done as toastDone, problem as toastProblem, said as toastSaid } from "../lib/toast.svelte.js";
+  import { say } from "../lib/toast.svelte.js";
   import { archive, availableDownloads, docxFile, entryDownload, projectFiles, renderingFile, saveBlob } from "../lib/reader/downloads.js";
   import Preview from "./Preview.svelte";
   import PreviewControls from "./PreviewControls.svelte";
@@ -129,7 +130,7 @@
     heading: (tree) => headingOf(tree),
     gather: (digests) => figures.gather(SLUG, digests, authHeaders(KEY), { strict: true }),
     facts: () => ({ canEdit: mayEdit, hasSession: Boolean(session), source: sourceGeneration }),
-    say,
+    say: (message) => say(message, { kind: "problem", id: "reader:publication-load" }),
     disposed: () => readerDisposed,
   });
   const publishedPublication = $derived(publication.state.publication);
@@ -663,7 +664,10 @@
     const matches = comments.filter((comment) => comment.motivation === "editing" &&
       (ids.includes(comment.id) || (pass && comment.pass === pass)));
     const first = matches.find((comment) => !comment.resolved) || matches[0];
-    if (!first) { toastProblem("These suggestions are no longer available."); return; }
+    if (!first) {
+      say("Those suggestions are no longer on the document. They were applied, rejected or withdrawn.", { kind: "problem", id: "reader:suggestions-gone" });
+      return;
+    }
     await focusAnnotation(first.id);
   }
 
@@ -692,7 +696,7 @@
       showMobileView("source");
       await tick();
       if (comment.sourceStart == null) {
-        toastProblem("This proposed change cannot be located in the current source. Its retained text is available in Changes.");
+        say("This proposed change no longer matches anything in the source, so it cannot be shown in place. The text it proposed is kept in Changes.", { kind: "problem", id: "reader:suggestion-unplaceable" });
         return;
       }
       const id = session?.idOf(comment.sourcePath);
@@ -805,7 +809,7 @@
   function submitAnnotation({ motivation, body, proposed }) {
     if (!pending || !mayChat) return false;
     if (publishedMode && (publicationUpdate || pending.publication_id !== publishedPublication?.id)) {
-      say("Refresh the published version and select the passage again before submitting. Your draft is kept.", true);
+      say("This document has been published to since the passage was selected. Refresh, select it again, and submit; the draft is kept.", { kind: "problem", id: "reader:published-moved" });
       return false;
     }
     // The server determines the author when it acknowledges the submission.
@@ -901,7 +905,7 @@
   // beside the live text, so an editor can take what still applies by hand.
   async function openStaleSuggestion(comment) {
     if (!comment.source || !comment.revision || !session) {
-      toastProblem("the passage has changed since this was suggested");
+      say("The passage this was suggested against has changed, and there is no earlier version of it to compare against.", { kind: "problem", id: "reader:suggestion-stale" });
       return;
     }
     const path = comment.source.path;
@@ -925,7 +929,7 @@
         note: "this suggestion no longer applies cleanly",
       };
     } catch (error) {
-      toastProblem(error.message || "the passage has changed since this was suggested");
+      say(error.message || "The version this was suggested against could not be read, so the two texts cannot be shown side by side.", { kind: "problem", id: "reader:suggestion-stale" });
     }
   }
 
@@ -1041,7 +1045,7 @@
     if (!session || !chosen?.length) return;
     const texts = previewTexts(session.doc, [...openProposals.values()], chosen);
     if (!texts) {
-      toastProblem("those proposals could not be read together");
+      say("Those proposals change the same lines and cannot be previewed together. Preview them one at a time.", { kind: "problem", id: "reader:proposal-preview" });
       return;
     }
     // A file the chosen proposals leave alone would preview as itself, which
@@ -1074,7 +1078,7 @@
         note: "a reading, not a version: nothing here is saved or shared until these proposals are accepted",
       };
     } catch (error) {
-      toastProblem(error.message || "that reading could not be opened");
+      say(error.message || "That preview of the applied proposals could not be opened.", { kind: "problem", id: "reader:proposal-preview" });
     }
   }
 
@@ -1212,7 +1216,7 @@
     if (event.type === "error") {
       if (event.temp_id && pendingChat?.has(event.temp_id)) {
         pendingChat.acknowledge(event.temp_id, false);
-        toastProblem(event.message || "Chat message was rejected.");
+        say(event.message || "The server rejected that chat message.", { kind: "problem", id: "reader:chat-rejected" });
         return;
       }
       // A backfill this browser sent is not a submission and never touched
@@ -1254,7 +1258,7 @@
           .then((data) => receive({ type: "hello", comments: data.comments }))
           .catch(() => {});
       }
-      toastProblem(event.message || "The server refused that change.");
+      say(event.message || "The server refused that change. Nothing on screen has changed.", { kind: "problem", id: "reader:change-refused" });
       return;
     }
 
@@ -1272,7 +1276,7 @@
           if (mayEdit && publication.begin()) void refreshPublicationMetadata();
           return paintPreview();
         })
-        .catch((error) => say(error.message || "could not open the document", true));
+        .catch((error) => say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" }));
       peers = event.count || 1;
       return;
     }
@@ -1364,18 +1368,6 @@
   // A close is only worth interrupting when the work has reached neither this
   // browser's storage nor the server.
   const atRisk = $derived(Boolean(mayEdit && (persistence.localError || (persistence.pending && !persistence.local))));
-
-  // What the editor has to say about an event -- a render that finished, a
-  // download that failed, a lock with nowhere to go -- is said in a toast,
-  // where it is set in readable type and goes on its own, rather than as a
-  // badge on the bar, where it was the smallest text on the page and clipped
-  // to an ellipsis on anything narrower than a desktop. The text is the
-  // toast's id, so a line said again while it is still up is refreshed
-  // rather than stacked under its twin.
-  function say(text, isProblem = false) {
-    if (!text) return;
-    (isProblem ? toastProblem : toastSaid)(text, { id: `reader:${text}` });
-  }
 
   // What the document is called, which is what the rendered page is titled.
   // The title it was published under wins; a document that never had one is
@@ -1535,7 +1527,6 @@
   const timeline = createTimeline({
     slug: SLUG,
     key: KEY,
-    problem: (message) => toastProblem(message),
     onrestored: () => historySource.select(""),
     disposed: () => readerDisposed,
   });
@@ -1547,6 +1538,7 @@
   // a clicked version appear unselected.
   const historySource = createHistorySource({
     checkpoint: sha => history.checkpoint(SLUG, sha, keyHeaders(KEY)),
+    moment: anchor => activity.documentAt(SLUG, anchor, keyHeaders(KEY)),
     checkpoints: () => checkpoints,
     preferredPath: () => session?.paths?.get(openFile) || "",
     currentTree: () => {
@@ -1581,6 +1573,36 @@
   const ARRIVED_FILE = new URLSearchParams(location.search).get("file") || "";
 
   const loadHistory = () => timeline.load();
+
+  /* ------------------------------------------- when the document was written */
+
+  // The minute-by-minute record behind the Activity view. Read when the panel
+  // that shows it is open, and not otherwise: it is a whole document's
+  // lifetime of rows, and nothing else on the page wants them.
+  let activityRows = $state([]);
+  let activityProblem = $state("");
+  let activityLoading = $state(false);
+  let activityRead = 0;
+  async function loadActivity() {
+    const mine = ++activityRead;
+    activityLoading = true;
+    try {
+      const rows = await activity.load(SLUG, keyHeaders(KEY));
+      if (readerDisposed || mine !== activityRead) return;
+      activityRows = rows;
+      activityProblem = "";
+    } catch (error) {
+      if (readerDisposed || mine !== activityRead) return;
+      activityProblem = error.message || "This document's activity could not be read.";
+    } finally {
+      if (!readerDisposed && mine === activityRead) activityLoading = false;
+    }
+  }
+
+  // Showing a moment is showing a version: the same selection, the same
+  // comparison against the document as it stands, the same pane.
+  const viewMoment = (anchor) => viewPoint(anchor ? `${MOMENT}${anchor}` : "");
+  const viewingMoment = $derived(isMoment(historySelectedSha) ? anchorOf(historySelectedSha) : "");
 
   // The timeline and the source workspace share one selection. Selecting a
   // version compares it with the current source and nothing else: the
@@ -2076,7 +2098,6 @@
 
   let previousConnected = null;
   $effect(() => {
-    if (previousConnected === false && connected) toastDone("Connection restored", { id: "reader:connection-restored" });
     previousConnected = connected;
   });
 
@@ -2403,7 +2424,9 @@
     // Not remembered: a panel opening the sidebar on a narrow screen is what
     // this visit is doing, not what the reader asked to come back to.
     if (compact) prefs.mobileView = name ? "sidebar" : "document";
-    return name === "history" ? loadHistory() : Promise.resolve();
+    if (name !== "history") return Promise.resolve();
+    void loadActivity();
+    return loadHistory();
   }
 
   // The source and the document are kept as a share of what they have between
@@ -2488,7 +2511,7 @@
     setTimeout(async () => {
       if (editor !== target || !mayEdit) return;
       try { await target?.editCommand(command); }
-      catch (error) { toastProblem(error.message || "Clipboard access failed. Try the keyboard shortcut."); }
+      catch (error) { say(error.message || "The browser refused clipboard access. Use the keyboard shortcut instead.", { kind: "problem", id: "reader:clipboard" }); }
     }, 0);
   }
 
@@ -2600,7 +2623,7 @@
       });
       saveBlob(file.blob, file.name);
     } catch (error) {
-      say(error.message || "Could not download the rendering.", true);
+      say(error.message || "The rendered document could not be downloaded.", { kind: "problem", id: "reader:download-render" });
     }
   }
 
@@ -2632,7 +2655,7 @@
     slug: SLUG,
     key: KEY,
     arrivedFile: ARRIVED_FILE,
-    say,
+    say: (message) => say(message, { id: "reader:files-moved" }),
     paint: () => paintPreview(),
     retarget: () => updatePreviewTarget(),
     onarrived: (file) => openTheFile(file),
@@ -2796,7 +2819,7 @@
   /// to be told what we know.
   async function downloadTree() {
     if (!mayEdit) {
-      say("Editor access is required to download the project.", true);
+      say("Downloading the whole project is an editor's. A reader can download the rendered document instead.", { kind: "problem", id: "reader:download-project" });
       return;
     }
     try {
@@ -2808,7 +2831,7 @@
       // downloaded is the directory, and the slug is what a person knows it by.
       saveBlob(await archive(files), `${SLUG}.zip`);
     } catch (error) {
-      say(error.message || "could not download the project", true);
+      say(error.message || "The project could not be downloaded.", { kind: "problem", id: "reader:download-project" });
     }
   }
 
@@ -2818,7 +2841,7 @@
     try {
       const chosen = await entryDownload({ entry, tree: liveTreeNow(), folders: [...folders], gather: gatherFigures });
       saveBlob(chosen.files ? await archive(chosen.files) : new Blob([chosen.bytes]), chosen.name);
-    } catch (error) { say(error.message || "Could not download this item.", true); }
+    } catch (error) { say(error.message || "That file could not be downloaded.", { kind: "problem", id: "reader:download-entry" }); }
   }
 
   // Dropping a file on the source pane does what the controls in the list do:
@@ -2878,7 +2901,7 @@
       onState: (state_) => {
         const newlyFailed = state_.localError && state_.localError !== persistence.localError;
         persistence = state_;
-        if (newlyFailed) toastProblem(`${state_.localError}. Download the project to keep a recovery copy.`);
+        if (newlyFailed) say(`${state_.localError}. This browser can no longer keep its own copy of the project, so a reload while the connection is down would lose what is not yet on the server. Download the project to have a copy that does not depend on either.`, { kind: "problem", id: "reader:local-storage-failed" });
       },
       onSession: (active) => {
         session = active;
@@ -2949,7 +2972,7 @@
           if (typeof source !== "string" || !/^https?:\/\//.test(source)) return;
           const resolved = new URL(source);
           if (document_.docs_origin && resolved.origin !== document_.docs_origin) {
-            say("The published document URL was refused.", true);
+            say("The published version is hosted somewhere this deployment does not allow, so it was not shown.", { kind: "problem", id: "reader:publication-origin" });
             return;
           }
           frameSrc = resolved.href;
@@ -2976,7 +2999,7 @@
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
     renderers.offerLatex(list.includes("latex"));
     if (!renderers.outputKind(format)) {
-      say(`${format} documents are read where their renderer is built`, true);
+      say(`A ${format} document is read where its renderer is built, and this browser has none for it.`, { kind: "problem", id: "reader:no-renderer" });
       settled = true;
       return;
     }
@@ -3014,6 +3037,7 @@
       // The column reopened where it was left, and this panel has to fetch
       // what it shows.
       loadHistory();
+      void loadActivity();
     }
   }
 
@@ -3049,9 +3073,9 @@
         doc = { title: "Document not found" };
         say(
           me.providers?.length && !identity
-            ? "not found — sign in, if this was shared with you"
-          : "not found",
-          true,
+            ? "No document at this address. If it was shared with you, sign in: a document shared with an account opens only for that account."
+          : "No document at this address. The link may be wrong, or the document may have been deleted.",
+          { kind: "problem", id: "reader:not-found" },
         );
       },
     });
@@ -3085,16 +3109,29 @@
 
   // Ctrl-S is what a hand does after typing a paragraph, and there is nothing
   // for it to do: the document is already durable. What it must not do is
-  // claim that pending writes are saved, so it says what is actually true.
+  // claim more than it knows.
+  //
+  // "Saved" is the word to be careful with. This browser's own storage is not
+  // a save: it is evictable, it is one device, and it holds nothing the
+  // server has not also been sent only while the socket is down. So an
+  // offline Ctrl-S says where the work currently is and what will happen to
+  // it, and leaves the word alone. Only the server copy is called saved.
   function reportPersistence() {
-    // Never claim pending or disconnected writes have reached the server.
+    // A local write that failed or is still in flight is not worth
+    // reassuring anybody about; the failure says so on its own.
     if (persistence.localError || persistence.localPending) return;
     if (!connected) {
-      if (persistence.local) say("saved on this device");
+      if (!persistence.local) return;
+      say(
+        persistence.pending
+          ? "Offline. Your latest changes are in this browser only, and will be sent as soon as the connection returns."
+          : "Offline. Everything typed so far has already reached the server.",
+        { id: "reader:persistence" },
+      );
       return;
     }
     if (persistence.pending) return;
-    say("saved on the server");
+    say("Saved on the server.", { id: "reader:persistence" });
   }
 
   async function makeAvailableOffline() {
@@ -3105,9 +3142,8 @@
       await cacheCurrentShell();
       await prepareOfflineProject({ ...doc, slug: SLUG, server: location.origin });
       offlinePrepared = true;
-      toastDone("Available offline on this device");
     } catch (error) {
-      toastProblem(error?.message || "Could not make this project available offline");
+      say(error?.message || "This project could not be stored for offline use.", { kind: "problem", id: "reader:offline-prepare" });
     } finally {
       preparingOffline = false;
     }
@@ -3241,7 +3277,7 @@
          remembered or carried by the document. -->
     <div class="menu-section-label">Local execution</div>
     <Menu.Item value="local-execution" class="menuitem">
-      <span class="w-4">{localExecution ? "✓" : ""}</span>Run this document's code here
+      <span class="w-4">{localExecution ? "✓" : ""}</span>Execute code locally
     </Menu.Item>
     <hr class="hr my-1" />
   {/if}
@@ -3413,12 +3449,15 @@
       main={previewMain || session?.mainPath() || ""}
       canOpen={(item) => Boolean(diagnosticFile(item))} onopen={openDiagnostic}
       provenance={renderState.lastLatexResult?.provenance || null}
-      attempts={renderState.lastLatexResult?.attempts || []} />
+      attempts={renderState.lastLatexResult?.attempts || []}
+      log={renderState.lastLatexResult?.log || ""} />
   {/snippet}
 
   {#snippet historyPanel()}
     <History {checkpoints} viewing={historySelectedSha} canEdit={mayEdit}
       durability={historyDurability} problem={historyProblem} onview={viewPoint}
+      activity={activityRows} activityProblem={activityProblem} activityLoading={activityLoading}
+      {viewingMoment} onmoment={viewMoment}
       onname={nameCheckpoint} oncopy={checkpointLink} />
   {/snippet}
 
@@ -3770,6 +3809,9 @@
       {restoreBusy ? "Restoring…" : restoreMoved ? "Restore anyway" : "Restore version"}
     </button>
   {/snippet}
+  {#if historyProblem}
+    <p class="text-error-500 text-sm" role="alert">{historyProblem}</p>
+  {/if}
 </Modal>
 
 <!-- Deleting a thread cannot be undone, so it is confirmed. -->

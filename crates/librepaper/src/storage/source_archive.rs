@@ -54,7 +54,8 @@ pub enum SourceFile {
 }
 
 impl SourceFile {
-    fn path(&self) -> &str {
+    /// Where this file sits in the project.
+    pub fn path(&self) -> &str {
         match self {
             Self::Inline { path, .. } | Self::Asset { path, .. } => path,
         }

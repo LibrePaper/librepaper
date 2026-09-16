@@ -35,6 +35,11 @@ pub struct ServeOptions {
     pub publishers: Option<String>,
     pub commenters: Option<String>,
     pub no_listing: bool,
+    /// Write each new account's starter documents as though they had been
+    /// typed over this many days, so the history panel has something in it on a
+    /// demonstration deployment. The operations are real; only the clock is
+    /// invented. See `crate::seed::activity`.
+    pub simulate_activity: Option<u32>,
     /// The reader origin browsers reach this deployment on, and the origin
     /// documents are served from. Without the first, the deployment answers on
     /// loopback alone.
@@ -171,6 +176,30 @@ pub fn sign_in_advice(
     advice
 }
 
+/// What the catalogue is allowed to hold, and how fast it may be asked to
+/// hold it, as this deployment's configuration says.
+///
+/// Separated from `serve` because the one thing worth checking about it is
+/// which knob each field comes from, and two of these read alike and mean
+/// nothing like each other: `rate_per_hour` is what one person may *say*
+/// about a document in an hour -- comments, twenty by default -- while
+/// `session.checkpoint_owner_per_hour` is how often their work may be
+/// *marked*, three hundred, because a room marks the document after every
+/// thirty seconds of quiet. The version budget wired to the comment one let
+/// an hour of ordinary writing spend it, after which every checkpoint was
+/// refused; the sweeper has nowhere to put that error, so the timeline simply
+/// stopped, and the next version that got through held a whole afternoon.
+fn storage_policy(config: &Configuration) -> crate::storage::postgres::StoragePolicy {
+    crate::storage::postgres::StoragePolicy {
+        owner_bytes: config.storage.per_owner,
+        deployment_bytes: config.storage.total,
+        asset_uploads_per_hour: config.storage.uploads_per_hour as i64,
+        versions_per_hour: config.session.checkpoint_owner_per_hour,
+        max_uncompacted_updates: 1_000,
+        max_uncompacted_bytes: config.persistence().max_staging_bytes as i64,
+    }
+}
+
 pub async fn serve(options: ServeOptions) {
     options
         .config
@@ -276,14 +305,7 @@ pub async fn serve(options: ServeOptions) {
     let key = session_key_file(&key_path, key_path.exists()).unwrap_or_else(|err| die(err));
     let mut database = crate::storage::postgres::PostgresOptions::new(&storage.database_url);
     database.max_connections = storage.database_connections;
-    database.policy = crate::storage::postgres::StoragePolicy {
-        owner_bytes: config.storage.per_owner,
-        deployment_bytes: config.storage.total,
-        asset_uploads_per_hour: config.storage.uploads_per_hour as i64,
-        versions_per_hour: config.rate_per_hour,
-        max_uncompacted_updates: 1_000,
-        max_uncompacted_bytes: config.persistence().max_staging_bytes as i64,
-    };
+    database.policy = storage_policy(&config);
     let catalog = Arc::new(
         crate::storage::postgres::PostgresCatalog::connect(database)
             .await
@@ -309,6 +331,7 @@ pub async fn serve(options: ServeOptions) {
     // An operator who wants no public front page at all: the examples stop
     // being listed to people who hold nothing on them.
     instance.listing = !options.no_listing;
+    instance.simulate_activity = options.simulate_activity;
     instance.origins = origins.clone();
     instance.latex = Some(latex);
     instance.fonts = fonts;
@@ -543,6 +566,36 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use crate::config::SessionLimit;
+
+    /// The version budget is the checkpoint budget. It was the comment one,
+    /// which is fifteen times smaller and counts a different thing, and the
+    /// difference was a history that stopped partway through an afternoon.
+    #[test]
+    fn the_version_budget_is_the_checkpoint_budget() {
+        let config = Configuration {
+            rate_per_hour: 20,
+            session: SessionLimit {
+                checkpoint_owner_per_hour: 300,
+                ..Configuration::default().session
+            },
+            ..Configuration::default()
+        };
+        let policy = storage_policy(&config);
+        assert_eq!(
+            policy.versions_per_hour, 300,
+            "versions are budgeted by session.checkpoint_owner_per_hour"
+        );
+        assert_ne!(
+            policy.versions_per_hour, config.rate_per_hour,
+            "and never by the comment rate that reads like it"
+        );
     }
 }
 

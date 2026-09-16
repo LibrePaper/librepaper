@@ -143,8 +143,8 @@ function build(over = {}) {
   await assert.rejects(publication.publish(), /Fix its render errors/);
 }
 
-// The ordinary publish: the expected publication is named, and the reader is
-// told what is happening.
+// The ordinary publish: the expected publication is named. Nothing is said
+// out of band -- the Share panel's button reads "Publishing…" throughout.
 {
   const sent = [];
   const { publication, said } = build({
@@ -163,7 +163,7 @@ function build(over = {}) {
   assert.equal(sent[0].expectedPublicationId, "pub-1", "an update names what it replaces");
   assert.equal(publication.state.publication.id, "pub-2");
   assert.equal(publication.state.update, false);
-  assert.match(said[0], /Preparing publication/);
+  assert.deepEqual(said, [], "an editor publishing is watching the button that says so");
   assert.equal(publication.state.stale, false, "what was just published is what is on screen");
 }
 

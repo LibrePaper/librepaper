@@ -1685,9 +1685,12 @@ impl Room {
             .ok_or_else(|| WriteError::Storage("PostgreSQL catalog required".into()))?;
         let document_id = uuid::Uuid::parse_str(&self.storage_id)
             .map_err(|_| WriteError::Storage("room has an invalid document id".into()))?;
-        let (body, generation, durable) = {
+        let (body, frontier, generation, durable) = {
             let mut state = self.state.lock().await;
             let body = session::encode_state(&state.session.doc);
+            // Read under the same lock as the body: a frontier taken after it
+            // would name a version the persisted bytes do not contain.
+            let frontier = state.session.doc.state_frontiers().encode();
             let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
             if body.len() > ceiling {
                 self.fence(FenceReason::Oversized);
@@ -1703,7 +1706,7 @@ impl Room {
                 .iter()
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
-            (body, generation, durable)
+            (body, frontier, generation, durable)
         };
         let size = body.len() as i64;
         let collaboration = crate::storage::collaboration::CollaborationStorage::new(
@@ -1711,7 +1714,7 @@ impl Room {
             self.blobs.clone(),
         );
         let durable_sequence = collaboration
-            .append(document_id, &body)
+            .append(document_id, &body, &frontier)
             .await
             .map_err(|error| WriteError::Storage(error.to_string()))?;
         if durable_sequence % 100 == 0 {

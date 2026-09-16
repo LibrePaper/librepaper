@@ -6,15 +6,41 @@
 // deliberately has no dependency on preview rendering or the live editor.
 import { createGeneration } from "./generation.js";
 
-export function createHistorySource({ checkpoint, currentTree, checkpoints = () => [], preferredPath = () => "" }) {
+/// A selection is a checkpoint's id, or a position in the operation history
+/// written `frontier:<anchor>` -- the activity timeline hands those out for
+/// minutes nobody checkpointed. Both are read into the same shape, so
+/// everything below this line, and every panel above it, treats them alike.
+export const MOMENT = "frontier:";
+export const isMoment = (selected) => String(selected || "").startsWith(MOMENT);
+export const anchorOf = (selected) => (isMoment(selected) ? String(selected).slice(MOMENT.length) : "");
+
+export function createHistorySource({ checkpoint, moment, currentTree, checkpoints = () => [], preferredPath = () => "" }) {
   const state = $state({ selected: "", path: "", loading: false, problem: "", result: null });
   const selections = createGeneration();
   let disposed = false;
 
   const snapshot = tree => ({ ...tree, texts: { ...tree.texts }, files: { ...tree.files } });
-  const label = point => point.label || (point.at ? new Date(point.at).toLocaleString() : point.sha.slice(0, 7));
+  const label = point => point.label
+    || (point.at ? new Date(point.at).toLocaleString() : "")
+    || (point.sha ? point.sha.slice(0, 7) : "An earlier moment");
+
+  /// The document at a position in its own history, shaped like a checkpoint
+  /// so the comparison below cannot tell the difference. There is no archive
+  /// and no event behind it -- no label, no author, no reason -- and its
+  /// `files` map is rebuilt from what the moment holds.
+  async function readMoment(selected) {
+    const found = await moment?.(anchorOf(selected));
+    if (!found || typeof found.texts !== "object") {
+      throw new Error("The document at that moment could not be read.");
+    }
+    const files = {};
+    for (const path of Object.keys(found.texts || {})) files[path] = { kind: "text" };
+    for (const [path, sha] of Object.entries(found.assets || {})) files[path] = { kind: "asset", sha };
+    return snapshot({ main: found.main || "", texts: found.texts, files, at: found.at || "" });
+  }
 
   async function readPoint(sha) {
+    if (isMoment(sha)) return readMoment(sha);
     const listed = checkpoints().find(point => point.sha === sha);
     const point = { ...listed, ...(await checkpoint(sha)) };
     if (point.sha !== sha || !point.texts || typeof point.texts !== "object") {
