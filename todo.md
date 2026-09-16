@@ -27,12 +27,12 @@ and a `getCursorPos` guard came back the other way.
 
 ## What is actually left
 
-1. **The upstream pull request has not been opened.** The branch is pushed and
-   the state of it is recorded in `web/vendor/loro-codemirror/README.md`, which
-   is the authority here rather than this file -- including that the branch
-   still carries the whole-update version of fault four and wants refreshing
-   from the vendored `sync.ts` first. Opening the request needs your GitHub
-   identity.
+1. **The upstream pull request has not been opened.** All five faults are on
+   the fork's `fix-multi-container-events` at `ddbc6e7`, one commit each plus
+   a changeset, and that branch is what this build fetches -- so what the
+   editor runs and what is waiting to be offered are the same bytes. Opening
+   the request needs your GitHub identity and puts your name on the claim.
+   `docs/loro-codemirror.md` has the detail.
 
 2. **`bulk` in `Changes.svelte` is half-wired.** `selectedRows`, `bulk` and
    `onbulk` are all there; the Reader has never passed `onbulk`, so the second

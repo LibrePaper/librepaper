@@ -44,3 +44,8 @@ tools/latex/corpus/article/article.bib
 
 # What wrangler leaves beside deploy/latex/wrangler.toml when it deploys.
 deploy/latex/.wrangler/
+
+# The CodeMirror binding is fetched from its fork by `make loro-codemirror`
+# and verified against loro-codemirror.lock. The source lives in the fork, so
+# there is one copy of it rather than two to keep in step.
+web/vendor/loro-codemirror/

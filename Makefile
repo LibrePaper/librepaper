@@ -26,12 +26,15 @@ WASM_BR := $(WASM).br $(BIB).br $(CITES).br $(TYPST).br
 # The pages. web/dist is entirely a build output, so it is an input to
 # nothing: what the pages are built from lives in web/src and web/public.
 SHELL_OUT := web/dist/index.html
+# The CodeMirror binding, fetched from the fork rather than vendored: see
+# loro-codemirror.lock and docs/loro-codemirror.md.
+LCM     := web/vendor/loro-codemirror/index.ts
 WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
 
 .DEFAULT_GOAL := help
-.PHONY: help build install test check-all browser test-external test-release-workloads smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update fmt web fuzz
+.PHONY: help build install test check-all browser test-external test-release-workloads smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update loro-codemirror loro-update fmt web fuzz
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -305,16 +308,42 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 
 # --- the web app -----------------------------------------------------------
 #
-# Svelte, Skeleton, CodeMirror and Yjs, bundled into the pages the binary
+# Svelte, Skeleton, CodeMirror and Loro, bundled into the pages the binary
 # embeds. The output goes to web/dist, so nothing under that directory is
 # edited by hand. The build refuses to run if a page has drifted from the
 # design system -- see web/tests/unit/vocabulary.js.
 
 web: $(SHELL_OUT)  ## Build the pages from web/
 
-$(SHELL_OUT): $(WEB)
+$(SHELL_OUT): $(WEB) $(LCM)
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
 	@cd web && bun install --silent && bun run build
+
+
+# --- the CodeMirror binding ------------------------------------------------
+#
+# A fork of loro-codemirror, fetched rather than vendored. Upstream cannot keep
+# an editor in step with a document holding more than one container, which is
+# every update here; docs/loro-codemirror.md says what is changed and why.
+#
+# It was vendored into web/vendor until 2026-09-16, which meant the same source
+# existed twice -- here and in the fork -- and they drifted, the fork sitting
+# three fixes behind for a while with nothing to notice it. Now the fork is the
+# only copy and this fetches it by pinned commit, verifying every file against
+# loro-codemirror.lock and writing nothing that does not match.
+
+loro-codemirror:  ## Fetch and verify the pinned CodeMirror binding
+	@node web/tools/fetch-loro-codemirror.mjs
+
+# As with the renderers: the files are produced by the phony target above, and
+# this rule lets Make resolve them as prerequisites on a clean checkout while
+# leaving an already-correct file's mtime alone.
+$(LCM): | loro-codemirror
+
+# Move the pin to a commit you name. Never resolves a branch or a "latest".
+loro-update:  ## Move the binding pin (COMMIT=<full 40-char sha>)
+	@test -n "$(COMMIT)" || { echo "usage: make loro-update COMMIT=<full 40-char sha>"; exit 1; }
+	@node web/tools/update-loro-codemirror.mjs $(COMMIT)
 
 # --- the docs site ----------------------------------------------------------
 #
