@@ -309,12 +309,19 @@ const getEffects = (
     }
 
     const anchor = Cursor.decode(state.cursor.anchor);
-    const anchorPos = doc.getCursorPos(anchor).offset;
+    // `getCursorPos` returns undefined for a cursor it cannot resolve -- a
+    // container that is gone, or a position outside it. Dereferencing
+    // `.offset` on that throws from inside presence rendering, which is not
+    // a place a remote peer should be able to take the editor down from.
+    const anchorPos = doc.getCursorPos(anchor)?.offset;
+    if (anchorPos === undefined) return;
     let headPos = anchorPos;
     if (state.cursor.head) {
         // range
         const head = Cursor.decode(state.cursor.head);
-        headPos = doc.getCursorPos(head).offset;
+        const resolvedHeadPos = doc.getCursorPos(head)?.offset;
+        if (resolvedHeadPos === undefined) return;
+        headPos = resolvedHeadPos;
     }
     return remoteAwarenessEffect.of({
         type: "update",

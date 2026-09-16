@@ -1,8 +1,15 @@
 # loro-codemirror, forked
 
-Upstream is <https://github.com/loro-dev/loro-codemirror> at 0.3.3, MIT, and the
-LICENSE beside this file is theirs. This is that package's `src/` with five
-changes to it.
+Upstream is <https://github.com/loro-dev/loro-codemirror>, MIT, and the LICENSE
+beside this file is theirs. This is that package's `src/` with five changes to
+it.
+
+Based on 0.3.3 and reconciled with upstream `main` (0.4.0, unpublished) on
+2026-09-16. Two things came back from that comparison and are in here now:
+`getCursorPos` is guarded in `awareness.ts` and `ephemeral.ts` (it returns
+undefined for a cursor it cannot resolve, and the unguarded `.offset` threw
+from inside presence rendering), and upstream now marks its own init dispatch
+with `loroSyncAnnotation` instead of the `isInitDispatch` flag 0.3.3 used.
 
 ## Why it is forked
 
@@ -99,9 +106,19 @@ than bundled output.
 ## What to do with it
 
 Send them upstream. Until they land, this is what the editor imports — see
-`web/src/components/Editor.svelte`. Note that upstream has not published since
-October 2025 while `loro-prosemirror` has moved in that time, so a reply may be
+`web/src/components/Editor.svelte`. Note that upstream has not *published* since
+October 2025, though `main` has moved to an unreleased 0.4.0, so a reply may be
 slow; that is the reason for forking rather than waiting.
+
+Four of the five go upstream, and a branch is prepared with one commit each:
+faults one, two, three and four, all still present on `main` as of 2026-09-16.
+
+The fifth does not. Upstream now wraps `value.undo()` in `queueMicrotask`
+inside the state field, which gets the write out of the update the same way
+moving it to a command does. That makes it a difference of approach rather than
+a bug to report, and removing `undoEffect`/`redoEffect` — which only follows
+from our version — would be an API break to ask for on top of it. Keep both
+here; raise them separately, if at all.
 
 When a release contains the fixes: delete this directory, restore the dependency
 in `web/package.json`, and point the imports in `Editor.svelte` and
