@@ -323,3 +323,120 @@ function decodeBase64(encoded) {
   if (!encoded) return new Uint8Array();
   return Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
 }
+
+/// Which review rows are answers to the same question.
+///
+/// Two proposals that change the same words are not a conflict to be resolved
+/// -- they are two answers, and the useful presentation is side by side with
+/// one choice to make (SPEC-loro.md §5.3). This finds them.
+///
+/// The test is: same file, different proposals, overlapping extents. A row's
+/// extent is `[position, position + before.length)`, which is the same basis
+/// `proposal-marks.js` draws in, so two rows contend here exactly when they
+/// would be drawn over each other there.
+///
+/// Touching ends do not overlap. One proposal replacing "cat" and another
+/// inserting after it are adjacent edits, not competing ones, and grouping
+/// them would ask the reviewer to choose between two things that can both
+/// happen.
+///
+/// A stale row is left out. Its extent is a claim about text that is no longer
+/// there, so it cannot be said to overlap anything, and a reviewer cannot
+/// answer it anyway.
+///
+/// Returns the rows, each with `contested` set to a group id shared by every
+/// row in the group, or `""`. Rows are not reordered: the caller decides how
+/// to present a group, and the queue's own order is somebody's reading order.
+export function markContention(rows) {
+  const live = rows.filter((row) => !row.stale && row.file_id);
+  // Group ids come from the rows themselves rather than a counter, so the
+  // same queue always produces the same ids and a re-render does not look
+  // like a change.
+  const group = new Map(); // row id -> group id
+  const union = new Map(); // group id -> group id it was merged into
+
+  const find = (id) => {
+    let at = id;
+    while (union.has(at)) at = union.get(at);
+    return at;
+  };
+
+  for (let i = 0; i < live.length; i++) {
+    for (let j = i + 1; j < live.length; j++) {
+      const a = live[i];
+      const b = live[j];
+      if (a.proposal === b.proposal) continue;
+      if (a.file_id !== b.file_id) continue;
+      const aEnd = a.position + a.before.length;
+      const bEnd = b.position + b.before.length;
+      // Strict overlap. Two zero-width rows at one point are two insertions
+      // in the same gap, which is not a choice between them either.
+      if (a.position >= bEnd || b.position >= aEnd) continue;
+      const aGroup = group.has(a.id) ? find(group.get(a.id)) : null;
+      const bGroup = group.has(b.id) ? find(group.get(b.id)) : null;
+      if (aGroup && bGroup) {
+        if (aGroup !== bGroup) union.set(bGroup, aGroup);
+      } else if (aGroup) {
+        group.set(b.id, aGroup);
+      } else if (bGroup) {
+        group.set(a.id, bGroup);
+      } else {
+        group.set(a.id, a.id);
+        group.set(b.id, a.id);
+      }
+    }
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    contested: group.has(row.id) ? find(group.get(row.id)) : "",
+  }));
+}
+
+/// The document as a set of proposals would leave it, as text.
+///
+/// Because a proposal is a fork rather than an annotation, any subset of them
+/// can be merged into a scratch document and read as finished prose (§5.3):
+/// "the paper with Alice's introduction and Bob's conclusion", without
+/// committing to either.
+///
+/// This is computed here rather than asked of the server. §5.3 proposed a
+/// `proposal-preview` message for it, and that is unnecessary: `proposal-list`
+/// already carries every open proposal's branch bytes, so this browser can
+/// fork and merge locally. That also keeps §5.2's rule intact, since nothing
+/// about a diff crosses the wire.
+///
+/// The scratch document is thrown away. Nothing syncs to it, nothing is
+/// persisted, and the room document is not touched -- `fork()` is what makes
+/// that true rather than a discipline to maintain.
+///
+/// Returns a Map of file id to text, or null if the merge could not be done.
+export function previewTexts(doc, proposals, chosen) {
+  if (!doc || !chosen?.length) return null;
+  const wanted = new Set(chosen);
+  let scratch = null;
+  try {
+    scratch = doc.fork();
+    let applied = 0;
+    for (const proposal of proposals) {
+      if (!wanted.has(proposal.id) || !proposal.bytes) continue;
+      // Importing a branch brings its operations into the scratch document
+      // and merges them with everything already there, which is what makes a
+      // subset readable as one piece of prose rather than a list of patches.
+      scratch.import(proposal.bytes);
+      applied += 1;
+    }
+    if (!applied) return null;
+    const out = new Map();
+    const files = scratch.getMap("files");
+    for (const id of files.keys()) {
+      const text = files.get(id);
+      if (text?.kind?.() === "Text") out.set(id, text.toString());
+    }
+    return out;
+  } catch {
+    return null;
+  } finally {
+    scratch?.destroy?.();
+  }
+}

@@ -68,12 +68,13 @@ const handlers = {
   onaccept: (comment) => { window.decided.push(['comment', comment.id, 'accept']); return Promise.resolve({ ok: true }); },
   onreject: (comment) => { window.decided.push(['comment', comment.id, 'reject']); return Promise.resolve({ ok: true }); },
   onreveal: (comment) => window.revealed.push(comment.id),
+  onproposalpreview: (ids) => { window.asked = ids; },
 };
 
 let component = null;
 window.show = async (props = {}) => {
   if (component) await unmount(component);
-  window.decided = []; window.revealed = [];
+  window.decided = []; window.revealed = []; window.asked = null;
   component = mount(Changes, { target: document.body, props: {
     proposals: rows, comments, files, canReview: true, canModerate: true, ...handlers, ...props,
   } });
@@ -92,15 +93,43 @@ window.count = () => document.querySelector('.changes-meta')?.textContent || '';
 window.feedback = () => document.querySelector('.panel-status')?.textContent || '';
 window.nav = () => document.querySelector('.queue-nav span')?.textContent || '';
 window.act = (id, action) => {
-  const row = [...document.querySelectorAll('.change-row')]
-    .find((node) => node.querySelector('.row-main')?.id === 'change-' + id);
-  if (!row) throw new Error('no row ' + id);
-  row.querySelector('.row-action.' + action).click();
+  const main = [...document.querySelectorAll('.row-main')].find((node) => node.id === 'change-' + id);
+  if (!main) throw new Error('no row ' + id);
+  // Inside a contested group each option carries its own buttons, so scope to
+  // the option when there is one and to the card when there is not.
+  const scope = main.closest('.contested-option') || main.closest('.change-row');
+  scope.querySelector('.row-action.' + action).click();
 };
 window.key = (key) => {
   document.querySelector('.changes-panel')
     .dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
 };
+// Two proposals over the same words, which the Reader marks with a shared
+// contested id (SPEC-loro.md §5.3). The panel's job is to stand them
+// together, and to leave an unrelated change alone.
+window.rivals = [
+  { id: 'alice#0', proposal: 'alice', hunk: 0, __from: 'proposal', author: 'alice@example.org',
+    file_id: 'f1', path: 'paper.md', position: 4, before: 'cat', after: 'tabby', contested: 'alice#0',
+    created_at: new Date(Date.now() - 7200000).toISOString() },
+  { id: 'bob#0', proposal: 'bob', hunk: 0, __from: 'proposal', author: 'bob@example.org',
+    file_id: 'f1', path: 'paper.md', position: 4, before: 'cat sat', after: 'dog lay', contested: 'alice#0',
+    created_at: new Date(Date.now() - 1200000).toISOString() },
+  { id: 'carol#0', proposal: 'carol', hunk: 0, __from: 'proposal', author: 'carol@example.org',
+    file_id: 'f2', path: 'notes.md', position: 0, before: '', after: 'Elsewhere.',
+    created_at: new Date(Date.now() - 600000).toISOString() },
+];
+
+window.groups = () => [...document.querySelectorAll('.changes-list > .change-row')].map((row) => ({
+  contested: row.classList.contains('contested'),
+  head: row.querySelector('.contested-head')?.textContent?.trim() || '',
+  options: [...row.querySelectorAll('.contested-option .row-main')].map((node) => node.id.replace('change-', '')),
+  id: row.querySelector('.row-main')?.id?.replace('change-', '') || '',
+}));
+window.pick = (id) => {
+  const node = [...document.querySelectorAll('.row-main')].find((n) => n.id === 'change-' + id);
+  node.closest('.row-head').querySelector('.row-pick').click();
+};
+window.previewButton = () => document.querySelector('.preview-bar button');
 window.ready = true;
 await window.show();
 `);
@@ -181,8 +210,45 @@ try {
   await page.evaluate("window.show({ canReview: false, canModerate: false })");
   await until("read-only", async () => (await page.evaluate("window.rows()")).every((row) => row.acceptDisabled === true), 4000);
   assert.equal((await page.evaluate("window.rows()")).length, 4, "a reader still sees what is proposed");
+  // Rival changes stand together (§5.3). Two proposals over the same words are
+  // one question with two answers, and the reviewer sees them as such rather
+  // than meeting the second one several cards later.
+  await page.evaluate("window.show({ proposals: window.rivals, comments: [] })");
+  await until("rivals shown", async () => (await page.evaluate("window.groups()")).length > 0, 4000);
+  const groups = await page.evaluate("window.groups()");
+  assert.equal(groups.length, 2, "the two rivals are one entry, and the unrelated change is its own");
+  assert.equal(groups[0].contested, true, "the rival pair is marked as contested");
+  assert.deepEqual(groups[0].options, ["alice#0", "bob#0"], "both answers are inside the one card");
+  assert.match(groups[0].head, /2 proposals change the same text/);
+  assert.match(groups[0].head, /still to answer/, "and the reviewer is told the others remain");
+  assert.equal(groups[1].contested, false, "a change nobody contests is an ordinary card");
+  assert.equal(groups[1].id, "carol#0");
+  assert.match(await page.evaluate("window.count()"), /1 contested/);
 
-  console.log("changes-browser: one card per hunk, both sides of each change readable, stale hunks inert, keyboard and buttons answer the same queue");
+  // Both rivals are still answerable on their own: grouping them presents the
+  // choice, it does not take the decision away or make it a single action.
+  await page.evaluate('window.act("bob#0", "accept")');
+  await until("rival answered", async () => (await page.evaluate("window.decided")).length > 0, 4000);
+  assert.deepEqual(await page.evaluate("window.decided"), [["bob", 0, "accept"]]);
+
+  // Reading a chosen set of proposals as prose (§5.3). Ticking changes selects
+  // the proposals they belong to -- a proposal is a branch and a reading
+  // applies it whole -- so two hunks of one proposal count once.
+
+  await page.evaluate("window.show({ proposals: window.rivals, comments: [] })");
+  await until("preview offered", async () => await page.evaluate("!!window.previewButton()"), 4000);
+  assert.equal(await page.evaluate("window.previewButton().disabled"), true,
+    "with nothing ticked there is nothing to read");
+  await page.evaluate('window.pick("alice#0")');
+  await page.evaluate('window.pick("carol#0")');
+  await until("two chosen", async () => /2 proposals/.test(await page.evaluate("window.previewButton().textContent")), 4000);
+  await page.evaluate("window.previewButton().click()");
+  await until("asked to read", async () => (await page.evaluate("window.asked")) !== null, 4000);
+  assert.deepEqual((await page.evaluate("window.asked")).sort(), ["alice", "carol"],
+    "the reading names proposals, not hunks");
+
+
+  console.log("changes-browser: one card per hunk, rival changes stand together, a chosen set reads as prose, stale hunks inert");
 } finally {
   await page?.close();
   server?.close();

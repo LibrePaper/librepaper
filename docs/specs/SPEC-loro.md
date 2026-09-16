@@ -349,8 +349,9 @@ way to name a hunk that means the same thing on both sides.
 
 ### 5.3 What branching makes possible, which suggesting mode does not
 
-*Provisional. §5.1 is a floor, not a ceiling; this section records what the
-substrate opens up so the protocol does not accidentally close it.*
+*§5.1 is a floor, not a ceiling. This section recorded what the substrate
+opens up so the protocol would not accidentally close it; the first two are
+now built, and what was learned building them is below.*
 
 Google Docs' suggesting mode is a flat overlay: every suggestion is an
 annotation on one linear document. That is why two people rewriting the same
@@ -366,6 +367,15 @@ who disagree about a sentence, or a coauthor and an agent who have rewritten
 the same paragraph. The server can identify contention without being told, by
 testing whether two proposals' hunks overlap on their common base, so this is a
 presentation decision rather than a protocol one.
+
+**Built, in the browser rather than the server**, for the same reason the
+preview below is: the hunks are already computed here (§5.2), so the overlap is
+too. `markContention` groups rows that change the same words in the same file,
+and the Changes panel stands them together as one card with one choice.
+Adjacent edits are deliberately not grouped — two changes that merely touch
+ends can both happen, and asking a reviewer to choose between them would be
+inventing a conflict. Stale rows are left out: their extent describes text that
+is no longer there, so it cannot be said to overlap anything.
 
 **A speculative reading of the paper.** Because a branch is a fork and not an
 annotation, any *subset* of open proposals can be merged into a scratch
@@ -383,6 +393,16 @@ here that needs a message, so §5.1 gains:
 It returns text, not a document and not a delta: it is a reading, nothing syncs
 to it, and nothing is persisted. A preview that returned a `DiffBatch` would
 violate §5.2.
+
+**Those two messages were not needed, and are not implemented.** `proposal-list`
+already carries every open proposal's branch bytes, so the browser can fork the
+room, import a chosen subset and read the result without asking anybody. That is
+strictly better than the exchange above: no protocol surface to maintain, and
+§5.2's rule holds trivially because nothing about a diff crosses the wire at
+all. `previewTexts` in `web/src/lib/proposals.js` is the whole of it, and it
+works on a fork, so "nothing is persisted" is a property of the code rather than
+a rule to keep. The table stays as a record of a design that was proposed and
+turned out to be unnecessary.
 
 **Blame that survives review.** Contract 4 keeps attribution correct through a
 partial accept and §3.6 keeps every intermediate state reachable. Together

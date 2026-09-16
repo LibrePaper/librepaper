@@ -10,7 +10,7 @@
     canTrack = true, canReview = true, selected = "", selectedProposal = "", filters = {},
     authors = [], sessions = [], ontracking, onmarkup, onfilter, onselect,
     onaccept, onreject, onbulk, onproposalreveal, onproposaldecide,
-    onprevious, onnext, onreveal, onresolve, ondelete, onreply, onhistory,
+    onprevious, onnext, onreveal, onresolve, ondelete, onreply, onhistory, onproposalpreview,
     identity = "", commentingAs = "Anonymous", canModerate = false,
     went = {}, replacements = {},
   } = $props();
@@ -95,6 +95,60 @@
   const markupVisible = $derived(showMarkup === undefined ? markup : showMarkup);
   const derivedAuthors = $derived(authors.length ? authors : [...new Set(allRows.map(authorOf))]);
   const derivedFiles = $derived(files.length ? files.map((file) => file.path || file.id).filter(Boolean) : [...new Set(allRows.map(pathOf))]);
+  /// The queue, with rival changes standing together.
+  ///
+  /// Two proposals that change the same words are two answers to one question
+  /// (SPEC-loro.md §5.3), and the Reader marks them with a shared `contested`
+  /// id. Here that becomes one entry holding all of them, placed where the
+  /// first of them would have been -- so the reading order the queue already
+  /// had is the order a reviewer keeps, and a rival change never arrives
+  /// several screens away from the one it competes with.
+  ///
+  /// A group with one member left -- the rest filtered out, or answered -- is
+  /// not a group. There is no choice to present.
+  const groupedRows = $derived.by(() => {
+    const out = [];
+    const seen = new Set();
+    for (const item of filteredRows) {
+      const group = item.contested || "";
+      if (!group) {
+        out.push({ kind: "row", key: rowId(item), item });
+        continue;
+      }
+      if (seen.has(group)) continue;
+      seen.add(group);
+      const members = filteredRows.filter((other) => other.contested === group);
+      if (members.length < 2) {
+        out.push({ kind: "row", key: rowId(item), item });
+        continue;
+      }
+      out.push({ kind: "contested", key: `contested:${group}`, members });
+    }
+    return out;
+  });
+  /// Whether a reading is on offer at all. It needs somewhere to send the
+  /// request and at least one proposal to put in it; a queue of nothing but
+  /// comment suggestions has no branches to merge.
+  const canPreview = $derived(
+    Boolean(onproposalpreview) && filteredRows.some((item) => item.__kind === "proposal"),
+  );
+  const contestedCount = $derived(
+    new Set(filteredRows.filter((item) => item.contested).map((item) => item.contested)).size,
+  );
+
+  /// The proposals a preview would apply.
+  ///
+  /// Ticking a change selects the proposal it belongs to, not the change: a
+  /// proposal is a branch and a reading applies it whole. Two changes from one
+  /// author's session are one proposal and count once.
+  const chosenProposals = $derived([
+    ...new Set(
+      selectedRows
+        .map((item) => String(value(item, "proposal", "proposalId", "proposal_id")))
+        .filter(Boolean),
+    ),
+  ]);
+
   const rowFor = (id) => filteredRows.find((item) => rowId(item) === id);
   const reviewAllowed = (item) => item?.__kind === "suggestion" ? canModerate : canReview;
   const activeIndex = $derived(filteredRows.findIndex((item) => rowId(item) === active));
@@ -236,7 +290,12 @@
       <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
       <Switch.HiddenInput />
     </Switch></div>
-    <div class="changes-meta" aria-live="polite">{allPending} pending{allRows.length !== allPending ? ` · ${allRows.length} total` : ""}{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}</div>
+    <div class="changes-meta" aria-live="polite">{allPending} pending{allRows.length !== allPending ? ` · ${allRows.length} total` : ""}{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}{contestedCount ? ` · ${contestedCount} contested` : ""}</div>
+    <!-- Reading a chosen set of proposals as prose. Reviewing a change shows a
+         few words either side of it, which is how you accept a sentence that
+         spoils the paragraph after it; this shows the result instead. It is a
+         reading and not a version -- nothing is decided by opening it. -->
+    {#if canPreview}<div class="preview-bar"><button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!chosenProposals.length} title={chosenProposals.length ? "Read the paper with these proposals applied" : "Tick changes to read the paper as they would leave it"} onclick={() => onproposalpreview?.([...chosenProposals])}>Read with {chosenProposals.length || "no"} proposal{chosenProposals.length === 1 ? "" : "s"}</button>{#if chosenProposals.length}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (checked = new Set())}>Clear</button>{/if}</div>{/if}
     <div class="filter-bar">
       <select aria-label="Change status" value={activeFilters.status} onchange={(event) => updateFilter("status", event)}><option value="pending">Pending</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="all">All statuses</option></select>
       {#if showExtraFilters}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" aria-expanded={filtersOpen} aria-controls="change-extra-filters" onclick={() => filtersOpen = !filtersOpen}>Filter{activeFilters.author || activeFilters.file || activeFilters.session ? " •" : ""}</button>{/if}
@@ -267,19 +326,34 @@
     {#if feedback}<p class="panel-status" role="status" aria-live="polite">{feedback}</p>{/if}
   </header>
   {#if !filteredRows.length}<p class="panel-muted changes-empty" role="status">{activeFilters.status === "pending" ? "No pending changes." : "No changes match these filters."}</p>{/if}
+  <!-- One entry per decision, except where several proposals answer the same
+       question: those stand together so the choice between them is visible
+       rather than spread down the queue (SPEC-loro.md §5.3). -->
+  {#snippet changeBody(item)}
+    {@const id = rowId(item)}{@const isOpen = active === id}{@const why = blocker(item)}{@const parts = diffParts(item)}
+    <div class="row-head">{#if canPreview}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Include ${authorLabel(item)}'s change in a reading`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-author">{authorLabel(item)}{timeLabel(item) ? ` · ${timeLabel(item)}` : ""}</span><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}{shortDiff(item)}{/if}</span>{#if derivedFiles.length > 1}<span class="row-context">{pathOf(item)}</span>{/if}{#if statusOf(item) !== "pending"}<span class="row-status">{statusOf(item)}</span>{/if}</button></div>
+    <div class="row-footer"><span></span>{#if pending(item)}<span class="row-actions"><button type="button" class="btn btn-sm row-action reject" aria-label={`Reject change in ${pathOf(item)}`} title={why || "Reject this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button><button type="button" class="btn btn-sm row-action accept" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button></span>{/if}</div>
+    {#if isOpen && why}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
+      <div class="conflict" role="alert"><strong>Needs attention</strong><p>{why}</p><button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => resolve(item)}>Show the passage</button></div>
+    </div>{#if item.replies?.length}<details class="discussion"><summary>Discussion ({item.replies.length})</summary><ul>{#each item.replies as reply (reply.id)}<li><strong>{reply.creator || "Author"}:</strong> {reply.body}</li>{/each}</ul></details>{/if}{/if}
+  {/snippet}
   <div class="changes-list" role="list" aria-label="Revision queue">
-    {#each filteredRows as item (rowId(item))}
-      {@const id = rowId(item)}{@const isOpen = active === id}{@const why = blocker(item)}{@const parts = diffParts(item)}
-      <article class="change-row" class:active={isOpen} class:suggestion={item.__kind === "suggestion"} class:blocked={Boolean(why)} role="listitem">
-        <div class="row-head"><button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-author">{authorLabel(item)}{timeLabel(item) ? ` · ${timeLabel(item)}` : ""}</span><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}{shortDiff(item)}{/if}</span>{#if derivedFiles.length > 1}<span class="row-context">{pathOf(item)}</span>{/if}{#if statusOf(item) !== "pending"}<span class="row-status">{statusOf(item)}</span>{/if}</button></div>
-        <div class="row-footer"><span></span>{#if pending(item)}<span class="row-actions"><button type="button" class="btn btn-sm row-action reject" aria-label={`Reject change in ${pathOf(item)}`} title={why || "Reject this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button><button type="button" class="btn btn-sm row-action accept" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button></span>{/if}</div>
-        {#if isOpen && why}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
-          <div class="conflict" role="alert"><strong>Needs attention</strong><p>{why}</p><button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => resolve(item)}>Show the passage</button></div>
-        </div>{#if item.replies?.length}<details class="discussion"><summary>Discussion ({item.replies.length})</summary><ul>{#each item.replies as reply (reply.id)}<li><strong>{reply.creator || "Author"}:</strong> {reply.body}</li>{/each}</ul></details>{/if}{/if}
-      </article>
+    {#each groupedRows as entry (entry.key)}
+      {#if entry.kind === "contested"}
+        <article class="change-row contested" role="listitem" aria-label={`${entry.members.length} rival changes to the same text in ${pathOf(entry.members[0])}`}>
+          <p class="contested-head"><span class="contested-badge">Contested</span> {entry.members.length} proposals change the same text{derivedFiles.length > 1 ? ` in ${pathOf(entry.members[0])}` : ""}. Accepting one leaves the rest still to answer.</p>
+          {#each entry.members as item (rowId(item))}
+            <div class="contested-option">{@render changeBody(item)}</div>
+          {/each}
+        </article>
+      {:else}
+        {@const item = entry.item}
+        <article class="change-row" class:active={active === rowId(item)} class:suggestion={item.__kind === "suggestion"} class:blocked={Boolean(blocker(item))} role="listitem">
+          {@render changeBody(item)}
+        </article>
+      {/if}
     {/each}
   </div>
-  {#if filteredRows.length}<footer class="queue-nav"><span>{activeIndex + 1} of {filteredRows.length}</span><span><button type="button" aria-label="Previous change" title="Previous change (↑ or K)" onclick={() => { onprevious?.(active); move(-1); }} disabled={activeIndex <= 0}>↑</button><button type="button" aria-label="Next change" title="Next change (↓ or J)" onclick={() => { onnext?.(active); move(1); }} disabled={activeIndex >= filteredRows.length - 1}>↓</button></span></footer>{/if}
 </div>
 
 <style>
@@ -302,6 +376,15 @@
   .changes-menu-hint { padding: 0 .65rem .35rem; color: var(--color-surface-500-400); font-size: .75rem; line-height: var(--panel-line-height); }
   .filters { flex-wrap: wrap; margin-top: .5rem; } .filters select { min-width: 0; max-width: 100%; flex: 1 1 7rem; }
   .changes-list { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; } .change-row { position: relative; content-visibility: auto; contain-intrinsic-size: 0 7rem; border-bottom: 1px solid var(--color-surface-200-800); padding: .8rem var(--spacing); } .change-row.active { background: color-mix(in srgb, var(--color-primary-500) 8%, transparent); box-shadow: inset 3px 0 var(--color-primary-500); } .change-row.blocked { box-shadow: inset 3px 0 var(--color-warning-500); }
+  /* A contested group is one card holding rival answers. The left rule marks
+     the whole group rather than each option, so the eye reads "one question"
+     before it reads the choices. */
+  .change-row.contested { box-shadow: inset 3px 0 var(--color-tertiary-500); background: color-mix(in srgb, var(--color-tertiary-500) 5%, transparent); }
+  .contested-head { margin: 0 0 .4rem; font-size: .78rem; color: var(--color-surface-600-400); }
+  .contested-badge { display: inline-block; padding: 0 .35rem; border-radius: .2rem; background: var(--color-tertiary-500); color: var(--color-tertiary-contrast-500); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; }
+  .contested-option + .contested-option { border-top: 1px dashed var(--color-surface-200-800); padding-top: .5rem; margin-top: .5rem; }
+  .preview-bar { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .4rem; }
+  .row-pick { margin-right: .5rem; flex: none; align-self: start; margin-top: .2rem; }
   .row-head { align-items: flex-start; gap: .4rem; } .row-main { min-width: 0; flex: 1; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; } .row-author, .row-diff, .row-context, .row-status { display: block; } .row-author { font-size: .78rem; font-weight: 600; } .row-diff { margin: .45rem 0; font: .84rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; } .row-diff span { display: block; } .insertion { color: var(--color-success-700-300); } .deletion { color: var(--color-error-700-300); text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); } .row-footer { display: flex; min-height: 1.8rem; align-items: center; justify-content: space-between; } .row-actions { display: flex; gap: .25rem; } .row-action { flex: 0 0 auto; background: transparent; } .row-action.accept { color: var(--color-success-700-300); } .row-action.reject { color: var(--color-error-700-300); }
   .change-detail { margin: .6rem 0 0 1.5rem; max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; } .discussion { margin: .5rem 0 0 1.5rem; font-size: .8rem; } .discussion li { margin-top: .3rem; } .conflict { margin-top: .7rem; padding: .5rem; border-left: 3px solid var(--color-warning-500); } .changes-empty { padding: 1rem; }
   .queue-nav { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 1.4rem; min-height: 2.5rem; border-top: 1px solid var(--color-surface-200-800); font-size: .78rem; color: var(--color-surface-500-400); } .queue-nav button { border: 0; background: transparent; padding: .35rem .55rem; font-size: 1rem; cursor: pointer; } .queue-nav button:disabled { opacity: .3; cursor: default; }

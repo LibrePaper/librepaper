@@ -1,6 +1,6 @@
 <script>
   import { newRequestKey } from "../lib/request-key.js";
-  import { decodeProposal, hunksOfProposal } from "../lib/proposals.js";
+  import { decodeProposal, hunksOfProposal, markContention, previewTexts } from "../lib/proposals.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { anchorAll, anchorAllSources, anchorOne, flatten } from "../lib/anchor.js";
@@ -1018,7 +1018,63 @@
       }
     }
     review = drawn;
-    reviewRows = rows;
+    // Rows that answer the same question are marked as a group here rather
+    // than in the panel, because it is a fact about the hunks and not about
+    // how they are shown -- and because the panel filters, and a group has to
+    // be recognised before a filter can hide half of it.
+    reviewRows = markContention(rows);
+  }
+
+  /// Read the paper as a chosen set of proposals would leave it (§5.3).
+  ///
+  /// Reviewing a hunk shows a few words either side of it, which is how you
+  /// accept a sentence that ruins the paragraph after it. This shows the
+  /// result instead: the file, as prose, with those proposals merged in.
+  ///
+  /// It is read-only and it is a reading, not a version. Nothing syncs to it,
+  /// nothing is persisted, and the room document is untouched --
+  /// `previewTexts` works on a fork, so that is a property of the code rather
+  /// than a rule to keep. Which file is shown is the one being edited, or the
+  /// first the chosen proposals actually change.
+  async function previewProposals(chosen) {
+    if (!session || !chosen?.length) return;
+    const texts = previewTexts(session.doc, [...openProposals.values()], chosen);
+    if (!texts) {
+      toastProblem("those proposals could not be read together");
+      return;
+    }
+    // A file the chosen proposals leave alone would preview as itself, which
+    // tells the reader nothing, so prefer one they actually touch.
+    const touched = new Set(
+      reviewRows.filter((row) => chosen.includes(row.proposal) && row.file_id).map((row) => row.file_id),
+    );
+    const id = (showing && touched.has(showing) && showing) || [...touched][0] || showing;
+    if (!id) return;
+    const path = session.paths?.get(id) || "";
+    const live = session.textOf?.(id);
+    try {
+      MergeEditor = (await import("./MergeEditor.svelte")).default;
+      mergeTarget = {
+        path,
+        oldText: live ? live.toString() : "",
+        newText: texts.get(id) ?? "",
+        // No live text and not editable: this is a reading of something that
+        // has not happened, and writing into it would be writing into a
+        // document nobody else has.
+        liveText: null,
+        ephemeral: null,
+        loroDoc: null,
+        editable: false,
+        baselineLabel: "the paper now",
+        targetLabel:
+          chosen.length === 1
+            ? "with 1 proposal applied"
+            : `with ${chosen.length} proposals applied`,
+        note: "a reading, not a version: nothing here is saved or shared until these proposals are accepted",
+      };
+    } catch (error) {
+      toastProblem(error.message || "that reading could not be opened");
+    }
   }
 
   // Recomputing costs a fork and a diff per open proposal, and the thing that
@@ -3336,6 +3392,7 @@
       onaccept={(comment) => decideSuggestion(comment, "accept")}
       onreject={(comment) => decideSuggestion(comment, "reject")}
       onrejectconfirmed={rejectConfirmed}
+      onproposalpreview={previewProposals}
       onhistory={() => { void showPanel("history"); }} />
     {@render pendingRecovery("changes")}
   {/snippet}
@@ -3402,6 +3459,7 @@
                      liveText={mergeTarget.liveText} ephemeral={mergeTarget.ephemeral} loroDoc={mergeTarget.loroDoc}
                      diff
                      editable={mergeTarget.editable !== false && mayEdit && editing}
+                     baselineLabel={mergeTarget.baselineLabel || "checkpoint"}
                      targetLabel={mergeTarget.targetLabel}
                      note={mergeTarget.note || ""}
                      onclose={() => (mergeTarget = null)} />
