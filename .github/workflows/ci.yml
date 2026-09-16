@@ -50,7 +50,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: sudo apt-get install -y --no-install-recommends bubblewrap texlive-latex-base texlive-latex-recommended
+      # mold for the same reason the test job installs it: .cargo/config.toml
+      # links through it, and a machine without it fails to link with gcc
+      # saying "cannot find 'ld'" when it means mold. This job builds the crate
+      # like any other, so it needs the linker like any other.
+      - run: >-
+          sudo apt-get install -y --no-install-recommends
+          mold bubblewrap texlive-latex-base texlive-latex-recommended
       - run: python -m pip install jupyter ipython nbformat
       - run: make test-external
 
