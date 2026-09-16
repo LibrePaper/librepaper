@@ -2,9 +2,17 @@ import assert from 'node:assert/strict';
 import { mkdtemp,writeFile,readFile,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { INSERT_ACTIONS,buildInsertion } from '../../src/lib/insert.js';
+// Quarto is a host tool, not something this repository builds or vendors, so
+// a machine without it is a machine that cannot run this check -- not a
+// failure. The CI runner has neither Quarto nor Typst installed, which is why
+// this suite was red on every commit for weeks while passing locally.
+if (spawnSync('quarto', ['--version'], { stdio: 'ignore' }).error) {
+  console.log('insert-quarto-render: no quarto on PATH; skipping (install Quarto to run it)');
+  process.exit(0);
+}
 const run=promisify(execFile),dir=await mkdtemp(join(tmpdir(),'librepaper-insert-quarto-'));
 try {
   await writeFile(join(dir,'plot.svg'),'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>');

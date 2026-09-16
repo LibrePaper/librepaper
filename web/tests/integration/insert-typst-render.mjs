@@ -4,9 +4,17 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { INSERT_ACTIONS, buildInsertion } from "../../src/lib/insert.js";
+
+// Typst is a host tool, not something this repository builds or vendors, so a
+// machine without it cannot run this check -- which is not the same as the
+// check failing. See insert-quarto-render.mjs.
+if (spawnSync("typst", ["--version"], { stdio: "ignore" }).error) {
+  console.log("insert-typst-render: no typst on PATH; skipping (install Typst to run it)");
+  process.exit(0);
+}
 
 const run = promisify(execFile);
 const dir = await mkdtemp(join(tmpdir(), "librepaper-insert-typst-"));

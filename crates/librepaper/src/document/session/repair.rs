@@ -51,16 +51,77 @@ pub enum Repair {
 pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
     let mut done = Vec::new();
 
+    // A file under the empty id is rehomed under a minted one, keeping its
+    // words. This happens first, so that everything below sees a document
+    // without the degenerate key and puts the rehomed file right in the same
+    // pass.
+    //
+    // The empty string is this document's sentinel for "no main file is set":
+    // `main_id` returns it when `meta.main` is absent. So a file keyed by it
+    // can never be named as main -- the check at the bottom reads the pointer
+    // back as unset and chooses again, every pass, for the life of the
+    // document. Declining to choose it is not an answer either: a document
+    // whose only file is that one then has a text and no main, which is the
+    // other invariant this pass exists to hold.
+    //
+    // No `put_text` ever mints an empty id, so nothing here has carets or
+    // concurrent edits pointing at it that a stable id would protect -- a peer
+    // wrote it straight into the map. The words are what matter, and they are
+    // kept. The new file is left nameless on purpose: the orphan pass below
+    // names it from its minted id, which is the same name it would have had if
+    // it had arrived that way.
+    {
+        let files = doc.get_map(super::shape::FILES);
+        let orphaned = match files.get("") {
+            Some(loro::ValueOrContainer::Container(loro::Container::Text(text))) => {
+                Some(text.to_string())
+            }
+            _ => None,
+        };
+        if let Some(body) = orphaned {
+            files.delete("").ok();
+            doc.get_map(super::shape::PATHS).delete("").ok();
+            let id = super::shape::mint_id();
+            if let Ok(text) = files.insert_container(&id, loro::LoroText::new()) {
+                if !body.is_empty() {
+                    text.insert_utf16(0, &body).ok();
+                }
+            }
+        }
+    }
+
     // Get current state: paths and assets
     let here = super::shape::paths_of(doc);
     let assets = super::shape::assets_of(doc);
-    let files = super::shape::texts_of(doc);
 
     // Paths, in a fixed order, so that two servers repairing the same document
     // make the same corrections: which of two colliding files is the one moved
     // aside cannot depend on the order a hash map happened to iterate in.
     let mut named: Vec<(String, String)> = here.into_iter().collect();
     named.sort();
+
+    // A `paths` entry whose id is not a file in `files` names nothing, so
+    // there is nothing to rename: `rename_path` refuses it -- it looks the id
+    // up and returns false when no text is there -- while the loop below
+    // reported a `Renamed` regardless. The entry survived, was reported again
+    // on the next pass, and so on for the life of the document. The fuzzer
+    // reached it with a bare `paths[""] = "x"`.
+    //
+    // A name with no file behind it is not a file somebody can see and fix, so
+    // unlike a bad path it is dropped rather than corrected.
+    {
+        let files = doc.get_map(super::shape::FILES);
+        let path_map = doc.get_map(super::shape::PATHS);
+        let dangling: Vec<String> = named
+            .iter()
+            .filter(|(id, _)| files.get(id).is_none())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &dangling {
+            path_map.delete(id).ok();
+        }
+        named.retain(|(id, _)| !dangling.contains(id));
+    }
 
     let mut taken: HashSet<String> = HashSet::new();
     for (id, path) in named {
@@ -135,7 +196,29 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
     // A text with no path at all -- a `files` entry somebody set without one --
     // is named, so that it is a file rather than an orphan. The file already
     // exists with its content; only the path entry is added.
-    let ids: Vec<String> = files.keys().cloned().collect();
+    //
+    // The ids come from the `files` map itself. They used to come from
+    // `texts_of`, which is keyed by PATH and which skips every file that has
+    // no path entry -- so this loop could not see a single one of the orphans
+    // it exists for, and instead read each file's *path* as though it were an
+    // id. Since no `paths` entry is keyed by a path, every one looked like an
+    // orphan, and each pass wrote a fresh bogus entry mapping a path string to
+    // a placeholder. That is what made `repair` non-idempotent: the fuzzer
+    // found it with a single `PutText { path: "", body: "" }`, where a second
+    // repair renamed `unnamed-<id>.txt` to `unnamed-unnamed<id>.txt`, and a
+    // third would have gone on again for the life of the document.
+    //
+    // Sorted, because the repairs two servers make must not depend on the
+    // order a map happened to iterate in -- the same reason `named` is sorted.
+    let ids: Vec<String> = {
+        let mut ids: Vec<String> = doc
+            .get_map(super::shape::FILES)
+            .keys()
+            .map(|key| key.to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
     for id in &ids {
         if super::shape::paths_of(doc).contains_key(id) {
             continue;
@@ -188,6 +271,12 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
     if !names_a_file {
         let mut candidates: Vec<(String, String)> = super::shape::paths_of(doc)
             .into_iter()
+            // Only what the check above would accept. The empty id is rehomed
+            // at the top of this function, so this should find nothing to
+            // skip; it stays because a chooser that can pick what the checker
+            // rejects is a loop however it is spelled, and this is the line
+            // that says it cannot.
+            .filter(|(id, _)| !id.is_empty())
             .map(|(id, path)| (path, id))
             .collect();
         candidates.sort();
@@ -352,5 +441,119 @@ fn restore_with(
 
     if !main.is_empty() {
         super::shape::set_main(doc, &main);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Configuration;
+    use crate::document::session;
+    use loro::{LoroDoc, LoroText};
+
+    fn repaired(doc: &LoroDoc) -> (Vec<super::Repair>, Vec<super::Repair>) {
+        let config = Configuration::default();
+        let rules = config.paths();
+        let first = super::repair(doc, &rules);
+        let second = super::repair(doc, &rules);
+        (first, second)
+    }
+
+    /// Repairing twice is repairing once.
+    ///
+    /// The fuzzer found this with a single `PutText { path: "", body: "" }`:
+    /// the second pass renamed `unnamed-<id>.txt` to `unnamed-unnamed<id>.txt`,
+    /// and every pass after it would have renamed again. A document that is
+    /// repaired after every update would have been renamed for the rest of its
+    /// life, and two servers repairing the same document would have disagreed
+    /// about its contents on every pass.
+    #[test]
+    fn repairing_twice_is_repairing_once() {
+        let doc = session::new_doc();
+        session::put_text(&doc, "", "");
+
+        let (first, second) = repaired(&doc);
+        assert!(!first.is_empty(), "an empty path is something to repair");
+        assert!(second.is_empty(), "a second repair had work: {second:?}");
+
+        // Every `paths` entry is keyed by a file id, and every one of those ids
+        // is a file that is there. The bug wrote entries keyed by a *path*,
+        // which named no file at all.
+        let files = doc.get_map(super::super::shape::FILES);
+        for id in session::paths_of(&doc).keys() {
+            assert!(
+                files.get(id).is_some(),
+                "paths names {id:?}, which is not a file"
+            );
+        }
+        assert_eq!(session::paths_of(&doc).len(), 1, "one file, one name");
+    }
+
+    /// A file under the empty id is rehomed and keeps its words.
+    ///
+    /// The empty string is the sentinel for "no main is set", so a file keyed
+    /// by it can never be named as main: every pass set main to `""`, read it
+    /// back as unset, and set it again. Declining to choose it just moved the
+    /// problem -- a document whose only file was that one then had a text and
+    /// no main. So the key goes and the words are kept. The fuzzer found this
+    /// immediately after the orphan fix let it get further in.
+    #[test]
+    fn a_file_under_the_empty_id_is_rehomed() {
+        let doc = session::new_doc();
+        let files = doc.get_map(super::super::shape::FILES);
+        let text = files.insert_container("", LoroText::new()).unwrap();
+        text.insert(0, "body").unwrap();
+        doc.commit();
+
+        let (_, second) = repaired(&doc);
+        assert!(second.is_empty(), "a second repair had work: {second:?}");
+    }
+
+    /// A `paths` entry naming no file is removed, not renamed forever.
+    #[test]
+    fn a_path_entry_with_no_file_is_dropped() {
+        let doc = session::new_doc();
+        super::super::shape::put_path(&doc, "", "x");
+        doc.commit();
+
+        let (first, second) = repaired(&doc);
+        assert!(
+            second.is_empty(),
+            "a second repair had work: {second:?} (first: {first:?})"
+        );
+    }
+    /// A text in `files` with no name gets one.
+    ///
+    /// This is what the orphan pass is for, and it could not do it: it read the
+    /// file list keyed by path, which by construction excludes every file that
+    /// has no path. So the one case it exists for was the one case it missed.
+    #[test]
+    fn a_text_with_no_path_is_named() {
+        let doc = session::new_doc();
+        let files = doc.get_map(super::super::shape::FILES);
+        let text = files.insert_container("orphan", LoroText::new()).unwrap();
+        text.insert(0, "words nobody can reach").unwrap();
+        doc.commit();
+        assert!(session::paths_of(&doc).is_empty(), "it starts nameless");
+
+        let (first, second) = repaired(&doc);
+        assert!(
+            first.iter().any(
+                |repair| matches!(repair, super::Repair::Renamed { id, .. } if id == "orphan")
+            ),
+            "the orphan is named: {first:?}"
+        );
+        assert!(second.is_empty(), "and naming it settles: {second:?}");
+        assert_eq!(
+            session::paths_of(&doc).get("orphan").map(String::as_str),
+            Some("unnamed-orphan.txt"),
+            "named from its id, so the name is stable across passes"
+        );
+        assert_eq!(
+            session::texts_of(&doc)
+                .get("unnamed-orphan.txt")
+                .map(String::as_str),
+            Some("words nobody can reach"),
+            "and it is reachable, with its words"
+        );
     }
 }
