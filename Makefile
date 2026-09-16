@@ -124,7 +124,12 @@ check-all: test browser  ## Run the test suite AND the browser components
 # The per-test bound is generous rather than tuned: the LaTeX one drives a real
 # TeX Live through a browser and takes minutes by itself, and a tighter bound
 # reported that passing test as broken.
-browser:  ## Run the component tests in headless chromium (needs chromium)
+# $(LCM) because each test builds its own bundle from web/src, and the editor
+# imports the CodeMirror binding, which is fetched rather than vendored. The CI
+# job runs this target on its own, so the dependency has to be here: without it
+# every test that builds Editor.svelte failed with an unresolved import, which
+# is how removing the vendored source from the repository broke this job.
+browser: $(LCM)  ## Run the component tests in headless chromium (needs chromium)
 	@command -v chromium >/dev/null || command -v google-chrome >/dev/null || \
 		{ echo "no chromium to drive; skipping the browser tests"; exit 0; }
 	@failed=""; \
