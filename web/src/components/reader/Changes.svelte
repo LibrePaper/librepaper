@@ -132,6 +132,10 @@
   const canPreview = $derived(
     Boolean(onproposalpreview) && filteredRows.some((item) => item.__kind === "proposal"),
   );
+  /// Whether ticking a row leads anywhere: to a reading, or to a decision
+  /// about several changes at once. Without one of those the checkbox is a
+  /// control that does nothing, so it is not drawn.
+  const canPick = $derived(canPreview || (canReview && pendingRows.length > 1));
   const contestedCount = $derived(
     new Set(filteredRows.filter((item) => item.contested).map((item) => item.contested)).size,
   );
@@ -151,6 +155,13 @@
 
   const rowFor = (id) => filteredRows.find((item) => rowId(item) === id);
   const reviewAllowed = (item) => item?.__kind === "suggestion" ? canModerate : canReview;
+  /// The changes a bulk decision would answer for: the ticked ones this
+  /// caller may review and nothing is stopping. A tick means the whole
+  /// proposal to a reading and this one hunk to a decision -- the two verbs
+  /// say which they mean, and count what they would touch.
+  const chosenChanges = $derived(
+    selectedRows.filter((item) => pending(item) && reviewAllowed(item) && !blocker(item)),
+  );
   const activeIndex = $derived(filteredRows.findIndex((item) => rowId(item) === active));
   const showExtraFilters = $derived(derivedAuthors.length > 1 || derivedFiles.length > 1);
 

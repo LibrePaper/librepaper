@@ -1,8 +1,9 @@
 # LibrePaper security and privacy
 
-*2026-09-15, finding 1 settled 2026-09-16. Threat model and proposed
-specification. A finding marked settled describes what the code now does;
-every other finding describes current behavior, and its requirements do not.*
+*2026-09-15, last trimmed 2026-09-16. Threat model and proposed specification.
+Every finding here describes current behavior; its requirements do not. Settled
+findings are removed, and what is left is renumbered, so this is a list of work
+remaining rather than a record of what was done.*
 
 ## Purpose
 
@@ -12,6 +13,15 @@ no unauthenticated bypass, no injection sink, and no missing origin check. The
 dangers are structural: boundaries that are derived rather than asserted,
 trust relationships the product does not name, and defaults that hand a
 self-hoster a dependency they did not choose.
+
+Four things this document used to ask for are done, and the reasoning moved to
+where it is enforced rather than staying here. The two origins a deployment
+answers on live in `server/origins.rs`; the policy every published document
+renders under is `document_policy` in `server/routes.rs`; the environment a
+preset may not set is `refused_environment` in `local/presets`; and the bound
+on an agent's authority is `resolved_role` in `server/mod.rs`. What a reader
+of a hosted document should expect is in [privacy.md](../privacy.md), and what
+an operator must configure is in [hosting.md](../hosting.md).
 
 This complements the architecture review. Where that document explains how the
 parts fit, this one explains what happens when one of them is wrong. (The
@@ -38,149 +48,7 @@ because a document is code.
 
 ## Findings, by consequence
 
-### 1. The document origin is asserted, not derived — settled
-
-*Implemented. What follows describes the finding as it stood and the shape of
-the answer, because the reasoning is what the other findings lean on.*
-
-`server/origins.rs` used to build the isolation hostname by prefixing `docs.`
-to whatever the `Host` header carried, and nothing checked that name against
-anything. Published documents are still served byte for byte
-(`document/html.rs`) under a CSP that permits `'unsafe-inline'`,
-`'unsafe-eval'` and `https:` (`server/routes.rs:1110`), which is finding 2.
-
-What that hostname is and is not holding back is worth stating precisely. Over
-HTTPS the session cookie carries the `__Host-` prefix, so it is host-only and a
-document on the sibling hostname never receives it, whatever the hostname
-arrangement. The real exposures are same-site request forgery, which is what
-rule A answers, and full same-origin DOM access if the two origins ever
-collapse into one, against which the cookie prefix is worth nothing. Over plain
-HTTP the prefix is dropped and a same-site document can plant a cookie under
-the bare name, which `auth/mod.rs:180` names in a comment and refuses to read.
-
-Nothing refused to start when the hostname was wrong. A deployment on a bare
-host or an IP address, a proxy that rewrites `Host`, or an operator who
-resolves a broken preview by pointing `docs.<host>` and `<host>` at one origin
-could make the deployment fail closed or serve the document shell from the
-wrong origin. The browser boundary is the scheme/host/port origin tuple; DNS
-alone does not prove it. Rule A also cannot repair a request that reaches the
-reader origin with a document response.
-
-The `Host` header escaped into one more security-relevant string: the OAuth
-redirect URI was built from it. A provider rejects an unregistered redirect
-URI, so that failed closed, but it was a second place where an unvalidated host
-reached somewhere it mattered.
-
-Rule A (`cross_site_refused`) is load-bearing for every state-changing route
-precisely because `docs.<host>` is same-site with the reader.
-
-**Settled.** A deployment states its reader origin with `--origin`; the
-document origin defaults to that host behind `docs.` and `--docs-origin`
-overrides it. `Origins::configure` refuses at startup to accept two origins
-sharing a host, naming the DNS record and certificate to create. It is a
-deployment diagnostic and not a claim that DNS proves browser isolation. Every
-request resolves its `Host` against that pair in the outermost middleware,
-before anything is reserved or read, and an unrecognized host is answered 421
-rather than served on a guess.
-
-Three consequences beyond the refusal. Which side a request is on is now
-decided when the host is matched rather than by reading `docs.` off the name
-again, so a document origin on an unrelated host routes correctly. The scheme
-is the configured origin's rather than a forwarded header's, which is what
-decides `Secure` and the `__Host-` prefix, so `X-Forwarded-Proto` no longer
-has a say. And the OAuth callback is built from the validated origin, so a
-request cannot name its own redirect.
-
-A deployment given no `--origin` answers on loopback alone, which is what
-development and the test suite use. Loopback is accepted whatever the
-configuration says, because the operator's own `admin status`, container
-health checks and the tests all arrive that way, and a browser cannot be
-induced to send a loopback `Host` to a remote server.
-
-Published-document routes were already reachable only inside the document-side
-branch of the router, so the guarantee that hostile document HTML never reaches
-the reader origin reduces to the property the tests now assert directly:
-nothing but the configured document origin ever resolves to the document side.
-
-### 2. A shared link is a web page, not a paper
-
-With the boundary intact, a document still reaches any `https:` host. It can
-beacon who opened it, when, from which address, with a full fingerprint; it can
-load remote resources that do the same passively; it can paint a convincing
-sign-in panel inside its own frame. `form-action 'none'` and `frame-ancestors`
-close the classic versions; `fetch()` is open by design.
-
-For anonymous review this is a leak of the reviewer to the author, through a
-document the author wrote.
-
-**Settled, narrower than this asked for.** One policy applies to every
-document and every reader. There is no per-document switch, which removes the
-signed-claim plumbing, the per-viewer cache key and the interface that would
-have gone with it. `document_policy` encodes one rule: a document may run its
-own code and may not fetch code from another host. `'unsafe-inline'` and
-`'unsafe-eval'` stay, because a published document is untrusted in its
-entirety and sealed in its own origin, so its inline script is the document and
-refusing it would break most Quarto and pandoc output to protect nothing. What
-is refused is `https:` in `script-src`.
-
-Images, fonts, styles and network connections deliberately still reach the open
-web. A document can therefore still tell its author who opened it and when.
-That is an accepted leak, recorded in `docs/privacy.md` rather than engineered
-away, and it means LibrePaper cannot offer a reviewer anonymity against a
-determined author. The requirement below is what a stricter deployment would
-need, kept because the reasoning still holds.
-
-**Rendering was moved to match.** Quarto's default HTML output loads MathJax
-and a polyfill from public delivery networks, which under this policy would
-have cost every such document its mathematics. The Quarto adapter now passes
-`--standalone --embed-resources` for `html` and `revealjs`, as the pandoc
-builder already did, so a document carries its own scripts and reaches no
-network at all. It is forced rather than defaulted: an author asking for
-`embed-resources: false` is asking for output this deployment cannot serve
-intact.
-
-Measured on this repository's own Quarto example, with no external reference of
-any kind left in either:
-
-| Output | Bytes |
-| --- | --- |
-| `html`, not embedded | 26,461 |
-| `html`, embedded | 1,318,011 |
-| `revealjs`, embedded | 3,484,456 |
-
-The cost is MathJax inlined whole, and it is charged per document against the
-4 MB `max_document` ceiling. A reveal.js deck at 3.5 MB has little room left,
-so that ceiling is the thing to watch. Serving the math renderer from the
-deployment would cost nothing per document and let one cached copy serve every
-paper; it is the better answer whenever the ceiling starts to bite.
-
-Documents rendered elsewhere and uploaded are not covered by any of that, so
-publishing scans the HTML and reports the hosts it would refuse. It warns
-rather than failing: the author can re-render, and the reader could only have
-watched a paper quietly not work. See `external_script_sources` and the
-`warnings` field on activate.
-
-**Originally required.** Every document, including one its reader owns,
-renders under a strict policy by default. The policy is explicit and complete:
-it includes `default-src 'none'` and `connect-src 'none'`; scripts and styles
-are allowed only when required by the selected renderer, images and fonts are
-limited to the deployment and `data:`, and `form-action 'none'`,
-`base-uri 'none'`, `object-src 'none'`, explicit navigation rules, and the
-appropriate `frame-ancestors` rule remain present. No external script, media,
-worker, manifest, or navigation source is implicit. A permissive policy is an
-explicit, per-document choice the reader makes and can withdraw; the reader is
-told which policy is in force, and browser tests verify that the strict policy
-blocks outbound connections and third-party resources.
-
-The cost is real and belongs in the manual rather than in a reader's surprise.
-Under this policy a document loses remote images, web fonts, and any
-interactive widget that fetches its own data; the per-document permissive
-choice is the answer, and it has to be discoverable. The in-frame agent is
-unaffected: `web/src/agent/agent.js` makes no network calls of any kind and
-talks to the reader only over postMessage, so it survives `connect-src 'none'`
-intact.
-
-### 3. The companion executes collaborator-authored code
+### 1. The companion executes collaborator-authored code
 
 `librepaper local` runs Quarto, TeX and the other engines on the user's
 machine. Quarto executes R and Python chunks. The loopback surface is sound:
@@ -204,25 +72,12 @@ silently authorize a newly arriving collaborator.
   a trusted editor. A newly authenticated or newly granted editor, or a source
   revision outside the approved identity, suspends execution until the person
   who granted it approves again.
-- **Settled.** `Preset.environment` refuses loader and interpreter variables
-  at validation time, before any route that could set them exists.
-  `refused_environment` denies the `LD_*` and `DYLD_*` namespaces whole,
-  because a loader honors a long and version-dependent list and enumerating it
-  is a losing game, and denies by exact name for the interpreters the engines
-  embed: Python and R through Quarto, Perl through biber and latexmk. It
-  covers both the "load code from here" and the "run this code at startup"
-  forms, since refusing only the first would be theatre. The check is
-  case-insensitive and reads the environment map only, so an option that
-  happens to share a name is unaffected. `TEXINPUTS` and its siblings are
-  deliberately allowed: a preset configuring a compiler is the point of the
-  feature, a TeX run is confined by its own shell-escape policy, and refusing
-  them would break real configurations for nothing.
 - Companion settings list live execution grants with their origin, document,
   trusted editor identities, approved source identity, entrypoint and expiry,
   and revoke them individually. Pairing tokens and execution grants are shown
   and revoked separately; a pairing does not imply permission to execute.
 
-### 4. Content is plain at rest, including backups
+### 2. Content is plain at rest, including backups
 
 `storage/backup.rs` writes `pg_dump` output to a 0600 file and copies blob
 objects beside it. File permissions are correct throughout the tree; encryption
@@ -234,7 +89,7 @@ and refuses to write an unencrypted one without an explicit flag. The hosting
 documentation states, in the operator's own words, that the operator can read
 every document.
 
-### 5. Link lifetime outlives its purpose
+### 3. Link lifetime outlives its purpose
 
 `LINK_DEFAULT_SECONDS` is 180 days and `never` is offered
 (`server/sharing.rs:17`). The rationale in that module is that a round of
@@ -245,7 +100,7 @@ work — the exposure is the forwarded mail, not the protocol.
 **Required.** The default becomes 30 days with renewal offered from the sharing
 dialog. `never` remains available and is labelled as what it is.
 
-### 6. Privacy leaks the product does not name
+### 4. Privacy leaks the product does not name
 
 - **The TeX mirror.** `web/src/lib/latex.js:38` sends every browser to
   `https://latex.librepaper.workers.dev/`. A self-hosted deployment still
@@ -257,17 +112,12 @@ dialog. `never` remains available and is labelled as what it is.
   signed `visitor:` credential (`server/signin.rs:9`), and the collaboration
   layer broadcasts presence and cursor position. A reviewer reading a paper is
   visible to its author in real time.
-- **Attribution.** `attributed_as` keeps a pseudonym separate from the account
-  id, correctly. The account id still travels with the write, so a pseudonymous
-  comment is pseudonymous to other users and to nobody else.
+**Required.** The mirror has a documented self-hosting path; it is already a
+deployment setting (`--latex-mirror`), and the only pointer to hosting one is a
+URL inside a startup error message. Presence is visible to a reader before they
+are visible through it, and a reader may attend without broadcasting.
 
-**Required.** The mirror is a first-class deployment setting with a documented
-self-hosting path, and the manual states the leak for anyone who keeps the
-default. Presence is visible to a reader before they are visible through it,
-and a reader may attend without broadcasting. The manual says what a pseudonym
-does and does not hide.
-
-### 7. Supply chain
+### 5. Supply chain
 
 `deploy/install.sh` and `deploy/install-companion.sh` verify the release
 archive against a `checksums.txt` fetched from the same release. That detects
@@ -283,7 +133,7 @@ only the digest. The secrets file carries a second recipient. Rotation is a
 documented procedure with a date, because the first rotation will happen under
 pressure.
 
-### 8. Indirect prompt injection is unbounded
+### 6. Indirect prompt injection is unbounded
 
 `server/mcp.rs` and the chat relay feed document text and comments — hostile
 content by the definition above — to an agent that proposes edits and posts
@@ -296,10 +146,10 @@ its authority. That authority is already link-scoped
 (`server/assistant.rs:42`), which is the correct instinct and the actual
 mitigation.
 
-**Required.** Link-scoped agent authority is documented as a security property
-and covered by a test that fails if an owner session ever widens it. Agent
-writes are marked as agent writes in the timeline, so an injected edit is
-visible as one. LibrePaper does not claim to prevent injection.
+**Required.** Agent writes are marked as agent writes in the timeline, so an
+injected edit is visible as one. This touches the comment and history data
+model rather than a single decision, which is why it outlived the rest of this
+finding. LibrePaper does not claim to prevent injection.
 
 ## Non-goals
 
@@ -311,12 +161,28 @@ visible as one. LibrePaper does not claim to prevent injection.
 
 ## What is already sound
 
-Recorded so the list above reads as a set of decisions rather than a verdict:
-HMAC with domain separation and constant-time verification, PKCE, state
-cookies, `__Host-` cookie naming wherever the deployment is HTTPS, POST-only
-logout behind rule A, path rules that refuse `..`, dotfiles, control characters
-and deep trees (`document/paths.rs`), capabilities stored only as digests, 0600
-and 0700 on every secret and state directory, atomic key creation,
+Recorded so the list above reads as a set of decisions rather than a verdict.
+What this document used to ask for and no longer does, first:
+
+- **Two configured origins**, validated on every request in the outermost
+  middleware, with a startup refusal when the reader and document origins share
+  a host, and published documents reachable only on the second.
+- **One policy for every published document**: it may run its own code and may
+  not fetch code from another host. Quarto renders self-contained so it needs
+  none, and publishing reports the hosts of a document that does. Images,
+  fonts and connections deliberately still reach the open web, which is an
+  accepted leak rather than an oversight.
+- **Preset environments refuse loader and interpreter variables**, at
+  validation time, before any route that could set one exists.
+- **An agent's authority is the link it was given**, with a test that fails if
+  a caller's own session ever widens it.
+
+And, from the beginning: HMAC with domain separation and constant-time
+verification, PKCE, state cookies, `__Host-` cookie naming wherever the
+deployment is HTTPS, POST-only logout behind rule A, path rules that refuse
+`..`, dotfiles, control characters and deep trees (`document/paths.rs`),
+capabilities stored only as digests, 0600 and 0700 on every secret and state
+directory, atomic key creation,
 `x-content-type-options` and `no-referrer` throughout, postMessage
 authenticated at both ends — origin-checked inbound on the reader
 (`web/src/components/Preview.svelte:50`), source-checked inbound in the frame
@@ -329,16 +195,16 @@ teardown.
 
 ## Order of work
 
-Finding 1 is done, and so is the loader-variable denial in finding 3. What is
-left, in order:
-
-1. The strict document policy, finding 2. The largest piece of work here and
-   the only finding a hostile document author can act on with no operator
-   mistake at all.
-2. Backup encryption, finding 4.
-3. The rest of finding 3: grants that name the editors and the source identity
+1. Backup encryption, finding 2. Self-contained, and it blocks nothing else.
+2. The rest of finding 1: grants that name the editors and the source identity
    they trust, and a settings surface that lists and revokes them apart from
-   pairings. Larger than the denial above, and it needs a design decision about
-   what counts as an approved source identity.
-4. Release signing and the second secrets recipient, finding 7.
-5. Everything else, in the order the manual needs it.
+   pairings. It needs a design decision first, about what counts as an approved
+   source identity.
+3. Link lifetime, finding 3. Extending an existing grant in place should come
+   before shortening the default: there is no renew operation today, minting
+   replaces the row and drops its guests, so a shorter default alone would
+   force a redistribution every month and push people to `never`.
+4. Release signing and the second secrets recipient, finding 5.
+5. Marking agent writes in the timeline, finding 6.
+6. The presence and mirror items in finding 4, in the order the manual needs
+   them.
