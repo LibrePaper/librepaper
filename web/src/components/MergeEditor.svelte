@@ -2,11 +2,12 @@
   // A compact two pane merge editor. The old checkpoint is deliberately
   // read-only; the live side is editable and is written back through the
   // caller after every accepted hunk or manual edit.
-  import { EditorState } from "@codemirror/state";
+  import { EditorState, Prec } from "@codemirror/state";
   import { EditorView, lineNumbers, keymap } from "@codemirror/view";
   import { defaultKeymap, indentWithTab } from "@codemirror/commands";
   import { MergeView } from "@codemirror/merge";
-  import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "../../vendor/loro-codemirror/index.ts";
+  import { LoroExtensions } from "../../vendor/loro-codemirror/index.ts";
+  import { undoManagerField, undo as undoCommand, redo as redoCommand } from "../lib/loro-undo.js";
   import { UndoManager } from "loro-crdt";
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import IconButton from "./IconButton.svelte";
@@ -37,9 +38,14 @@
   // is a textbox, and two unnamed textboxes side by side are two of "edit
   // text" with nothing to tell them apart.
   function extensions(readOnly = false, collaborative = false, side = "", loroDoc = null, loroText = null, undoManager = null) {
+    // Ours has to outrank the Mod-z LoroExtensions binds at Prec.high, and
+    // `undoManagerField` hands it the same manager. See lib/loro-undo.js.
     const keyboardExtensions = collaborative && loroDoc && loroText && undoManager
-      ? [{ key: "Mod-z", run: undoCommand, preventDefault: true },
-         { key: "Mod-Shift-z", run: redoCommand, preventDefault: true }]
+      ? [undoManagerField.init(() => undoManager),
+         Prec.highest(keymap.of([
+           { key: "Mod-z", run: undoCommand, preventDefault: true },
+           { key: "Mod-Shift-z", run: redoCommand, preventDefault: true },
+         ]))]
       : [];
     const collaborativeExtensions = collaborative && loroDoc && loroText && undoManager
       ? [LoroExtensions(loroDoc, undefined, undoManager, () => loroText)]
@@ -47,7 +53,8 @@
     return [
       EditorView.contentAttributes.of({ "aria-label": side || "Source" }),
       lineNumbers(),
-      keymap.of([indentWithTab, ...defaultKeymap, ...keyboardExtensions]),
+      keymap.of([indentWithTab, ...defaultKeymap]),
+      ...keyboardExtensions,
       EditorView.lineWrapping,
       ...collaborativeExtensions,
       ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),

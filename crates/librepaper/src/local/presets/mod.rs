@@ -391,6 +391,46 @@ impl PresetStore {
     }
 }
 
+/// Environment names a preset may not set, because each one chooses code that
+/// an engine loads before it reads a single line of the document. A preset
+/// runs the user's real compilers on the user's own machine, so this is the
+/// difference between "run latexmk with these options" and "run this library
+/// instead of libc".
+///
+/// Checked when a preset is validated rather than where the environment is
+/// applied, which is before any route that could set one exists. Nothing today
+/// lets a browser add an environment entry; this is here so that the day a
+/// route does, it inherits the refusal rather than needing to remember it.
+///
+/// Prefixes where the namespace is the thing: a dynamic loader honors a long
+/// and version-dependent list of `LD_*` and `DYLD_*` names, so enumerating
+/// them is a losing game. Exact names elsewhere, covering the interpreters the
+/// engines actually embed -- Python and R through Quarto, Perl through biber
+/// and latexmk -- and covering both the "load code from here" and "run this
+/// code at startup" forms, since refusing only the first is theatre.
+///
+/// `TEXINPUTS` and its siblings are deliberately absent. They are a legitimate
+/// thing for a preset to set, a TeX run is already confined by its own
+/// shell-escape policy, and refusing them would break real configurations to
+/// no benefit.
+fn refused_environment(name: &str) -> Option<&'static str> {
+    let upper = name.trim().to_ascii_uppercase();
+    if upper.starts_with("LD_") || upper.starts_with("DYLD_") {
+        return Some("it directs the dynamic loader");
+    }
+    match upper.as_str() {
+        "PYTHONPATH" | "PYTHONHOME" => Some("it redirects where Python imports from"),
+        "PYTHONSTARTUP" => Some("it runs Python code before the document does"),
+        "PERL5LIB" => Some("it redirects where Perl loads modules from"),
+        "PERL5OPT" => Some("it passes arbitrary options to every Perl process"),
+        _ if upper.starts_with("R_LIBS") => Some("it redirects where R loads packages from"),
+        "R_PROFILE" | "R_PROFILE_USER" | "R_ENVIRON" | "R_ENVIRON_USER" => {
+            Some("it runs R code at startup")
+        }
+        _ => None,
+    }
+}
+
 fn validate_preset(preset: &Preset) -> Result<(), String> {
     if preset.id.len() > 128 || (!preset.id.is_empty() && !safe_id(&preset.id)) {
         return Err("invalid preset id".into());
@@ -405,6 +445,14 @@ fn validate_preset(preset: &Preset) -> Result<(), String> {
         bounded_text(value, "preset value")?;
         if name.contains('=') || name.contains('\0') {
             return Err("invalid preset key".into());
+        }
+    }
+    for name in preset.environment.keys() {
+        if let Some(reason) = refused_environment(name) {
+            return Err(format!(
+                "preset environment may not set {name}: {reason}. A preset names a compiler \
+                 and its options; it is not a way to choose what code that compiler loads."
+            ));
         }
     }
     for (name, kind) in &preset.option_schema {
@@ -512,6 +560,64 @@ mod tests {
                 "paper.tex"
             )
             .is_err());
+    }
+
+    #[test]
+    fn a_preset_may_not_choose_what_code_an_engine_loads() {
+        for name in [
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "ld_preload",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONSTARTUP",
+            "PERL5LIB",
+            "PERL5OPT",
+            "R_LIBS",
+            "R_LIBS_USER",
+            "R_LIBS_SITE",
+            "R_PROFILE_USER",
+            "R_ENVIRON",
+            " LD_PRELOAD ",
+        ] {
+            let mut value = preset();
+            value.environment.insert(name.into(), "/tmp/evil".into());
+            let Err(error) = validate_preset(&value) else {
+                panic!("{name} should be refused before it can reach an engine");
+            };
+            assert!(error.contains(name), "{name}: {error}");
+        }
+    }
+
+    /// The denial is narrow on purpose: a preset that configures a compiler is
+    /// the whole point of the feature, and refusing ordinary build variables
+    /// would break real configurations without closing anything.
+    #[test]
+    fn ordinary_build_environment_is_still_allowed() {
+        for name in ["TEXINPUTS", "BIBINPUTS", "QUARTO_PYTHON", "LANG", "HOME"] {
+            let mut value = preset();
+            value.environment.insert(name.into(), "/usr/share".into());
+            assert!(
+                validate_preset(&value).is_ok(),
+                "{name} should still be allowed"
+            );
+        }
+    }
+
+    /// The refusal reads the environment map, not the options map: an option
+    /// called `PYTHONPATH` is a compiler flag with an unlucky name, and it is
+    /// never put into a process environment.
+    #[test]
+    fn an_option_is_not_an_environment_entry() {
+        let mut value = preset();
+        value.options.insert("PYTHONPATH".into(), "whatever".into());
+        value
+            .option_schema
+            .insert("PYTHONPATH".into(), OptionType::String);
+        assert!(validate_preset(&value).is_ok());
     }
 
     #[test]

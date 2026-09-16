@@ -17,7 +17,9 @@ import { test } from "node:test";
 import { ChangeSet, EditorState, Transaction } from "@codemirror/state";
 import { LoroDoc, LoroText, UndoManager } from "loro-crdt";
 import { LoroSyncPluginValue, loroSyncAnnotation } from "../../vendor/loro-codemirror/sync.ts";
-import { UndoPluginValue, redo, undo, undoManagerStateField } from "../../vendor/loro-codemirror/undo.ts";
+import { UndoPluginValue } from "../../vendor/loro-codemirror/undo.ts";
+// `undo` and `redo` are ours, not the binding's -- see lib/loro-undo.js.
+import { redo, undo, undoManagerField } from "../../src/lib/loro-undo.js";
 
 class View {
   constructor(state) {
@@ -97,7 +99,7 @@ const setup = async ({ initial } = {}) => {
   const manager = new UndoManager(doc, { excludeOriginPrefixes: ["directory"] });
   const view = new View(EditorState.create({
     doc: initial ?? getText(doc).toString(),
-    extensions: [undoManagerStateField.init(() => manager)],
+    extensions: [undoManagerField.init(() => manager)],
   }));
   const sync = view.attach(new LoroSyncPluginValue(view, doc, getText));
   view.attach(new UndoPluginValue(view, doc, manager, getText));

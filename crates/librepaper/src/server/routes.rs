@@ -1111,10 +1111,7 @@ impl Server {
             set(
                 &mut response,
                 "content-security-policy",
-                &format!(
-                    "default-src 'self' data: blob: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; style-src 'self' 'unsafe-inline' data: blob: https:; frame-ancestors {}; form-action 'none'; base-uri 'none'",
-                    arrival.reader_origin()
-                ),
+                &document_policy(&arrival.reader_origin()),
             );
         }
         privacy_headers(&mut response);
@@ -1322,6 +1319,89 @@ impl Server {
         // change to the agent or to the viewer.
         set(&mut response, "cache-control", "no-store");
         response
+    }
+}
+
+/// The policy every published document renders under. One policy, the same for
+/// every document and every reader, because a policy a reader can switch is a
+/// policy nobody can reason about and a response nobody can cache.
+///
+/// The rule it encodes is one sentence: **a document may run its own code, and
+/// may not fetch code from somewhere else.**
+///
+/// `'unsafe-inline'` and `'unsafe-eval'` stay, and they cost nothing here. They
+/// are dangerous on a page that mixes trusted markup with untrusted input,
+/// because they let injected script run with the page's authority. A published
+/// document has no such mixture. It is untrusted in its entirety and sealed in
+/// its own origin, so its inline script *is* the document; refusing it would
+/// break most Quarto and pandoc output to protect nothing.
+///
+/// What is refused is `https:` in `script-src`. That is not about danger per
+/// byte, it is about a second party and a later time: code fetched at read time
+/// was never reviewed with the document, the author can change it afterwards,
+/// and whoever serves it can be compromised into every reader's frame. `data:`
+/// and `blob:` remain because they are the document's own bytes, not a host.
+///
+/// Images, fonts, styles and network connections deliberately still reach the
+/// open web. A document can therefore still tell its author who opened it and
+/// when. That is a known and accepted leak, written down in `docs/privacy.md`
+/// rather than engineered away, and it is why an author who needs a reader to
+/// stay anonymous cannot get that from this policy.
+fn document_policy(reader_origin: &str) -> String {
+    format!(
+        "default-src 'self' data: blob: https:; \
+         script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; \
+         style-src 'self' 'unsafe-inline' data: blob: https:; \
+         frame-ancestors {reader_origin}; form-action 'none'; base-uri 'none'"
+    )
+}
+
+#[cfg(test)]
+mod document_policy_tests {
+    use super::document_policy;
+
+    #[test]
+    fn a_document_may_not_fetch_code_from_another_host() {
+        let policy = document_policy("https://paper.example");
+        let script = policy
+            .split("; ")
+            .find(|part| part.starts_with("script-src "))
+            .expect("the policy names a script source");
+        assert!(
+            !script.contains("https:"),
+            "script-src must not admit another host: {script}"
+        );
+        // Its own bytes, in every form the document can write them.
+        for own in [
+            "'self'",
+            "'unsafe-inline'",
+            "'unsafe-eval'",
+            "data:",
+            "blob:",
+        ] {
+            assert!(
+                script.contains(own),
+                "script-src should keep {own}: {script}"
+            );
+        }
+    }
+
+    /// The accepted leak, asserted so that closing it is a deliberate act with
+    /// a failing test to update, rather than a quiet change of mind.
+    #[test]
+    fn images_and_connections_still_reach_the_open_web() {
+        let policy = document_policy("https://paper.example");
+        assert!(policy.contains("default-src 'self' data: blob: https:"));
+        assert!(!policy.contains("connect-src"));
+        assert!(!policy.contains("img-src"));
+    }
+
+    #[test]
+    fn the_framing_reader_is_named_and_the_classic_paths_stay_shut() {
+        let policy = document_policy("https://paper.example");
+        assert!(policy.contains("frame-ancestors https://paper.example"));
+        assert!(policy.contains("form-action 'none'"));
+        assert!(policy.contains("base-uri 'none'"));
     }
 }
 

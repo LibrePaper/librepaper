@@ -209,7 +209,7 @@ impl PublicationStore {
         request_id: &str,
         expected: &str,
         manifest: &PublicationManifest,
-    ) -> Result<PublicationManifest, PublicationError> {
+    ) -> Result<Activated, PublicationError> {
         validate_manifest(manifest)?;
         let staged = self
             .staged_manifest(storage_id, request_id)
@@ -234,11 +234,15 @@ impl PublicationStore {
             return Err(PublicationError::Conflict);
         }
         let mut files = Vec::with_capacity(manifest.assets.len() + 2);
+        let index = self
+            .read_staged(storage_id, request_id, &manifest.html)
+            .await?;
+        // Read once, while the bytes are already here, so the author learns at
+        // publish time that part of their document will not load.
+        let foreign_scripts = external_script_sources(&String::from_utf8_lossy(&index)).join(", ");
         files.push(PublicationFile {
             path: "index.html".into(),
-            bytes: self
-                .read_staged(storage_id, request_id, &manifest.html)
-                .await?,
+            bytes: index,
             media_type: manifest.html.mime.clone(),
         });
         for asset in &manifest.assets {
@@ -269,9 +273,14 @@ impl PublicationStore {
             })
             .await
             .map_err(|e| PublicationError::Storage(e.to_string()))?;
-        self.current(storage_id)
+        let current = self
+            .current(storage_id)
             .await?
-            .ok_or(PublicationError::Missing)
+            .ok_or(PublicationError::Missing)?;
+        Ok(Activated {
+            manifest: current,
+            foreign_scripts,
+        })
     }
     pub async fn current(
         &self,
@@ -488,5 +497,155 @@ fn decode_bounded(v: &[u8], limit: usize) -> Result<Vec<u8>, PublicationError> {
         Err(PublicationError::TooLarge)
     } else {
         Ok(out)
+    }
+}
+
+/// What activating a publication produced: the committed manifest, and any
+/// hosts the document tries to fetch code from. The second is advice for the
+/// author rather than a failure, so it rides alongside rather than replacing
+/// the result.
+pub struct Activated {
+    pub manifest: PublicationManifest,
+    /// Comma-separated hosts, empty when the document is self-contained.
+    pub foreign_scripts: String,
+}
+
+/// Script sources a published document fetches from another host.
+///
+/// The policy in `document_policy` lets a document run its own code and
+/// refuses code fetched from elsewhere, so these references will not load for
+/// any reader. The person who can fix that is the author, who is standing in
+/// front of the publish button with the source open; the reader can only see a
+/// paper that quietly does not work. So this runs at publish time and the
+/// answer is reported back rather than enforced -- publishing still succeeds,
+/// because refusing it would be a poor trade the first time this fires on a
+/// document somebody needs out today.
+///
+/// Quarto's `embed-resources` output has none of these: it inlines every
+/// script as a `data:` URL and every figure and stylesheet with it, which the
+/// policy allows in full. That is the fix to recommend, and it is why the
+/// message names it.
+///
+/// A deliberately small scanner rather than a parser. It over-reports rather
+/// than under-reports: a `src` inside a comment or a string is still worth an
+/// author's glance, and nothing here decides whether bytes are served.
+pub fn external_script_sources(html: &str) -> Vec<String> {
+    let lowered = html.to_ascii_lowercase();
+    let mut found: Vec<String> = Vec::new();
+    let mut at = 0usize;
+    while let Some(start) = lowered[at..].find("<script") {
+        let open = at + start;
+        // Only a tag, not a name that merely begins with one: `<scriptfoo`.
+        let after = lowered[open + 7..].chars().next();
+        if !matches!(after, Some(c) if c.is_whitespace() || c == '>' || c == '/') {
+            at = open + 7;
+            continue;
+        }
+        let end = lowered[open..]
+            .find('>')
+            .map(|e| open + e)
+            .unwrap_or(lowered.len());
+        if let Some(value) = attribute(&lowered[open..end], "src") {
+            if let Some(host) = foreign_host(&value) {
+                if !found.contains(&host) {
+                    found.push(host);
+                }
+            }
+        }
+        at = end.max(open + 7);
+    }
+    found
+}
+
+/// The value of one attribute inside a single tag, quoted either way.
+fn attribute(tag: &str, name: &str) -> Option<String> {
+    let mut at = 0usize;
+    while let Some(found) = tag[at..].find(name) {
+        let start = at + found;
+        // Preceded by whitespace, so `data-src` is not `src`.
+        let before = tag[..start].chars().last();
+        let rest = tag[start + name.len()..].trim_start();
+        at = start + name.len();
+        if !matches!(before, Some(c) if c.is_whitespace()) {
+            continue;
+        }
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let quote = rest.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            continue;
+        }
+        let body = &rest[quote.len_utf8()..];
+        return body.find(quote).map(|e| body[..e].trim().to_string());
+    }
+    None
+}
+
+/// The host a script source names, if it names one at all. `data:` and `blob:`
+/// are the document's own bytes and relative paths are the deployment's, so
+/// neither is foreign; a protocol-relative `//host/x` is.
+fn foreign_host(value: &str) -> Option<String> {
+    let value = value.trim();
+    let rest = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+        .or_else(|| value.strip_prefix("//"))?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+#[cfg(test)]
+mod external_script_tests {
+    use super::external_script_sources;
+
+    #[test]
+    fn a_documents_own_code_is_not_foreign() {
+        let html = r#"
+            <script>window.x = 1</script>
+            <script src="data:application/javascript;base64,YQ=="></script>
+            <script src="assets/plot.js"></script>
+            <script src="/agent.js"></script>
+            <script src="blob:something"></script>
+            <img src="https://tracker.example/pixel.png">
+        "#;
+        assert!(external_script_sources(html).is_empty());
+    }
+
+    #[test]
+    fn code_fetched_from_another_host_is_reported_once_per_host() {
+        let html = r#"
+            <script src="https://cdn.example/plotly.js"></script>
+            <script SRC='http://cdn.example/other.js'></script>
+            <script src="//unpkg.example/thing.js" defer></script>
+        "#;
+        assert_eq!(
+            external_script_sources(html),
+            vec!["cdn.example".to_string(), "unpkg.example".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_similar_attribute_or_tag_is_not_mistaken_for_one() {
+        let html = r#"
+            <script data-src="https://cdn.example/a.js">inline</script>
+            <scriptish src="https://cdn.example/b.js"></scriptish>
+            <div src="https://cdn.example/c.js"></div>
+        "#;
+        assert!(external_script_sources(html).is_empty());
+    }
+
+    /// The real shape this has to get right: what Quarto actually emits with
+    /// `embed-resources`, which is every script as a base64 `data:` URL.
+    #[test]
+    fn quarto_embedded_output_reports_nothing() {
+        let html = concat!(
+            "<script src=\"data:application/javascript;base64,Ly8gdGFic2V0cw==\"></script>",
+            "<link href=\"data:text/css;base64,YQ==\" rel=\"stylesheet\">",
+            "<img src=\"data:image/png;base64,YQ==\">",
+            "<script>function x(){}</script>"
+        );
+        assert!(external_script_sources(html).is_empty());
     }
 }

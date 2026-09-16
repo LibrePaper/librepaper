@@ -157,9 +157,19 @@ silently authorize a newly arriving collaborator.
   a trusted editor. A newly authenticated or newly granted editor, or a source
   revision outside the approved identity, suspends execution until the person
   who granted it approves again.
-- `Preset.environment` refuses loader and interpreter variables (`LD_PRELOAD`,
-  `LD_LIBRARY_PATH`, `DYLD_*`, `PYTHONPATH`, `PERL5LIB`, `R_LIBS*`) at
-  validation time, before any route that could set them exists.
+- **Settled.** `Preset.environment` refuses loader and interpreter variables
+  at validation time, before any route that could set them exists.
+  `refused_environment` denies the `LD_*` and `DYLD_*` namespaces whole,
+  because a loader honors a long and version-dependent list and enumerating it
+  is a losing game, and denies by exact name for the interpreters the engines
+  embed: Python and R through Quarto, Perl through biber and latexmk. It
+  covers both the "load code from here" and the "run this code at startup"
+  forms, since refusing only the first would be theatre. The check is
+  case-insensitive and reads the environment map only, so an option that
+  happens to share a name is unaffected. `TEXINPUTS` and its siblings are
+  deliberately allowed: a preset configuring a compiler is the point of the
+  feature, a TeX run is confined by its own shell-escape policy, and refusing
+  them would break real configurations for nothing.
 - Companion settings list live execution grants with their origin, document,
   trusted editor identities, approved source identity, entrypoint and expiry,
   and revoke them individually. Pairing tokens and execution grants are shown
@@ -272,14 +282,16 @@ teardown.
 
 ## Order of work
 
-Finding 1 is done. What is left, in order:
+Finding 1 is done, and so is the loader-variable denial in finding 3. What is
+left, in order:
 
-1. The loader-variable denial in finding 3, before a route can reach presets.
-   A few lines, purely additive, and awkward to add once a route depends on
-   the behavior.
-2. The strict document policy, finding 2. The largest piece of work here and
+1. The strict document policy, finding 2. The largest piece of work here and
    the only finding a hostile document author can act on with no operator
    mistake at all.
-3. Backup encryption, finding 4.
+2. Backup encryption, finding 4.
+3. The rest of finding 3: grants that name the editors and the source identity
+   they trust, and a settings surface that lists and revokes them apart from
+   pairings. Larger than the denial above, and it needs a design decision about
+   what counts as an approved source identity.
 4. Release signing and the second secrets recipient, finding 7.
 5. Everything else, in the order the manual needs it.

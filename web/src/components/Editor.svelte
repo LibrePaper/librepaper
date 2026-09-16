@@ -4,7 +4,7 @@
   // reconfigures the live editor without dropping the caret, the scroll
   // position or the undo history.
   import { Compartment } from "@codemirror/state";
-  import { undo as undoFn, redo as redoFn } from "../../vendor/loro-codemirror/index.ts";
+  import { undo as undoFn, redo as redoFn } from "../lib/loro-undo.js";
   import { keymap } from "@codemirror/view";
 
   // The keys the editor answers to: Vim's, Emacs's, or nothing extra. One
@@ -92,7 +92,7 @@
   // same LoroDoc, and each file has a LoroText within it. Two people typing
   // in the same sentence converge without either waiting for the other, and
   // each of them keeps their own caret, selection and undo history.
-  import { EditorState, Transaction } from "@codemirror/state";
+  import { EditorState, Prec, Transaction } from "@codemirror/state";
   import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, dropCursor, rectangularSelection, drawSelection } from "@codemirror/view";
   import { defaultKeymap, indentWithTab, selectAll } from "@codemirror/commands";
   import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, startCompletion } from "@codemirror/autocomplete";
@@ -106,7 +106,8 @@
     setDiagnostics as setLintDiagnostics,
     openLintPanel,
   } from "@codemirror/lint";
-  import { LoroExtensions, undo as undoCommand, redo as redoCommand } from "../../vendor/loro-codemirror/index.ts";
+  import { LoroExtensions } from "../../vendor/loro-codemirror/index.ts";
+  import { undoManagerField, undo as undoCommand, redo as redoCommand } from "../lib/loro-undo.js";
   import { UndoManager } from "loro-crdt";
 
   import { typstLanguage } from "../lib/typst-mode.js";
@@ -793,8 +794,6 @@
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
-          { key: "Mod-z", run: undoCommand, preventDefault: true },
-          { key: "Mod-Shift-z", run: redoCommand, preventDefault: true },
           ...closeBracketsKeymap,
           ...foldKeymap,
           indentWithTab,
@@ -804,6 +803,16 @@
           // Ctrl-Shift-M opens the list of what the compiler said.
           ...lintKeymap,
         ]),
+        // Undo and redo are ours, not the binding's. The binding binds Mod-z
+        // at Prec.high from inside LoroExtensions, so ours has to outrank it
+        // to be the one that runs; `undoManagerField` hands it the same
+        // manager the binding was given. See lib/loro-undo.js for why.
+        undoManagerField.init(() => undoManager),
+        Prec.highest(keymap.of([
+          { key: "Mod-z", run: undoCommand, preventDefault: true },
+          { key: "Mod-y", mac: "Mod-Shift-z", run: redoCommand, preventDefault: true },
+          { key: "Mod-Shift-z", run: redoCommand, preventDefault: true },
+        ])),
         // The shared document, and everyone else's cursors in it. The editor
         // is bound to one text at a time (the one in 'showing'), and the
         // getTextFromDoc function returns that text. Multiple editors may be

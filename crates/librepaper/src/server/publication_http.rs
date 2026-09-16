@@ -210,14 +210,33 @@ impl Server {
                 .activate(&entry.storage_id, &request_id, expected, &manifest)
                 .await
             {
-                Ok(committed) => {
+                Ok(activated) => {
+                    let committed = activated.manifest;
                     if let Ok(room) = self.rooms.try_get(slug).await {
                         room.broadcast(&json!({"type": "publication-updated", "publication_id": committed.publication_id})).await;
                     }
-                    write_json(
-                        200,
-                        &json!({"publication": self.publication_metadata(&entry, &who, arrival, &committed).await}),
-                    )
+                    // Published, and then told what will not work. A document
+                    // that fetches code from elsewhere is refused that code by
+                    // the reader policy, and the author is the only person who
+                    // can fix it -- the reader would just see a paper that
+                    // quietly does not work.
+                    let mut body = json!({
+                        "publication": self.publication_metadata(&entry, &who, arrival, &committed).await
+                    });
+                    if !activated.foreign_scripts.is_empty() {
+                        body["warnings"] = json!([{
+                            "kind": "external-scripts",
+                            "hosts": activated.foreign_scripts,
+                            "message": format!(
+                                "This document loads code from {}, which readers will not run. \
+                                 Published documents may run their own code but may not fetch code \
+                                 from another host. Re-render with resources embedded (Quarto: \
+                                 embed-resources: true) so the document carries its own scripts.",
+                                activated.foreign_scripts
+                            ),
+                        }]);
+                    }
+                    write_json(200, &body)
                 }
                 Err(error) => publication_error(error),
             },

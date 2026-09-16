@@ -14,13 +14,13 @@
 # `make loro-update COMMIT=<full sha>` and review the diff.
 
 repository  vincentarelbundock/loro-codemirror
-commit      ddbc6e7f559c78613f002010fcf6a6cbeff99b7a
+commit      1c6f37704af5fb02547609513d39511c716953a7
 
 # path              sha256
-src/index.ts        6ec28eb2245cac727a24295b6d5dfdce78caf90b6635e0dd76f29e1f87c0cfdd
-src/sync.ts         6433241d8ade98d38a729616995d5dd8eca2bb815110da9abd6cd022cb56481d
-src/undo.ts         48b0f38e0ccae721c4f75855fb3ba15d051c1e8f731e3b41aec0c7ea1059835e
-src/awareness.ts    e433ebe325307ca3d89b1824e79f4aabb1dd838ae391da074ad1aad7eccea9c8
-src/ephemeral.ts    94f7d0ee76cb5c5be72109fd9561f621a99086b5a2b7269a045ec551933d771d
-src/utils.ts        fd6164fa4cbc6e9e806d8d1f718b3963a45b44057f3e9b553810d3aade450835
-LICENSE             151ad01fa0c61039e8dca81685a220e8c4952093487c225ca85e3ecde02914d3
+src/index.ts      6ec28eb2245cac727a24295b6d5dfdce78caf90b6635e0dd76f29e1f87c0cfdd
+src/sync.ts       6433241d8ade98d38a729616995d5dd8eca2bb815110da9abd6cd022cb56481d
+src/undo.ts       25590b968b40606dc60d2895c39c6a4e5530cbc5b58489ba09eb3573bd39d14a
+src/awareness.ts  e433ebe325307ca3d89b1824e79f4aabb1dd838ae391da074ad1aad7eccea9c8
+src/ephemeral.ts  94f7d0ee76cb5c5be72109fd9561f621a99086b5a2b7269a045ec551933d771d
+src/utils.ts      fd6164fa4cbc6e9e806d8d1f718b3963a45b44057f3e9b553810d3aade450835
+LICENSE           151ad01fa0c61039e8dca81685a220e8c4952093487c225ca85e3ecde02914d3
