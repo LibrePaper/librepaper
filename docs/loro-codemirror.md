@@ -2,7 +2,7 @@
 
 Upstream is <https://github.com/loro-dev/loro-codemirror>, MIT. The fork is
 <https://github.com/vincentarelbundock/loro-codemirror>, and it is that
-package's `src/` with five changes to it, plus a test suite of its own at
+package's `src/` with four changes to it, plus a test suite of its own at
 `web/tests/unit/loro-codemirror.mjs`.
 
 **The source is not in this repository.** `make loro-codemirror` fetches it
@@ -93,35 +93,33 @@ hold the edit. That is a concurrent-edit race rather than a batching fault, and
 nothing in this binding maps positions across it. Imports arrive from the
 network, on their own task, so it is not a sequence CodeMirror produces.
 
-### Five, in `undo.ts`: the undo happened inside a state field
+### Not in the fork: undo and redo as commands
 
-`undoManagerStateField.update` called `UndoManager.undo()`. A state field's
-update has to be a pure function of what it is handed -- CodeMirror runs it
-while it is computing the new state, before that state exists -- and
-`UndoManager.undo()` writes to the document. Loro delivers the resulting event
-synchronously, so `UndoPluginValue`'s subscriber called `view.dispatch` from
-inside the dispatch that was still being computed.
+There was a fifth change here, and it has moved to `web/src/lib/loro-undo.js`,
+which is the only one of the five a caller can own.
 
-The inner transaction then updated the view against a state the outer one was
-about to replace, and the two ended up apart by exactly the text that had been
-undone. What a user saw was a crash from deep inside CodeMirror's view --
-`Cannot destructure property 'tile' of 'o.pop(...)'`, thrown while walking a
-tile tree whose length no longer matched its document -- with nothing in it
-naming Loro, undo, or this package.
+`undo(view)` in the binding dispatches a `StateEffect`, and
+`undoManagerStateField.update` undoes the document when it sees it. A state
+field's update has to be a pure function of what it is handed -- CodeMirror
+runs it while computing the new state -- so upstream defers the call with
+`queueMicrotask` (their PR 19) to keep the write out of the transaction it was
+asked in. That is enough to stop it re-entering: the crash it used to cause,
+`Cannot destructure property 'tile' of 'o.pop(...)'` from inside the view, is
+upstream's own fixed bug and not something this build can still hit.
 
-`undo()` and `redo()` now ask the manager directly. They are commands, so they
-run between transactions, which is the one place it is safe to move the
-document; the change comes back as a dispatch of its own. They also return
-`false` when there is nothing to undo, so the key falls through, which is what
-a CodeMirror command is expected to do.
+What is left is smaller. The undo happens a microtask after the keystroke
+rather than in it, and the command returns `true` whether or not there was
+anything to take back, so the key never falls through to whatever is bound
+behind it. Asking the manager from the command is simply better: a command runs
+between transactions, which is the one place it is safe to move the document.
 
-With the field no longer acting on them, `undoEffect` and `redoEffect` would
-be exports that compile, run and do nothing, so they are removed rather than
-left as a trap. Anyone dispatching one should call `undo(view)` or
-`redo(view)`, which is what the keymap already did.
-
-Each change carries a comment at the point of it saying what upstream does and
-why it is wrong here.
+It is not worth a breaking change to someone else's package -- removing
+`undoEffect` and `redoEffect` is what carrying it upstream would cost -- and
+it does not need to be in the package at all, because this build constructs the
+`UndoManager` itself and hands it to `LoroExtensions`. `lib/loro-undo.js`
+keeps it in a `StateField` of ours and binds the keys at `Prec.highest`, above
+the `Prec.high` `LoroExtensions` binds its own Mod-z at. Nothing in that file
+refers to `web/vendor`, so it survives the switch back to the package.
 
 ## The tests
 
@@ -133,11 +131,11 @@ the plugins the fields of a `ViewUpdate` they read. No DOM, so it runs under
 `--experimental-transform-types`, which the `check` script passes, because
 they use constructor parameter properties that plain type stripping rejects.
 
-Against upstream 0.4.0 the suite fails four of its eight cases (the import
-with a map event, both undo cases, and the mixed update). Against the
-vendored copy as of the 2026-09-16 reconcile it fails five, the extra one
-being the dropped first edit. Rerun it that way before trusting a change
-here: copy the other version over `sync.ts` and `undo.ts`, run, restore.
+Against upstream 0.4.0 the suite fails three of its eight cases: the import
+with a map event, the undo with a map event, and the mixed update. Those three
+are exactly the faults a caller cannot work around, which is the whole of what
+the fork is for. Rerun it that way before trusting a change here: copy
+upstream's `sync.ts` and `undo.ts` over the vendored ones, run, restore.
 
 ## Why a fork and not a patch on disk
 
@@ -148,27 +146,33 @@ than bundled output.
 
 ## What to do with it
 
-All five faults are on the fork's `fix-multi-container-events`, one commit
-each plus a changeset, at `ddbc6e7`. That branch is what this build fetches,
+The four faults are on the fork's `fix-multi-container-events`, one commit
+each plus a changeset, at `1c6f377`. That branch is what this build fetches,
 so the thing the editor runs and the thing waiting to be offered upstream are
 the same bytes -- which is the point of fetching rather than vendoring.
+
+The fifth commit is not on it. It lives on `fix-undo-redo-commands`, is not
+fetched by anything, and is kept only so the reasoning is not lost;
+`lib/loro-undo.js` is what this build actually runs.
 
 **The pull request has not been opened.** The branch is ready; opening it is a
 decision about putting your name on the claim, and upstream is alive enough
 for it to matter: an outside issue filed 2026-09-02 was fixed and released by
 2026-09-13.
 
-Fault five goes upstream after all. It was held back on the reasoning that
-upstream's `queueMicrotask` inside the state field gets the write out of the
-update the same way moving it to a command does, making it a difference of
-approach rather than a bug. The test suite here disproves that: against the
-branch carrying upstream's `queueMicrotask`, both undo cases fail. Deferring
-the write is not sufficient. The commit says so, and flags the removal of
-`undoEffect`/`redoEffect` as the breaking change it is.
+Fault five is not going upstream. The two undo cases that fail against
+upstream's `queueMicrotask` fail on the command contract -- a synchronous
+undo, and `false` when there is nothing to take back -- not on the document
+ending up wrong, and with `lib/loro-undo.js` supplying the commands they pass
+against upstream unchanged. Offering it would mean asking upstream to drop two
+exported symbols for a difference of approach in code this build no longer
+depends on them for.
 
 When a release contains the fixes: delete `loro-codemirror.lock`, the two
 tools under `web/tools`, the `loro-codemirror` and `loro-update` targets and
 the `$(LCM)` prerequisite in the Makefile, and the gitignore entry; restore
-the dependency in `web/package.json`; point the imports in `Editor.svelte` and
-`MergeEditor.svelte` back at the package name; and keep the test, pointed at
-the package, since it is the only thing that checks any of this.
+the dependency in `web/package.json`; point the `LoroExtensions` imports in
+`Editor.svelte` and `MergeEditor.svelte`, and the two plugin-value imports in
+the test, at the package name. `lib/loro-undo.js` and everything importing it
+stay as they are -- that is why the manager sits in a field of ours. Keep the
+test, since it is the only thing that checks any of this.

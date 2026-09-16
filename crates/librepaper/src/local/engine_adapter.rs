@@ -193,6 +193,20 @@ impl QuartoInvocationPlan {
             .arg(output)
             .arg("--lua-filter")
             .arg(filter);
+        if html_output(&self.format) {
+            // Published documents may run their own code and may not fetch code
+            // from another host, which is the reader policy in
+            // `server::routes::document_policy`. Quarto's default HTML output
+            // loads MathJax and a polyfill from public delivery networks, so a
+            // document rendered without this would lose its mathematics for
+            // every reader and would tell those networks who was reading it.
+            //
+            // Forced rather than defaulted. An author who sets
+            // `embed-resources: false` is asking for output this deployment
+            // cannot serve intact, so honoring it would only produce a broken
+            // paper. The pandoc builder already does the same thing.
+            command.arg("--standalone").arg("--embed-resources");
+        }
         match self.policy {
             super::protocol::QuartoRenderPolicy::ProjectDefaults => {}
             super::protocol::QuartoRenderPolicy::RefreshComputations => {
@@ -330,9 +344,65 @@ pub fn quarto_shared_paths(
     Ok(selected)
 }
 
+/// Whether a Quarto format produces a web page, and so has to carry its own
+/// resources. `pdf` and `docx` are self-contained by construction.
+fn html_output(format: &str) -> bool {
+    matches!(format, "html" | "revealjs")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rendered_args(format: &str) -> Vec<String> {
+        let plan = QuartoInvocationPlan {
+            main: "paper.qmd".into(),
+            format: format.into(),
+            render_scope: crate::local::protocol::QuartoRenderScope::Document,
+            policy: crate::local::protocol::QuartoRenderPolicy::ProjectDefaults,
+            profile: None,
+            parameters: Vec::new(),
+        };
+        let mut command = Command::new("quarto");
+        plan.apply(
+            &mut command,
+            Path::new("/tmp/out"),
+            Path::new("/tmp/filter.lua"),
+        );
+        command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// A web page has to carry its own scripts, because the reader policy
+    /// refuses code fetched from another host. Without this, Quarto's default
+    /// output loses its mathematics to a blocked delivery network.
+    #[test]
+    fn web_output_is_rendered_self_contained() {
+        for format in ["html", "revealjs"] {
+            let args = rendered_args(format);
+            assert!(
+                args.iter().any(|arg| arg == "--embed-resources"),
+                "{format} must embed its resources: {args:?}"
+            );
+            assert!(args.iter().any(|arg| arg == "--standalone"), "{format}");
+        }
+    }
+
+    /// Not every format is a web page. Embedding is meaningless for these and
+    /// Quarto would have to be told to ignore it.
+    #[test]
+    fn other_formats_are_left_alone() {
+        for format in ["pdf", "docx"] {
+            let args = rendered_args(format);
+            assert!(
+                !args.iter().any(|arg| arg == "--embed-resources"),
+                "{format} should not be told to embed: {args:?}"
+            );
+        }
+    }
 
     fn request(kind: &str, engine: &str) -> JobRequest {
         JobRequest {

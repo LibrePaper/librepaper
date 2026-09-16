@@ -113,17 +113,64 @@ close the classic versions; `fetch()` is open by design.
 For anonymous review this is a leak of the reviewer to the author, through a
 document the author wrote.
 
-**Required.** Every document, including one its reader owns, renders under a
-strict policy by default. The policy is explicit and complete: it includes
-`default-src 'none'` and `connect-src 'none'`; scripts and styles are allowed
-only when required by the selected renderer, images and fonts are limited to
-the deployment and `data:`, and `form-action 'none'`, `base-uri 'none'`,
-`object-src 'none'`, explicit navigation rules, and the appropriate
-`frame-ancestors` rule remain present. No external script, media, worker,
-manifest, or navigation source is implicit. A permissive policy is an explicit,
-per-document choice the reader makes and can withdraw; the reader is told which
-policy is in force, and browser tests verify that the strict policy blocks
-outbound connections and third-party resources.
+**Settled, narrower than this asked for.** One policy applies to every
+document and every reader. There is no per-document switch, which removes the
+signed-claim plumbing, the per-viewer cache key and the interface that would
+have gone with it. `document_policy` encodes one rule: a document may run its
+own code and may not fetch code from another host. `'unsafe-inline'` and
+`'unsafe-eval'` stay, because a published document is untrusted in its
+entirety and sealed in its own origin, so its inline script is the document and
+refusing it would break most Quarto and pandoc output to protect nothing. What
+is refused is `https:` in `script-src`.
+
+Images, fonts, styles and network connections deliberately still reach the open
+web. A document can therefore still tell its author who opened it and when.
+That is an accepted leak, recorded in `docs/privacy.md` rather than engineered
+away, and it means LibrePaper cannot offer a reviewer anonymity against a
+determined author. The requirement below is what a stricter deployment would
+need, kept because the reasoning still holds.
+
+**Rendering was moved to match.** Quarto's default HTML output loads MathJax
+and a polyfill from public delivery networks, which under this policy would
+have cost every such document its mathematics. The Quarto adapter now passes
+`--standalone --embed-resources` for `html` and `revealjs`, as the pandoc
+builder already did, so a document carries its own scripts and reaches no
+network at all. It is forced rather than defaulted: an author asking for
+`embed-resources: false` is asking for output this deployment cannot serve
+intact.
+
+Measured on this repository's own Quarto example, with no external reference of
+any kind left in either:
+
+| Output | Bytes |
+| --- | --- |
+| `html`, not embedded | 26,461 |
+| `html`, embedded | 1,318,011 |
+| `revealjs`, embedded | 3,484,456 |
+
+The cost is MathJax inlined whole, and it is charged per document against the
+4 MB `max_document` ceiling. A reveal.js deck at 3.5 MB has little room left,
+so that ceiling is the thing to watch. Serving the math renderer from the
+deployment would cost nothing per document and let one cached copy serve every
+paper; it is the better answer whenever the ceiling starts to bite.
+
+Documents rendered elsewhere and uploaded are not covered by any of that, so
+publishing scans the HTML and reports the hosts it would refuse. It warns
+rather than failing: the author can re-render, and the reader could only have
+watched a paper quietly not work. See `external_script_sources` and the
+`warnings` field on activate.
+
+**Originally required.** Every document, including one its reader owns,
+renders under a strict policy by default. The policy is explicit and complete:
+it includes `default-src 'none'` and `connect-src 'none'`; scripts and styles
+are allowed only when required by the selected renderer, images and fonts are
+limited to the deployment and `data:`, and `form-action 'none'`,
+`base-uri 'none'`, `object-src 'none'`, explicit navigation rules, and the
+appropriate `frame-ancestors` rule remain present. No external script, media,
+worker, manifest, or navigation source is implicit. A permissive policy is an
+explicit, per-document choice the reader makes and can withdraw; the reader is
+told which policy is in force, and browser tests verify that the strict policy
+blocks outbound connections and third-party resources.
 
 The cost is real and belongs in the manual rather than in a reader's surprise.
 Under this policy a document loses remote images, web fonts, and any

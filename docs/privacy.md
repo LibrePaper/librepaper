@@ -40,9 +40,14 @@ compromise of some third-party host out of every reader's browser.
 ## Documents rendered elsewhere may already be reaching out
 
 Quarto's default HTML output loads its mathematics renderer from a public
-content delivery network. A document published that way tells that network who
-is reading it, on every open, whoever hosts LibrePaper. Rendering with
-`embed-resources: true` removes the dependency by inlining everything.
+content delivery network. A document published that way would tell that network
+who is reading it, on every open, whoever hosts LibrePaper.
+
+LibrePaper renders Quarto with every resource embedded, so documents built
+through the companion do not have this dependency and make no network request
+at all. A document rendered somewhere else and uploaded can still carry one.
+Publishing reports the hosts it finds, and the fix is to re-render with
+`embed-resources: true`.
 
 ## Reading is not invisible
 

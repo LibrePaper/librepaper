@@ -198,6 +198,59 @@ impl std::ops::Deref for Server {
 /// supplied link bounds authority, so an owner login cannot elevate it.
 pub const AUTOMATION_HEADER: &str = "x-librepaper-automation";
 
+/// What an agent request may do here, and the reason the assistant is not a
+/// way to launder an owner session into a reader link.
+///
+/// The security property, stated plainly: **an agent's authority is the link it
+/// was given, and nothing the caller is adds to it.** A person may hold an
+/// owner cookie for this document and still be handed a read-only link; the
+/// agent acting on that link must stay read-only, because the instructions it
+/// is following came out of a document, and a document is hostile by
+/// assumption. Indirect prompt injection is not prevented anywhere in this
+/// system. This is what bounds the damage when it happens.
+///
+/// That is why the identity is not a parameter. It is not that the caller is
+/// ignored by accident; there is nothing here to ignore it with. The one input
+/// that grants anything is the presented link, and `ceiling` can only lower
+/// what the link says, never raise it.
+///
+/// `role_of` is deliberately not called with blanked owner and caller fields:
+/// an unowned entry treats an empty caller as its owner, which would turn
+/// "no identity" into the highest rung rather than the lowest.
+#[allow(clippy::too_many_arguments)] // Each input to an authority decision stays named.
+fn resolved_role(
+    automation: bool,
+    entry: &IndexEntry,
+    owner_key: &str,
+    caller_id: &str,
+    presented_link: &str,
+    ceiling: crate::document::store::Ceiling,
+    now: i64,
+) -> Role {
+    if automation {
+        // The caller's identity is in scope here and is deliberately not
+        // passed on. That is the whole property: see `automation_role`.
+        automation_role(entry, presented_link, ceiling, now)
+    } else {
+        entry.role_of(owner_key, caller_id, presented_link, ceiling, now)
+    }
+}
+
+fn automation_role(
+    entry: &IndexEntry,
+    presented_link: &str,
+    ceiling: crate::document::store::Ceiling,
+    now: i64,
+) -> Role {
+    match entry.link_role(presented_link, now) {
+        Some(Role::Editor) if ceiling.edit => Role::Editor,
+        Some(Role::Editor | Role::Commenter) if ceiling.comment => Role::Commenter,
+        Some(Role::Editor | Role::Commenter | Role::Reader) => Role::Reader,
+        None => Role::Reader,
+        Some(Role::Owner) => Role::Reader,
+    }
+}
+
 /// Everything a request says about who is asking, resolved once: the account,
 /// the key their uploads belong to, the link they came in on, and the role
 /// those add up to on the document at hand.
@@ -680,21 +733,15 @@ impl Server {
         }
         let now = crate::util::now_unix();
         let ceiling = self.ceiling_for(&id);
-        let mut role = if automation {
-            // In automation mode only the supplied live link contributes a
-            // role. Do not call role_of with empty owner/caller fields: an
-            // unowned entry treats an empty caller as its owner. Examples
-            // likewise remain read-only without an explicit edit link.
-            match entry.link_role(&presented_link, now) {
-                Some(Role::Editor) if ceiling.edit => Role::Editor,
-                Some(Role::Editor | Role::Commenter) if ceiling.comment => Role::Commenter,
-                Some(Role::Editor | Role::Commenter | Role::Reader) => Role::Reader,
-                None => Role::Reader,
-                Some(Role::Owner) => Role::Reader,
-            }
-        } else {
-            entry.role_of(&key, &id.id, &presented_link, ceiling, now)
-        };
+        let mut role = resolved_role(
+            automation,
+            entry,
+            &key,
+            &id.id,
+            &presented_link,
+            ceiling,
+            now,
+        );
         // Legacy rows can carry an owner key from before provider identities
         // existed.  The visitor credential that happens to match that key is
         // useful for attribution, but it is not proof of OAuth ownership and
@@ -1023,3 +1070,130 @@ impl Server {
 /// binary, so a documentation change never needs a release and a deployment
 /// never carries a copy of the text.
 pub const DOCUMENTATION: &str = "https://librepaper.org";
+
+#[cfg(test)]
+mod automation_authority_tests {
+    use super::*;
+
+    fn ceiling() -> Ceiling {
+        Ceiling {
+            comment: true,
+            edit: true,
+        }
+    }
+
+    /// A document owned by `alice`, shared by a reader link and an editor link.
+    fn shared_document() -> IndexEntry {
+        IndexEntry {
+            slug: "paper".into(),
+            publisher: "alice".into(),
+            publisher_id: "github:alice".into(),
+            links: vec![
+                LinkGrant {
+                    hash: "reader-hash".into(),
+                    role: Role::Reader.as_str().into(),
+                    ..Default::default()
+                },
+                LinkGrant {
+                    hash: "editor-hash".into(),
+                    role: Role::Editor.as_str().into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// The property finding 8 of SPEC-security depends on. The agent reads
+    /// hostile text and acts on it, so nothing stops a document from telling it
+    /// to overwrite the paper. What bounds the damage is that the agent holds
+    /// only the link's authority. If an owner session on the same request ever
+    /// widened a reader link, an injected instruction would gain the owner's
+    /// reach, and this test is what fails first.
+    #[test]
+    fn an_owner_session_does_not_widen_the_link_an_agent_was_given() {
+        let entry = shared_document();
+        let now = crate::util::now_unix();
+        // One caller, one document, one reader link. The only thing that
+        // differs between these two calls is whether it is the agent asking.
+        let owner = ("owner-key", "github:alice");
+        assert_eq!(
+            resolved_role(
+                false,
+                &entry,
+                owner.0,
+                owner.1,
+                "reader-hash",
+                ceiling(),
+                now
+            ),
+            Role::Owner,
+            "the owner is still the owner in their own browser"
+        );
+        assert_eq!(
+            resolved_role(
+                true,
+                &entry,
+                owner.0,
+                owner.1,
+                "reader-hash",
+                ceiling(),
+                now
+            ),
+            Role::Reader,
+            "an agent holds the link's authority, never the caller's"
+        );
+    }
+
+    /// The other half: link authority is honored, not merely capped. An agent
+    /// given an editor link is meant to be able to edit, or the feature does
+    /// nothing.
+    #[test]
+    fn an_agent_still_gets_what_its_link_actually_grants() {
+        let entry = shared_document();
+        let now = crate::util::now_unix();
+        assert_eq!(
+            automation_role(&entry, "editor-hash", ceiling(), now),
+            Role::Editor
+        );
+    }
+
+    /// No link is the bottom rung, never the top. An unowned entry treats an
+    /// empty caller as its owner, so routing automation through `role_of` with
+    /// blanked fields would turn "presented nothing" into full authority.
+    #[test]
+    fn presenting_no_link_grants_nothing() {
+        let now = crate::util::now_unix();
+        for entry in [shared_document(), IndexEntry::default()] {
+            assert_eq!(automation_role(&entry, "", ceiling(), now), Role::Reader);
+            assert_eq!(
+                automation_role(&entry, "not-a-link", ceiling(), now),
+                Role::Reader
+            );
+        }
+    }
+
+    /// A deployment that refuses anonymous editing lowers what a link grants.
+    /// The ceiling may only take away.
+    #[test]
+    fn a_deployment_ceiling_can_lower_a_link_but_never_raise_one() {
+        let entry = shared_document();
+        let now = crate::util::now_unix();
+        let read_only = Ceiling {
+            comment: false,
+            edit: false,
+        };
+        assert_eq!(
+            automation_role(&entry, "editor-hash", read_only, now),
+            Role::Reader
+        );
+        let comment_only = Ceiling {
+            comment: true,
+            edit: false,
+        };
+        assert_eq!(
+            automation_role(&entry, "editor-hash", comment_only, now),
+            Role::Commenter
+        );
+    }
+}
