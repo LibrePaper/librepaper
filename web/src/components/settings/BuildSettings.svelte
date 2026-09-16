@@ -9,6 +9,9 @@
   let { format = "", documentId = "", userId = "anonymous", preferences = {}, onpreferences } = $props();
   const local = $derived(companion.status);
   $effect(() => companion.watch());
+  // Opening this pane is a question about build tools, so it is the moment
+  // to look for the companion -- the page never does it on its own.
+  $effect(() => void localBridge.probe());
   const builders = $derived(buildersFor(format));
   const localBuilders = $derived(builders.filter((entry) => entry.backend.includes("local")));
   const browserBuilders = $derived(builders.filter((entry) => entry.backend.includes("browser")));
@@ -109,7 +112,7 @@
   {#if ["unknown", "unreachable", "denied"].includes(local?.state)}<button type="button" class="btn btn-sm preset-filled-primary-500" onclick={connect}>Open companion</button>{/if}
   {#if ["unauthorized", "reachable"].includes(local?.state)}<button type="button" class="btn btn-sm preset-filled-primary-500" onclick={connect}>Connect</button>{/if}
   {#if local?.state !== "connected"}<a class="btn btn-sm preset-outlined-surface-300-700" href="https://github.com/LibrePaper/librepaper/releases/latest" target="_blank" rel="noreferrer">Install companion</a>{/if}
-  <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => localBridge.probe({ force: true })}>Retry</button>
+  <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void localBridge.retry()}>Retry</button>
   <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={local?.state !== "connected"} onclick={rescan}>Rescan</button>
 </SettingRow>{/if}
 

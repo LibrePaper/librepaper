@@ -73,6 +73,7 @@ export const _testing = {
     addressSpaceSupported = true;
     listeners.clear();
     subscriberCount = 0;
+    engaged = false;
     currentStatus = initialStatus();
     cancelAutoReconnect();
   },
@@ -190,7 +191,7 @@ export function configure({ project, origin, active = true } = {}) {
     origin: origin !== undefined ? origin : current.origin,
     active,
   };
-  if (previous !== pairingKey()) { lastInstance = null; negative = null; setStatus(initialStatus()); }
+  if (previous !== pairingKey()) { lastInstance = null; negative = null; engaged = false; setStatus(initialStatus()); }
   scheduleAutoReconnect();
 }
 
@@ -265,17 +266,38 @@ const listeners = new Set();
 let lastInstance = null;
 let autoReconnectTimer = null;
 let subscriberCount = 0;
+// Whether this page session has deliberately reached for the local app.
+//
+// A loopback request is what makes a browser ask the person for local
+// network access -- "allow this site to access other apps and services" --
+// and that question is only fair once they have asked for something the
+// local app does: a local build, a Zotero lookup, the local-app settings,
+// the connect ceremony. Opening a document must not provoke it, not even a
+// document this browser already holds a pairing for. So nothing here probes
+// on its own: `probe()` and `send()` mark the session engaged, and only a
+// session that is engaged keeps its status fresh in the background.
+let engaged = false;
 
 function cancelAutoReconnect() {
   if (autoReconnectTimer) clearTimeout(autoReconnectTimer);
   autoReconnectTimer = null;
 }
 
+// Called by the two things that are a person asking for the local app: a
+// probe and a real request. The first one also starts the background
+// reconnect, so a companion started after this page was opened is still
+// found without another click.
+function engage() {
+  if (engaged) return;
+  engaged = true;
+  scheduleAutoReconnect();
+}
+
 function scheduleAutoReconnect() {
-  if (autoReconnectTimer || !current.active || subscriberCount === 0 || !getPairing()) return;
+  if (autoReconnectTimer || !engaged || !current.active || subscriberCount === 0 || !getPairing()) return;
   autoReconnectTimer = setTimeout(async () => {
     autoReconnectTimer = null;
-    if (!current.active || subscriberCount === 0 || !getPairing()) return;
+    if (!engaged || !current.active || subscriberCount === 0 || !getPairing()) return;
     await probe().catch(() => {});
     scheduleAutoReconnect();
   }, RECONNECT_INTERVAL_MS);
@@ -381,6 +403,7 @@ async function throwOnFailure(response) {
 /// drops the pairing and is `Unauthorized`, any other non-2xx is `Refused`
 /// with the server's own message when it gave one.
 async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
+  engage();
   const scope = pairingKey();
   const addr = address();
   const url = addr + "librepaper/local/v1/" + path;
@@ -413,14 +436,14 @@ async function bytesOfResponse(response) {
 
 // -------------------------------------------------------------- probe
 
-export async function probe({ force = false, pairedOnly = false } = {}) {
-  if (pairedOnly && !getPairing()) return currentStatus;
+export async function probe({ force = false } = {}) {
   const scope = pairingKey();
   const scopedStatus = (patch) => scope === pairingKey() ? setStatus(patch) : currentStatus;
   const startMs = deps.now();
   if (!force && negative && startMs < negative.until) {
     return currentStatus;
   }
+  engage();
   const addr = address();
   // Every "no usable local app yet" outcome below shares this shape -- only
   // the message and (once the health body has been read) the reported

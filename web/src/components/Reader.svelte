@@ -210,13 +210,14 @@
   const localAppStatus = $derived(companion.status);
 
   /// Points the local-app pairing at this document and picks up whatever
-  /// binding it already remembers for it. A pairing this browser already
-  /// holds is verified now, so the workspace banner shows a connected
-  /// preview without a first failed attempt to start one.
+  /// binding it already remembers for it. Nothing is asked of the local app
+  /// here: reaching loopback is what makes the browser ask the person for
+  /// local network access, and opening a document is not a request for
+  /// anything local. The first gesture that needs the companion --
+  /// `ensureLocalApp`, a local build, the local-app settings -- probes then.
   function pairLocalQuarto() {
     localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
     quartoBindingId = localQuarto.bindingId();
-    if (mayEdit) void localQuarto.probe({ pairedOnly: true });
   }
   // Which engine draws each format, and what it produces, belong to the
   // build settings along with the preference they follow from; the aliases

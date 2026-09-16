@@ -69,3 +69,19 @@ each reader's address and the exact set of packages a document pulls, which is
 a usable fingerprint of the document. Bytes are verified against a digest, so
 this is a privacy and availability dependency rather than a way to tamper with
 a build. Operators who do not want it can host a mirror.
+
+## The companion is not looked for until you ask
+
+The page can reach the LibrePaper app on your own computer, over loopback, to
+build a document with the tools installed there. Asking is not free: a request
+to loopback is what makes a browser put up its local-network permission —
+Firefox's wording is that the site wants access to other apps and services —
+and a prompt like that, arriving at the moment a document opens, reads as an
+accusation.
+
+So the page never looks on its own. Opening a document reaches nothing, even
+one this browser has already paired with the app. The first loopback request
+is made by a gesture that needs it: turning on local execution, choosing a
+local build tool, a Zotero lookup, or opening the Build or Local app settings.
+Refusing the permission costs only those; everything the browser renders by
+itself is unaffected.

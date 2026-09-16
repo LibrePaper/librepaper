@@ -374,6 +374,51 @@ async function testRefusedUnreachableUnauthorized() {
   await rejects(local.capabilities({}), "Unauthorized", "a 401 rejects as Unauthorized");
 }
 
+/* --------------------------------------------------------- engagement */
+
+// A loopback request is what makes a browser ask the person to allow this
+// site "access to other apps and services". That question belongs to the
+// moment they ask for something local, so simply watching the status --
+// which every open document does, pairing or not -- must reach nothing.
+async function testWatchingNeverReachesLoopback() {
+  const storage = fakeStorage();
+  let calls = 0;
+  const now = clock();
+  setup({ storage, now, fetchImpl: async () => { calls += 1; return jsonResponse(200, HEALTH_OK); } });
+  storage.setItem("librepaper-local-pairings", JSON.stringify({
+    "https://a|p": { token: "token", expires: now.now() + 3_600_000, instance: "abc123" },
+  }));
+  // The background reconnect is a real timer; hold its callbacks instead of
+  // waiting fifteen seconds for each one.
+  const pending = [];
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn) => { pending.push(fn); return { unref() {} } ; };
+  const fire = async () => { for (const callback of pending.splice(0)) await callback(); };
+  try {
+    local.configure({ project: "p", origin: "https://a" });
+    const stop = local.subscribe(() => {});
+    await fire();
+    check("watching a paired document reaches the local app not at all", calls === 0, `calls=${calls}`);
+
+    // Asking for it is what engages the session -- and from then on the
+    // reconnect may keep the status fresh.
+    await local.probe({ force: true });
+    check("a deliberate probe reaches it", calls > 0, `calls=${calls}`);
+    const engagedCalls = calls;
+    await fire();
+    check("the reconnect runs once the session is engaged", calls > engagedCalls, `calls=${calls}`);
+
+    // A different document starts over: its own pairing, its own question.
+    local.configure({ project: "other", origin: "https://a" });
+    const switchedCalls = calls;
+    await fire();
+    check("opening another document disengages again", calls === switchedCalls, `calls=${calls}`);
+    stop();
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+}
+
 /* --------------------------------------------------------- run */
 
 const tests = [
@@ -392,6 +437,7 @@ const tests = [
   testPollingIntervals,
   testCancelViaAbort,
   testRefusedUnreachableUnauthorized,
+  testWatchingNeverReachesLoopback,
 ];
 
 for (const test of tests) {

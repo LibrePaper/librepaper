@@ -12,6 +12,9 @@
 
   const local = $derived(companion.status);
   $effect(() => companion.watch());
+  // The pane about the local app is the one place where looking for it needs
+  // no other excuse; every other surface waits for a gesture that needs it.
+  $effect(() => void localBridge.probe());
 
   let address = $state(localBridge.address());
   let pairingCode = $state("");
