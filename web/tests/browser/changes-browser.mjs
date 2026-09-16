@@ -130,6 +130,9 @@ window.pick = (id) => {
   node.closest('.row-head').querySelector('.row-pick').click();
 };
 window.previewButton = () => document.querySelector('.preview-bar button');
+window.barButton = (word) => [...document.querySelectorAll('.preview-bar button')]
+  .find((node) => node.textContent.trim().startsWith(word)) || null;
+window.picks = () => document.querySelectorAll('.row-pick').length;
 window.ready = true;
 await window.show();
 `);
@@ -248,7 +251,48 @@ try {
     "the reading names proposals, not hunks");
 
 
-  console.log("changes-browser: one card per hunk, rival changes stand together, a chosen set reads as prose, stale hunks inert");
+  // The same ticks answer several changes at once. Here a tick means the one
+  // hunk rather than the whole proposal -- a decision names a hunk (§5.2) --
+  // and the verb says so by counting changes where the reading counts
+  // proposals. Nothing is answered that a card would not let this caller
+  // answer one at a time.
+  await page.evaluate("window.show()");
+  await until("verbs offered", async () => await page.evaluate("!!window.barButton('Accept')"), 4000);
+  assert.equal(await page.evaluate("window.barButton('Accept').disabled"), true,
+    "with nothing ticked there is nothing to answer for");
+  await page.evaluate('window.pick("run#0")');
+  await page.evaluate('window.pick("moved#0")');
+  // Two ticked, one of them stale: the verb counts only what it would touch.
+  await until("one answerable", async () => /Accept 1 change$/.test((await page.evaluate("window.barButton('Accept').textContent")).trim()), 4000);
+  await page.evaluate("window.barButton('Accept').click()");
+  await until("bulk accepted", async () => (await page.evaluate("window.decided")).length > 0, 4000);
+  assert.deepEqual(await page.evaluate("window.decided"), [["run", 0, "accept"]],
+    "the stale hunk is left alone rather than answered against words that moved");
+  assert.match(await page.evaluate("window.feedback()"), /excluded/,
+    "and the reviewer is told it was held back");
+
+  // Two hunks of one proposal are two answers, and rejecting says so once.
+  await page.evaluate("window.show()");
+  await until("reset for reject", async () => (await page.evaluate("window.decided")).length === 0, 4000);
+  await page.evaluate('window.pick("run#0")');
+  await page.evaluate('window.pick("run#1")');
+  await until("two answerable", async () => /Reject 2 changes$/.test((await page.evaluate("window.barButton('Reject').textContent")).trim()), 4000);
+  await page.evaluate("window.barButton('Reject').click()");
+  await until("bulk rejected", async () => (await page.evaluate("window.decided")).length === 2, 4000);
+  assert.deepEqual((await page.evaluate("window.decided")).map((entry) => entry[1]).sort(), [0, 1],
+    "both hunks of the proposal are answered, each by its own index");
+  assert.match(await page.evaluate("window.feedback()"), /2 changes rejected/);
+  assert.equal(await page.evaluate("window.barButton('Reject').disabled"), true,
+    "and the ticks are spent, so the verb cannot be pressed twice");
+
+  // A reader is offered neither the verbs nor a tick that leads nowhere: this
+  // queue has no reading to offer without onproposalpreview.
+  await page.evaluate("window.show({ canReview: false, canModerate: false, onproposalpreview: undefined })");
+  await until("inert for a reader", async () => (await page.evaluate("window.picks()")) === 0, 4000);
+  assert.equal(await page.evaluate("!!window.barButton('Accept')"), false,
+    "a reader is not offered a verb they cannot use");
+
+  console.log("changes-browser: one card per hunk, rival changes stand together, a chosen set reads as prose or is answered together, stale hunks inert");
 } finally {
   await page?.close();
   server?.close();

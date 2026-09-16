@@ -9,7 +9,7 @@
     proposals = [], comments = [], files = [], tracking = false, markup = true, showMarkup,
     canTrack = true, canReview = true, selected = "", selectedProposal = "", filters = {},
     authors = [], sessions = [], ontracking, onmarkup, onfilter, onselect,
-    onaccept, onreject, onbulk, onproposalreveal, onproposaldecide,
+    onaccept, onreject, onproposalreveal, onproposaldecide,
     onprevious, onnext, onreveal, onresolve, ondelete, onreply, onhistory, onproposalpreview,
     identity = "", commentingAs = "Anonymous", canModerate = false,
     went = {}, replacements = {},
@@ -155,6 +155,9 @@
 
   const rowFor = (id) => filteredRows.find((item) => rowId(item) === id);
   const reviewAllowed = (item) => item?.__kind === "suggestion" ? canModerate : canReview;
+  /// Whether a decision is in flight; the bulk verbs are disabled while one
+  /// is, so a second click cannot answer for rows already being answered for.
+  const busy = $derived(deciding.size > 0);
   /// The changes a bulk decision would answer for: the ticked ones this
   /// caller may review and nothing is stopping. A tick means the whole
   /// proposal to a reading and this one hunk to a decision -- the two verbs
@@ -226,26 +229,26 @@
 
   async function bulk(action) {
     if (!canReview) return;
-    // Capture IDs before sending anything; this is not a moving filter query.
+    // Take the rows before sending anything: the ticks are cleared and the
+    // queue re-sorts as answers arrive, so this is a list and not a filter
+    // that keeps being asked.
     const captured = selectedRows.filter(pending); if (!captured.length) return;
     const excluded = captured.filter((item) => blocker(item) || !reviewAllowed(item));
     const eligible = captured.filter((item) => !blocker(item) && reviewAllowed(item));
     if (!eligible.length) { feedback = `${excluded.length} selected change${excluded.length === 1 ? "" : "s"} excluded because it needs attention.`; return; }
-    const ids = eligible.map(idOf); eligible.forEach((item) => addBusy(rowId(item))); checked = new Set();
+    eligible.forEach((item) => addBusy(rowId(item))); checked = new Set();
     try {
-      const supplied = onbulk?.({ action, decision: action, ids: [...ids], changes: [...eligible] });
-      let report;
-      if (supplied !== undefined) report = await supplied;
-      else if (onbulk) throw new Error("Bulk review did not return a confirmation report.");
-      else {
-        const settled = await Promise.allSettled(eligible.map((item) => decisionPromise(item, action)));
-        report = { succeeded: settled.flatMap((entry, index) => entry.status === "fulfilled" ? [ids[index]] : []), failed: settled.flatMap((entry, index) => entry.status === "rejected" ? [{ id: ids[index], error: entry.reason }] : []) };
-      }
-      if (!report) throw new Error("Bulk review did not return a confirmation report.");
-      const succeeded = Array.isArray(report) ? report.filter((entry) => entry.status === "fulfilled").length : (report?.succeeded?.length ?? ids.length);
-      const failed = Array.isArray(report) ? report.filter((entry) => entry.status === "rejected").length : (report?.failed?.length ?? 0);
-      const omitted = excluded.length + Math.max(0, eligible.length - succeeded - failed);
-      feedback = failed || omitted ? `${succeeded} ${action}ed; ${failed} failed; ${omitted} excluded or still pending.` : `${succeeded} change${succeeded === 1 ? "" : "s"} ${action}ed.`;
+      // Each hunk is decided on its own, because that is what a decision is:
+      // it names a proposal and an index within it (§5.2), and the server
+      // checks each against the branch it was written for. They go together
+      // rather than in turn -- a decision does not move the branch it is
+      // about, so one cannot spoil the next -- and every answer is waited for,
+      // so the count below is what actually happened and not what was asked.
+      const settled = await Promise.allSettled(eligible.map((item) => decisionPromise(item, action)));
+      const succeeded = settled.filter((entry) => entry.status === "fulfilled").length;
+      const failed = settled.length - succeeded;
+      const omitted = excluded.length;
+      feedback = failed || omitted ? `${succeeded} ${action}ed; ${failed} failed; ${omitted} excluded.` : `${succeeded} change${succeeded === 1 ? "" : "s"} ${action}ed.`;
     } catch (error) { feedback = error?.message || `Could not ${action} the selected changes.`; }
     finally { eligible.forEach((item) => removeBusy(rowId(item))); }
   }
@@ -306,7 +309,15 @@
          few words either side of it, which is how you accept a sentence that
          spoils the paragraph after it; this shows the result instead. It is a
          reading and not a version -- nothing is decided by opening it. -->
-    {#if canPreview}<div class="preview-bar"><button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!chosenProposals.length} title={chosenProposals.length ? "Read the paper with these proposals applied" : "Tick changes to read the paper as they would leave it"} onclick={() => onproposalpreview?.([...chosenProposals])}>Read with {chosenProposals.length || "no"} proposal{chosenProposals.length === 1 ? "" : "s"}</button>{#if chosenProposals.length}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (checked = new Set())}>Clear</button>{/if}</div>{/if}
+    {#if canPick}<div class="preview-bar">
+      {#if canPreview}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!chosenProposals.length} title={chosenProposals.length ? "Read the paper with these proposals applied" : "Tick changes to read the paper as they would leave it"} onclick={() => onproposalpreview?.([...chosenProposals])}>Read with {chosenProposals.length || "no"} proposal{chosenProposals.length === 1 ? "" : "s"}</button>{/if}
+      <!-- Answering several at once. The count is of hunks, not proposals: a
+           decision names a hunk, so this is the same verb the card offers,
+           said once for everything ticked that it may be said for. -->
+      {#if canReview}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!chosenChanges.length || busy} title={chosenChanges.length ? "Accept every ticked change you may answer for" : "Tick changes to accept them together"} onclick={() => bulk("accept")}>Accept {chosenChanges.length || "no"} change{chosenChanges.length === 1 ? "" : "s"}</button>
+      <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!chosenChanges.length || busy} title={chosenChanges.length ? "Reject every ticked change you may answer for" : "Tick changes to reject them together"} onclick={() => bulk("reject")}>Reject {chosenChanges.length || "no"} change{chosenChanges.length === 1 ? "" : "s"}</button>{/if}
+      {#if checked.size}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (checked = new Set())}>Clear</button>{/if}
+    </div>{/if}
     <div class="filter-bar">
       <select aria-label="Change status" value={activeFilters.status} onchange={(event) => updateFilter("status", event)}><option value="pending">Pending</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="all">All statuses</option></select>
       {#if showExtraFilters}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" aria-expanded={filtersOpen} aria-controls="change-extra-filters" onclick={() => filtersOpen = !filtersOpen}>Filter{activeFilters.author || activeFilters.file || activeFilters.session ? " •" : ""}</button>{/if}
@@ -342,7 +353,7 @@
        rather than spread down the queue (SPEC-loro.md §5.3). -->
   {#snippet changeBody(item)}
     {@const id = rowId(item)}{@const isOpen = active === id}{@const why = blocker(item)}{@const parts = diffParts(item)}
-    <div class="row-head">{#if canPreview}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Include ${authorLabel(item)}'s change in a reading`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-author">{authorLabel(item)}{timeLabel(item) ? ` · ${timeLabel(item)}` : ""}</span><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}{shortDiff(item)}{/if}</span>{#if derivedFiles.length > 1}<span class="row-context">{pathOf(item)}</span>{/if}{#if statusOf(item) !== "pending"}<span class="row-status">{statusOf(item)}</span>{/if}</button></div>
+    <div class="row-head">{#if canPick}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-author">{authorLabel(item)}{timeLabel(item) ? ` · ${timeLabel(item)}` : ""}</span><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}{shortDiff(item)}{/if}</span>{#if derivedFiles.length > 1}<span class="row-context">{pathOf(item)}</span>{/if}{#if statusOf(item) !== "pending"}<span class="row-status">{statusOf(item)}</span>{/if}</button></div>
     <div class="row-footer"><span></span>{#if pending(item)}<span class="row-actions"><button type="button" class="btn btn-sm row-action reject" aria-label={`Reject change in ${pathOf(item)}`} title={why || "Reject this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button><button type="button" class="btn btn-sm row-action accept" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button></span>{/if}</div>
     {#if isOpen && why}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
       <div class="conflict" role="alert"><strong>Needs attention</strong><p>{why}</p><button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => resolve(item)}>Show the passage</button></div>
