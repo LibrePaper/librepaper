@@ -8,11 +8,8 @@
 // A comment is orphaned only when neither anchor finds its passage. When the
 // source still has it but the rendering does not, the passage is not lost --
 // it is only unreachable from the page, which the card says instead of
-// "orphaned" and which a reveal answers by going to the source. A region
-// annotation is placed by the agent, not by either quotation, so it is never
-// orphaned and never source-only.
-export function orphanState({ renderedFound, sourceFound, region }) {
-  if (region) return { orphaned: false, inSourceOnly: false };
+// "orphaned" and which a reveal answers by going to the source.
+export function orphanState({ renderedFound, sourceFound }) {
   return {
     orphaned: !renderedFound && !sourceFound,
     inSourceOnly: !renderedFound && Boolean(sourceFound),

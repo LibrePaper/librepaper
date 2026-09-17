@@ -6,12 +6,23 @@
 // made twice.
 import assert from "node:assert/strict";
 import { loadRunes } from "../helpers/runes.mjs";
+import * as realPassages from "../../src/lib/passages.js";
 
 const { createPassageTrace } = await loadRunes(
   new URL("../../src/lib/reader/passage-trace.svelte.js", import.meta.url),
 );
 
-const orphan = (id, revision = "r1") => ({ id, revision, orphaned: true });
+// A lost comment as the server records it: what it is about, in the file it
+// was about, at the checkpoint it was made on.
+const orphan = (id, checkpoint = "r1") => ({
+  id,
+  orphaned: true,
+  original_anchor: {
+    kind: "source_text",
+    checkpoint_id: checkpoint,
+    target: { file_id: id, exact: id, prefix: "", suffix: "" },
+  },
+});
 const tree = { texts: { "main.md": "current source" } };
 
 function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}) {
@@ -21,7 +32,8 @@ function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}
     now: () => current(),
     loadCheckpoints,
     passages: {
-      wentAt: async (_slug, comment) => { calls.push(`went:${comment.id}`); return { sha: "sha-1" }; },
+      tracedBy: realPassages.tracedBy,
+      wentAt: async (_slug, traced) => { calls.push(`went:${traced.selector.exact}`); return { sha: "sha-1" }; },
       textAt: async () => "old text",
       sourceTextAt: async () => "old source",
       replacementAt: async () => "what stands there now",
@@ -41,13 +53,16 @@ function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}
   assert.deepEqual(trace.state.replacements, { a: "what stands there now", b: "what stands there now" });
 }
 
-// A comment that anchors fine is not walked, and neither is one on a figure:
-// a region has a place in the document whatever the text does.
+// A comment that still anchors is not walked, and neither is one about the
+// document as a whole: it has no passage that could have gone anywhere.
 {
   let state = { source: 1, visible: "visible" };
   const { trace, calls } = build({ current: () => state });
   await trace.trace({
-    comments: [{ id: "fine", orphaned: false }, { id: "figure", orphaned: true, region: { image_index: 0 } }],
+    comments: [
+      { id: "fine", orphaned: false },
+      { id: "whole", orphaned: true, original_anchor: { kind: "document", checkpoint_id: "r1" } },
+    ],
     tree,
     checkpoints: [{ sha: "sha-1" }],
   });

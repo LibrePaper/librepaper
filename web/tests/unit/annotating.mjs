@@ -17,8 +17,8 @@ function check(what, condition) {
     verbsFor({ exact: "some words" }).map((verb) => verb.id).join(",") === "comment,highlight,suggest");
   check("a point has no words to highlight or replace",
     verbsFor({ point: true }).map((verb) => verb.id).join(",") === "comment");
-  check("nor does a box on a figure",
-    verbsFor({ region: { image_index: 0 } }).map((verb) => verb.id).join(",") === "comment");
+  check("nor does a note at a point",
+    verbsFor({ point: true }).map((verb) => verb.id).join(",") === "comment");
   check("and with nothing selected there is nothing to offer", verbsFor(null).length === 0);
   check("every verb says what it is for", VERBS.every((verb) => verb.id && verb.label && verb.title));
 }
@@ -32,21 +32,21 @@ function check(what, condition) {
   // A point note and a box differ in what they are anchored to, not in what
   // they are; the server has never heard of either.
   check("a point note is a comment", motivationFor("point") === "commenting");
-  check("a box is a comment", motivationFor("region") === "commenting");
+  check("anything else is a comment", motivationFor("point") === "commenting");
 }
 
 /* ---------------------------------------------------------------- the modes */
 
 {
-  check("only the two gestures with nothing to select are modes",
-    MODES.map((item) => item.id).join(",") === "point,region");
-  check("the two modes do not share an icon", MODES[0].icon !== MODES[1].icon);
+  // A box drawn on a figure was the other mode. A comment is a range of the
+  // source now, and a rectangle over a rendered image is not one, so there is
+  // nothing to arm.
+  check("the one gesture with nothing to select is a mode",
+    MODES.map((item) => item.id).join(",") === "point");
   check("arming from nothing arms it", nextMode("", "point") === "point");
-  check("arming the other swaps", nextMode("point", "region") === "region");
-  // A mode changes what a click or a drag in the document does, and `region`
-  // stops text being selectable at all; the control that armed it has to be
-  // able to put it away.
-  check("choosing the armed mode puts it away", nextMode("region", "region") === "");
+  // A mode changes what a click in the document does, so the control that
+  // armed it has to be able to put it away.
+  check("choosing the armed mode puts it away", nextMode("point", "point") === "");
 }
 
 if (failures) {

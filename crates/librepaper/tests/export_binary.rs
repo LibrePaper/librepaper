@@ -1,4 +1,4 @@
-//! Exercise export failures and source comparisons through the CLI.
+//! Exercise export failures and source-target rendering through the CLI.
 
 use std::process::{Output, Stdio};
 use std::time::Duration;
@@ -73,10 +73,31 @@ async fn history_outage_fails_export_without_overwriting_output() {
 }
 
 #[tokio::test]
-async fn typst_response_compares_source_anchors_through_the_real_command() {
+async fn typst_response_uses_its_immutable_source_target() {
+    // A comment as the server serves one: the passage it is about, in the
+    // checkpoint it was made against, and -- separately -- what became of that
+    // passage since. The export reads both and re-renders nothing.
     let comment = json!({
-        "id": "review", "exact": "The cat is blue.", "revision": "old",
-        "source": {"path": "main.typ", "exact": "The *cat* is blue."},
+        "id": "review",
+        "body": "Cats are not blue.",
+        "original_anchor": {
+            "checkpoint_id": "old",
+            "kind": "source_text",
+            "target": {
+                "file_id": "main-file",
+                "start_utf16": 0,
+                "end_utf16": 18,
+                "start_side": "left",
+                "end_side": "right",
+                "exact": "The *cat* is blue.",
+                "prefix": "",
+                "suffix": ""
+            }
+        },
+        "attachment": {
+            "checkpoint_id": "new",
+            "status": "deleted"
+        }
     });
     let app = document()
         .route(
@@ -89,18 +110,6 @@ async fn typst_response_compares_source_anchors_through_the_real_command() {
         .route(
             "/api/documents/paper/history",
             get(|| async { Json(json!({"checkpoints":[{"sha":"old"},{"sha":"new"}]})) }),
-        )
-        .route(
-            "/api/documents/paper/history/old",
-            get(|| async {
-                Json(json!({"main":"main.typ", "texts":{"main.typ":"The *cat* is blue."}}))
-            }),
-        )
-        .route(
-            "/api/documents/paper/history/new",
-            get(|| async {
-                Json(json!({"main":"main.typ", "texts":{"main.typ":"The *cat* is red."}}))
-            }),
         );
     let (server, task) = serve(app).await;
     let output = cli(&server, &["export", "paper", "--format", "response"]).await;
@@ -111,11 +120,11 @@ async fn typst_response_compares_source_anchors_through_the_real_command() {
     );
     let response = String::from_utf8_lossy(&output.stdout);
     assert!(
-        response.contains("**Then:** “The cat is blue.”"),
+        response.contains("**Then:** “The *cat* is blue.”"),
         "{response}"
     );
     assert!(
-        response.contains("**Now (source):** “The *cat* is red.”"),
+        response.contains("**Now:** no longer in the document."),
         "{response}"
     );
     task.abort();

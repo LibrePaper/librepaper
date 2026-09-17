@@ -255,8 +255,8 @@ async fn catalog_v3_release_benchmark() {
     });
 
     sqlx::query!(
-        r#"INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,selector,context)
-           SELECT gen_random_uuid(),$1,'comment','benchmark',$2,'benchmark','Benchmark','{}'::jsonb,'{"version":1}'::jsonb
+        r#"INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,checkpoint_id,target_kind)
+           SELECT gen_random_uuid(),$1,'comment','benchmark',$2,'benchmark','Benchmark','checkpoint','document'
            FROM generate_series(1,500)"#,
         documents[3].id,
         owner.id,

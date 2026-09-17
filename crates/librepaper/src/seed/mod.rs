@@ -23,7 +23,8 @@ use crate::config::Configuration;
 use crate::document::render::{document_format, render_markdown_document};
 use crate::document::store::{example_suffix, slugify, Publication, Store};
 use crate::http::{detail_of, get_json, post_directory, post_json, text};
-use crate::room::{Message, Region, SourceAnchor};
+use crate::room::Message;
+
 use crate::storage::{open_storage, StorageOptions};
 #[cfg(not(test))]
 use crate::util::die;
@@ -44,9 +45,6 @@ pub struct SeedAnnotation {
     pub creator: &'static str,
     pub resolved: bool,
     pub replies: Vec<&'static str>,
-    /// Annotates part of a figure instead of a passage, given as percentages
-    /// of the image.
-    pub region: Option<Region>,
 }
 
 #[derive(Clone, Debug)]
@@ -333,7 +331,7 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
             let missed = document
                 .annotations
                 .iter()
-                .filter(|a| a.region.is_none() && !visible.contains(a.exact))
+                .filter(|a| !visible.contains(a.exact))
                 .count();
             (document.annotations.len() - missed, missed)
         } else {
@@ -343,8 +341,6 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
                 &slug,
                 &document.annotations,
                 &visible_text(&raw),
-                &source,
-                &main,
             )
             .await
         };
@@ -357,14 +353,35 @@ pub async fn seed_remote(server_flag: String, token: Option<&str>, documents: &[
     }
 }
 
+/// What the reader would anchor against: the document with its markup,
+/// scripts and styles removed. An approximation of what a browser shows,
+/// which is enough to locate a phrase and take its surroundings. All
+/// whitespace collapses, newlines included: a browser renders a line break
+/// inside a paragraph as a single space.
+pub fn visible_text(document: &str) -> String {
+    let script_or_style =
+        regex::Regex::new(r"(?is)<(script|style)\b[^>]*>.*?</(script|style)>").expect("pattern");
+    let tag = regex::Regex::new(r"(?s)<[^>]*>").expect("pattern");
+    let space = regex::Regex::new(r"\s+").expect("pattern");
+    let text = script_or_style.replace_all(document, " ");
+    let text = tag.replace_all(&text, "");
+    let text = html_escape::decode_html_entities(&text);
+    space.replace_all(&text, " ").to_string()
+}
+
+/// Seeds one example's annotations by posting them the way a browser does.
+///
+/// Nothing here says which file or which offsets: it sends the passage as the
+/// rendered page has it, and the server works out what that is a passage of.
+/// That is the same path a reader's comment takes, which is the point -- a
+/// seeder that knew better than the server would be testing something nobody
+/// else does.
 async fn seed_remote_annotations(
     server: &str,
     token: &str,
     slug: &str,
     annotations: &[SeedAnnotation],
     visible: &str,
-    source: &str,
-    main_path: &str,
 ) -> (usize, usize) {
     let url = format!("{server}/api/documents/{slug}/comments");
     let (mut placed, mut missed) = (0, 0);
@@ -382,8 +399,6 @@ async fn seed_remote_annotations(
             prefix: spot.prefix,
             suffix: spot.suffix,
             position: spot.position,
-            source: source_anchor(item, source, main_path),
-            region: item.region.clone(),
             ..Message::default()
         };
         let (status, result) = post_json(&url, &json!(incoming), token, Duration::from_secs(60))
@@ -437,9 +452,8 @@ async fn seed_remote_annotations(
 }
 
 /// Where a seeded annotation's passage sits in the document's visible text,
-/// and the context stored either side of it. A region annotation is anchored
-/// to the image instead and needs no passage; anything else whose passage is
-/// not in the document cannot be placed.
+/// and the context stored either side of it. A passage that is not in the
+/// document cannot be placed.
 pub struct SeedAnchor {
     pub prefix: String,
     pub suffix: String,
@@ -447,13 +461,6 @@ pub struct SeedAnchor {
 }
 
 pub fn anchor(item: &SeedAnnotation, text: &str) -> Option<SeedAnchor> {
-    if item.region.is_some() {
-        return Some(SeedAnchor {
-            prefix: String::new(),
-            suffix: String::new(),
-            position: None,
-        });
-    }
     let at = text.find(item.exact)?;
     let context = Configuration::default().caps.context;
     Some(SeedAnchor {
@@ -461,43 +468,6 @@ pub fn anchor(item: &SeedAnnotation, text: &str) -> Option<SeedAnchor> {
         suffix: head(&text[at + item.exact.len()..], context),
         position: Some(at as i64),
     })
-}
-
-/// Where a seeded annotation's passage sits in the source it was published
-/// from, as opposed to the rendered page `anchor` above locates it in. Kept
-/// only when the passage names one spot unambiguously: several matches would
-/// leave no way to say which one the comment is about, and that is the same
-/// rule the reader itself follows when a comment arrives with no position of
-/// its own. A region annotation has no passage to look for.
-pub fn source_anchor(item: &SeedAnnotation, source: &str, path: &str) -> Option<SourceAnchor> {
-    if item.region.is_some() || source.matches(item.exact).count() != 1 {
-        return None;
-    }
-    let at = source.find(item.exact)?;
-    let context = Configuration::default().caps.context;
-    Some(SourceAnchor {
-        path: path.to_string(),
-        exact: item.exact.to_string(),
-        prefix: tail(&source[..at], context),
-        suffix: head(&source[at + item.exact.len()..], context),
-        position: Some(at as i64),
-    })
-}
-
-/// What the reader would anchor against: the document with its markup,
-/// scripts and styles removed. An approximation of what a browser shows,
-/// which is enough to locate a phrase and take its surroundings. All
-/// whitespace collapses, newlines included: a browser renders a line break
-/// inside a paragraph as a single space.
-pub fn visible_text(document: &str) -> String {
-    let script_or_style =
-        regex::Regex::new(r"(?is)<(script|style)\b[^>]*>.*?</(script|style)>").expect("pattern");
-    let tag = regex::Regex::new(r"(?s)<[^>]*>").expect("pattern");
-    let space = regex::Regex::new(r"\s+").expect("pattern");
-    let text = script_or_style.replace_all(document, " ");
-    let text = tag.replace_all(&text, "");
-    let text = html_escape::decode_html_entities(&text);
-    space.replace_all(&text, " ").to_string()
 }
 
 fn head(text: &str, n: usize) -> String {

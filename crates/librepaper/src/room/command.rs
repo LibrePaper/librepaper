@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-use super::{Message, QuartoOutputAnchor, Region, SourceAnchor};
+use super::Message;
 
 /// Validated comment protocol commands. The serde-facing [`Message`] remains
 /// compatible with existing clients; these variants carry only fields used by
@@ -13,17 +13,16 @@ pub enum Command {
         publication_id: String,
         body: String,
         creator: String,
+        /// The selection as the page had it. Made into a source range by the
+        /// server, which is the only side that has the source to find it in.
         exact: String,
         prefix: String,
         suffix: String,
         position: Option<i64>,
         point: bool,
+        document: bool,
         color: Option<String>,
-        region: Option<Region>,
-        output_anchor: Option<QuartoOutputAnchor>,
-        source: Option<SourceAnchor>,
         proposed: Option<String>,
-        revision: String,
         temp_id: String,
         request_id: String,
     },
@@ -42,12 +41,6 @@ pub enum Command {
     },
     Delete {
         comment_id: String,
-        temp_id: String,
-        request_id: String,
-    },
-    Anchor {
-        comment_id: String,
-        source: SourceAnchor,
         temp_id: String,
         request_id: String,
     },
@@ -145,7 +138,6 @@ impl Command {
             | Self::Reply { request_id, .. }
             | Self::Resolve { request_id, .. }
             | Self::Delete { request_id, .. }
-            | Self::Anchor { request_id, .. }
             | Self::Refine { request_id, .. }
             | Self::Accept { request_id, .. }
             | Self::Reject { request_id, .. }
@@ -158,7 +150,6 @@ impl Command {
             Self::Reply { comment_id, .. }
             | Self::Resolve { comment_id, .. }
             | Self::Delete { comment_id, .. }
-            | Self::Anchor { comment_id, .. }
             | Self::Refine { comment_id, .. }
             | Self::Accept { comment_id, .. }
             | Self::Reject { comment_id, .. } => comment_id,
@@ -173,7 +164,6 @@ impl Command {
             | Self::Reply { temp_id, .. }
             | Self::Resolve { temp_id, .. }
             | Self::Delete { temp_id, .. }
-            | Self::Anchor { temp_id, .. }
             | Self::Refine { temp_id, .. }
             | Self::Accept { temp_id, .. }
             | Self::Reject { temp_id, .. } => temp_id,
@@ -192,12 +182,9 @@ impl Command {
                 suffix,
                 position,
                 point,
+                document,
                 color,
-                region,
-                output_anchor,
-                source,
                 proposed,
-                revision,
                 temp_id,
                 request_id,
                 ..
@@ -210,12 +197,9 @@ impl Command {
                 suffix,
                 position,
                 point,
+                document,
                 color,
-                region,
-                output_anchor,
-                source,
                 proposed,
-                revision,
                 temp_id,
                 request_id,
                 publication_id,
@@ -265,12 +249,9 @@ impl Message {
                 suffix: self.suffix,
                 position: self.position,
                 point: self.point,
+                document: self.document,
                 color: self.color,
-                region: self.region,
-                output_anchor: self.output_anchor,
-                source: self.source,
                 proposed: self.proposed,
-                revision: self.revision,
                 temp_id: self.temp_id,
                 request_id: self.request_id,
             }),
@@ -303,20 +284,6 @@ impl Message {
                 }
                 Ok(Command::Delete {
                     comment_id: self.comment_id,
-                    temp_id: self.temp_id,
-                    request_id: self.request_id,
-                })
-            }
-            "anchor" => {
-                if self.comment_id.trim().is_empty() {
-                    return missing("anchor", "comment_id");
-                }
-                let Some(source) = self.source else {
-                    return missing("anchor", "source");
-                };
-                Ok(Command::Anchor {
-                    comment_id: self.comment_id,
-                    source,
                     temp_id: self.temp_id,
                     request_id: self.request_id,
                 })

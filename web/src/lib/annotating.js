@@ -17,16 +17,21 @@ export const VERBS = [
   { id: "suggest", label: "Suggest", title: "Suggest a replacement for the selected passage" },
 ];
 
-/// The two annotations that have nothing to select, and so have to be armed.
-/// `region` is offered only by a document that has a figure to draw on.
+/// The annotation that has nothing to select, and so has to be armed.
+///
+/// A box drawn on a figure used to be the other one. A comment is a range of
+/// the source now, and a rectangle over a rendered image is not a range of
+/// anything: naming what it is about needs the renderer to say which part of
+/// the page each figure came from, and the renderers this build serves do not
+/// say. Until they do, there is nothing honest to store, so the gesture is
+/// not offered.
 export const MODES = [
   { id: "point", icon: "text-cursor", label: "Note at a point", title: "Then click a place in the document" },
-  { id: "region", icon: "box", label: "Box on a figure", title: "Then drag a box on a figure" },
 ];
 
-/// The W3C motivation an annotation is stored under. A point note and a box
-/// are comments; they differ in what they are anchored to, not in what they
-/// are. The server knows nothing about verbs or modes.
+/// The W3C motivation an annotation is stored under. A point note is a
+/// comment; it differs in what it is anchored to, not in what it is. The
+/// server knows nothing about verbs or modes.
 export function motivationFor(which) {
   if (which === "highlight") return "highlighting";
   if (which === "suggest") return "editing";
@@ -35,8 +40,7 @@ export function motivationFor(which) {
 
 /// Arming a mode from a click on it: choosing the one already armed puts it
 /// away again. A mode that is never disarmed by the control that armed it is
-/// a trap, and both of these change what a click or a drag in the document
-/// does -- `region` stops text being selectable at all.
+/// a trap, and arming one changes what a click in the document does.
 export function nextMode(current, chosen) {
   return current === chosen ? "" : chosen;
 }
@@ -48,10 +52,10 @@ export function isSuggestion(which) {
   return which === "suggest";
 }
 
-/// What the bar offers over what has been selected. A point in the text and a
-/// box on a figure have no words: nothing to paint a highlight over, and
-/// nothing to propose a replacement for, so both are Comment alone.
+/// What the bar offers over what has been selected. A point in the text has
+/// no words: nothing to paint a highlight over and nothing to propose a
+/// replacement for, so it is Comment alone.
 export function verbsFor(pending) {
   if (!pending) return [];
-  return pending.point || pending.region ? VERBS.filter((verb) => verb.id === "comment") : VERBS;
+  return pending.point ? VERBS.filter((verb) => verb.id === "comment") : VERBS;
 }

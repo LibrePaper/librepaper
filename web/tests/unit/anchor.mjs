@@ -1,14 +1,13 @@
-// anchorSource, and anchorAllSources over it.
+// Placing comments on the page, and taking the server's word for where their
+// passages are in the source.
 //
-// A source selector is anchored the same way a rendered one is -- exact
-// match, then the flattened fallback -- but it also has to find its file
-// first, since the path a comment remembers can have been renamed since. The
-// three things worth checking are that the easy case still works, that a
-// rename is followed when the passage is unmistakably in exactly one other
-// file, and that it is refused rather than guessed at when two files could
-// both be the answer.
+// Two different jobs, and the split between them is the point. `anchorOne`
+// matches a rendered quotation against rendered text, which is display and
+// may be wrong without anything being lost. `placeSources` does no matching
+// at all: the server resolved every comment against the document's own
+// history, and this only turns the file id in that answer into a path.
 
-import { anchorOne, anchorSource, anchorAllSources } from "../../src/lib/anchor.js";
+import { anchorOne, placeSources, shownSelector } from "../../src/lib/anchor.js";
 
 let failures = 0;
 function check(what, condition) {
@@ -18,52 +17,6 @@ function check(what, condition) {
 }
 
 const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: "", position: null, ...extra });
-
-{
-  const tree = { texts: { "chapter.typ": "before the passage of interest after" } };
-  const found = anchorSource(tree, source("chapter.typ", "the passage of interest"));
-  check("the path it names is tried first", found?.path === "chapter.typ");
-  check("and the offsets are the passage's own", found?.start === 7 && found?.end === 30);
-}
-
-{
-  // The file has been renamed since the comment was made -- its old path is
-  // gone, but the text is, unmistakably, in the one file that remains.
-  const tree = { texts: { "renamed.typ": "before the passage of interest after" } };
-  const found = anchorSource(tree, source("chapter.typ", "the passage of interest"));
-  check("a rename is followed when only one file could be meant", found?.path === "renamed.typ");
-}
-
-{
-  // Two files could both be the answer once the name is gone: guessing which
-  // one is worse than saying nothing.
-  const tree = {
-    texts: {
-      "one.typ": "before the passage of interest after",
-      "two.typ": "before the passage of interest after",
-    },
-  };
-  const found = anchorSource(tree, source("gone.typ", "the passage of interest"));
-  check("ambiguous across files after a rename is refused", found === null);
-}
-
-{
-  // The exact text has reflowed a little -- a line break where there used to
-  // be a space -- so only the whitespace-flattened fallback finds it.
-  const tree = { texts: { "chapter.typ": "before the\npassage of interest after" } };
-  const found = anchorSource(tree, source("chapter.typ", "the passage of interest"));
-  check("the flattened fallback still finds a reflowed passage", found?.path === "chapter.typ");
-}
-
-{
-  const found = anchorSource({ texts: {} }, source("chapter.typ", "the passage of interest"));
-  check("a passage in no file at all is refused", found === null);
-}
-
-{
-  const found = anchorSource({ texts: { "chapter.typ": "nothing like it here" } }, source("chapter.typ", "the passage of interest"));
-  check("a passage nowhere in its own file, with no other file to try, is refused", found === null);
-}
 
 {
   const point = { path: "chapter.typ", exact: "", prefix: "before", suffix: " after", position: 6, point: true };
@@ -81,20 +34,61 @@ const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: 
   check("a point can sit at document end", anchorOne("before after", { point:true, exact:"", position:12, prefix:"before after" })?.start === 12);
 }
 
-/* --------------------------------------------------------- anchorAllSources */
+/* -------------------------------------------------------------- placeSources */
 
 {
-  const tree = { texts: { "chapter.typ": "before the passage of interest after" } };
+  const paths = new Map([["file-1", "chapter.typ"]]);
+  const session = { paths };
+  const sourceText = (status, range) => ({
+    original_anchor: { kind: "source_text", checkpoint_id: "abc", target: { file_id: "file-1", exact: "the passage" } },
+    attachment: { status, resolved_range_utf16: range },
+  });
   const comments = [
-    { id: 1, source: source("chapter.typ", "the passage of interest") },
-    { id: 2, source: source("chapter.typ", "nowhere to be found") },
-    { id: 3 }, // no source anchor: left alone, and not counted
+    sourceText("exact", [7, 18]),
+    sourceText("modified", [9, 21]),
+    sourceText("deleted", null),
+    sourceText("ambiguous", [7, 18]),
+    { original_anchor: { kind: "document", checkpoint_id: "abc" } },
   ];
-  const { anchored, orphaned } = anchorAllSources(tree, comments);
-  check("counts only the comments that have a source", anchored + orphaned === 2);
-  check("one anchored", anchored === 1 && comments[0].sourcePath === "chapter.typ" && typeof comments[0].sourceStart === "number");
-  check("one orphaned", orphaned === 1 && comments[1].sourcePath === null && comments[1].sourceStart === null && comments[1].sourceEnd === null);
-  check("the sourceless comment is untouched", !("sourcePath" in comments[2]));
+  const { anchored, orphaned } = placeSources(session, comments);
+  check("a passage the server placed is placed here", anchored === 2);
+  check("and it is placed exactly where the server said", comments[0].sourceStart === 7 && comments[0].sourceEnd === 18);
+  check("an edited passage is still placed", comments[1].sourceStart === 9);
+  check("a deleted passage is not placed anywhere", comments[2].sourceStart === null);
+  check("an ambiguous passage is not placed either", comments[3].sourceStart === null);
+  check("both unplaced passages are counted as such", orphaned === 2);
+  check("a comment on the document as a whole has no passage to place", comments[4].sourceStart === null);
+}
+
+{
+  // A file id this browser does not know -- the document has moved on, or
+  // this is a reader who was never sent the source -- places nothing rather
+  // than placing it at an offset into some other file.
+  const comments = [{
+    original_anchor: { kind: "source_text", checkpoint_id: "abc", target: { file_id: "file-gone", exact: "x" } },
+    attachment: { status: "exact", resolved_range_utf16: [0, 1] },
+  }];
+  placeSources({ paths: new Map() }, comments);
+  check("an unknown file id places nothing", comments[0].sourcePath === null);
+}
+
+/* ------------------------------------------------------------ shownSelector */
+
+{
+  const shown = shownSelector({
+    presentation: {
+      rendered_exact: "the passage",
+      rendered_prefix: "before ",
+      rendered_suffix: " after",
+      rendered_position_utf16: 7,
+    },
+  });
+  check("the display selector is the rendered quotation", shown.exact === "the passage" && shown.prefix === "before ");
+  check("a quotation is not a point", shown.point === false);
+  const point = shownSelector({ presentation: { rendered_position_utf16: 12 } });
+  check("no words and a position is a point", point.point === true && point.position === 12);
+  const bare = shownSelector({});
+  check("a comment with no presentation at all is not a point", bare.point === false && bare.exact === "");
 }
 
 {
@@ -110,4 +104,4 @@ const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: 
 }
 
 if (failures) process.exit(1);
-console.log("anchor: source selectors anchor to the right file, or to none");
+console.log("anchor: rendered quotations are matched, source ranges are taken as given");

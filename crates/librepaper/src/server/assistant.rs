@@ -1,7 +1,7 @@
 //! HTTP endpoints used by the writing assistant.
 
 use super::*;
-use crate::room::{BatchCaller, BatchSuggestion, SourceAnchor};
+use crate::room::{BatchCaller, BatchSuggestion, OriginalAnchor};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -12,7 +12,7 @@ pub(super) struct BatchRequest {
 
 #[derive(Deserialize)]
 pub(super) struct BatchItem {
-    pub anchor: SourceAnchor,
+    pub original_anchor: OriginalAnchor,
     pub proposed: String,
     #[serde(default)]
     pub body: String,
@@ -104,7 +104,7 @@ impl Server {
             .items
             .into_iter()
             .map(|item| BatchSuggestion {
-                source: item.anchor,
+                original_anchor: item.original_anchor,
                 proposed: item.proposed,
                 body: item.body,
             })

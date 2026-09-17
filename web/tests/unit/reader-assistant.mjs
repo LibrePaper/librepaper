@@ -1,41 +1,61 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { capturePreviewTree } from "../../src/lib/assistant-preview.js";
 
-// Exercise Reader's actual selection capture and handoff, including the async
-// digest boundary. This catches pairing a retained quotation with a new file.
+// Exercise Reader's actual selection capture.
+//
+// What is worth pinning down here is what a selection does *not* carry. It
+// used to carry a source path and a checkpoint digest, worked out in this
+// browser while the person was still deciding whether to write anything --
+// which is how a quotation could end up paired with a file the reader had
+// since navigated away from. A selection is now what the page showed and
+// nothing else; which passage of which file that is gets decided by the
+// server, from the checkpoint it holds, at the moment the comment is made.
 const reader = readFileSync(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
 const start = reader.indexOf("  function showSelection(");
 const end = reader.indexOf("  function placeBar(", start);
 assert.ok(start > 0 && end > start);
-let completeDigest;
-let tree = { main: "a.md", texts: { "a.md": "same phrase" } };
-const capturedTrees = [];
 const ctx = vm.createContext({
-  mayEdit: true, publishedMode: false, publishedPublication: null, capturePreviewTree,
-  pending: null, docText: "same phrase", viewing: null, selectionRevision: null,
-  bar: { shown: true }, width: 600, assistantRequest: null,
-  session: { paths: new Map([["a", "a.md"]]) }, openFile: "a",
-  treeNow: () => tree,
-  sync: { sourceSelectorFor: (_text, selection, current) => ({ ...selection, path: current.main }) },
-  renderers: { formatOf: () => "markdown" },
-  snapshotDigest: (current) => { capturedTrees.push(current); return new Promise((resolve) => { completeDigest = resolve; }); },
-  placeBar: () => {}, showPanel: () => {}, showMobileView: () => {},
-  crypto: { randomUUID: () => "request" },
+  mayEdit: true, publishedMode: false, publishedPublication: null,
+  pending: null, docText: "same phrase",
+  bar: { shown: true },
+  placeBar: () => {},
 });
 vm.runInContext(reader.slice(start, end), ctx);
-vm.runInContext("showSelection({exact:'same phrase',prefix:'',suffix:'',position:0}, {})", ctx);
-tree = { main: "b.md", texts: { "b.md": "different" } };
-ctx.openFile = "b";
+
+vm.runInContext(
+  "showSelection({exact:'same phrase',prefix:'before ',suffix:' after',position:7}, {})",
+  ctx,
+);
 const captured = ctx.pending;
-completeDigest("revision-a");
-await ctx.selectionRevision;
-assert.equal(capturedTrees[0].main, "a.md");
-assert.equal(captured.source.path, "a.md");
-assert.equal(captured.revision, "revision-a");
-assert.equal(ctx.pending.revision, "revision-a");
+assert.equal(captured.exact, "same phrase");
+assert.equal(captured.prefix, "before ");
+assert.equal(captured.suffix, " after");
+assert.equal(captured.position, 7);
+assert.equal(captured.publication_id, "");
+for (const field of ["source", "path", "revision", "file_id", "start", "end"]) {
+  assert.ok(!(field in captured), `a selection must not carry ${field}`);
+}
+
+// A note left between two words: no quotation, and the position is the whole
+// of where it is.
+vm.runInContext("showSelection({exact:'',prefix:'before',suffix:' after',position:6,point:true}, {})", ctx);
+assert.equal(ctx.pending.point, true);
+assert.equal(ctx.pending.position, 6);
+
+// A point with no position is not a point, and a range with no words is not a
+// range: neither is something to comment on.
+vm.runInContext("showSelection({exact:'',prefix:'',suffix:'',position:null,point:true}, {})", ctx);
+assert.equal(ctx.pending, null);
+vm.runInContext("showSelection({exact:'',prefix:'',suffix:'',position:3}, {})", ctx);
+assert.equal(ctx.pending, null);
 vm.runInContext("showSelection(null, {})", ctx);
 assert.equal(ctx.pending, null);
-assert.equal(captured.source.path, "a.md");
-console.log("reader-assistant: selection attachment keeps its captured source and revision across navigation");
+
+// A reader annotating a published rendering says which one they were reading.
+ctx.publishedMode = true;
+ctx.publishedPublication = { id: "publication-1" };
+vm.runInContext("showSelection({exact:'same phrase',prefix:'',suffix:'',position:0}, {})", ctx);
+assert.equal(ctx.pending.publication_id, "publication-1");
+
+console.log("reader-assistant: a selection is what the page showed, and carries no source identity");

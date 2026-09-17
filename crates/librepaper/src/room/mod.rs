@@ -31,21 +31,30 @@ use crate::util::{now_unix, timestamp};
 pub(crate) mod agent;
 pub(crate) mod agent_comments;
 mod agent_view;
+pub mod annotation;
 mod catalog;
 pub(crate) mod checkpoint;
 mod command;
+#[cfg(test)]
+mod comment_anchor_tests;
 pub(crate) mod comments;
 pub(crate) mod error;
 mod figures;
 #[cfg(test)]
 mod idle_room_tests;
+pub(crate) mod locate;
 pub(crate) mod outgoing;
 #[cfg(test)]
 mod proposal_round_trip_tests;
 pub(crate) mod proposals;
 mod resident;
+pub(crate) mod resolve;
 pub(crate) mod text;
 
+pub use annotation::{
+    AnchorSide, AnchorStatus, CheckpointId, CommentTarget, DerivedAttachment, FileId,
+    OriginalAnchor, SourceTextTarget,
+};
 use catalog::*;
 pub use checkpoint::Attribution;
 pub use command::Command;
@@ -70,28 +79,31 @@ pub struct Message {
     pub body: String,
     #[serde(default)]
     pub creator: String,
+    /// What was selected, as the page had it, and the words on either side of
+    /// it. This is what a client can see and all it is asked for: the range in
+    /// the source that these words came from is worked out by the server,
+    /// which is what holds the checkpoint (see [`comments`] and [`locate`]).
     #[serde(default)]
     pub exact: String,
     #[serde(default)]
     pub prefix: String,
     #[serde(default)]
     pub suffix: String,
+    /// Where the selection was in the rendered text. Display evidence, and a
+    /// tie-breaker of last resort; never an offset into any file.
     #[serde(default)]
     pub position: Option<i64>,
-    /// A point annotation has no selected text and uses a nonnegative position.
+    /// A point annotation has no selected text: it is a place between two
+    /// words, found from the words on either side of it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub point: bool,
+    /// A remark about the document as a whole rather than about any passage
+    /// of it. It has nothing to anchor and so can never be orphaned.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub document: bool,
     /// Optional six digit RGB highlight color.
     #[serde(default)]
     pub color: Option<String>,
-    #[serde(default)]
-    pub region: Option<Region>,
-    #[serde(default)]
-    pub output_anchor: Option<QuartoOutputAnchor>,
-    /// The source anchor a `comment` arrives with, or that an `anchor`
-    /// message backfills onto one that has none yet.
-    #[serde(default)]
-    pub source: Option<SourceAnchor>,
     /// The replacement a suggestion (a `comment` whose motivation is
     /// `editing`) proposes for the passage its source anchor names.
     /// `Some("")` proposes deleting it.
@@ -1019,6 +1031,11 @@ impl Room {
             self.fence(FenceReason::UnreadableState);
         }
         self.load_session().await;
+        // Comments come back from the catalogue with whatever attachment was
+        // last written down, and the document has just been rebuilt from its
+        // own history: resolve once here so the first reader is told where
+        // every passage is rather than where it used to be.
+        self.reattach_comments().await;
     }
 
     /// Recover the PostgreSQL collaboration base and ordered update tail.
@@ -1637,6 +1654,37 @@ impl Room {
         state.session.generation += 1;
         state.session.updated_at = now;
         state.session.by = by.clone();
+        // The text just moved, so where every comment points has moved with
+        // it. Worked out here, once, against the document this update just
+        // produced -- not by each reader against whatever it can see.
+        let moved = comments::reattach(&mut state);
+        for (id, attachment) in &moved {
+            // Only editors: where a passage is in the source is source, and a
+            // reader of a published render is never told about the source.
+            let payload = json!({
+                "type": "attachment", "comment_id": id, "attachment": attachment,
+            })
+            .to_string();
+            send_to(&mut state, None, Outgoing::shared_text(payload), |peer| {
+                peer.may_edit
+            });
+        }
+        drop(state);
+        if !moved.is_empty() {
+            if let Some(catalog) = self.catalog.as_ref().get() {
+                for (id, attachment) in moved {
+                    let Ok(uuid) = uuid::Uuid::parse_str(&id) else {
+                        continue;
+                    };
+                    if catalog.record_attachment(uuid, &attachment).await.is_err() {
+                        // A cache nobody could write is a cache that gets
+                        // worked out again next time. The edit itself is
+                        // already applied and is not put at risk for it.
+                        break;
+                    }
+                }
+            }
+        }
         Applied::Relay
     }
 

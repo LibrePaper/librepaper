@@ -229,6 +229,28 @@ document use `text.get_cursor(pos, side)` and resolve with
 `offsets_of_sticky_indices` — that a resolved anchor lands in the file it names
 — becomes a container comparison rather than a `BranchPtr` comparison.
 
+A comment keeps two things apart, and the split is the whole of its design.
+What it is *about* is `room::annotation::OriginalAnchor`: a checkpoint and
+either a UTF-16 range of one file, named by its stable `files` key, or the
+document as a whole. The server works it out once, when the comment is made, in
+`room::locate` — from the words the browser saw, because a browser has no
+source to send offsets into and a reader of a published rendering has no source
+at all — and nothing writes to it afterwards.
+
+Where that passage *is* is `room::resolve`'s `DerivedAttachment`: a cache,
+keyed by the checkpoint it was computed against, recomputed on every edit.
+Cursors captured at creation are what it resolves through; Loro relocates a
+cursor whose content was deleted to the boundary it occupied, so a resolved
+pair is checked against the quoted text before it is believed, and a collapsed
+one is reported as `deleted` rather than as a position. Loro's replacement
+cursors are stored back into the cache and never into the anchor. When there
+are no usable cursors it falls back to looking for the words, and two equally
+good candidates are `ambiguous` rather than the first of them.
+
+A rendered quotation survives as `PresentationContext`: what the page said,
+kept for display and for explaining a comment to a person. Nothing resolves
+through it, and a re-render on its own cannot orphan a comment.
+
 ### 3.8 Presence
 
 `y-protocols` awareness, including the hand-rolled Rust encoder at

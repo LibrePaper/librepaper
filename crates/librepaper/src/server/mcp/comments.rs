@@ -4,7 +4,10 @@
 use super::*;
 use crate::room::agent::OperationKey;
 use crate::room::agent_comments::AgentAnnotationAuthority;
-use crate::room::{self, BatchCaller, Comment, Reply, SourceAnchor};
+use crate::room::{
+    self, AnchorSide, BatchCaller, CheckpointId, Comment, CommentTarget, FileId, OriginalAnchor,
+    Reply, SourceTextTarget,
+};
 
 fn validate_existing_action(
     action: &str,
@@ -157,15 +160,35 @@ impl Server {
                     .await?,
             )
         };
-        let source =
-            if let (Some(view), Some(range_id)) = (view.as_ref(), args["range_id"].as_str()) {
-                if range_id.is_empty() {
-                    None
-                } else {
-                    let (path, start, end) = resolve_range(view, view_id, range_id, &self.key)?;
-                    let text = &view.snapshot.texts[path];
-                    Some(SourceAnchor {
-                        path: path.to_string(),
+        // An agent comments on a range it captured, and a captured range is
+        // already what a comment is about: a file and an offset pair in the
+        // view's own checkpoint. So the anchor is built from it rather than
+        // searched for, and the quotation beside it is read out of the same
+        // text at the same offsets.
+        let anchored = match (view.as_ref(), args["range_id"].as_str()) {
+            (Some(view), Some(range_id)) if !range_id.is_empty() => {
+                let (path, start, end) = resolve_range(view, view_id, range_id, &self.key)?;
+                let text = &view.snapshot.texts[path];
+                let tree = super::operations::tree_of_view(view)?;
+                let file_id = tree
+                    .files
+                    .get(path)
+                    .map(|file| file.file_id.clone())
+                    .unwrap_or_default();
+                if file_id.is_empty() {
+                    return Err(Failure::new(
+                        "invalid_range",
+                        "that range names a file this checkpoint does not have",
+                    ));
+                }
+                Some(OriginalAnchor {
+                    checkpoint_id: CheckpointId(view.snapshot.source_revision.clone()),
+                    target: CommentTarget::SourceText(SourceTextTarget {
+                        file_id: FileId(file_id),
+                        start_utf16: text[..start].encode_utf16().count() as u32,
+                        end_utf16: text[..end].encode_utf16().count() as u32,
+                        start_side: AnchorSide::Left,
+                        end_side: AnchorSide::Right,
                         exact: text[start..end].to_string(),
                         prefix: text[..start]
                             .chars()
@@ -176,22 +199,17 @@ impl Server {
                             .rev()
                             .collect(),
                         suffix: text[end..].chars().take(64).collect(),
-                        position: Some(text[..start].encode_utf16().count() as i64),
-                    })
-                }
-            } else {
-                None
-            };
-        if args["range_id"]
-            .as_str()
-            .is_some_and(|range_id| !range_id.is_empty())
-            && source.is_none()
-        {
-            return Err(Failure::new(
-                "invalid_range",
-                "a valid view_id is required with range_id",
-            ));
-        }
+                    }),
+                })
+            }
+            (_, Some(range_id)) if !range_id.is_empty() => {
+                return Err(Failure::new(
+                    "invalid_range",
+                    "a valid view_id is required with range_id",
+                ));
+            }
+            _ => None,
+        };
 
         let request_id = key.scoped_request_id(actor);
         let mut upserts = Vec::new();
@@ -206,6 +224,17 @@ impl Server {
                 if body.is_empty() {
                     return Err(Failure::new("invalid_params", "body is required"));
                 }
+                // A comment has to be about something, and an agent that
+                // captured no range said nothing about what. The document as
+                // a whole is a thing to comment on, and is what this means.
+                let original_anchor = anchored.unwrap_or(OriginalAnchor {
+                    checkpoint_id: CheckpointId(
+                        view.as_ref()
+                            .map(|v| v.snapshot.source_revision.clone())
+                            .unwrap_or_default(),
+                    ),
+                    target: CommentTarget::Document,
+                });
                 let id = format!(
                     "comment-{}",
                     &hex::encode(Sha256::digest(request_id.as_bytes()))[..32]
@@ -216,13 +245,8 @@ impl Server {
                     body: body.into(),
                     creator: creator.clone(),
                     author: author.clone(),
-                    via: who.link.clone(),
                     created: crate::util::timestamp(),
-                    source,
-                    revision: view
-                        .as_ref()
-                        .map(|v| v.snapshot.source_revision.clone())
-                        .unwrap_or_default(),
+                    original_anchor: Some(original_anchor),
                     ..Comment::default()
                 });
             }

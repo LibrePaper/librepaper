@@ -474,13 +474,14 @@ mod tests {
             author_account_id: Some(collaborator.id),
             author_key: format!("account:{}", collaborator.id),
             author_label: "Collaborator".into(),
-            selector: json!({}),
-            context: json!({"version":1}),
-            source_version_id: None,
-            source_update_sequence: None,
-            source_project_generation: None,
-            source_state_vector: None,
+            original_anchor: crate::room::OriginalAnchor {
+                checkpoint_id: crate::room::annotation::CheckpointId("checkpoint".into()),
+                target: crate::room::CommentTarget::Document,
+            },
             publication_id: None,
+            color: None,
+            presentation: Default::default(),
+            attachment: None,
         };
         let collaborator_actor = MutationAuthorization {
             account_id: Some(collaborator.id),
@@ -525,13 +526,14 @@ mod tests {
                     author_account_id: Some(collaborator.id),
                     author_key: format!("account:{}", collaborator.id),
                     author_label: "Collaborator".into(),
-                    selector: json!({"exact":"Paper"}),
-                    context: json!({"version":1}),
-                    source_version_id: None,
-                    source_update_sequence: Some(0),
-                    source_project_generation: Some(0),
-                    source_state_vector: None,
+                    original_anchor: crate::room::OriginalAnchor {
+                        checkpoint_id: crate::room::annotation::CheckpointId("checkpoint".into()),
+                        target: crate::room::CommentTarget::Document,
+                    },
                     publication_id: None,
+                    color: None,
+                    presentation: Default::default(),
+                    attachment: None,
                 },
                 &owner_actor,
                 false,
@@ -1619,5 +1621,6 @@ mod tests {
 mod benchmarks;
 pub use access::{AccessRole, GrantRecord, ShareLinkRecord};
 pub use annotations::{
+    attachment_from_record, original_anchor_from_record, presentation_from_record,
     AnnotationRecord, MutationAuthorization, NewAnnotation, NewReply, ReplyRecord,
 };

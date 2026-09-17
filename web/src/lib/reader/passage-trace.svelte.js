@@ -26,6 +26,10 @@ export function createPassageTrace({
   now = () => ({ source: 0, visible: "" }),
   // The manifest, read only if a walk needs one and none has been read.
   loadCheckpoints = async () => [],
+  // What each of this document's files is called, by its stable id: a
+  // comment names the file it is about by id, and an old checkpoint is read
+  // by path.
+  paths = () => new Map(),
 }) {
   const state = $state({ went: {}, replacements: {} });
 
@@ -37,8 +41,10 @@ export function createPassageTrace({
 
   async function trace({ comments, tree, checkpoints = [] }) {
     const { source, visible } = now();
-    const lost = comments.filter((comment) => comment.orphaned && !comment.region);
-    const ids = lost.map((comment) => `${comment.id}:${comment.revision}`).join("|");
+    const lost = comments.filter((comment) => comment.orphaned);
+    const ids = lost
+      .map((comment) => `${comment.id}:${comment.original_anchor?.checkpoint_id || ""}`)
+      .join("|");
     if (last?.source === source && last?.visible === visible && last?.ids === ids) return;
     last = { source, visible, ids };
     const stale = walks.begin();
@@ -53,14 +59,15 @@ export function createPassageTrace({
     for (const comment of lost) {
       if (!current()) return;
       try {
-        const point = await passages.wentAt(slug, comment, list, keyHeaders(key));
+        const traced = passages.tracedBy(comment, paths());
+        const point = await passages.wentAt(slug, traced, list, keyHeaders(key));
         if (point) went[comment.id] = point;
-        if (!comment.revision) continue;
-        const oldText = comment.source
-          ? await passages.sourceTextAt(slug, comment.revision, comment.source.path, keyHeaders(key))
-          : await passages.textAt(slug, comment.revision, keyHeaders(key));
-        const against = comment.source ? tree.texts[comment.source.path] ?? "" : visible;
-        const replacement = await passages.replacementAt(oldText, against, comment.source || comment);
+        if (!traced?.checkpoint) continue;
+        const oldText = traced.path
+          ? await passages.sourceTextAt(slug, traced.checkpoint, traced.path, keyHeaders(key))
+          : await passages.textAt(slug, traced.checkpoint, keyHeaders(key));
+        const against = traced.path ? tree.texts[traced.path] ?? "" : visible;
+        const replacement = await passages.replacementAt(oldText, against, traced.selector);
         if (replacement !== null) replacements[comment.id] = replacement;
       } catch {
         // A missing checkpoint cannot establish a replacement. The walk is

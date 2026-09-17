@@ -346,38 +346,6 @@ impl super::Room {
         Ok(id.to_string())
     }
 
-    /// Writes a branch down as a proposal, and returns its id.
-    ///
-    /// Split from [`Room::open_suggestion`] because the callers that make a
-    /// suggestion while holding the room state cannot take that lock again --
-    /// it is not reentrant, and asking for it twice is a deadlock rather than
-    /// an error. So they build the branch under the lock they already hold,
-    /// where the document is, and store it here after letting it go.
-    pub(crate) async fn store_proposal(
-        &self,
-        author: &str,
-        peer: PeerID,
-        base: &Frontiers,
-        tip: &Frontiers,
-        branch: Vec<u8>,
-    ) -> Result<String, ProposalError> {
-        let (catalog, document) = self.catalog_and_document()?;
-        let id = crate::storage::postgres::new_id();
-        catalog
-            .open_proposal(crate::storage::postgres::NewProposal {
-                document_id: document,
-                id,
-                author: author.to_string(),
-                author_peer: peer as i64,
-                base_frontiers: base.encode(),
-                tip_frontiers: tip.encode(),
-                branch_bytes: branch,
-            })
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?;
-        Ok(id.to_string())
-    }
-
     /// Opens a proposal for a suggestion, and returns its id for the comment to
     /// carry.
     ///
@@ -416,6 +384,38 @@ impl super::Room {
                 base_frontiers: base.encode(),
                 tip_frontiers: tip.encode(),
                 branch_bytes: bytes,
+            })
+            .await
+            .map_err(|error| ProposalError::Failed(error.to_string()))?;
+        Ok(id.to_string())
+    }
+
+    /// Writes a branch down as a proposal, and returns its id.
+    ///
+    /// Split from [`Room::open_suggestion`] because the callers that make a
+    /// suggestion while holding the room state cannot take that lock again --
+    /// it is not reentrant, and asking for it twice is a deadlock rather than
+    /// an error. So they build the branch under the lock they already hold,
+    /// where the document is, and store it here after letting it go.
+    pub(crate) async fn store_proposal(
+        &self,
+        author: &str,
+        peer: PeerID,
+        base: &Frontiers,
+        tip: &Frontiers,
+        branch: Vec<u8>,
+    ) -> Result<String, ProposalError> {
+        let (catalog, document) = self.catalog_and_document()?;
+        let id = crate::storage::postgres::new_id();
+        catalog
+            .open_proposal(crate::storage::postgres::NewProposal {
+                document_id: document,
+                id,
+                author: author.to_string(),
+                author_peer: peer as i64,
+                base_frontiers: base.encode(),
+                tip_frontiers: tip.encode(),
+                branch_bytes: branch,
             })
             .await
             .map_err(|error| ProposalError::Failed(error.to_string()))?;

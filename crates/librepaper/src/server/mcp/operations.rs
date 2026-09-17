@@ -4,7 +4,10 @@ use crate::room::agent::{
     self, Affinity, AgentAuthority, OperationKey, Patch, PatchRequest, SourceFile, SourceTree,
 };
 use crate::room::agent_comments::AnnotationBatch;
-use crate::room::{BatchCaller, Comment, SourceAnchor};
+use crate::room::{
+    AnchorSide, BatchCaller, CheckpointId, Comment, CommentTarget, FileId, OriginalAnchor,
+    SourceTextTarget,
+};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct CandidateGrant {
@@ -422,9 +425,7 @@ impl Server {
                 }
                 if args["action"] == "checkpoint" {
                     return self
-                        .mcp_checkpoint(
-                            slug, actor, &current, headers, arrival, peer, args, &key, &digest,
-                        )
+                        .mcp_checkpoint(slug, actor, &current, headers, (args, &key, &digest))
                         .await;
                 }
                 self.mcp_comment(
@@ -436,6 +437,14 @@ impl Server {
         }
     }
 
+    /// Takes a suggestion: the proposal it carries becomes an edit to the
+    /// passage it is about.
+    ///
+    /// The passage is named by the comment's own anchor -- the file's stable
+    /// id and a UTF-16 range in the checkpoint it was made against -- so this
+    /// does not go looking for it. It checks that the range still reads the
+    /// way the anchor says it does and refuses when it does not, because a
+    /// proposal applied to different words is a different proposal.
     #[allow(clippy::too_many_arguments)]
     async fn mcp_accept(
         &self,
@@ -489,48 +498,37 @@ impl Server {
                 "suggestion changed or is already decided",
             ));
         }
-        if comment.revision != view.snapshot.source_revision {
+        if comment.revision() != view.snapshot.source_revision {
             return Err(Failure::new(
                 "conflict",
                 "suggestion belongs to another source tree; capture and propose against the current passage",
             ));
         }
         let anchor = comment
-            .source
+            .source()
             .ok_or_else(|| Failure::new("invalid_range", "suggestion has no source anchor"))?;
+        let tree = tree_of_view(&view)?;
+        let path = tree
+            .files
+            .iter()
+            .find(|(_, entry)| entry.file_id == anchor.file_id.0)
+            .map(|(path, _)| path.clone())
+            .ok_or_else(|| Failure::new("conflict", "suggestion file disappeared"))?;
         let text = view
             .snapshot
             .texts
-            .get(&anchor.path)
+            .get(&path)
             .ok_or_else(|| Failure::new("conflict", "suggestion file disappeared"))?;
-        let position = anchor
-            .position
-            .and_then(|p| usize::try_from(p).ok())
-            .ok_or_else(|| {
-                Failure::new(
-                    "ambiguous_range",
-                    "suggestion requires an exact captured position",
-                )
-            })?;
-        let mut units = 0;
-        let mut start = None;
-        for (byte, ch) in text.char_indices() {
-            if units == position {
-                start = Some(byte);
-                break;
-            }
-            units += ch.len_utf16();
-        }
-        if start.is_none() && units == position {
-            start = Some(text.len());
-        }
-        let start = start
+        // The anchor counts in UTF-16 units and a patch is stated in bytes;
+        // the conversion is exact, and a position that falls inside a
+        // character is a refusal rather than a rounding.
+        let start = byte_of_utf16(text, anchor.start_utf16 as usize)
             .ok_or_else(|| Failure::new("invalid_range", "position splits a Unicode character"))?;
-        let end = start.saturating_add(anchor.exact.len());
+        let end = byte_of_utf16(text, anchor.end_utf16 as usize)
+            .ok_or_else(|| Failure::new("invalid_range", "position splits a Unicode character"))?;
         if text.get(start..end) != Some(anchor.exact.as_str()) {
             return Err(Failure::new("conflict", "suggestion passage changed"));
         }
-        let tree = tree_of_view(&view)?;
         let request = PatchRequest {
             acceptance: Some(agent::AgentAcceptance {
                 comment_id: id.to_string(),
@@ -538,16 +536,16 @@ impl Server {
                 expected_seq: comment.seq,
             }),
             operation: key.clone(),
-            base_tree: view.snapshot.source_revision,
+            base_tree: view.snapshot.source_revision.clone(),
             consistency: agent::Consistency::ExactTree,
             dependencies: Vec::new(),
             patches: vec![Patch {
-                path: anchor.path.clone(),
-                file_id: tree.files[&anchor.path].file_id.clone(),
+                path: path.clone(),
+                file_id: anchor.file_id.0.clone(),
                 start,
                 end,
-                exact: anchor.exact,
-                replacement: comment.proposed.ok_or_else(|| {
+                exact: anchor.exact.clone(),
+                replacement: comment.proposed.clone().ok_or_else(|| {
                     Failure::new("invalid_params", "suggestion has no replacement")
                 })?,
                 affinity: Affinity::Before,
@@ -571,18 +569,13 @@ impl Server {
             .map_err(failure)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn mcp_checkpoint(
         &self,
         slug: &str,
         actor: &str,
         who: &Viewer,
         headers: &HeaderMap,
-        _arrival: &Arrival,
-        _peer: SocketAddr,
-        args: &Value,
-        key: &OperationKey,
-        digest: &str,
+        (args, key, digest): (&Value, &OperationKey, &str),
     ) -> Result<Value, Failure> {
         if !who.at_least(Role::Editor) {
             return Err(Failure::new(
@@ -872,20 +865,24 @@ impl Server {
                     Comment {
                         id: format!("{}-{index}", &pass[..32]),
                         motivation: "editing".into(),
-                        source: Some(SourceAnchor {
-                            path: patch.path.clone(),
-                            exact: patch.exact.clone(),
-                            prefix,
-                            suffix,
-                            position: Some(source[..patch.start].encode_utf16().count() as i64),
+                        original_anchor: Some(OriginalAnchor {
+                            checkpoint_id: CheckpointId(view.snapshot.source_revision.clone()),
+                            target: CommentTarget::SourceText(SourceTextTarget {
+                                file_id: FileId(patch.file_id.clone()),
+                                start_utf16: source[..patch.start].encode_utf16().count() as u32,
+                                end_utf16: source[..patch.end].encode_utf16().count() as u32,
+                                start_side: AnchorSide::Left,
+                                end_side: AnchorSide::Right,
+                                exact: patch.exact.clone(),
+                                prefix,
+                                suffix,
+                            }),
                         }),
                         proposed: Some(patch.replacement.clone()),
                         body: candidate.notes.get(index).cloned().unwrap_or_default(),
                         creator: creator.clone(),
                         created: crate::util::timestamp(),
                         author: author.clone(),
-                        via: who.link.clone(),
-                        revision: view.snapshot.source_revision.clone(),
                         pass: pass.clone(),
                         ..Comment::default()
                     }
@@ -1065,4 +1062,18 @@ impl Server {
             _ => Err(Failure::new("invalid_params", "unknown result kind")),
         }
     }
+}
+
+/// The byte offset of a UTF-16 offset, or `None` when it falls inside a
+/// character. A patch is stated in bytes and an anchor counts the way a
+/// browser does, so one of the two has to be converted, exactly.
+fn byte_of_utf16(text: &str, target: usize) -> Option<usize> {
+    let mut units = 0;
+    for (byte, character) in text.char_indices() {
+        if units == target {
+            return Some(byte);
+        }
+        units += character.len_utf16();
+    }
+    (units == target).then_some(text.len())
 }

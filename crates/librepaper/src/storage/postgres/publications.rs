@@ -294,3 +294,20 @@ fn validate(input: &NewPublication) -> Result<()> {
     }
     Ok(())
 }
+
+impl PostgresCatalog {
+    /// One publication by its own id, for the callers that have the id a
+    /// reader was looking at rather than the request that made it.
+    pub async fn publication(&self, id: Uuid) -> Result<Option<PublicationRecord>> {
+        sqlx::query_as!(
+            PublicationRecord,
+            "SELECT id,document_id,source_version_id,request_key,request_digest,manifest_key,
+                    manifest_digest,publisher_account_id,publisher_label,created_at
+             FROM publications WHERE id=$1",
+            id,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+}

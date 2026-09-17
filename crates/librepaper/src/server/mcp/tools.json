@@ -420,7 +420,7 @@
             "resolve",
             "delete",
             "refine",
-            "accept",
+
             "reject",
             "checkpoint"
           ]

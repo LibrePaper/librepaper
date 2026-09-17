@@ -1,6 +1,11 @@
 //! The comments: what one is, how a submission from a reader becomes one, and
 //! the anchor that ties it to a passage.
 
+use super::annotation::{
+    AnchorStatus, CheckpointId, FileId, PresentationContext, SourceTextTarget,
+};
+use super::locate::{self, Quote};
+use super::resolve;
 use super::*;
 
 // Browser submissions carry a random UUID that remains stable across retries.
@@ -33,112 +38,44 @@ pub struct Reply {
     pub author: String,
 }
 
-/// A rectangle on an image, in percentages of the image's own size, so it
-/// survives the document being displayed at any width.
-///
-/// Which image is a harder question than where on it. There is no text around
-/// a figure to anchor to, so two identifiers are kept: a digest of the image
-/// source, which survives the figure moving, and its position among the
-/// document's images, which survives the image being re-encoded. The reader
-/// tries the digest first.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct Region {
-    #[serde(default)]
-    pub image_digest: String,
-    #[serde(default)]
-    pub image_index: i64,
-    #[serde(default)]
-    pub x: f64,
-    #[serde(default)]
-    pub y: f64,
-    #[serde(default, rename = "w")]
-    pub width: f64,
-    #[serde(default, rename = "h")]
-    pub height: f64,
-}
-
-/// Identity of an immutable Quarto output. Coordinates are interpreted in
-/// `coordinate_system` units and dimensions belong to the artifact captured
-/// by the render, so a later render cannot silently move a discussion onto a
-/// different plot.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QuartoOutputAnchor {
-    pub render_id: String,
-    #[serde(default)]
-    pub cell_id: String,
-    #[serde(default)]
-    pub output_ordinal: u32,
-    pub content_sha256: String,
-    #[serde(default)]
-    pub coordinate_system: String,
-    #[serde(default)]
-    pub width: u32,
-    #[serde(default)]
-    pub height: u32,
-}
-
-/// Where a passage sits in the file it actually came from, as opposed to the
-/// rendered page a reader was looking at when they wrote the comment. The
-/// source is what is versioned -- checkpoints and the CRDT both hold it, not
-/// the HTML a browser produced from it -- so this is the anchor that survives
-/// a re-render and that can be looked up in any checkpoint without rendering
-/// it first. It becomes the anchor of record; the rendered TextQuoteSelector
-/// stays only for display. Not every comment has one: a remark on generated
-/// text (a bibliography entry, a numbered caption) may match nothing in the
-/// source, and a region comment on a figure never has one.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct SourceAnchor {
-    #[serde(default)]
-    pub path: String,
-    #[serde(default)]
-    pub exact: String,
-    #[serde(default)]
-    pub prefix: String,
-    #[serde(default)]
-    pub suffix: String,
-    #[serde(default)]
-    pub position: Option<i64>,
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
     #[serde(default)]
     pub seq: i64,
+    /// What this comment is about, in the document as it stood when it was
+    /// made. Written once by the server, from the selection a client sent,
+    /// and never written again: see [`super::annotation`].
+    ///
+    /// Every stored comment has one -- the persistence layer refuses a comment
+    /// that does not. It is optional here because the view served to a reader
+    /// has it taken out: source identities and source quotations are
+    /// editorial, and a rendered reader is not shown them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_anchor: Option<OriginalAnchor>,
+    /// Where that passage is in the checkpoint this comment was last served
+    /// against. Derived, replaceable, and absent when nothing has resolved it
+    /// yet -- never a second opinion about what the comment is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<DerivedAttachment>,
+    /// The page the comment was made on: the words as the render had them,
+    /// and which publication that was. Display evidence only.
+    #[serde(default, skip_serializing_if = "PresentationContext::is_empty")]
+    pub presentation: PresentationContext,
     #[serde(default)]
     pub motivation: String,
-    /// Published rendering the reader selected from. Empty only for editor
-    /// annotations which are not tied to a rendered publication.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub publication_id: String,
-    #[serde(default)]
-    pub exact: String,
-    #[serde(default)]
-    pub prefix: String,
-    #[serde(default)]
-    pub suffix: String,
-    /// Where the passage sat when the comment was made. Null for a comment
-    /// written before it was recorded, rather than claiming offset 0.
-    #[serde(default)]
-    pub position: Option<i64>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub point: bool,
+    /// The highlight colour a reader chose, as `#rrggbb`. Presentation, but
+    /// the reader's own rather than the render's, so it belongs to the
+    /// comment and is stored with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
-    /// Set instead of the text selector when the annotation is on part of a
-    /// figure rather than on a run of words.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<Region>,
-    /// Immutable Quarto output identity, present on comments made over a
-    /// rendered table, figure, or other generated result.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_anchor: Option<QuartoOutputAnchor>,
-    /// The anchor of record, into the source rather than the rendered page.
-    /// Absent on a region comment, on a comment made before this existed, and
-    /// on one whose passage could not be found in the source it was written
-    /// against.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<SourceAnchor>,
+    /// Published rendering the reader selected from. Empty only for editor
+    /// annotations which are not tied to a rendered publication. Kept beside
+    /// the comment rather than inside its presentation because who may see a
+    /// comment is decided by it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub publication_id: String,
+
     /// The proposal this comment offers, when its motivation is `editing`.
     ///
     /// A suggestion is a proposed change with a remark attached, and the change
@@ -178,15 +115,6 @@ pub struct Comment {
     pub resolved: bool,
     #[serde(default)]
     pub resolved_at: Option<String>,
-    /// The checkpoint this comment was made on: what the reviewer was actually
-    /// looking at. Ordinary comments use the checkpoint taken the moment they
-    /// arrive, while anchored assistant comments preserve their captured
-    /// revision -- so a passage can be looked up in the text as it was rather
-    /// than reconstructed from one that has moved on. Empty on a comment from
-    /// before the field existed, which is read as the oldest checkpoint the
-    /// manifest still has.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub revision: String,
     /// The checkpoint current when it was resolved, beside `resolved_at`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub resolved_in: String,
@@ -199,25 +127,38 @@ pub struct Comment {
     /// shape for the same reason as `Reply::author`.
     #[serde(default, skip_serializing)]
     pub author: String,
-    /// The digest of the link this comment arrived on, empty for a commenter
-    /// by name. It is what lets an owner group a blind reviewer's remarks
-    /// without either reviewer having signed anything, and it is not exported:
-    /// the export is the reviewer's words, not the mechanics of how they
-    /// arrived. Kept off every client-bound shape, as `author` is.
-    #[serde(default, skip_serializing)]
-    pub via: String,
-    /// The `request_id` an `accept` last actually applied, so a retry with
-    /// the same id is recognized as the same request rather than accepted a
-    /// second time -- an accept has a side effect on the live document, and
-    /// the ordinary re-submit-with-the-same-id retry that a plain comment
-    /// answers for free would otherwise reapply the edit. Kept off every
-    /// client-bound shape, as `author` and `via` are.
-    #[serde(default, skip_serializing)]
-    pub accept_request: String,
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
+impl Comment {
+    /// The checkpoint this comment was made against: what the reviewer was
+    /// actually looking at. It lives on the anchor, because that is what it
+    /// is a property of, and this is the one way to ask for it -- a second
+    /// copy beside it could disagree with it.
+    ///
+    /// Empty on the redacted view served to a reader, which has no anchor.
+    pub fn revision(&self) -> &str {
+        self.original_anchor
+            .as_ref()
+            .map(|anchor| anchor.checkpoint_id.0.as_str())
+            .unwrap_or_default()
+    }
+
+    /// The passage this comment is about, if it is about a passage rather
+    /// than about the document as a whole.
+    pub fn source(&self) -> Option<&SourceTextTarget> {
+        self.original_anchor
+            .as_ref()
+            .and_then(|a| a.target.source())
+    }
+}
+
+/// Keeps a highlight colour only if it is one: six hexadecimal digits behind
+/// a hash, lowercased so two spellings of the same colour are one colour.
+pub fn valid_color(value: Option<&str>) -> Option<String> {
+    let raw = value?.trim();
+    let digits = raw.strip_prefix('#')?;
+    (digits.len() == 6 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| format!("#{}", digits.to_ascii_lowercase()))
 }
 
 pub(super) fn valid_revision(value: &str) -> bool {
@@ -228,20 +169,12 @@ pub(super) fn valid_revision(value: &str) -> bool {
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
 }
 
-pub fn valid_color(value: Option<&str>) -> Option<String> {
-    let value = value?.trim();
-    (value.len() == 7
-        && value.starts_with('#')
-        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit()))
-    .then(|| value.to_ascii_uppercase())
-}
-
 /// One proposal in an assistant pass. Validation and placement happen while
 /// the room's restore lock and state snapshot are held by
 /// [`Room::apply_suggestion_batch`].
 #[derive(Clone, Debug)]
 pub struct BatchSuggestion {
-    pub source: SourceAnchor,
+    pub original_anchor: OriginalAnchor,
     pub proposed: String,
     pub body: String,
 }
@@ -282,18 +215,17 @@ impl CommentView {
         let mine = !author.is_empty() && comment.author == author;
         let deletable = deletable(comment, author, is_owner);
         let mut comment = comment.clone();
-        // Source anchors and suggestion proposals are editorial material. A
-        // rendered reader may discuss the quotation that was displayed, but
-        // must never receive source paths, source quotations, or proposed
-        // source edits through the annotation channel.
+        // Source provenance and suggestion proposals are editorial material.
+        // A rendered reader may discuss an annotation, but must never receive
+        // source file identities, source quotations, or proposed source edits.
         if !is_owner {
-            comment.source = None;
+            comment.original_anchor = None;
+            comment.attachment = None;
             // Everything about a proposed source change: the id, and the two
             // projections of it. A reader sees the remark, not the edit.
             comment.proposal.clear();
             comment.proposed = None;
             comment.outcome.clear();
-            comment.revision.clear();
             comment.resolved_in.clear();
         }
         CommentView {
@@ -320,177 +252,304 @@ pub fn deletable(item: &Comment, author: &str, is_owner: bool) -> bool {
     is_owner || (!author.is_empty() && item.author == author)
 }
 
-/// Keeps a rectangle only if it is one: inside the image, with a size worth
-/// drawing. Percentages, so it holds at any display width.
-pub fn valid_region(spot: Option<&Region>) -> Option<Region> {
-    let spot = spot?;
-    let inside = |v: f64| (0.0..=100.0).contains(&v);
-    if !inside(spot.x) || !inside(spot.y) || !inside(spot.width) || !inside(spot.height) {
-        return None;
-    }
-    if spot.width < 0.5
-        || spot.height < 0.5
-        || spot.x + spot.width > 100.5
-        || spot.y + spot.height > 100.5
-    {
-        return None;
-    }
-    if spot.image_index < 0 {
-        return None;
-    }
-    Some(Region {
-        image_digest: clean(&spot.image_digest, 64),
-        image_index: spot.image_index,
-        x: spot.x,
-        y: spot.y,
-        width: spot.width,
-        height: spot.height,
-    })
+fn source_target(anchor: &OriginalAnchor) -> Option<&SourceTextTarget> {
+    anchor.target.source()
 }
 
-pub fn valid_quarto_output_anchor(
-    anchor: Option<&QuartoOutputAnchor>,
-) -> Option<QuartoOutputAnchor> {
-    let anchor = anchor?;
-    let valid_text = |value: &str, max: usize| {
-        !value.is_empty()
-            && value.len() <= max
-            && value.chars().all(|character| !character.is_control())
-    };
-    if !valid_text(&anchor.render_id, 256)
-        || anchor.render_id.contains('/')
-        || anchor.render_id.contains('\\')
-        || anchor.render_id.contains("..")
-        || anchor.output_ordinal > crate::quarto::MAX_OUTPUTS as u32
-        || anchor.content_sha256.len() != 64
-        || !anchor
-            .content_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        || anchor.width > 1_000_000
-        || anchor.height > 1_000_000
-    {
-        return None;
-    }
-    if !anchor.cell_id.is_empty() && !valid_text(&anchor.cell_id, 256) {
-        return None;
-    }
-    let coordinate_system = if anchor.coordinate_system.is_empty() {
-        "percent"
-    } else {
-        anchor.coordinate_system.as_str()
-    };
-    if !matches!(coordinate_system, "percent" | "pixel" | "viewbox") {
-        return None;
-    }
-    Some(QuartoOutputAnchor {
-        render_id: anchor.render_id.clone(),
-        cell_id: anchor.cell_id.clone(),
-        output_ordinal: anchor.output_ordinal,
-        content_sha256: anchor.content_sha256.clone(),
-        coordinate_system: coordinate_system.to_string(),
-        width: anchor.width,
-        height: anchor.height,
-    })
+pub(super) fn path_for_file_id(doc: &loro::LoroDoc, file_id: &FileId) -> Option<String> {
+    session::paths_of(doc)
+        .into_iter()
+        .find_map(|(id, path)| (id == file_id.0).then_some(path))
 }
 
-/// Finds where a suggestion's anchor sits in `text`: the one place
-/// `source.exact` occurs, or, when it occurs more than once, the occurrence
-/// whose surrounding words best match `source.prefix` and `source.suffix` --
-/// the longest common suffix of the prefix and longest common prefix of the
-/// suffix -- ties broken by distance from `source.position`. `None` when the
-/// passage does not occur at all, which is the caller's cue to fall back to a
-/// three-way merge.
-pub(crate) fn locate_anchor(text: &str, anchor: &SourceAnchor) -> Option<usize> {
-    if anchor.exact.is_empty() {
-        return None;
-    }
-    let candidates: Vec<usize> = text
-        .match_indices(anchor.exact.as_str())
-        .map(|(at, _)| at)
+/// The files a passage could have come from, main first.
+///
+/// Main first because a document is usually one file with the rest included
+/// into it, so the file being read is the likeliest answer and the order
+/// decides nothing else: a passage that occurs in two files is ambiguous
+/// whichever order they are tried in.
+fn source_files(doc: &loro::LoroDoc) -> Vec<(String, String, String)> {
+    let main = session::main_path(doc);
+    let paths = session::paths_of(doc);
+    let texts = session::texts_of(doc);
+    let mut files: Vec<(String, String, String)> = paths
+        .into_iter()
+        .filter_map(|(id, path)| texts.get(&path).map(|text| (id, path, text.clone())))
         .collect();
-    let (&first, rest) = candidates.split_first()?;
-    if rest.is_empty() {
-        return Some(byte_to_utf16(text, first));
-    }
-    fn common_suffix_len(a: &str, b: &str) -> usize {
-        a.chars()
-            .rev()
-            .zip(b.chars().rev())
-            .take_while(|(x, y)| x == y)
-            .count()
-    }
-    fn common_prefix_len(a: &str, b: &str) -> usize {
-        a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
-    }
-    let mut best = first;
-    let mut best_score = -1i64;
-    let mut best_distance = i64::MAX;
-    for byte in candidates {
-        let before = &text[..byte];
-        let after = &text[byte + anchor.exact.len()..];
-        let score = (common_suffix_len(&anchor.prefix, before)
-            + common_prefix_len(&anchor.suffix, after)) as i64;
-        let at16 = byte_to_utf16(text, byte) as i64;
-        let distance = anchor
-            .position
-            .map(|position| (at16 - position).abs())
-            .unwrap_or(0);
-        if score > best_score || (score == best_score && distance < best_distance) {
-            best_score = score;
-            best_distance = distance;
-            best = byte;
-        }
-    }
-    Some(byte_to_utf16(text, best))
+    files.sort_by(|a, b| {
+        (a.1 != main, a.1.as_str())
+            .partial_cmp(&(b.1 != main, b.1.as_str()))
+            .expect("total order")
+    });
+    files
 }
 
-/// Keeps a source anchor only if it names a real place: a passage worth
-/// keeping, and a path that stays inside the document rather than reading
-/// somewhere else on the machine that renders it. Anything wrong with either
-/// drops the whole anchor rather than keeping half of it, because half an
-/// anchor -- a path with no passage, or a passage nobody can find the file
-/// for -- is not one a client could ever act on.
-pub(super) fn valid_source(
+/// Checks a range somebody else worked out.
+///
+/// An assistant reads the source itself and sends offsets into it, so there is
+/// nothing to locate -- but there is something to verify, and it is not the
+/// bounds. It is that the text at the range is the text the caller says is
+/// there. A range that passes this is a range into the checkpoint's own text,
+/// which is the same guarantee [`anchor_for`] gets by construction.
+fn validate_original_anchor(
     config: &Configuration,
-    anchor: Option<&SourceAnchor>,
-) -> Option<SourceAnchor> {
-    let anchor = anchor?;
-    let cleaned: String = anchor
-        .exact
-        .chars()
-        .filter(|&c| {
-            let code = c as u32;
-            !(code < 0x09
-                || (0x0b..=0x0c).contains(&code)
-                || (0x0e..=0x1f).contains(&code)
-                || code == 0x7f)
+    doc: &loro::LoroDoc,
+    checkpoint: &str,
+    anchor: OriginalAnchor,
+) -> Result<OriginalAnchor, &'static str> {
+    // The checkpoint is the room's own name for a state of the document, not
+    // a shape a client chooses: what matters is that the caller worked against
+    // the one this is being written against, not what it looks like.
+    if anchor.checkpoint_id.0.is_empty() || anchor.checkpoint_id.0 != checkpoint {
+        return Err("a comment needs the current checkpoint provenance");
+    }
+    let Some(source) = anchor.target.source() else {
+        return Ok(anchor);
+    };
+    if source.file_id.0.is_empty()
+        || source.start_utf16 > source.end_utf16
+        || source.exact.chars().count() > config.caps.exact
+        || source.prefix.chars().count() > config.caps.context
+        || source.suffix.chars().count() > config.caps.context
+    {
+        return Err("that source anchor is not valid");
+    }
+    let Some(path) = path_for_file_id(doc, &source.file_id) else {
+        return Err("that source file is not part of this document");
+    };
+    let texts = session::texts_of(doc);
+    let Some(text) = texts.get(&path) else {
+        return Err("that source file is not text");
+    };
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if source.end_utf16 as usize > units.len() {
+        return Err("that source range is not valid");
+    }
+    let at = utf16_slice(text, source.start_utf16 as usize, source.end_utf16 as usize);
+    if at != source.exact {
+        // The range and the quotation disagree, so at most one of them is
+        // right and there is no way to tell which. Neither is stored.
+        return Err("that passage is not where the anchor says it is");
+    }
+    Ok(anchor)
+}
+
+/// The source a comment was made against, when that is not the source as it
+/// stands.
+///
+/// A reader annotating a published rendering is reading a page built from one
+/// particular checkpoint, and the words in front of them are that
+/// checkpoint's words -- not the draft an editor has been rewriting since. So
+/// the comment is anchored there, in the state it was actually made in, and
+/// where that passage has got to since is the resolver's question like any
+/// other. Anchoring it to the current draft instead would either fail to find
+/// the passage or, worse, find a different one.
+pub(super) struct PublishedSource {
+    checkpoint: String,
+    files: Vec<(String, String, String)>,
+}
+
+impl Room {
+    /// The checkpoint a publication was built from, and its files.
+    ///
+    /// `None` when there is no such publication, when it kept no source
+    /// version, or when that version's archive can no longer be read -- all of
+    /// which mean the same thing here: anchor against the document as it
+    /// stands instead, and let the resolution say what it finds.
+    async fn published_source(&self, publication_id: &str) -> Option<PublishedSource> {
+        let id = uuid::Uuid::parse_str(publication_id).ok()?;
+        let catalog = self.catalog.as_ref().get()?;
+        let publication = catalog.publication(id).await.ok()??;
+        let document_id = uuid::Uuid::parse_str(&self.storage_id).ok()?;
+        if publication.document_id != document_id {
+            return None;
+        }
+        let version = catalog
+            .version(document_id, publication.source_version_id?)
+            .await
+            .ok()??;
+        let point = super::checkpoint::checkpoint_from_version(&version);
+        let checkpoint = point.sha.clone();
+        let (tree, bodies) = self.checkpoint_texts(&point).await.ok()?;
+        let files = tree
+            .files
+            .iter()
+            .filter(|(_, file)| file.kind == "text")
+            .filter_map(|(path, file)| {
+                bodies
+                    .get(&file.sha)
+                    .map(|body| (file.id.clone(), path.clone(), body.clone()))
+            })
+            .collect();
+        Some(PublishedSource { checkpoint, files })
+    }
+}
+
+/// Works out what a selection is about, in the document as it stands.
+///
+/// This is the one place a rendered selection becomes a source range, and it
+/// happens on the server because the server is what holds the checkpoint. A
+/// browser sends what it can see -- the words, and the words around them --
+/// and never an offset: an offset from a client is a claim about a file the
+/// client may not even be allowed to read.
+///
+/// The range this returns is by construction a range of the checkpoint's own
+/// text, and `exact` is the text at it, so there is nothing left to verify
+/// afterwards. That is the point of deriving it here rather than checking a
+/// submitted one.
+fn anchor_for(
+    config: &Configuration,
+    doc: &loro::LoroDoc,
+    current: &str,
+    published: Option<&PublishedSource>,
+    quote: &Quote<'_>,
+    whole_document: bool,
+    point: bool,
+) -> Result<OriginalAnchor, String> {
+    let checkpoint = published.map(|p| p.checkpoint.as_str()).unwrap_or(current);
+    if checkpoint.is_empty() {
+        return Err("this document has no checkpoint to comment against".into());
+    }
+    let checkpoint_id = CheckpointId(checkpoint.to_string());
+    // A remark about the document as a whole, which is the one kind of
+    // comment that cannot be orphaned because it is not about a passage.
+    if whole_document || (!point && quote.exact.trim().is_empty()) {
+        return Ok(OriginalAnchor {
+            checkpoint_id,
+            target: CommentTarget::Document,
+        });
+    }
+    if quote.exact.chars().count() > config.caps.exact {
+        return Err("that selection is too long to comment on".into());
+    }
+    let files = match published {
+        Some(published) => published.files.clone(),
+        None => source_files(doc),
+    };
+    let candidates: Vec<locate::Candidate<'_>> = files
+        .iter()
+        .map(|(id, path, text)| locate::Candidate {
+            file_id: id,
+            path,
+            text,
         })
         .collect();
-    let exact = cleaned.trim().to_string();
-    if exact.is_empty() {
-        return None;
+    let found = if point {
+        locate::locate_point(&candidates, quote)
+    } else {
+        locate::locate(&candidates, quote)
+    };
+    match found {
+        Ok(target) => Ok(OriginalAnchor {
+            checkpoint_id,
+            target: CommentTarget::SourceText(target),
+        }),
+        Err(failure) => Err(failure.message().to_string()),
     }
-    if exact.chars().count() > config.caps.exact {
-        return None;
+}
+
+/// Works out where every comment's passage is in the document as it stands,
+/// and says which comments moved.
+///
+/// This is the only writer of `Comment::attachment`, and it writes nothing
+/// else: the anchors it reads from are left exactly as they were. Comments
+/// whose attachment is unchanged are not reported, so a document nobody is
+/// editing costs one pass and no writes at all.
+pub(super) fn reattach(state: &mut RoomState) -> Vec<(String, DerivedAttachment)> {
+    let checkpoint = state
+        .manifest
+        .latest()
+        .map(|point| point.sha.clone())
+        .unwrap_or_default();
+    // The files, read once for the whole pass rather than once per comment:
+    // a document with five hundred comments on it is resolved on every edit.
+    let sources = resolve::Sources::of(&state.session.doc);
+    let mut moved = Vec::new();
+    for comment in state.comments.iter_mut() {
+        let Some(anchor) = comment.original_anchor.as_ref() else {
+            continue;
+        };
+        // Whatever the last resolution stored, including the cursors Loro
+        // handed back then. Resolution starts from those, not from the
+        // original range, which is what lets a passage be followed through
+        // any number of edits rather than re-found after each one.
+        let live = comment
+            .attachment
+            .as_ref()
+            .and_then(|current| current.live_source_range.as_ref());
+        let found = resolve::resolve(&state.session.doc, &sources, &checkpoint, anchor, live);
+        if comment.attachment.as_ref() != Some(&found) {
+            moved.push((comment.id.clone(), found.clone()));
+            comment.attachment = Some(found);
+        }
     }
-    let path = anchor.path.trim();
-    if path.is_empty()
-        || path.len() > 512
-        || path.starts_with('/')
-        || path.contains('\\')
-        || path.split('/').any(|part| part == "..")
-        || path.chars().any(|c| c.is_control())
-    {
-        return None;
+    moved
+}
+
+impl Room {
+    /// Which passage a message is about, for the callers that need the place
+    /// rather than the anchor: the file it is in, where it starts, and the
+    /// source text it covers.
+    ///
+    /// The same walk a comment takes, so a suggestion and a comment made on
+    /// the same words are about the same words.
+    pub(crate) async fn locate_passage(
+        &self,
+        message: &Message,
+    ) -> Result<(String, usize, String), String> {
+        let state = self.state.lock().await;
+        let files = source_files(&state.session.doc);
+        let candidates: Vec<locate::Candidate<'_>> = files
+            .iter()
+            .map(|(id, path, text)| locate::Candidate {
+                file_id: id,
+                path,
+                text,
+            })
+            .collect();
+        let quote = Quote {
+            exact: &message.exact,
+            prefix: &message.prefix,
+            suffix: &message.suffix,
+        };
+        let found = locate::locate(&candidates, &quote).map_err(|failure| failure.message())?;
+        let path = files
+            .iter()
+            .find(|(id, _, _)| *id == found.file_id.0)
+            .map(|(_, path, _)| path.clone())
+            .ok_or("that passage is not in this document's source")?;
+        Ok((path, found.start_utf16 as usize, found.exact))
     }
-    Some(SourceAnchor {
-        path: path.to_string(),
-        exact,
-        prefix: clean(&anchor.prefix, config.caps.context),
-        suffix: clean(&anchor.suffix, config.caps.context),
-        position: anchor.position.filter(|p| *p >= 0),
-    })
+
+    /// Reattaches every comment and records what changed.
+    ///
+    /// The durable write is only of the cache: a failure here leaves the
+    /// comments right in memory and stale on disk, which the next pass fixes.
+    /// It is never allowed to fail the edit that prompted it.
+    pub(crate) async fn reattach_comments(&self) {
+        let moved = {
+            let mut state = self.state.lock().await;
+            reattach(&mut state)
+        };
+        if moved.is_empty() {
+            return;
+        }
+        let Some(catalog) = self.catalog.as_ref().get() else {
+            return;
+        };
+        for (id, attachment) in moved {
+            let Ok(uuid) = uuid::Uuid::parse_str(&id) else {
+                continue;
+            };
+            if let Err(error) = catalog.record_attachment(uuid, &attachment).await {
+                eprintln!(
+                    "warning: could not record where a comment's passage went in {}: {error}",
+                    self.slug
+                );
+                return;
+            }
+        }
+    }
 }
 
 /// Installs a comment the durable write has already accepted.
@@ -566,7 +625,6 @@ impl Room {
                 "too many comments from this caller; try later".into(),
             ));
         }
-        let texts = session::texts_of(&state.session.doc);
         let pass = new_id();
         let mut results: Vec<Value> = Vec::with_capacity(items.len());
         let mut events = Vec::new();
@@ -580,22 +638,26 @@ impl Room {
         let mut prepared: Vec<(usize, Comment, PreparedBranch)> = Vec::new();
         let mut next_seq = state.seq;
         for item in items {
-            let Some(source) = valid_source(&config, Some(&item.source)) else {
+            let original_anchor = match validate_original_anchor(
+                &config,
+                &state.session.doc,
+                revision,
+                item.original_anchor.clone(),
+            ) {
+                Ok(anchor) => anchor,
+                Err(reason) => {
+                    results.push(json!({"status":"refused","reason":reason}));
+                    continue;
+                }
+            };
+            let Some(source) = source_target(&original_anchor) else {
                 results.push(json!({"status":"refused","reason":"invalid anchor"}));
                 continue;
             };
-            if source != item.source {
-                results.push(json!({"status":"refused","reason":"invalid anchor"}));
-                continue;
-            }
-            let Some(text) = texts.get(&source.path) else {
+            let Some(path) = path_for_file_id(&state.session.doc, &source.file_id) else {
                 results.push(json!({"status":"anchor-not-found"}));
                 continue;
             };
-            if locate_anchor(text, &source).is_none() {
-                results.push(json!({"status":"anchor-not-found"}));
-                continue;
-            }
             let proposed: String = item
                 .proposed
                 .chars()
@@ -616,24 +678,19 @@ impl Room {
             // this is where the document is. It is written down after the lock
             // goes. A passage that is not where the anchor says refuses the
             // item rather than being placed somewhere plausible.
-            let branch = texts
-                .get(&source.path)
-                .and_then(|body| locate_anchor(body, &source))
-                .and_then(|at| {
-                    crate::room::proposals::from_suggestion(
-                        &state.session.doc,
-                        &source.path,
-                        at,
-                        &source.exact,
-                        &proposed,
-                    )
+            let branch = crate::room::proposals::from_suggestion(
+                &state.session.doc,
+                &path,
+                source.start_utf16 as usize,
+                &source.exact,
+                &proposed,
+            )
+            .ok()
+            .and_then(|(made, base, tip, peer)| {
+                session::encode_diff(&made, &session::encode_vector(&state.session.doc))
                     .ok()
-                })
-                .and_then(|(made, base, tip, peer)| {
-                    session::encode_diff(&made, &session::encode_vector(&state.session.doc))
-                        .ok()
-                        .map(|bytes| (base, tip, bytes, peer))
-                });
+                    .map(|bytes| (base, tip, bytes, peer))
+            });
             let Some(branch) = branch else {
                 results
                     .push(json!({"status":"refused","reason":"that passage is not where it was"}));
@@ -643,17 +700,18 @@ impl Room {
             let added = Comment {
                 id: new_id(),
                 seq: next_seq,
+                attachment: Some(DerivedAttachment {
+                    checkpoint_id: CheckpointId(revision.to_string()),
+                    status: AnchorStatus::Exact,
+                    live_source_range: resolve::capture(&state.session.doc, source),
+                    resolved_range_utf16: Some((source.start_utf16, source.end_utf16)),
+                    diagnostic: None,
+                }),
+                original_anchor: Some(original_anchor.clone()),
+                presentation: PresentationContext::default(),
                 motivation: "editing".into(),
-                publication_id: String::new(),
-                exact: source.exact.clone(),
-                prefix: source.prefix.clone(),
-                suffix: source.suffix.clone(),
-                position: source.position,
-                point: false,
                 color: None,
-                region: None,
-                output_anchor: None,
-                source: Some(source),
+                publication_id: String::new(),
                 proposal: String::new(),
                 // Projections, filled in when this is served rather than stored.
                 proposed: Some(proposed.clone()),
@@ -664,12 +722,9 @@ impl Room {
                 created: timestamp(),
                 resolved: false,
                 resolved_at: None,
-                revision: revision.to_string(),
                 resolved_in: String::new(),
                 replies: Vec::new(),
                 author: caller.author.to_string(),
-                via: caller.via.to_string(),
-                accept_request: String::new(),
             };
             results.push(Value::Null);
             prepared.push((results.len() - 1, added, branch));
@@ -773,7 +828,7 @@ impl Room {
     /// the submitting socket or HTTP response asks for its own view.
     pub async fn comment_event_for(&self, payload: &Value, author: &str, is_owner: bool) -> Value {
         let kind = payload.get("type").and_then(Value::as_str);
-        if !matches!(kind, Some("comment" | "refine" | "reply" | "anchor")) {
+        if !matches!(kind, Some("comment" | "refine" | "reply")) {
             return payload.clone();
         }
         let id = match kind {
@@ -781,7 +836,7 @@ impl Room {
                 .get("comment")
                 .and_then(|comment| comment.get("id"))
                 .and_then(Value::as_str),
-            Some("reply" | "anchor") => payload.get("comment_id").and_then(Value::as_str),
+            Some("reply") => payload.get("comment_id").and_then(Value::as_str),
             _ => None,
         };
         let Some(id) = id else {
@@ -809,16 +864,7 @@ impl Room {
             // channel.
             return json!({"type": "annotation-redacted", "annotation_revision": comment.seq});
         }
-        if !is_owner && kind == Some("anchor") {
-            // An editor may re-anchor a public rendered quotation to private
-            // source, but the source selector itself never leaves the
-            // editorial channel.
-            let mut event = payload.clone();
-            if let Some(object) = event.as_object_mut() {
-                object.remove("source");
-            }
-            return event;
-        }
+
         let view = CommentView::for_viewer(comment, author, is_owner);
         let mut event = payload.clone();
         if let Ok(value) = serde_json::to_value(view) {
@@ -861,6 +907,20 @@ impl Room {
                 false,
             );
         }
+        // A comment on a published rendering is anchored in the checkpoint
+        // that rendering was built from, so that checkpoint's source is read
+        // here -- before the room state is taken, because it reads storage and
+        // because the comment gate above already keeps other writers out.
+        let published = match &command {
+            Command::Comment {
+                publication_id,
+                document,
+                ..
+            } if !publication_id.is_empty() && !*document => {
+                self.published_source(publication_id).await
+            }
+            _ => None,
+        };
         let mut state = self.state.lock().await;
         let config = self.config.clone();
 
@@ -966,7 +1026,7 @@ impl Room {
                 if target.motivation != "editing" || target.resolved || target.proposal.is_empty() {
                     return fail("only a pending suggestion can be refined");
                 }
-                if target.revision != revision {
+                if target.revision() != revision {
                     return fail("suggestion revision changed; read it again before refining");
                 }
                 if proposed.chars().count() > config.caps.exact
@@ -976,23 +1036,21 @@ impl Room {
                 }
                 let proposed = clean(&proposed, config.caps.exact);
                 let body = clean(&body, config.caps.body).trim().to_string();
-                let source = target.source.clone();
+                let original_anchor = target.original_anchor.clone();
                 let was = target.proposal.clone();
                 let target = target.clone();
                 // Refining replaces the branch rather than editing it. The words
                 // somebody is refining away were proposed, and a proposal that
                 // quietly becomes a different proposal under the same id is one
                 // a reviewer could have agreed to without having seen it.
-                let rebuilt = source.as_ref().and_then(|anchor| {
-                    let texts = session::texts_of(&state.session.doc);
-                    let at = texts
-                        .get(&anchor.path)
-                        .and_then(|body| locate_anchor(body, anchor))?;
+                let rebuilt = original_anchor.as_ref().and_then(|anchor| {
+                    let source = source_target(anchor)?;
+                    let path = path_for_file_id(&state.session.doc, &source.file_id)?;
                     let (made, base, tip, peer) = crate::room::proposals::from_suggestion(
                         &state.session.doc,
-                        &anchor.path,
-                        at,
-                        &anchor.exact,
+                        &path,
+                        source.start_utf16 as usize,
+                        &source.exact,
                         &proposed,
                     )
                     .ok()?;
@@ -1176,64 +1234,6 @@ impl Room {
                     true,
                 )
             }
-            // A backfill on an existing comment, for a passage anchored after the
-            // fact -- a comment made before source anchors existed, or one made
-            // on generated text that a later edit brought back into the source.
-            // Guarded the same way a delete is: the author of the comment, or an
-            // editor, and only once -- a comment that already has an anchor of
-            // record is not overwritten by a second try.
-            Command::Anchor {
-                comment_id,
-                source,
-                request_id,
-                ..
-            } => {
-                let Some(index) = state.comments.iter().position(|item| item.id == comment_id)
-                else {
-                    return fail("unknown comment");
-                };
-                if !deletable(&state.comments[index], author, is_owner) {
-                    return fail("you may only anchor your own comments");
-                }
-                if state.comments[index].source.is_some() {
-                    return fail("this comment already has a source anchor");
-                }
-                if state.comments[index].region.is_some() {
-                    return fail("a figure comment cannot take a source anchor");
-                }
-                let Some(anchor) = valid_source(&config, Some(&source)) else {
-                    return fail("that source anchor is not valid");
-                };
-                // Prepared on a copy and applied once durable, for the same
-                // reason as a resolve.
-                let mut anchored = state.comments[index].clone();
-                anchored.source = Some(anchor.clone());
-                drop(state);
-                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
-                    match catalog_comment_row(&self.slug, &anchored) {
-                        Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
-                        Err(error) => Err(error),
-                    }
-                } else {
-                    Err("durable catalog required".into())
-                };
-                state = self.state.lock().await;
-                if persisted.is_err() {
-                    return fail(UNSAVED);
-                }
-                let anchored_id = anchored.id.clone();
-                if self.catalog.as_ref().get().is_some() {
-                    install_comment(&mut state, anchored);
-                }
-                (
-                    json!({
-                        "type": "anchor", "comment_id": anchored_id,
-                        "source": anchor,
-                        "request_id": request_id,
-                    }),
-                    true,
-                )
-            }
 
             Command::Reply {
                 comment_id,
@@ -1335,12 +1335,9 @@ impl Room {
                 suffix: raw_suffix,
                 position,
                 point,
+                document,
                 color: raw_color,
-                region: raw_region,
-                output_anchor: raw_output_anchor,
-                source: raw_source,
                 proposed: raw_proposed,
-                revision: supplied_revision,
                 temp_id,
                 request_id,
             } => {
@@ -1361,58 +1358,45 @@ impl Room {
                 if !existing_submission && state.comments.len() >= config.max_comments {
                     return fail("this document has reached its comment limit");
                 }
-                let exact = clean(&raw_exact, config.caps.exact).trim().to_string();
-                let spot = valid_region(raw_region.as_ref());
-                // An annotation is anchored to words or to part of a figure;
-                // one or the other, never neither.
-                let output_anchor = match valid_quarto_output_anchor(raw_output_anchor.as_ref()) {
-                    Some(anchor) => Some(anchor),
-                    None if raw_output_anchor.is_some() => {
-                        return fail("that Quarto output anchor is not valid");
-                    }
-                    None => None,
-                };
-                if spot.is_some()
-                    && output_anchor
-                        .as_ref()
-                        .is_some_and(|anchor| anchor.width == 0 || anchor.height == 0)
-                {
-                    return fail("a Quarto region anchor needs positive dimensions");
-                }
-                if let (Some(spot), Some(anchor)) = (spot.as_ref(), output_anchor.as_ref()) {
-                    if spot.image_digest != anchor.content_sha256
-                        || anchor.coordinate_system != "percent"
-                    {
-                        return fail("the Quarto region does not match its output");
-                    }
-                }
-                if output_anchor.is_some() && motivation == "editing" {
-                    return fail("Quarto output comments cannot be suggestions");
-                }
-                let position = position.filter(|p| *p >= 0);
-                if point {
-                    if motivation != "commenting"
-                        || !exact.is_empty()
-                        || spot.is_some()
-                        || output_anchor.is_some()
-                        || position.is_none()
-                    {
-                        return fail(
-                            "a point comment requires commenting motivation and a nonnegative position",
-                        );
-                    }
-                } else if exact.is_empty() && spot.is_none() && output_anchor.is_none() {
-                    return fail("select some text or part of a figure to comment on");
-                }
                 let color = match raw_color {
-                    Some(raw) if matches!(motivation.as_str(), "commenting" | "highlighting") => {
-                        match valid_color(Some(&raw)) {
-                            Some(color) => Some(color),
-                            None => return fail("color must be a #RRGGBB value"),
-                        }
-                    }
-                    Some(_) => None,
-                    None => None,
+                    Some(raw) if !raw.trim().is_empty() => match valid_color(Some(&raw)) {
+                        Some(color) => Some(color),
+                        None => return fail("color must be a #RRGGBB value"),
+                    },
+                    _ => None,
+                };
+                // What the browser saw. Capped here, before any of it is used
+                // to search with, and kept afterwards as the presentation
+                // context: what a comment looked like where it was made is
+                // worth showing, and is never what it is about.
+                let seen = PresentationContext {
+                    rendered_exact: clean(&raw_exact, config.caps.exact),
+                    rendered_prefix: clean(&raw_prefix, config.caps.context),
+                    rendered_suffix: clean(&raw_suffix, config.caps.context),
+                    rendered_position_utf16: position
+                        .filter(|at| *at >= 0)
+                        .map(|at| at.min(u32::MAX as i64) as u32),
+                };
+                let quote = Quote {
+                    exact: &seen.rendered_exact,
+                    prefix: &seen.rendered_prefix,
+                    suffix: &seen.rendered_suffix,
+                };
+                // The passage, found in the document's own source. A client
+                // sends words; where those words are is the server's answer,
+                // because the server is what holds the checkpoint -- and, for
+                // a reader of a published render, what holds the source at all.
+                let original_anchor = match anchor_for(
+                    &config,
+                    &state.session.doc,
+                    &current,
+                    published.as_ref(),
+                    &quote,
+                    document,
+                    point,
+                ) {
+                    Ok(anchor) => anchor,
+                    Err(reason) => return fail(&reason),
                 };
                 // A suggestion is its proposal; without one it is an
                 // annotation with nothing to act on. `proposed` on any other
@@ -1421,24 +1405,7 @@ impl Room {
                 if motivation == "editing" && raw_proposed.is_none() {
                     return fail("a suggestion needs a proposal");
                 }
-                if motivation == "editing" {
-                    if let Some(source) = raw_source.as_ref() {
-                        let cleaned: String = source
-                            .exact
-                            .chars()
-                            .filter(|&c| {
-                                let code = c as u32;
-                                !(code < 0x09
-                                    || (0x0b..=0x0c).contains(&code)
-                                    || (0x0e..=0x1f).contains(&code)
-                                    || code == 0x7f)
-                            })
-                            .collect();
-                        if cleaned.trim().chars().count() > config.caps.exact {
-                            return fail("the source anchor is too long");
-                        }
-                    }
-                }
+
                 let proposed = if motivation == "editing" {
                     let raw = raw_proposed.as_deref().unwrap_or_default();
                     let cleaned: String = raw
@@ -1458,52 +1425,54 @@ impl Room {
                 } else {
                     None
                 };
-                if !valid_revision(&supplied_revision) {
-                    return fail("that revision is not valid");
-                }
-                let source = if output_anchor.is_some() {
-                    None
-                } else if spot.is_none() {
-                    match raw_source.as_ref() {
-                        Some(raw) => match valid_source(&config, Some(raw)) {
-                            Some(cleaned) if cleaned == *raw || supplied_revision.is_empty() => {
-                                Some(cleaned)
-                            }
-                            Some(_) => return fail("that source anchor is not valid"),
-                            None if supplied_revision.is_empty() => None,
-                            None => return fail("that source anchor is not valid"),
-                        },
-                        None if supplied_revision.is_empty() => None,
-                        None => return fail("that source anchor is not valid"),
+                // A suggestion replaces a passage, so there has to be one: a
+                // proposal against the document as a whole has nothing to
+                // put its words in place of.
+                let source = match source_target(&original_anchor) {
+                    Some(target) => Some(target.clone()),
+                    None if motivation == "editing" => {
+                        return fail("a suggestion has to be about a passage")
                     }
-                } else {
-                    None
+                    None => None,
                 };
-                let revision = if source.is_some() && !supplied_revision.is_empty() {
-                    supplied_revision
-                } else {
-                    current.clone()
-                };
-                let next_seq = state.seq.saturating_add(1);
-                // The selector is the durable anchor. Offsets are recomputed in
-                // the reader against whatever version of the document is on
-                // screen, so replacing a document needs no migration pass here.
+                // The cursors that will follow this passage from here on.
+                // Taken now, against the checkpoint the range was found in,
+                // because that is the only moment they are certainly right.
+                // Where that passage is, now. For a comment made against the
+                // current draft that is where it was just found, and cursors
+                // can be taken there to follow it from here on. For one made
+                // against a published checkpoint the offsets belong to that
+                // checkpoint, so there is nothing to take a cursor at yet and
+                // the resolver answers by the words instead.
+                let attachment = source.as_ref().map(|target| {
+                    if original_anchor.checkpoint_id.0 == current {
+                        DerivedAttachment {
+                            checkpoint_id: CheckpointId(current.clone()),
+                            status: AnchorStatus::Exact,
+                            live_source_range: resolve::capture(&state.session.doc, target),
+                            resolved_range_utf16: Some((target.start_utf16, target.end_utf16)),
+                            diagnostic: None,
+                        }
+                    } else {
+                        resolve::resolve(
+                            &state.session.doc,
+                            &resolve::Sources::of(&state.session.doc),
+                            &current,
+                            &original_anchor,
+                            None,
+                        )
+                    }
+                });
                 let mut added = Comment {
-                    id: requested_id.clone().unwrap_or_else(new_id),
-                    seq: next_seq,
+                    id: requested_id.unwrap_or_else(new_id),
+                    seq: state.seq.saturating_add(1),
+                    original_anchor: Some(original_anchor),
+                    attachment,
+                    presentation: seen,
                     motivation,
-                    publication_id,
-                    exact,
-                    prefix: clean(&raw_prefix, config.caps.context),
-                    suffix: clean(&raw_suffix, config.caps.context),
-                    position,
-                    point,
                     color,
-                    // A region comment is anchored to the figure; the source
-                    // it might otherwise have carried is not kept.
-                    source,
-                    region: spot,
-                    output_anchor,
+                    publication_id,
+
                     proposal: String::new(),
                     proposed: proposed.clone(),
                     outcome: String::new(),
@@ -1512,41 +1481,48 @@ impl Room {
                     created: timestamp(),
                     resolved: false,
                     resolved_at: None,
-                    revision,
                     resolved_in: String::new(),
                     pass: String::new(),
                     replies: Vec::new(),
                     author: author.to_string(),
-                    via: via.to_string(),
-                    accept_request: String::new(),
                 };
                 // A comment that proposes different words for a passage makes a
                 // branch for them, built here where the document is (§1.2).
-                let offered =
-                    added
-                        .source
-                        .clone()
-                        .zip(proposed.clone())
-                        .and_then(|(anchor, wanted)| {
-                            let texts = session::texts_of(&state.session.doc);
-                            let at = texts
-                                .get(&anchor.path)
-                                .and_then(|body| locate_anchor(body, &anchor))?;
-                            let (made, base, tip, peer) = crate::room::proposals::from_suggestion(
-                                &state.session.doc,
-                                &anchor.path,
-                                at,
-                                &anchor.exact,
-                                &wanted,
-                            )
-                            .ok()?;
-                            let bytes = session::encode_diff(
-                                &made,
-                                &session::encode_vector(&state.session.doc),
-                            )
-                            .ok()?;
-                            Some((base, tip, bytes, peer))
-                        });
+                let offered = added
+                    .original_anchor
+                    .as_ref()
+                    .zip(proposed.clone())
+                    .and_then(|(anchor, wanted)| {
+                        let source = source_target(anchor)?;
+                        let path = path_for_file_id(&state.session.doc, &source.file_id)?;
+                        // A branch is made against the document as it stands,
+                        // so it starts where the passage is now -- which is
+                        // the range it was just anchored at for a suggestion
+                        // made against the current draft, and whatever the
+                        // resolver found for one made against an older
+                        // checkpoint. `from_suggestion` refuses a range whose
+                        // text is not the text the anchor quotes.
+                        let at = added
+                            .attachment
+                            .as_ref()
+                            .and_then(|found| found.resolved_range_utf16)
+                            .map(|(start, _)| start)
+                            .unwrap_or(source.start_utf16);
+                        let (made, base, tip, peer) = crate::room::proposals::from_suggestion(
+                            &state.session.doc,
+                            &path,
+                            at as usize,
+                            &source.exact,
+                            &wanted,
+                        )
+                        .ok()?;
+                        let bytes = session::encode_diff(
+                            &made,
+                            &session::encode_vector(&state.session.doc),
+                        )
+                        .ok()?;
+                        Some((base, tip, bytes, peer))
+                    });
                 drop(state);
                 if proposed.is_some() {
                     let Some((base, tip, bytes, peer)) = offered else {
@@ -1630,84 +1606,4 @@ impl Room {
     }
 
     /* ---------------------------------------------------------- the document */
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn colors_are_canonical_six_digit_rgb_values() {
-        assert_eq!(valid_color(Some("#aBc123")), Some("#ABC123".into()));
-        assert!(valid_color(Some("red")).is_none());
-        assert!(valid_color(Some("#12GG00")).is_none());
-        assert!(valid_color(Some("#1234567")).is_none());
-    }
-
-    fn anchor() -> QuartoOutputAnchor {
-        QuartoOutputAnchor {
-            render_id: "render-1".into(),
-            cell_id: "cell-plot".into(),
-            output_ordinal: 0,
-            content_sha256: "a".repeat(64),
-            coordinate_system: "pixel".into(),
-            width: 800,
-            height: 600,
-        }
-    }
-
-    #[test]
-    fn output_anchor_keeps_immutable_identity_and_dimensions() {
-        let value = valid_quarto_output_anchor(Some(&anchor())).expect("valid anchor");
-        assert_eq!(value.render_id, "render-1");
-        assert_eq!(value.content_sha256, "a".repeat(64));
-        assert_eq!((value.width, value.height), (800, 600));
-    }
-
-    #[test]
-    fn output_anchor_rejects_bad_digest_and_coordinate_system() {
-        let mut value = anchor();
-        value.content_sha256 = "not-a-digest".into();
-        assert!(valid_quarto_output_anchor(Some(&value)).is_none());
-        value = anchor();
-        value.coordinate_system = "screen-pixels".into();
-        assert!(valid_quarto_output_anchor(Some(&value)).is_none());
-    }
-
-    #[test]
-    fn reader_annotation_view_does_not_include_source_editorial_fields() {
-        let comment = Comment {
-            id: "comment".into(),
-            publication_id: "publication-1".into(),
-            exact: "visible quotation".into(),
-            prefix: "visible prefix ".into(),
-            suffix: " visible suffix".into(),
-            source: Some(SourceAnchor {
-                path: "private.md".into(),
-                exact: "private source text".into(),
-                ..Default::default()
-            }),
-            proposed: Some("private replacement".into()),
-            ..Default::default()
-        };
-        assert!(visible_to_reader(&comment));
-        let reader = serde_json::to_value(CommentView::for_viewer(&comment, "", false))
-            .expect("annotation view serializes");
-        assert!(reader.get("source").is_none());
-        assert!(reader.get("proposed").is_none());
-        assert_eq!(reader["publication_id"], "publication-1");
-        assert_eq!(reader["exact"], "visible quotation");
-        assert_eq!(reader["prefix"], "visible prefix ");
-        assert_eq!(reader["suffix"], " visible suffix");
-        let editor = serde_json::to_value(CommentView::for_viewer(&comment, "", true))
-            .expect("editor annotation view serializes");
-        assert_eq!(editor["source"]["path"], "private.md");
-        assert_eq!(editor["proposed"], "private replacement");
-
-        let local = Comment::default();
-        assert!(
-            !visible_to_reader(&local),
-            "an empty publication id reached the reader channel"
-        );
-    }
 }

@@ -3,8 +3,7 @@
   import { decodeProposal, hunksOfProposal, markContention, previewTexts } from "../lib/proposals.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
-  import { anchorAll, anchorAllSources, anchorOne, flatten } from "../lib/anchor.js";
-  import * as sync from "../lib/sync.js";
+  import { anchorAll, anchorOne, flatten, placeSources, shownSelector } from "../lib/anchor.js";
   import * as renderers from "../lib/renderers.js";
   import * as quarto from "../lib/engines/quarto.js";
   import * as figures from "../lib/figures.js";
@@ -190,7 +189,6 @@
   let frameReady = false;
   let docText = null; // the joined visible text, invariant across repaints
   let docView = null; // flatten(docText), so anchoring does not redo it per call
-  let figureAt = $state([]); // text offset of each figure, by its index
 
   let preview = $state(null);
   // Both Quarto's own live preview and a Typst document previewed through
@@ -367,7 +365,7 @@
   // template and annotation code.
   let framePreview;
 
-  // The agent repaints the whole document on every "regions" or "highlight"
+  // The agent repaints the whole document on every "highlight"
   // message, so a call that changes nothing is not free even though it looks
   // idempotent. Each is sent only when its payload actually differs from the
   // last one sent -- reset when the frame republishes its text, since the
@@ -385,110 +383,53 @@
     frameOverlays.annotations(comments);
   }
 
-  // Whether a comment's passage is lost is answered from two anchors, not
-  // one: the rendered quotation, which is what the highlight and the click
-  // target are drawn from, and the source quotation, which is the anchor of
-  // record. A comment is orphaned only when neither finds its passage; when
-  // only the source still has it, the card says so instead and a click on it
-  // goes to the source rather than nowhere. A region has no source anchor and
-  // is never in either state.
+  // Whether a comment's passage is lost is answered from two places, not one:
+  // the rendered quotation, which is what the highlight and the click target
+  // are drawn from, and where the server says the passage is in the source. A
+  // comment is orphaned only when neither has it; when only the source does,
+  // the card says so instead and a click on it goes to the source rather than
+  // nowhere.
   function applyAnchorFlags(comment) {
     const { orphaned, inSourceOnly } = orphanState({
       renderedFound: comment.start != null,
       sourceFound: comment.sourceStart != null,
-      region: Boolean(comment.region),
     });
     comment.orphaned = orphaned;
     comment.inSourceOnly = inSourceOnly;
   }
 
-  // The one place both anchors of a comment are computed, so the orphaning
-  // rule above lives in one place too. Used for a whole re-anchoring pass and
-  // for the single comment a submission or a broadcast just added -- the
-  // rendered pass is skipped for a region annotation, which is placed by the
-  // agent rather than by text matching, but the source pass runs over
-  // whatever is given it since only a comment that already has a `source`
-  // does anything there.
+  // Where to draw each comment, and where its passage is in the source.
+  //
+  // The two are different questions with different answers. Where to draw it
+  // is a question about the page in front of this browser, and the rendered
+  // quotation is what answers it -- display evidence, matched against display
+  // text, and nothing follows from it being wrong beyond a mark in the wrong
+  // place. Where the passage is in the source is not this browser's question
+  // at all: the server resolved it through the document's own history and
+  // sent the answer, and `placeSources` only translates that answer's file id
+  // into a path.
   function anchorComments(list) {
-    const renderAnchors = list.filter((comment) => !comment.region);
-    anchorAll(docText || "", renderAnchors, docText === null ? null : docView);
+    anchorAll(docText || "", list, docText === null ? null : docView);
     if (publishedMode) {
       for (const comment of list) {
         if (comment.publication_id === publishedPublication?.id) continue;
-        const found = !comment.region && anchorOne(docText || "", { ...comment, position: null, requireUnique: true }, docView);
+        const found = anchorOne(docText || "", { ...shownSelector(comment), position: null, requireUnique: true }, docView);
         comment.start = found?.start ?? null;
         comment.end = found?.end ?? null;
         comment.earlierPublication = !found;
-        if (comment.region) comment.regionUnplaceable = true;
       }
-    } else if (mayEdit) anchorAllSources(treeNow(), list);
+    } else if (mayEdit) placeSources(session, list);
     for (const comment of list) applyAnchorFlags(comment);
   }
 
   // A comment made before the source anchor existed, or whose passage this
   // browser cannot re-derive from the words alone, is missing the anchor of
-  // record. An editor's browser backfills it once per page load, quietly: the
-  // same heuristic a fresh selection uses, run now against the passage the
-  // rendered anchor already found. Tried is remembered so a comment nobody
-  // can place is not retried on every repaint, and nothing here is retried
-  // automatically -- a comment that stays untried just keeps its rendered
-  // anchor as its only one.
-  const triedBackfill = new Set();
-  // A backfill this browser sent and has not heard back about, so its `error`
-  // -- a race with someone else's backfill, or a comment deleted meanwhile --
-  // is known to be that and not a failed submission. Nothing else reads or
-  // writes this set.
-  const pendingBackfill = new Set();
-  function backfillSourceAnchors() {
-    if (!mayEdit || !session || docText === null) return;
-    const tree = treeNow();
-    const open = session?.paths?.get(openFile) || "";
-    for (const comment of comments) {
-      if (comment.source || comment.region || comment.point || comment.pending || comment.temp_id) continue;
-      if (comment.start == null || triedBackfill.has(comment.id)) continue;
-      triedBackfill.add(comment.id);
-      const source = sync.sourceSelectorFor(
-        docText,
-        { exact: comment.exact, position: comment.start },
-        tree,
-        { open, formatOf: renderers.formatOf },
-      );
-      if (source) {
-        pendingBackfill.add(comment.id);
-        collaboration?.send({ type: "anchor", comment_id: comment.id, source });
-      }
-    }
-  }
-
   function reanchor() {
     if (!frameReady || !commentsReady || docText === null) return;
     anchorComments(comments);
     annotations.publish();
     applyHighlights();
     tracePassages();
-    // The frame's own `ready` is what re-anchors after the source changes --
-    // `session.watchSource` schedules a repaint, and every repaint ends here
-    // -- so a comment newly findable in the source is caught by the same
-    // pass, not by a second path. Batched a tick out so the paint above is
-    // never delayed by a socket round trip.
-    setTimeout(backfillSourceAnchors, 0);
-  }
-
-  /// Marks (or clears) every named comment's region as placeable, reassigning
-  /// `comments` afterward -- not because the loop above needs it, but because
-  /// that reassignment is what tells Svelte the array changed.
-  function markRegionsPlaceable(ids, placeable, reason) {
-    for (const comment of comments) {
-      if (!comment.region || !ids.has(String(comment.id))) continue;
-      if (placeable) {
-        delete comment.regionUnplaceable;
-        delete comment.regionUnplaceableReason;
-      } else {
-        comment.regionUnplaceable = true;
-        comment.regionUnplaceableReason = String(reason || "figure-unavailable");
-      }
-    }
-    annotations.publish();
   }
 
   function fromFrame(message) {
@@ -496,9 +437,6 @@
       case "ready":
         docText = typeof message.text === "string" ? message.text : "";
         docView = flatten(docText);
-        // Where each figure sits in that text, so a note on a figure can be
-        // ordered against the notes on passages.
-        figureAt = Array.isArray(message.images) ? message.images.map(Number) : [];
         // The first time the frame says it is there is the first moment
         // anything can be sent to it. A paint made before this went to a
         // window that had not navigated yet and was lost -- which is what a
@@ -526,27 +464,6 @@
       case "selection":
         showSelection(message.selector, message.rect);
         break;
-      case "region":
-        // A rectangle drawn on a figure anchors the same way a quotation
-        // does, but it has no words to look up in the source: a region has
-        // no source anchor and never will.
-        pending = { exact: "", prefix: "", suffix: "", position: null, region: message.region, source: null, publication_id: publishedMode ? publishedPublication?.id || "" : "" };
-        placeBar(message.rect);
-        break;
-      case "regions-unplaceable": {
-        const ids = new Set((message.ids || []).map(String));
-        if (!ids.size) break;
-        markRegionsPlaceable(ids, false, message.reason);
-        break;
-      }
-      case "regions-placeable": {
-        const ids = new Set((message.ids || []).map(String));
-        if (!ids.size) break;
-        markRegionsPlaceable(ids, true);
-        break;
-      }
-      // The keyboard, from inside the document: the selection lives in the
-      // frame, so the key that acts on one has to be heard there.
       case "annotate":
         if (pending) annotate("comment");
         break;
@@ -570,10 +487,9 @@
   // Making an annotation is two different gestures, and the state says which.
   //
   // `mode` is armed in advance and is empty almost always: only a note at a
-  // point and a box on a figure have nothing to select, so only those two are
-  // modes. Arming one changes what a click or a drag in the document does --
-  // `region` stops text being selectable at all -- so an armed mode says so
-  // across the top of the document and Escape puts it away.
+  // point has nothing to select, so it is the only mode. Arming it changes
+  // what a click in the document does, so an armed mode says so across the
+  // top of the document and Escape puts it away.
   //
   // `verb` is chosen from the bar over a selection, after the passage is
   // already in hand. It is what the draft in the column is being written
@@ -591,6 +507,11 @@
   let selectionRevision = Promise.resolve("");
   let bar = $state({ shown: false, left: 0, top: 0 });
 
+  // What was selected, as the page had it. That is all this browser sends and
+  // all it can honestly send: which passage of which source file those words
+  // came from is the server's answer, worked out against the checkpoint it
+  // holds -- a reader of a published document has no source here to answer it
+  // from, and an editor's answer would still have to be checked.
   function showSelection(selector, rect) {
     const point = selector?.point === true;
     if (!selector || (point
@@ -604,34 +525,10 @@
       exact: String(selector.exact || ""),
       prefix: String(selector.prefix || ""),
       suffix: String(selector.suffix || ""),
-      // A hint, not a claim: the server keeps it, and anchoring uses it only
-      // to choose between passages the context cannot separate.
       position: Number.isInteger(selector.position) && selector.position >= 0 ? selector.position : null,
       ...(point ? { point: true } : {}),
     };
-    // The anchor of record, cut from the source at the same moment: a best
-    // effort taken here, in the commenter's browser, while the words just
-    // selected are still fresh. A page with no text yet, or a phrase the
-    // source-matching heuristic cannot place, leaves this null -- which the
-    // server reads as "no source anchor yet" rather than as a failure.
-    let source = null;
-    try {
-      if (mayEdit && docText !== null && !point) {
-        source = sync.sourceSelectorFor(docText, pending, treeNow(), {
-          open: session?.paths?.get(openFile) || "",
-          formatOf: renderers.formatOf,
-        }) || null;
-      }
-    } catch {
-      source = null;
-    }
-    pending.source = source;
-    const captured = pending;
     pending.publication_id = publishedMode ? publishedPublication?.id || "" : "";
-    selectionRevision = mayEdit ? snapshotDigest(capturePreviewTree(treeNow())) : Promise.resolve("");
-    void selectionRevision.then((revision) => {
-      captured.revision = revision;
-    }).catch(() => { captured.revision = ""; });
     placeBar(rect);
   }
 
@@ -644,26 +541,28 @@
 
   function askCommentAssistant(comment) {
     if (!comment?.id) return;
-    const source = comment.source || (comment.exact ? {
-      path: comment.sourcePath || session?.paths?.get(openFile) || "",
-      exact: comment.exact,
-      prefix: comment.prefix || "",
-      suffix: comment.suffix || "",
-      position: Number.isInteger(comment.position) ? comment.position : null,
-    } : null);
+    const target = comment.original_anchor?.kind === "source_text"
+      ? comment.original_anchor.target : null;
+    const source = target ? {
+      path: comment.sourcePath || session?.paths?.get(target.file_id) || "",
+      exact: target.exact,
+      prefix: target.prefix || "",
+      suffix: target.suffix || "",
+      position: comment.sourceStart ?? target.start_utf16,
+    } : null;
     assistantRequest = {
       id: crypto.randomUUID(),
       comment: {
-        id: String(comment.id), body: comment.body || "", exact: comment.exact || "",
-        proposed: comment.proposed || "", revision: comment.revision || "",
+        id: String(comment.id), body: comment.body || "", exact: shownSelector(comment).exact,
+        proposed: comment.proposed || "", revision: comment.original_anchor?.checkpoint_id || "",
         source, replies: (comment.replies || []).map((reply) => ({ body: reply.body, creator: reply.creator })),
         suggestion: comment.motivation === "editing" ? {
-          id: String(comment.id), proposed: comment.proposed || "", revision: comment.revision || "",
+          id: String(comment.id), proposed: comment.proposed || "", revision: comment.original_anchor?.checkpoint_id || "",
           path: source?.path || "", exact: source?.exact || "",
         } : null,
       },
       selection: source,
-      revision: comment.revision || "",
+      revision: comment.original_anchor?.checkpoint_id || "",
     };
     showPanel("agent");
     if (width <= 760) showMobileView("sidebar");
@@ -732,7 +631,7 @@
       } else editor?.goTo(comment.sourceStart);
       return;
     }
-    if (comment.start != null || comment.region) {
+    if (comment.start != null) {
       showMobileView("document");
       await tick();
       tell({ type: "reveal", id: comment.id });
@@ -973,15 +872,18 @@
   // editor on the proposal applied to the checkpoint it was made against,
   // beside the live text, so an editor can take what still applies by hand.
   async function openStaleSuggestion(comment) {
-    if (!comment.source || !comment.revision || !session) {
+    const anchored = comment.original_anchor;
+    const target = anchored?.kind === "source_text" ? anchored.target : null;
+    const madeOn = anchored?.checkpoint_id || "";
+    if (!target || !madeOn || !session) {
       say("The passage this was suggested against has changed, and there is no earlier version of it to compare against.", { kind: "problem", id: "reader:suggestion-stale" });
       return;
     }
-    const path = comment.source.path;
+    const path = session.paths?.get(target.file_id) || "";
     try {
-      const point = await history.checkpoint(SLUG, comment.revision, keyHeaders(KEY));
+      const point = await history.checkpoint(SLUG, madeOn, keyHeaders(KEY));
       const baseText = point.texts?.[path] ?? "";
-      const oldText = suggestions.applyProposal(baseText, comment.source, comment.proposed ?? "");
+      const oldText = suggestions.applyProposal(baseText, target, comment.proposed ?? "");
       const tree = treeNow();
       const id = session.idOf(path);
       const component = (await import("./MergeEditor.svelte")).default;
@@ -1305,11 +1207,6 @@
         say(event.message || "The server rejected that chat message.", { kind: "problem", id: "reader:chat-rejected" });
         return;
       }
-      // A backfill this browser sent is not a submission and never touched
-      // the screen while it waited, so its failure -- somebody else's
-      // backfill won the race, or the comment is gone -- is dropped quietly
-      // rather than rolled back or reported.
-      if (event.comment_id && pendingBackfill.delete(event.comment_id)) return;
       // A decision (accept or reject) that did not go through: the card was
       // marked busy, never resolved, and this clears that back off.
       const deciding = event.comment_id && comments.find((item) => item.id === event.comment_id);
@@ -1401,16 +1298,14 @@
       return;
     }
 
-    if (event.type === "anchor") {
-      // The server's answer to this browser's own backfill, or somebody
-      // else's: either way, a comment that had no anchor of record now does.
-      // A comment_id nobody has -- deleted meanwhile -- is answered with
-      // nothing to do.
-      pendingBackfill.delete(event.comment_id);
+    if (event.type === "attachment") {
+      // The server has resolved where a comment's passage is now, after
+      // somebody edited the document. Nothing here decides anything: the
+      // answer is taken and drawn.
       const comment = comments.find((item) => item.id === event.comment_id);
       if (!comment) return;
-      comment.source = event.source;
-      anchorAllSources(treeNow(), [comment]);
+      comment.attachment = event.attachment;
+      placeSources(session, [comment]);
       applyAnchorFlags(comment);
       annotations.publish();
       applyHighlights();
@@ -1731,6 +1626,7 @@
     slug: SLUG,
     key: KEY,
     now: () => ({ source: sourceGeneration, visible: docText }),
+    paths: () => session?.paths,
     loadCheckpoints: async () => {
       await loadHistory();
       return timeline.state.checkpoints;
@@ -3526,9 +3422,9 @@
 
   {#snippet collaborationPanel()}
     <Collaboration messages={liveChat} {connected} canPost={mayChat} onsend={sendLiveChat}
-      {unreadChat} bind:tab={prefs.collaborationTab} {comments} {figureAt} {identity}
+      {unreadChat} bind:tab={prefs.collaborationTab} {comments} {identity}
       commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {mode} {went} {replacements}
-      canComment={mayChat} hasFigures={figureAt.length > 0} ontool={arm}
+      canComment={mayChat} ontool={arm}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply}
       {composing} {needsLogin} signInHref={signInHref()}
@@ -3537,7 +3433,7 @@
   {/snippet}
 
   {#snippet changesPanel()}
-    <Changes proposals={reviewRows} {comments} {files} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"}
+    <Changes proposals={reviewRows} {comments} {files} {identity} commentingAs={doc.commenting_as || "Anonymous"}
       {canModerate} canReview={mayEdit}
       {tracking} canTrack={mayEdit && editing} ontracking={setTracking}
       {went} {replacements} canComment={mayChat} onreveal={revealAnnotation}
@@ -3845,14 +3741,14 @@
   </div>
 {/if}
 
-<!-- An armed mode changes what a click or a drag in the document does, and
-     `region` stops text being selectable at all. None of that is visible in
-     the document itself, so it is said here, over the document, for as long
-     as it is true -- and the way out is in the same place as the news. -->
+<!-- An armed mode changes what a click in the document does, which is not
+     visible in the document itself, so it is said here, over the document,
+     for as long as it is true -- and the way out is in the same place as the
+     news. -->
 {#if mode && mayChat}
   <div id="modestrip" role="status">
     <span class="what">{MODES.find((item) => item.id === mode)?.label}</span>
-    <span class="how">{mode === "region" ? "Drag a box on a figure" : "Click a place in the document"}</span>
+    <span class="how">Click a place in the document</span>
     <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={disarm}>Done (Esc)</button>
   </div>
 {/if}

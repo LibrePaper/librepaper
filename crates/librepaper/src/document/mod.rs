@@ -12,7 +12,7 @@ pub mod hunks;
 #[cfg(test)]
 pub mod needs;
 pub mod paths;
-pub mod quarto;
+
 pub mod quota;
 pub mod render;
 pub mod retention;

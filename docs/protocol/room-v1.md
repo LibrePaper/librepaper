@@ -46,11 +46,10 @@ include a UUID-shaped `temp_id`, kept unchanged across retries.
 
 | `type` | Required action fields | Optional action fields |
 |---|---|---|
-| `comment` | `body`, `exact` (the selected words), `publication_id` for rendered annotations | `motivation` (defaults to commenting), `prefix`, `suffix`, `position`, `point`, `color`, editor-only `source` |
+| `comment` | `body`, `exact` (the selected words), `publication_id` for rendered annotations | `motivation` (defaults to commenting), `prefix`, `suffix`, `position`, `point`, `document`, `color` |
 | `reply` | `comment_id`, `body` | — |
 | `resolve` | `comment_id`, `resolved` (boolean; false reopens) | — |
 | `delete` | `comment_id` | — |
-| `anchor` | `comment_id`, `source` | — |
 | `refine` | `comment_id`, `proposed`, `expected_proposed`, `revision` | `body` |
 | `accept` | `comment_id` | — |
 | `reject` | `comment_id` | — |
@@ -68,18 +67,52 @@ submission available for recovery. Editor source annotations can omit the ID.
 `publication-updated` carries only `publication_id`. It announces availability;
 clients offer Refresh without replacing the visible page or discarding drafts.
 
-`source` is `{path, exact, prefix, suffix, position}`: the file path and
-selected source text, with optional surrounding text and a nonnegative
-position hint. It identifies the source passage separately from `exact`,
-which identifies the passage in the rendered document. The server supplies
-the author, timestamps, and checkpoint references; a submitted `creator`
-does not override attribution. Highlighting may omit `body`. A figure region
-can replace the text selection, as supported by the browser's annotation
-interface. Text limits and allowed motivations are deployment settings.
+A client sends what it saw: `exact` and, around it, `prefix` and `suffix`,
+with `position` as the offset in the rendered text. It never sends a file, an
+offset into one, or a checkpoint. What passage of what source file those words
+are is worked out by the server, against the checkpoint it holds, at the moment
+the comment is made -- and once, never again. A reader of a published rendering
+has no source to answer that question from, and an editor's answer would have
+to be checked against the checkpoint anyway, so there is one answer and the
+server gives it.
+
+Words that appear in several places, with nothing in the surrounding text to
+say which was meant, are refused (`type: error`) rather than attached to the
+first of them. Selecting a longer passage resolves it.
+
+Set `document: true` for a remark about the document as a whole. It takes no
+selection and can never be orphaned.
+
+The server supplies the author, timestamps, and the checkpoint the comment is
+anchored against; a submitted `creator` does not override attribution.
+Highlighting may omit `body`. Text limits and allowed motivations are
+deployment settings.
+
+A stored comment carries three things a client can read:
+
+- `original_anchor`: `{checkpoint_id, kind, target}`, what the comment is
+  about. `kind` is `source_text` -- whose `target` is `{file_id, start_utf16,
+  end_utf16, start_side, end_side, exact, prefix, suffix}` -- or `document`.
+  It is written once and no later event changes it. Editors only: a rendered
+  reader is never sent source identities or source quotations.
+- `attachment`: `{checkpoint_id, status, resolved_range_utf16, diagnostic}`,
+  where that passage is now. `status` is `exact`, `modified`, `ambiguous`,
+  `deleted` or `unresolved`. It is a cache: the server recomputes it from the
+  document's own history whenever the document changes, and broadcasts an
+  `attachment` event to editor peers. Editors only.
+- `presentation`: `{rendered_exact, rendered_prefix, rendered_suffix,
+  rendered_position_utf16}`, the words as the page had them. Display evidence,
+  sent to everyone who can see the comment, and never resolved through.
+
+Figure-region annotations are not part of this version. A rectangle over a
+rendered image names no range of any source file, and naming what it is about
+needs provenance the renderers do not emit.
 
 Set `point: true` for a comment bubble at a single rendered-text position. A
 point comment must use `motivation: "commenting"`, an empty `exact`, and a
-nonnegative `position`; it still requires a nonempty body. `color`, when
+nonnegative `position`; it still requires a nonempty body. It is anchored to
+the place between the words on either side of it, which is what `prefix` and
+`suffix` are for. `color`, when
 present, must be a six-digit `#RRGGBB` value and is retained for commenting or
 highlighting annotations. `point: false` is omitted from wire responses.
 
@@ -101,8 +134,9 @@ legacy event shape. Errors use the same request_id, version, and protocol
 fields and have type: error plus a human-readable message. A response with
 HTTP success means the annotation is durable.
 
-`refine` replaces the text of one pending suggestion in place. Its ID, source
-anchor, captured revision and pass remain unchanged. Only its author or an
+`refine` replaces the text of one pending suggestion in place. Its ID, its
+anchor and its pass remain unchanged, and `revision` must match the checkpoint
+the suggestion was made against. Only its author or an
 editor may refine it. A mismatched `expected_proposed` or `revision`, a decided
 suggestion, or an acceptance still pending is refused. The resulting `refine`
 event carries `comment_id` and the full updated `comment`. Retrying an already

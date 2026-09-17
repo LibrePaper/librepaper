@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT owner_id,ownership_mode FROM documents\n             WHERE id=$1 AND status='active' FOR SHARE",
+  "query": "SELECT owner_id,ownership_mode FROM documents WHERE id=$1 AND status='active' FOR SHARE",
   "describe": {
     "columns": [
       {
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "64ada71e503491512582590290ef54953fef638a80e15dad99bc0bb5a96f0a48"
+  "hash": "72ad73a7dbf57562f4e84665d92424c0d42f88d56d015e3e08a43af8def03d6f"
 }

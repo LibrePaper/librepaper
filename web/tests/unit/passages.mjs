@@ -8,7 +8,7 @@
 // renders rather than one per checkpoint -- which is the whole reason it is a
 // bisection and not a walk.
 
-import { replacementAt, sourceTextAt, htmlAt, renderTree, wentAt } from "../../src/lib/passages.js";
+import { replacementAt, sourceTextAt, htmlAt, renderTree, tracedBy, wentAt } from "../../src/lib/passages.js";
 import { hunks } from "../../src/lib/history.js";
 
 let failures = 0;
@@ -47,13 +47,23 @@ function history(n, until) {
   };
 }
 
-const comment = (revision) => ({
-  exact: "the passage of interest",
-  prefix: "before ",
-  suffix: " after",
-  position: null,
-  revision,
+/// A comment as the server records it, and the two ways a walk can read it:
+/// through the source file it names, or -- when this browser cannot name that
+/// file -- through the rendered text of each checkpoint.
+const comment = (checkpoint) => ({
+  original_anchor: {
+    kind: "source_text",
+    checkpoint_id: checkpoint,
+    target: {
+      file_id: "file-1",
+      exact: "the passage of interest",
+      prefix: "before ",
+      suffix: " after",
+    },
+  },
 });
+const rendered = (checkpoint) => tracedBy(comment(checkpoint), new Map());
+const inSource = (checkpoint) => tracedBy(comment(checkpoint), new Map([["file-1", "chapter.typ"]]));
 
 /// The same history, but read as source files rather than renderings -- the
 /// texts at each checkpoint stand in for what `sourceTextAt` would return for
@@ -89,17 +99,6 @@ function sourceHistory(n, until) {
     },
   };
 }
-
-const sourceComment = (revision) => ({
-  revision,
-  source: {
-    path: "chapter.typ",
-    exact: "the passage of interest",
-    prefix: "before ",
-    suffix: " after",
-    position: null,
-  },
-});
 
 /* ------------------------------------------------------------ replacements */
 
@@ -310,7 +309,7 @@ const sourceComment = (revision) => ({
 
 {
   const { checkpoints, at, atSource, looked } = sourceHistory(32, 20);
-  const found = await wentAt("slug", sourceComment(checkpoints[0].sha), checkpoints, {}, at, atSource);
+  const found = await wentAt("slug", inSource(checkpoints[0].sha), checkpoints, {}, at, atSource);
   check("a source anchor finds the first moment the source no longer holds it", found?.sha === checkpoints[21].sha);
   check(`a bisection over the source, not a walk (looked at ${looked.size} of 32)`, looked.size <= 8);
 }
@@ -319,7 +318,7 @@ const sourceComment = (revision) => ({
 
 {
   const { checkpoints, at, looked } = history(32, 20);
-  const found = await wentAt("slug", comment(checkpoints[0].sha), checkpoints, {}, at);
+  const found = await wentAt("slug", rendered(checkpoints[0].sha), checkpoints, {}, at);
   check("the first moment the passage is missing", found?.sha === checkpoints[21].sha);
   check(
     `a bisection, not a walk (looked at ${looked.size} of 32)`,
@@ -331,7 +330,7 @@ const sourceComment = (revision) => ({
   // A comment made after the passage had already been through some history
   // starts from its own checkpoint and finds the same moment.
   const { checkpoints, at } = history(32, 20);
-  const found = await wentAt("slug", comment(checkpoints[10].sha), checkpoints, {}, at);
+  const found = await wentAt("slug", rendered(checkpoints[10].sha), checkpoints, {}, at);
   check("the comment's own checkpoint is where the search starts", found?.sha === checkpoints[21].sha);
 }
 
@@ -339,7 +338,7 @@ const sourceComment = (revision) => ({
   // A comment whose checkpoint the manifest no longer has is read as made on
   // the oldest moment there is, which is the earliest thing that can be true.
   const { checkpoints, at } = history(32, 20);
-  const found = await wentAt("slug", comment("nowhere"), checkpoints, {}, at);
+  const found = await wentAt("slug", rendered("nowhere"), checkpoints, {}, at);
   check("a forgotten checkpoint falls back to the oldest", found?.sha === checkpoints[21].sha);
 }
 
@@ -347,13 +346,13 @@ const sourceComment = (revision) => ({
 
 {
   const { checkpoints, at } = history(8, 7);
-  const found = await wentAt("slug", comment(checkpoints[0].sha), checkpoints, {}, at);
+  const found = await wentAt("slug", rendered(checkpoints[0].sha), checkpoints, {}, at);
   check("a passage still in the document is not reported as gone", found === null);
 }
 
 {
   const { checkpoints, at } = history(8, -1);
-  const found = await wentAt("slug", comment(checkpoints[0].sha), checkpoints, {}, at);
+  const found = await wentAt("slug", rendered(checkpoints[0].sha), checkpoints, {}, at);
   check("a passage that was never there names no moment", found === null);
 }
 
@@ -362,15 +361,15 @@ const sourceComment = (revision) => ({
   // treated as an empty page and reported as the moment a passage vanished.
   const { checkpoints, at } = history(8, 4);
   const unknown = async (_slug, sha) => (sha === checkpoints[3].sha ? null : at(_slug, sha));
-  const found = await wentAt("slug", comment(checkpoints[0].sha), checkpoints, {}, unknown);
+  const found = await wentAt("slug", rendered(checkpoints[0].sha), checkpoints, {}, unknown);
   check("an unavailable checkpoint is unknown rather than empty", found === null);
 }
 
 {
   const { checkpoints, at } = history(1, -1);
-  const found = await wentAt("slug", comment(checkpoints[0].sha), checkpoints, {}, at);
+  const found = await wentAt("slug", rendered(checkpoints[0].sha), checkpoints, {}, at);
   check("a history of one has nothing to say", found === null);
-  check("an empty history has nothing to say", (await wentAt("slug", comment(""), [], {}, at)) === null);
+  check("an empty history has nothing to say", (await wentAt("slug", rendered(""), [], {}, at)) === null);
 }
 
 check("a selected part of a rewritten word has no identifiable replacement",

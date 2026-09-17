@@ -30,13 +30,7 @@
   let field = $state(null);
 
   const quotation = $derived(
-    pending?.output_anchor
-      ? `Current output: ${pending.exact}${pending.region ? " (selected region)" : ""}`
-      : pending?.point
-        ? "A note at this point"
-        : pending?.region
-          ? `Figure ${pending.region.image_index + 1}`
-          : `“${pending?.exact ?? ""}”`,
+    pending?.point ? "A note at this point" : `“${pending?.exact ?? ""}”`,
   );
 
   $effect(() => {

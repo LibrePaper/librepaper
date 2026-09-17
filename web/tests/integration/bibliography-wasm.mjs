@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { call, handOver, load } from "../../src/lib/renderer-wasm.js";
-import { sourceSelectorFor } from "../../src/lib/sync.js";
-import { anchorSource } from "../../src/lib/anchor.js";
 
 function module(name) {
   const bytes = readFileSync(new URL(`../../dist/wasm/${name}.wasm`, import.meta.url));
@@ -32,15 +30,16 @@ assert.match(first.text, /Doe, 2020/, "APA citations include author and year");
 assert.match(first.text, /A useful study/);
 assert.doesNotMatch(first.text, /bibliography-style|\[@doe2020\]/);
 assert.deepEqual(first.diagnostics, []);
+// The sentence a reader would select reads the same either side of the
+// citation, which is what lets the server find it in the source. Mapping it
+// back is `room::locate`'s job and is tested there; what matters here is that
+// the renderer leaves the prose alone while it replaces the citation.
 const rendered = first.text.replace(/<head>[\s\S]*?<\/head>/, "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 const exact = rendered.match(/The surrounding words.*?matters\./)[0];
-const selector = sourceSelectorFor(rendered, { exact, position: rendered.indexOf(exact) }, tree, { formatOf: (path) => path.endsWith(".md") ? "markdown" : "" });
-assert.ok(selector, "a sentence spanning a citation maps back to source");
-assert.equal(selector.path, tree.main);
-assert.ok(source.includes(selector.exact));
+assert.ok(exact.startsWith("The surrounding words explain the result"), exact);
+assert.ok(exact.endsWith("and why it matters."), exact);
 const changed = source.replace("apa", "ieee");
 assert.notEqual(render(changed).text, first.text);
-assert.ok(anchorSource({ ...tree, texts: { ...tree.texts, [tree.main]: changed } }, selector), "comment survives a style change");
 tree.texts["chapters/refs.bib"] = bib.replace("A useful study", "A revised study");
 assert.match(render(source).text, /A revised study/, "bibliography edits invalidate the prepared library");
 tree.texts["chapters/refs.bib"] = bib;

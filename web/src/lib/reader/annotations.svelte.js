@@ -43,9 +43,18 @@ export function createAnnotations({ slug, anchor, repaint, send, publicationId =
     const editingFields = motivation === "editing" ? { proposed: proposed ?? "" } : {};
     const colorFields = motivation !== "editing" && /^#[0-9a-f]{6}$/i.test(color || "")
       ? { color: color.toLowerCase() } : {};
+    // The draft is shown the way a stored comment is shown: from what the
+    // page had. The server will send back the same thing beside the anchor it
+    // works out, so the card and the highlight do not move when it does.
     const optimistic = {
       id: temp_id, temp_id, seq: Number.MAX_SAFE_INTEGER,
       ...selection, motivation, body, ...editingFields, ...colorFields, creator,
+      presentation: {
+        rendered_exact: selection.exact || "",
+        rendered_prefix: selection.prefix || "",
+        rendered_suffix: selection.suffix || "",
+        rendered_position_utf16: Number.isInteger(selection.position) ? selection.position : null,
+      },
       created: new Date().toISOString(), resolved: false, resolved_at: null,
       replies: [], pending: true,
     };

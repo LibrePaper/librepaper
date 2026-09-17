@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6,\n                                    color=$7,\n                                    resolved_at=CASE WHEN $8 THEN COALESCE(resolved_at,now()) ELSE NULL END,\n                                    updated_at=now()\n             WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cc90026aa440245890427afaa3fe90ec19a50894778c1c8234bb443e9663610d"
+}

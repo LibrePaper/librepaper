@@ -14,15 +14,13 @@
   // the end, in the order it was made.
   let {
     comments = [],
-    figureAt = [],
     identity = "",
     commentingAs = "Anonymous",
     canModerate = false,
     canComment = true,
-    // The armed mode, if any: "point", "region", or "" for the ordinary
+    // The armed mode, if any: "point", or "" for the ordinary
     // state, where a selection in the document is what starts an annotation.
     mode = "",
-    hasFigures = false,
     // The draft being written, if any: `{ pending, verb, prefill }`. It is
     // shown as a card in the column, in the place the saved note will take.
     composing = null,
@@ -61,10 +59,6 @@
   } = $props();
 
   function place(comment) {
-    if (comment.region) {
-      const at = figureAt[comment.region.image_index];
-      if (Number.isFinite(at)) return at;
-    }
     return Number.isFinite(comment.start) ? comment.start : Infinity;
   }
 
@@ -74,17 +68,13 @@
   // there when it is sent.
   function placeDraft(pending) {
     if (!pending) return Infinity;
-    if (pending.region) {
-      const at = figureAt[pending.region.image_index];
-      if (Number.isFinite(at)) return at;
-    }
     return Number.isFinite(pending.position) ? pending.position : Infinity;
   }
 
   const filtered = $derived(comments.filter((comment) => {
     if (filter === "highlights") return comment.motivation === "highlighting";
     if (filter === "suggestions") return comment.motivation === "editing";
-    if (filter === "comments") return Boolean(comment.output_anchor) || (comment.motivation !== "editing" && (comment.motivation !== "highlighting" || comment.body || comment.replies?.length));
+    if (filter === "comments") return comment.motivation !== "editing" && (comment.motivation !== "highlighting" || comment.body || comment.replies?.length);
     return true;
   }));
   const shown = $derived([...filtered].sort((a, b) => place(a) - place(b) || a.seq - b.seq));
@@ -160,9 +150,8 @@
             label={item.label}
             tool={item.id}
             pressed={mode === item.id}
-            disabled={!canComment || (item.id === "region" && !hasFigures)}
-            title={!canComment ? "Read-only access" : item.id === "region" && !hasFigures
-              ? "This document has no figures to draw on"
+            disabled={!canComment}
+            title={!canComment ? "Read-only access"
               : mode === item.id ? `${item.label} · on. Choose again to stop.` : item.title}
             onclick={() => ontool?.(item.id)}
           />

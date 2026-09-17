@@ -1,16 +1,12 @@
 //! Positions in the text, counted the way a browser counts them: UTF-16 code
 //! units, which is what every region a reader sends is measured in.
 //!
-//! This module holds the two primitives ([`len16`] and [`utf16_slice`]) that
-//! are identical wherever they are needed -- the length of a string in
-//! UTF-16 units, and a clamped, surrogate-safe extraction of a unit range --
-//! and are therefore shared beyond `room` with `cli::export`'s comment
-//! relocation. Every *other* UTF-16 helper in this codebase looks similar on
-//! the surface but differs in a way that matters, so it stays where it is
-//! rather than folding in here:
+//! This module holds the primitive ([`utf16_slice`]) that is identical
+//! wherever it is needed: a clamped, surrogate-safe extraction of a unit
+//! range. Every *other* UTF-16 helper in this codebase looks similar on the
+//! surface but differs in a way that matters, so it stays where it is rather
+//! than folding in here:
 //!
-//! - [`byte_to_utf16`] below is specific to converting a `str::match_indices`
-//!   byte offset, and has no equivalent elsewhere.
 //! - [`apply_edit_str`] below *clamps* `edit.at`/`edit.at + edit.delete` to
 //!   the text's length -- it is used to rehearse a suggestion's proposal
 //!   against a merge base the caller already trusts approximately, where a
@@ -42,19 +38,6 @@
 //! arithmetic and a JavaScript string's own indexing all agree on UTF-16
 //! code units, which is why none of the above ever converts to UTF-8 byte
 //! offsets internally.
-
-/// The length of a string in UTF-16 code units, which is the alphabet
-/// `wasm_helpers::text::Edit` and the document itself count offsets in.
-pub(crate) fn len16(text: &str) -> usize {
-    text.chars().map(char::len_utf16).sum()
-}
-
-/// The UTF-16 offset of a byte offset into `text`. What turns a
-/// `str::match_indices` position -- a byte index -- into the units an `Edit`
-/// is stated in.
-pub(super) fn byte_to_utf16(text: &str, byte_at: usize) -> usize {
-    len16(&text[..byte_at])
-}
 
 /// The UTF-16 units `[start, end)` of `text`, as a `String`. Both bounds are
 /// clamped to the text's length rather than checked, because every caller
@@ -97,13 +80,6 @@ mod tests {
     // one unit" rather than "one scalar, two units".
     const EMOJI: &str = "\u{1F600}";
     const COMBINING: &str = "e\u{0301}";
-
-    #[test]
-    fn len16_counts_surrogate_pairs_and_combining_marks() {
-        assert_eq!(len16(EMOJI), 2);
-        assert_eq!(len16(COMBINING), 2);
-        assert_eq!(len16(&format!("a{EMOJI}b")), 4);
-    }
 
     #[test]
     fn utf16_slice_extracts_a_whole_surrogate_pair() {
@@ -161,12 +137,5 @@ mod tests {
             insert: "z".into(),
         };
         assert_eq!(apply_edit_str(&text, &edit), "az");
-    }
-
-    #[test]
-    fn byte_to_utf16_converts_a_byte_offset_past_a_surrogate_pair() {
-        let text = format!("a{EMOJI}b");
-        let byte_at = text.find('b').unwrap();
-        assert_eq!(byte_to_utf16(&text, byte_at), 3);
     }
 }

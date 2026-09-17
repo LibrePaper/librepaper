@@ -244,23 +244,46 @@ create table annotations (
     author_account_id uuid references accounts(id),
     author_key text not null,
     author_label text not null,
-    selector jsonb not null,
-    context jsonb not null default '{"version":1}'::jsonb,
-    source_version_id uuid,
-    source_update_sequence bigint,
-    source_project_generation bigint,
-    source_state_vector bytea,
     publication_id uuid,
-    proposed_text text,
-    suggestion_state text check (suggestion_state in ('proposed','accepted','rejected')),
+    color text,
+    -- What the comment is about, written once: the checkpoint, and either a
+    -- range of one source file or the document as a whole. A CHECK requires
+    -- the range columns together for 'source_text' and absent for 'document'.
+    checkpoint_id text not null,
+    target_kind text not null check (target_kind in ('source_text','document')),
+    file_id text,
+    start_utf16 integer,
+    end_utf16 integer,
+    start_side text,
+    end_side text,
+    exact text,
+    prefix text,
+    suffix text,
+    -- What the page said, for display. Never resolved through.
+    rendered_exact text not null default '',
+    rendered_prefix text not null default '',
+    rendered_suffix text not null default '',
+    rendered_position_utf16 integer,
     resolved_at timestamptz,
     created_at timestamptz not null default now(),
-    updated_at timestamptz not null default now(),
-    check (
-      (kind = 'suggestion' and proposed_text is not null and suggestion_state is not null)
-      or
-      (kind <> 'suggestion' and proposed_text is null and suggestion_state is null)
-    )
+    updated_at timestamptz not null default now()
+);
+
+-- Where each comment's passage is now, as last resolved. Every column is
+-- replaceable and the whole table can be dropped without losing anything:
+-- it is recomputed from the anchor above and the document's own history.
+create table annotation_live_state (
+    annotation_id uuid primary key references annotations(id) on delete cascade,
+    checkpoint_id text,
+    status text not null default 'unresolved'
+        check (status in ('exact','modified','ambiguous','deleted','unresolved')),
+    start_cursor bytea,
+    end_cursor bytea,
+    cursor_format text,
+    resolved_start_utf16 integer,
+    resolved_end_utf16 integer,
+    diagnostic text,
+    updated_at timestamptz not null default now()
 );
 
 create index annotations_timeline
@@ -282,13 +305,23 @@ create table replies (
 );
 ```
 
-Historical source-version and publication IDs are descriptive provenance; they
-need not remain live foreign keys. Source-dependent annotations may also retain
-the captured update sequence, project generation, and bounded CRDT version vector.
-A suggestion normally rebases from that captured causal state onto the current
-CRDT. It requires exact equality only when its operation replaces the entire
-project or depends on unchanged project structure. Keeping an unresolved
-annotation does not pin a source version forever.
+The split between the two tables is the invariant. `annotations` records what
+a reviewer selected, in the checkpoint they selected it in, and nothing writes
+to those columns after the insert -- an update that arrives with a different
+anchor is refused. `annotation_live_state` records where that passage has got
+to, and is rewritten whenever the document changes. Reading the first tells you
+what a comment is about; reading the second tells you where to draw it.
+
+`file_id` is the stable key of the document's Loro `files` map, never a path:
+renaming a file does not change what a comment is about. Offsets are UTF-16 code
+units, the alphabet the browser and the CRDT both convert to. The cursors are
+Loro's own anchors, captured when the comment was made and replaced by whatever
+Loro hands back on a later resolution; they live in the live-state row for the
+same reason everything else there does.
+
+A suggestion's proposal is a branch (§1.2 of SPEC-loro.md), so it is not stored
+here; the comment carries the proposal's id. Keeping an unresolved annotation
+does not pin a source version forever.
 
 `author_key` is a server-derived stable pseudonymous actor identifier used for
 ownership and attribution checks when no registered account is present. It is

@@ -609,54 +609,10 @@ impl Server {
                 ));
             }
             if query["selection"].is_object() {
-                let anchor: crate::room::SourceAnchor =
-                    serde_json::from_value(query["selection"].clone()).map_err(|_| {
-                        Failure::new("invalid_range", "invalid captured source selection")
-                    })?;
-                let text =
-                    view.snapshot.texts.get(&anchor.path).ok_or_else(|| {
-                        Failure::new("invalid_range", "selection file unavailable")
-                    })?;
-                let position = anchor
-                    .position
-                    .and_then(|p| usize::try_from(p).ok())
-                    .ok_or_else(|| {
-                        Failure::new("ambiguous_range", "selection requires captured position")
-                    })?;
-                let mut units = 0;
-                let mut start = None;
-                for (byte, ch) in text.char_indices() {
-                    if units == position {
-                        start = Some(byte);
-                        break;
-                    }
-                    units += ch.len_utf16();
-                }
-                if start.is_none() && units == position {
-                    start = Some(text.len());
-                }
-                let start = start.ok_or_else(|| {
-                    Failure::new(
-                        "invalid_range",
-                        "selection position splits a Unicode character",
-                    )
-                })?;
-                let end = start.saturating_add(anchor.exact.len());
-                if text.get(start..end) != Some(anchor.exact.as_str())
-                    || !text[..start].ends_with(&anchor.prefix)
-                    || !text[end..].starts_with(&anchor.suffix)
-                {
-                    return Err(Failure::new(
-                        "conflict",
-                        "captured selection no longer matches this view",
-                    ));
-                }
-                query["path"] = json!(anchor.path);
-                query["start"] = json!(start);
-                query["end"] = json!(end);
-                if let Some(object) = query.as_object_mut() {
-                    object.remove("selection");
-                }
+                return Err(Failure::new(
+                    "unsupported",
+                    "legacy source selections are unsupported; use a captured range handle",
+                ));
             }
             if let Some(handle) = query
                 .get("range_id")

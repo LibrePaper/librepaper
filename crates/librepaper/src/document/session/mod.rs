@@ -134,8 +134,12 @@ mod astral_tests {
     #[test]
     fn a_cursor_past_an_astral_character_resolves_to_the_same_utf16_offset() {
         let doc = doc_with(&format!("{EMOJI} cat"));
+        let file_id = paths_of(&doc)
+            .into_iter()
+            .find_map(|(id, path)| (path == "main.md").then_some(id))
+            .expect("main file has a stable Loro id");
         // Aim at the "c": UTF-16 offset 3, which is code point 2.
-        let cursor = cursor_at_path(&doc, "main.md", 3, loro::cursor::Side::Left)
+        let cursor = cursor_at_file_id(&doc, &file_id, 3, loro::cursor::Side::Left)
             .expect("an anchor in a file that exists");
         let (offset, _) = offset_of_cursor(&doc, &cursor).expect("it resolves");
         assert_eq!(

@@ -8,6 +8,7 @@
   import * as history from "../lib/history.js";
   import { runsFor } from "../lib/suggestions.js";
   import { threadRuns } from "../lib/thread.js";
+  import { shownSelector } from "../lib/anchor.js";
   import { day as isoDay, moment } from "../lib/dates.js";
 
   // One annotation, and everything said about it.
@@ -39,6 +40,11 @@
     selected = false,
   } = $props();
 
+  // What this comment looked like where it was made. Display evidence: it
+  // is what the card shows and what the highlight was drawn from, never what
+  // the comment is about.
+  const shown = $derived(shownSelector(comment));
+
   // A suggestion is a comment whose motivation is `editing` (the W3C term).
   const isSuggestion = $derived(comment.motivation === "editing");
   const annotationColor = $derived(/^#[0-9a-f]{6}$/i.test(comment.color || "") ? comment.color : null);
@@ -55,7 +61,9 @@
       diffRuns = [];
       return;
     }
-    const oldText = comment.source?.exact ?? comment.exact ?? "";
+    // The passage a suggestion replaces, as the source has it: that is what
+    // the proposal is a replacement for, and what the diff is against.
+    const oldText = comment.original_anchor?.target?.exact ?? shown.exact;
     const proposedText = comment.proposed ?? "";
     const request = ++diffRequest;
     history.wordDiff(oldText, proposedText).then((edits) => {
@@ -93,7 +101,7 @@
   const summary = $derived(
     [
       comment.outcome === "accepted" ? "Accepted" : comment.outcome === "rejected" ? "Rejected" : "",
-      comment.point ? "Point comment" : comment.region ? `Figure ${comment.region.image_index + 1}` : (comment.exact || "").trim(),
+      shown.point ? "Point comment" : shown.exact.trim(),
       (comment.body || "").trim(),
     ]
       .filter(Boolean)
@@ -126,7 +134,7 @@
       open();
       return;
     }
-    if (!comment.orphaned && !comment.regionUnplaceable) onreveal?.(comment);
+    if (!comment.orphaned) onreveal?.(comment);
   }
 
   async function reply() {
@@ -183,9 +191,6 @@
   {:else}
     <div class="flex flex-col gap-2">
       <Row gap={1} wrap>
-        {#if comment.output_anchor}
-          <span class="badge preset-tonal-surface">Current output anchor</span>
-        {/if}
         {#if comment.earlierPublication}
           <span class="badge preset-tonal-warning">Earlier published version</span>
         {:else if comment.orphaned}
@@ -202,13 +207,6 @@
                only unreachable from the page. -->
           <span class="badge preset-tonal-secondary">In the source, not on the page</span>
         {/if}
-        {#if comment.regionUnplaceable}
-          <span class="badge preset-tonal-warning">
-            {comment.regionUnplaceableReason === "pdf"
-              ? "Figure region unavailable in this PDF"
-              : "Figure unavailable in this version"}
-          </span>
-        {/if}
         <!-- The motivation is the W3C annotation type. Commenting is the
              default, so only the others are worth showing. -->
         {#if comment.motivation && comment.motivation !== "commenting"}
@@ -219,12 +217,8 @@
       <!-- The passage itself is not repeated here: it is painted in the
            document, and ringed there while this card is the selected one.
            Only a note with no words to point at says what it is on. -->
-      {#if comment.point}
+      {#if shown.point}
         <p class="panel-muted">Comment at this point</p>
-      {:else if comment.region}
-        <blockquote class="figureref panel-muted">
-          Figure {comment.region.image_index + 1}
-        </blockquote>
       {/if}
 
       {#if isSuggestion}

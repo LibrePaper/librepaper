@@ -206,6 +206,23 @@ export function holds(text, comment) {
   return typeof text === "string" && Boolean(anchorOne(text, comment, flatten(text)));
 }
 
+/// How a comment is read against an old checkpoint: the passage it is about,
+/// as the source had it, and the file that passage was in.
+///
+/// This is the comment's own record, not a guess -- the server wrote it when
+/// the comment was made and has not touched it since. `paths` turns the file
+/// id into whatever that file is called now.
+export function tracedBy(comment, paths) {
+  const anchor = comment?.original_anchor;
+  if (anchor?.kind !== "source_text") return null;
+  const target = anchor.target;
+  return {
+    checkpoint: anchor.checkpoint_id || "",
+    path: paths?.get?.(target.file_id) || "",
+    selector: { exact: target.exact, prefix: target.prefix || "", suffix: target.suffix || "" },
+  };
+}
+
 /// The first checkpoint at which a comment's passage was no longer found.
 ///
 /// `checkpoints` is the manifest, oldest first. The search starts at the
@@ -214,30 +231,28 @@ export function holds(text, comment) {
 /// caller has already established that the passage is gone. Returns the
 /// manifest entry, or null when there is nothing to say: no history to look
 /// in, or a passage that turns out still to be there.
-export async function wentAt(slug, comment, checkpoints, headers = {}, at = textAt, atSource = sourceTextAt) {
-  if (!checkpoints?.length) return null;
+export async function wentAt(slug, traced, checkpoints, headers = {}, at = textAt, atSource = sourceTextAt) {
+  if (!checkpoints?.length || !traced) return null;
   // A comment from before checkpoints were recorded on one, or one whose
   // checkpoint has since been shed, is read as made on the oldest moment the
   // manifest still has. That is the earliest thing that could be true of it.
-  const own = checkpoints.findIndex((point) => point.sha === comment.revision);
+  const own = checkpoints.findIndex((point) => point.sha === traced.checkpoint);
   let low = own >= 0 ? own : 0;
   let high = checkpoints.length - 1;
   if (low >= high) return null;
 
-  // A source anchor is searched for in the source file it names, at every
-  // checkpoint, and a comment without one falls back to the rendered
-  // quotation exactly as before -- the two are just different ways of
-  // reading a checkpoint into a string to run `holds` against.
-  const source = comment.source;
-  const selector = source || comment;
-  const read = source
-    ? (sha) => atSource(slug, sha, source.path, headers)
+  // The passage is looked for in the source file it was quoted from, at each
+  // checkpoint. A comment whose file this browser cannot name -- renamed away,
+  // or a document it only has the rendering of -- falls back to the rendered
+  // text of the checkpoint.
+  const selector = traced.selector;
+  const read = traced.path
+    ? (sha) => atSource(slug, sha, traced.path, headers)
     : (sha) => at(slug, sha, headers);
 
   // The passage has to have been there to have gone. A comment whose own
   // checkpoint does not hold it is one whose quotation this cannot reason
-  // about -- a figure annotation, or a passage the renderer no longer emits --
-  // and saying nothing is better than naming a moment at random.
+  // about, and saying nothing is better than naming a moment at random.
   const ownText = await read(checkpoints[low].sha);
   if (typeof ownText !== "string" || !holds(ownText, selector)) return null;
   const newestText = await read(checkpoints[high].sha);

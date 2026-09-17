@@ -3,11 +3,11 @@
 //! relative icon asset, math, tables, a shared `references.bib` cited in the
 //! format's own way, previews, and synchronization.
 //!
-//! Text annotations use short, stable phrases that appear in the rendered
-//! document. The HTML tutorial also demonstrates a region annotation on its
-//! icon. `seed` rejects text annotations that cannot be anchored.
+//! Annotations use short, stable phrases that appear in the rendered
+//! document, and `seed` rejects any whose phrase cannot be found: a seeded
+//! comment is placed by the same path a reader's is, and is worth no more
+//! than that path is.
 
-use crate::room::Region;
 use crate::seed::{SeedAnnotation, SeedDocument};
 
 fn note(
@@ -23,17 +23,6 @@ fn note(
         creator,
         ..SeedAnnotation::default()
     }
-}
-
-fn region(index: i64, x: f64, y: f64, w: f64, h: f64) -> Option<Region> {
-    Some(Region {
-        image_digest: String::new(),
-        image_index: index,
-        x,
-        y,
-        width: w,
-        height: h,
-    })
 }
 
 pub fn seed_documents() -> Vec<SeedDocument> {
@@ -96,15 +85,6 @@ pub fn seed_documents() -> Vec<SeedDocument> {
                     "",
                     "LibrePaper",
                 ),
-                SeedAnnotation {
-                    region: region(0, 10.0, 10.0, 80.0, 80.0),
-                    ..note(
-                        "commenting",
-                        "",
-                        "Region comments can point to a precise part of an image.",
-                        "LibrePaper",
-                    )
-                },
             ],
         },
         SeedDocument {

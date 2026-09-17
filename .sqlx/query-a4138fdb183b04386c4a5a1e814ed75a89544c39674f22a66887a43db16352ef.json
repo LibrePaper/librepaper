@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,annotation_id,author_account_id,author_key,author_label,body,\n                            created_at,updated_at\n                     FROM replies WHERE id=$1",
+  "query": "SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at FROM replies WHERE id=$1",
   "describe": {
     "columns": [
       {
@@ -60,5 +60,5 @@
       false
     ]
   },
-  "hash": "01dac69d4debeb488c0ab61607cbf4d15a5f1564b3389c37cb8a266461330fb2"
+  "hash": "a4138fdb183b04386c4a5a1e814ed75a89544c39674f22a66887a43db16352ef"
 }

@@ -1,3 +1,5 @@
+import { shownSelector } from "../anchor.js";
+
 // Owns the replay caches for decorations painted by the document frame.
 // A rebuilt frame invalidates these caches; ordinary reactive updates cross
 // the frame only when their payload has actually changed.
@@ -26,23 +28,15 @@ export function createFrameOverlays({ ready, send }) {
   }
 
   function annotations(comments) {
-    const nextRegions = comments.filter((comment) => comment.region).map((comment) => ({
-      id: comment.id,
-      point: Boolean(comment.point),
-      digest: comment.region.image_digest,
-      index: comment.region.image_index,
-      x: comment.region.x,
-      y: comment.region.y,
-      w: comment.region.w,
-      h: comment.region.h,
-      motivation: comment.motivation,
-      resolved: Boolean(comment.resolved),
-    }));
+    // Nothing draws boxes on figures any more: a comment is a range of the
+    // source, and a rectangle over a rendered image is not one. The frame
+    // keeps the machinery, so the list it is given is simply empty.
+    const nextRegions = [];
     const nextHighlights = comments
       .filter((comment) => !comment.orphaned && comment.start != null)
       .map((comment) => ({
         id: comment.id,
-        point: Boolean(comment.point),
+        point: shownSelector(comment).point,
         start: comment.start,
         end: comment.end,
         motivation: comment.motivation,

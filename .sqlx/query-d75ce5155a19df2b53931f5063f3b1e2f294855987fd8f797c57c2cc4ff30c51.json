@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT role FROM share_links WHERE document_id=$1 AND token_hash=$2\n                     AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())",
+  "query": "SELECT role FROM share_links WHERE document_id=$1 AND token_hash=$2 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       false
     ]
   },
-  "hash": "f94e558eb49b3fce2fa5af6e4f9544aa882017763e17bfb5aacc4685c2115b66"
+  "hash": "d75ce5155a19df2b53931f5063f3b1e2f294855987fd8f797c57c2cc4ff30c51"
 }

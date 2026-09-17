@@ -156,57 +156,60 @@ function search(text, { exact, prefix = "", suffix = "", position = null, requir
 }
 
 /**
- * Locate a comment's source selector in a tree of source files. The path it
- * was cut from is tried first, since that is where it almost always still
- * is; a file that has since been renamed has no text at that path any more,
- * so every other file in the tree is tried instead, and the selector is
- * accepted only when exactly one of them finds it -- the same rule
- * `sourcePlaceInTree` applies to a caret, for the same reason: a source
- * quote landing in the wrong file is worse than one that lands nowhere.
- * Returns {path, start, end}, or null.
+ * What a comment looked like on the page it was made on.
+ *
+ * The words and the words around them, as the render had them. This is the
+ * selector the highlight is drawn from and the only thing here that is ever
+ * matched against text: it is display evidence, and it is treated as such.
+ * What the comment is *about* is its source range, which the server owns.
  */
-export function anchorSource(tree, source) {
-  if (!source?.exact) return null;
-  const texts = tree?.texts || {};
-  const own = texts[source.path];
-  if (own !== undefined) {
-    const found = anchorOne(own, source, flatten(own));
-    return found ? { path: source.path, start: found.start, end: found.end } : null;
-  }
-
-  let hit = null;
-  for (const [path, text] of Object.entries(texts)) {
-    const found = anchorOne(text, source, flatten(text));
-    if (!found) continue;
-    if (hit) return null; // found in more than one file: which one it meant is a guess
-    hit = { path, start: found.start, end: found.end };
-  }
-  return hit;
+export function shownSelector(comment) {
+  const seen = comment?.presentation || {};
+  const exact = String(seen.rendered_exact || "");
+  const position = Number.isInteger(seen.rendered_position_utf16)
+    ? seen.rendered_position_utf16
+    : null;
+  return {
+    exact,
+    prefix: String(seen.rendered_prefix || ""),
+    suffix: String(seen.rendered_suffix || ""),
+    position,
+    // A note left between two words has no words of its own; the position and
+    // the context on either side are the whole of it.
+    point: !exact && position !== null,
+  };
 }
 
 /**
- * Re-anchor every comment's source selector against a tree, in one pass.
- * Mutates each comment that has a `source` with `sourceStart`, `sourceEnd`
- * and `sourcePath` -- null when the passage cannot be placed -- and counts
- * only over those comments, mirroring `anchorAll`.
+ * Where each comment's passage is in the source, according to the server.
+ *
+ * Nothing is searched for here. The server resolves every comment against the
+ * document's own history whenever the document changes, and sends the answer
+ * with the comment; this only turns the file id in that answer into the path
+ * this browser knows it by. A comment the server could not place gets nulls,
+ * and its card says so rather than the editor guessing at it.
  */
-export function anchorAllSources(tree, comments) {
+export function placeSources(session, comments) {
   let anchored = 0;
   let orphaned = 0;
   for (const comment of comments) {
-    if (!comment.source) continue;
-    const found = anchorSource(tree, comment.source);
-    if (found) {
-      comment.sourcePath = found.path;
-      comment.sourceStart = found.start;
-      comment.sourceEnd = found.end;
-      anchored++;
-    } else {
+    const anchor = comment.original_anchor;
+    const range = comment.attachment?.resolved_range_utf16;
+    const status = comment.attachment?.status;
+    const placed = status === "exact" || status === "modified";
+    const fileId = anchor?.kind === "source_text" ? anchor.target?.file_id : null;
+    const path = fileId ? session?.paths?.get(fileId) : null;
+    if (!path || !placed || !Array.isArray(range)) {
+      if (fileId) orphaned++;
       comment.sourcePath = null;
       comment.sourceStart = null;
       comment.sourceEnd = null;
-      orphaned++;
+      continue;
     }
+    comment.sourcePath = path;
+    comment.sourceStart = range[0];
+    comment.sourceEnd = range[1];
+    anchored++;
   }
   return { anchored, orphaned };
 }
@@ -224,7 +227,7 @@ export function anchorAll(text, comments, view = null) {
   // same document) can pass it in instead of paying to rebuild it.
   view = view || flatten(text);
   for (const comment of comments) {
-    const position = anchorOne(text, comment, view);
+    const position = anchorOne(text, shownSelector(comment), view);
     if (position) {
       comment.start = position.start;
       comment.end = position.end;

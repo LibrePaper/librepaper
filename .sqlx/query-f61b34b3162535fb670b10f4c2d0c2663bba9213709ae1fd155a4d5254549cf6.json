@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO replies(id,annotation_id,author_account_id,author_key,author_label,body)\n             VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING\n             RETURNING id,annotation_id,author_account_id,author_key,author_label,body,\n                       created_at,updated_at",
+  "query": "SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at FROM replies WHERE annotation_id=ANY($1) ORDER BY created_at,id LIMIT 5001",
   "describe": {
     "columns": [
       {
@@ -46,12 +46,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
-        "Uuid",
-        "Text",
-        "Text",
-        "Text"
+        "UuidArray"
       ]
     },
     "nullable": [
@@ -65,5 +60,5 @@
       false
     ]
   },
-  "hash": "77f14292967b49b65595df3f12fde8078fa9504516b35ba828be5ff5f34b966d"
+  "hash": "f61b34b3162535fb670b10f4c2d0c2663bba9213709ae1fd155a4d5254549cf6"
 }

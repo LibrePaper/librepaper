@@ -7,11 +7,14 @@ const overlays = createFrameOverlays({ ready: () => ready, send: (message) => se
 const comments = [
   {
     id: "passage", start: 4, end: 9, motivation: "editing", proposed: "after",
-    outcome: "", resolved: false, point: false,
+    outcome: "", resolved: false,
+    presentation: { rendered_exact: "quote", rendered_position_utf16: 4 },
   },
   {
-    id: "figure", motivation: "commenting", resolved: true,
-    region: { image_digest: "abc", image_index: 2, x: 1, y: 2, w: 3, h: 4 },
+    // A note left between two words: no quotation of its own, so the frame is
+    // told to draw a mark rather than a range.
+    id: "point", start: 7, end: 7, motivation: "commenting", resolved: false,
+    presentation: { rendered_position_utf16: 7 },
   },
   { id: "orphan", start: 10, end: 12, orphaned: true, motivation: "commenting" },
 ];
@@ -23,19 +26,19 @@ assert.deepEqual(sent, []);
 ready = true;
 assert.equal(overlays.annotations(comments), true);
 assert.deepEqual(sent, [
-  {
-    type: "regions",
-    regions: [{
-      id: "figure", point: false, digest: "abc", index: 2,
-      x: 1, y: 2, w: 3, h: 4, motivation: "commenting", resolved: true,
-    }],
-  },
+  { type: "regions", regions: [] },
   {
     type: "highlight",
-    ranges: [{
-      id: "passage", point: false, start: 4, end: 9, motivation: "editing",
-      resolved: false, proposed: "after", outcome: "",
-    }],
+    ranges: [
+      {
+        id: "passage", point: false, start: 4, end: 9, motivation: "editing",
+        resolved: false, proposed: "after", outcome: "",
+      },
+      {
+        id: "point", point: true, start: 7, end: 7, motivation: "commenting",
+        resolved: false, proposed: "", outcome: "",
+      },
+    ],
   },
 ]);
 

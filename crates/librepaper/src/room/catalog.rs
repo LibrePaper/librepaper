@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{Comment, Manifest, QuartoOutputAnchor, Region, Reply, SourceAnchor, WriteError};
+use super::{Comment, Manifest, Reply, WriteError};
 use crate::storage::postgres::{
+    attachment_from_record, original_anchor_from_record, presentation_from_record,
     AnnotationRecord, MutationAuthorization, NewAnnotation, NewReply, PostgresCatalog, ReplyRecord,
 };
 
@@ -303,8 +304,10 @@ pub(super) fn annotation_input(
     } else {
         "comment"
     };
-    let selector = json!({"exact":comment.exact,"prefix":comment.prefix,"suffix":comment.suffix,"position":comment.position,"point":comment.point,"color":comment.color,"region":comment.region,"output_anchor":comment.output_anchor,"source":comment.source});
-    let context = json!({"motivation":comment.motivation,"creator":comment.creator,"via":comment.via,"pass":comment.pass,"proposal":comment.proposal,"accept_request":comment.accept_request,"revision":comment.revision,"resolved_in":comment.resolved_in});
+    let original_anchor = comment
+        .original_anchor
+        .clone()
+        .ok_or_else(|| WriteError::Invalid("comment requires an original source anchor".into()))?;
     Ok(NewAnnotation {
         document_id,
         kind: kind.into(),
@@ -323,13 +326,11 @@ pub(super) fn annotation_input(
         } else {
             comment.creator.clone()
         },
-        selector,
-        context,
-        source_version_id: None,
-        source_update_sequence: None,
-        source_project_generation: None,
-        source_state_vector: None,
         publication_id: Uuid::parse_str(&comment.publication_id).ok(),
+        color: comment.color.clone(),
+        original_anchor,
+        presentation: comment.presentation.clone(),
+        attachment: comment.attachment.clone(),
     })
 }
 
@@ -338,86 +339,41 @@ pub(crate) fn room_comment_from_catalog_row(
     replies: Vec<ReplyRecord>,
     seq: i64,
 ) -> Result<Comment, String> {
-    let selector = row
-        .selector
-        .as_object()
-        .ok_or("annotation selector is invalid")?;
-    let context = row
-        .context
-        .as_object()
-        .ok_or("annotation context is invalid")?;
-    fn parse<T: serde::de::DeserializeOwned>(
-        selector: &serde_json::Map<String, Value>,
-        key: &str,
-    ) -> Option<T> {
-        selector
-            .get(key)
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
-    }
+    let original_anchor = original_anchor_from_record(&row).map_err(|error| error.to_string())?;
+    let attachment = attachment_from_record(&row).map_err(|error| error.to_string())?;
     Ok(Comment {
         id: row.id.to_string(),
         seq,
-        motivation: context
-            .get("motivation")
-            .and_then(Value::as_str)
-            .unwrap_or("commenting")
-            .into(),
+        original_anchor: Some(original_anchor),
+        attachment,
+        motivation: match row.kind.as_str() {
+            "suggestion" => "editing",
+            "highlight" => "highlighting",
+            _ => "commenting",
+        }
+        .into(),
+        presentation: presentation_from_record(&row),
+        color: row.color.clone(),
         publication_id: row
             .publication_id
             .map(|id| id.to_string())
             .unwrap_or_default(),
-        exact: parse(selector, "exact").unwrap_or_default(),
-        prefix: parse(selector, "prefix").unwrap_or_default(),
-        suffix: parse(selector, "suffix").unwrap_or_default(),
-        position: parse(selector, "position"),
-        point: parse(selector, "point").unwrap_or(false),
-        color: parse(selector, "color"),
-        region: parse::<Region>(selector, "region"),
-        output_anchor: parse::<QuartoOutputAnchor>(selector, "output_anchor"),
-        source: parse::<SourceAnchor>(selector, "source"),
-        proposal: context
-            .get("proposal")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .into(),
+        proposal: String::new(),
         // Projections. A row does not carry them; whoever serves this comment
         // fills them in from the proposal named above.
         proposed: None,
         outcome: String::new(),
-        pass: context
-            .get("pass")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .into(),
-        accept_request: context
-            .get("accept_request")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .into(),
-        revision: context
-            .get("revision")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .into(),
+        pass: String::new(),
         body: row.body,
         creator: row.author_label,
         author: row.author_key,
-        via: context
-            .get("via")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .into(),
+
         created: crate::util::format_unix(row.created_at.unix_timestamp()),
         resolved: row.resolved_at.is_some(),
         resolved_at: row
             .resolved_at
             .map(|at| crate::util::format_unix(at.unix_timestamp())),
-        resolved_in: context
-            .get("resolved_in")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .into(),
+        resolved_in: String::new(),
         replies: replies
             .into_iter()
             .map(|reply| Reply {

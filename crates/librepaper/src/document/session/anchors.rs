@@ -20,6 +20,31 @@ use loro::{
 
 use super::shape::{FILES, PATHS};
 
+/// The result of resolving a source range in the current CRDT state.
+///
+/// Cursor replacement is deliberately returned to the caller. A replacement
+/// belongs to the derived, current attachment cache; it must never overwrite
+/// the immutable checkpoint/range that records what a reviewer selected.
+#[derive(Clone, Debug)]
+pub struct ResolvedRange {
+    pub start_utf16: u32,
+    pub end_utf16: u32,
+    pub start_replacement: Option<Cursor>,
+    pub end_replacement: Option<Cursor>,
+}
+
+/// Why resolving stored cursor bytes against a source file failed. Callers
+/// surface these distinctions instead of reducing every historic-resolution
+/// failure to a generic missing range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CursorResolutionError {
+    MissingFile,
+    MissingContainer,
+    MalformedCursor,
+    ForeignContainer,
+    InvalidPosition,
+}
+
 /// Captures a position in the text at `path` that follows the same CRDT
 /// content when concurrent updates shift its ordinary UTF-16 offset.
 ///
@@ -28,20 +53,25 @@ use super::shape::{FILES, PATHS};
 /// function converts the UTF-16 input position to Unicode, calls `get_cursor`,
 /// and returns the resulting cursor.
 pub fn cursor_at_path(doc: &LoroDoc, path: &str, pos_utf16: u32, side: Side) -> Option<Cursor> {
-    let files = doc.get_map(FILES);
     let paths_map = doc.get_map(PATHS);
 
     // Find the file ID that corresponds to this path.
     let id = id_of_path(&paths_map, path)?;
 
-    // Get the text at this file ID.
-    let text = text_at(&files, &id)?;
+    cursor_at_file_id(doc, &id, pos_utf16, side)
+}
 
-    // Convert UTF-16 position to Unicode code points. `convert_pos` may fail
-    // if the position is out of bounds, so return None in that case.
+/// Captures a cursor at a stable Loro `files` map key. This is the source
+/// anchor API: callers persist the key, never a path that can be renamed.
+pub fn cursor_at_file_id(
+    doc: &LoroDoc,
+    file_id: &str,
+    pos_utf16: u32,
+    side: Side,
+) -> Option<Cursor> {
+    let files = doc.get_map(FILES);
+    let text = text_at(&files, file_id)?;
     let pos_unicode = text.convert_pos(pos_utf16 as usize, PosType::Utf16, PosType::Unicode)?;
-
-    // Get the cursor at the Unicode position.
     text.get_cursor(pos_unicode, side)
 }
 
@@ -79,15 +109,16 @@ pub fn offset_of_cursor(doc: &LoroDoc, cursor: &Cursor) -> Option<(u32, Option<C
 /// offset and cause a rejection to edit the wrong file. Resolving through
 /// the named path makes the container identity part of the guard.
 ///
-/// Returns the start and end offsets as UTF-16 code units, or `None` if either
-/// cursor does not resolve, or if the cursors' containers do not match the
-/// expected file's container.
+/// Returns the current offsets and Loro's replacement cursors, or `None` if
+/// either cursor does not resolve, or if their containers do not match the
+/// expected file's container. Callers must persist replacements in derived
+/// resolver state before the next resolution attempt.
 pub fn offsets_of_cursors(
     doc: &LoroDoc,
     path: &str,
     start: &Cursor,
     end: &Cursor,
-) -> Option<(u32, u32)> {
+) -> Option<ResolvedRange> {
     let files = doc.get_map(FILES);
     let paths_map = doc.get_map(PATHS);
 
@@ -115,7 +146,48 @@ pub fn offsets_of_cursors(
     let end_utf16 =
         text.convert_pos(end_result.current.pos, PosType::Unicode, PosType::Utf16)? as u32;
 
-    Some((start_utf16, end_utf16))
+    Some(ResolvedRange {
+        start_utf16,
+        end_utf16,
+        start_replacement: start_result.update,
+        end_replacement: end_result.update,
+    })
+}
+
+/// Resolves a source range through its immutable Loro file ID. Unlike the
+/// path-oriented helper, this cannot change meaning after a rename.
+pub fn offsets_of_cursors_in_file(
+    doc: &LoroDoc,
+    file_id: &str,
+    start: &Cursor,
+    end: &Cursor,
+) -> Result<ResolvedRange, CursorResolutionError> {
+    let files = doc.get_map(FILES);
+    let Some(text) = text_at(&files, file_id) else {
+        return Err(CursorResolutionError::MissingFile);
+    };
+    let expected_container_id = text.id();
+    if start.container != expected_container_id || end.container != expected_container_id {
+        return Err(CursorResolutionError::ForeignContainer);
+    }
+    let start_result = doc
+        .get_cursor_pos(start)
+        .map_err(|_| CursorResolutionError::MissingContainer)?;
+    let end_result = doc
+        .get_cursor_pos(end)
+        .map_err(|_| CursorResolutionError::MissingContainer)?;
+    let start_utf16 = text
+        .convert_pos(start_result.current.pos, PosType::Unicode, PosType::Utf16)
+        .ok_or(CursorResolutionError::InvalidPosition)? as u32;
+    let end_utf16 = text
+        .convert_pos(end_result.current.pos, PosType::Unicode, PosType::Utf16)
+        .ok_or(CursorResolutionError::InvalidPosition)? as u32;
+    Ok(ResolvedRange {
+        start_utf16,
+        end_utf16,
+        start_replacement: start_result.update,
+        end_replacement: end_result.update,
+    })
 }
 
 /// The text at `id` in the files map, or `None` if `id` does not name a text.

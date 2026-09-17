@@ -23,12 +23,8 @@ function check(what, condition) {
 
 {
   check(
-    "the source anchor's own quotation wins when there is one",
-    prefillFor({ exact: "rendered words", source: { exact: "source words" } }) === "source words",
-  );
-  check(
-    "the rendered quotation is the fallback with no source anchor",
-    prefillFor({ exact: "rendered words", source: null }) === "rendered words",
+    "the words the page showed are what a proposal starts from",
+    prefillFor({ exact: "rendered words" }) === "rendered words",
   );
   check("no pending selection prefills empty", prefillFor(null) === "");
 }
