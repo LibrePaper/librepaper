@@ -87,6 +87,10 @@ accusation.
 So the page never looks on its own. Opening a document reaches nothing, even
 one this browser has already paired with the app. The first loopback request
 is made by a gesture that needs it: turning on local execution, choosing a
-local build tool, a Zotero lookup, or opening the Build or Local app settings.
-Refusing the permission costs only those; everything the browser renders by
-itself is unaffected.
+local build tool, a Zotero lookup, or opening the Local app settings — the one
+pane that exists to show the companion. The Build settings pane does not look
+when it opens: most of what it offers is a choice between engines in this
+browser, and asking which tools are installed on your computer is not the price
+of choosing pdfLaTeX. Its local tools are offered rather than greyed out until
+somebody picks one, and picking one is the question. Refusing the permission
+costs only those; everything the browser renders by itself is unaffected.

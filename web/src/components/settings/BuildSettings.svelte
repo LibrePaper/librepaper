@@ -11,12 +11,13 @@
   $effect(() => companion.watch());
   const builders = $derived(buildersFor(format));
   const localBuilders = $derived(builders.filter((entry) => entry.backend.includes("local")));
-  // Opening this pane is a question about build tools, so it is the moment
-  // to look for the companion -- the page never does it on its own. Only for
-  // a format that has a local tool, though: LaTeX builds in the browser and
-  // nowhere else, so reaching loopback for it would ask this person for
-  // local-network access to answer a question this pane cannot even pose.
-  $effect(() => { if (localBuilders.length) void localBridge.probe(); });
+  // This pane is not itself a question about the companion. Most of what it
+  // offers -- which browser engine, which output -- needs nothing local, and
+  // opening it to choose pdfLaTeX must not make the browser ask this person
+  // to allow the site "access to other apps and services". So it does not
+  // probe when it mounts. Choosing a local tool does (`chooseOption`), and so
+  // do the buttons below; until then the local rows say only that nobody has
+  // looked yet.
   const browserBuilders = $derived(builders.filter((entry) => entry.backend.includes("browser")));
   const selected = $derived(preferences.selection === "tool" ? (preferences.preset ? `local:preset:${preferences.preset}` : preferences.tool === "tex" && preferences.engine ? `${preferences.backend || "browser"}:tex:${preferences.engine}` : optionValue(preferences.backend || "browser", preferences.tool || "")) : "automatic");
 
@@ -28,13 +29,23 @@
   function chooseParameters(text) {
     try { const parameters = text.trim() ? JSON.parse(text) : {}; if (!parameters || Array.isArray(parameters) || typeof parameters !== "object") return; onpreferences?.(update(scope(), format, { parameters })); } catch { /* leave the last valid map */ }
   }
-  function disabled(entry) { const capability = capabilityFor(local?.capabilities, entry.id); return entry.backend.includes("local") && (capability?.available !== true || !supportsOperation(local?.capabilities, entry.id, "build", "snapshot")); }
+  // "unknown" is nobody having asked yet, not a tool having been found
+  // missing. Offering the local rows then is what lets choosing one be the
+  // gesture that looks -- greying them out before the question has been put
+  // would make the pane impossible to get out of without a probe it is not
+  // entitled to make.
+  function disabled(entry) {
+    if (!entry.backend.includes("local")) return false;
+    if (local?.state === "unknown") return false;
+    const capability = capabilityFor(local?.capabilities, entry.id);
+    return capability?.available !== true || !supportsOperation(local?.capabilities, entry.id, "build", "snapshot");
+  }
   function disabledOutput(output) {
     if (preferences.backend !== "local") return format === "markdown" || format === "quarto" ? output !== "html" : false;
     const capability = capabilityFor(local?.capabilities, preferences.tool);
     return !capability || !Array.isArray(capability.outputs) || !capability.outputs.includes(output);
   }
-  const statusMessage = $derived(({ unknown: "Checking for the local companion…", unreachable: "Local companion unavailable.", denied: "Local network access was blocked by the browser.", reachable: "Local companion is running; connect this document.", unauthorized: "Connect this document to use local tools.", incompatible: "Update the local companion to use these tools.", connected: "Local companion connected." })[local?.state] || "");
+  const statusMessage = $derived(({ unknown: "The local companion has not been looked for yet.", unreachable: "Local companion unavailable.", denied: "Local network access was blocked by the browser.", reachable: "Local companion is running; connect this document.", unauthorized: "Connect this document to use local tools.", incompatible: "Update the local companion to use these tools.", connected: "Local companion connected." })[local?.state] || "");
   function version(entry) { return capabilityFor(local?.capabilities, entry.id)?.version; }
   function engineLabel(engine) { return engine === "pdflatex" ? "pdfLaTeX" : engine === "xelatex" ? "XeLaTeX" : "LuaLaTeX"; }
   const savedMissing = $derived(preferences.selection === "tool" && preferences.tool && !builders.some((entry) => entry.id === preferences.tool) ? preferences.tool : "");
@@ -70,6 +81,10 @@
     const output = !outputs.length || outputs.includes("html") ? "html" : outputs[0];
     const next = update(scope(), format, { selection: "tool", backend, tool, output, ...(engine ? { engine } : {}), ...(preset ? { preset } : {}) });
     onpreferences?.(next);
+    // Asking for a tool on this computer is asking for the local app: this is
+    // the moment the pane may reach loopback, and the capabilities that come
+    // back fill in the version and the outputs this tool really has.
+    if (backend === "local") void localBridge.probe({ force: true });
   }
   async function rescan() { try { await localBridge.capabilities({ rescan: true }); } catch { /* status explains failure */ } }
   async function connect() { try { await localBridge.connectViaApp(); } catch { /* local status carries instructions */ } }
@@ -112,10 +127,12 @@
      local either, so this pane says nothing about the companion for it. -->
 {#if format !== "latex"}<SettingRow title="Local tools" description="Refresh installed tools and companion presets.">
   <span class="setting-description" role="status">{statusMessage}</span>
-  {#if ["unknown", "unreachable", "denied"].includes(local?.state)}<button type="button" class="btn btn-sm preset-filled-primary-500" onclick={connect}>Open companion</button>{/if}
+  <!-- Launching the app is an answer to "it is not running". Before anybody
+       has looked, the only thing to offer is the looking. -->
+  {#if ["unreachable", "denied"].includes(local?.state)}<button type="button" class="btn btn-sm preset-filled-primary-500" onclick={connect}>Open companion</button>{/if}
   {#if ["unauthorized", "reachable"].includes(local?.state)}<button type="button" class="btn btn-sm preset-filled-primary-500" onclick={connect}>Connect</button>{/if}
   {#if local?.state !== "connected"}<a class="btn btn-sm preset-outlined-surface-300-700" href="https://github.com/LibrePaper/librepaper/releases/latest" target="_blank" rel="noreferrer">Install companion</a>{/if}
-  <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void localBridge.retry()}>Retry</button>
+  <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void localBridge.retry()}>{local?.state === "unknown" ? "Look for it" : "Retry"}</button>
   <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={local?.state !== "connected"} onclick={rescan}>Rescan</button>
 </SettingRow>{/if}
 

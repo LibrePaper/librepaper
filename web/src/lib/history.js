@@ -156,38 +156,6 @@ function windowAround(text, start, end, context) {
   };
 }
 
-/// How much a checkpoint changed the document's size relative to its parent,
-/// for the density bar beside its row. `null` when there is nothing to draw:
-/// no parent, an unlisted parent, or either end missing its `size`. The width
-/// is scaled by the logarithm of the change, not the change itself, because a
-/// five-byte fix and a five-kilobyte paste are both worth a bar and neither
-/// should swallow the other -- the log keeps a small edit visible and a large
-/// one from running off the sidebar. `grew` says which theme colour the bar
-/// takes; the width is already rounded to a whole pixel, and the label reads
-/// the way a diff stat does.
-const SIZE_BAR_MIN = 2;
-const SIZE_BAR_MAX = 48;
-// Where the log scale saturates: a checkpoint that changed the document by
-// this many bytes or more draws the widest bar. Fifty kilobytes is a lot of
-// prose to add or remove in one sitting.
-const SIZE_BAR_SATURATION = Math.log2(50_000);
-export function sizeDelta(point, checkpoints) {
-  if (!point?.parent || typeof point.size !== "number") return null;
-  const parent = (checkpoints || []).find((candidate) => candidate.sha === point.parent);
-  if (!parent || typeof parent.size !== "number") return null;
-  const delta = point.size - parent.size;
-  if (!delta) return null;
-  const magnitude = Math.log2(Math.abs(delta) + 1);
-  const width = Math.round(
-    Math.max(SIZE_BAR_MIN, Math.min(SIZE_BAR_MAX, (magnitude / SIZE_BAR_SATURATION) * SIZE_BAR_MAX)),
-  );
-  return {
-    grew: delta > 0,
-    width,
-    title: `${delta > 0 ? "+" : "−"}${Math.abs(delta)} byte${Math.abs(delta) === 1 ? "" : "s"}`,
-  };
-}
-
 /// The order the manifest is read in, oldest first. The server writes a
 /// sequence number and a timestamp, and two checkpoints can share a
 /// timestamp, so the sequence decides first and the digest breaks the last

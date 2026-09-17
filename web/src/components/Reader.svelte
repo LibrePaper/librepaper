@@ -1102,7 +1102,13 @@
   function setTracking(on) {
     if (!editor) return;
     if (on) editor.startTracking(); else editor.stopTracking();
-    tracking = Boolean(on);
+    // What the editor actually did, not what was asked of it. Switching on
+    // needs a branch to fork into, and a switch that reads on while typing
+    // still reaches the paper is worse than one that refuses to move.
+    tracking = editor.trackingOn?.() ?? Boolean(on);
+    if (on && !tracking) {
+      say("Track changes could not be turned on: this document is not connected for editing.", { kind: "problem", id: "reader:tracking" });
+    }
   }
 
   /// Look at a hunk: open the file it belongs to, put the caret where it
@@ -1157,6 +1163,17 @@
           if (decoded) openProposals.set(decoded.id, decoded);
         }
         recomputeReview();
+      } else if (event.type === "proposal-changed") {
+        // One branch has appeared or moved. The whole list is not resent for
+        // it -- that would carry everyone else's branch bytes on every
+        // keystroke somebody types -- so it is merged in here and the queue
+        // recomputed, which is what puts a tracked edit on screen while it is
+        // still being written.
+        const decoded = decodeProposal(event.proposal);
+        if (decoded) {
+          openProposals.set(decoded.id, decoded);
+          recomputeReview();
+        }
       } else if (event.type === "proposal-decided" && event.resolved) {
         // A proposal leaves the queue when it resolves, not when one of its
         // hunks is answered: until every hunk has an answer the document has
@@ -3270,11 +3287,14 @@
   <Menu.Item value="preview-file" class="menuitem" disabled={!canPreviewFile}>Preview this file</Menu.Item>
   <hr class="hr my-1" />
   {@render previewItems()}
-  {#if mayEdit}
+  {#if localExecutionRelevant}
     <!-- Off for every document every time it is opened, including one
          somebody else shared: what a document may run on this computer is
          answered by the person sitting at it, in this session, and is never
-         remembered or carried by the document. -->
+         remembered or carried by the document. Offered only where it means
+         something: a LaTeX or HTML document has no local tool that runs it,
+         so the item would warn about arbitrary code execution and then do
+         nothing at all. -->
     <div class="menu-section-label">Local execution</div>
     <Menu.Item value="local-execution" class="menuitem">
       <span class="w-4">{localExecution ? "✓" : ""}</span>Execute code locally
@@ -3518,7 +3538,7 @@
       {:else if Editor && session?.text}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} editable={mayEdit}
-                  send={collaboration?.sendLive} {review} {reviewing} {tracking}
+                  send={collaboration?.sendLive} {review} {reviewing}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; }} />
         {/key}

@@ -49,6 +49,18 @@ pub struct Proposal {
     pub tip: Frontiers,
 }
 
+/// One stored proposal in the shape the wire uses, so that a client sent the
+/// whole list and a client sent a single change are reading the same fields.
+fn summarize(p: &crate::storage::postgres::StoredProposal) -> serde_json::Value {
+    serde_json::json!({
+        "id": p.id.to_string(),
+        "author": p.author,
+        "base": super::encode_update(&p.base_frontiers),
+        "tip": super::encode_update(&p.tip_frontiers),
+        "branch": super::encode_update(&p.branch_bytes),
+    })
+}
+
 /// What went wrong deciding one.
 #[derive(Debug)]
 pub enum ProposalError {
@@ -481,18 +493,35 @@ impl super::Room {
             .open_proposals(document)
             .await
             .map_err(|error| ProposalError::Failed(error.to_string()))?;
-        Ok(open
-            .into_iter()
-            .map(|p| {
-                serde_json::json!({
-                    "id": p.id.to_string(),
-                    "author": p.author,
-                    "base": super::encode_update(&p.base_frontiers),
-                    "tip": super::encode_update(&p.tip_frontiers),
-                    "branch": super::encode_update(&p.branch_bytes),
-                })
-            })
-            .collect())
+        Ok(open.iter().map(summarize).collect())
+    }
+
+    /// One proposal, as the list would have described it.
+    ///
+    /// A branch that has just been opened or added to is news: until somebody
+    /// is told, the author is typing into a fork nobody can see -- including
+    /// their own browser, which draws the queue from what the server says is
+    /// open. Sending the whole list on every flush would carry everyone else's
+    /// branch bytes with it, so the one that changed travels alone, in the
+    /// same shape, and the client merges it into the list it already has.
+    ///
+    /// `None` once the proposal is no longer pending: a decided branch is not
+    /// something to put back into a reviewer's queue.
+    pub(crate) async fn proposal_summary(
+        &self,
+        id: &str,
+    ) -> Result<Option<serde_json::Value>, ProposalError> {
+        let (catalog, _) = self.catalog_and_document()?;
+        let id = uuid::Uuid::parse_str(id)
+            .map_err(|_| ProposalError::Failed("that is not a proposal".into()))?;
+        let stored = catalog
+            .proposal(id)
+            .await
+            .map_err(|error| ProposalError::Failed(error.to_string()))?;
+        Ok(stored
+            .filter(|p| p.status == "pending")
+            .as_ref()
+            .map(summarize))
     }
 
     /// Records one hunk decision, and resolves the proposal once every hunk has

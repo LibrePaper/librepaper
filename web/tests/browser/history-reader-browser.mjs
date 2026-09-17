@@ -113,12 +113,6 @@ try {
   await tab.resize(1400, 900); await tab.navigate(`${origin}/docs/paper`);
   await until("initial current source", () => tab.evaluate(`document.querySelector('.cm-content')?.textContent.includes('current purple')`), 10000);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
-  // Six versions in five minutes is one sitting, and more of them than the
-  // day's feed will list, so it is opened onto its own axis first. That is
-  // the panel's own drill-down and is checked properly in
-  // history-panel-browser.mjs; here it is just the way to the rows.
-  await until("the day's sittings", () => tab.evaluate(`Boolean(document.querySelector('.sitting'))`), 10000);
-  await tab.evaluate(`document.querySelector('.sitting-open')?.click()`);
   await until("checkpoint timeline", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[1].sha}"]'))`), 10000);
   const select = async index => {
     const sha = points[index].sha;
@@ -149,16 +143,20 @@ try {
   await select(2); await expectDiff(sources[2], current);
   await select(0); await expectDiff(sources[0], current);
   console.log("history reader: repeated checkpoint selection updates both source endpoints");
-  await tab.evaluate(`document.querySelector('.timeline-now .timeline-point').click()`);
+  await tab.evaluate(`document.querySelector('.day-now .timeline-point').click()`);
   await until('current source alone', () => tab.evaluate(`document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
   await select(1); await expectDiff(sources[1], current);
   console.log('history reader: the current row, and a version against it');
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="Files"]').click()`);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
   await until('reopening history starts at the current source', () => tab.evaluate(`document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
+  // The last three of these are autosaves in a row, which the panel gathers
+  // into one entry; opening it is how the rest of them are reached. That
+  // coarsening is the panel's own and is checked in history-panel-browser.mjs.
+  await tab.evaluate(`document.querySelector('.run-head')?.click()`);
   await select(5);
   await expectDiff(sources[5], current);
-  console.log('history reader: every version is a row of its own');
+  console.log('history reader: every version is reachable, gathered or not');
 
   failed.add(points[0].sha);
   await select(0);

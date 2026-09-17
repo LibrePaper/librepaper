@@ -6,6 +6,8 @@ const registry = await read("registry.js");
 const local = await read("LocalAppSettings.svelte");
 const storage = await read("StorageSettings.svelte");
 const rendering = await read("RenderingSettings.svelte");
+const build = await read("BuildSettings.svelte");
+const reader = await readFile(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
 
 // The local pairing surface is shared by the formats that have a local
 // builder. Keep this check close to the components because a LaTeX-only gate
@@ -46,4 +48,21 @@ assert.doesNotMatch(registry, /GROUPS|group:/);
 assert.match(registry, /id: "build",[\s\S]*?note: "Only this browser and user\."/);
 assert.match(registry, /id: "local",[\s\S]*?note: "The LibrePaper app running on this computer\."/);
 
-console.log("settings-quarto: Quarto exposes the shared local pairing and doctor panel without LaTeX controls; storage, groups and render options are as expected");
+// Choosing a build tool is mostly a browser question -- which engine, which
+// output -- and opening this pane must not make the browser ask to allow the
+// site "access to other apps and services". Nothing here probes on mount;
+// picking a local tool is what looks, and until somebody has looked the local
+// rows are offered rather than greyed out as unavailable.
+assert.doesNotMatch(build, /\$effect\([^)]*localBridge\.probe/);
+assert.match(build, /if \(backend === "local"\) void localBridge\.probe\(\{ force: true \}\);/);
+assert.match(build, /if \(local\?\.state === "unknown"\) return false;/);
+assert.match(build, /unknown: "The local companion has not been looked for yet\."/);
+
+// "Execute code locally" is offered only where a local tool actually runs the
+// document. On LaTeX or HTML it warned about arbitrary code execution and then
+// did nothing, which is a local-app question asked of somebody who never posed
+// one.
+assert.match(reader, /const localExecutionRelevant = \$derived\(\["quarto", "typst"\]\.includes\(sourceFormat\) && mayEdit\);/);
+assert.match(reader, /\{#if localExecutionRelevant\}[\s\S]{0,900}?Execute code locally/);
+
+console.log("settings-quarto: Quarto exposes the shared local pairing and doctor panel without LaTeX controls; the build pane and the local-execution item reach for the companion only when asked; storage, groups and render options are as expected");

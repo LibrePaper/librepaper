@@ -1,9 +1,13 @@
-// Browser regression check for the real history panel, which narrows three
-// times and never shows two of the steps at once: a month that chooses a day,
-// a day that is the sittings somebody had rather than twenty-four hours of
-// mostly nothing, and -- only for a sitting too busy to list -- that one
-// interval on a real axis of minutes. Details belong to the chosen version
-// and to no other.
+// Browser regression check for the real history panel: a month that chooses a
+// day, and a day coarsened by significance -- a version somebody asked for is
+// always its own row, the autosaves between two of those are one row that
+// says what the run of them changed, and either opens where it stands.
+// Details belong to the chosen version and to no other, and what was written
+// and never saved is folded away behind a single line.
+//
+// The volume is the point of all of it: the server saves a version after
+// thirty seconds of quiet, so the fixtures here are small but the arrangement
+// they check is the one that has to survive two hundred of them in a day.
 //
 // The panel reads days in the reader's own timezone, so the fixture below
 // would fall on different days in different ones. The browser is launched in
@@ -16,6 +20,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { readdirSync } from "node:fs";
 import { browser, until } from "../../tools/browser-driver.mjs";
 
 process.env.TZ = "UTC";
@@ -69,12 +74,49 @@ const earlier = {
 // The writes the sittings are cut from. Nine o'clock to twenty past is one
 // sitting; forty minutes of nothing, then ten o'clock is another. The panel
 // draws no height at all for the forty minutes.
+// One version somebody asked for, set on the panel partway through, so that
+// a row with a word on it can be told from the rows without one.
+const published = {
+  sha: "f".repeat(64), at: "2026-09-11T10:20:00Z", by: "Vincent", why: "cli", label: "",
+  changed: ["main.md"],
+};
+
+// A day's writing. Three of these minutes hold no version, and are the ones
+// the panel folds away; the fourth is the minute 10:00's versions were taken
+// in, and belongs to them rather than to the folded line.
+const write = (at, changes) => ({ at, peer: "", changes, state_bytes: changes * 100, frontier: at });
 const rows = [
-  { at: "2026-09-11T09:02:00Z", peer: "", changes: 1, state_bytes: 100, frontier: "one" },
-  { at: "2026-09-11T09:20:00Z", peer: "", changes: 3, state_bytes: 300, frontier: "two" },
-  { at: "2026-09-11T10:01:00Z", peer: "", changes: 3, state_bytes: 700, frontier: "three" },
-  { at: "2026-09-11T10:04:00Z", peer: "", changes: 4, state_bytes: 1500, frontier: "four" },
+  write("2026-09-11T09:00:00Z", 2),
+  write("2026-09-11T09:02:00Z", 1),
+  write("2026-09-11T09:20:00Z", 3),
+  write("2026-09-11T10:14:00Z", 4),
 ];
+
+// Thirty autosaves a minute apart, half from each of two people, on a day too
+// big to list -- so whether they are one run or two is entirely the question
+// of whether a different person at the keyboard ends one.
+const shared = Array.from({ length: 30 }, (_, index) => ({
+  sha: String(index).padStart(64, "7"),
+  at: `2026-09-12T11:${String(index).padStart(2, "0")}:00Z`,
+  by: index % 2 ? "Anne" : "Vincent",
+  why: "quiet", label: "", changed: ["main.md"],
+}));
+
+// An afternoon of the kind the server actually produces: ninety autosaves,
+// a couple of minutes apart, with real pauses scattered through. Far past
+// what anybody reads as a list, and the day the coarsening exists for.
+const busyDay = Array.from({ length: 90 }, (_, index) => {
+  const minute = 540 + index * 2 + (index % 17 === 0 ? 6 : 0);
+  return {
+    sha: String(index).padStart(64, "b"),
+    at: `2026-09-13T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00Z`,
+    by: "Vincent", why: "quiet", label: "", changed: ["main.tex"],
+  };
+});
+
+// A day somebody wrote on and saved nothing from, which the month has to mark
+// because it has no versions to count.
+const quietDay = write("2026-09-07T11:00:00Z", 5);
 
 const source = `
 import History from ${JSON.stringify(join(root, "web/src/components/reader/History.svelte"))};
@@ -85,12 +127,17 @@ const otherFilePoint = ${JSON.stringify(otherFilePoint)};
 const movedPoints = ${JSON.stringify(movedPoints)};
 const earlier = ${JSON.stringify(earlier)};
 const rows = ${JSON.stringify(rows)};
+const published = ${JSON.stringify(published)};
+const quietDay = ${JSON.stringify(quietDay)};
+const shared = ${JSON.stringify(shared)};
+const busyDay = ${JSON.stringify(busyDay)};
 const all = [...points, otherFilePoint, ...movedPoints];
 const events = [];
 const component = createClassComponent({ component: History, target: document.body, props: {
   checkpoints: all, activity: rows, canEdit: true, currentLabel: "",
   onview: (sha) => events.push(["view", sha]),
   onname: (sha, label) => events.push(["name", sha, label]),
+  onmoment: (frontier) => events.push(["moment", frontier]),
 } });
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 30)); await tick(); };
 const check = (condition, message) => { if (!condition) throw new Error(message); };
@@ -99,94 +146,107 @@ window.historyPanelCheck = async () => {
   const crumb = () => document.querySelector('.crumb-back')?.textContent.trim() ?? null;
   const cells = () => [...document.querySelectorAll('[data-history-day]')];
   const cell = (day) => cells().find((node) => node.dataset.historyDay === day);
-  const sittings = () => [...document.querySelectorAll('.sitting')];
+  const list = () => [...document.querySelectorAll('.day-row:not(.day-now)')];
+  const nowRow = () => document.querySelector('.day-row.day-now');
+  const runs = () => [...document.querySelectorAll('.day-run')];
   const text = (node) => node?.textContent.replace(/\\s+/g, ' ').trim() ?? null;
-  const shas = () => [...document.querySelectorAll('[data-sha]')].map((node) => node.dataset.sha);
+  // What a row puts in front of the eye, which is not all a row says: the
+  // word an autosave withholds from the page it still owes a screen reader.
+  const seen = (node) => [...node.querySelectorAll('.day-when, .day-what')].map(text).join(' ');
 
-  /* --------------------------------------------- one step at a time */
+  /* ----------------------------------- a day that fits is a day that is listed */
 
-  // The panel opens on the day's sittings. The month is a way back, not a
-  // grid beside them, and no clock is drawn at all until a sitting is
-  // opened: showing two of the three levels at once is the thing this
-  // arrangement exists to stop.
+  // The panel opens on a day, with the month a click above rather than a grid
+  // beside it. Five versions is a day anybody can read, so every one of them
+  // is a row -- and this is the regression guard: coarsening a day of five
+  // into one entry standing for them saved nobody anything and left a panel
+  // whose only row could not be chosen, which is the one thing it is for.
   check(!cells().length, 'the month must not be drawn beside the day');
-  check(!document.querySelector('.axis'), 'nor an axis until a sitting asks for one');
   check(crumb() === '‹ September 2026', 'the month is one click above');
+  check(list().length === 5 && !runs().length,
+    'a day that fits is listed, never gathered: '
+    + list().length + ' rows, ' + runs().length + ' runs');
+  check(!document.querySelector('.track, .sitting, .spark, .day-bar, .day-dot, .day-leader'),
+    'and nothing else: no spine, no bars, no sparklines, no markers');
+  const said = list().map(seen);
+  // Newest first: a version history is read from its end, and the last thing
+  // somebody did is what they nearly always came back for.
+  check(said.join('|') === '10:03 AM|10:02 AM|10:00 AM|10:00 AM|9:00 AM',
+    'each of them its time and nothing more, latest first: ' + said.join('|'));
+  // The live document is the head of that list rather than a banner above the
+  // month: it is what every version is compared against, and nothing is newer.
+  check(nowRow() && document.querySelector('.day-row') === nowRow(),
+    'the current version is the first row of the list');
+  check(seen(nowRow()) === 'Now Current version',
+    'and reads as a version among versions: ' + seen(nowRow()));
+  check(!document.querySelector('.now, .timeline-now'),
+    'with nothing left of the banner it used to be');
+  // It still has to name itself to a screen reader and to a tooltip.
+  const first = list()[0].querySelector('.timeline-point');
+  check(text(first.querySelector('.sr-only')) === 'Autosaved'
+    && first.title.includes('Autosaved'),
+    'what it was is said where saying it costs the eye nothing');
+  // And one somebody asked for says which, wherever it appears.
+  component.$set({ checkpoints: [...all, published] }); await flush();
+  check(seen(list()[0]) === '10:20 AM Published',
+    'a version somebody asked for says which it was: ' + seen(list()[0]));
+  component.$set({ checkpoints: all }); await flush();
 
-  /* --------------------------------------- the day is sittings, not hours */
+  /* ------------------------------ a day too big to read is coarsened */
 
-  // 09:00 and 09:02 are one sitting; 09:35 is the same one, twenty-five
-  // minutes being the longest pause that still counts; 10:00 onwards is
-  // another. Nothing is drawn for the fifty minutes nobody worked.
-  check(sittings().length === 2, 'the day is the sittings somebody had');
-  // The exact spelling of a time is the reader's locale's business; that it
-  // is the sitting's own start and end is this panel's.
-  const when = text(document.querySelector('.sitting-when'));
-  check(when && when.includes('9:00') && when.includes('9:20'),
-    'a sitting is named by when it ran, and it ran from 9:00 to 9:20: ' + when);
-  const gap = document.querySelector('.feed-gap');
-  check(text(gap) === '40m later',
-    'and the silence before the next one is a sentence, not empty space');
-  check(gap.getBoundingClientRect().height < 30,
-    'forty minutes of nothing costs one line, whatever it would cost in proportion');
+  // Ninety versions in one afternoon is what the server actually produces --
+  // it saves after thirty seconds of quiet -- and that is the day the
+  // coarsening exists for.
+  component.$set({ checkpoints: busyDay }); await flush();
+  check(!list().length && runs().length > 1,
+    'a day too big to read is its runs: ' + runs().length + ' runs, ' + list().length + ' rows');
+  check(runs().length < 10, 'a handful of them, not ninety: ' + runs().length);
+  const heads = () => [...document.querySelectorAll('.run-head')];
+  const stands = heads().map((node) => Number(text(node.querySelector('.run-what')).split(' ')[0]));
+  check(stands.every((count) => count <= 25),
+    'and no one of them stands for more than a screenful: ' + stands.join());
+  check(stands.reduce((sum, count) => sum + count, 0) === busyDay.length,
+    'with none of them dropped: ' + stands.join());
+  check(text(heads()[0].querySelector('.run-what')).endsWith('· main.tex'),
+    'a run says what the whole of it changed: ' + text(heads()[0].querySelector('.run-what')));
+  check(/\\d.*–.*\\d/.test(text(heads()[0].querySelector('.run-when'))),
+    'and when it ran: ' + text(heads()[0].querySelector('.run-when')));
 
-  // The sparse sitting lists its versions where they are; the dense one
-  // offers its own axis instead of a column of near-identical rows.
-  const first = sittings()[0];
-  const second = sittings()[1];
-  check(first.querySelectorAll('[data-sha]').length === 1,
-    'three versions or fewer are simply listed');
-  check(text(first).includes('4 writes') && text(first).includes('1 version'),
-    'under a heading that counts both what was written and what was saved');
-  check(first.querySelector('.spark') && first.querySelectorAll('.spark-bar').length === 24,
-    'with a fixed-width sparkline for the shape of it');
-  check(!second.querySelectorAll('[data-sha]').length,
-    'a sitting with more versions than that lists none of them');
-  check(second.querySelector('.sitting-open'), 'and offers to open itself instead');
-  check(text(second).includes('4 versions'));
-  check(second.getBoundingClientRect().height < 90,
-    'and a sitting is a few lines whether it ran for two minutes or two hours');
+  // Opened, a run is the versions in it -- where it stands, with the rest of
+  // the day still below rather than replaced by it. That is how a version
+  // inside one is reached, and reaching it is the point.
+  check(heads()[0].getAttribute('aria-expanded') === 'false');
+  heads()[0].click(); await flush();
+  check(heads()[0].getAttribute('aria-expanded') === 'true');
+  check(list().length === stands[0], 'opened, a run is the versions in it: ' + list().length);
+  check(document.querySelector('.day-run .day-row'), 'shown where the run stands');
+  const inside = list()[0].dataset.sha;
+  list()[0].querySelector('.timeline-point').click(); await flush();
+  check(events.some((event) => event[0] === 'view' && event[1] === inside),
+    'and choosing one asks for its comparison');
+  heads()[0].click(); await flush();
+  check(!list().length, 'and it closes again');
 
-  /* ------------------------------------- one sitting, on a real axis */
+  // A version chosen from outside a closed run opens the run it is in: a
+  // selection nobody can see is worse than none.
+  component.$set({ viewing: inside }); await flush();
+  check(document.querySelector('[data-sha="' + inside + '"]'),
+    'a version chosen from inside a closed run opens the run it is in');
+  component.$set({ viewing: '' }); await flush();
 
-  second.querySelector('.sitting-open').click(); await flush();
-  check(!sittings().length, 'the day stands down when one of its sittings is opened');
-  check(document.querySelector('.axis'), 'and that sitting gets an axis of its own');
-  check(crumb().startsWith('‹'), 'with a way back to the day');
-  check(shas().length === 4, 'every version in the sitting is on it');
-  // The window is the sitting, not the day: a quarter of an hour of axis
-  // rather than twenty-four hours of mostly nothing.
-  const labels = [...document.querySelectorAll('.axis-hour')].map((node) => node.textContent);
-  check(labels.length >= 2 && labels.length <= 12,
-    'the axis is ticked for the interval it covers, not for a whole day: ' + labels.join());
-  check(!labels.includes('3:00 AM') && !labels.includes('11:00 PM'),
-    'no hour outside the sitting is drawn at all');
-
-  // Position is time. A dot is at its own minute whatever is near it, and a
-  // label that would collide is pushed clear with a leader back to its dot.
-  const at = (node) => Number(node.style.top.replace('px', ''));
-  const dots = [...document.querySelectorAll('.axis-canvas > .day-dot')];
-  check(dots.length === 4, 'one dot per version, and only one');
-  check(at(dots[0]) === at(dots[1]),
-    'two versions in the same minute are in the same place, because place is time');
-  check(at(dots[2]) > at(dots[1]) && at(dots[3]) > at(dots[2]), 'the axis runs forwards');
-  const minute = at(dots[3]) - at(dots[2]);
-  check(minute > 2 && Math.abs((at(dots[2]) - at(dots[1])) - 2 * minute) < 0.6,
-    'and two minutes is twice as far as one: the axis is proportional, not merely ordered');
-  // The dots cannot both be at ten o'clock and both be readable, so the
-  // second label is pushed clear -- and keeps a leader back to its own dot.
-  const marks = [...document.querySelectorAll('.axis-mark')];
-  check(at(marks[1]) > at(dots[1]) + 4, 'a label that would collide is pushed clear');
-  check(document.querySelectorAll('.day-leader').length >= 1,
-    'and keeps a leader back to the dot it belongs to');
-  check(!document.querySelector('.hour'), 'no row per hour survives anywhere');
-
-  // The writes are bars beside the same axis, never rows of their own.
-  const bars = [...document.querySelectorAll('.day-bar')];
-  check(bars.length === 2, 'the writes in the sitting are bars, not events');
-  check(bars.every((node) => node.offsetWidth <= 48),
-    'and a bar stays inside its strip rather than becoming a rule across the panel');
-  check(Number(bars[0].dataset.minute) === 601 && Number(bars[1].dataset.minute) === 604);
+  // Two people writing at once is one run, and it credits neither of them.
+  // An autosave is attributed to whoever sent the last update before it
+  // fired, which on a shared document is a coin toss -- so the panel never
+  // turns that name into a claim about whose work a stretch of it was.
+  component.$set({ checkpoints: shared }); await flush();
+  const hands = [...document.querySelectorAll('.run-what')].map(text);
+  // Two, because thirty is past the ceiling -- not thirty, which is what
+  // splitting on the name would have given.
+  check(hands.length === 2 && hands.every((one) => /^15 autosaves · main\\.md$/.test(one)),
+    'thirty alternating authors are cut by the ceiling, never by the name: '
+    + hands.join(' | '));
+  check(!hands.some((one) => /Anne|Vincent/.test(one)), 'and no run credits either of them');
+  component.$set({ checkpoints: all }); await flush();
 
   /* ----------------------------------------------- one version at a time */
 
@@ -201,32 +261,56 @@ window.historyPanelCheck = async () => {
   const card = document.querySelector('.day-card');
   check(card && document.querySelectorAll('.day-card').length === 1,
     'the chosen version, and only that one, shows its details');
-  check(card.textContent.includes('3 files changed'),
-    'what it moved is in the card rather than on the axis');
+  check(text(card) === '3 files changed',
+    'an autosave says what it moved and claims no author: ' + text(card));
+  component.$set({ checkpoints: [...all, published], viewing: published.sha }); await flush();
+  check(text(document.querySelector('.day-card')).startsWith('Vincent · '),
+    'a version somebody asked for names the person who asked: '
+    + text(document.querySelector('.day-card')));
+  component.$set({ checkpoints: all }); await flush();
+  component.$set({ viewing: movedPoints[0].sha }); await flush();
   check(card.querySelector('[aria-label="Name this version"]')
     && card.querySelector('[aria-label="Copy the link to this version"]'),
     'with the actions that belong to it');
   check(!document.querySelector('[aria-label="Restore this version"]'),
     'restoring belongs to the comparison, where what it replaces is on the screen');
   component.$set({ viewing: movedPoints[1].sha }); await flush();
-  check(document.querySelector('.day-card').textContent.includes('No files changed'));
+  check(text(document.querySelector('.day-card')).includes('No files changed'));
   component.$set({ viewing: movedPoints[2].sha }); await flush();
-  check(!document.querySelector('.day-card').textContent.includes('file'),
+  check(!text(document.querySelector('.day-card')).includes('file'),
     'a version that cannot account for itself does not claim to');
-  // A version from another sitting entirely: the panel steps back up to the
-  // day rather than leaving the reader on a sitting that does not hold what
-  // they are comparing.
   component.$set({ viewing: otherFilePoint.sha }); await flush();
-  check(!document.querySelector('.axis') && sittings().length === 2,
-    'choosing a version outside the open sitting steps back up to the day');
-  check(document.querySelector('.day-card').textContent.includes('references.bib'),
+  check(text(document.querySelector('.day-card')).includes('references.bib'),
     'one moved file is named, without its directory');
   component.$set({ viewing: '' }); await flush();
 
-  /* ------------------------------------------------ back up the steps */
+  /* -------------------------------------------- everything not saved */
+
+  // There are always far more of these than there are versions, and none of
+  // them is what the panel was opened for -- so they are one folded line, and
+  // the times inside it only when somebody asks.
+  const more = () => document.querySelector('.unsaved-more');
+  check(more() && more().getAttribute('aria-expanded') === 'false',
+    'what was never saved is folded away');
+  check(text(more()).endsWith('3 moments not saved as a version'),
+    'and counted: ' + text(more()));
+  check(!document.querySelector('.unsaved-row'),
+    'with none of the times built until it is opened');
+  more().click(); await flush();
+  const moments = [...document.querySelectorAll('.unsaved-row')];
+  check(moments.map(text).join() === '10:14 AM,9:20 AM,9:02 AM',
+    'opened, it is the minutes nobody saved, latest first: ' + moments.map(text).join());
+  check(more().getAttribute('aria-expanded') === 'true');
+  moments[0].click(); await flush();
+  check(events.some((event) => event[0] === 'moment' && event[1] === rows[3].frontier),
+    'and each opens the document as it stood then');
+  more().click(); await flush();
+  check(!document.querySelector('.unsaved-row'), 'and it folds again');
+
+  /* ------------------------------------------------ back up to the month */
 
   document.querySelector('.crumb-back').click(); await flush();
-  check(!document.querySelector('.feed'), 'and the day stands down when the month does');
+  check(!list().length && !runs().length, 'the day stands down when the month comes back');
   check(cells().length % 7 === 0 && cells().length > 28, 'the month is whole weeks');
   check(cell('2026-09-01') && cell('2026-09-30'), 'and the whole month');
   // September 2026 begins on a Tuesday, so the grid runs on into August and
@@ -239,14 +323,16 @@ window.historyPanelCheck = async () => {
   check(count('2026-09-09') === '1' && count('2026-09-10') === '4' && count('2026-09-11') === '5',
     'and the number of versions that landed on it');
   check(count('2026-09-08') === null, 'a day nothing happened on carries no number');
-  // A day is a date on the panel's ground, not a filled box: the mark under
-  // it is the activity, and a day nobody touched draws nothing at all.
-  const activity_ = (day) => cell(day)?.querySelector('.cal-mark');
-  check(activity_('2026-09-10')?.dataset.level === '4',
-    'a day is marked by how much was written on it');
-  check(activity_('2026-09-09')?.dataset.level === '1');
-  check(!activity_('2026-09-08'), 'and a day nobody touched is marked not at all');
-  check(cell('2026-09-08').classList.contains('cal-quiet'), 'it recedes instead');
+  // A day written on that nothing was saved from has no number to show, so it
+  // is marked instead -- otherwise there would be no way to find one, because
+  // the day below is a list of versions.
+  component.$set({ activity: [...rows, quietDay] }); await flush();
+  check(cell('2026-09-07').querySelector('.cal-mark'), 'a day written on and never saved is marked');
+  check(count('2026-09-07') === null, 'with no count, because it has no versions');
+  check(!cell('2026-09-11').querySelector('.cal-mark'),
+    'and a day that does have versions is not marked twice');
+  check(!cell('2026-09-08').querySelector('.cal-mark'), 'nor a day nobody touched at all');
+  component.$set({ activity: rows }); await flush();
   check(cell('2026-09-11').getAttribute('aria-pressed') === 'true',
     'the day that was open is the day the month opens on');
 
@@ -274,7 +360,7 @@ window.historyPanelCheck = async () => {
   check(names.join() === 'Earlier draft,Submitted draft',
     'the named versions are the one way in that is not a date');
   document.querySelectorAll('.names-row')[0].click(); await flush();
-  check(!document.querySelector('.cal-grid') && document.querySelector('.feed'),
+  check(!document.querySelector('.cal-grid') && (list().length || runs().length),
     'opening one drills straight into its day');
   check(events.some((event) => event[0] === 'view' && event[1] === points[0].sha),
     'and asks for its comparison');
@@ -285,6 +371,11 @@ window.historyPanelCheck = async () => {
   /* -------------------------------------------------------- the present */
 
   component.$set({ viewing: '' }); await flush();
+  // The live document is a row in the day, so the month -- which is a day
+  // picker and nothing else -- does not carry it.
+  check(!nowRow(), 'the month step is days, and the present is not one of them');
+  cell('2026-09-11').click(); await flush();
+  check(nowRow(), 'and it is back at the head of the list the moment a day is open');
   const currentName = document.querySelector('[aria-label="Name the current version"]');
   check(currentName, 'current version has a naming action'); currentName.click(); await flush();
   const input = document.querySelector('[aria-label="Name the current version"]');
@@ -304,10 +395,31 @@ let tab;
 try {
   await build({ configFile: false, root: join(root, "web"), plugins: [svelte()], logLevel: "error",
     build: { outDir: output, emptyOutDir: true, lib: { entry, formats: ["es"], fileName: () => "history-panel-check.js" } } });
+  // The built shell's stylesheet carries the theme -- every colour and step
+  // of spacing the panel uses is a custom property defined there.
+  const built = join(root, "web/dist/assets");
+  const theme = readdirSync(built)
+    .filter((name) => name.endsWith(".css"))
+    .map((name) => readFileSync(join(built, name), "utf8"))
+    .filter((text) => text.includes("--color-sidebar"))
+    .join("\n");
+  if (!theme) throw new Error("no built theme stylesheet: run `bun run build` in web/ first");
   server = createServer((request, response) => {
+    if (request.url === "/theme.css") {
+      response.setHeader("Content-Type", "text/css");
+      return response.end(theme);
+    }
     const file = join(output, request.url.slice(1));
-    if (request.url !== "/" && existsSync(file)) { response.setHeader("Content-Type", "text/javascript"); response.end(readFileSync(file)); return; }
-    response.setHeader("Content-Type", "text/html"); response.end('<body><script type="module" src="/history-panel-check.js"></script></body>');
+    if (request.url !== "/" && existsSync(file)) {
+      response.setHeader("Content-Type", request.url.endsWith(".css") ? "text/css" : "text/javascript");
+      response.end(readFileSync(file));
+      return;
+    }
+    response.setHeader("Content-Type", "text/html");
+    response.end('<!doctype html><html data-theme="librepaper"><head>'
+      + '<link rel="stylesheet" href="/theme.css"><link rel="stylesheet" href="/style.css">'
+      + '<style>body{margin:0;width:340px}</style></head>'
+      + '<body><script type="module" src="/history-panel-check.js"></script></body></html>');
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address();
@@ -316,7 +428,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("history panel component", () => tab.evaluate("Boolean(window.historyPanelCheck)"));
   assert.equal(await tab.evaluate("window.historyPanelCheck()"), true);
-  console.log("history panel: month, sittings, one sitting's minutes -- one step at a time");
+  console.log("history panel: a month, a day coarsened by significance, and everything unsaved folded away");
 } finally {
   await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
 }

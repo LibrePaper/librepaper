@@ -30,6 +30,36 @@ async fn send_outgoing(tx: &Sender, outgoing: Outgoing) -> Result<(), ()> {
     send_outgoing_with_timeout(tx, outgoing, SOCKET_WRITE_TIMEOUT).await
 }
 
+/// Tells everyone editing that a branch has appeared or moved.
+///
+/// A proposal is written down when it opens and again on every flush, and
+/// until this goes out nobody is looking at it: a client builds its review
+/// queue from what the server says is open, so an unannounced branch is a
+/// change that was recorded and never shown -- to the author as much as to
+/// anyone else, since their own panel is drawn from the same list.
+///
+/// The author is included rather than skipped. They hold the branch, but not
+/// the name the server gave it or the list it belongs to, and answering their
+/// own change has to name a tip the server agrees with.
+///
+/// Best effort: the write has already happened, and a proposal that cannot be
+/// read back is no reason to fail the flush. The next announcement, or the
+/// list a client is handed when it joins, carries the same branch.
+async fn announce_proposal(room: &Room, id: &str) {
+    let Ok(Some(proposal)) = room.proposal_summary(id).await else {
+        return;
+    };
+    room.broadcast_editors_except(
+        None,
+        &json!({
+            "type": "proposal-changed",
+            "proposal": proposal,
+            "version": 1, "protocol": "librepaper.room.v1",
+        }),
+    )
+    .await;
+}
+
 async fn send_outgoing_with_timeout(
     tx: &impl OutgoingSink,
     outgoing: Outgoing,
@@ -790,12 +820,15 @@ impl Server {
                                     .open_suggestion(&by, &anchor.path, at, &anchor.exact, &proposed)
                                     .await
                                 {
-                                    Ok(id) => json!({
-                                        "type": "proposal-opened", "proposal_id": id,
-                                        "suggested": true,
-                                        "request_id": incoming.request_id,
-                                        "version": 1, "protocol": "librepaper.room.v1",
-                                    }),
+                                    Ok(id) => {
+                                        announce_proposal(&room, &id).await;
+                                        json!({
+                                            "type": "proposal-opened", "proposal_id": id,
+                                            "suggested": true,
+                                            "request_id": incoming.request_id,
+                                            "version": 1, "protocol": "librepaper.room.v1",
+                                        })
+                                    }
                                     Err(error) => refuse(error),
                                 }
                             }
@@ -815,11 +848,14 @@ impl Server {
                                     continue 'reader;
                                 };
                                 match room.open_proposal(&by, &base).await {
-                                    Ok(id) => json!({
-                                        "type": "proposal-opened", "proposal_id": id,
-                                        "request_id": incoming.request_id,
-                                        "version": 1, "protocol": "librepaper.room.v1",
-                                    }),
+                                    Ok(id) => {
+                                        announce_proposal(&room, &id).await;
+                                        json!({
+                                            "type": "proposal-opened", "proposal_id": id,
+                                            "request_id": incoming.request_id,
+                                            "version": 1, "protocol": "librepaper.room.v1",
+                                        })
+                                    }
                                     Err(error) => refuse(error),
                                 }
                             }
@@ -834,12 +870,15 @@ impl Server {
                                     continue 'reader;
                                 };
                                 match room.update_proposal(&incoming.proposal_id, &tip, &branch).await {
-                                    Ok(()) => json!({
-                                        "type": "proposal-updated",
-                                        "proposal_id": incoming.proposal_id,
-                                        "request_id": incoming.request_id,
-                                        "version": 1, "protocol": "librepaper.room.v1",
-                                    }),
+                                    Ok(()) => {
+                                        announce_proposal(&room, &incoming.proposal_id).await;
+                                        json!({
+                                            "type": "proposal-updated",
+                                            "proposal_id": incoming.proposal_id,
+                                            "request_id": incoming.request_id,
+                                            "version": 1, "protocol": "librepaper.room.v1",
+                                        })
+                                    }
                                     Err(error) => refuse(error),
                                 }
                             }

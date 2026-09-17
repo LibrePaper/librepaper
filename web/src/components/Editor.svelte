@@ -119,11 +119,12 @@
   import { DIRECTORY_ORIGIN } from "../lib/project-session.js";
   import { untrack } from "svelte";
 
+  // Whether what is typed here goes into a proposal rather than into the paper
+  // is not a prop. It is `startTracking`/`stopTracking`, and the answer lives
+  // in the proposals API: a branch is opened the moment it is switched on and
+  // the binding is rebuilt against that branch in the same call, before any
+  // prop could have arrived (§3.3).
   let { session, format = "", file = "", keys = "default", editable = true,
-    // Whether what is typed here goes into a proposal rather than into the
-    // paper. A branch is opened the moment it is switched on, and the editor
-    // binds to that branch's copy of the file (§3.3).
-    tracking = false,
     analyze = analyzeBibliography, send = null, onproposal = null,
     // What is being proposed for this document, and which hunk of it the
     // reviewer is looking at. `review` is the list the Reader keeps from
@@ -150,9 +151,16 @@
   /// to run again after one.
   function drawProposals() {
     if (!view) return;
+    // Not this browser's own draft. While one is open the binding is attached
+    // to the branch, so what the author typed is the text in front of them;
+    // painting their own hunks over it would strike through words that are no
+    // longer there and show every insertion a second time. It is still a row
+    // in the Changes panel, which is where an author reads back what they
+    // have proposed.
+    const mine = proposals?.drafting?.() ? proposals.id() : "";
     view.dispatch({
       effects: setProposalMarks.of({
-        proposals: review || [],
+        proposals: mine ? (review || []).filter((one) => one.id !== mine) : review || [],
         showing,
         selected: reviewing,
       }),
@@ -169,6 +177,10 @@
   let proposals = null;
   $effect(() => {
     if (!send || !session) return;
+    // Never over a branch somebody is typing into: replacing the API would
+    // orphan the fork, which is still holding unflushed work and would have
+    // nothing left to flush it.
+    if (proposals?.drafting?.()) return;
     proposals = createProposals({
       session,
       send: (message) => send?.(message),
@@ -192,6 +204,32 @@
     show(id);
   }
 
+  // A branch lives in this browser until it is flushed, and nothing that is
+  // only here can be reviewed -- not by a coauthor, and not by the author,
+  // whose own queue is drawn from what the server says is open. So typing
+  // sends: after a pause long enough that a keystroke is not a round trip,
+  // and short enough that the Changes panel keeps up with the sentence being
+  // written.
+  const PROPOSAL_FLUSH_MS = 400;
+  let proposalFlushTimer = null;
+  function scheduleProposalFlush() {
+    if (!proposals?.drafting?.()) return;
+    clearTimeout(proposalFlushTimer);
+    proposalFlushTimer = setTimeout(() => {
+      proposalFlushTimer = null;
+      proposals?.flush?.();
+    }, PROPOSAL_FLUSH_MS);
+  }
+
+  /// Whether a branch is open here, which is the only truthful answer to
+  /// "is track changes on". The switch in the Changes panel reads it back
+  /// rather than assuming it got what it asked for: without a socket to send
+  /// a proposal on there is nothing to fork into, and a switch that shows on
+  /// while every keystroke goes into the paper is the worst of both.
+  export function trackingOn() {
+    return Boolean(proposals?.drafting?.());
+  }
+
   /// Start proposing rather than editing. Forks the document, and from here
   /// what is typed accumulates on the branch and is flushed to the server
   /// instead of reaching the paper.
@@ -208,8 +246,17 @@
   /// goes up before the local branch is let go.
   export function stopTracking() {
     if (!proposals || !proposals.drafting()) return;
+    // Whatever the pause timer was about to send goes now, in this call,
+    // rather than after the branch has been let go.
+    clearTimeout(proposalFlushTimer);
+    proposalFlushTimer = null;
     proposals.flush();
+    // The manager is keyed by the document it takes back operations on, and
+    // that document is about to be destroyed. Dropping it here keeps one
+    // dead manager per tracking session from accumulating in the map.
+    const branch = proposals.doc();
     proposals.stop();
+    if (branch) undoManagers.delete(branch);
     rebind();
   }
 
@@ -526,7 +573,7 @@
   export function editAvailability() {
     if (!view) return {};
     const selected = !view.state.selection.main.empty;
-    const manager = undoManagers.get(session.doc);
+    const manager = undoManagers.get(boundDoc());
     return {
       undo: editable && (manager?.canUndo?.() ?? false),
       redo: editable && (manager?.canRedo?.() ?? false),
@@ -741,9 +788,10 @@
     // document and merges everything within a second: without the exclusion,
     // creating a file and typing into it are one undo step, and taking it
     // back deletes the file.
-    const undoManager = undoManagers.get(session.doc)
-      || new UndoManager(session.doc, { excludeOriginPrefixes: [DIRECTORY_ORIGIN] });
-    undoManagers.set(session.doc, undoManager);
+    const bound = boundDoc();
+    const undoManager = undoManagers.get(bound)
+      || new UndoManager(bound, { excludeOriginPrefixes: [DIRECTORY_ORIGIN] });
+    undoManagers.set(bound, undoManager);
 
     // Who the caret belongs to. The session publishes {name, color, tab}; the
     // binding wants {name, colorClassName}, and paints through a class rather
@@ -817,14 +865,18 @@
         // is bound to one text at a time (the one in 'showing'), and the
         // getTextFromDoc function returns that text. Multiple editors may be
         // open on different files at once; they all share the same LoroDoc.
-        LoroExtensions(session.doc, session.ephemeral && { user: { name: userName, colorClassName }, ephemeral: session.ephemeral }, undoManager, () => text),
+        LoroExtensions(bound, session.ephemeral && { user: { name: userName, colorClassName }, ephemeral: session.ephemeral }, undoManager, () => text),
         EditorView.updateListener.of((update) => {
           // A document change clears the proposal decorations, because the
           // offsets they were placed at have moved. Drawing them again from
           // the hunks is the only honest way back, and it has to happen after
           // the transaction rather than inside it.
           if (update.docChanged && (review || []).length) queueMicrotask(drawProposals);
-          if (update.docChanged) onchange?.();
+          if (update.docChanged) {
+            onchange?.();
+            // What was typed went into the branch, not the paper. Send it.
+            scheduleProposalFlush();
+          }
           // Only a deliberate move counts: typing moves the caret constantly,
           // and scrolling the document on every keystroke would make the
           // preview unreadable.
@@ -862,16 +914,33 @@
     });
   }
 
-  // Get the text for a file, from either the proposal or the room document
-  // depending on whether tracking is enabled.
+  // Get the text for a file, from either the branch being drafted or the room
+  // document.
+  //
+  // The test is whether a branch is open, not what the `tracking` prop says.
+  // `startTracking` forks and rebinds in one call, and the prop that reports
+  // the switch has not reached this component by then -- reading it here bound
+  // the editor to the room's text with tracking on, so every keystroke went
+  // into the paper and the branch stayed empty. Which is what "track changes
+  // records nothing" looked like.
   function getTextFromDoc(id) {
-    // When tracking is on and a proposal is active, get the text from the proposal
-    if (tracking && proposals) {
+    if (proposals?.drafting?.()) {
       const proposalText = proposals.text(id);
       if (proposalText) return proposalText;
     }
-    // Otherwise get from the room document
     return session.textOf?.(id) || (id === session.mainId?.() ? session.text : null);
+  }
+
+  /// The document the binding belongs to: the branch while one is being
+  /// drafted, the room's otherwise.
+  ///
+  /// The binding commits this document after writing into the text it was
+  /// given, and applies to the view whatever arrives in it. Handing it the
+  /// room's document while the text is the branch's leaves the branch's
+  /// operations uncommitted and paints a coauthor's edit into a text that has
+  /// not got it.
+  function boundDoc() {
+    return proposals?.drafting?.() ? proposals.doc() || session.doc : session.doc;
   }
 
   /// Shows a file, keeping the state of the one being left. The view is made
@@ -954,6 +1023,13 @@
       return () => {
         bibliographyGeneration += 1;
         clearTimeout(bibliographyTimer);
+        // A pause that the editor going away cut short is still work somebody
+        // did, so it goes up on the way out rather than with the view.
+        if (proposalFlushTimer) {
+          clearTimeout(proposalFlushTimer);
+          proposalFlushTimer = null;
+          proposals?.flush?.();
+        }
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         if (view) viewCallbacks.delete(view);
         view?.destroy();

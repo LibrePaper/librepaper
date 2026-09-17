@@ -226,6 +226,25 @@ export function createProposals({ session, send, mayEdit }) {
       return Boolean(proposal);
     },
 
+    /// The name the server gave this browser's branch, or `""` before the
+    /// reply to `proposal-open` has arrived. What it is for: the author is
+    /// typing into the branch, so the diff between base and tip is already on
+    /// their screen as ordinary text, and drawing it over itself would show
+    /// every insertion twice. The editor asks for this to leave its own
+    /// draft out of what it paints.
+    id() {
+      return proposal?.id || "";
+    },
+
+    /// The branch itself, or `null` when nothing is being drafted.
+    ///
+    /// The editor's binding needs it, not just the text inside it: a binding
+    /// commits the document it was given and applies what arrives in it, and
+    /// while somebody is drafting, that document is the fork.
+    doc() {
+      return proposal?.branch || null;
+    },
+
     // Get the text at a file id from the branch. The caller types into it.
     text(fileId) {
       if (!proposal) return null;
@@ -237,6 +256,13 @@ export function createProposals({ session, send, mayEdit }) {
     // Send the branch to the server, and say where its tip now is.
     flush() {
       if (!proposal) return;
+
+      // The binding writes into the branch's text but commits the room
+      // document -- it was handed one doc and a getter for the other -- so the
+      // branch is carrying uncommitted operations by the time we get here.
+      // Committing them is what makes `frontiers()` below name the text the
+      // author can see.
+      proposal.branch.commit();
 
       // Everything since the fork, not everything since the last flush.
       //

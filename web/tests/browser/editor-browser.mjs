@@ -289,6 +289,59 @@ window.collabCacheCheck = async () => {
     sessions.forEach((value) => value.leave());
   }
 };
+// Track changes, end to end through the component: switching it on has to
+// take the keystrokes out of the paper and put them on a branch, and that
+// branch has to reach the socket while the author is still typing. Both of
+// those were broken -- the binding was rebuilt while the prop that said
+// "tracking" had not arrived yet, so every tracked keystroke went straight
+// into the document, and nothing flushed until tracking was switched off.
+window.trackingCheck = async () => {
+  const sent = [];
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const id = value.addText("tracked.md", "alpha");
+  value.setMain(id);
+  const host = document.createElement("section");
+  document.body.append(host);
+  const tracked = createClassComponent({
+    component: Editor,
+    target: host,
+    props: {
+      session: value, format: "markdown", file: id, editable: true,
+      send: (message) => { sent.push(message); return true; },
+    },
+  });
+  await tick();
+  tracked.startTracking();
+  await tick();
+  const on = tracked.trackingOn();
+  const opened = sent.some((message) => message.type === "proposal-open");
+  // The server is what names a branch, and an update has nothing to address
+  // itself to until it has.
+  tracked.receiveProposal({ type: "proposal-opened", proposal_id: "p1" });
+  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  view.dispatch({ changes: { from: 0, insert: "TRACKED " } });
+  // Longer than the flush pause: the point of the check is that typing sends,
+  // without anything else having to happen.
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const update = sent.find((message) => message.type === "proposal-update");
+  const shown = view.state.doc.toString();
+  const paper = value.textOf(id).toString();
+  tracked.stopTracking();
+  await tick();
+  const off = tracked.trackingOn();
+  const afterStop = value.textOf(id).toString();
+  const back = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  back.dispatch({ changes: { from: 0, insert: "DIRECT " } });
+  await tick();
+  const direct = value.textOf(id).toString();
+  tracked.$destroy();
+  host.remove();
+  value.leave();
+  return {
+    on, off, opened, shown, paper, afterStop, direct,
+    flushed: Boolean(update && update.proposal_id === "p1" && update.update),
+  };
+};
 window.diagnosticsCheck = async () => {
   const host = document.createElement("aside");
   document.body.append(host);
@@ -350,10 +403,10 @@ window.diagnosticsCheck = async () => {
 
 // Switching Vim keys on and off must reconfigure the view in place: the same
 // EditorView, with the undo history it had.
-// The history panel for a document nobody has checkpointed: the sittings its
-// writes fall into, the bars they become once one of those sittings is
-// opened, and arrow keys that move the month without a mouse. The version
-// side of the same panel is checked in history-panel-browser.mjs.
+// The history panel for a document nobody has checkpointed: a month that
+// marks the days somebody wrote on, and days that are nothing but the minutes
+// nobody saved -- plus arrow keys that move the month without a mouse. The
+// version side of the same panel is checked in history-panel-browser.mjs.
 window.activityCheck = async () => {
   const host = document.createElement("aside");
   document.body.append(host);
@@ -361,15 +414,15 @@ window.activityCheck = async () => {
   const rows = [
     { at: "2026-09-14T09:05:00Z", peer: "", changes: 2, state_bytes: 1000, frontier: "one" },
     { at: "2026-09-14T09:40:00Z", peer: "", changes: 3, state_bytes: 1600, frontier: "two" },
-    { at: "2026-09-14T09:42:00Z", peer: "", changes: 1, state_bytes: 1700, frontier: "three" },
-    { at: "2026-09-15T15:00:00Z", peer: "", changes: 1, state_bytes: 1750, frontier: "four" },
+    { at: "2026-09-15T15:00:00Z", peer: "", changes: 1, state_bytes: 1750, frontier: "three" },
   ];
   const component = createClassComponent({ component: History, target: host, props: {
     checkpoints: [], activity: rows, viewingMoment: "",
     onmoment: (frontier) => opened.push(frontier), onview: () => {},
   } });
-  const sittings = () => [...host.querySelectorAll(".sitting")];
-  const bars = () => [...host.querySelectorAll(".day-bar")];
+  const versions = () => [...host.querySelectorAll(".day-row")];
+  const unsaved = () => [...host.querySelectorAll(".unsaved-row")];
+  const more = () => host.querySelector(".unsaved-more");
   const back = async () => { host.querySelector(".crumb-back").click(); await tick(); };
   const into = async (day) => {
     host.querySelector('[data-history-day="' + day + '"]').click();
@@ -378,41 +431,34 @@ window.activityCheck = async () => {
   const chosen = () => host.querySelector("[data-history-day][aria-pressed=true]")?.dataset.historyDay;
   await tick();
 
-  // It opens on a day, and the day is its sittings -- no month beside them,
-  // and no clock at all until a sitting is opened.
+  // It opens on a day, with no month beside it. Nothing here was ever saved
+  // as a version, so the day has no versions to list and everything it does
+  // have is behind the one folded line.
   const first = {
     month: host.querySelectorAll("[data-history-day]").length,
-    axis: host.querySelectorAll(".axis").length,
-    sittings: sittings().length,
-    heading: host.querySelector(".sitting-when")?.textContent.trim() ?? null,
+    versions: versions().length,
+    folded: more()?.getAttribute("aria-expanded") ?? null,
+    built: unsaved().length,
+    says: more()?.textContent.replace(/\\s+/g, " ").trim() ?? null,
   };
+  more().click();
+  await tick();
+  const shown = unsaved().map((node) => node.textContent.trim());
+  unsaved()[0].click();
+  await tick();
 
-  // Back to the month: for a document nobody saved from, two marked days and
-  // no number on any of them.
+  // Back to the month: two days marked as written on, and no count on either,
+  // because neither holds a version.
   await back();
   const month = {
     cells: host.querySelectorAll("[data-history-day]").length,
     marked: host.querySelectorAll(".cal-mark").length,
     counted: host.querySelectorAll(".cal-count").length,
-    feed: host.querySelectorAll(".feed").length,
+    versions: versions().length,
     picked: chosen(),
   };
 
-  // The other day worked: a five-and-thirty-minute gap in the middle of it,
-  // so two sittings rather than one, and the silence between them written
-  // rather than drawn.
-  await into("2026-09-14");
-  const busier = { sittings: sittings().length, gap: host.querySelector(".feed-gap")?.textContent.trim() ?? null };
-  // Opening the second gives it an axis of its own, and clicking a bar on it
-  // reaches a minute nobody saved a version of.
-  [...host.querySelectorAll(".sitting-open")].pop().click();
-  await tick();
-  bars()[0]?.click();
-  await tick();
-  const onAxis = { axis: host.querySelectorAll(".axis").length, bars: bars().length };
-
   // A day at a time across the calendar, and a week at a time up it.
-  while (host.querySelector(".crumb-back")) await back();
   const press = async (key) => {
     host.querySelector(".cal-grid").dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
     await tick();
@@ -421,10 +467,10 @@ window.activityCheck = async () => {
   const afterLeft = await press("ArrowLeft");
   const afterUp = await press("ArrowUp");
 
-  // A day nobody worked has no sittings, and says so rather than drawing an
-  // empty clock.
+  // A day nobody worked says so, rather than drawing an empty anything.
   await into("2026-09-07");
-  const emptyDay = sittings().length === 0 && host.querySelectorAll(".axis").length === 0;
+  const emptyDay = versions().length === 0 && !more()
+    && host.textContent.includes("Nothing was written on this day");
 
   // The document starts in September, so there is nowhere to the left of its
   // first day to go.
@@ -433,7 +479,7 @@ window.activityCheck = async () => {
   await back();
   const atTheStart = await press("ArrowLeft");
 
-  const result = { ...first, ...month, busier, onAxis, opened, afterLeft, afterUp, emptyDay, atTheStart };
+  const result = { ...first, ...month, shown, opened, afterLeft, afterUp, emptyDay, atTheStart };
   component.$destroy();
   host.remove();
   return result;
@@ -618,29 +664,24 @@ try {
   console.log("editor-browser: diagnostics, hints, source links, empty state and the compile log passed");
   const activity = await evaluate("activityCheck()");
   assert.equal(activity.month, 0, "the panel opens on a day, with the month nowhere on screen");
-  assert.equal(activity.axis, 0, "and no clock at all until a sitting asks for one");
-  assert.equal(activity.sittings, 1, "the day it opens on held one sitting");
-  assert.match(activity.heading, /3:00/, "named by when it ran");
-  assert.equal(activity.feed, 0, "the day stands down when the month comes back");
+  assert.equal(activity.versions, 0, "a document nobody saved from has no versions to list");
+  assert.equal(activity.folded, "false", "and what it does have is folded away");
+  assert.equal(activity.built, 0, "with none of it built until it is asked for");
+  assert.match(activity.says, /1 moment not saved as a version/, "counted in the singular");
+  assert.deepEqual(activity.shown.length, 1, "opened, it is the minute nobody saved");
+  assert.match(activity.shown[0], /3:00/, "which says when it was");
+  assert.deepEqual(activity.opened, ["three"],
+    "and clicking it asks for the document as it stood then");
   assert.equal(activity.cells % 7, 0, "the month draws whole weeks");
   assert.equal(activity.marked, 2, "with the two days somebody wrote on marked");
   assert.equal(activity.counted, 0, "and no version counted on any of them");
   assert.equal(activity.picked, "2026-09-15", "the panel opened on the last day anything happened");
-  assert.equal(activity.busier.sittings, 2,
-    "a thirty-five-minute pause is where one sitting ends and the next begins");
-  assert.equal(activity.busier.gap, "35m later",
-    "and the silence between them is a sentence rather than empty space");
-  assert.equal(activity.onAxis.axis, 1, "opening a sitting gives it an axis of its own");
-  assert.equal(activity.onAxis.bars, 2, "with the writes in it as bars");
-  assert.deepEqual(activity.opened, ["two"],
-    "and clicking one asks for the document as it stood in that minute");
-  assert.equal(activity.afterLeft, "2026-09-13", "ArrowLeft moves the calendar a day back");
-  assert.equal(activity.afterUp, "2026-09-06", "ArrowUp moves a week");
-  assert.equal(activity.emptyDay, true,
-    "a day nobody worked has no sittings, rather than an empty clock");
+  assert.equal(activity.afterLeft, "2026-09-14", "ArrowLeft moves the calendar a day back");
+  assert.equal(activity.afterUp, "2026-09-07", "ArrowUp moves a week");
+  assert.equal(activity.emptyDay, true, "a day nobody worked says so rather than drawing nothing");
   assert.equal(activity.atTheStart, "2026-09-01",
     "arrowing past the first month the document has must go nowhere");
-  console.log("editor-browser: the history panel's three steps, its sittings and its arrow keys passed");
+  console.log("editor-browser: the history panel's month, its marked days and its arrow keys passed");
   const cache = await evaluate("collabCacheCheck()");
   assert.equal(cache.recovered, "new offline server");
   assert.equal(cache.prepared, "Cached paper");
@@ -655,6 +696,17 @@ try {
   assert.equal(vim.sameViewOff, true, "turning Vim off rebuilt the editor");
   assert.equal(vim.undoKept, true, "toggling Vim dropped the undo history");
   console.log("editor-browser: vim keys toggle in place, keeping the view and its history");
+
+  const tracked = await evaluate("trackingCheck()");
+  assert.equal(tracked.on, true, "track changes reported off after being switched on");
+  assert.equal(tracked.opened, true, "switching track changes on did not open a proposal");
+  assert.equal(tracked.shown, "TRACKED alpha", "the author cannot see what they typed");
+  assert.equal(tracked.paper, "alpha", "a tracked keystroke reached the document instead of the branch");
+  assert.equal(tracked.flushed, true, "the branch was never sent, so nobody could review it");
+  assert.equal(tracked.off, false, "track changes reported on after being switched off");
+  assert.equal(tracked.afterStop, "alpha", "stopping applied the proposal instead of leaving it for review");
+  assert.equal(tracked.direct, "DIRECT alpha", "editing after stopping did not reach the document");
+  console.log("editor-browser: tracked edits go to a branch, are sent while typing, and leave the paper alone");
 } finally {
   socket?.close();
   browser?.kill();

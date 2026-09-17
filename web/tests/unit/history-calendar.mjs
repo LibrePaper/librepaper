@@ -11,8 +11,8 @@
 
 import assert from "node:assert/strict";
 import {
-  daySessions, dayVersions, monthGrid, monthOf, monthSpan, sessionBins,
-  sessionSparkline, shiftDay, shiftMonth, versionDays,
+  dayEntries, dayVersions, deliberate, monthGrid, monthOf, monthSpan,
+  shiftDay, shiftMonth, unsavedMinutes, versionDays,
 } from "../../src/lib/history-calendar.js";
 
 const mark = (at, extra = {}) => ({
@@ -114,134 +114,258 @@ assert.equal(monthOf("2026-09-16"), "2026-09");
     "a document with no past is still somewhere");
 }
 
-// --- the day, cut where the work stopped -----------------------------------
+// --- one day's versions -----------------------------------------------------
 
 {
-  // Two sittings an hour apart, and a publish on its own in between: the day
-  // is three things that happened, not twenty-four hours of mostly nothing.
-  const rows = [
-    row("2026-09-14T09:05:00Z", 2, 1000, "one"),
-    row("2026-09-14T09:07:00Z", 3, 1600, "two"),
-    row("2026-09-14T09:20:00Z", 1, 1700, "three"),
-    row("2026-09-14T14:00:00Z", 4, 2000, "four"),
-    row("2026-09-14T14:02:00Z", 1, 2100, "five"),
-    row("2026-09-15T10:00:00Z", 9, 9000, "elsewhere"),
-  ];
   const points = [
-    mark("2026-09-14T09:06:00Z"),
-    mark("2026-09-14T11:30:00Z", { why: "cli" }),
-    mark("2026-09-14T14:01:00Z", { label: "Draft" }),
+    mark("2026-09-14T09:05:00Z"),
+    mark("2026-09-14T14:30:00Z", { label: "Draft" }),
     mark("2026-09-15T10:00:00Z"),
   ];
-  const sessions = daySessions(points, rows, "2026-09-14", "UTC");
-  assert.equal(sessions.length, 3, "a day is its sittings, and a five-hour gap is not one of them");
-  assert.deepEqual(sessions.map((one) => [one.from, one.to]),
-    [[545, 560], [690, 690], [840, 842]]);
-  assert.equal(sessions[0].writes, 6, "a sitting sums the writes in it");
-  assert.equal(sessions[0].versions.length, 1);
-  assert.equal(sessions[0].span, 15);
-  // A publish leaves a version and no writes at all, and it is still
-  // something that happened at half past eleven.
-  assert.equal(sessions[1].writes, 0, "a version with nothing written around it is its own event");
-  assert.equal(sessions[1].versions.length, 1);
-  assert.equal(sessions[1].moments.length, 0);
-  assert.equal(sessions[2].versions[0].point.label, "Draft");
-  assert.ok(!sessions.some((one) => one.moments.some((m) => m.frontier === "elsewhere")),
-    "and a day holds only its own");
-  // The silence before each one, so the feed can say it in words instead of
-  // spending height on it. The first of the day has nothing before it.
-  assert.equal(sessions[0].since, null);
-  assert.equal(sessions[1].since, 130, "two hours and ten minutes of nothing");
-  assert.equal(sessions[2].since, 150);
+  const versions = dayVersions(points, "2026-09-14", "UTC");
+  assert.deepEqual(versions.map((one) => one.minute), [545, 870],
+    "a version is placed by minutes from midnight, which is what the list reads");
+  assert.equal(versions.length, 2, "and a day holds only its own");
+  assert.deepEqual(versions.map((one) => one.point.at),
+    ["2026-09-14T09:05:00Z", "2026-09-14T14:30:00Z"], "oldest first");
+  // The reader's own day and the reader's own clock: 14:30 UTC is 23:30 in
+  // Tokyo, still that day, and 15:00 UTC is midnight of the next one.
+  assert.deepEqual(dayVersions(points, "2026-09-14", "Asia/Tokyo").map((one) => one.minute),
+    [1085, 1410]);
+  assert.deepEqual(dayVersions([mark("2026-09-14T15:00:00Z")], "2026-09-15", "Asia/Tokyo")
+    .map((one) => one.minute), [0]);
 }
 
+// --- a day that fits is a day that is listed --------------------------------
+
 {
-  // The gap is the caller's to set: what counts as one sitting is a fact
-  // about how somebody works, not about how the panel draws.
-  const rows = [
-    row("2026-09-14T09:00:00Z", 1, 100, "a"),
-    row("2026-09-14T09:40:00Z", 1, 200, "b"),
+  // The rule that comes before all the others, and the one whose absence made
+  // a seeded example show a single row that could not be chosen: coarsening
+  // is for a day too big to read. Applied to a day of three it gathers them
+  // into one entry that opens into three -- which saves nobody anything and
+  // takes away the only thing the panel does, because a version is chosen by
+  // clicking it and an entry standing for several cannot be.
+  const day = [
+    mark("2026-09-14T09:26:00Z", { sha: "a".repeat(64) }),
+    mark("2026-09-14T09:29:00Z", { sha: "b".repeat(64) }),
+    mark("2026-09-14T09:33:00Z", { sha: "c".repeat(64) }),
   ];
-  assert.equal(daySessions([], rows, "2026-09-14", "UTC").length, 2,
-    "forty minutes apart is two sittings at the default");
-  assert.equal(daySessions([], rows, "2026-09-14", "UTC", { gap: 60 }).length, 1,
-    "and one when an hour of quiet still counts as the same sitting");
-  assert.equal(daySessions([], rows, "2026-09-14", "UTC", { gap: 0 }).length, 2,
-    "and a gap of nothing never merges two different minutes");
-  assert.deepEqual(daySessions([], [], "2026-09-14", "UTC"), [],
-    "a day nobody worked has no sittings at all, rather than one empty one");
+  const entries = dayEntries(day, "2026-09-14", "UTC");
+  assert.deepEqual(entries.map((one) => one.kind), ["version", "version", "version"],
+    "three autosaves minutes apart are three rows, not one entry standing for them");
+  assert.deepEqual(entries.map((one) => one.points.length), [1, 1, 1]);
+  // It is the ceiling that decides, and it is the caller's.
+  assert.ok(dayEntries(day, "2026-09-14", "UTC", { most: 2, gathered: 2 })
+    .some((one) => one.kind === "run"), "and a day past the ceiling is gathered again");
+  // Newest first, whichever way the day was built: the last thing somebody
+  // did is the first row, because it is what they nearly always came for.
+  assert.deepEqual(entries.map((one) => one.points[0].sha[0]), ["c", "b", "a"],
+    "the day is listed from its end");
+}
+
+// --- a day, coarsened by significance ---------------------------------------
+
+// Every fixture below is a handful of versions, which the rule above would
+// list rather than gather -- so each says `most` out loud. What is under test
+// here is what happens to a day that does *not* fit.
+const coarse = (points, options = {}) =>
+  dayEntries(points, "2026-09-14", "UTC", { most: 4, gathered: 2, ...options });
+
+{
+  // The server saves a version after thirty seconds of quiet, so an
+  // afternoon is dozens of them. What survives that is not a shorter list but
+  // a different rule: anything somebody asked for stands alone, and the
+  // autosaves between two of those are one entry. Every boundary is something
+  // a reader would recognise -- never an interval the panel chose.
+  const quiet = (minute, changed) =>
+    mark(`2026-09-14T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00Z`,
+      { sha: String(minute).padStart(64, "0"), changed });
+  const points = [
+    quiet(540, ["main.tex"]),
+    quiet(542, ["main.tex"]),
+    quiet(544, ["references.bib"]),
+    quiet(546, ["main.tex"]),
+    { ...quiet(600), why: "cli", changed: ["main.tex"] },
+    quiet(602, ["main.tex"]),
+    quiet(604, ["main.tex"]),
+    quiet(606, ["main.tex"]),
+    { ...quiet(700), label: "Sent to coauthors", changed: ["main.tex"] },
+  ];
+  const entries = coarse(points);
+  // Newest first: the named version, the autosaves after the publish, the
+  // publish, and the morning's run last.
+  assert.deepEqual(entries.map((one) => one.kind),
+    ["version", "run", "version", "run"],
+    "the autosaves gather; the publish and the named one never do");
+  const morning = entries[3];
+  assert.equal(morning.points.length, 4, "a run holds the versions it stands for");
+  // The list is turned over; a run's own span is not. "9:00 - 9:06" is a fact
+  // about the work rather than a reading order.
+  assert.deepEqual([morning.minute, morning.to], [540, 546], "and says when it ran");
+  assert.deepEqual(morning.points.map((one) => one.at.slice(11, 16)),
+    ["09:06", "09:04", "09:02", "09:00"], "and opens onto its versions newest first");
+  // What a clock range cannot say, and what somebody nearly always came for.
+  assert.deepEqual(morning.changed, ["main.tex", "references.bib"],
+    "a run says what the whole of it changed");
+  assert.equal(entries[2].points[0].why, "cli");
+  assert.equal(entries[0].points[0].label, "Sent to coauthors",
+    "a name is enough on its own to keep a version out of a run");
+  // Every version is still reachable: coarsening hides nothing.
+  assert.equal(entries.flatMap((one) => one.points).length, points.length);
+  // An entry is named by the oldest version in it, which is what makes the
+  // key steady: turning the list over must not rename the rows an open run
+  // is remembered by.
+  assert.deepEqual(entries.map((one) => one.key),
+    entries.map((one) => one.points[one.points.length - 1].sha),
+    "and each entry is named by the first version in it");
 }
 
 {
-  // The reader's own day and clock: 23:50 UTC is the small hours in Tokyo, so
-  // the sitting is on the next day there, and ten to midnight is ten to nine.
-  const rows = [row("2026-09-14T23:50:00Z", 1, 100, "late")];
-  assert.deepEqual(daySessions([], rows, "2026-09-15", "Asia/Tokyo").map((one) => one.from), [530]);
-  assert.deepEqual(daySessions([], rows, "2026-09-14", "Asia/Tokyo"), []);
+  // A different name on two checkpoints is NOT a boundary, and this is the
+  // test that says so on purpose. An autosave is attributed to whoever sent
+  // the last update before it fired, so on a document two people are writing
+  // at once the name alternates with typing order while every checkpoint
+  // holds both their work. Splitting on it would invent a handover that never
+  // happened and credit each run to one of them.
+  const hand = (minute, by) =>
+    mark(`2026-09-14T09:${String(minute).padStart(2, "0")}:00Z`,
+      { sha: `${by}${minute}`.padEnd(64, "0"), by, changed: ["main.tex"] });
+  const together = coarse([
+    hand(0, "vincent"), hand(2, "anne"), hand(4, "vincent"),
+    hand(6, "anne"), hand(8, "anne"), hand(10, "vincent"),
+  ]);
+  // Two, because six is past the ceiling this fixture set -- not six, which
+  // is what splitting on the name would have given.
+  assert.equal(together.length, 2,
+    "two people writing together are cut by the ceiling, never by the name");
+  assert.deepEqual(together.map((one) => one.points.length), [3, 3]);
 }
 
-// --- the shape of one sitting ----------------------------------------------
+{
+  // A pause long enough to be a break in the work is a boundary. The server
+  // saves at least every five minutes of continuous writing, so ten leaves
+  // room either side of "still working".
+  const tick = (minute) =>
+    mark(`2026-09-14T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00Z`,
+      { sha: String(minute).padStart(64, "0"), changed: ["main.tex"] });
+  const broken = coarse([tick(540), tick(544), tick(548), tick(600), tick(604), tick(608)]);
+  assert.deepEqual(broken.map((one) => [one.minute, one.to]), [[600, 608], [540, 548]],
+    "fifty-two minutes of nothing ends a run");
+  // How long a pause has to be is the caller's, like everything else here.
+  assert.equal(coarse([tick(540), tick(544), tick(548)], { most: 2, pause: 2 }).length, 3,
+    "with an impatient threshold, nothing gathers at all");
+}
+
+{
+  // What one entry may stand for has a ceiling, because the arithmetic gives
+  // it one: between two deliberate versions the server saves at least every
+  // thirty seconds, so an unbroken afternoon reaches several hundred, and
+  // opening one row onto three hundred near-identical times finds nothing.
+  const steady = (count, step) => Array.from({ length: count }, (_, index) => {
+    const minute = 540 + Math.round(index * step);
+    return mark(
+      `2026-09-14T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00Z`,
+      { sha: String(index).padStart(64, "0"), changed: ["main.tex"] },
+    );
+  });
+  const long = dayEntries(steady(90, 2), "2026-09-14", "UTC");
+  assert.ok(long.length > 1, "ninety versions in one stretch is not one entry");
+  assert.ok(long.every((one) => one.points.length <= 25),
+    "and no entry stands for more than a screenful: "
+    + long.map((one) => one.points.length).join());
+  assert.equal(long.flatMap((one) => one.points).length, 90, "with none of them dropped");
+  // The ceiling is a ceiling, not a bucket size: a run under it is never cut.
+  assert.equal(dayEntries(steady(90, 2), "2026-09-14", "UTC", { most: 200 }).length, 90,
+    "past the ceiling, a day that fits is listed again -- one knob, one idea");
+}
+
+{
+  // Where the cut falls. A run of work is divided where the work paused
+  // longest, not at every twenty-fifth version -- a cut at a count lands in
+  // the middle of whatever somebody was doing.
+  const beat = (minutes) => minutes.map((minute, index) => mark(
+    `2026-09-14T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00Z`,
+    { sha: String(index).padStart(64, "0"), changed: ["main.tex"] },
+  ));
+  // Six versions a minute apart, with a nine-minute pause after the fourth --
+  // not long enough to end a run on its own, but the obvious place to cut.
+  const uneven = beat([540, 541, 542, 543, 552, 553]);
+  assert.deepEqual(coarse(uneven).map((one) => [one.minute, one.to]), [[552, 553], [540, 543]],
+    "the cut falls at the longest pause inside the run");
+  assert.deepEqual(coarse(uneven, { gathered: 3 }).map((one) => one.kind),
+    ["version", "version", "run"],
+    "and a leftover too short to gather is simply its versions");
+
+  // The degenerate case, and the reason the tie-break exists: somebody typing
+  // steadily for hours has every gap identical. Taking the first of the tied
+  // pauses would shave one version off the front over and over and leave a
+  // row for nearly every version.
+  const flat = beat(Array.from({ length: 40 }, (_, index) => 540 + index));
+  const halved = dayEntries(flat, "2026-09-14", "UTC", { most: 10 });
+  assert.ok(halved.length <= 5,
+    "an unvarying run is halved, not shaved: " + halved.length + " rows");
+  assert.ok(halved.every((one) => one.points.length <= 10));
+  assert.equal(halved.flatMap((one) => one.points).length, 40);
+}
+
+{
+  // A run that cannot account for itself claims nothing: one version's
+  // silence makes the union a guess rather than a total.
+  const points = [
+    mark("2026-09-14T09:00:00Z", { sha: "a".repeat(64), changed: ["main.tex"] }),
+    mark("2026-09-14T09:02:00Z", { sha: "b".repeat(64) }),
+    mark("2026-09-14T09:04:00Z", { sha: "c".repeat(64), changed: ["main.tex"] }),
+  ];
+  assert.equal(coarse(points, { most: 2 })[0].changed, null);
+}
+
+{
+  // What counts as asked for. A name is the most deliberate thing anybody
+  // does to a checkpoint, whatever the document's own reason for taking it.
+  assert.equal(deliberate({ why: "quiet" }), false);
+  assert.equal(deliberate({ why: "left" }), false);
+  assert.equal(deliberate({ why: "sync" }), false);
+  assert.equal(deliberate({ why: "quiet", label: "Draft" }), true);
+  assert.equal(deliberate({ why: "cli" }), true);
+  assert.equal(deliberate({ why: "restore" }), true);
+}
+
+// --- what was written and never saved --------------------------------------
 
 {
   const rows = [
-    row("2026-09-14T09:00:00Z", 1, 100, "a"),
-    row("2026-09-14T09:14:00Z", 8, 900, "b"),
-    row("2026-09-14T09:15:00Z", 2, 1000, "c"),
+    row("2026-09-14T09:05:00Z", 2, 1000, "one"),
+    row("2026-09-14T09:05:40Z", 1, 1100, "two"),
+    row("2026-09-14T09:40:00Z", 3, 1600, "three"),
+    row("2026-09-14T14:00:00Z", 1, 1650, "four"),
+    row("2026-09-15T10:00:00Z", 9, 9000, "elsewhere"),
   ];
-  const [sitting] = daySessions([], rows, "2026-09-14", "UTC");
-  const spark = sessionSparkline(sitting, 8);
-  assert.equal(spark.length, 8, "a sparkline is the same width whatever the sitting's length");
-  assert.equal(sessionSparkline(sitting, 20).length, 20);
-  assert.equal(spark[0].changes, 1, "the first two minutes hold the first write");
-  assert.equal(spark[7].changes, 10, "and the last two the burst at the end");
-  assert.equal(spark[7].share, 1, "the busiest bar is full");
-  assert.equal(spark[3].share, 0, "and the quiet ones are empty rather than missing");
-  // A sitting one minute long is still a shape, not a division by zero.
-  const [instant] = daySessions([], [row("2026-09-14T09:00:00Z", 3, 50, "x")], "2026-09-14", "UTC");
-  assert.equal(sessionSparkline(instant).filter((bar) => bar.share > 0).length, 1);
+  // The minute a version was taken in is that version's minute, and belongs
+  // to the list of versions rather than to this one.
+  const points = [mark("2026-09-14T09:40:30Z")];
+  const left = unsavedMinutes(points, rows, "2026-09-14", "UTC");
+  // Newest first, like the versions these hang under.
+  assert.deepEqual(left.map((one) => one.minute), [840, 545],
+    "only the minutes no version covers");
+  assert.equal(left[1].changes, 3, "a minute sums the writes in it");
+  assert.deepEqual(left.map((one) => one.frontier), ["four", "two"],
+    "and each opens the last anchor left in it");
+  assert.ok(!left.some((one) => one.frontier === "elsewhere"), "the day holds only its own");
+  // A minute with no anchor cannot be opened, so offering it would be a row
+  // that does nothing.
+  const anchorless = unsavedMinutes([], [
+    { at: "2026-09-14T11:00:00Z", changes: 1, state_bytes: 10, frontier: "", peer: "" },
+  ], "2026-09-14", "UTC");
+  assert.deepEqual(anchorless, []);
+  // The reader's own day and clock again: two in the afternoon in UTC is
+  // eleven at night in Tokyo, still the same day and near the end of it.
+  const tokyo = unsavedMinutes([], rows, "2026-09-14", "Asia/Tokyo");
+  assert.deepEqual(tokyo.map((one) => [one.frontier, one.minute]),
+    [["four", 1380], ["three", 1120], ["two", 1085]]);
+  assert.deepEqual(
+    unsavedMinutes([], rows, "2026-09-15", "Asia/Tokyo").map((one) => one.frontier),
+    ["elsewhere"],
+  );
 }
 
-// --- one sitting, on a real axis -------------------------------------------
-
-{
-  const rows = [
-    row("2026-09-14T14:00:00Z", 2, 1000, "a"),
-    row("2026-09-14T14:01:00Z", 3, 1600, "b"),
-    row("2026-09-14T14:09:00Z", 1, 1650, "c"),
-  ];
-  const [sitting] = daySessions([], rows, "2026-09-14", "UTC");
-  const bins = sessionBins(sitting);
-  assert.equal(bins.length, 10, "a ten-minute sitting is ten one-minute bins, all of them");
-  assert.equal(bins[0].at, 840, "and a bin is placed on the day's own axis, not the sitting's");
-  assert.equal(bins[9].at, 849);
-  assert.equal(bins[1].changes, 3);
-  // The work is the growth since the minute before, so the first minute of a
-  // document's life carries the whole of it and the scale is set by that.
-  assert.equal(bins[1].work, 600);
-  assert.equal(bins[0].share, 1, "the busiest minute fills its bar");
-  assert.equal(bins[1].share, 0.6);
-  assert.equal(bins[9].level, 1, "one write is never nothing");
-  assert.equal(bins[5].share, 0, "a minute nobody wrote in draws no bar at all");
-  assert.deepEqual(bins[0].moments.map((one) => one.frontier), ["a"],
-    "and a bin keeps its minutes, because clicking the bar is how one is opened");
-  // Coarser bins still cover the whole sitting and nothing beyond it.
-  const coarse = sessionBins(sitting, 4);
-  assert.equal(coarse.length, 3);
-  assert.equal(coarse[0].at, 840);
-  assert.equal(coarse.reduce((sum, bin) => sum + bin.changes, 0), 6, "nothing is dropped");
-}
-
-{
-  // A document written before the server recorded growth has none, so the
-  // strip falls back to counting writes rather than drawing a flat sitting.
-  const rows = [
-    { at: "2026-09-14T09:00:00Z", changes: 1, state_bytes: 0, frontier: "a", peer: "" },
-    { at: "2026-09-14T09:01:00Z", changes: 4, state_bytes: 0, frontier: "b", peer: "" },
-  ];
-  const [sitting] = daySessions([], rows, "2026-09-14", "UTC");
-  const bins = sessionBins(sitting);
-  assert.equal(bins[0].level, 1);
-  assert.equal(bins[1].level, 4, "the busier of the two minutes is the busier bar");
-}
-
-console.log("history calendar: whole weeks either side of the month, a day cut into sittings, and one sitting on an axis of minutes");
+console.log("history calendar: whole weeks either side of the month, and a day coarsened by significance");

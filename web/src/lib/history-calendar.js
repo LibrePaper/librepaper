@@ -1,14 +1,36 @@
-// A month of the document's life, the sittings one of its days was written
-// in, and the axis one of those sittings is drawn on.
+// A month of the document's life, and the versions on one of its days.
 //
-// The version panel narrows three times, and this answers each step in turn.
-// *Which day?* -- a month laid out as a grid, each cell knowing how many
-// versions landed on it and whether anybody wrote on it at all. *Which
-// sitting on that day?* -- the day cut where the work stopped, so the panel
-// spends its height on the twenty minutes somebody wrote rather than on the
-// five hours they did not. And, for a sitting busy enough to need it, *when
-// exactly, and which version?* -- that one interval on a real axis of
-// minutes, which is the only place a proportional time scale earns its space.
+// The version panel asks two questions. *Which day?* -- a month laid out as a
+// grid, each cell knowing how many versions landed on it and whether anybody
+// wrote on it at all. *Which version?* -- that day's versions, in order.
+//
+// The second answer has to survive the volume. The server saves a version
+// after thirty seconds of quiet and at least every five minutes of continuous
+// work, so an afternoon of writing is dozens of them and a paper's life is
+// thousands. Listing them all is the one thing the panel must not do.
+//
+// The coarsening is by *significance*, not by the clock. A run of autosaves
+// is one entry that says what the whole of it changed and opens into the
+// individual times when asked, and a run ends where something happened that a
+// reader would recognise as a boundary: a version somebody asked for, or a
+// pause long enough to be a break in the work.
+//
+// A different person at the keyboard would be the third such boundary, and it
+// is deliberately not one, because nothing in the history can tell us. A
+// checkpoint's author is whoever sent the most recent update before it fired
+// -- `session.by` is overwritten by every edit -- so on a document two people
+// are writing at once it names whoever typed last, while the checkpoint holds
+// both their work. `document_activity.peer` is written as the empty string on
+// every path. Splitting on either would cut a collaborative afternoon into
+// runs that reflect typing order and credit each of them to one person.
+//
+// None of those is a time bucket, and the depth stops here on purpose. A tree
+// of finer and finer intervals answers "when" more precisely at every level,
+// and precision-of-when is not the question anybody opens a history with --
+// they are looking for the version before they cut the introduction, or the
+// one they sent to a coauthor. Below a version there is nothing left to
+// divide anyway: the finest thing that can be opened is a minute of the
+// operation history, which is the one folded line at the end.
 //
 // Both are pure, because the arithmetic -- which week a day falls in, which
 // minute a timestamp is at once the reader's own timezone is applied -- is
@@ -136,116 +158,198 @@ export function dayVersions(checkpoints, day, timeZone) {
     .map((point) => ({ point, minute: Math.max(0, minutesIn(point.at, timeZone)) }));
 }
 
-/// How long a pause has to be before it is a different sitting.
+/// The reasons a version was taken by the document rather than asked for.
 ///
-/// Twenty-five minutes: long enough that stopping to read something is still
-/// the same sitting, short enough that lunch is not. It is a fact about how
-/// people work rather than about how the panel draws, so it is a number here
-/// and an argument below, not something baked into a component.
-export const SESSION_GAP_MINUTES = 25;
+/// These are the volume: a quiet period, or an editor closing the tab, or a
+/// sync. They are worth keeping and worth reaching, and they are never worth
+/// a line each in a list somebody is scanning.
+const QUIET = new Set(["quiet", "left", "automatic", "sync"]);
 
-/// The day's work as the sittings somebody actually had.
+/// Whether a version is one somebody asked for. A name is enough on its own:
+/// giving a checkpoint a name is the most deliberate thing anybody does to
+/// one, whatever the document's own reason for taking it was.
+export const deliberate = (point) => Boolean(point?.label) || !QUIET.has(point?.why);
+
+/// How many autosaves in a row are worth gathering. Two collapse into an
+/// entry that opens into two, which is the same height and one more click.
+const WORTH_GATHERING = 3;
+
+/// How long a pause between two autosaves has to be before it reads as a
+/// break in the work rather than as thinking.
 ///
-/// A day is not twenty-four hours of anything. Somebody writes for twenty
-/// minutes after breakfast and an hour after lunch, and a view that gives the
-/// five empty hours between them five hours of height has spent most of
-/// itself on nothing. So the day is cut where the work stopped: every run of
-/// writing and saving with no gap longer than `gap` in it is one session, and
-/// the panel lists sessions rather than hours.
+/// The server saves after thirty seconds of quiet and at least every five
+/// minutes of continuous writing, so anything up to five minutes apart is
+/// somebody still working. Ten leaves room either side of that.
+const RUN_PAUSE_MINUTES = 10;
+
+/// How many versions one run may stand for.
 ///
-/// Versions are events in their own right here, not just the writes around
-/// them: a publish from the command line leaves a version and no writes at
-/// all, and it is still something that happened at half past one.
+/// The ceiling exists because the arithmetic says it has to. Between two
+/// deliberate versions, checkpoints are at least thirty seconds apart and --
+/// or the pause above would have ended the run -- at most ten minutes apart,
+/// so an unbroken afternoon of writing can reach several hundred. Opening one
+/// entry onto three hundred near-identical times is not a way to find
+/// anything.
 ///
-/// Returns `[{ from, to, span, since, writes, work, moments, versions }]`,
-/// oldest first, every time in minutes from midnight in the reader's own
-/// timezone. `since` is how long the silence before this session was, or
-/// `null` for the first of the day -- the feed says that in words instead of
-/// spending height on it.
-export function daySessions(checkpoints, rows, day, timeZone, { gap = SESSION_GAP_MINUTES } = {}) {
-  const moments = momentsOf(rows, day, timeZone)
-    .map((row) => ({ ...row, minute: minutesIn(row.at, timeZone) }))
-    .filter((one) => one.minute >= 0);
-  // One shape for both kinds of event, rather than two: a sitting is cut from
-  // the times alone, and the walk below should not have to ask which sort of
-  // thing it is holding before it can ask when it was.
-  const events = [
-    ...moments.map((one) => ({ minute: one.minute, moment: one, version: null })),
-    ...dayVersions(checkpoints, day, timeZone)
-      .map((one) => ({ minute: one.minute, moment: null, version: one })),
-  ].sort((left, right) => left.minute - right.minute);
-  const quiet = Math.max(0, gap);
-  const out = [];
-  for (const event of events) {
-    const last = out[out.length - 1];
-    if (!last || event.minute - last.to > quiet) {
-      out.push({ from: event.minute, to: event.minute, writes: 0, work: 0, moments: [], versions: [] });
-    }
-    const session = out[out.length - 1];
-    session.to = Math.max(session.to, event.minute);
-    if (event.moment) {
-      session.moments.push(event.moment);
-      session.writes += event.moment.changes;
-      session.work += event.moment.work;
-    }
-    if (event.version) session.versions.push(event.version);
+/// Twenty-five is about a screenful in a sidebar. It is a ceiling on what one
+/// entry may hide, not a bucket size: a run under it is never divided.
+const MOST_IN_A_RUN = 25;
+
+/// One day's versions, coarsened.
+///
+/// Returns entries in order, each either a single version or a run of
+/// consecutive autosaves. A run knows what the whole of it changed -- the
+/// union of the paths its versions touched -- because "when" alone does not
+/// answer the question somebody opens a history with, which is nearly always
+/// "where did I write that". A run whose versions never recorded what they
+/// changed says nothing rather than guessing.
+///
+/// Newest first. A version history is read from the end: what somebody is
+/// looking for is nearly always the last thing they did, and a list that puts
+/// it at the bottom makes every reader scroll past a day of autosaves to reach
+/// the one row they came for. The runs are built in clock order -- a run is a
+/// stretch of time and can only be found forwards -- and the whole is turned
+/// over once, at the end, together with the versions inside each run. A run
+/// still says its own span forwards ("3:14 - 4:02"): the order of the list is
+/// a reading convenience, while the span is a fact about the work.
+///
+/// `gathered` sets how long a run has to be before it is gathered at all,
+/// `pause` how long a silence has to be to end one, and `most` how many
+/// versions one may stand for. All three are the caller's: they are claims
+/// about how people work, not facts about the data.
+export function dayEntries(
+  checkpoints,
+  day,
+  timeZone,
+  { gathered = WORTH_GATHERING, pause = RUN_PAUSE_MINUTES, most = MOST_IN_A_RUN } = {},
+) {
+  const versions = dayVersions(checkpoints, day, timeZone);
+  // A day that fits is a day that is listed. Coarsening exists to make a day
+  // of three hundred versions readable; applied to a day of three it gathers
+  // them into one entry that opens into three, which saves nobody a thing and
+  // costs them the one thing the panel is for -- a version is chosen by
+  // clicking it, and an entry standing for several cannot be chosen at all.
+  if (versions.length <= Math.max(1, most)) {
+    return newestFirst(versions.map((one) => entry([one], "version")));
   }
-  let previous = null;
-  return out.map((session) => {
-    const since = previous === null ? null : session.from - previous;
-    previous = session.to;
-    return { ...session, span: session.to - session.from, since };
-  });
+  const runs = [];
+  for (const one of versions) {
+    const last = runs[runs.length - 1];
+    // What ends a run, and both of them are something a reader would
+    // recognise as a boundary rather than an interval the panel chose. Who
+    // was typing is not among them: see the note at the top of this file.
+    const continues = !deliberate(one.point)
+      && last
+      && !last.asked
+      && one.minute - last.items[last.items.length - 1].minute <= Math.max(0, pause);
+    if (continues) last.items.push(one);
+    else runs.push({ asked: deliberate(one.point), items: [one] });
+  }
+
+  return newestFirst(runs
+    .flatMap((run) => (run.asked ? [run.items] : divide(run.items, Math.max(1, most))))
+    .flatMap((items) => {
+      // A run too short to be worth gathering is just its versions.
+      if (items.length > 1 && items.length < Math.max(2, gathered)) {
+        return items.map((one) => entry([one], "version"));
+      }
+      return [entry(items, items.length > 1 ? "run" : "version")];
+    }));
 }
 
-/// A session's shape, as a fixed number of bars.
-///
-/// Fixed, because this is a sparkline beside a heading rather than an axis:
-/// it says "steady", or "one burst at the end", or "stop-start", and it has
-/// to say it in the same width whether the session was six minutes or ninety.
-/// The detail view is where a bar's place means a time.
-export function sessionSparkline(session, bars = 16) {
-  const count = Math.max(1, Math.round(bars));
-  const width = Math.max(1, (session.to - session.from + 1) / count);
-  const out = Array.from({ length: count }, () => 0);
-  for (const one of session.moments) {
-    const index = Math.min(count - 1, Math.max(0, Math.floor((one.minute - session.from) / width)));
-    out[index] += one.changes;
-  }
-  const most = Math.max(0, ...out);
-  return out.map((changes) => ({ changes, share: most > 0 ? changes / most : 0 }));
+// The one place the clock order is turned over, so that everything above it
+// can be written forwards. An entry keeps its own `minute` and `to`: those
+// are the span it ran for, not its place in the list.
+function newestFirst(entries) {
+  return entries
+    .map((one) => (one.points.length > 1 ? { ...one, points: [...one.points].reverse() } : one))
+    .reverse();
 }
 
-/// One session cut into bins of `span` minutes, in the same coordinates the
-/// detail view's axis is drawn in: `at` is minutes from midnight, so a bin
-/// and a version at the same time are at the same height by construction.
+// One entry, in the shape the panel reads: what it stands for, when it ran,
+// and -- for a run -- what the whole of it changed.
+function entry(items, kind) {
+  const points = items.map((one) => one.point);
+  return {
+    kind,
+    key: points[0].sha,
+    minute: items[0].minute,
+    to: items[items.length - 1].minute,
+    points,
+    changed: kind === "run" ? changedAcross(points) : null,
+  };
+}
+
+/// Cuts an over-long run at the longest pause inside it, and keeps cutting
+/// until no piece stands for more than `most` versions.
 ///
-/// The minutes a bin holds are kept, because clicking a bar is how a reader
-/// reaches a minute nobody saved a version of.
-export function sessionBins(session, span = 1) {
-  const width = Math.max(1, Math.round(span));
-  const count = Math.max(1, Math.ceil((session.to - session.from + 1) / width));
-  const bins = Array.from({ length: count }, (_, index) => ({
-    at: session.from + index * width,
-    span: width,
-    changes: 0,
-    work: 0,
-    moments: [],
-  }));
-  for (const one of session.moments) {
-    const index = Math.min(count - 1, Math.max(0, Math.floor((one.minute - session.from) / width)));
-    bins[index].changes += one.changes;
-    bins[index].work += one.work;
-    bins[index].moments.push(one);
+/// The place to divide a run of real work is where the work paused longest,
+/// not at every twenty-fifth version: a cut at a count falls in the middle of
+/// whatever somebody was doing and means nothing to them, while a cut at the
+/// longest pause is the same kind of boundary as the ones above -- the reader
+/// stopped there. Recursing on both halves finds the next-longest pause in
+/// each, so the pieces follow the shape of the afternoon rather than its
+/// length.
+///
+/// Equal pauses are cut nearest the middle, which matters more than it looks:
+/// a run with no variation in it at all -- somebody typing steadily for three
+/// hours -- has every gap tied, and taking the first of them would shave one
+/// version off the front three hundred times over and leave three hundred
+/// rows. Cutting in the middle halves it instead.
+function divide(items, most) {
+  if (items.length <= most) return [items];
+  const middle = items.length / 2;
+  let at = 1;
+  let longest = -1;
+  let nearest = Infinity;
+  for (let index = 1; index < items.length; index += 1) {
+    const gap = items[index].minute - items[index - 1].minute;
+    const away = Math.abs(index - middle);
+    if (gap > longest || (gap === longest && away < nearest)) {
+      longest = gap;
+      nearest = away;
+      at = index;
+    }
   }
-  // Work is the honest measure -- how much the document grew -- but a
-  // document whose activity was recorded before growth was has none, so the
-  // strip falls back to counting writes rather than drawing nothing.
-  const measure = bins.some((bin) => bin.work > 0) ? "work" : "changes";
-  const most = Math.max(0, ...bins.map((bin) => bin[measure]));
-  return bins.map((bin) => ({
-    ...bin,
-    level: level(bin[measure], most),
-    share: most > 0 ? bin[measure] / most : 0,
-  }));
+  return [...divide(items.slice(0, at), most), ...divide(items.slice(at), most)];
+}
+
+// What a run of versions changed, all told. `null` when any of them could not
+// answer: a run that cannot account for itself should not claim to, and one
+// version's silence makes the union a guess rather than a total.
+function changedAcross(points) {
+  const paths = new Set();
+  for (const point of points) {
+    if (!Array.isArray(point.changed)) return null;
+    for (const path of point.changed) paths.add(path);
+  }
+  return [...paths].sort();
+}
+
+/// The minutes somebody wrote in that no version was taken in.
+///
+/// These are reachable and sometimes wanted -- the whole operation history is
+/// kept so that a reader can open a minute nobody thought to save -- but they
+/// are not what a version history is for, and there are far more of them than
+/// there are versions. The panel keeps them folded away; this is the list it
+/// unfolds.
+///
+/// A minute a version already covers is that version's minute, and appears
+/// only as the version.
+export function unsavedMinutes(checkpoints, rows, day, timeZone) {
+  const saved = new Set(dayVersions(checkpoints, day, timeZone).map((one) => one.minute));
+  const byMinute = new Map();
+  for (const row of momentsOf(rows, day, timeZone)) {
+    const minute = minutesIn(row.at, timeZone);
+    if (minute < 0 || saved.has(minute)) continue;
+    const found = byMinute.get(minute) || { minute, changes: 0, frontier: "" };
+    found.changes += row.changes;
+    found.frontier = row.frontier || found.frontier;
+    byMinute.set(minute, found);
+  }
+  // Newest first, like the versions above them: this list hangs off the end
+  // of the same day and is read the same way.
+  return [...byMinute.values()]
+    .filter((one) => one.frontier)
+    .sort((left, right) => right.minute - left.minute);
 }
