@@ -777,11 +777,23 @@
     return true;
   }
 
-  // What the composer sends. The anchor comes from the draft rather than from
-  // `pending`, and a refusal leaves the card open with the words still in it.
+  // What the composer sends. The passage comes from the draft rather than
+  // from `pending`, so a stray selection made while someone is typing cannot
+  // retarget what they are writing about, and a refusal leaves the card open
+  // with the words still in it.
+  //
+  // One exception, and it is the recovery this reader asks for by name: when
+  // the document has been published to since the draft was started, it says
+  // "refresh, select it again, and submit". Selecting it again has to mean
+  // something, so a fresh selection made against the publication now on
+  // screen replaces the one the draft was holding -- which is stale by then
+  // and would only be refused.
   function sendDraft({ body, proposed }) {
     if (!composing) return false;
-    pending = composing.pending;
+    const held = composing.pending;
+    const moved = publishedMode && held.publication_id !== publishedPublication?.id;
+    const reselected = moved && pending && pending.publication_id === publishedPublication?.id;
+    pending = reselected ? { ...pending } : held;
     const motivation = motivationFor(composing.verb);
     const submitted = submitAnnotation({ motivation, body, proposed });
     if (!submitted) return false;

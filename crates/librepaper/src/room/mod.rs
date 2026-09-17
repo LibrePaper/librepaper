@@ -43,6 +43,8 @@ mod figures;
 #[cfg(test)]
 mod idle_room_tests;
 pub(crate) mod locate;
+#[cfg(test)]
+mod locate_corpus_tests;
 pub(crate) mod outgoing;
 #[cfg(test)]
 mod proposal_round_trip_tests;

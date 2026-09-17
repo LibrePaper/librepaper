@@ -61,7 +61,8 @@
   }
 </script>
 
-<article class="card composer preset-outlined-primary-500 p-2" aria-label={suggesting ? "Suggest a change" : "New comment"}>
+<article id="composer" class="card composer preset-outlined-primary-500 p-2"
+         aria-label={suggesting ? "Suggest a change" : "New comment"}>
   <div class="flex flex-col gap-2">
     <blockquote class="quote border-primary-500 border-l-2 pl-3 text-sm">{quotation}</blockquote>
 
@@ -77,14 +78,6 @@
     {/if}
 
     {#if suggesting}
-      {#if !pending?.source}
-        <!-- No anchor of record: the server stores and shows the suggestion
-             anyway, but an editor has to apply it by hand rather than
-             clicking Accept. -->
-        <p class="text-warning-600-400 text-sm">
-          LibrePaper could not place this passage in the source. An editor will have to apply the suggestion by hand.
-        </p>
-      {/if}
       <label class="label">
         <span class="label-text">Suggested replacement</span>
         <textarea
@@ -119,7 +112,7 @@
 
     <div class="flex items-center justify-end gap-2">
       <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => oncancel?.()}>Cancel</button>
-      <button type="button" class="btn btn-sm preset-filled-primary-500"
+      <button type="button" class="btn btn-sm preset-filled-primary-500" data-send
               disabled={needsLogin || (!suggesting && !body.trim())}
               onclick={send}>{suggesting ? "Suggest" : "Comment"}</button>
     </div>

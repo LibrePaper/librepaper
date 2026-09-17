@@ -84,7 +84,7 @@ try {
     await tab.evaluate("window.dispatchEvent(new MessageEvent('message',{origin:" + JSON.stringify(docsOrigin) + ",source:document.querySelector('.viewport iframe').contentWindow,data:{librepaper:true,..." + JSON.stringify(message) + "}}))");await flush();
   };
   const select=()=>frameMessage({type:"selection",selector:{exact:"Visible passage",prefix:"",suffix:"",position:0},rect:{top:30,bottom:50,left:30,right:130}});
-  const draft=async(text)=>{await tab.evaluate("(()=>{const field=document.querySelector('#commentForm textarea');field.value="+JSON.stringify(text)+";field.dispatchEvent(new Event('input',{bubbles:true}))})()");await flush();};
+  const draft=async(text)=>{await tab.evaluate("(()=>{const field=document.querySelector('#composer textarea');field.value="+JSON.stringify(text)+";field.dispatchEvent(new Event('input',{bubbles:true}))})()");await flush();};
 
   await until("published iframe",()=>tab.evaluate("Boolean(document.querySelector('.viewport iframe')&&window.roomReceive)"),10000);
   await until("published frame agent",()=>Promise.resolve(docsRequests.includes("/agent.js")),10000);
@@ -96,29 +96,29 @@ try {
 
   await select();await until("selection bar",()=>tab.evaluate("Boolean(document.querySelector('#selectionbar'))"),3000);
   await tab.evaluate("document.querySelector('#selectionbar button').click()");
-  await until("comment form",()=>tab.evaluate("Boolean(document.querySelector('#commentForm textarea'))"),3000);
+  await until("comment composer",()=>tab.evaluate("Boolean(document.querySelector('#composer textarea'))"),3000);
   await draft("Comment on the first publication");
-  await tab.evaluate("document.querySelector('#commentForm').requestSubmit()");await flush();
+  await tab.evaluate("document.querySelector('#composer [data-send]').click()");await flush();
   const first=await tab.evaluate("window.roomSent.filter(message=>message.type==='comment').at(-1)");
   assert.equal(first.publication_id,"pub-1");assert.equal(first.body,"Comment on the first publication");
 
   await select();await tab.evaluate("document.querySelector('#selectionbar button').click()");
-  await until("second comment form",()=>tab.evaluate("Boolean(document.querySelector('#commentForm textarea'))"),3000);
+  await until("second comment composer",()=>tab.evaluate("Boolean(document.querySelector('#composer textarea'))"),3000);
   await draft("Draft retained for the new publication");
   const publicationFetches=await tab.evaluate("window.fetchRequests.filter(request=>request.url.includes('/publication')).length");
   const oldFrame=await tab.evaluate("document.querySelector('.viewport iframe').src");
   current=2;await tab.evaluate("window.roomReceive({type:'publication-updated',publication_id:'pub-2'})");await flush();
   assert.equal(await tab.evaluate("window.fetchRequests.filter(request=>request.url.includes('/publication')).length"),publicationFetches,"notice does not refetch HTML");
   assert.equal(await tab.evaluate("document.querySelector('.viewport iframe').src"),oldFrame,"notice does not navigate");
-  assert.equal(await tab.evaluate("document.querySelector('#commentForm textarea').value"),"Draft retained for the new publication");
+  assert.equal(await tab.evaluate("document.querySelector('#composer textarea').value"),"Draft retained for the new publication");
   const sent=await tab.evaluate("window.roomSent.filter(message=>message.type==='comment').length");
-  await tab.evaluate("document.querySelector('#commentForm').requestSubmit()");await flush();
+  await tab.evaluate("document.querySelector('#composer [data-send]').click()");await flush();
   assert.equal(await tab.evaluate("window.roomSent.filter(message=>message.type==='comment').length"),sent,"stale selection is refused");
-  assert.equal(await tab.evaluate("document.querySelector('#commentForm textarea').value"),"Draft retained for the new publication","stale submit keeps draft");
+  assert.equal(await tab.evaluate("document.querySelector('#composer textarea').value"),"Draft retained for the new publication","stale submit keeps draft");
 
   await tab.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent.includes('Refresh')).click()");
   await until("refreshed publication",()=>tab.evaluate("document.querySelector('.viewport iframe').src.includes('v=2')"),5000);
-  await select();await tab.evaluate("document.querySelector('#commentForm').requestSubmit()");await flush();
+  await select();await tab.evaluate("document.querySelector('#composer [data-send]').click()");await flush();
   const refreshed=await tab.evaluate("window.roomSent.filter(message=>message.type==='comment').at(-1)");
   assert.equal(refreshed.publication_id,"pub-2");assert.equal(refreshed.body,"Draft retained for the new publication");
   assert.equal(await tab.evaluate("window.fetchRequests.some(request => /\\/publication\\/(?:prepare|activate|objects\\/)/.test(request.url))"),false,
