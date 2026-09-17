@@ -621,12 +621,11 @@ main.reader.source-right .editorpane {
 /* One palette for the tools, shared with the marks the agent paints into the
    document and the labels in the sidebar: hue says which kind of annotation,
    and it stays desaturated so a page of them reads as a document rather than
-   as a highlighter set. */
-.tools [data-tool="commenting"] {
+   as a highlighter set. Only the two armed modes are left here -- commenting,
+   highlighting and suggesting act on a selection and live on the bar over
+   it. */
+.tools [data-tool="point"] {
   --librepaper-tint: hsl(42 55% 45%);
-}
-.tools [data-tool="highlighting"] {
-  --librepaper-tint: hsl(145 28% 38%);
 }
 .tools [data-tool="region"] {
   --librepaper-tint: hsl(262 30% 50%);
@@ -637,8 +636,9 @@ main.reader.source-right .editorpane {
   background: color-mix(in srgb, var(--librepaper-tint) 12%, transparent);
 }
 
-/* The button that appears over a selection in the document, offering to make
-   the annotation the chosen tool would make. */
+/* The bar that appears over a selection in the document, offering the verbs
+   that can act on it. Hidden until a selection places it: the inline style is
+   what shows it, so a bar with nowhere to be is never on the screen. */
 #selectionbar {
   position: fixed;
   z-index: 20;
@@ -712,9 +712,11 @@ main.reader.adapted .mobile-pane-nav {
   background: var(--color-shell);
 }
 .mobile-pane-nav > * { flex-shrink: 0; }
-/* The one row of controls that is only ever touched, so it is the one row
-   sized for a finger rather than for a pointer: the 44px a thumb needs, where
-   the rail beside a mouse gets the 32px that reads better in a column. */
+/* The row of panels a phone gets in place of the rail beside the column. It
+   is only ever touched, so it is sized for a finger rather than for a
+   pointer: the 44px a thumb needs, where the rail beside a mouse gets the
+   32px that reads better in a column. Which face the main area wears is not
+   in here: that is the pair in the bar at the top. */
 .mobile-pane-nav :where(.icon-control) { width: 2.75rem; height: 2.75rem; }
 main.reader .sidebar, main.reader .editorpane, main.reader .viewport, main.reader .latexpane {
   min-height: 0;

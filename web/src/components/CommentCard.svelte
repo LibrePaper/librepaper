@@ -1,11 +1,14 @@
 <script>
   import { tick } from "svelte";
+  import { Menu } from "@skeletonlabs/skeleton-svelte";
+  import ExplorerMenu from "./ExplorerMenu.svelte";
   import IconButton from "./IconButton.svelte";
   import Avatar from "./Avatar.svelte";
   import Row from "./layout/Row.svelte";
   import * as history from "../lib/history.js";
   import { runsFor } from "../lib/suggestions.js";
-  import { day as isoDay } from "../lib/dates.js";
+  import { threadRuns } from "../lib/thread.js";
+  import { day as isoDay, moment } from "../lib/dates.js";
 
   // One annotation, and everything said about it.
   let {
@@ -84,7 +87,6 @@
   );
 
   const stamp = (value) => (value || "").replace("T", " ").slice(0, 16) + " UTC";
-
   // The one line a resolved card shows: what it was about, then what was said
   // about it. A decided suggestion leads with the decision, since that is
   // what "resolved" means for it.
@@ -97,6 +99,14 @@
       .filter(Boolean)
       .join(" — ") || "Resolved",
   );
+
+  // The note and its replies as one conversation, run together by author.
+  // Repeating the badge on every line makes a stack of identities out of what
+  // is really a short exchange between two or three people, and in a sidebar
+  // this narrow the repeated gutter costs more than the reply is worth. The
+  // rule itself, and why the run is keyed on a display name, live in
+  // `lib/thread.js` -- `web/tests/unit/thread.mjs` is what exercises it.
+  const runs = $derived(threadRuns(comment));
 
   // Opening a resolved note replaces the summary button with the card, so the
   // element that was activated stops existing. Focus would be dropped to the
@@ -117,6 +127,12 @@
       return;
     }
     if (!comment.orphaned && !comment.regionUnplaceable) onreveal?.(comment);
+  }
+
+  async function reply() {
+    replying = true;
+    await tick();
+    replyField?.focus();
   }
 
   // No buttons under the reply box: Enter sends, Shift+Enter breaks the line
@@ -151,7 +167,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
 <article
   id="{cardIdPrefix}-{comment.id}"
-  class="card cursor-pointer p-3 {comment.resolved || comment.pending
+  class="card cursor-pointer p-2 {comment.resolved || comment.pending
     ? 'preset-outlined-surface-200-800 opacity-70'
     : 'preset-outlined-surface-300-700'}"
   class:collapsed
@@ -267,28 +283,29 @@
         <p class="panel-muted">Now: {replacement ? `“${replacement}”` : "deleted without replacement."}</p>
       {/if}
 
-      {#if comment.body}<p>{comment.body}</p>{/if}
-
-
-      <div class="byline">
-        <Avatar name={comment.creator} size={5} title={`${comment.creator} · ${stamp(comment.created)}`} />
-        <small class="panel-meta">{stamp(comment.created)}</small>
+      <div class="thread">
+        {#each runs as run (run.id)}
+          <div class="run">
+            <div class="run-head">
+              <Avatar name={run.author} size={5} title={`${run.author} · ${stamp(run.created)}`} />
+              <strong class="run-author">{run.author}</strong>
+              <small class="panel-meta">{moment(run.created)}</small>
+            </div>
+            {#each run.posts as post (post.id)}
+              {#if post.body}<p class="post" title={stamp(post.created)}>{post.body}</p>{/if}
+            {/each}
+          </div>
+        {/each}
       </div>
-
-      {#if comment.replies?.length}
-        <ul class="border-surface-200-800 flex flex-col gap-2 border-l pl-3">
-          {#each comment.replies as reply (reply.id)}
-            <li class="reply">
-              <Avatar name={reply.creator} size={5} title={`${reply.creator} · ${stamp(reply.created)}`} />
-              <span>{reply.body}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
     </div>
   {/if}
 
-  <Row gap={1} justify="end">
+  <!-- One row of verbs for the whole thread, and it keeps out of the way:
+       the two that get used stay visible only while the card is the one being
+       read, and the one that cannot be undone waits behind the menu. A card
+       that is hovered, focused into, or selected shows them; so does every
+       card on a device with no pointer to hover with. -->
+  <div class="actions">
     {#if !isSuggestion && canComment}
       <!-- Reject is the resolve, for a suggestion -- see the diff and
            decision block above. -->
@@ -306,29 +323,32 @@
     <IconButton
       icon="reply"
       label="Reply"
+      tone={canComment ? "outlined" : null}
       disabled={!canComment}
-      onclick={async (e) => {
+      onclick={(e) => {
         e.stopPropagation();
-        replying = true;
-        await tick();
-        replyField?.focus();
+        void reply();
       }}
     />
     {#if deletable}
-      <IconButton
-        icon="trash"
-        label="Delete"
-        colour="text-error-500"
-        onclick={(e) => {
-          e.stopPropagation();
-          ondelete?.(comment);
-        }}
-      />
+      <Menu onSelect={(chosen) => { if (chosen.value === "delete") ondelete?.(comment); }}>
+        <!-- The button is authored here rather than handed a `class`: a class
+             arriving as a prop carries no scope hash, so the rules below would
+             have to be global to paint at all. -->
+        <Menu.Trigger>
+          {#snippet element(attributes)}
+            <button {...attributes} type="button" class="comment-menu" aria-label="More comment options">•••</button>
+          {/snippet}
+        </Menu.Trigger>
+        <ExplorerMenu>
+          <Menu.Item value="delete" class="menuitem">Delete comment</Menu.Item>
+        </ExplorerMenu>
+      </Menu>
     {/if}
-  </Row>
+  </div>
 
   {#if replying && canComment}
-    <form class="mt-3 flex flex-col gap-2" onsubmit={submitReply}>
+    <form class="mt-2 flex flex-col gap-2" onsubmit={submitReply}>
       {#if !identity}
         <p class="panel-meta">replying as {commentingAs}</p>
       {/if}
@@ -349,7 +369,28 @@
 
 <style>
   .selected { border-color: var(--color-primary-500); box-shadow: 0 0 0 1px var(--color-primary-500); }
-  .byline { display: flex; align-items: center; gap: var(--spacing); }
-  .reply { display: flex; align-items: flex-start; gap: var(--spacing); }
-  .reply > span { min-width: 0; overflow-wrap: anywhere; }
+
+  /* The conversation: runs of one author separated by a little air, the lines
+     within a run tight enough to read as one person still talking. No rail
+     down the side and no avatar gutter -- a long reply in a sidebar this
+     narrow needs the whole width. */
+  .thread { display: flex; flex-direction: column; gap: calc(var(--spacing) * 3); }
+  .run { display: flex; flex-direction: column; gap: calc(var(--spacing) * 0.75); }
+  .run-head { display: flex; align-items: center; gap: var(--spacing); min-width: 0; }
+  .run-author { min-width: 0; overflow: hidden; font-size: var(--panel-meta-size); line-height: var(--panel-line-height); text-overflow: ellipsis; white-space: nowrap; }
+  .post { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+
+  .actions { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 0.5); margin-top: var(--spacing); opacity: 0; transition: opacity 120ms ease-in-out; }
+  /* Visible whenever the card is the one in hand. `:focus-within` is what
+     keeps them reachable from the keyboard: they are always in the tab order,
+     and tabbing to one is what paints it. */
+  .card:hover .actions,
+  .card:focus-within .actions,
+  .selected .actions { opacity: 1; }
+  /* Nothing hovers on a touch screen, so there they simply stay. */
+  @media (hover: none) { .actions { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .actions { transition: none; } }
+
+  .comment-menu { padding-inline: calc(var(--spacing) * 1.5); border-radius: var(--radius-base); font-size: var(--panel-meta-size); line-height: 1; color: var(--panel-muted); }
+  .comment-menu:hover, .comment-menu[data-state="open"] { background: var(--color-row-hover); }
 </style>

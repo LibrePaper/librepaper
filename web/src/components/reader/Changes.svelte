@@ -6,9 +6,9 @@
     // One row per hunk. A decision names a proposal and an index within it
     // (SPEC-loro.md §5.2), so the unit of the queue is a hunk and not a
     // proposal: an agent run that touches four passages is four answers.
-    proposals = [], comments = [], files = [], tracking = false, markup = true, showMarkup,
+    proposals = [], comments = [], files = [], tracking = false,
     canTrack = true, canReview = true, selected = "", selectedProposal = "", filters = {},
-    authors = [], sessions = [], ontracking, onmarkup, onfilter, onselect,
+    authors = [], sessions = [], ontracking, onfilter, onselect,
     onaccept, onreject, onproposalreveal, onproposaldecide,
     onprevious, onnext, onreveal, onresolve, ondelete, onreply, onhistory, onproposalpreview,
     identity = "", commentingAs = "Anonymous", canModerate = false,
@@ -20,7 +20,13 @@
   let deciding = $state(new Set());
   let localFilters = $state({ status: "pending", author: "", file: "", session: "" });
   let feedback = $state("");
-  let filtersOpen = $state(false);
+  // Ticking changes is a mode you enter, not the state the queue sits in. A
+  // review is one change at a time; answering several at once is the rarer
+  // thing, so it waits behind a menu item and takes the row of verbs with it.
+  let selecting = $state(false);
+  // A bulk verb aimed at everything pending, held for one confirmation. There
+  // is no undoing a decision from here (§5.1), so "accept all" asks once.
+  let confirming = $state("");
 
   const value = (item, ...keys) => keys.map((key) => item?.[key])
     .find((answer) => answer !== undefined && answer !== null && answer !== "") ?? "";
@@ -92,7 +98,6 @@
   const allPending = $derived(allRows.filter(pending).length);
   const selectedRows = $derived(filteredRows.filter((item) => checked.has(rowId(item))));
   const active = $derived(filteredRows.some((item) => rowId(item) === expanded) ? expanded : filteredRows.some((item) => rowId(item) === String(selectedProposal)) ? String(selectedProposal) : filteredRows.some((item) => rowId(item) === `suggestion:${String(selected)}`) ? `suggestion:${String(selected)}` : filteredRows[0] ? rowId(filteredRows[0]) : "");
-  const markupVisible = $derived(showMarkup === undefined ? markup : showMarkup);
   const derivedAuthors = $derived(authors.length ? authors : [...new Set(allRows.map(authorOf))]);
   const derivedFiles = $derived(files.length ? files.map((file) => file.path || file.id).filter(Boolean) : [...new Set(allRows.map(pathOf))]);
   /// The queue, with rival changes standing together.
@@ -165,8 +170,25 @@
   const chosenChanges = $derived(
     selectedRows.filter((item) => pending(item) && reviewAllowed(item) && !blocker(item)),
   );
-  const activeIndex = $derived(filteredRows.findIndex((item) => rowId(item) === active));
   const showExtraFilters = $derived(derivedAuthors.length > 1 || derivedFiles.length > 1);
+  /// Everything on show that this caller could actually answer for: what the
+  /// two verbs in the menu would touch, and what the count beside them says.
+  const answerable = $derived(
+    pendingRows.filter((item) => reviewAllowed(item) && !blocker(item)),
+  );
+  /// Whether the filename belongs on the metadata line. One file under review
+  /// names itself in every row, which is a word that tells the reviewer
+  /// nothing; two or more and it is the only thing placing the change.
+  const showPath = $derived(derivedFiles.length > 1);
+  const statusNames = { pending: "Pending changes", accepted: "Accepted changes", rejected: "Rejected changes", all: "All changes" };
+  const filterLabel = $derived([
+    statusNames[activeFilters.status] || statusNames.pending,
+    activeFilters.author ? authorFilterLabel(activeFilters.author) : "",
+    activeFilters.file || "",
+  ].filter(Boolean).join(" · "));
+  /// Whether anything is hidden behind the status filter -- what the empty
+  /// state offers to show when the pending queue is done.
+  const resolvedCount = $derived(allRows.length - allPending);
 
   $effect(() => {
     const valid = new Set(allRows.filter(pending).map(rowId));
@@ -174,6 +196,7 @@
     if (next.size !== checked.size) checked = next;
   });
   $effect(() => { if (expanded && !filteredRows.some((item) => rowId(item) === expanded)) expanded = ""; });
+  $effect(() => { if (selecting && !canPick) stopSelecting(); });
 
   /// Why this change cannot be answered, or "" when it can.
   ///
@@ -189,7 +212,9 @@
     if (item.conflict) return typeof item.conflict === "string" ? item.conflict : "Concurrent edits need attention.";
     return "";
   }
-  function updateFilter(key, event) { const next = { ...localFilters, [key]: event.currentTarget.value }; localFilters = next; onfilter?.(next); }
+  function updateFilter(key, answer) { const next = { ...localFilters, [key]: answer }; localFilters = next; onfilter?.(next); }
+  function startSelecting() { selecting = true; confirming = ""; }
+  function stopSelecting() { selecting = false; checked = new Set(); }
   function focusRow(id) { requestAnimationFrame(() => document.getElementById(`change-${id}`)?.focus({ preventScroll: true })); }
   function activate(item, { focus = false } = {}) {
     if (!item) return;
@@ -227,16 +252,18 @@
     finally { removeBusy(id); }
   }
 
-  async function bulk(action) {
+  /// Answering several changes at once: the ticked ones, or everything
+  /// pending when the verb came from the menu rather than from a selection.
+  async function bulk(action, rows = selectedRows) {
     if (!canReview) return;
     // Take the rows before sending anything: the ticks are cleared and the
     // queue re-sorts as answers arrive, so this is a list and not a filter
     // that keeps being asked.
-    const captured = selectedRows.filter(pending); if (!captured.length) return;
+    const captured = rows.filter(pending); if (!captured.length) return;
     const excluded = captured.filter((item) => blocker(item) || !reviewAllowed(item));
     const eligible = captured.filter((item) => !blocker(item) && reviewAllowed(item));
-    if (!eligible.length) { feedback = `${excluded.length} selected change${excluded.length === 1 ? "" : "s"} excluded because it needs attention.`; return; }
-    eligible.forEach((item) => addBusy(rowId(item))); checked = new Set();
+    if (!eligible.length) { feedback = `${excluded.length} change${excluded.length === 1 ? "" : "s"} excluded because it needs attention.`; return; }
+    eligible.forEach((item) => addBusy(rowId(item))); stopSelecting(); confirming = "";
     try {
       // Each hunk is decided on its own, because that is what a decision is:
       // it names a proposal and an index within it (§5.2), and the server
@@ -252,14 +279,25 @@
     } catch (error) { feedback = error?.message || `Could not ${action} the selected changes.`; }
     finally { eligible.forEach((item) => removeBusy(rowId(item))); }
   }
-  // There is no undoing a decision from here. A decision is recorded and
-  // broadcast at once (§5.1), and what it eventually does to the document is
-  // a merge the server makes when the proposal resolves -- so taking one back
-  // is an ordinary edit to the paper, not a review action. The menu used to
-  // offer it against the deleted revision mechanism, wired to a callback
-  // nothing passed.
+  // The menu is where the infrequent things live: the two verbs that answer
+  // for the whole queue, the reading of a chosen set of proposals, and the
+  // mode that lets a reviewer choose that set. None of them belongs in the
+  // panel itself, where they would stand above every review as controls
+  // nobody presses.
+  //
+  // There is no undoing a decision here. A decision is recorded and broadcast
+  // at once (§5.1), and what it eventually does to the document is a merge
+  // the server makes when the proposal resolves -- so taking one back is an
+  // ordinary edit to the paper, not a review action.
   function chooseMenuItem(value) {
-    if (value === "markup") onmarkup?.(!markupVisible);
+    if (value === "select") startSelecting();
+    else if (value === "accept-all") confirming = "accept";
+    else if (value === "reject-all") confirming = "reject";
+    else if (value === "resolved") updateFilter("status", "all");
+  }
+  function chooseFilter(value) {
+    const [key, ...rest] = String(value).split(":");
+    if (key === "status" || key === "author" || key === "file") updateFilter(key, rest.join(":"));
   }
   function move(offset) { const index = filteredRows.findIndex((item) => rowId(item) === active); const item = filteredRows[index + offset] || filteredRows[index]; if (item) activate(item, { focus: true }); }
   // A stale hunk has one way forward: look at the passage as it stands now.
@@ -272,6 +310,7 @@
   function keydown(event) {
     if (event.defaultPrevented || event.isComposing || event.target.closest("input,select,textarea,[contenteditable=true],details,[data-scope='menu']")) return;
     const item = rowFor(active); const key = event.key.toLowerCase();
+    if (event.key === "Escape" && (selecting || confirming)) { event.preventDefault(); stopSelecting(); confirming = ""; return; }
     if (event.key === "ArrowDown" || key === "j") { event.preventDefault(); onnext?.(active); move(1); }
     else if (event.key === "ArrowUp" || key === "k") { event.preventDefault(); onprevious?.(active); move(-1); }
     else if (item && key === "a" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); void decide(item, "accept"); }
@@ -293,79 +332,131 @@
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="panel changes-panel" role="application" tabindex="0" onkeydown={keydown} aria-label="Changes review" aria-keyshortcuts="ArrowDown ArrowUp J K A R">
+  <!-- Two rows and nothing else above the queue: what this is, whether
+       subsequent edits are tracked, and which changes are on show. Everything
+       a reviewer does rarely is behind the ••• beside them, so the first
+       reviewable change is a finger's width from the top of the panel rather
+       than a screen down it. -->
   <header class="changes-header">
-    <!-- A real switch rather than a checkbox with a switch painted over it:
-         the state is the control's own, so the name no longer has to carry
-         "On" or "Off" for a screen reader to read it out. -->
-    <div class="changes-title-row"><h2>Changes</h2><Switch class="tracking-toggle" checked={tracking} disabled={!canTrack}
-      title={canTrack ? "Track subsequent edits in this document" : "Editing is unavailable"}
-      onCheckedChange={({ checked }) => ontracking?.(checked)}>
-      <Switch.Label>Track changes</Switch.Label>
-      <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
-      <Switch.HiddenInput />
-    </Switch></div>
-    <div class="changes-meta" aria-live="polite">{allPending} pending{allRows.length !== allPending ? ` · ${allRows.length} total` : ""}{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}{contestedCount ? ` · ${contestedCount} contested` : ""}</div>
-    <!-- Reading a chosen set of proposals as prose. Reviewing a change shows a
-         few words either side of it, which is how you accept a sentence that
-         spoils the paragraph after it; this shows the result instead. It is a
-         reading and not a version -- nothing is decided by opening it. -->
-    {#if canPick}<div class="preview-bar">
-      {#if canPreview}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!chosenProposals.length} title={chosenProposals.length ? "Read the paper with these proposals applied" : "Tick changes to read the paper as they would leave it"} onclick={() => onproposalpreview?.([...chosenProposals])}>Read with {chosenProposals.length || "no"} proposal{chosenProposals.length === 1 ? "" : "s"}</button>{/if}
-      <!-- Answering several at once. The count is of hunks, not proposals: a
-           decision names a hunk, so this is the same verb the card offers,
-           said once for everything ticked that it may be said for. -->
-      {#if canReview}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!chosenChanges.length || busy} title={chosenChanges.length ? "Accept every ticked change you may answer for" : "Tick changes to accept them together"} onclick={() => bulk("accept")}>Accept {chosenChanges.length || "no"} change{chosenChanges.length === 1 ? "" : "s"}</button>
-      <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!chosenChanges.length || busy} title={chosenChanges.length ? "Reject every ticked change you may answer for" : "Tick changes to reject them together"} onclick={() => bulk("reject")}>Reject {chosenChanges.length || "no"} change{chosenChanges.length === 1 ? "" : "s"}</button>{/if}
-      {#if checked.size}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => (checked = new Set())}>Clear</button>{/if}
-    </div>{/if}
-    <div class="filter-bar">
-      <select aria-label="Change status" value={activeFilters.status} onchange={(event) => updateFilter("status", event)}><option value="pending">Pending</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="all">All statuses</option></select>
-      {#if showExtraFilters}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" aria-expanded={filtersOpen} aria-controls="change-extra-filters" onclick={() => filtersOpen = !filtersOpen}>Filter{activeFilters.author || activeFilters.file || activeFilters.session ? " •" : ""}</button>{/if}
-      <Menu onSelect={(chosen) => chooseMenuItem(chosen.value)}>
-        <!-- The button is authored here rather than handed a `class`: a class
-             arriving as a prop carries no scope hash, so the rules below would
-             have to be global to paint at all. -->
-        <Menu.Trigger>
-          {#snippet element(attributes)}
-            <button {...attributes} class="changes-menu" aria-label="More change options">•••</button>
-          {/snippet}
-        </Menu.Trigger>
-        <ExplorerMenu>
-          <div class="changes-menu-label">View</div>
-          <Menu.Item value="markup" class="menuitem" disabled={!onmarkup}>
-            <span class="w-4">{markupVisible ? "✓" : ""}</span>Markup
-          </Menu.Item>
-          <hr class="hr my-1" />
-          <div class="changes-menu-label">Keyboard shortcuts</div>
-          <div class="changes-menu-hint">J/K or ↑/↓ to move<br />A to accept · R to reject</div>
-        </ExplorerMenu>
-      </Menu>
+    <div class="changes-title-row">
+      <h2>Changes</h2>
+      <div class="title-controls">
+        <!-- A real switch rather than a checkbox with a switch painted over it:
+             the state is the control's own, so the name no longer has to carry
+             "On" or "Off" for a screen reader to read it out. -->
+        <Switch class="tracking-toggle" checked={tracking} disabled={!canTrack}
+          title={canTrack ? "Track subsequent edits in this document" : "Editing is unavailable"}
+          onCheckedChange={({ checked }) => ontracking?.(checked)}>
+          <Switch.Label>Track changes</Switch.Label>
+          <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
+          <Switch.HiddenInput />
+        </Switch>
+        <Menu onSelect={(chosen) => chooseMenuItem(chosen.value)}>
+          <!-- The button is authored here rather than handed a `class`: a class
+               arriving as a prop carries no scope hash, so the rules below would
+               have to be global to paint at all. -->
+          <Menu.Trigger>
+            {#snippet element(attributes)}
+              <button {...attributes} class="changes-menu" aria-label="More change options">•••</button>
+            {/snippet}
+          </Menu.Trigger>
+          <ExplorerMenu>
+            {#if canPick}<Menu.Item value="select" class="menuitem">Select multiple</Menu.Item>{/if}
+            {#if canReview && answerable.length}
+              <Menu.Item value="accept-all" class="menuitem">Accept all pending changes</Menu.Item>
+              <Menu.Item value="reject-all" class="menuitem">Reject all pending changes</Menu.Item>
+            {/if}
+            {#if activeFilters.status === "pending" && resolvedCount}
+              <Menu.Item value="resolved" class="menuitem">Show resolved changes</Menu.Item>
+            {/if}
+            <hr class="hr my-1" />
+            <div class="changes-menu-hint">J/K or ↑/↓ to move<br />A to accept · R to reject</div>
+          </ExplorerMenu>
+        </Menu>
+      </div>
     </div>
-    {#if filtersOpen && showExtraFilters}<div id="change-extra-filters" class="filters" aria-label="Change filters">
-      {#if derivedAuthors.length > 1}<select aria-label="Filter by author" value={activeFilters.author} onchange={(event) => updateFilter("author", event)}><option value="">All authors</option>{#each derivedAuthors as author}<option value={author}>{authorFilterLabel(author)}</option>{/each}</select>{/if}
-      {#if derivedFiles.length > 1}<select aria-label="Filter by file" value={activeFilters.file} onchange={(event) => updateFilter("file", event)}><option value="">All files</option>{#each derivedFiles as file}<option value={file}>{file}</option>{/each}</select>{/if}
-    </div>{/if}
-    {#if feedback}<p class="panel-status" role="status" aria-live="polite">{feedback}</p>{/if}
+    <div class="changes-meta" aria-live="polite">{allPending} pending{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}{contestedCount ? ` · ${contestedCount} contested` : ""}</div>
   </header>
-  {#if !filteredRows.length}<p class="panel-muted changes-empty" role="status">{activeFilters.status === "pending" ? "No pending changes." : "No changes match these filters."}</p>{/if}
+  <!-- One control, not a dropdown beside a button that opens more of them:
+       status is what a reviewer changes, and author and file -- when there is
+       more than one of either -- sit inside the same popover rather than
+       claiming a row of their own. -->
+  <div class="filter-bar">
+    <Menu onSelect={(chosen) => chooseFilter(chosen.value)}>
+      <Menu.Trigger>
+        {#snippet element(attributes)}
+          <button {...attributes} type="button" class="filter-trigger" aria-label="Which changes to show">{filterLabel}<span class="caret" aria-hidden="true">▾</span></button>
+        {/snippet}
+      </Menu.Trigger>
+      <ExplorerMenu>
+        <div class="changes-menu-label">Status</div>
+        {#each [["pending", "Pending"], ["accepted", "Accepted"], ["rejected", "Rejected"], ["all", "All"]] as [key, label]}
+          <Menu.Item value={`status:${key}`} class="menuitem"><span class="w-4">{activeFilters.status === key ? "✓" : ""}</span>{label}</Menu.Item>
+        {/each}
+        {#if derivedAuthors.length > 1}
+          <hr class="hr my-1" />
+          <div class="changes-menu-label">Author</div>
+          <Menu.Item value="author:" class="menuitem"><span class="w-4">{activeFilters.author ? "" : "✓"}</span>Anyone</Menu.Item>
+          {#each derivedAuthors as author}
+            <Menu.Item value={`author:${author}`} class="menuitem"><span class="w-4">{activeFilters.author === author ? "✓" : ""}</span>{authorFilterLabel(author)}</Menu.Item>
+          {/each}
+        {/if}
+        {#if derivedFiles.length > 1}
+          <hr class="hr my-1" />
+          <div class="changes-menu-label">File</div>
+          <Menu.Item value="file:" class="menuitem"><span class="w-4">{activeFilters.file ? "" : "✓"}</span>Every file</Menu.Item>
+          {#each derivedFiles as file}
+            <Menu.Item value={`file:${file}`} class="menuitem"><span class="w-4">{activeFilters.file === file ? "✓" : ""}</span>{file}</Menu.Item>
+          {/each}
+        {/if}
+      </ExplorerMenu>
+    </Menu>
+  </div>
+  <!-- Ticking rows, and the verbs that go with it, for as long as the mode
+       lasts. Reading a chosen set of proposals as prose lives here too: it is
+       a reading and not a version -- nothing is decided by opening it -- and
+       it needs a chosen set, which is exactly what this mode makes. -->
+  {#if selecting}<div class="select-bar" role="group" aria-label="Selected changes">
+    <span class="select-count">{checked.size} selected</span>
+    {#if canPreview}<button type="button" class="bar-action" disabled={!chosenProposals.length} title={chosenProposals.length ? "Read the paper with these proposals applied" : "Tick changes to read the paper as they would leave it"} onclick={() => onproposalpreview?.([...chosenProposals])}>Read</button>{/if}
+    {#if canReview}<button type="button" class="bar-action reject" disabled={!chosenChanges.length || busy} onclick={() => bulk("reject")}>Reject</button>
+    <button type="button" class="bar-action accept" disabled={!chosenChanges.length || busy} onclick={() => bulk("accept")}>Accept</button>{/if}
+    <button type="button" class="bar-action" onclick={stopSelecting}>Cancel</button>
+  </div>{/if}
+  {#if confirming}<div class="select-bar confirm-bar" role="group" aria-label="Confirm a decision for every pending change">
+    <span class="select-count">{confirming === "accept" ? "Accept" : "Reject"} all {answerable.length}?</span>
+    <button type="button" class="bar-action {confirming}" disabled={busy} onclick={() => bulk(confirming, pendingRows)}>{confirming === "accept" ? "Accept all" : "Reject all"}</button>
+    <button type="button" class="bar-action" onclick={() => confirming = ""}>Cancel</button>
+  </div>{/if}
+  {#if feedback}<p class="panel-status" role="status" aria-live="polite">{feedback}</p>{/if}
+  {#if !filteredRows.length}<div class="changes-empty" role="status">
+    <p class="panel-muted">{activeFilters.status === "pending" ? "No pending changes." : "No changes match these filters."}</p>
+    {#if activeFilters.status === "pending" && resolvedCount}<button type="button" class="empty-link" onclick={() => updateFilter("status", "all")}>View resolved changes</button>{/if}
+  </div>{/if}
   <!-- One entry per decision, except where several proposals answer the same
        question: those stand together so the choice between them is visible
        rather than spread down the queue (SPEC-loro.md §5.3). -->
   {#snippet changeBody(item)}
     {@const id = rowId(item)}{@const isOpen = active === id}{@const why = blocker(item)}{@const parts = diffParts(item)}
-    <div class="row-head">{#if canPick}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-author">{authorLabel(item)}{timeLabel(item) ? ` · ${timeLabel(item)}` : ""}</span><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}{shortDiff(item)}{/if}</span>{#if derivedFiles.length > 1}<span class="row-context">{pathOf(item)}</span>{/if}{#if statusOf(item) !== "pending"}<span class="row-status">{statusOf(item)}</span>{/if}</button></div>
-    <div class="row-footer"><span></span>{#if pending(item)}<span class="row-actions"><button type="button" class="btn btn-sm row-action reject" aria-label={`Reject change in ${pathOf(item)}`} title={why || "Reject this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button><button type="button" class="btn btn-sm row-action accept" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button></span>{/if}</div>
+    <!-- The change first and whoever wrote it after it, smaller: the proposed
+         words are the thing being reviewed, and a username set above them in
+         bold reads as though the author were. -->
+    <div class="row-head">{#if selecting}<input type="checkbox" class="row-pick" checked={checked.has(id)} aria-label={`Tick ${authorLabel(item)}'s change`} onclick={(event) => event.stopPropagation()} onchange={() => toggleChecked(item)} />{/if}<button id={`change-${id}`} type="button" class="row-main" aria-current={isOpen ? "true" : undefined} onclick={() => reveal(item)}><span class="row-diff">{#if parts.before}<span class="deletion">− {parts.before}</span>{/if}{#if parts.after}<span class="insertion">+ {parts.after}</span>{/if}{#if !parts.before && !parts.after}<span class="row-summary">{shortDiff(item)}</span>{/if}</span><span class="row-meta"><span class="row-author">{authorLabel(item)}</span>{#if showPath}<span class="row-context">{pathOf(item)}</span>{/if}{#if statusOf(item) !== "pending"}<span class="row-status">{statusOf(item)}</span>{/if}{#if why}<span class="row-warning">needs attention</span>{/if}</span></button></div>
     {#if isOpen && why}<div id={`change-detail-${id}`} class="change-detail" role="region" aria-label={`Details for change in ${pathOf(item)}`}>
-      <div class="conflict" role="alert"><strong>Needs attention</strong><p>{why}</p><button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => resolve(item)}>Show the passage</button></div>
-    </div>{#if item.replies?.length}<details class="discussion"><summary>Discussion ({item.replies.length})</summary><ul>{#each item.replies as reply (reply.id)}<li><strong>{reply.creator || "Author"}:</strong> {reply.body}</li>{/each}</ul></details>{/if}{/if}
+      <div class="conflict" role="alert"><p>{why}</p><button type="button" class="empty-link" onclick={() => resolve(item)}>Show the passage</button></div>
+    </div>{/if}
+    <!-- Only the change being looked at offers an answer. Twenty rows of
+         buttons is twenty invitations to answer something nobody has read. -->
+    {#if isOpen && !selecting && pending(item)}<div class="row-actions"><button type="button" class="row-action reject" aria-label={`Reject change in ${pathOf(item)}`} title={why || "Reject this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "reject")}>{deciding.has(id) ? "Rejecting…" : "Reject"}</button><button type="button" class="row-action accept" aria-label={`Accept change in ${pathOf(item)}`} title={why || "Accept this change"} disabled={!reviewAllowed(item) || Boolean(why) || deciding.has(id)} onclick={() => void decide(item, "accept")}>{deciding.has(id) ? "Accepting…" : "Accept"}</button></div>{/if}
+    {#if isOpen && item.replies?.length}<details class="discussion"><summary>Discussion ({item.replies.length})</summary><ul>{#each item.replies as reply (reply.id)}<li><strong>{reply.creator || "Author"}:</strong> {reply.body}</li>{/each}</ul></details>{/if}
   {/snippet}
   <div class="changes-list" role="list" aria-label="Revision queue">
     {#each groupedRows as entry (entry.key)}
       {#if entry.kind === "contested"}
         <article class="change-row contested" role="listitem" aria-label={`${entry.members.length} rival changes to the same text in ${pathOf(entry.members[0])}`}>
-          <p class="contested-head"><span class="contested-badge">Contested</span> {entry.members.length} proposals change the same text{derivedFiles.length > 1 ? ` in ${pathOf(entry.members[0])}` : ""}. Accepting one leaves the rest still to answer.</p>
+          <p class="contested-head"><span class="contested-badge">Contested</span> {entry.members.length} proposals change the same text{showPath ? ` in ${pathOf(entry.members[0])}` : ""}. Accepting one leaves the rest still to answer.</p>
           {#each entry.members as item (rowId(item))}
-            <div class="contested-option">{@render changeBody(item)}</div>
+            <div class="contested-option" class:active={active === rowId(item)}>{@render changeBody(item)}</div>
           {/each}
         </article>
       {:else}
@@ -376,39 +467,79 @@
       {/if}
     {/each}
   </div>
+  <!-- The shortcuts, said once and quietly, rather than a panel of
+       documentation standing where changes could be. -->
+  {#if filteredRows.length}<footer class="changes-hint">J/K next · A accept · R reject</footer>{/if}
 </div>
 
 <style>
   .changes-panel { display: flex; flex-direction: column; min-height: 0; outline: none; height: 100%; }
-  .changes-header { position: sticky; top: 0; z-index: 2; flex: 0 0 auto; padding: var(--spacing); background: var(--color-sidebar); border-bottom: 1px solid var(--color-surface-200-800); }
-  .changes-title-row, .filters, .row-head { display: flex; align-items: center; gap: var(--spacing); } .changes-title-row { flex-wrap: wrap; justify-content: space-between; } h2 { margin: 0; font-size: 1rem; }
-  .changes-meta, .row-context, .row-status { color: var(--color-surface-500-400); font-size: .75rem; }
+  /* Two lines of header, and the filter under it: about fifty pixels before
+     the first change, where the settings area this replaced took several
+     hundred. Both stay put while the queue scrolls beneath them. */
+  .changes-header { position: sticky; top: 0; z-index: 2; flex: 0 0 auto; padding: .4rem var(--spacing) .25rem; background: var(--color-sidebar); }
+  .changes-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; } h2 { margin: 0; flex: 1 1 auto; min-width: 0; font-size: .95rem; }
+  .title-controls { display: flex; align-items: center; gap: .15rem; margin-left: auto; min-width: 0; }
+  .changes-meta, .row-meta, .changes-hint, .changes-menu-hint { color: var(--color-surface-500-400); font-size: .72rem; }
+  .changes-meta { margin-top: .1rem; }
   /* The track and thumb are `.switch` in librepaper.css, worn here and in the
      settings dialog alike; this is only where the words sit beside them. */
-  .changes-panel :global(.tracking-toggle) { display: flex; align-items: center; gap: .45rem; font-size: .78rem; }
-  /* The header of a panel that can be dragged down to fifteen rem: a row that
-     insists on a width is a row that pushes the ••• button out of the column.
-     So the status select takes what is left rather than asking for seven rem
-     of it, and the row wraps before it overflows. What the button opens is
-     portalled to the body, so the column's own clipping is not its problem. */
-  .filter-bar { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .65rem; } .filter-bar select { flex: 1 1 6rem; min-width: 0; max-width: 100%; }
-  .changes-menu { margin-left: auto; padding: .2rem .45rem; border: 0; border-radius: .25rem; background: none; line-height: 1; cursor: pointer; }
+  .changes-panel :global(.tracking-toggle) { display: flex; align-items: center; gap: .35rem; flex: 0 0 auto; font-size: .72rem; white-space: nowrap; }
+  .filter-bar { flex: 0 0 auto; padding: 0 var(--spacing) .3rem; background: var(--color-sidebar); border-bottom: 1px solid var(--color-surface-200-800); }
+  .filter-trigger { display: flex; align-items: center; gap: .3rem; max-width: 100%; padding: .2rem .35rem; margin-left: -.35rem; border: 0; border-radius: .25rem; background: none; color: inherit; font-size: .78rem; line-height: 1.3; text-align: left; cursor: pointer; }
+  .filter-trigger:hover, .filter-trigger[data-state="open"] { background: var(--color-surface-200-800); }
+  .caret { color: var(--color-surface-600-400); font-size: .85rem; line-height: 1; }
+  .changes-menu { flex: 0 0 auto; padding: .1rem .35rem; border: 0; border-radius: .25rem; background: none; line-height: 1; cursor: pointer; }
   .changes-menu:hover, .changes-menu[data-state="open"] { background: var(--color-surface-200-800); }
   .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--color-surface-600-400); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
-  .changes-menu-hint { padding: 0 .65rem .35rem; color: var(--color-surface-500-400); font-size: .75rem; line-height: var(--panel-line-height); }
-  .filters { flex-wrap: wrap; margin-top: .5rem; } .filters select { min-width: 0; max-width: 100%; flex: 1 1 7rem; }
-  .changes-list { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; } .change-row { position: relative; content-visibility: auto; contain-intrinsic-size: 0 7rem; border-bottom: 1px solid var(--color-surface-200-800); padding: .8rem var(--spacing); } .change-row.active { background: color-mix(in srgb, var(--color-primary-500) 8%, transparent); box-shadow: inset 3px 0 var(--color-primary-500); } .change-row.blocked { box-shadow: inset 3px 0 var(--color-warning-500); }
-  /* A contested group is one card holding rival answers. The left rule marks
-     the whole group rather than each option, so the eye reads "one question"
-     before it reads the choices. */
-  .change-row.contested { box-shadow: inset 3px 0 var(--color-tertiary-500); background: color-mix(in srgb, var(--color-tertiary-500) 5%, transparent); }
-  .contested-head { margin: 0 0 .4rem; font-size: .78rem; color: var(--color-surface-600-400); }
-  .contested-badge { display: inline-block; padding: 0 .35rem; border-radius: .2rem; background: var(--color-tertiary-500); color: var(--color-tertiary-contrast-500); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; }
-  .contested-option + .contested-option { border-top: 1px dashed var(--color-surface-200-800); padding-top: .5rem; margin-top: .5rem; }
-  .preview-bar { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .4rem; }
-  .row-pick { margin-right: .5rem; flex: none; align-self: start; margin-top: .2rem; }
-  .row-head { align-items: flex-start; gap: .4rem; } .row-main { min-width: 0; flex: 1; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; } .row-author, .row-diff, .row-context, .row-status { display: block; } .row-author { font-size: .78rem; font-weight: 600; } .row-diff { margin: .45rem 0; font: .84rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; } .row-diff span { display: block; } .insertion { color: var(--color-success-700-300); } .deletion { color: var(--color-error-700-300); text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); } .row-footer { display: flex; min-height: 1.8rem; align-items: center; justify-content: space-between; } .row-actions { display: flex; gap: .25rem; } .row-action { flex: 0 0 auto; background: transparent; } .row-action.accept { color: var(--color-success-700-300); } .row-action.reject { color: var(--color-error-700-300); }
-  .change-detail { margin: .6rem 0 0 1.5rem; max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; } .discussion { margin: .5rem 0 0 1.5rem; font-size: .8rem; } .discussion li { margin-top: .3rem; } .conflict { margin-top: .7rem; padding: .5rem; border-left: 3px solid var(--color-warning-500); } .changes-empty { padding: 1rem; }
-  .queue-nav { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 1.4rem; min-height: 2.5rem; border-top: 1px solid var(--color-surface-200-800); font-size: .78rem; color: var(--color-surface-500-400); } .queue-nav button { border: 0; background: transparent; padding: .35rem .55rem; font-size: 1rem; cursor: pointer; } .queue-nav button:disabled { opacity: .3; cursor: default; }
-  @media (max-width: 32rem) { .changes-header, .change-row { padding-inline: calc(var(--spacing) * .75); } .row-head { gap: .35rem; } .row-action { padding-inline: .35rem; } .row-context { max-width: 10rem; } .change-detail, .discussion { margin-left: .25rem; } }
+  .changes-menu-hint { padding: .2rem .65rem .35rem; line-height: var(--panel-line-height); }
+  /* The contextual bar: only while a selection or a confirmation is open, and
+     gone the moment it is answered or dismissed. */
+  .select-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; padding: .35rem var(--spacing); border-bottom: 1px solid var(--color-surface-200-800); background: color-mix(in srgb, var(--color-primary-500) 6%, var(--color-sidebar)); font-size: .75rem; }
+  .select-count { flex: 1 1 auto; color: var(--color-surface-600-400); }
+  .bar-action, .row-action, .empty-link { border: 0; background: none; padding: .2rem .3rem; border-radius: .25rem; font-size: .75rem; cursor: pointer; }
+  .row-action { padding-inline: .4rem; }
+  .bar-action:hover:not(:disabled), .row-action:hover:not(:disabled), .empty-link:hover { background: var(--color-surface-200-800); }
+  .bar-action:disabled, .row-action:disabled { opacity: .4; cursor: default; }
+  .bar-action.accept, .row-action.accept { color: var(--color-success-700-300); }
+  .bar-action.reject, .row-action.reject { color: var(--color-error-700-300); }
+  .empty-link { padding-inline: 0; color: var(--color-primary-700-300); text-decoration: underline; }
+  .changes-list { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+  /* A row is the change and a line saying whose it is. No card, no padding
+     around a card, no border but the hairline between one change and the
+     next -- so a dozen of them fit where three used to. */
+  .change-row { position: relative; content-visibility: auto; contain-intrinsic-size: 0 3.4rem; border-bottom: 1px solid var(--color-surface-200-800); padding: .5rem var(--spacing) .5rem calc(var(--spacing) - 3px); border-left: 3px solid transparent; }
+  /* One mark for the selected change, not three: a rule down its left edge. */
+  .change-row.active, .contested-option.active { border-left-color: var(--color-primary-500); }
+  .change-row.blocked { border-left-color: var(--color-warning-500); }
+  .change-row.contested { border-left-color: var(--color-tertiary-500); }
+  .contested-head { margin: 0 0 .4rem; font-size: .72rem; color: var(--color-surface-600-400); }
+  .contested-badge { display: inline-block; padding: 0 .3rem; border-radius: .2rem; background: var(--color-tertiary-500); color: var(--color-tertiary-contrast-500); font-size: .64rem; text-transform: uppercase; letter-spacing: .04em; }
+  .contested-option { padding-left: .4rem; border-left: 3px solid transparent; }
+  .contested-option + .contested-option { border-top: 1px dashed var(--color-surface-200-800); padding-top: .4rem; margin-top: .4rem; }
+  .row-head { display: flex; align-items: flex-start; gap: .4rem; }
+  .row-pick { flex: none; margin-top: .25rem; }
+  .row-main { min-width: 0; flex: 1; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; }
+  .row-diff, .row-meta { display: block; }
+  .row-diff { font: .82rem/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+  .row-diff > span { display: block; }
+  /* A change nobody is looking at shows its first couple of lines; the one
+     being reviewed shows all of it. */
+  .change-row:not(.active) .row-diff > span, .contested-option:not(.active) .row-diff > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+  .insertion { color: var(--color-success-700-300); }
+  .deletion { color: var(--color-error-700-300); text-decoration: line-through; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); }
+  .row-summary { color: var(--color-surface-700-300); }
+  /* One metadata line, whatever it ends up carrying: the parts are written
+     without their separators and the line puts them between. */
+  .row-meta { margin-top: .15rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-meta > span + span::before { content: " · "; }
+  .row-warning { color: var(--color-warning-700-300); }
+  .row-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .3rem; }
+  .change-detail { margin-top: .35rem; max-height: 12rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .conflict { padding-left: .5rem; border-left: 2px solid var(--color-warning-500); font-size: .75rem; }
+  .conflict p { margin: 0; }
+  .discussion { margin-top: .35rem; font-size: .75rem; } .discussion li { margin-top: .3rem; }
+  .changes-empty { padding: 1rem var(--spacing); }
+  .changes-hint { flex: 0 0 auto; padding: .35rem var(--spacing); border-top: 1px solid var(--color-surface-200-800); text-align: center; }
+  @media (max-width: 32rem) { .changes-header, .filter-bar, .select-bar, .change-row { padding-inline: calc(var(--spacing) * .75); } .change-row { padding-left: calc(var(--spacing) * .75 - 3px); } .row-context { max-width: 10rem; } }
 </style>

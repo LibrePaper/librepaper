@@ -1,9 +1,10 @@
-// Two small surfaces whose behaviour is not what their markup looks like:
-// the preview status, which is a popover rather than a disclosure, and a
-// resolved comment card, whose summary button stops existing the moment it is
-// activated. Both were written by hand and got the interesting parts wrong --
-// a panel that closed for neither Escape nor a click outside it, and focus
-// dropped to the body -- so both are pinned here.
+// Small surfaces whose behaviour is not what their markup looks like: the
+// preview status, which is a popover rather than a disclosure, and a comment
+// card, whose summary button stops existing the moment it is activated and
+// whose thread is a run of authors rather than a list of messages. The first
+// two were written by hand and got the interesting parts wrong -- a panel
+// that closed for neither Escape nor a click outside it, and focus dropped to
+// the body -- so all three are pinned here.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -87,6 +88,40 @@ window.statusPopoverCheck = async () => {
     'focus moves to the card rather than being dropped to the body');
   card.$destroy();
   cardHost.remove();
+
+  // A thread is grouped by author: the avatar and the name are written once
+  // for a run of messages by the same person, and a reply from somebody else
+  // opens the next run. The count of avatars is the whole point -- five
+  // messages between two people used to be five badges.
+  const threadHost = document.createElement('div');
+  document.body.append(threadHost);
+  const thread = createClassComponent({ component: CommentCard, target: threadHost, props: {
+    comment: {
+      id: 'c2', body: 'this is not ok', exact: 'the passage', creator: 'Vincent',
+      created: '2026-09-17T11:04:00Z',
+      replies: [
+        { id: 'r1', creator: 'Vincent', body: 'Again, there is repetition here', created: '2026-09-17T11:05:00Z' },
+        { id: 'r2', creator: 'Alice', body: 'I agree with the second point', created: '2026-09-17T11:08:00Z' },
+        { id: 'r3', creator: 'Vincent', body: 'Fair enough', created: '2026-09-17T11:10:00Z' },
+      ],
+    },
+    canComment: true,
+  } });
+  await flush();
+
+  const runs = [...threadHost.querySelectorAll('.run')];
+  check(runs.length === 3, 'four messages between two people are three runs, not four');
+  check(threadHost.querySelectorAll('.avatar').length === 3, 'one avatar per run, not one per message');
+  check(runs[0].querySelectorAll('.post').length === 2,
+    'two things said in a row by one person sit in the same run');
+  check([...threadHost.querySelectorAll('.run-author')].map((each) => each.textContent.trim()).join(',') === 'Vincent,Alice,Vincent',
+    'a new author opens a new run, and the one who comes back opens a third');
+  // The gutter that made a long reply wrap in half the sidebar is gone: a
+  // message is laid out against the card, not against the avatar.
+  check(runs[0].querySelector('.post').getBoundingClientRect().left
+    <= runs[0].getBoundingClientRect().left + 1, 'a message uses the full width of the card');
+  thread.$destroy();
+  threadHost.remove();
   return true;
 };
 `;

@@ -87,6 +87,7 @@
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import { correctedLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
+  import { MODES, motivationFor, nextMode, verbsFor } from "../lib/annotating.js";
   import InsertMenu from "./InsertMenu.svelte";
   import ReaderSidebar from "./reader/ReaderSidebar.svelte";
   import PanelRail from "./reader/PanelRail.svelte";
@@ -508,7 +509,7 @@
         const first = framePreview.markReady();
         frameReady = true;
         if (first && !publishedMode) replayPreview();
-        tell({ type: "tool", tool });
+        tell({ type: "tool", tool: mode });
         // Whatever was painted before is gone with the rebuilt DOM.
         frameOverlays.reset();
         reanchor();
@@ -544,6 +545,14 @@
         markRegionsPlaceable(ids, true);
         break;
       }
+      // The keyboard, from inside the document: the selection lives in the
+      // frame, so the key that acts on one has to be heard there.
+      case "annotate":
+        if (pending) annotate("comment");
+        break;
+      case "disarm":
+        disarm();
+        break;
       case "caret":
         followDocumentClick(Number(message.offset) || 0, message.pdf);
         break;
@@ -558,8 +567,25 @@
 
   /* --------------------------------------------------------------- selection */
 
-  let tool = $state("commenting");
+  // Making an annotation is two different gestures, and the state says which.
+  //
+  // `mode` is armed in advance and is empty almost always: only a note at a
+  // point and a box on a figure have nothing to select, so only those two are
+  // modes. Arming one changes what a click or a drag in the document does --
+  // `region` stops text being selectable at all -- so an armed mode says so
+  // across the top of the document and Escape puts it away.
+  //
+  // `verb` is chosen from the bar over a selection, after the passage is
+  // already in hand. It is what the draft in the column is being written
+  // under. See `lib/annotating.js`.
+  let mode = $state("");
+  let verb = $state("comment");
+  // What the bar offers over what is selected: everything for a passage,
+  // and Comment alone for a point or a box, which have no words to highlight
+  // or to propose a replacement for.
+  const shownVerbs = $derived(verbsFor(pending));
   let highlightColor = $state(HIGHLIGHT_COLORS[0]);
+  let palette = $state(false);
   let pending = $state(null);
   let assistantRequest = $state(null);
   let selectionRevision = Promise.resolve("");
@@ -752,50 +778,76 @@
     return Math.round(height) + 9;
   }
 
-  // The tool decides how wide the bar is -- highlighting adds five swatches --
-  // and the width is only knowable once it is drawn, so the placing above is
-  // made good here, after it is.
+  // How wide the bar is depends on what is in it -- the swatch row doubles it
+  // -- and the width is only knowable once it is drawn, so the placing above
+  // is made good here, after it is.
   $effect(() => {
     if (!bar.shown || !barElement) return;
-    void tool;
+    void palette;
     const left = correctedLeft({ left: bar.left, width: barElement.offsetWidth, windowWidth: innerWidth });
     if (left !== null) bar = { ...bar, left };
   });
 
-  function chooseTool(which) {
+  // Arming one of the two modes, or putting away the one that is armed. A
+  // mode always starts from a clean slate: whatever was selected belongs to
+  // the gesture that is being abandoned.
+  function arm(which) {
     if (!mayChat) return;
-    tool = which;
-    if (pending?.point || pending?.region || which === "point" || which === "region") {
-      pending = null;
-      bar = { ...bar, shown: false };
-    }
-    tell({ type: "tool", tool: which });
-    if (compact) showMobileView("document");
+    mode = nextMode(mode, which);
+    pending = null;
+    bar = { ...bar, shown: false };
+    tell({ type: "tool", tool: mode });
+    if (compact && mode) showMobileView("document");
+  }
+
+  function disarm() {
+    if (!mode) return;
+    mode = "";
+    tell({ type: "tool", tool: "" });
   }
 
   /* -------------------------------------------------------------- annotating */
 
-  let commenting = $state(false);
+  // The draft being written, or null. It holds the anchor it was started
+  // from rather than reading `pending`, so a stray selection elsewhere in
+  // the document cannot move a note that is half written onto other words.
+  let composing = $state(null);
   let identifying = $state(false);
   let deleting = $state(false);
-  let draft = $state({ body: "", proposed: "" });
   let pendingDelete = $state([]);
 
-  // Opening the dialog. The suggest variant starts its proposal textarea
-  // with the source slice when the passage was placed, the rendered words
-  // otherwise (`suggestions.prefillFor`, which a check exercises directly).
-  // Set here, once, rather than in an effect: an effect that read `draft` to
-  // write it would run again on every keystroke and clobber what was typed.
-  function openDialog() {
-    if (tool === "editing") draft = { ...draft, proposed: suggestions.prefillFor(pending) };
-    commenting = true;
+  const needsLogin = $derived(!identity && Boolean(me.comments_need_login));
+
+  // Opening the draft in the column, and showing the reader the column it is
+  // in: a composer in a panel nobody is looking at is a dialog that failed to
+  // open. The suggest variant starts its replacement field with the source
+  // slice when the passage was placed, the rendered words otherwise
+  // (`suggestions.prefillFor`, which a check exercises directly).
+  function openDraft() {
+    if (!pending) return;
+    composing = {
+      // A fresh id per draft: the composer keeps the words being typed in its
+      // own state, so starting a second draft has to be a second component
+      // rather than the first one handed new props.
+      id: crypto.randomUUID(),
+      pending,
+      verb,
+      prefill: verb === "suggest" ? suggestions.prefillFor(pending) : "",
+    };
+    prefs.collaborationTab = "comments";
+    if (panel !== "collaboration") void showPanel("collaboration");
+    if (compact) showMobileView("sidebar");
   }
 
-  function barClicked() {
+  // A verb chosen on the bar over the selection. Highlighting is the one that
+  // never opens a draft: the passage is the whole annotation, so the click
+  // that names the verb is also the one that makes it.
+  function annotate(which) {
     if (!pending || !mayChat) return;
+    verb = which;
     bar = { ...bar, shown: false };
-    if (tool === "highlighting") {
-      // No dialog: the passage is the whole annotation.
+    palette = false;
+    if (which === "highlight") {
       submitAnnotation({ motivation: "highlighting", body: "" });
       return;
     }
@@ -803,7 +855,15 @@
       identifying = true;
       return;
     }
-    openDialog();
+    openDraft();
+  }
+
+  // Picking a colour highlights with it, rather than arming a colour for a
+  // second click: the swatch row is only ever opened from Highlight, so the
+  // verb is already chosen by the time one is pressed.
+  function highlightWith(color) {
+    highlightColor = color;
+    annotate("highlight");
   }
 
   function submitAnnotation({ motivation, body, proposed }) {
@@ -818,17 +878,26 @@
     return true;
   }
 
-  function submitDialog(event) {
-    event.preventDefault();
-    const motivation = tool === "region" || tool === "point" ? "commenting" : tool;
-    const submitted = submitAnnotation({
-      motivation,
-      body: draft.body,
-      proposed: motivation === "editing" ? draft.proposed : undefined,
-    });
-    if (!submitted) return;
-    draft = { body: "", proposed: "" };
-    commenting = false;
+  // What the composer sends. The anchor comes from the draft rather than from
+  // `pending`, and a refusal leaves the card open with the words still in it.
+  function sendDraft({ body, proposed }) {
+    if (!composing) return false;
+    pending = composing.pending;
+    const motivation = motivationFor(composing.verb);
+    const submitted = submitAnnotation({ motivation, body, proposed });
+    if (!submitted) return false;
+    composing = null;
+    // A suggestion is not a comment and does not appear among them: it joins
+    // the review queue. Show that queue rather than letting the words seem to
+    // vanish from the column they were written in. `focusAnnotation` sends a
+    // suggestion to the same place.
+    if (motivation === "editing") void showPanel("changes");
+    return true;
+  }
+
+  function cancelDraft() {
+    composing = null;
+    pending = null;
   }
 
   // An editor's decision on a suggestion: optimistically busy, not resolved,
@@ -2469,6 +2538,11 @@
   const splitTight = $derived(width < px(ACTIVITY_WIDTH, unit) + px(PANES.editor.min, unit)
     + px(DOCUMENT_MIN, unit) + px(GRIP, unit)
     + (panel ? px(PANES.sidebar.min, unit) + px(GRIP, unit) : 0));
+  // A window that cannot hold the split it was asked for: the phone, and the
+  // tight split above it. Both show one pane at a time, so both need the
+  // switch between the two faces in the bar; only the phone loses the rail
+  // beside the column and needs the row along the bottom.
+  const adapted = $derived(compact || (splitTight && layout === "split"));
   const effectiveLayout = $derived(!compact && panel === "history"
     ? "source"
     : compact
@@ -3177,6 +3251,15 @@
   // an editor usually puts a split on, and nothing here or in CodeMirror wants
   // it.
   function shortcut(event) {
+    // One Escape, one thing: the swatches, then the bar, then the armed mode.
+    // Nothing here touches a dialog -- those close themselves -- and nothing
+    // happens when none of the three is up, so Escape stays the browser's.
+    if (event.key === "Escape") {
+      if (palette) { palette = false; return; }
+      if (bar.shown) { bar = { ...bar, shown: false }; return; }
+      if (mode) disarm();
+      return;
+    }
     if (editing && (event.ctrlKey || event.metaKey) && event.altKey && event.key.toLowerCase() === "l") {
       event.preventDefault();
       setLinked(!linked);
@@ -3313,6 +3396,21 @@
 
 <Nav {me} documentation={false}>
   {#snippet tools()}
+    <!-- The two faces of the one thing this bar already names. On a wide
+         window the choice is the layout menu and the split; on a narrow one
+         only one face fits at a time, so it becomes a pair of buttons, and it
+         belongs up here rather than at the foot of the window: it says what
+         you are looking at, which is what the rest of this bar says, while
+         the row along the bottom is a list of panels to open beside it.
+         Neither is pressed while a panel covers them both. -->
+    {#if adapted && (editing || panel === "history")}
+      <div class="face-switch" role="group" aria-label="Workspace view">
+        <IconButton icon="book" label="Document" pressed={shown.document}
+                    onclick={() => showMobileView("document")} />
+        <IconButton icon="file-text" label="Source" pressed={shown.source}
+                    onclick={() => showMobileView("source")} />
+      </div>
+    {/if}
     {#if publishedMode && publicationUpdate}
       <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void publication.acceptUpdate()}>
         New published version available · Refresh
@@ -3396,7 +3494,7 @@
 <main id="main" tabindex="-1" class="reader" class:editing={shown.source} class:no-preview={!shown.document}
       class:no-comments={!shown.comments} class:source-right={sourceSide === "right"}
       class:mobile-document={activeMobileView === "document"} class:mobile-source={activeMobileView === "source"}
-      class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact || (splitTight && layout === "split")}
+      class:mobile-sidebar={activeMobileView === "sidebar"} class:adapted={compact}
       style="height: calc(100dvh - var(--librepaper-bar)); --librepaper-activity: {px(ACTIVITY_WIDTH, unit)}px; --librepaper-editor: {pixels(PANES.editor, panes)}px; --librepaper-sidebar: {pixels(PANES.sidebar, panes)}px">
   <!-- What this page is. The title is in the bar, where it is a span beside
        the menus rather than a heading, so the one heading a screen reader
@@ -3429,18 +3527,20 @@
   {#snippet collaborationPanel()}
     <Collaboration messages={liveChat} {connected} canPost={mayChat} onsend={sendLiveChat}
       {unreadChat} bind:tab={prefs.collaborationTab} {comments} {figureAt} {identity}
-      commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {tool} {went} {replacements}
-      canComment={mayChat} hasFigures={figureAt.length > 0} ontool={chooseTool}
+      commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {mode} {went} {replacements}
+      canComment={mayChat} hasFigures={figureAt.length > 0} ontool={arm}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
-      ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply} />
+      ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply}
+      {composing} {needsLogin} signInHref={signInHref()}
+      oncommentsend={sendDraft} oncommentcancel={cancelDraft} />
     {@render pendingRecovery("collaboration")}
   {/snippet}
 
   {#snippet changesPanel()}
     <Changes proposals={reviewRows} {comments} {files} {figureAt} {identity} commentingAs={doc.commenting_as || "Anonymous"}
-      {canModerate} canReview={mayEdit} {tool}
+      {canModerate} canReview={mayEdit}
       {tracking} canTrack={mayEdit && editing} ontracking={setTracking}
-      {went} {replacements} canComment={mayChat} ontool={chooseTool} onreveal={revealAnnotation}
+      {went} {replacements} canComment={mayChat} onreveal={revealAnnotation}
       selected={selectedAnnotation} onresolve={resolve} ondelete={askDelete}
       ondeletemany={askDeleteMany} onreply={reply}
       selectedProposal={reviewing ? `${reviewing.proposal}#${reviewing.hunk}` : ""}
@@ -3687,13 +3787,13 @@
            path={previewMain} status={previewStatusControl} controls={previewControls}
            away={!shown.document || unrendered || failedBeforeRender} />
 
-  <nav class="mobile-pane-nav" aria-label="Workspace view">
-    <IconButton icon="book" label="Document" pressed={shown.document}
-                onclick={() => showMobileView("document")} />
-    {#if editing}
-      <IconButton icon="file-text" label="Source" pressed={shown.source}
-                  onclick={() => showMobileView("source")} />
-    {/if}
+  <!-- The panels, and only the panels. Which face the main area wears -- the
+       document or its source -- is not a panel, and it rode in this row for
+       want of anywhere else: two buttons that looked like panel icons, at the
+       head of a row that scrolls, saying what you are reading rather than
+       what you could open. It is in the bar above now, beside the file it
+       names. -->
+  <nav class="mobile-pane-nav" aria-label="Workspace panels">
     <PanelRail tabs={compact ? tabs : []} {panel} open={shown.comments} onselect={selectPanel} />
   </nav>
 
@@ -3703,29 +3803,57 @@
   {#if guide.shown}<div class="grip-guide" class:held={guide.held} style="left: {guide.left}px"></div>{/if}
 </main>
 
+<!-- What can be done to the passage that is selected, over the passage that
+     is selected. The verbs are here rather than in the column because the
+     selection is the subject: by the time this is on the screen the reader
+     has already said what they are annotating, and all that is left is which
+     annotation it is to be. -->
 {#if bar.shown && mayChat}
   <div
     bind:this={barElement}
     id="selectionbar"
-    class="flex gap-1"
     style="display: flex; left: {bar.left}px; top: {bar.top}px"
   >
-    {#if tool === "highlighting"}
-      <div class="highlight-colors" role="group" aria-label="Highlight color">
+    <div class="verbs">
+      {#each shownVerbs as item (item.id)}
+        <button type="button" class="verb" class:primary={item.id === "comment"}
+                title={item.title} onclick={() => annotate(item.id)}>{item.label}</button>
+        {#if item.id === "highlight"}
+          <!-- The swatches hang off Highlight rather than replacing the bar:
+               one click highlights in the colour already chosen, and this is
+               for the times that is the wrong colour. -->
+          <button type="button" class="verb swatch-toggle" aria-expanded={palette}
+                  aria-label="Choose highlight colour" title="Choose highlight colour"
+                  onclick={() => (palette = !palette)}>
+            <span class="chip" style="background:{highlightColor}"></span>▾
+          </button>
+        {/if}
+      {/each}
+    </div>
+    {#if palette}
+      <div class="highlight-colors" role="group" aria-label="Highlight colour">
         {#each HIGHLIGHT_COLORS as color}
           <button type="button" class:selected={highlightColor === color} class="color-swatch" style="background:{color}"
-            aria-label="Use {colorName(color)} highlight" aria-pressed={highlightColor === color}
-            onclick={() => (highlightColor = color)}></button>
+            aria-label="Highlight in {colorName(color)}" onclick={() => highlightWith(color)}></button>
         {/each}
-        <label class="custom-color" title="Choose highlight color">
-          <span class="sr-only">Custom highlight color</span>
-          <input type="color" bind:value={highlightColor} />
+        <label class="custom-color" title="Choose highlight colour">
+          <span class="sr-only">Custom highlight colour</span>
+          <input type="color" bind:value={highlightColor} onchange={() => highlightWith(highlightColor)} />
         </label>
       </div>
     {/if}
-    {#if mayChat}<button class="btn btn-sm preset-filled-primary-500 shadow-lg" onclick={barClicked}>
-      {tool === "highlighting" ? "Highlight" : tool === "region" ? "Box" : tool === "editing" ? "Suggest" : "Comment"}
-    </button>{/if}
+  </div>
+{/if}
+
+<!-- An armed mode changes what a click or a drag in the document does, and
+     `region` stops text being selectable at all. None of that is visible in
+     the document itself, so it is said here, over the document, for as long
+     as it is true -- and the way out is in the same place as the news. -->
+{#if mode && mayChat}
+  <div id="modestrip" role="status">
+    <span class="what">{MODES.find((item) => item.id === mode)?.label}</span>
+    <span class="how">{mode === "region" ? "Drag a box on a figure" : "Click a place in the document"}</span>
+    <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={disarm}>Done (Esc)</button>
   </div>
 {/if}
 
@@ -3740,76 +3868,6 @@
                 options={quartoOptions}
                 onapplyoptions={applyRenderOptions}
                 account={me} />
-
-<Modal bind:open={commenting} title={tool === "editing" ? "Suggest a change" : "Add comment"}>
-  {#snippet children()}
-    <form id="commentForm" class="flex flex-col gap-3" onsubmit={submitDialog}>
-      <blockquote class="border-primary-500 text-surface-700-300 border-l-2 pl-3 text-sm">
-        {pending?.output_anchor ? `Current output: ${pending.exact}${pending.region ? " (selected region)" : ""}` : pending?.point ? "Comment at this point" : pending?.region ? `Figure ${pending.region.image_index + 1}` : `“${pending?.exact ?? ""}”`}
-      </blockquote>
-      {#if identity}
-        <p class="text-surface-600-400 text-sm">
-          {tool === "editing" ? "suggesting" : "commenting"} as {me.provider === "github" ? `@${identity}` : identity}
-        </p>
-      {:else if me.comments_need_login}
-        <p class="text-sm">
-          <a class="anchor" href={signInHref()}>Sign in</a> to {tool === "editing" ? "suggest a change to" : "comment on"} this document.
-        </p>
-      {:else}
-        <!-- No name to type: the server hands out a per-document pseudonym for
-             an anonymous commenter, so this is only ever a statement. -->
-        <p class="text-surface-600-400 text-sm">
-          {tool === "editing" ? "suggesting" : "commenting"} as {doc.commenting_as || "Anonymous"}
-        </p>
-      {/if}
-      {#if tool === "editing"}
-        {#if !pending?.source}
-          <!-- No anchor of record: the server stores and shows the
-               suggestion anyway, but an editor has to apply it by hand
-               rather than clicking Accept. -->
-          <p class="text-warning-600-400 text-sm">
-            LibrePaper could not place this passage in the source. An editor will have to apply the suggestion by hand.
-          </p>
-        {/if}
-        <label class="label">
-          <span class="label-text">Suggested replacement</span>
-          <!-- svelte-ignore a11y_autofocus -->
-          <textarea
-            class="textarea"
-            rows="5"
-            maxlength="5000"
-            autofocus
-            bind:value={draft.proposed}
-            placeholder="Leave empty to suggest deleting the passage"
-          ></textarea>
-        </label>
-        <label class="label">
-          <span class="label-text">Note (optional)</span>
-          <textarea class="textarea" rows="2" maxlength="5000" bind:value={draft.body}></textarea>
-        </label>
-      {:else}
-        <label class="label">
-          <span class="label-text">Comment</span>
-          <!-- svelte-ignore a11y_autofocus -->
-          <textarea class="textarea" rows="5" maxlength="5000" required autofocus bind:value={draft.body}></textarea>
-        </label>
-      {/if}
-    </form>
-  {/snippet}
-  {#snippet footer()}
-    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (commenting = false)}>
-      Cancel
-    </button>
-    <button
-      type="submit"
-      form="commentForm"
-      class="btn preset-filled-primary-500"
-      disabled={!identity && me.comments_need_login}
-    >
-      Save
-    </button>
-  {/snippet}
-</Modal>
 
 <Modal bind:open={localExecutionConsent} title="Run this document's code on this computer?"
   description="{LOCAL_EXECUTION_WARNING} Only turn this on for a document whose authors you trust.">
@@ -3867,7 +3925,7 @@
     <button
       type="button"
       class="btn preset-filled-primary-500"
-      onclick={() => { identifying = false; openDialog(); }}
+      onclick={() => { identifying = false; openDraft(); }}
     >
       Continue as {doc.commenting_as || "Anonymous"}
     </button>
@@ -3884,6 +3942,15 @@
     font-size: var(--text-sm);
   }
   .compact-workspace-menu { display: none; }
+  /* The two faces read as one control with one of them chosen, rather than as
+     two buttons that happen to be next to each other: a tray around the pair,
+     and the tint the pressed icon already wears marking which is in front. */
+  .face-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--radius-container); background: var(--color-surface-100-900); }
+  /* Sized for a thumb where it is only ever touched, like the row of panels
+     along the bottom of the same window. */
+  @media (max-width: 760px) {
+    .face-switch :global(.icon-control) { width: 2.5rem; height: 2.5rem; }
+  }
   .presence { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-surface-600-400); font-size: var(--text-xs); }
   .connection-dot { width: .5rem; height: .5rem; margin-inline: var(--spacing); border-radius: 50%; background: var(--color-success-500); }
   .connection-dot.offline { background: var(--color-warning-500); }
@@ -3897,10 +3964,24 @@
     .desktop-workspace-menu { display: none; }
     .compact-workspace-menu { display: block; }
   }
-  .highlight-colors { display:flex; align-items:center; gap:3px; padding:2px; border-radius:4px; background:var(--color-surface-100-900); }
+  /* The bar over a selection: one row of verbs, with the swatches unfolding
+     beneath it when Highlight's caret is pressed. */
+  #selectionbar { flex-direction:column; align-items:flex-start; gap:3px; }
+  .verbs { display:flex; overflow:hidden; border:1px solid var(--color-surface-300-700); border-radius:var(--radius-base); background:var(--color-surface-50-950); box-shadow:var(--shadow-lg); }
+  .verb { display:flex; align-items:center; gap:3px; padding:calc(var(--spacing) * 1) calc(var(--spacing) * 2.5); font-size:var(--panel-meta-size); line-height:1.4; white-space:nowrap; }
+  .verb + .verb { border-left:1px solid var(--color-surface-300-700); }
+  .verb:hover { background:var(--color-row-hover); }
+  .verb.primary { font-weight:600; color:var(--color-primary-700-300); }
+  .swatch-toggle { padding-inline:calc(var(--spacing) * 1.5); }
+  .swatch-toggle .chip { display:inline-block; width:.7rem; height:.7rem; border:1px solid var(--color-surface-400-600); border-radius:50%; }
+  .highlight-colors { display:flex; align-items:center; gap:3px; padding:2px; border:1px solid var(--color-surface-300-700); border-radius:var(--radius-base); background:var(--color-surface-50-950); box-shadow:var(--shadow-lg); }
   .color-swatch { width:1.5rem; height:1.5rem; border:2px solid transparent; border-radius:50%; }
   .color-swatch.selected { border-color:var(--color-surface-900-100); box-shadow:0 0 0 1px var(--color-primary-500); }
   .custom-color { display:grid; place-items:center; width:1.5rem; height:1.5rem; }
   .custom-color input { width:1.5rem; height:1.5rem; padding:0; border:0; background:transparent; }
+  /* An armed mode, said over the document for as long as it is armed. */
+  #modestrip { position:fixed; z-index:20; left:50%; top:calc(var(--librepaper-bar) + var(--spacing) * 2); display:flex; align-items:center; gap:calc(var(--spacing) * 2); padding:calc(var(--spacing) * 1) calc(var(--spacing) * 2); transform:translateX(-50%); border:1px solid var(--color-primary-500); border-radius:var(--radius-base); background:var(--color-surface-50-950); box-shadow:var(--shadow-lg); font-size:var(--panel-meta-size); }
+  #modestrip .what { font-weight:600; }
+  #modestrip .how { color:var(--panel-muted); }
   .pending-recovery { flex-shrink: 0; max-height: 35%; overflow-y: auto; border-top: 1px solid var(--color-surface-300-700); background: var(--color-surface-100-900); }
 </style>

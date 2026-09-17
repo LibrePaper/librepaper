@@ -27,7 +27,12 @@ const clearOwnOutput = {
 export default defineConfig({
   root: resolve(import.meta.dirname, "pages"),
   publicDir: resolve(import.meta.dirname, "public"),
-  plugins: [clearOwnOutput, tailwindcss(), svelte()],
+  // `configFile: false` because there is no `svelte.config.js` and none is
+  // wanted: every component here is plain Svelte with no preprocessor. Said
+  // out loud, because the plugin otherwise looks for one in the Vite root --
+  // `pages/`, not `web/` -- and announces on every build that it did not find
+  // it, which reads like something is missing.
+  plugins: [clearOwnOutput, tailwindcss(), svelte({ configFile: false })],
   // The pages are served from the site root by the Go-free Rust server, which
   // knows nothing about this build beyond where the files are.
   base: "/",

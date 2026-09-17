@@ -6,17 +6,20 @@
   let {
     messages = [], connected = false, canPost = false, onsend,
     comments = [], figureAt = [], identity = "", commentingAs = "Anonymous",
-    canModerate = false, canComment = true, tool = "commenting", hasFigures = false,
+    canModerate = false, canComment = true, mode = "", hasFigures = false,
     went = {}, replacements = {}, ontool, onreveal, onresolve, ondelete,
     ondeletemany, onreply, onaccept, onreject, onrejectconfirmed, pending,
     unreadChat = false, selected = "", tab = $bindable("comments"),
+    // The draft being written, which belongs to the Comments tab whatever it
+    // will become: a suggestion is a comment until it is sent.
+    composing = null, needsLogin = false, signInHref = "", oncommentsend, oncommentcancel,
   } = $props();
   const VIEWS = [
     { id: "chat", label: "Chat" },
     { id: "comments", label: "Comments" },
     { id: "highlights", label: "Highlights" },
   ];
-  const common = () => ({ figureAt, identity, commentingAs, canModerate, canComment, tool,
+  const common = () => ({ figureAt, identity, commentingAs, canModerate, canComment, mode,
     hasFigures, went, replacements, ontool, onreveal, onresolve, ondelete, ondeletemany,
     onreply, onaccept, onreject, onrejectconfirmed, pending, selected });
 </script>
@@ -38,12 +41,13 @@
     </Tabs.List>
     <Tabs.Content value="chat" class="collab-panel"><Chat {messages} {connected} {canPost} {onsend} /></Tabs.Content>
     <Tabs.Content value="comments" class="collab-panel">
-      <Comments {...common()} {comments} filter="comments" cardIdPrefix="collaboration-comment" />
+      <Comments {...common()} {comments} filter="comments" cardIdPrefix="collaboration-comment"
+        {composing} {needsLogin} {signInHref} onsend={oncommentsend} oncancel={oncommentcancel} />
     </Tabs.Content>
     <Tabs.Content value="highlights" class="collab-panel">
       <Comments {...common()} {comments} filter="highlights" title="Highlights"
         cardIdPrefix="collaboration-highlight"
-        emptyMessage="Select text and choose Highlight. Add a reply to discuss a highlight." />
+        emptyMessage="Select a passage and choose Highlight. Add a reply to discuss a highlight." />
     </Tabs.Content>
   </Tabs>
 </section>

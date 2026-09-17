@@ -107,6 +107,9 @@ try {
     await flush();
   };
   const nav = (name) => `.mobile-pane-nav [aria-label="${name}"]`;
+  // Which face the main area wears is chosen in the bar at the top, beside
+  // the file it names; the row along the bottom is the panels alone.
+  const face = (name) => `.face-switch [aria-label="${name}"]`;
   const visible = (selector) => b.evaluate(`(() => { const node=document.querySelector(${JSON.stringify(selector)}); return Boolean(node?.getClientRects().length && getComputedStyle(node).visibility !== 'hidden'); })()`);
   const bounded = async () => {
     const bounds = await b.evaluate(`({width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,scrollHeight:document.documentElement.scrollHeight,children:[...document.body.children].map(n=>({tag:n.tagName,cls:n.className,top:n.getBoundingClientRect().top,bottom:n.getBoundingClientRect().bottom}))})`);
@@ -149,13 +152,6 @@ try {
     const button = `.sidebar-activity [aria-label^="${name}"]`;
     assert.equal(await b.evaluate(`Boolean(document.querySelector(${JSON.stringify(button)}))`), true, name + ' has an icon');
     await click(button);
-    if (name === 'Changes') {
-      // With its filters open, which is the widest the column itself gets.
-      // The ••• menu is portalled to the body and so is not measured here.
-      await b.evaluate(`(() => { const more = [...document.querySelectorAll('.filter-bar button')].find(node => node.textContent.trim().startsWith('Filter'));
-        more?.click(); })()`);
-      await flush();
-    }
     const panel = await panelAt(name, 240);
     assert.equal(panel.open, true, name + ' opens its panel: ' + JSON.stringify(panel));
     assert.ok(panel.width >= 239, 'the panel gets the width the column was dragged to: ' + JSON.stringify(panel));
@@ -266,16 +262,26 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".collaboration article[id$=point]").classList.contains("collapsed")'), false);
   assert.equal(await b.evaluate('Array.from(document.querySelectorAll("[id]")).map(node=>node.id).length === new Set(Array.from(document.querySelectorAll("[id]")).map(node=>node.id)).size'), true, 'tab instances never duplicate DOM IDs');
 
-  await click('.collaboration [aria-label="Point comment"]');
+  // A note at a point is one of the two gestures that is still a mode: there
+  // is nothing to select, so it is armed first and says so over the document.
+  await click('.collaboration [aria-label="Note at a point"]');
+  assert.equal(await visible('#modestrip'), true, 'an armed mode says so over the document');
   await frameMessage({type:'selection',selector:{exact:'',point:true,position:0,prefix:'',suffix:'A long document'},rect:{top:80,bottom:80,left:80,right:80}});
-  await click('#selectionbar > button');
+  assert.equal(await b.evaluate('document.querySelectorAll("#selectionbar .verb").length'), 1,
+    'a point has no words, so the bar offers Comment alone');
+  await click('#selectionbar .verb');
+  // No dialog: the draft is a card in the column, in the place its note will
+  // take, and the column it is in is the one that opens.
+  assert.equal(await visible('.composer'), true, 'choosing a verb opens the draft in the column');
+  assert.equal(await b.evaluate('document.querySelector(".collab-tabs [aria-selected=true]").textContent.trim()'), 'Comments');
   await b.evaluate(`(() => {
-    const input=document.querySelector('#commentForm textarea');
+    const input=document.querySelector('.composer textarea');
     input.value='A new point comment'; input.dispatchEvent(new Event('input',{bubbles:true}));
   })()`);
   await flush();
-  await b.evaluate('document.querySelector("#commentForm").requestSubmit()');
+  await b.evaluate(`Array.from(document.querySelectorAll('.composer button')).find(node=>node.textContent.trim()==='Comment').click()`);
   await flush();
+  assert.equal(await visible('.composer'), false, 'sending closes the draft');
   const submittedPoint = await b.evaluate('window.roomSent.filter(message=>message.type==="comment").at(-1)');
   assert.equal(submittedPoint.point, true);
   assert.equal(submittedPoint.position, 0);
@@ -298,15 +304,26 @@ try {
   await flush();
   assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("A new point comment")'), false);
 
-  await selectDiscussionTab('Highlights');
-  await click('.collaboration [aria-label="Highlight"]');
+  // Escape puts the armed mode away. It is the only thing that made a click
+  // in the document mean something other than a click, so it has to be
+  // reachable without hunting for the button that armed it.
+  await b.evaluate("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
+  await flush();
+  assert.equal(await visible("#modestrip"), false, "Escape puts the armed mode away");
+
+  // Highlighting arms nothing at all now: select the words, choose the verb.
+  // The swatches hang off Highlight, and picking one is the highlight.
   await frameMessage({type:'selection',selector:{exact:'long',position:2,prefix:'A ',suffix:' document'},rect:{top:80,bottom:100,left:80,right:120}});
+  assert.equal(await b.evaluate('Array.from(document.querySelectorAll("#selectionbar .verb")).map(node=>node.textContent.trim()).join("|")'),
+    'Comment|Highlight|▾|Suggest', 'a passage can be commented on, highlighted or replaced');
+  await click('#selectionbar .swatch-toggle');
   await b.evaluate(`(() => {
     const picker=document.querySelector('#selectionbar input[type=color]');
-    picker.value='#123abc'; picker.dispatchEvent(new Event('input',{bubbles:true}));
+    picker.value='#123abc';
+    picker.dispatchEvent(new Event('input',{bubbles:true}));
+    picker.dispatchEvent(new Event('change',{bubbles:true}));
   })()`);
   await flush();
-  await click('#selectionbar > button');
   const submittedHighlight = await b.evaluate('window.roomSent.filter(message=>message.type==="comment").at(-1)');
   assert.equal(submittedHighlight.motivation, 'highlighting');
   assert.equal(submittedHighlight.color, '#123abc');
@@ -323,13 +340,13 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".filelist .panel-actions").getBoundingClientRect().bottom <= document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
 
   await b.resize(390,844); await flush();
-  await click(nav('Document'));
+  await click(face('Document'));
   assert.equal(await visible('.viewport'),true);
   assert.equal(await visible('.editorpane'),false);
   assert.equal(await visible('.sidebar'),false);
   await bounded();
   await b.evaluate('window.savedFrame.contentWindow.scrollTo(0, 800)');
-  await click(nav('Source'));
+  await click(face('Source'));
   assert.equal(await visible('.editorpane'),true);
   assert.equal(await visible('.viewport'),false);
   assert.equal(await b.evaluate('document.querySelector(".cm-editor") === window.savedEditor'), true);
@@ -339,7 +356,7 @@ try {
   assert.equal(await visible('.editorpane'),false);
   await click('.explorer-row[title="chapter-1.html"]');
   assert.equal(await visible('.editorpane'),true, 'choosing a file opens its source');
-  await click(nav('Document'));
+  await click(face('Document'));
   assert.equal(await b.evaluate('document.querySelector(".viewport iframe") === window.savedFrame'), true);
   assert.equal(await b.evaluate('window.savedFrame.contentWindow.scrollY'),800);
 
@@ -353,18 +370,18 @@ try {
     document.querySelector('.agent-panel .chat-transcript').scrollTop = 100;
   })()`);
   await flush();
-  await click(nav('Source'));
+  await click(face('Source'));
   await click(nav('Agent'));
   assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-form textarea").value'), 'An unsent thought');
   assert.equal(await b.evaluate('document.querySelector(".agent-panel .chat-transcript").scrollTop'),100);
   await bounded();
 
   await b.resize(900,900); await flush();
-  await click(nav('Document'));
+  await click(face('Document'));
   assert.equal(await visible('.viewport'),true);
   assert.equal(await visible('.editorpane'),false);
   assert.equal(await visible('.sidebar'),true);
-  await click(nav('Source'));
+  await click(face('Source'));
   assert.equal(await visible('.editorpane'),true);
   assert.equal(await visible('.viewport'),false);
   await bounded();
@@ -378,8 +395,8 @@ try {
     await b.evaluate(`localStorage.setItem('librepaper-layout', JSON.stringify(${JSON.stringify(saved)}))`);
     await b.navigate(url);
     await until('reader remount',()=>b.evaluate('document.querySelector(".cm-editor") !== null'),10000);
-    await click(nav('Document')); assert.equal(await visible('.viewport'), true);
-    await click(nav('Source')); assert.equal(await visible('.editorpane'), true);
+    await click(face('Document')); assert.equal(await visible('.viewport'), true);
+    await click(face('Source')); assert.equal(await visible('.editorpane'), true);
     await bounded();
   }
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);

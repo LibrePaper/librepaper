@@ -28,3 +28,17 @@ export function day(at, timeZone) {
   const pad = (part) => String(part).padStart(2, "0");
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
 }
+
+/// When something was said, as short as it can be written without becoming
+/// ambiguous: the clock time for a message posted today, and the calendar day
+/// for anything older. A thread is read in one sitting, where every message
+/// carrying its full date is noise; the full timestamp stays in the tooltip.
+/// Both halves are in the reader's timezone, for the reason `day` gives.
+export function moment(at, now = new Date()) {
+  const when = at instanceof Date ? at : new Date(at);
+  if (Number.isNaN(when.getTime())) return "";
+  const today = day(when) === day(now);
+  if (!today) return day(when);
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${pad(when.getHours())}:${pad(when.getMinutes())}`;
+}

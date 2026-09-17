@@ -900,6 +900,26 @@ import { sha256HexOfText } from "../lib/digest.js";
     post({ type: "caret", offset, pdf });
   });
 
+  // The keys that act on a selection have to be heard here: the selection is
+  // in this frame, and a keystroke aimed at it never reaches the page around
+  // it. Only two, and both are about the gesture already under way -- "c" for
+  // the passage in hand, Escape for the mode the sidebar armed -- so neither
+  // takes a key away from a document that wants one.
+  document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target?.isContentEditable || target?.closest?.("input,textarea,select,[contenteditable]")) return;
+    if (event.key === "Escape") {
+      post({ type: "disarm" });
+      return;
+    }
+    if (event.key !== "c" && event.key !== "C") return;
+    const selection = document.getSelection();
+    if (!selection || selection.isCollapsed) return;
+    event.preventDefault();
+    post({ type: "annotate" });
+  });
+
   document.addEventListener("mouseup", () => scheduleSelection(0));
   document.addEventListener("touchend", () => scheduleSelection(120), { passive: true });
   document.addEventListener("selectionchange", () => scheduleSelection(80));

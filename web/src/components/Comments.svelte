@@ -1,8 +1,10 @@
 <script>
   import IconButton from "./IconButton.svelte";
   import CommentCard from "./CommentCard.svelte";
+  import CommentComposer from "./CommentComposer.svelte";
   import PanelHeader from "./PanelHeader.svelte";
   import { reviewGroups, rejectPass } from "../lib/assistant-review.js";
+  import { MODES } from "../lib/annotating.js";
   import { tick } from "svelte";
 
   // The annotations, in document order: an annotation is about a place in the
@@ -17,8 +19,17 @@
     commentingAs = "Anonymous",
     canModerate = false,
     canComment = true,
-    tool = "commenting",
+    // The armed mode, if any: "point", "region", or "" for the ordinary
+    // state, where a selection in the document is what starts an annotation.
+    mode = "",
     hasFigures = false,
+    // The draft being written, if any: `{ pending, verb, prefill }`. It is
+    // shown as a card in the column, in the place the saved note will take.
+    composing = null,
+    needsLogin = false,
+    signInHref = "",
+    onsend,
+    oncancel,
     // Where each orphaned passage went, by comment id. Passed through rather
     // than looked up here: the card is what says it, and the page is what
     // knows it.
@@ -42,10 +53,9 @@
     // uses the same card and action plumbing with a narrower list.
     filter = "all",
     title = "Comments",
-    emptyMessage = "Highlight text in the document, then choose “Comment”.",
+    emptyMessage = "Select a passage in the document, then choose Comment.",
     onhistory,
     cardIdPrefix = "comment",
-    tools = null,
     // The id of the annotation the page has singled out, if any.
     selected = "",
   } = $props();
@@ -56,6 +66,19 @@
       if (Number.isFinite(at)) return at;
     }
     return Number.isFinite(comment.start) ? comment.start : Infinity;
+  }
+
+  // Where a draft sits while it is being written: the same rule, over the
+  // anchor the selection bar captured rather than over a saved comment, so
+  // the composer occupies the place its card will take rather than jumping
+  // there when it is sent.
+  function placeDraft(pending) {
+    if (!pending) return Infinity;
+    if (pending.region) {
+      const at = figureAt[pending.region.image_index];
+      if (Number.isFinite(at)) return at;
+    }
+    return Number.isFinite(pending.position) ? pending.position : Infinity;
   }
 
   const filtered = $derived(comments.filter((comment) => {
@@ -98,18 +121,19 @@
   const deletable = $derived(filtered.filter((comment) => canModerate || comment.deletable));
   const clearable = $derived(deletable.filter((comment) => comment.resolved));
 
-  const TOOLS = [
-    { id: "commenting", icon: "comment", label: "Comment", title: "Comment on the selected passage" },
-    { id: "highlighting", icon: "highlight", label: "Highlight", title: "Highlight, with no comment" },
-    { id: "point", icon: "comment", label: "Point comment", title: "Comment at a point in the document" },
-    { id: "region", icon: "box", label: "Box", title: "Drag a box on a figure" },
-  ];
-  const TOOL_VIEWS = {
-    comments: ["commenting", "point", "region"],
-    highlights: ["highlighting"],
-    suggestions: ["editing"],
-  };
-  const shownTools = $derived(tools ?? TOOLS.filter((item) => !TOOL_VIEWS[filter] || TOOL_VIEWS[filter].includes(item.id)));
+  // Commenting, highlighting and suggesting are not offered here: they act on
+  // a passage, and the bar over the selection is where they belong. What is
+  // left are the two annotations with nothing to select, which is why they
+  // are still armed in advance. See `lib/annotating.js`.
+  const shownModes = $derived(filter === "highlights" ? [] : MODES);
+
+  // Where the draft's card goes: before the first group whose passage is
+  // later in the document than the one being written about, or at the end.
+  const composerKey = $derived.by(() => {
+    if (!composing) return null;
+    const where = placeDraft(composing.pending);
+    return groups.find((group) => place(group.comments[0]) > where)?.key ?? "";
+  });
 
   function resolveAll() {
     for (const comment of resolvable) onresolve?.(comment);
@@ -125,25 +149,23 @@
   >
     {#snippet actions()}
       <div class="flex flex-wrap items-center gap-1">
-        <div class="tools flex gap-1" role="radiogroup" aria-label="Annotation tool">
-        {#each shownTools as item}
-          {#if filter === "suggestions"}
-          <button type="button" class="btn btn-sm preset-tonal-primary" disabled={!canComment}
-            aria-pressed={tool === item.id} onclick={() => ontool?.(item.id)}>{item.label}</button>
-          {:else}
+        <!-- Not a radiogroup: neither of these is on by default, and choosing
+             the one that is on puts it away again, which is a pair of toggles
+             rather than a choice between two. -->
+        <div class="tools flex gap-1" role="group" aria-label="Add a note">
+        {#each shownModes as item (item.id)}
           <IconButton
             icon={item.icon}
             size="btn-icon-sm"
             label={item.label}
             tool={item.id}
-            pressed={tool === item.id}
+            pressed={mode === item.id}
             disabled={!canComment || (item.id === "region" && !hasFigures)}
             title={!canComment ? "Read-only access" : item.id === "region" && !hasFigures
               ? "This document has no figures to draw on"
-              : item.title}
+              : mode === item.id ? `${item.label} · on. Choose again to stop.` : item.title}
             onclick={() => ontool?.(item.id)}
           />
-          {/if}
         {/each}
         </div>
         {#if onhistory}
@@ -181,10 +203,30 @@
     {/if}
   </PanelHeader>
 
+  <!-- Keyed on the draft: the composer keeps what is being typed in its own
+       state, so a second draft has to be a second component rather than the
+       first one handed a new passage to be about. -->
+  {#snippet composer()}
+    {#key composing.id}
+    <CommentComposer
+      pending={composing.pending}
+      verb={composing.verb}
+      prefill={composing.prefill || ""}
+      {identity}
+      {commentingAs}
+      {needsLogin}
+      {signInHref}
+      onsend={(written) => onsend?.(written)}
+      oncancel={() => oncancel?.()}
+    />
+    {/key}
+  {/snippet}
+
   <div id="{cardIdPrefix}-list" class="comments-list flex flex-col gap-3">
     {@render pending?.()}
     {#if passResult}<p class="panel-muted" role="status">{passResult}</p>{/if}
     {#each groups as group (group.key)}
+      {#if composerKey === group.key}{@render composer()}{/if}
       <div class="flex flex-col gap-3" data-pass={group.pass || undefined}>
       {#if group.pass}
         <div class="pass-header">
@@ -219,6 +261,7 @@
       {/each}
       </div>
     {/each}
+    {#if composerKey === ""}{@render composer()}{/if}
   </div>
 </div>
 
