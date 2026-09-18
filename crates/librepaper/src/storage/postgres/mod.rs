@@ -1846,6 +1846,18 @@ mod tests {
                         byte_length: figure.len() as i64,
                     },
                 },
+                // Not a figure anybody uploaded: the renderer emits it, it is
+                // the same every time, and no publication before this one
+                // holds it. It is owned -- and named by its own digest, so
+                // the next publication of the same stylesheet finds it
+                // already written instead of rewriting it.
+                PublicationFile {
+                    path: "style.css".into(),
+                    media_type: "text/css".into(),
+                    source: crate::storage::publication::PublicationSource::Owned(
+                        b"body{font-family:serif}".to_vec(),
+                    ),
+                },
             ],
         };
         let first = publications
@@ -1861,16 +1873,17 @@ mod tests {
             .unwrap();
         assert_eq!(
             written.len(),
-            2,
-            "a publication writes its rendering and its manifest, not the figures in it"
+            3,
+            "a publication writes its rendering, its stylesheet and its manifest -- not the figures in it"
         );
+
         // And it was not charged for a second time. The quota counts
         // `publication_files`, so what this publication added to it is its
         // rendering alone -- not the figure, which is counted once where it
         // lives, in `document_assets`.
         assert_eq!(
             catalog.usage_bytes(None).await.unwrap() - held_after_upload,
-            "<h1>One</h1>".len() as i64,
+            ("<h1>One</h1>".len() + "body{font-family:serif}".len()) as i64,
             "a shared figure is counted where it lives and not again here"
         );
         // The reader still gets it: the row points at the document's own blob.
@@ -1888,12 +1901,47 @@ mod tests {
         let second = publications.publish(second).await.unwrap();
         assert_ne!(second.id, first.id);
 
+        // The second page differs only in its rendering, so that is all it
+        // wrote: one more HTML object and one more manifest. The stylesheet
+        // it names is the object the first page already wrote.
+        let after_second = blobs
+            .list(&format!("documents/{}/publications/", document.id))
+            .await
+            .unwrap();
+        assert_eq!(
+            after_second.len(),
+            written.len() + 2,
+            "republishing rewrites the rendering, not the files that did not change"
+        );
+        let mut stylesheets = Vec::new();
+        for publication in [first.id, second.id] {
+            stylesheets.push(
+                catalog
+                    .publication_files(publication)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|file| file.path == "style.css")
+                    .unwrap()
+                    .storage_key,
+            );
+        }
+        assert_eq!(
+            stylesheets[0], stylesheets[1],
+            "two publications of the same stylesheet name one object"
+        );
+
+
         // Superseding the first page schedules its cleanup. It must take the
         // rendering it owned and leave the figure it only pointed at.
         let doomed = catalog.publication_cleanup_keys(first.id).await.unwrap();
         assert!(
             !doomed.contains(&figure_key),
             "cleaning up a page must not delete the figure the document still holds",
+        );
+        assert!(
+            !doomed.contains(&stylesheets[0]),
+            "nor the stylesheet the page that replaced it still names",
         );
         blobs.delete(&doomed).await.unwrap();
         assert!(catalog
@@ -1909,11 +1957,15 @@ mod tests {
             figure,
             "and is byte-for-byte what was uploaded"
         );
-        // The page that is still current can still serve it.
+        // The page that is still current can still serve both of them.
         let still = catalog.publication_files(second.id).await.unwrap();
         assert!(still
             .iter()
             .any(|file| file.storage_key == figure_key && file.path == "figures/plot.png"));
+        assert!(
+            blobs.exists(&stylesheets[1]).await.unwrap(),
+            "the stylesheet the current page names survived its predecessor's cleanup",
+        );
 
         catalog.close().await;
     }

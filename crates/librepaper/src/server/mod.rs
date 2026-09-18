@@ -940,6 +940,15 @@ impl Server {
             "draft_format": metadata.draft_format,
             "main": entry.main,
             "role": role.as_str(),
+            // Who the project belongs to. Every row carries it, not only the
+            // rows somebody else owns: a listing that names an owner only
+            // sometimes reads as though the unnamed rows have none, and the
+            // caller already knows which id is theirs. The display name when
+            // the account has one and the handle when it does not, which is
+            // `owner_name`'s rule -- never the email a Google account wears
+            // as its handle, which that rule is written to avoid.
+            "owner": entry.owner_name(),
+            "owner_id": entry.publisher_id,
         })
     }
 

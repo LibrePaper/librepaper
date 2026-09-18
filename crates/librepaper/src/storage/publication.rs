@@ -219,11 +219,25 @@ impl PublicationStorage {
                     let key = match source {
                         PublicationSource::Shared { storage_key, .. } => storage_key,
                         PublicationSource::Owned(bytes) => {
+                            // Named by the digest of its own bytes, so two
+                            // publications that hold the same file hold one
+                            // object. A rendering differs every time and gets
+                            // a key of its own; the stylesheet and the fonts
+                            // beside it usually do not, and used to be
+                            // rewritten in full on every republish.
                             let key = format!(
-                                "documents/{document_id}/publications/{staging_id}/files/{}",
-                                path
+                                "documents/{document_id}/publications/files/{}",
+                                hex::encode(digest)
                             );
-                            blobs.put_new(&key, bytes, &media_type).await?;
+                            match blobs.put_new(&key, bytes, &media_type).await {
+                                Ok(()) => {}
+                                // Already written, by an earlier publication
+                                // of this document or a retry of this one.
+                                // The key is the digest, so the only thing
+                                // worth confirming is that it really is here.
+                                Err(BlobError::Conflict) => {}
+                                Err(error) => return Err(error.into()),
+                            }
                             verify(blobs.as_ref(), &key, &digest, byte_length as u64).await?;
                             key
                         }

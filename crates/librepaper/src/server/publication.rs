@@ -133,6 +133,50 @@ impl PublicationStore {
             publisher: manifest.publisher,
         }))
     }
+    /// Which of a manifest's objects the document already holds, as the
+    /// assets they were uploaded as, keyed by digest.
+    ///
+    /// One question asked in two places, deliberately: `prepare` uses it to
+    /// stop asking a browser to upload a figure that never left, and
+    /// `activate` uses it to point the published file at the blob the
+    /// document keeps. If the two disagreed, activation would look in staging
+    /// for bytes nobody was asked to stage. They cannot disagree, because
+    /// nothing deletes an asset -- what is held at `prepare` is still held at
+    /// `activate`.
+    async fn already_held(
+        &self,
+        storage_id: &str,
+        manifest: &PublicationManifest,
+    ) -> Result<HashMap<String, crate::storage::postgres::AssetRecord>, PublicationError> {
+        let document_id = Uuid::parse_str(storage_id)
+            .map_err(|_| PublicationError::Invalid("invalid document id".into()))?;
+        let wanted: Vec<String> = manifest
+            .assets
+            .iter()
+            .map(|asset| asset.object.sha256.clone())
+            .collect();
+        if wanted.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let bytes_wanted: HashMap<&str, usize> = manifest
+            .assets
+            .iter()
+            .map(|asset| (asset.object.sha256.as_str(), asset.object.bytes))
+            .collect();
+        Ok(self
+            .store
+            .catalog
+            .assets_by_digests(document_id, &wanted)
+            .await
+            .map_err(|e| PublicationError::Storage(e.to_string()))?
+            .into_iter()
+            .map(|asset| (hex::encode(&asset.digest), asset))
+            .filter(|(digest, asset)| {
+                bytes_wanted.get(digest.as_str()) == Some(&(asset.byte_length as usize))
+            })
+            .collect())
+    }
+
     pub async fn prepare(
         &self,
         storage_id: &str,
@@ -160,10 +204,20 @@ impl PublicationStore {
         let bytes =
             serde_json::to_vec(manifest).map_err(|e| PublicationError::Invalid(e.to_string()))?;
         put_idempotent(self.blobs.as_ref(), &key, bytes, "application/json").await?;
+        // A figure the document already holds is never asked for. It was
+        // uploaded once, is kept content-addressed and is never deleted, and
+        // activation will point the published file straight at it -- so
+        // staging a second copy would send it over the network to be thrown
+        // away. What is left to ask for is the rendering, which is different
+        // every time, and whatever the renderer produced beside it.
+        let held = self.already_held(storage_id, manifest).await?;
         let mut hashes = Vec::new();
         for object in
             std::iter::once(&manifest.html).chain(manifest.assets.iter().map(|a| &a.object))
         {
+            if held.contains_key(&object.sha256) {
+                continue;
+            }
             let object_key = staging_object_key(storage_id, request_id, &object.sha256)?;
             if self.blobs.length(&object_key).await.ok() != Some(object.bytes as u64) {
                 hashes.push(object.sha256.clone());
@@ -263,30 +317,17 @@ impl PublicationStore {
             media_type: manifest.html.mime.clone(),
             source: PublicationSource::Owned(index),
         });
-        // Which of this page's figures the document already holds. They are
-        // kept content-addressed and are never deleted, so a publication that
-        // copied them would be storing a second copy of bytes that cannot
-        // change -- once per publication, and the reader version republishes
-        // itself whenever the source goes quiet.
-        let wanted: Vec<String> = manifest
-            .assets
-            .iter()
-            .map(|asset| asset.object.sha256.clone())
-            .collect();
-        let held: HashMap<String, crate::storage::postgres::AssetRecord> = catalog
-            .assets_by_digests(document_id, &wanted)
-            .await
-            .map_err(|e| PublicationError::Storage(e.to_string()))?
-            .into_iter()
-            .map(|asset| (hex::encode(&asset.digest), asset))
-            .collect();
+        // Which of this page's figures the document already holds. The same
+        // question `prepare` asked, so that what was never staged is never
+        // looked for in staging.
+        let held = self.already_held(storage_id, manifest).await?;
         for asset in &manifest.assets {
             let path = validate_path(&asset.path)?;
             // The media type is the page's, not the blob's: a figure is stored as
             // opaque bytes and the rendering is what knows it is a PNG.
             let media_type = asset.object.mime.clone();
             let source = match held.get(&asset.object.sha256) {
-                Some(record) if record.byte_length as usize == asset.object.bytes => {
+                Some(record) => {
                     let digest: [u8; 32] = record.digest.as_slice().try_into().map_err(|_| {
                         PublicationError::Storage("stored asset digest is not a sha256".into())
                     })?;
@@ -297,8 +338,11 @@ impl PublicationStore {
                     }
                 }
                 // A stylesheet or font the rendering produced, rather than a
-                // figure somebody uploaded: nothing else holds it.
-                _ => PublicationSource::Owned(
+                // figure somebody uploaded: nothing else holds it, so this
+                // publication does -- under a key that is its digest, which
+                // is what lets the next publication of the same fonts find
+                // them already written.
+                None => PublicationSource::Owned(
                     self.read_staged(storage_id, request_id, &asset.object)
                         .await?,
                 ),
