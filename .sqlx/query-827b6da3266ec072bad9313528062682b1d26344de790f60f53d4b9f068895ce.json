@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET run_after=now(),updated_at=now()\n             WHERE kind='document_deletion' AND document_id=$1 AND status='queued'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "827b6da3266ec072bad9313528062682b1d26344de790f60f53d4b9f068895ce"
+}

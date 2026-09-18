@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET status='cancelled',updated_at=now()\n             WHERE kind='document_deletion' AND document_id=$1 AND status='queued'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4d67c28da0ff337c6961f45496d88d35cf9c8f12508c0bceb11c27e72bccaa11"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT run_after FROM jobs\n             WHERE kind='document_deletion' AND document_id=$1 AND status='queued'\n             ORDER BY run_after LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "run_after",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9e1b25542216f9dec101beb5ba023e11d6bfede26028203038a709559a6c0610"
+}
