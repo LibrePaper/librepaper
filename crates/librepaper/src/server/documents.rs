@@ -1280,6 +1280,173 @@ impl Server {
         }
     }
 
+    /// Give a project a different name.
+    ///
+    /// The name and the address are two things: a project keeps its slug when
+    /// it is renamed, because the slug is what every link anybody has already
+    /// shared points at, and a rename is about what this project is called
+    /// rather than about where it lives. Only the owner may, for the same
+    /// reason a deletion is theirs alone.
+    pub(super) async fn handle_rename(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Reply {
+        let headers = request.headers().clone();
+        if cross_site_refused(&headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let who = match self.publisher(&headers, arrival).await {
+            Ok(who) => who,
+            Err(response) => return response,
+        };
+        let Ok(body) = to_bytes(request.into_body(), 1 << 16).await else {
+            return write_json(400, &json!({"error": "bad request"}));
+        };
+        let title = serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|value| value.get("title")?.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return write_json(400, &json!({"error": "give the project a name"}));
+        }
+        if title.chars().count() > 200 {
+            return write_json(400, &json!({"error": "that name is too long"}));
+        }
+        // Somebody else's document answers as a missing one does.
+        match self.checked_entry(slug).await {
+            Ok(Some(entry)) if entry.owned_by(&who.key, &who.id) => entry,
+            Ok(Some(_)) | Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
+        };
+        match self.store.rename(slug, &title).await {
+            Ok(()) => write_json(200, &json!({"slug": slug, "title": title})),
+            Err(error) => {
+                eprintln!("could not rename {slug}: {error}");
+                write_json(500, &json!({"error": "could not rename the project"}))
+            }
+        }
+    }
+
+    /// Copy a project, with everything in it, into a new project of your own.
+    ///
+    /// A fork is a new document and not a branch: it has its own slug, its own
+    /// links, its own comments -- which is to say none -- and its own history
+    /// starting now. Nothing about it points back, because the thing being
+    /// copied may be somebody else's and may go away.
+    ///
+    /// Anyone who may read a project may fork it, which is the same rule that
+    /// lets them download it: a copy taken through the browser and a copy
+    /// taken here are the same copy, and refusing the second while allowing
+    /// the first would only be slower.
+    pub(super) async fn handle_fork(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Reply {
+        let headers = request.headers().clone();
+        if cross_site_refused(&headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let query = request.uri().query().map(str::to_string);
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
+        };
+        // Read it as whoever is asking: a private project nobody shared is
+        // not forkable, and answers as missing rather than as refused.
+        let viewer = self
+            .viewer(&entry, &headers, arrival, query.as_deref())
+            .await;
+        if !self.may_read(&entry, &viewer) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        // But it is written as an account: a copy has to belong to somebody,
+        // and a link-holder who is not signed in has nowhere to put one.
+        let who = match self.publisher(&headers, arrival).await {
+            Ok(who) => who,
+            Err(response) => return response,
+        };
+        if who.id.is_empty() {
+            return write_json(401, &json!({"error": "sign in to keep a copy"}));
+        }
+        let files = match self.store.project_files(slug).await {
+            Ok(Some(files)) => files,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(error) => {
+                eprintln!("could not read {slug} to fork it: {error}");
+                return write_json(503, &json!({"error": "could not read that project"}));
+            }
+        };
+        let title = format!("{} (copy)", entry.title);
+        // Always a fresh suffixed slug, never the bare title: two copies of
+        // the same paper are the ordinary case here, and the second must not
+        // land on the first.
+        let base = {
+            let stem = slugify(&title, &self.config);
+            let stem = if stem.is_empty() {
+                "project".into()
+            } else {
+                stem
+            };
+            format!(
+                "{stem}-{}",
+                crate::document::store::random_suffix(&self.config)
+            )
+        };
+        let source = files
+            .iter()
+            .find(|(path, _)| path == &entry.main)
+            .and_then(|(_, bytes)| String::from_utf8(bytes.clone()).ok())
+            .unwrap_or_default();
+        let rest: Vec<(String, Vec<u8>)> = files
+            .into_iter()
+            .filter(|(path, _)| path != &entry.main)
+            .collect();
+        let actor = crate::document::store::MutationActor {
+            account_id: who.id.clone(),
+            owner_key: who.key.clone(),
+            session_generation: who.session_generation.clone(),
+            link_hash: String::new(),
+            policy_editor: true,
+            unowned_publisher: false,
+        };
+        match self
+            .store
+            .put_directory_as_actor(
+                Publication {
+                    slug: base,
+                    title: title.clone(),
+                    source,
+                    source_format: entry.source_format.clone(),
+                    main: entry.main.clone(),
+                },
+                rest,
+                actor,
+            )
+            .await
+        {
+            Ok(made) => write_json(
+                200,
+                &json!({"slug": made.slug, "title": made.title, "url": format!("/docs/{}", made.slug)}),
+            ),
+            Err(error) => {
+                eprintln!("could not fork {slug}: {error:?}");
+                write_json(500, &json!({"error": "could not copy that project"}))
+            }
+        }
+    }
+
     /// What this account has deleted and can still get back.
     ///
     /// Deleting has always been a mark and a job queued seven days out rather

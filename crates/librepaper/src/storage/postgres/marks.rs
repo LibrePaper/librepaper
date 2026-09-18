@@ -19,6 +19,15 @@ pub struct MarkRecord {
     pub opened_at: Option<OffsetDateTime>,
 }
 
+/// The two numbers the listing prints beside a project's name.
+#[derive(Clone, Debug)]
+pub struct CountRecord {
+    pub document_id: Uuid,
+    pub comments: i64,
+    pub open: i64,
+    pub file_count: Option<i32>,
+}
+
 impl PostgresCatalog {
     /// Star a document, or take the star off it. Returns whether it is starred
     /// afterwards, which is what the caller was asking for and saves it
@@ -100,6 +109,46 @@ impl PostgresCatalog {
             "SELECT document_id,favorited_at,opened_at FROM document_marks
              WHERE account_id=$1 AND document_id=ANY($2)",
             account_id,
+            document_ids,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// What the listing says about each project besides its name: how many
+    /// comments it has collected, and how many files it holds.
+    ///
+    /// One query per fact for a whole page of projects, rather than the
+    /// request per project the landing page used to make. The comments are an
+    /// aggregate over `annotations`; the file count is read off whichever
+    /// version each document currently points at, where it was written down
+    /// when that version was committed.
+    ///
+    /// A document whose current version predates `file_count` yields `None`,
+    /// and one with no version yet yields no row at all. Both are "not known"
+    /// rather than zero, and the listing draws them the same way.
+    pub async fn listing_counts(&self, document_ids: &[Uuid]) -> Result<Vec<CountRecord>> {
+        if document_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as!(
+            CountRecord,
+            r#"SELECT d.id AS "document_id!",
+                      COALESCE(a.comments, 0) AS "comments!",
+                      COALESCE(a.open, 0) AS "open!",
+                      v.file_count
+               FROM documents d
+               LEFT JOIN document_versions v ON v.id = d.current_version_id
+               LEFT JOIN (
+                   SELECT document_id,
+                          count(*) AS comments,
+                          count(*) FILTER (WHERE resolved_at IS NULL) AS open
+                   FROM annotations
+                   WHERE document_id = ANY($1) AND kind = 'comment'
+                   GROUP BY document_id
+               ) a ON a.document_id = d.id
+               WHERE d.id = ANY($1)"#,
             document_ids,
         )
         .fetch_all(&self.pool)

@@ -107,22 +107,6 @@ impl From<BlobError> for Error {
     }
 }
 
-/// How long a publication outlives the one that replaced it.
-///
-/// Only one thing still needs it: a reader with the page already open, whose
-/// frame may yet ask for a figure or a font it has not fetched. Nothing else
-/// does -- an annotation carries a bare `publication_id` with no foreign key,
-/// and a reader on a newer rendering is shown comments from older ones by
-/// matching their quoted words against the page in front of them, so deleting
-/// the row they name loses nothing.
-///
-/// It was seven days, from when publishing was a button somebody pressed a
-/// handful of times. The reader version now rebuilds itself whenever the
-/// source goes quiet, so a week of superseded bundles is a week of full
-/// copies of every figure, and the default per-owner ceiling is 100 MB. A
-/// reading session is the honest unit.
-const SUPERSEDED_GRACE: time::Duration = time::Duration::hours(1);
-
 pub struct PublicationStorage {
     catalog: Arc<PostgresCatalog>,
     blobs: Arc<dyn BlobStore>,
@@ -314,7 +298,11 @@ impl PublicationStorage {
                     payload: serde_json::json!({"publication_id":previous_id}),
                     priority: 0,
                     max_attempts: 100,
-                    run_after: time::OffsetDateTime::now_utc() + SUPERSEDED_GRACE,
+                    // At once. A page nobody can reach is not worth a grace
+                    // period, and what a reader still on it needs -- the row
+                    // that says which checkpoint it was rendered from -- is
+                    // what retiring keeps.
+                    run_after: time::OffsetDateTime::now_utc(),
                 })
                 .await?;
         }

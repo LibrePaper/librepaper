@@ -34,7 +34,7 @@ pub struct PublicationRecord {
     pub source_version_id: Option<Uuid>,
     pub request_key: String,
     pub request_digest: Vec<u8>,
-    pub manifest_key: String,
+    pub manifest_key: Option<String>,
     pub manifest_digest: Vec<u8>,
     pub publisher_account_id: Option<Uuid>,
     pub publisher_label: String,
@@ -235,16 +235,83 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
-    pub async fn finish_publication_cleanup(&self, publication_id: Uuid) -> Result<bool> {
-        let removed = sqlx::query!(
-            "DELETE FROM publications p WHERE p.id=$1
-             AND NOT EXISTS(SELECT 1 FROM documents d WHERE d.current_publication_id=p.id)",
-            publication_id,
+    /// Forgets retired pages nobody can still be reading.
+    ///
+    /// A retired row is kept for one reason: somebody who opened that page
+    /// before it was replaced is still looking at it, and commenting on it
+    /// means finding their words in the source it was rendered from. That
+    /// cannot outlive the page itself. The frame a reader is shown is signed
+    /// for `FRAME_TOKEN_SECONDS` -- a day -- and once that runs out their
+    /// page can fetch nothing and a reload gives them the current version.
+    ///
+    /// So a day is the life of the question these rows answer, and this keeps
+    /// them for two: long enough that a tab left open overnight is still
+    /// answered, short enough that a document edited for a year holds a day
+    /// of rows rather than a year of them. Letting them go also lets history
+    /// pruning have the source versions they were spared for.
+    ///
+    /// Annotations already made are not affected. Since the source-first
+    /// migration an annotation carries its own checkpoint, file id, offsets
+    /// and quoted text, and names no version row at all.
+    pub async fn forget_retired_publications(&self, document_id: Uuid) -> Result<u64> {
+        Ok(sqlx::query!(
+            "DELETE FROM publications p
+             WHERE p.document_id=$1
+               AND p.manifest_key IS NULL
+               AND p.created_at < now() - interval '2 days'
+               AND NOT EXISTS(SELECT 1 FROM documents d WHERE d.current_publication_id=p.id)",
+            document_id,
         )
         .execute(&self.pool)
         .await?
+        .rows_affected())
+    }
+
+    /// Retires a publication that is no longer current: it keeps what it says
+    /// and lets go of what it showed.
+    ///
+    /// The files go, which is the whole saving -- a superseded page is
+    /// unreachable, because `deliver` resolves the current publication on
+    /// every request. The row stays, because a reader is offered a newer
+    /// version rather than given one, and somebody still reading the page
+    /// they opened must be able to comment on it: `room::published_source`
+    /// reads this row to find the source checkpoint their words are in. It is
+    /// also what keeps history pruning from taking that checkpoint away.
+    ///
+    /// Blobs are left to the orphan sweeper, which re-reads every reference
+    /// at the moment it deletes. Deciding here would mean deciding before the
+    /// delete and acting after it, and a publish landing in between shares
+    /// objects with this one.
+    pub async fn finish_publication_cleanup(&self, publication_id: Uuid) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let current = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM documents WHERE current_publication_id=$1)
+               AS "exists!""#,
+            publication_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if current {
+            return Ok(false);
+        }
+        let retired = sqlx::query!(
+            "UPDATE publications SET manifest_key=NULL WHERE id=$1",
+            publication_id,
+        )
+        .execute(&mut *tx)
+        .await?
         .rows_affected();
-        Ok(removed == 1)
+        if retired != 1 {
+            return Ok(false);
+        }
+        sqlx::query!(
+            "DELETE FROM publication_files WHERE publication_id=$1",
+            publication_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 }
 

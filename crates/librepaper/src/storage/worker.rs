@@ -204,6 +204,15 @@ impl Worker {
             .finish_publication_cleanup(payload.publication_id)
             .await
             .map_err(|error| error.to_string())?;
+        // And forget the pages retired long enough ago that nobody can still
+        // be reading one. Done here because publishing is the only thing that
+        // makes another one, so it is the only moment the answer changes.
+        if let Some(document_id) = claim.job.document_id {
+            self.catalog
+                .forget_retired_publications(document_id)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         Ok(())
     }
 

@@ -35,9 +35,8 @@
   let me = $state({});
   let documents = $state([]);
   let trashed = $state([]);
-  let counts = $state(new Map());
   // Every path in each project, by slug. What a search matches besides the
-  // title, and what the Files column counts.
+  // title. Filled only while somebody is searching.
   let paths = $state(new Map());
   let selected = $state(new Set());
   let search = $state("");
@@ -56,6 +55,14 @@
   let confirmText = $state("");
   let pendingDeletion = [];
   let nameInput = $state(null);
+  // The project being renamed, and the name being typed for it.
+  let renaming = $state(null);
+  let renameTo = $state("");
+  let renameError = $state("");
+  let renameInput = $state(null);
+  // The project a copy is being made of. A fork reads and rewrites a whole
+  // directory, so it is slow enough to need saying that it is happening.
+  let forking = $state("");
 
   // The columns a narrow screen drops; see `.col-when` at the foot of this
   // file for why these and not the others.
@@ -88,8 +95,8 @@
     const key = {
       title: (doc) => doc.title.toLowerCase(),
       owner: (doc) => (doc.owner || "").toLowerCase(),
-      files: (doc) => paths.get(doc.slug)?.length ?? -1,
-      comments: (doc) => counts.get(doc.slug) ?? -1,
+      files: (doc) => doc.files ?? -1,
+      comments: (doc) => doc.comments ?? -1,
       updated: (doc) => doc.updated_at,
       opened: (doc) => doc.opened_at || "",
     }[column];
@@ -105,11 +112,33 @@
   // matched is shown under the title, and opens the project on that file,
   // because "where is the figure I called that" is the question a search for
   // a path is asking.
+  //
+  // The paths behind the second half of that are fetched only once somebody
+  // is actually searching, and once per project per visit. Opening this page
+  // to look at your projects -- which is what opening it usually is -- costs
+  // one request; looking for a file costs a request per project, while you
+  // are looking.
   function found(doc, needle) {
     if (!needle) return { matches: true, path: "" };
     if (doc.title.toLowerCase().includes(needle)) return { matches: true, path: "" };
     const path = (paths.get(doc.slug) || []).find((each) => each.toLowerCase().includes(needle));
     return { matches: Boolean(path), path: path || "" };
+  }
+
+  // Ask each project what is in it, once. A failure is silent and leaves that
+  // project findable by its title alone, which is all it was before.
+  async function learnPaths() {
+    const wanted = documents.filter((doc) => !paths.has(doc.slug) && !doc.offline_prepared);
+    if (!wanted.length) return;
+    const listed = new Map(paths);
+    await Promise.all(
+      wanted.map((doc) =>
+        get("/api/documents/" + doc.slug)
+          .then((full) => listed.set(doc.slug, Array.isArray(full.files) ? full.files : []))
+          .catch(() => listed.set(doc.slug, [])),
+      ),
+    );
+    paths = listed;
   }
 
   // A document shared with you by name is in your list, and is not yours to
@@ -144,6 +173,11 @@
   }
 
   const needle = $derived(search.trim().toLowerCase());
+  // Typing is the request. Nothing is fetched until there is something to
+  // look for, and each project is asked once however long the search runs.
+  $effect(() => {
+    if (needle.length >= 2) void learnPaths();
+  });
   const source = $derived(place === "trash" ? trashed : documents);
   const shown = $derived.by(() => {
     const list = source.filter((doc) => belongs[place](doc) && found(doc, needle).matches);
@@ -228,23 +262,9 @@
       } while (cursor?.after_updated && cursor?.after_slug);
 
       documents = [...bySlug.values()];
-      // Counts and directories live in each project's room rather than in the
-      // index, so they are fetched separately and the list picks them up when
-      // they land.
-      const counted = new Map();
-      const listed = new Map();
-      await Promise.all(
-        documents.map((doc) =>
-          get(`/api/documents/${doc.slug}`)
-            .then((full) => {
-              counted.set(doc.slug, full.comment_count);
-              listed.set(doc.slug, Array.isArray(full.files) ? full.files : []);
-            })
-            .catch(() => {}),
-        ),
-      );
-      counts = counted;
-      paths = listed;
+      // The counts arrive with the listing now. They used to be a request per
+      // project -- forty projects meant forty-one requests to open this page
+      // -- because neither number was in the catalogue. Both are now.
     } catch (error) {
       if (navigator.onLine !== false) say(error?.message || "The project list could not be refreshed, so what is shown here may be out of date.", { kind: "problem", id: "landing:refresh" });
       return false;
@@ -363,6 +383,73 @@
     }
   }
 
+  /* ------------------------------------------------- renaming and copying */
+
+  function askRename(doc) {
+    renaming = doc;
+    renameTo = doc.title;
+    renameError = "";
+  }
+
+  // The name changes and the address does not. Every link anybody has been
+  // given points at the slug, and a project that moved because it was renamed
+  // would break each of them to no purpose.
+  async function reallyRename(event) {
+    event.preventDefault();
+    const doc = renaming;
+    const title = renameTo.trim();
+    if (!doc) return;
+    if (!title) {
+      renameError = "Give the project a name.";
+      renameInput?.focus();
+      return;
+    }
+    if (title === doc.title) {
+      renaming = null;
+      return;
+    }
+    try {
+      const response = await fetch(`/api/documents/${doc.slug}/rename`, {
+        method: "POST",
+        headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!response.ok) {
+        renameError = (await response.json().catch(() => ({}))).error || "That name could not be saved.";
+        return;
+      }
+      doc.title = title;
+      renaming = null;
+    } catch (error) {
+      renameError = error?.message || "That name could not be saved.";
+    }
+  }
+
+  // A copy is a project of its own from the moment it exists: its own link,
+  // its own comments, its own history. Nothing about it points back, because
+  // what it was copied from may be somebody else's and may go away.
+  async function fork(doc) {
+    if (forking) return;
+    forking = doc.slug;
+    try {
+      const response = await fetch(`/api/documents/${doc.slug}/fork`, {
+        method: "POST",
+        headers: SHELL_HEADERS,
+      });
+      if (!response.ok) {
+        const said = (await response.json().catch(() => ({}))).error;
+        throw new Error(said || "That project could not be copied.");
+      }
+      const made = await response.json();
+      say(`${made.title} is in your projects.`, { id: "landing:forked" });
+      await showList();
+    } catch (error) {
+      say(error?.message || "That project could not be copied.", { kind: "problem", id: "landing:fork" });
+    } finally {
+      forking = "";
+    }
+  }
+
   /* --------------------------------------------------------- a new project */
 
   // Making a project and filling it are two acts, not one. This asks only for
@@ -452,7 +539,8 @@
          what the reader's own collapsed column is, so the width here and the
          width there are the same width. -->
     <Sidebar tabs={PROJECT_TABS} panel={place} shown={{ comments: false }}
-             resizable={false} label="Projects" onselectpanel={goTo}>
+             resizable={false} label="Projects" onselectpanel={goTo}
+             badges={trashed.length ? { trash: { counts: [{ tone: "warnings", of: trashed.length }] } } : {}}>
       {#snippet controls()}{/snippet}
     </Sidebar>
 
@@ -579,12 +667,26 @@
                       {#if !mine(doc)}
                         <span class="badge preset-tonal-secondary text-xs" title="What you may do here">{doc.role}</span>
                       {/if}
+                      <!-- And whoever else has been in. Three faces and a
+                           count: the question this answers is "am I working
+                           on this with anyone", which four faces answer no
+                           better than three. Only shown on your own projects,
+                           because on somebody else's it would tell you who
+                           else holds the link you came in on. -->
+                      {#if doc.people?.length}
+                        <span class="people" title={doc.people.map((person) => person.name).join(", ")}>
+                          {#each doc.people.slice(0, 3) as person (person.id)}
+                            <Avatar name={person.name} key={person.id} size={5} title="" />
+                          {/each}
+                          {#if doc.people.length > 3}<span class="people-more">+{doc.people.length - 3}</span>{/if}
+                        </span>
+                      {/if}
                     </span>
                   {/if}
                 </td>
                 {#if place !== "trash"}
-                  <td>{counts.has(doc.slug) ? counts.get(doc.slug) || "—" : "—"}</td>
-                  <td class="col-files">{paths.has(doc.slug) ? paths.get(doc.slug).length : "—"}</td>
+                  <td>{doc.comments || "—"}</td>
+                  <td class="col-files">{doc.files ?? "—"}</td>
                 {/if}
                 <!-- Relative, with the date itself in the tooltip. Six copies
                      of today's date answer nothing; "12 min ago" answers the
@@ -599,6 +701,15 @@
                       <IconButton icon="trash" label="Delete {doc.title} for good" onclick={() => purge(doc)} />
                     </span>
                   {:else}
+                    <!-- What can be done to a project without opening it.
+                         Renaming keeps the slug, so every link already shared
+                         still arrives; forking makes a project of your own,
+                         which is why it is offered on somebody else's too. -->
+                    {#if mine(doc)}
+                      <IconButton icon="pencil" label="Rename {doc.title}" onclick={() => askRename(doc)} />
+                    {/if}
+                    <IconButton icon="copy" label="Make a copy of {doc.title}"
+                                disabled={forking === doc.slug} onclick={() => fork(doc)} />
                     <IconButton
                       icon="star"
                       tone="plain"
@@ -685,6 +796,25 @@
   {/snippet}
 </Modal>
 
+<Modal open={Boolean(renaming)} title="Rename project"
+       description="The name changes; the link does not, so anything already shared still works."
+       onclose={() => { renaming = null; renameError = ""; }}>
+  {#snippet children()}
+    <form id="rename-project" onsubmit={reallyRename}>
+      <label class="label">
+        <span class="label-text">Name</span>
+        <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
+        <input class="input" autofocus bind:this={renameInput} bind:value={renameTo} />
+      </label>
+      {#if renameError}<p class="text-error-500 text-sm">{renameError}</p>{/if}
+    </form>
+  {/snippet}
+  {#snippet footer()}
+    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (renaming = null)}>Cancel</button>
+    <button type="submit" form="rename-project" class="btn preset-filled-primary-500">Rename</button>
+  {/snippet}
+</Modal>
+
 <Modal bind:open={confirming} title="Move to the trash?" description={confirmText}>
   {#snippet footer()}
     <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (confirming = false)}>
@@ -749,6 +879,8 @@
 
   .owner { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); }
   .owner-name { font-size: var(--text-sm); }
+  .people { display: inline-flex; align-items: center; gap: 2px; margin-left: calc(var(--spacing)); }
+  .people-more { font-size: var(--text-xs); color: var(--color-surface-600-400); }
   .trash-actions { display: inline-flex; align-items: center; gap: calc(var(--spacing)); }
 
   /* The two columns a phone has no room for: the listing is read there to

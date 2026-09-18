@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.id AS \"document_id!\",\n                      COALESCE(a.comments, 0) AS \"comments!\",\n                      COALESCE(a.open, 0) AS \"open!\",\n                      v.file_count\n               FROM documents d\n               LEFT JOIN document_versions v ON v.id = d.current_version_id\n               LEFT JOIN (\n                   SELECT document_id,\n                          count(*) AS comments,\n                          count(*) FILTER (WHERE resolved_at IS NULL) AS open\n                   FROM annotations\n                   WHERE document_id = ANY($1) AND kind = 'comment'\n                   GROUP BY document_id\n               ) a ON a.document_id = d.id\n               WHERE d.id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "document_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "comments!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "open!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "file_count",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      true
+    ]
+  },
+  "hash": "401a0f195310121000639be53d4b741d0316f3a9184145fd49b788b670e00d33"
+}

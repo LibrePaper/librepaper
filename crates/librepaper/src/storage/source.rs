@@ -194,6 +194,8 @@ impl SourceStorage {
     }
 
     pub async fn commit_archive(&self, input: CommitArchive) -> Result<StoredProject, Error> {
+        // Taken before the archive is encoded and moved out of `input`.
+        let file_count = input.archive.files.len();
         let document = self
             .catalog
             .document(input.document_id)
@@ -274,6 +276,11 @@ impl SourceStorage {
                 logical_bytes: encoded.logical_bytes as i64,
                 tree_digest,
                 changed_paths: input.changed_paths,
+                // The one moment a version's file count is in hand without
+                // decoding anything. The listing reads it back off whichever
+                // version a document currently points at, rather than opening
+                // every project to count what is in it.
+                file_count: i32::try_from(file_count).ok(),
                 reason: input.reason,
                 label: input.label,
                 author_account_id: input.author_account_id,

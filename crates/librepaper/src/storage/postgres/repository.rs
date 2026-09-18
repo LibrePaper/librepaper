@@ -101,6 +101,11 @@ pub struct NewVersion {
     /// The paths whose contents differ from the parent version's. `None` when
     /// the writer could not answer, which is not the same as "nothing moved".
     pub changed_paths: Option<Vec<String>>,
+    /// How many files this version holds. `None` when the writer did not say,
+    /// which is what every version written before the listing needed the
+    /// number reads back as. The listing shows it as unknown rather than as
+    /// zero: a project has at least a main file, so zero would be a lie.
+    pub file_count: Option<i32>,
     pub reason: String,
     pub label: Option<String>,
     pub author_account_id: Option<Uuid>,
@@ -123,6 +128,7 @@ pub struct VersionRecord {
     pub logical_bytes: i64,
     pub tree_digest: Option<Vec<u8>>,
     pub changed_paths: Option<Vec<String>>,
+    pub file_count: Option<i32>,
     pub reason: String,
     pub label: Option<String>,
     pub author_account_id: Option<Uuid>,
@@ -896,7 +902,7 @@ impl PostgresCatalog {
             VersionRecord,
             "SELECT v.id,v.document_id,v.sequence,v.parent_id,v.through_update_sequence,
                     v.project_generation,v.archive_key,v.archive_encoding_version,v.archive_digest,
-                    v.archive_bytes,v.logical_bytes,v.tree_digest,v.changed_paths,v.reason,
+                    v.archive_bytes,v.logical_bytes,v.tree_digest,v.changed_paths,v.file_count,v.reason,
                     v.label,v.author_account_id,v.author_label,v.created_at
              FROM documents d
              JOIN document_versions v ON v.id=d.current_version_id
@@ -1051,12 +1057,12 @@ impl PostgresCatalog {
             "INSERT INTO document_versions
              (id,document_id,sequence,parent_id,through_update_sequence,project_generation,
               archive_key,archive_encoding_version,archive_digest,archive_bytes,logical_bytes,
-              tree_digest,changed_paths,reason,label,author_account_id,author_label)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+              tree_digest,changed_paths,file_count,reason,label,author_account_id,author_label)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
              RETURNING id,document_id,sequence,parent_id,through_update_sequence,project_generation,
                        archive_key,archive_encoding_version,archive_digest,archive_bytes,
-                       logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,
-                       author_label,created_at",
+                       logical_bytes,tree_digest,changed_paths,file_count,reason,label,
+                       author_account_id,author_label,created_at",
             id,
             input.document_id,
             sequence,
@@ -1070,6 +1076,7 @@ impl PostgresCatalog {
             input.logical_bytes,
             tree_digest,
             input.changed_paths.as_deref(),
+            input.file_count,
             input.reason,
             input.label,
             input.author_account_id,
@@ -1117,7 +1124,7 @@ impl PostgresCatalog {
             VersionRecord,
             "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,
                     archive_key,archive_encoding_version,archive_digest,archive_bytes,
-                    logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,
+                    logical_bytes,tree_digest,changed_paths,file_count,reason,label,author_account_id,
                     author_label,created_at
              FROM document_versions WHERE document_id=$1
              ORDER BY sequence DESC LIMIT $2",
@@ -1159,7 +1166,7 @@ impl PostgresCatalog {
             VersionRecord,
             "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,
                     archive_key,archive_encoding_version,archive_digest,archive_bytes,
-                    logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,
+                    logical_bytes,tree_digest,changed_paths,file_count,reason,label,author_account_id,
                     author_label,created_at
              FROM document_versions WHERE document_id=$1 AND id=$2",
             document_id,
@@ -1183,7 +1190,7 @@ impl PostgresCatalog {
             VersionRecord,
             "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,
                     archive_key,archive_encoding_version,archive_digest,archive_bytes,
-                    logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,
+                    logical_bytes,tree_digest,changed_paths,file_count,reason,label,author_account_id,
                     author_label,created_at
              FROM document_versions WHERE document_id=$1
              AND sequence < COALESCE($2::bigint, 9223372036854775807) ORDER BY sequence DESC LIMIT $3",

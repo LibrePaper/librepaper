@@ -31,6 +31,9 @@ export function createPreviewRenderer({
   snapshotDigest,
   diagnosticContext,
   parseSynctex,
+  /// Keeps the page that was just drawn, so the next visit to this document
+  /// has something to show while its engine loads and its source compiles.
+  rememberPreview = (_page, _identity) => {},
   /// Everything about the page that a render has to re-read after an await.
   /// One call rather than one getter per fact, because they are read
   /// together and a render compares a whole moment against another whole
@@ -215,7 +218,9 @@ export function createPreviewRenderer({
         status.succeeded();
         const buffer = pdf.buffer ? pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) : pdf;
         onsynctex(null);
-        framePreview.publish({ kind: "pdf", sha: identity, bytes: new Uint8Array(buffer.slice(0)) });
+        const page = { kind: "pdf", sha: identity, bytes: new Uint8Array(buffer.slice(0)) };
+        framePreview.publish(page);
+        rememberPreview(page, identity);
         if (capturedSource === facts().source) {
           diagnostics.rendered({ page: "", diagnostics: contextual });
         }
@@ -243,6 +248,7 @@ export function createPreviewRenderer({
         // that a font name half typed does not flash a badge on every
         // keystroke.
         framePreview.publish({ kind: "html", html });
+        rememberPreview({ kind: "html", html }, identity);
         if (capturedSource === facts().source) {
           diagnostics.rendered({ page: html, diagnostics: contextual });
         }

@@ -635,6 +635,85 @@ impl Store {
     /// The marks this account holds on the documents listed, by slug. The
     /// listing decorates its rows with these; a document the caller has never
     /// touched simply has no entry.
+    /// Every file in a project, by path, as it currently stands.
+    ///
+    /// Read from the committed source archive rather than from the live room:
+    /// the archive is what a project *is* between edits, and reading it needs
+    /// no room to be resident. A project whose newest edits have not been
+    /// checkpointed yet is copied as of its last checkpoint, which is the same
+    /// thing a download of it gives you.
+    pub async fn project_files(
+        &self,
+        slug: &str,
+    ) -> Result<Option<Vec<(String, Vec<u8>)>>, String> {
+        let Some(document) = self
+            .catalog
+            .document_by_slug(slug)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let source = crate::storage::source::SourceStorage::new(
+            self.catalog.clone(),
+            self.blobs.clone(),
+            Default::default(),
+        );
+        let Some(project) = source
+            .read_current(document.id)
+            .await
+            .map_err(|error| format!("{error:?}"))?
+        else {
+            return Ok(None);
+        };
+        let mut files = Vec::with_capacity(project.archive.files.len());
+        for file in &project.archive.files {
+            match file {
+                crate::storage::source_archive::SourceFile::Inline { path, bytes } => {
+                    files.push((path.clone(), bytes.clone()));
+                }
+                crate::storage::source_archive::SourceFile::Asset { path, asset_id, .. } => {
+                    // A figure the archive names by reference. Its bytes came
+                    // back beside the archive; one that did not is skipped
+                    // rather than failing the copy, because a project missing
+                    // one figure is still worth having.
+                    if let Some(bytes) = project.assets.get(asset_id) {
+                        files.push((path.clone(), bytes.clone()));
+                    }
+                }
+            }
+        }
+        Ok(Some(files))
+    }
+
+    /// The comment and file counts for a page of the listing, by slug.
+    ///
+    /// This is what replaced a request per project. It asks the catalogue two
+    /// aggregate questions about the whole page, rather than opening every
+    /// project's room to count what is in it -- which is what the landing
+    /// page was doing from the browser, and what doing it from the server
+    /// instead would only have moved rather than fixed.
+    pub async fn counts_for(
+        &self,
+        entries: &[IndexEntry],
+    ) -> Result<std::collections::HashMap<String, (i64, i64, Option<i32>)>, CatalogError> {
+        let mut by_id = std::collections::HashMap::new();
+        for entry in entries {
+            if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
+                by_id.insert(id, entry.slug.clone());
+            }
+        }
+        let ids: Vec<_> = by_id.keys().copied().collect();
+        let counts = self.catalog.listing_counts(&ids).await?;
+        Ok(counts
+            .into_iter()
+            .filter_map(|row| {
+                let slug = by_id.get(&row.document_id)?.clone();
+                Some((slug, (row.comments, row.open, row.file_count)))
+            })
+            .collect())
+    }
+
     pub async fn marks_for(
         &self,
         account_id: &str,

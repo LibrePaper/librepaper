@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,\n                    archive_key,archive_encoding_version,archive_digest,archive_bytes,\n                    logical_bytes,tree_digest,changed_paths,reason,label,author_account_id,\n                    author_label,created_at\n             FROM document_versions WHERE document_id=$1 AND id=$2",
+  "query": "INSERT INTO document_versions\n             (id,document_id,sequence,parent_id,through_update_sequence,project_generation,\n              archive_key,archive_encoding_version,archive_digest,archive_bytes,logical_bytes,\n              tree_digest,changed_paths,file_count,reason,label,author_account_id,author_label)\n             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)\n             RETURNING id,document_id,sequence,parent_id,through_update_sequence,project_generation,\n                       archive_key,archive_encoding_version,archive_digest,archive_bytes,\n                       logical_bytes,tree_digest,changed_paths,file_count,reason,label,\n                       author_account_id,author_label,created_at",
   "describe": {
     "columns": [
       {
@@ -70,26 +70,31 @@
       },
       {
         "ordinal": 13,
+        "name": "file_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 14,
         "name": "reason",
         "type_info": "Text"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "label",
         "type_info": "Text"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "author_account_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "author_label",
         "type_info": "Text"
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
@@ -97,7 +102,23 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Text",
+        "Int2",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "TextArray",
+        "Int4",
+        "Text",
+        "Text",
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -114,6 +135,7 @@
       false,
       true,
       true,
+      true,
       false,
       true,
       true,
@@ -121,5 +143,5 @@
       false
     ]
   },
-  "hash": "aa171a1c01b518ff9354a392275ea7e372cb12e70927afe3474a88ca59180cec"
+  "hash": "0670e2f4641dc1196b6e9cb90ffa74d78e90ab56c88ed34c54282243e687cd2d"
 }

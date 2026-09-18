@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM publication_files WHERE publication_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b0bbdaaff9f8a34bb7fda40fc699696f81cecb7fcb765b7f6a62cbc4697f6107"
+}

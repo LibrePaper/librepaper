@@ -1,0 +1,19 @@
+-- A publication that is no longer current keeps what it says, not what it showed.
+--
+-- Nothing can reach a superseded page. `deliver` resolves
+-- `current_publication` on every request, so the files of an older one are
+-- already unreachable by any route -- the `publication_id` in a reader's URL
+-- authorises the request, it does not select a version. Keeping those files
+-- stored served nobody, and the reader version now rebuilds itself whenever
+-- the source goes quiet, so it was accumulating one dead copy per pause.
+--
+-- The row is a different matter and stays forever. It is what
+-- `room::published_source` reads to turn a reader's quoted words into a range
+-- of the source: a reader is shown a newer version as an offer rather than a
+-- swap, so somebody still reading the page they opened must be able to
+-- comment on it. The row is also what spares that source version from history
+-- pruning. Both cost a few hundred bytes and neither is worth reclaiming.
+--
+-- So retiring a page deletes its `publication_files` and releases its
+-- manifest, and `manifest_key` has to be able to say that it holds nothing.
+ALTER TABLE publications ALTER COLUMN manifest_key DROP NOT NULL;

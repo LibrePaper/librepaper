@@ -25,6 +25,8 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
             get(checkpoint).patch(label_checkpoint),
         )
         .route("/api/documents/{slug}/restore", post(restore))
+        .route("/api/documents/{slug}/rename", post(rename))
+        .route("/api/documents/{slug}/fork", post(fork))
         .route("/api/trash", get(trash))
         .route("/api/documents/{slug}/untrash", post(untrash))
         .route("/api/documents/{slug}/purge", post(purge))
@@ -237,6 +239,24 @@ async fn restore(
     request: Request<Body>,
 ) -> Reply {
     server.handle_restore(request, &ctx.arrival, &slug).await
+}
+
+async fn rename(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_rename(request, &ctx.arrival, &slug).await
+}
+
+async fn fork(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_fork(request, &ctx.arrival, &slug).await
 }
 
 /// The deleted projects still inside their recovery window. Not
@@ -807,6 +827,9 @@ pub(super) async fn dispatch(
                 .await
                 .unwrap_or_default()
         };
+        // How many comments and how many files, for the whole page at once.
+        // This is what the landing page used to ask for a project at a time.
+        let counts = server.store.counts_for(&entries).await.unwrap_or_default();
         let documents: Vec<Value> = entries
             .iter()
             .map(|entry| {
@@ -814,6 +837,11 @@ pub(super) async fn dispatch(
                 let (favorite, opened) = marks.get(&entry.slug).cloned().unwrap_or_default();
                 row["favorite"] = json!(favorite);
                 row["opened_at"] = json!(opened);
+                let (comments, open, files) =
+                    counts.get(&entry.slug).copied().unwrap_or((0, 0, None));
+                row["comments"] = json!(comments);
+                row["open_comments"] = json!(open);
+                row["files"] = json!(files);
                 row
             })
             .collect();

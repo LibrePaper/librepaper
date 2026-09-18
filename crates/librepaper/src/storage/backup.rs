@@ -74,6 +74,8 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
            FROM document_versions
            UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM document_assets
            UNION ALL SELECT manifest_key,0,encode(manifest_digest,'hex') FROM publications
+             WHERE manifest_key IS NOT NULL
+
            UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM publication_files
            UNION ALL SELECT snapshot_key,snapshot_bytes,encode(snapshot_digest,'hex')
              FROM document_bases

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT v.id,v.document_id,v.sequence,v.parent_id,v.through_update_sequence,\n                    v.project_generation,v.archive_key,v.archive_encoding_version,v.archive_digest,\n                    v.archive_bytes,v.logical_bytes,v.tree_digest,v.changed_paths,v.reason,\n                    v.label,v.author_account_id,v.author_label,v.created_at\n             FROM documents d\n             JOIN document_versions v ON v.id=d.current_version_id\n             WHERE d.id=$1 AND d.status='active'",
+  "query": "SELECT v.id,v.document_id,v.sequence,v.parent_id,v.through_update_sequence,\n                    v.project_generation,v.archive_key,v.archive_encoding_version,v.archive_digest,\n                    v.archive_bytes,v.logical_bytes,v.tree_digest,v.changed_paths,v.file_count,v.reason,\n                    v.label,v.author_account_id,v.author_label,v.created_at\n             FROM documents d\n             JOIN document_versions v ON v.id=d.current_version_id\n             WHERE d.id=$1 AND d.status='active'",
   "describe": {
     "columns": [
       {
@@ -70,26 +70,31 @@
       },
       {
         "ordinal": 13,
+        "name": "file_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 14,
         "name": "reason",
         "type_info": "Text"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "label",
         "type_info": "Text"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "author_account_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "author_label",
         "type_info": "Text"
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
@@ -113,6 +118,7 @@
       false,
       true,
       true,
+      true,
       false,
       true,
       true,
@@ -120,5 +126,5 @@
       false
     ]
   },
-  "hash": "ba77dd834c4f1fd544e8b6295c10cf6001895c2ebe153172a073ad7fd56c457e"
+  "hash": "a32887ef411ddb4d97360feb04580c5a85b54ec57cb40a32b266a99e0e155992"
 }

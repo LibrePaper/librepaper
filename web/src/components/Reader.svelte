@@ -77,6 +77,7 @@
   import Avatar from "./Avatar.svelte";
   import { extractOutline } from "../lib/outline.js";
   import { createFramePreview } from "../lib/reader/frame-preview.js";
+  import { rememberPreview, lastPreview, flushPreview } from "../lib/reader/preview-cache.js";
   import { createFrameOverlays } from "../lib/reader/frame-overlays.js";
   import { createRenderDiagnostics } from "../lib/reader/render-diagnostics.js";
   import { createRenderCoordinator } from "../lib/reader/render-coordinator.js";
@@ -1994,6 +1995,32 @@
     },
   });
 
+  // Whether what is in the frame is the page this browser drew last time
+  // rather than one compiled for the source on screen now. Cleared by the
+  // first real render, which is the thing that makes it untrue.
+  let paintedFromCache = $state(false);
+  // And whether that page was drawn from this very source. A document nobody
+  // edited between visits comes back to a page that is not stale at all, only
+  // older than the tab it is in, and saying "rendering" about it would be
+  // describing work rather than the document.
+  let cacheMatchedSource = $state(false);
+
+  /// Puts the last page this browser drew for this document into the frame,
+  /// if the frame has nothing newer in it yet.
+  async function restoreLastPreview() {
+    const remembered = await lastPreview(SLUG);
+    // A compile can beat this; IndexedDB is fast but it is not free. The
+    // cached page is only ever a stand-in for an empty pane.
+    if (!remembered || readerDisposed || everPainted || !paintsTheFrame) return;
+    paintedFromCache = true;
+    cacheMatchedSource = Boolean(remembered.identity)
+      && remembered.identity === await snapshotDigest(treeNow()).catch(() => "");
+    if (readerDisposed || everPainted) return;
+    framePreview.publish(remembered.kind === "pdf"
+      ? { kind: "pdf", sha: remembered.identity, bytes: new Uint8Array(remembered.bytes).slice() }
+      : { kind: "html", html: remembered.html });
+  }
+
   const navigateFrame = (force = false) => framePreview.navigate(force);
   const replayPreview = () => paintsTheFrame && framePreview.replay();
   const frameLoaded = () => {
@@ -2041,6 +2068,12 @@
   ));
   const previewStatusLabel = $derived(
     previewProblem ? "Preview needs attention"
+      // What is on screen came from the last visit. While it is being
+      // compiled again, say which of the two it is: a page drawn from this
+      // very source is not stale and calling it "last session's" would send
+      // somebody looking for a difference that is not there.
+      : paintedFromCache && cacheMatchedSource ? "Checking this page is current"
+      : paintedFromCache ? "Last session's page, compiling this one"
       : previewBusy ? (sourceFormat === "quarto" ? "Rendering Quarto" : sourceFormat === "typst" ? "Rendering Typst" : "Compiling")
       : !everPaintedShown && !renderState.failure ? "Rendering from source" : "",
   );
@@ -2067,6 +2100,13 @@
     snapshotDigest,
     diagnosticContext,
     parseSynctex,
+    rememberPreview: (page, identity) => {
+      // A page compiled here is the page for the source on screen, so
+      // whatever the frame was standing in with is no longer what it holds.
+      paintedFromCache = false;
+      cacheMatchedSource = false;
+      rememberPreview(SLUG, page, identity);
+    },
     facts: () => ({
       disposed: readerDisposed,
       navigation: navigationGeneration,
@@ -2984,6 +3024,13 @@
     // Load the browser renderer for readers as well as editors; this is all
     // transient and does not create a server-side result.
     renderers.warm(format);
+    // And put the last page this browser drew for this document up while that
+    // happens. Loading an engine and compiling a paper takes seconds, and the
+    // pane spent all of them blank -- showing nothing, while holding the page
+    // that is almost always about to be drawn again. The compile replaces it
+    // when it lands, and `paintedFromCache` is what makes the status say so
+    // until then.
+    void restoreLastPreview();
     await startCollaboration(document_);
     // `onSource` starts publication metadata only after the initial document state
     // has populated the source tree. A session object alone is not a snapshot.
@@ -3059,6 +3106,10 @@
       // disconnects, which the socket closing does on its own; this is only
       // this browser letting go of its half.
       readerDisposed = true;
+      // A page compiled in the last few seconds is still waiting out its
+      // settling pause. Leaving is the moment it is worth most: it is the
+      // page this document will open with next time.
+      void flushPreview(SLUG);
       stopQuartoStatus();
       renderCoordinator.invalidate();
       navigationGeneration += 1;

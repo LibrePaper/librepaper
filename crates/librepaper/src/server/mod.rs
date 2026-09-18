@@ -949,6 +949,23 @@ impl Server {
             // as its handle, which that rule is written to avoid.
             "owner": entry.owner_name(),
             "owner_id": entry.publisher_id,
+            // Who else is on it. Only the people who came in on a link, whose
+            // names the catalogue already has in hand here -- a document
+            // nobody else has opened says nothing rather than saying nobody,
+            // and the owner is not one of them: they are already named beside
+            // this. Shown only to somebody who may see the sharing, which is
+            // the owner and the people named on it; a link-holder learning
+            // who else holds the link is what the blind-review link exists to
+            // prevent.
+            "people": if entry.owned_by(&who.key, &who.id) {
+                json!(entry
+                    .guests
+                    .iter()
+                    .map(|guest| json!({"name": guest.name, "id": guest.id}))
+                    .collect::<Vec<_>>())
+            } else {
+                json!([])
+            },
         })
     }
 

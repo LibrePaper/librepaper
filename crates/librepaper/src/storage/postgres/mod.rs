@@ -19,6 +19,7 @@ mod repository;
 
 pub use collaboration::{ActivityBucket, CollaborationBase, CollaborationState, PersistedUpdate};
 pub use jobs::{Job, JobClaim, JobStatus, NewJob};
+pub use marks::{CountRecord, MarkRecord};
 pub use proposals::{NewProposal, StoredDecision, StoredProposal};
 pub use publications::{
     NewPublication, NewPublicationFile, PublicationFileRecord, PublicationRecord,
@@ -831,6 +832,20 @@ mod tests {
             .finish_publication_cleanup(first_publication.id)
             .await
             .unwrap());
+        // Publishing over a page queues its retirement, and queues it due
+        // rather than days out. Take it off the queue here so the job
+        // assertions below are about the jobs they name.
+        let queued = catalog.claim_jobs("retirement", 10).await.unwrap();
+        assert_eq!(
+            queued.len(),
+            1,
+            "superseding a publication queues exactly one retirement"
+        );
+        assert_eq!(queued[0].job.kind, "publication_cleanup");
+        catalog
+            .complete_job(&queued[0], json!({"retired": true}))
+            .await
+            .unwrap();
 
         let collaboration = CollaborationStorage::new(Arc::new(catalog.clone()), blobs.clone());
         let sequence = collaboration
@@ -1280,6 +1295,7 @@ mod tests {
             logical_bytes: 400,
             tree_digest: None,
             changed_paths: None,
+            file_count: None,
             reason: "quiet".into(),
             label: None,
             author_account_id: Some(account.id),
@@ -1955,7 +1971,7 @@ mod tests {
         assert!(blobs.exists(&stylesheets[1]).await.unwrap());
         assert!(
             blobs.exists(&figure_key).await.unwrap(),
-            "the figure survived the cleanup of a page that showed it",
+            "the figure survived the retirement of a page that showed it",
         );
         assert!(
             catalog
@@ -1963,8 +1979,63 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty(),
-            "and the forgotten page took its rows with it",
+            "a retired page keeps no files: nothing could reach them anyway",
         );
+        // What it does keep is what it says. A reader who has not taken the
+        // newer version yet is still looking at this page, and commenting on
+        // it means finding their words in the source it was rendered from.
+        let retired = catalog.publication(first.id).await.unwrap().unwrap();
+        assert_eq!(retired.document_id, document.id);
+        assert!(
+            retired.manifest_key.is_none(),
+            "and releases the manifest, which nothing reads once it is not current",
+        );
+
+        // A retired row is kept only while somebody could still be reading
+        // the page it describes. Nothing is old enough yet.
+        assert_eq!(
+            catalog
+                .forget_retired_publications(document.id)
+                .await
+                .unwrap(),
+            0,
+            "a page retired a moment ago may still have a reader on it"
+        );
+        assert!(catalog.publication(first.id).await.unwrap().is_some());
+
+        // Older than the frame a reader is signed into, and it goes.
+        sqlx::query!(
+            "UPDATE publications SET created_at = now() - interval '3 days' WHERE id=$1",
+            first.id,
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            catalog
+                .forget_retired_publications(document.id)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(catalog.publication(first.id).await.unwrap().is_none());
+        // Never the page readers are on, however old it is.
+        sqlx::query!(
+            "UPDATE publications SET created_at = now() - interval '30 days' WHERE id=$1",
+            second.id,
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            catalog
+                .forget_retired_publications(document.id)
+                .await
+                .unwrap(),
+            0,
+            "the current page is not a retired one"
+        );
+        assert!(catalog.publication(second.id).await.unwrap().is_some());
         assert_eq!(
             blobs.get(&figure_key).await.unwrap(),
             figure,
@@ -2043,8 +2114,14 @@ mod tests {
             .unwrap();
 
         // A star is set, read back, and set again without doubling.
-        assert!(catalog.set_favorite(owner.id, paper.id, true).await.unwrap());
-        assert!(catalog.set_favorite(owner.id, paper.id, true).await.unwrap());
+        assert!(catalog
+            .set_favorite(owner.id, paper.id, true)
+            .await
+            .unwrap());
+        assert!(catalog
+            .set_favorite(owner.id, paper.id, true)
+            .await
+            .unwrap());
         let mine = catalog
             .marks_for_documents(owner.id, &[paper.id])
             .await
@@ -2078,7 +2155,10 @@ mod tests {
 
         // Un-starring something that has been opened keeps the row, because
         // Recent still needs it.
-        assert!(!catalog.set_favorite(owner.id, paper.id, false).await.unwrap());
+        assert!(!catalog
+            .set_favorite(owner.id, paper.id, false)
+            .await
+            .unwrap());
         let after = catalog
             .marks_for_documents(owner.id, &[paper.id])
             .await
@@ -2088,7 +2168,28 @@ mod tests {
 
         // Star it again: this is what has to survive the round trip through
         // the trash below.
-        catalog.set_favorite(owner.id, paper.id, true).await.unwrap();
+        catalog
+            .set_favorite(owner.id, paper.id, true)
+            .await
+            .unwrap();
+
+        // The two numbers the listing prints, for a whole page at once. This
+        // is what replaced a request per project from the browser.
+        let counts = catalog.listing_counts(&[paper.id]).await.unwrap();
+        assert_eq!(
+            counts.len(),
+            1,
+            "a document with no version still has a row"
+        );
+        assert_eq!(counts[0].comments, 0);
+        assert_eq!(
+            counts[0].file_count, None,
+            "a project with no committed version does not claim to hold zero files",
+        );
+        assert!(
+            catalog.listing_counts(&[]).await.unwrap().is_empty(),
+            "and an empty page asks the database nothing",
+        );
 
         // Into the trash. The row is still here, and so is the mark.
         assert!(catalog.mark_document_deleting(paper.id).await.unwrap());
@@ -2124,13 +2225,19 @@ mod tests {
 
         // Back out again, still starred.
         assert!(catalog.restore_document(paper.id).await.unwrap());
-        assert!(catalog.trashed_documents(owner.id, 50).await.unwrap().is_empty());
+        assert!(catalog
+            .trashed_documents(owner.id, 50)
+            .await
+            .unwrap()
+            .is_empty());
         let restored = catalog
             .marks_for_documents(owner.id, &[paper.id])
             .await
             .unwrap();
         assert!(
-            restored.first().is_some_and(|mark| mark.favorited_at.is_some()),
+            restored
+                .first()
+                .is_some_and(|mark| mark.favorited_at.is_some()),
             "a project comes back from the trash exactly as it went in",
         );
 
@@ -2149,7 +2256,6 @@ mod tests {
 #[cfg(test)]
 mod benchmarks;
 pub use access::{AccessRole, GrantRecord, ShareLinkRecord};
-pub use marks::MarkRecord;
 pub use annotations::{
     attachment_from_record, original_anchor_from_record, presentation_from_record,
     AnnotationRecord, MutationAuthorization, NewAnnotation, NewReply, ReplyRecord,
