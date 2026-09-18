@@ -755,7 +755,7 @@ mod tests {
                 publisher_label: "Owner".into(),
                 files: vec![PublicationFile {
                     path: "index.html".into(),
-                    bytes: b"<h1>One</h1>".to_vec(),
+                    source: crate::storage::publication::PublicationSource::Owned(b"<h1>One</h1>".to_vec()),
                     media_type: "text/html".into(),
                 }],
             })
@@ -780,7 +780,7 @@ mod tests {
                 publisher_label: "Owner".into(),
                 files: vec![PublicationFile {
                     path: "index.html".into(),
-                    bytes: b"<h1>One</h1>".to_vec(),
+                    source: crate::storage::publication::PublicationSource::Owned(b"<h1>One</h1>".to_vec()),
                     media_type: "text/html".into(),
                 }],
             })
@@ -810,7 +810,7 @@ mod tests {
                 publisher_label: "Owner".into(),
                 files: vec![PublicationFile {
                     path: "index.html".into(),
-                    bytes: b"<h1>Two</h1>".to_vec(),
+                    source: crate::storage::publication::PublicationSource::Owned(b"<h1>Two</h1>".to_vec()),
                     media_type: "text/html".into(),
                 }],
             })
@@ -1748,6 +1748,173 @@ mod tests {
             !live.iter().any(|row| row.token_hash == reader.to_vec()),
             "and no longer to the old one",
         );
+
+        catalog.close().await;
+    }
+    /// A published page points at the figures the document already holds, and
+    /// cleaning the page up afterwards must leave them exactly where they are.
+    ///
+    /// This is the one way this design can lose somebody's work. A figure is
+    /// stored once, content-addressed, and shared between the live document
+    /// and every publication that shows it. The cleanup that runs an hour
+    /// after a publication is superseded deletes the blobs that publication
+    /// named -- so it has to delete only the ones nothing else names, or it
+    /// takes the figure out of the paper its author is still writing.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_superseded_page_takes_its_rendering_and_leaves_the_figures() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        sqlx::query!(
+            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
+             document_versions,document_assets,replies,annotations,share_links,grants,documents,
+             accounts CASCADE",
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        let account = catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some("shared-files".into()),
+                handle: "owner".into(),
+                display_name: "Owner".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let document = catalog
+            .create_document(NewDocument {
+                slug: "paper".into(),
+                owner_id: account.id,
+                ownership_mode: "account".into(),
+                title: "Paper".into(),
+                source_format: "markdown".into(),
+                main_path: "paper.md".into(),
+                settings: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+
+        let object_root = tempfile::tempdir().unwrap();
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+        let figure = b"PNG-BYTES".to_vec();
+        let figure_digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&figure).into();
+        let figure_key = format!("documents/{}/assets/plot", document.id);
+        blobs
+            .put_new(&figure_key, figure.clone(), "application/octet-stream")
+            .await
+            .unwrap();
+        catalog
+            .complete_asset(NewAsset {
+                document_id: document.id,
+                storage_key: figure_key.clone(),
+                digest: figure_digest,
+                byte_length: figure.len() as i64,
+                media_type: "application/octet-stream".into(),
+            original_name: Some("plot.png".into()),
+            })
+            .await
+            .unwrap();
+        let held_after_upload = catalog.usage_bytes(None).await.unwrap();
+
+        let publications = PublicationStorage::new(Arc::new(catalog.clone()), blobs.clone());
+        let page = |body: &'static [u8], key: &str| Publish {
+            document_id: document.id,
+            source_version_id: None,
+            request_key: key.to_string(),
+            expected_current_id: None,
+            publisher_account_id: Some(account.id),
+            publisher_label: "Owner".into(),
+            files: vec![
+                PublicationFile {
+                    path: "index.html".into(),
+                    media_type: "text/html".into(),
+                    source: crate::storage::publication::PublicationSource::Owned(body.to_vec()),
+                },
+                PublicationFile {
+                    path: "figures/plot.png".into(),
+                    media_type: "image/png".into(),
+                    source: crate::storage::publication::PublicationSource::Shared {
+                        storage_key: figure_key.clone(),
+                        digest: figure_digest,
+                        byte_length: figure.len() as i64,
+                    },
+                },
+            ],
+        };
+        let first = publications
+            .publish(page(b"<h1>One</h1>", "one"))
+            .await
+            .unwrap();
+
+        // The figure was not copied: what went into the blob store for this
+        // publication is the rendering and the manifest, and nothing else.
+        let written = blobs
+            .list(&format!("documents/{}/publications/", document.id))
+            .await
+            .unwrap();
+        assert_eq!(
+            written.len(),
+            2,
+            "a publication writes its rendering and its manifest, not the figures in it"
+        );
+        // And it was not charged for a second time.
+        let mut written_bytes = 0_i64;
+        for item in &written {
+            written_bytes += blobs.length(&item.key).await.unwrap() as i64;
+        }
+        assert_eq!(
+            catalog.usage_bytes(None).await.unwrap() - held_after_upload,
+            written_bytes,
+            "a shared figure is counted where it lives and not again here"
+        );
+        // The reader still gets it: the row points at the document's own blob.
+        let files = catalog.publication_files(first.id).await.unwrap();
+        let shown = files
+            .iter()
+            .find(|file| file.path == "figures/plot.png")
+            .unwrap();
+        assert_eq!(shown.storage_key, figure_key);
+        assert_eq!(shown.media_type, "image/png", "the page knows it is a PNG");
+        assert_eq!(blobs.get(&shown.storage_key).await.unwrap(), figure);
+
+        let mut second = page(b"<h1>Two</h1>", "two");
+        second.expected_current_id = Some(first.id);
+        let second = publications.publish(second).await.unwrap();
+        assert_ne!(second.id, first.id);
+
+        // Superseding the first page schedules its cleanup. It must take the
+        // rendering it owned and leave the figure it only pointed at.
+        let doomed = catalog.publication_cleanup_keys(first.id).await.unwrap();
+        assert!(
+            !doomed.contains(&figure_key),
+            "cleaning up a page must not delete the figure the document still holds",
+        );
+        blobs.delete(&doomed).await.unwrap();
+        assert!(catalog
+            .finish_publication_cleanup(first.id)
+            .await
+            .unwrap());
+        assert!(
+            blobs.exists(&figure_key).await.unwrap(),
+            "the figure survived the cleanup of a page that showed it",
+        );
+        assert_eq!(
+            blobs.get(&figure_key).await.unwrap(),
+            figure,
+            "and is byte-for-byte what was uploaded"
+        );
+        // The page that is still current can still serve it.
+        let still = catalog.publication_files(second.id).await.unwrap();
+        assert!(still
+            .iter()
+            .any(|file| file.storage_key == figure_key && file.path == "figures/plot.png"));
 
         catalog.close().await;
     }

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT manifest_key AS \"key!\" FROM publications WHERE id=$1\n               UNION ALL\n               SELECT f.storage_key FROM publication_files f\n               WHERE f.publication_id=$1\n                 AND NOT EXISTS(SELECT 1 FROM document_assets a\n                                WHERE a.storage_key=f.storage_key)\n                 AND NOT EXISTS(SELECT 1 FROM publication_files o\n                                WHERE o.storage_key=f.storage_key\n                                  AND o.publication_id<>f.publication_id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a67694e6faab5fbfac93145c7a207fed78f1687b5f73e4d85db794bd4ea6a420"
+}

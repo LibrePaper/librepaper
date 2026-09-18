@@ -9,6 +9,17 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { zip } from "../../src/lib/zip.js";
+
+// The paper somebody arrives with. Dropped on the explorer it is the files
+// inside it: the wrapper folder gone, Quarto's rendered output left behind.
+const archive = Buffer.from(await zip({
+  "paper/report.qmd": "# Report",
+  "paper/report.html": "<p>generated</p>",
+  "paper/chapters/one.qmd": "# One",
+  "paper/fig/plot.png": new Uint8Array([137, 80, 78, 71]),
+  "paper/_freeze/cache.json": "{}",
+}).arrayBuffer()).toString("base64");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
@@ -30,7 +41,8 @@ import Nav from ${JSON.stringify(join(root, "web/src/components/Nav.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 const session = joinSession({ send() {}, mayEdit: true });
-const rules = { text_extensions: [".tex", ".md"], asset_extensions: [".png"], max_path: 200 };
+const rules = { extensions: [".tex", ".md", ".qmd"], text_extensions: [".tex", ".md", ".qmd"], asset_extensions: [".png"],
+  derived_extensions: [], max_path: 200, max_files: 200, max_document: 1000000, max_assets: 1000000, max_asset: 500000 };
 const main = session.addText("main.tex", "main");
 session.setMain(main);
 const child = session.addText("chapters/one.tex", "chapter");
@@ -43,6 +55,7 @@ const component = createClassComponent({ component: Files, target: document.body
   onduplicate: (entry, path) => session.duplicateEntry(entry, path, rules),
   onopen: (file) => component.$set({ open: file.id }),
   ontext: async (file, path) => session.addText(path, await file.text()),
+  onfigure: async (file, path) => session.addText(path, String((await file.arrayBuffer()).byteLength)),
 } });
 session.onFiles(() => component.$set({ files: session.list(), folders: session.folders() }));
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 80)); await tick(); };
@@ -152,6 +165,20 @@ window.filesCheck = async () => {
   const both = [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Keep both' && button.getClientRects().length);
   check(both, 'upload collision dialog'); both.click(); await flush();
   check(session.list().some((file) => file.path === 'empty/upload (2).tex'), 'upload keep both');
+  // A ZIP dropped on the explorer is the paper inside it. This is the only
+  // way an existing paper gets in, so it is checked where it happens rather
+  // than on the landing page it used to live on.
+  const imported = new DataTransfer();
+  imported.items.add(new File([Uint8Array.from(atob(${JSON.stringify(archive)}), c => c.charCodeAt(0))], 'paper.zip', { type: 'application/zip' }));
+  document.querySelector('.explorer').dispatchEvent(new DragEvent('drop', { dataTransfer: imported, bubbles: true, cancelable: true }));
+  await flush(); await flush();
+  const after = session.list().map((file) => file.path);
+  check(after.includes('report.qmd'), 'the archive lands without its wrapper folder: ' + after.join(', '));
+  check(after.includes('chapters/one.qmd'), 'nested files keep their place inside the archive');
+  check(after.includes('fig/plot.png'), 'figures come with it');
+  check(!after.includes('report.html') && !after.some((path) => path.startsWith('_freeze/')),
+    'what Quarto renders is left behind: ' + after.join(', '));
+  check(session.paths.get(main) === 'main.tex', 'importing a paper does not change which file is the main one');
   component.$set({ mayEdit: false }); await flush();
   check(!button('New folder'), 'read-only toolbar');
   check(!document.querySelector('[draggable="true"]'), 'read-only drag disabled');

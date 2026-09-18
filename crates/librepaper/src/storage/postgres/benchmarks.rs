@@ -207,7 +207,7 @@ async fn catalog_v3_release_benchmark() {
     let publication_files = (0..4096)
         .map(|index| PublicationFile {
             path: format!("files/{index}.txt"),
-            bytes: b"x".to_vec(),
+            source: crate::storage::publication::PublicationSource::Owned(b"x".to_vec()),
             media_type: "text/plain".into(),
         })
         .collect();
@@ -241,7 +241,7 @@ async fn catalog_v3_release_benchmark() {
             publisher_label: "Benchmark".into(),
             files: vec![PublicationFile {
                 path: "maximum.bin".into(),
-                bytes: vec![0x5a; 256 * 1024 * 1024],
+                source: crate::storage::publication::PublicationSource::Owned(vec![0x5a; 256 * 1024 * 1024]),
                 media_type: "application/octet-stream".into(),
             }],
         })

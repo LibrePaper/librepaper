@@ -43,13 +43,16 @@
     z-index: 50;
     box-sizing: border-box;
     width: max-content;
-    min-width: 11rem;
+    min-width: 13rem;
     max-width: calc(100vw - calc(var(--spacing) * 4));
-    padding: calc(var(--spacing) * 1.5);
+    padding: calc(var(--spacing) * 1);
     border: 1px solid var(--color-divider);
     border-radius: var(--radius-base);
     background: var(--color-surface-50-950);
     box-shadow: var(--shadow-xl);
     overflow-x: hidden;
+    /* A menu is not a place to select text from; dragging across it should
+       feel like sliding along the items, not like sweeping up their names. */
+    user-select: none;
   }
 </style>

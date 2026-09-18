@@ -141,6 +141,9 @@ const context = (values) => {
     // Recomputing the review is part of what an edit does now; the blocks
     // that care override this to count the calls.
     refreshReview: () => {},
+    // An edit also puts the readers' copy of the document back on the clock.
+    // The block that cares overrides this to count the calls.
+    publication: { keepCurrent: () => {} },
     mayEdit: true,
     publishedPublication: null,
     editing: true,
@@ -591,6 +594,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 // looking at.
 {
   let reviewed = 0;
+  let rescheduled = 0;
   const ctx = context({
     sourceGeneration: 0, historyLiveVersion: 0, mayEdit: true, publishedPublication: null,
     outlineRevision: 0, sourceFormat: "", editing: false,
@@ -598,12 +602,14 @@ for (const invalidate of [null, "navigation", "main"]) {
     setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
     diagnosticPainter: { typed: () => {} },
     refreshReview: () => { reviewed += 1; },
+    publication: { keepCurrent: () => { rescheduled += 1; } },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
   assert.equal(ctx.sourceGeneration, 1);
   assert.equal(ctx.historyLiveVersion, 1);
   assert.equal(reviewed, 1, "an edit under a proposal recomputes its hunks");
+  assert.equal(rescheduled, 1, "and puts the readers' copy of it back on the clock");
 }
 
 // Further keystrokes must not postpone an editor's already scheduled preview.

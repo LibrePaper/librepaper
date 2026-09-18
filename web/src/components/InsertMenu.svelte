@@ -1,6 +1,6 @@
 <script>
   import { Menu } from "@skeletonlabs/skeleton-svelte";
-  import ExplorerMenu from "./ExplorerMenu.svelte";
+  import MenubarMenu from "./MenubarMenu.svelte";
   import Modal from "./Modal.svelte";
   import { rankEntries, entryLabel } from "../lib/bibliography.js";
   import { INSERT_ACTIONS, insertionAvailability, buildInsertion, gatherInsertEnvironments, gatherInsertTargets, insertEnvironmentFields } from "../lib/insert.js";
@@ -143,24 +143,23 @@
   });
 </script>
 
-<Menu onOpenChange={(event) => { if (event.open) menuContext = getContext?.() || null; }} onSelect={(event) => choose(event.value)}>
-  <Menu.Trigger class="menubar-item" disabled={disabled}>Insert</Menu.Trigger>
-  <ExplorerMenu>
-    <div class="insert-scroll">
-    {#each groups as [group, ids], groupIndex}
-      {#if groupIndex}<div class="menu-separator" role="separator"></div>{/if}
-      <div class="insert-group" role="group" aria-label={group}>{group}</div>
-      {#each ids as id}
-        {@const state = availability(id, menuContext || {})}
-        <Menu.Item value={id} class="menuitem" disabled={!state.enabled}>
-          <span>{actionLabel(id)}</span>{#if actionById(id).dialog}<span class="insert-ellipsis">…</span>{/if}
-          {#if state.reason}<span class="insert-reason">{state.reason}</span>{/if}
-        </Menu.Item>
-      {/each}
+<MenubarMenu id="insert" label="Insert" {disabled}
+             onopen={() => { menuContext = getContext?.() || null; }}
+             onselect={choose}>
+  <div class="insert-scroll">
+  {#each groups as [group, ids], groupIndex}
+    {#if groupIndex}<div class="menu-separator" role="separator"></div>{/if}
+    <div class="insert-group" role="group" aria-label={group}>{group}</div>
+    {#each ids as id}
+      {@const state = availability(id, menuContext || {})}
+      <Menu.Item value={id} class="menuitem" disabled={!state.enabled}>
+        <span class="menuitem-label">{actionLabel(id)}{#if actionById(id).dialog}…{/if}</span>
+        {#if state.reason}<span class="insert-reason">{state.reason}</span>{/if}
+      </Menu.Item>
     {/each}
-    </div>
-  </ExplorerMenu>
-</Menu>
+  {/each}
+  </div>
+</MenubarMenu>
 
 {#snippet footer()}
   <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={closeDialog}>Cancel</button>
@@ -228,10 +227,10 @@
 </Modal>
 
 <style>
-  .insert-group { padding: .35rem .65rem .2rem; color: var(--color-surface-600-400); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  /* Aligned with the item names, not with the panel edge. */
+  .insert-group { padding: .45rem .65rem .2rem calc(var(--spacing) * 7); color: var(--color-surface-600-400); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
   .menu-separator { height: 1px; margin: .2rem .4rem; background: var(--color-divider); }
-  .insert-ellipsis { margin-left: auto; color: var(--color-surface-500-500); }
-  .insert-reason { display: block; margin-left: auto; max-width: 9rem; overflow: hidden; color: var(--color-surface-500-500); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
+  .insert-reason { flex: 0 0 auto; margin-left: auto; max-width: 9rem; overflow: hidden; color: var(--color-surface-500-500); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
   .insert-results { max-height: 16rem; overflow-y: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }
   .insert-result { display: flex; gap: .6rem; padding: .55rem .7rem; cursor: pointer; }
   .insert-result:hover { background: var(--color-surface-100-900); }

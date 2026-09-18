@@ -4,7 +4,7 @@
   import Modal from "../Modal.svelte";
   import { getPrivate, post } from "../../lib/api.js";
 
-  let { open = $bindable(false), slug, onclose, inline = false, canShare = false, mayPublish = false, publishedVersion = null, unpublishedChanges = false, publicationReady = false, publicationFailed = false, onpublish = () => {}, onrefreshpublication = () => {} } = $props();
+  let { open = $bindable(false), slug, onclose, inline = false, canShare = false, mayPublish = false, publishedVersion = null, unpublishedChanges = false, publicationReady = false, publicationFailed = false, publishing = false, publicationBlocked = "", onrefreshpublication = () => {} } = $props();
   let sharing = $state(null);
   let busy = $state(false);
   let loading = $state(false);
@@ -58,17 +58,6 @@
     } finally {
       if (request === generation) loading = false;
     }
-  }
-
-  async function publish() {
-    if (publicationBusy) return;
-    publicationBusy = true;
-    publicationError = "";
-    try {
-      await onpublish();
-    } catch (failure) {
-      publicationError = failure.message || "Could not publish this version.";
-    } finally { publicationBusy = false; }
   }
 
   async function refreshPublication() {
@@ -145,17 +134,23 @@
           {#if !publicationReady}
             <p class="panel-muted" role="status">{publicationFailed ? "Could not check the published version." : "Checking published version…"}</p>
             {#if publicationFailed}<button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={publicationBusy} onclick={refreshPublication}>{publicationBusy ? "Checking…" : "Retry"}</button>{/if}
+          {:else if publishing}
+            <p class="panel-muted" role="status">Updating what readers see…</p>
           {:else if publication?.id}
-            <p class="panel-meta">Published {publication.published_at ? dateOf(publication.published_at) : "recently"}{publication.publisher ? ` by ${publication.publisher}` : ""}</p>
-            {#if unpublishedChanges}<p class="panel-muted" role="status">Unpublished changes</p>{/if}
-            <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={publicationBusy || !(unpublishedChanges)} onclick={publish}>
-              {publicationBusy ? "Publishing…" : (unpublishedChanges ? "Publish update" : "Published")}
-            </button>
+            <p class="panel-meta">Readers have the version from {publication.published_at ? dateOf(publication.published_at) : "a moment ago"}{publication.publisher ? ` by ${publication.publisher}` : ""}</p>
+            {#if publicationBlocked}
+              <p class="panel-muted" role="status">{publicationBlocked}</p>
+            {:else if unpublishedChanges}
+              <p class="panel-muted" role="status">This draft is newer; readers get it shortly after you stop typing.</p>
+            {:else}
+              <p class="panel-muted" role="status">That is the current draft.</p>
+            {/if}
+          {:else if publicationBlocked}
+            <p class="panel-muted" role="status">{publicationBlocked}</p>
           {:else}
-            <p class="panel-muted">Not published yet.</p>
-            <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={publicationBusy} onclick={publish}>{publicationBusy ? "Publishing…" : "Publish"}</button>
+            <p class="panel-muted" role="status">Preparing what readers will see…</p>
           {/if}
-          <p class="panel-muted">Readers and commenters see the last published version.</p>
+          <p class="panel-muted">Readers and commenters are shown a rendering of the document, not its source, so it is rebuilt here whenever you leave the draft alone for a moment.</p>
           {#if publicationError}<p class="text-error-600-400" role="alert">{publicationError}</p>{/if}
         </section>
       {/if}

@@ -756,31 +756,68 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   }
 }
 
-/* --------------------------------------------------------- layout menu */
+/* --------------------------------------------------------------- menus */
 
-/* A line in the menu behind the layout button, which is where everything about
-   arranging the two panes lives: which side the source is on, the ratios a
-   drag sticks to, and whether a click in one pane takes the other along. */
+/* A line in one of the menus. The shape is a desktop menu's: a gutter on the
+   left wide enough for a tick, the name, and whatever the line has to say on
+   the right -- the keyboard shortcut, or why the item is unavailable. The
+   gutter is there whether or not this menu has anything to tick, so the names
+   in a menu start at one place rather than two. */
 .menuitem {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: --spacing(2);
+  gap: --spacing(3);
   width: 100%;
-  padding: --spacing(1.5) --spacing(2);
-  border-radius: var(--radius-base);
+  padding: --spacing(1.5) --spacing(2.5) --spacing(1.5) --spacing(7);
+  border-radius: calc(var(--radius-base) - 2px);
   font-size: var(--text-sm);
   line-height: var(--panel-line-height);
   white-space: nowrap;
-  cursor: pointer;
+  cursor: default;
+}
+.menuitem-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The tick sits in the gutter rather than in the line, so a checked item and
+   an unchecked one are the same width and nothing shifts when it changes. */
+.menuitem-check {
+  position: absolute;
+  left: --spacing(2);
+  width: --spacing(3.5);
+  text-align: center;
+  color: var(--color-primary-600-400);
+}
+/* What the keyboard already does. Quiet, right-aligned, and never the reason
+   the line is as wide as it is. */
+.menuitem-keys {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--color-surface-500-500);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 .menuitem:hover:not([data-disabled]),
 .menuitem[data-highlighted]:not([data-disabled]) {
-  background: var(--color-primary-100-900);
+  background: var(--color-primary-500);
+  color: white;
+}
+/* Everything the highlighted line carries goes white with it, including the
+   tick and the shortcut, which are otherwise tinted against the panel. */
+.menuitem:hover:not([data-disabled]) .menuitem-check,
+.menuitem[data-highlighted]:not([data-disabled]) .menuitem-check,
+.menuitem:hover:not([data-disabled]) .menuitem-keys,
+.menuitem[data-highlighted]:not([data-disabled]) .menuitem-keys {
+  color: inherit;
+  opacity: 0.85;
 }
 /* An option that is not available now says so by going pale, so the reason a
    click does nothing can be seen before the click. */
 .menuitem[data-disabled] {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: default;
 }
 
@@ -842,8 +879,9 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 
 /* The row of menus in the bar reads like the File, Edit, View row of a
    desktop window: words with air around them and nothing else, until one is
-   hovered or open, when it takes a light tint. The menus themselves are the
-   same panels the explorer uses. */
+   pointed at or opened. The row is one control rather than five buttons --
+   see lib/menubar.svelte.js -- so the open word is the one that looks
+   pressed, and hovering the next one moves there. */
 .menubar {
   display: flex;
   flex-shrink: 0;
@@ -852,22 +890,31 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 }
 .menubar-item {
   padding: --spacing(1) --spacing(2);
-  border-radius: var(--radius-base);
+  border: 0;
+  border-radius: calc(var(--radius-base) - 2px);
+  background: transparent;
   font-size: var(--text-sm);
   line-height: var(--panel-line-height);
-  color: var(--color-surface-800-200);
+  color: var(--color-surface-700-300);
   white-space: nowrap;
   cursor: default;
   user-select: none;
 }
-.menubar-item:hover:not(:disabled):not([data-disabled]),
+/* Pointing at a word is a hint; opening it is a state. Neither borrows the
+   accent colour: that belongs to the line you are about to choose inside the
+   panel, and a bar that lights up as brightly as its own menu reads as five
+   buttons again. */
+.menubar-item:hover:not(:disabled):not([data-disabled]) {
+  background: var(--color-surface-200-800);
+  color: var(--color-surface-950-50);
+}
 .menubar-item[data-state="open"] {
-  background: var(--color-primary-100-900);
+  background: var(--color-surface-300-700);
   color: var(--color-surface-950-50);
 }
 .menubar-item:disabled,
 .menubar-item[data-disabled] {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: default;
 }
 .menubar-item:focus-visible {

@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { FORMATS, starterDocument } from "../../src/lib/starter.js";
 
 const landing = readFileSync(new URL("../../src/components/Landing.svelte", import.meta.url), "utf8");
 const body = (start, end) => {
@@ -15,8 +16,8 @@ const body = (start, end) => {
 };
 
 const showList = body("  async function showList()", "  async function deleteSelected");
-const reallyDelete = body("  async function reallyDelete()", "  /* ------------------------------------------------------------ file picking */");
-const submit = body("  async function submit(event)", "  $effect(() => {");
+const reallyDelete = body("  async function reallyDelete()", "  /* --------------------------------------------------------- a new project */");
+const create = body("  async function create(event)", "  $effect(() => {");
 
 const context = (values) => vm.createContext({
   Promise,
@@ -60,26 +61,6 @@ const context = (values) => vm.createContext({
   ]);
   assert.deepEqual(Array.from(ctx.documents, (doc) => doc.slug), ["first", "duplicate", "last"]);
   assert.deepEqual(problems, []);
-}
-
-// Archive submissions preserve the selected main file and send every extracted
-// entry as a directory upload. A missing main reports an error without losing
-// the archive selection, so the user can simply choose another candidate.
-{
-  const forms = [];
-  const ctx = context({
-    chosen: { archive: true, main: "", files: [{ path: "paper.qmd", bytes: new Uint8Array([1]) }], name: "paper.zip" },
-    title: "Paper", busy: false, parsing: false, fileError: "", say: () => {},
-    refuse: () => { throw new Error("archive selection was lost"); },
-    upload: async (form) => { forms.push(form); return { ok: true, json: async () => ({ url: "/docs/paper" }) }; },
-    showList: async () => {}, shared: null, sharing: false, location: { origin: "https://example.test" },
-    URL, Blob, FormData,
-  });
-  vm.runInContext(submit, ctx);
-  await vm.runInContext("submit({ preventDefault() {} })", ctx);
-  assert.equal(forms.length, 0);
-  assert.equal(ctx.chosen.main, "");
-  assert.match(ctx.fileError, /Choose the document/);
 }
 
 // A later-page failure reports the refresh problem while leaving the prior
@@ -158,21 +139,61 @@ const context = (values) => vm.createContext({
   assert.match(problems[0], /2 projects could not be deleted/);
 }
 
-// A refused upload is reported under the form that sent it -- where the file
-// and title the person chose are still on screen -- rather than in a corner.
+// A project is made from its name and its format alone, and the page leaves
+// for it rather than returning to the list.
 {
+  let sent = null;
   const ctx = context({
-    chosen: new File(["# Paper"], "paper.qmd"), title: "Paper", busy: false, parsing: false, fileError: "",
-    say: () => { throw new Error("an upload failure belongs under the form"); },
-    refuse: () => {},
-    upload: async () => ({ ok: false, json: async () => ({ error: "that format is not accepted" }) }),
-    showList: async () => {}, shared: null, sharing: false, location: { origin: "https://example.test" },
-    URL, Blob, FormData,
+    naming: true, name: "  A Paper You Can Change  ", format: "quarto", nameError: "", busy: false,
+    nameInput: null,
+    starterDocument, FORMATS,
+    say: () => { throw new Error("a creation failure belongs in the dialog"); },
+    upload: async (form) => { sent = form; return { ok: true, json: async () => ({ url: "/docs/a-paper-3f9" }) }; },
+    location: { href: "/" },
+    Blob, FormData,
   });
-  vm.runInContext(submit, ctx);
-  await vm.runInContext("submit({ preventDefault() {} })", ctx);
-  assert.equal(ctx.fileError, "that format is not accepted");
-  assert.equal(ctx.chosen.name, "paper.qmd", "the chosen file is kept so it can be sent again");
+  vm.runInContext(create, ctx);
+  await vm.runInContext("create({ preventDefault() {} })", ctx);
+  assert.equal(ctx.location.href, "/docs/a-paper-3f9");
+  assert.equal(sent.get("title"), "A Paper You Can Change", "the name is trimmed before it becomes a title");
+  assert.equal(sent.get("file").name, "main.qmd", "the format names the main file");
+  assert.match(await sent.get("file").text(), /title: "A Paper You Can Change"/);
 }
 
-console.log("landing: pagination, refresh preservation, silent offline refresh, upload and deletion failure checks passed");
+// An unnamed project is refused here rather than at the server, and nothing
+// is sent.
+{
+  let focused = false;
+  const ctx = context({
+    naming: true, name: "   ", format: "markdown", nameError: "", busy: false,
+    nameInput: { focus: () => { focused = true; } },
+    starterDocument, FORMATS,
+    say: () => {},
+    upload: async () => { throw new Error("an unnamed project must not be sent"); },
+    location: { href: "/" }, Blob, FormData,
+  });
+  vm.runInContext(create, ctx);
+  await vm.runInContext("create({ preventDefault() {} })", ctx);
+  assert.equal(ctx.nameError, "Give the project a name.");
+  assert.equal(focused, true, "the field that is wrong is the field the cursor lands in");
+  assert.equal(ctx.location.href, "/", "a refused creation stays on the list");
+}
+
+// A refusal is reported in the dialog that asked -- where the name is still on
+// screen -- rather than in a corner, and the dialog stays open.
+{
+  const ctx = context({
+    naming: true, name: "Paper", format: "markdown", nameError: "", busy: false, nameInput: null,
+    starterDocument, FORMATS,
+    say: () => { throw new Error("a creation failure belongs in the dialog"); },
+    upload: async () => ({ ok: false, json: async () => ({ error: "you may not publish here" }) }),
+    location: { href: "/" }, Blob, FormData,
+  });
+  vm.runInContext(create, ctx);
+  await vm.runInContext("create({ preventDefault() {} })", ctx);
+  assert.equal(ctx.nameError, "you may not publish here");
+  assert.equal(ctx.naming, true, "the dialog stays open so the name can be changed");
+  assert.equal(ctx.busy, false);
+}
+
+console.log("landing: pagination, refresh preservation, silent offline refresh, project creation and deletion failure checks passed");

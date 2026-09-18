@@ -23,7 +23,7 @@ const published = { id: "pub-1", source_sha256: SOURCE_SHA, render_config_sha256
 
 function build(over = {}) {
   const said = [];
-  const facts = { canEdit: true, hasSession: true, source: 0, ...over.facts };
+  const facts = { canEdit: true, hasSession: true, source: 0, renderable: true, ...over.facts };
   const readers = [];
   const publication = createPublication({
     slug: "paper",
@@ -245,4 +245,76 @@ function build(over = {}) {
   assert.equal(publication.id(), "canonical");
 }
 
-console.log("reader publication: staleness is pessimistic, publishing names what it replaces");
+// Keeping the reader version current is this module's job, not a button's.
+// A document somebody holds a link to, whose draft has moved past what was
+// published, republishes itself.
+{
+  const { publication } = build();
+  publication.state.metadataReady = true;
+  publication.state.publication = { ...published, source_sha256: "something-else" };
+  publication.state.stale = true;
+  await publication.catchUp();
+  assert.equal(publication.state.publication.id, "pub-2", "the draft reached readers unasked");
+  assert.equal(publication.state.blocked, "");
+}
+
+// Every document keeps a reader version, shared or not: a document has one
+// the way it has a title, and an author who wants somewhere nothing is
+// prepared for readers opens another project.
+{
+  let published_ = 0;
+  const { publication } = build({
+    publisher: { publish: async () => { published_ += 1; return { id: "pub-2" }; } },
+  });
+  publication.state.metadataReady = true;
+  publication.state.publication = null;
+  await publication.catchUp();
+  assert.equal(published_, 1, "a document never shared still has a reader version");
+}
+
+// A draft that does not render has nothing to publish. Readers keep the last
+// version that did, and the author is told why rather than left watching a
+// publication that never arrives.
+{
+  let published_ = 0;
+  const { publication } = build({
+    facts: { renderable: false },
+    publisher: { publish: async () => { published_ += 1; return { id: "pub-2" }; } },
+  });
+  publication.state.metadataReady = true;
+  publication.state.publication = published;
+  publication.state.stale = true;
+  await publication.catchUp();
+  assert.equal(published_, 0, "a broken draft does not replace a working publication");
+  assert.match(publication.state.blocked, /does not render/);
+}
+
+// A draft already published is left alone: catching up twice is not two
+// publications.
+{
+  let published_ = 0;
+  const { publication } = build({
+    publisher: { publish: async () => { published_ += 1; return { id: "pub-2" }; } },
+  });
+  publication.state.metadataReady = true;
+  publication.state.publication = published;
+  publication.state.stale = false;
+  await publication.catchUp();
+  assert.equal(published_, 0, "nothing has moved, so nothing is rebuilt");
+}
+
+// A failed publish is reported where the author is, and does not leave the
+// document looking as though it is still working on one.
+{
+  const { publication } = build({
+    publisher: { publish: async () => { throw new Error("the bundle would not upload"); } },
+  });
+  publication.state.metadataReady = true;
+  publication.state.publication = { ...published, source_sha256: "something-else" };
+  publication.state.stale = true;
+  await publication.catchUp();
+  assert.equal(publication.state.publishing, false);
+  assert.match(publication.state.blocked, /would not upload/);
+}
+
+console.log("reader publication: staleness is pessimistic, the reader version keeps itself current");

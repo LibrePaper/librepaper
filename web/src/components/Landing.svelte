@@ -2,33 +2,23 @@
   // The landing page: what you may publish, and the projects you have. A
   // project is a document and the directory around it -- its chapters and its
   // figures -- and it is found here by any of them.
-  import { FileUpload } from "@skeletonlabs/skeleton-svelte";
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import Modal from "./Modal.svelte";
   import Hero from "./Hero.svelte";
   import Toasts from "./Toasts.svelte";
-  import CopyLink from "./CopyLink.svelte";
   import Page from "./layout/Page.svelte";
   import Stack from "./layout/Stack.svelte";
   import Row from "./layout/Row.svelte";
   import { say } from "../lib/toast.svelte.js";
-  import { SHELL_HEADERS, config as loadConfig, get, me as whoami, upload } from "../lib/api.js";
+  import { SHELL_HEADERS, get, me as whoami, upload } from "../lib/api.js";
   import { FAVORITES, VIEWED, read, write } from "../lib/storage.js";
   import { day as isoDay } from "../lib/dates.js";
-  import { unzip } from "../lib/zip.js";
-  import { archiveProject, archiveSelection } from "../lib/project-upload.js";
+  import { FORMATS, formatNamed, starterDocument } from "../lib/starter.js";
   import { preparedProjects } from "../lib/offline-projects.js";
 
   let me = $state({});
-  // Replaced by the server's own on load; this is only what the drop zone
-  // says in the instant before that arrives. Keep it in step with
-  // `Configuration::default` in `crates/librepaper/src/config.rs`.
-  let config = $state({
-    max_document: 4 * 1024 * 1024,
-    extensions: [".html", ".htm", ".md", ".markdown", ".typ", ".tex"],
-  });
   let documents = $state([]);
   let counts = $state(new Map());
   // Every path in each project, by slug. What a search matches besides the
@@ -41,20 +31,15 @@
   let tab = $state("all");
   let sortBy = $state("updated");
   let ascending = $state(false);
-  let fileError = $state("");
-  let chosen = $state(null);
-  let title = $state("");
+  let naming = $state(false);
+  let name = $state("");
+  let format = $state(FORMATS[0].id);
+  let nameError = $state("");
   let busy = $state(false);
-  let shared = $state(null);
   let confirming = $state(false);
   let confirmText = $state("");
-  let sharing = $state(false);
   let pendingDeletion = [];
-  let titleInput = $state(null);
-  let chooseSerial = 0;
-  let parsing = $state(false);
-
-  const maxLabel = $derived(Math.round(config.max_document / (1024 * 1024)) + " MB");
+  let nameInput = $state(null);
 
   // The columns a narrow screen drops; see `.col-when` at the foot of this
   // file for why these two and not the others.
@@ -258,152 +243,51 @@
     await showList();
   }
 
-  /* ------------------------------------------------------------ file picking */
+  /* --------------------------------------------------------- a new project */
 
-  function refuse(message) {
-    chooseSerial++;
-    parsing = false;
-    chosen = null;
-    title = "";
-    fileError = message;
-    return false;
+  // Making a project and filling it are two acts, not one. This asks only for
+  // the name -- the one thing nothing else can supply -- and the format, which
+  // decides what the main file is called. Everything afterwards happens in the
+  // project's own file explorer, which already knows how to take a file, a
+  // folder, or an archive, and where to put it.
+
+  function askName() {
+    name = "";
+    format = FORMATS[0].id;
+    nameError = "";
+    naming = true;
   }
 
-  // Checked here so a 30 MB mistake is caught before the upload, not after.
-  function valid(file) {
-    if (!file) return false;
-    const dot = file.name.lastIndexOf(".");
-    const extension = dot < 0 ? "" : file.name.slice(dot).toLowerCase();
-    if (!config.extensions.includes(extension)) {
-      return refuse(`${file.name} is not a document LibrePaper can serve. Only ${config.extensions.join(", ")} work.`);
-    }
-    if (file.size > config.max_document) {
-      return refuse(`${file.name} is ${(file.size / (1024 * 1024)).toFixed(1)} MB; the limit is ${maxLabel}.`);
-    }
-    return true;
-  }
-
-  function selectArchiveMain(main) {
-    if (!chosen?.archive) return;
-    chosen.main = main;
-    try {
-      const selected = archiveSelection(chosen.project, main, config);
-      chosen.files = selected.files;
-      chosen.skipped = selected.skipped;
-      fileError = "";
-    } catch (error) {
-      chosen.files = [];
-      fileError = error.message;
-    }
-  }
-
-  async function chooseArchive(file, serial) {
-    try {
-      const entries = await unzip(file, { maxBytes: config.max_document + (config.max_assets || 0), maxFiles: (config.max_files || 200) * 9 });
-      if (serial !== chooseSerial) return;
-      const project = archiveProject(entries, config);
-      chosen = { name: file.name, project, candidates: project.candidates, main: project.main, files: [], skipped: project.skipped, archive: true };
-      title = file.name.replace(/\.zip$/i, "").replace(/[_-]+/g, " ").trim();
-      if (project.main) {
-        selectArchiveMain(project.main);
-        const mainEntry = project.files.find((entry) => entry.path === project.main);
-        title = titleFrom(new TextDecoder().decode(mainEntry.bytes), mainEntry.path);
-      }
-      await Promise.resolve();
-      if (serial === chooseSerial) titleInput?.select();
-    } catch (error) {
-      if (serial === chooseSerial) refuse(error?.message || "Could not read the ZIP archive.");
-    } finally {
-      if (serial === chooseSerial) parsing = false;
-    }
-  }
-
-  // The document usually names itself: <title> or the first heading in HTML,
-  // the first setext or ATX H1 in Markdown. The filename is the fallback, and
-  // the CLI does the same.
-  function titleFrom(text, name) {
-    if (/\.html?$/i.test(name)) {
-      const parsed = new DOMParser().parseFromString(text, "text/html");
-      const found = parsed.title.trim() || parsed.querySelector("h1")?.textContent.trim();
-      if (found) return found;
-    } else {
-      const atx = text.match(/^#\s+(.+)$/m);
-      if (atx) return atx[1].trim();
-      const setext = text.match(/^(.+)\n=+\s*$/m);
-      if (setext) return setext[1].trim();
-    }
-    return name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
-  }
-
-  // The drop zone has done its job, so it gives way to the one remaining
-  // decision. The title arrives selected, so typing replaces it and Enter
-  // alone accepts it.
-  async function choose(file) {
-    const serial = ++chooseSerial;
-    chosen = null;
-    fileError = "";
-    parsing = true;
-    if (/\.zip$/i.test(file.name)) return chooseArchive(file, serial);
-    if (!valid(file)) return;
-    chosen = file;
-    title = file.name;
-    await Promise.resolve();
-    titleInput?.select();
-    const text = await file.text().catch(() => "");
-    if (serial !== chooseSerial) return;
-    // The reader may already be typing by the time the file is read.
-    if (title === file.name) {
-      title = titleFrom(text, file.name);
-      titleInput?.select();
-    }
-    parsing = false;
-  }
-
-  function cancelChoice() {
-    chooseSerial++;
-    parsing = false;
-    chosen = null;
-    title = "";
-  }
-
-  // A document dropped anywhere on the page, not only on the zone: the zone
-  // is where it says to drop one, not the only place that takes one.
-  function drop(event) {
+  async function create(event) {
     event.preventDefault();
-    const file = event.dataTransfer?.files?.[0];
-    if (file) choose(file);
-  }
-
-  async function submit(event) {
-    event.preventDefault();
-    if (parsing || busy) return;
-    if (!chosen) {
-      refuse("Choose a document to upload.");
+    if (busy) return;
+    const named = name.trim();
+    if (!named) {
+      nameError = "Give the project a name.";
+      nameInput?.focus();
       return;
     }
     busy = true;
+    nameError = "";
     try {
+      // The same multipart publish a directory uses, with a directory of one
+      // file. The server names the format from that file's extension, so
+      // there is one way in rather than a second route for empty projects.
+      const starter = starterDocument(named, format);
       const form = new FormData();
-      if (chosen.archive) {
-        if (!chosen.main) { fileError = "Choose the document file to open from the archive."; return; }
-        const selected = archiveSelection(chosen.project, chosen.main, config);
-        for (const entry of selected.files) form.append("file", new Blob([entry.bytes]), entry.path);
-        form.append("main", chosen.main);
-      } else form.append("file", chosen, chosen.name);
-      form.append("title", title);
+      form.append("file", new Blob([starter.text], { type: "text/plain" }), starter.path);
+      form.append("title", named);
       const response = await upload(form);
       if (!response.ok) {
-        fileError = (await response.json().catch(() => ({}))).error || "The upload was refused.";
+        nameError = (await response.json().catch(() => ({}))).error || "The project could not be created.";
         return;
       }
       const doc = await response.json();
-      chosen = null;
-      title = "";
-      await showList();
-      shared = new URL(doc.url, location.origin).href;
-      sharing = true;
+      // Straight into the project: the point of making one is to work in it,
+      // and the list behind is not where the next thing happens.
+      location.href = doc.url;
     } catch (error) {
-      fileError = error?.message || "The upload did not finish.";
+      nameError = error?.message || "The project could not be created.";
     } finally {
       busy = false;
     }
@@ -411,7 +295,6 @@
 
   $effect(() => {
     void showOfflineProjects();
-    loadConfig().then((found) => (config = found)).catch(() => {});
     whoami().then(async (who) => {
       me = who;
       if (who.can_publish) {
@@ -423,8 +306,6 @@
 </script>
 
 
-<svelte:window ondragover={(event) => event.preventDefault()} ondrop={drop} />
-
 <Nav {me} />
 
 <Page width="wide">
@@ -432,7 +313,7 @@
     <header>
       <Hero />
       <p class="text-surface-600-400 text-center">
-        Publish a document to start a project, share its link, and collect comments on it.
+        Start a project, write it with whoever you like, and share its link to collect comments.
       </p>
     </header>
 
@@ -442,82 +323,6 @@
       <aside class="card preset-tonal-warning p-4">
         {me.handle} may not publish here; this deployment allows {me.publishers}.
       </aside>
-    {/if}
-
-    {#if me.can_publish}
-      <form onsubmit={submit}>
-        {#if !chosen}
-          <!-- The zone, its button and its input are Skeleton's, which is
-               Zag's: the drag counting that a plain `dragleave` gets wrong
-               over child elements, the button that opens the picker without
-               reaching for the input, and the labelling between the three.
-               What a file has to be is still ours -- `valid` says why a file
-               was turned away in words, where `accept` and `maxFileSize`
-               would only say that it was. -->
-          <FileUpload
-            maxFiles={1}
-            accept={config.extensions.join(",") + ",.zip,text/html"}
-            onFileAccept={({ files }) => files[0] && choose(files[0])}
-            onFileReject={({ files }) => valid(files[0]?.file)}
-          >
-            <FileUpload.Dropzone disableClick class="card preset-outlined-surface-300-700 flex flex-col items-center gap-3 border-dashed p-8 text-center transition-colors data-[dragging]:preset-tonal-primary">
-              <Icon name="upload" size={28} />
-              <FileUpload.Label class="text-lg">Drop a document here to start a project</FileUpload.Label>
-              <FileUpload.Trigger class="btn preset-filled-primary-500">Choose a file</FileUpload.Trigger>
-              <small class="text-surface-600-400">
-                {config.extensions.join(" or ")} files or .zip projects. Document text up to {maxLabel}.
-              </small>
-              {#if parsing}
-                <p class="text-sm text-surface-600-400" role="status">Reading project archive…</p>
-                <button type="button" class="btn preset-outlined-surface-300-700" onclick={cancelChoice}>Cancel</button>
-              {/if}
-            </FileUpload.Dropzone>
-            <FileUpload.HiddenInput />
-          </FileUpload>
-        {:else}
-          <div class="card preset-outlined-surface-300-700 p-6">
-            <Stack gap={3}>
-              <p class="font-semibold">{chosen.name}</p>
-              {#if chosen.archive}
-                <label class="label">
-                  <span class="label-text">Document file</span>
-                  <select class="select" value={chosen.main} onchange={(event) => selectArchiveMain(event.currentTarget.value)}>
-                    <option value="" disabled>Choose the main document</option>
-                    {#each chosen.candidates as path}
-                      <option value={path}>{path}</option>
-                    {/each}
-                  </select>
-                  {#if chosen.skipped.length}<small class="text-surface-600-400">Files excluded from upload: {chosen.skipped.join(", ")}</small>{/if}
-                </label>
-              {/if}
-              <label class="label">
-                <span class="label-text">Title</span>
-                <!-- Escape backs out of the choice rather than only clearing
-                     the field. -->
-                <input
-                  class="input"
-                  bind:this={titleInput}
-                  bind:value={title}
-                  onkeydown={(event) => {
-                    if (event.key === "Escape") { event.preventDefault(); cancelChoice(); }
-                  }}
-                />
-              </label>
-              <Row gap={2} justify="end">
-                <button type="button" class="btn preset-outlined-surface-300-700" onclick={cancelChoice}>
-                  Cancel
-                </button>
-                <button type="submit" class="btn preset-filled-primary-500" disabled={busy || parsing || (chosen.archive && (!chosen.main || !!fileError))}>
-                  {busy ? "Creating…" : "Create project"}
-                </button>
-              </Row>
-            </Stack>
-          </div>
-        {/if}
-        {#if fileError}
-          <p class="text-error-500 mt-3 text-sm">{fileError}</p>
-        {/if}
-      </form>
     {/if}
 
     {#if documents.length || me.can_publish}
@@ -545,6 +350,12 @@
           </div>
 
           <Row gap={2}>
+            {#if me.can_publish}
+              <button type="button" class="btn preset-filled-primary-500" onclick={askName}>
+                <Icon name="file-plus" size={18} />
+                New project
+              </button>
+            {/if}
             {#if selected.size}
               <span class="text-surface-600-400 text-sm">{selected.size} selected</span>
               <button type="button" class="btn btn-sm preset-filled-error-500" onclick={deleteSelected}>
@@ -644,7 +455,9 @@
                 <tr>
                   <td colspan="7" class="text-surface-600-400 h-48 text-center align-middle">
                     {documents.length === 0
-                      ? "No projects yet."
+                      ? me.can_publish
+                        ? "No projects yet. Make one, then drop your files into it."
+                        : "No projects yet."
                       : tab === "favorites" && !needle
                         ? "No favorites yet. Star a project to keep it here."
                         : "No projects match that search."}
@@ -659,29 +472,51 @@
   </Stack>
 </Page>
 
+<!-- A name and a format, because a project is a directory and a main file and
+     nothing here can guess either. The files come next, in the project. -->
+<Modal
+  bind:open={naming}
+  title="New project"
+  description="Name it, then drop your files into its explorer."
+  onclose={() => (nameError = "")}
+>
+  {#snippet children()}
+    <form id="new-project" onsubmit={create}>
+      <Stack gap={3}>
+        <label class="label">
+          <span class="label-text">Name</span>
+          <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
+          <input class="input" autofocus bind:this={nameInput} bind:value={name} placeholder="A paper you can change" />
+        </label>
+        <label class="label">
+          <span class="label-text">Format</span>
+          <select class="select" bind:value={format}>
+            {#each FORMATS as choice}
+              <option value={choice.id}>{choice.name}</option>
+            {/each}
+          </select>
+          <small class="text-surface-600-400">
+            The main file is main.{formatNamed(format).extension}; you can add, rename and replace it later.
+          </small>
+        </label>
+        {#if nameError}<p class="text-error-500 text-sm">{nameError}</p>{/if}
+      </Stack>
+    </form>
+  {/snippet}
+  {#snippet footer()}
+    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (naming = false)}>Cancel</button>
+    <button type="submit" form="new-project" class="btn preset-filled-primary-500" disabled={busy}>
+      {busy ? "Creating…" : "Create project"}
+    </button>
+  {/snippet}
+</Modal>
+
 <Modal bind:open={confirming} title="Delete?" description={confirmText}>
   {#snippet footer()}
     <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (confirming = false)}>
       Cancel
     </button>
     <button type="button" class="btn preset-filled-error-500" onclick={reallyDelete}>Delete</button>
-  {/snippet}
-</Modal>
-
-<Modal
-  bind:open={sharing}
-  title="Published"
-  description="Share this link; anyone with it can comment, no account needed."
->
-  {#snippet children()}
-    <Row gap={2}>
-      <input class="input min-w-0 flex-1" readonly aria-label="Link to the published document" value={shared ?? ""} />
-      <CopyLink href={shared ?? ""} label="Copy the link" />
-    </Row>
-  {/snippet}
-  {#snippet footer()}
-    <a class="btn preset-outlined-surface-300-700" href={shared ?? "/"}>Open</a>
-    <button type="button" class="btn preset-filled-primary-500" onclick={() => (sharing = false)}>Done</button>
   {/snippet}
 </Modal>
 

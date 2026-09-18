@@ -65,6 +65,12 @@ export function createPublication({
     /// an update has to name the publication it expects to replace.
     metadataReady: false,
     metadataFailed: false,
+    /// A publication is being built and uploaded right now.
+    publishing: false,
+    /// Why the reader version is not current, when it is not. A render error
+    /// is the usual reason and is the author's to fix; readers keep the last
+    /// version that did render until they do.
+    blocked: "",
   });
 
   let reader = null;
@@ -113,7 +119,66 @@ export function createPublication({
     return reader;
   }
 
+  /// How long the source must sit still before the reader version is rebuilt.
+  /// Matches the room's own quiet-checkpoint window: publishing renders the
+  /// whole document again, so it waits for the same moment the room decides
+  /// the document is at rest rather than racing every keystroke.
+  const QUIET_MS = 30_000;
+  let quiet = null;
+
+  /// Keep the reader version current without being asked.
+  ///
+  /// Readers are never given the source -- they hold a link, and the source
+  /// room refuses them -- so "what a reader sees" can only ever be a bundle
+  /// somebody rendered for them. The rendering happens in this browser,
+  /// because this is where the engines are. What used to be a button is
+  /// therefore not a decision about whether readers may see the latest
+  /// version; it was only ever the moment this tab got around to building it.
+  /// So it builds it whenever the document has been left alone long enough to
+  /// be worth naming, and says so rather than asking.
+  ///
+  /// Every document does this, shared or not. Whether anybody holds a link is
+  /// not this code's question: a document has a reader version the way it has
+  /// a title, and an author who wants somewhere nothing is prepared for
+  /// readers opens another project.
+  function keepCurrent() {
+    clearTimeout(quiet);
+    quiet = setTimeout(() => void catchUp(), QUIET_MS);
+    // A pending rebuild is not a reason for a process to stay alive. In a
+    // browser this is a number and there is nothing to unreference; under
+    // Node, where the checks run, it is a handle that would hold the run
+    // open for the whole quiet window.
+    quiet?.unref?.();
+  }
+
+  async function catchUp() {
+    const at = facts();
+    if (disposed() || !at.canEdit || !at.hasSession) return;
+    if (state.publishing || !state.metadataReady) return;
+    if (state.publication && !state.stale) {
+      state.blocked = "";
+      return;
+    }
+    // A draft that does not render has nothing to publish. Readers keep the
+    // last version that did, which is the honest outcome -- but the author is
+    // told, because from here it looks like nothing is happening.
+    if (!at.renderable) {
+      state.blocked = "This draft does not render, so readers still have the last version that did.";
+      return;
+    }
+    state.publishing = true;
+    try {
+      await publish();
+      state.blocked = "";
+    } catch (error) {
+      state.blocked = error?.message || "The reader version could not be updated.";
+    } finally {
+      state.publishing = false;
+    }
+  }
+
   function dispose() {
+    clearTimeout(quiet);
     reader?.dispose();
     reader = null;
   }
@@ -172,6 +237,9 @@ export function createPublication({
     if (!state.metadataFailed) {
       await refreshStatus(publication);
       state.metadataReady = true;
+      // A document shared but never published, or left behind by an earlier
+      // session, catches up on its own once what it is behind is known.
+      keepCurrent();
     }
     return publication;
   }
@@ -236,6 +304,6 @@ export function createPublication({
 
   return {
     state, watchAsEditor, watchAsVisitor, dispose, begin, announce, acceptUpdate,
-    refreshStatus, refreshMetadata, publish, id,
+    refreshStatus, refreshMetadata, publish, keepCurrent, catchUp, id,
   };
 }

@@ -1,6 +1,7 @@
 <script>
   import { Menu } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "./ExplorerMenu.svelte";
+  import Menubar from "./Menubar.svelte";
   import Logo from "./Logo.svelte";
   import IconButton from "./IconButton.svelte";
   import Avatar from "./Avatar.svelte";
@@ -43,7 +44,7 @@
         {@render children()}
       </span>
     {/if}
-    {#if menus}<div class="menubar">{@render menus()}</div>{/if}
+    {#if menus}<Menubar>{@render menus()}</Menubar>{/if}
   </div>
 
   <div class="nav-actions flex shrink-0 items-center gap-2">

@@ -9,7 +9,9 @@ use uuid::Uuid;
 
 use crate::server::{write_json, Reply};
 use crate::storage::blob::{BlobError, BlobStore};
-use crate::storage::publication::{PublicationFile, PublicationStorage, Publish};
+use crate::storage::publication::{
+    PublicationFile, PublicationSource, PublicationStorage, Publish,
+};
 
 pub const MAX_HTML_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_ASSET_BYTES: usize = 64 * 1024 * 1024;
@@ -258,23 +260,62 @@ impl PublicationStore {
         let foreign_scripts = external_script_sources(&String::from_utf8_lossy(&index)).join(", ");
         files.push(PublicationFile {
             path: "index.html".into(),
-            bytes: index,
             media_type: manifest.html.mime.clone(),
+            source: PublicationSource::Owned(index),
         });
+        // Which of this page's figures the document already holds. They are
+        // kept content-addressed and are never deleted, so a publication that
+        // copied them would be storing a second copy of bytes that cannot
+        // change -- once per publication, and the reader version republishes
+        // itself whenever the source goes quiet.
+        let wanted: Vec<String> = manifest
+            .assets
+            .iter()
+            .map(|asset| asset.object.sha256.clone())
+            .collect();
+        let held: HashMap<String, crate::storage::postgres::AssetRecord> = catalog
+            .assets_by_digests(document_id, &wanted)
+            .await
+            .map_err(|e| PublicationError::Storage(e.to_string()))?
+            .into_iter()
+            .map(|asset| (hex::encode(&asset.digest), asset))
+            .collect();
         for asset in &manifest.assets {
+            let path = validate_path(&asset.path)?;
+            // The media type is the page's, not the blob's: a figure is stored as
+            // opaque bytes and the rendering is what knows it is a PNG.
+            let media_type = asset.object.mime.clone();
+            let source = match held.get(&asset.object.sha256) {
+                Some(record) if record.byte_length as usize == asset.object.bytes => {
+                    let digest: [u8; 32] = record.digest.as_slice().try_into().map_err(|_| {
+                        PublicationError::Storage("stored asset digest is not a sha256".into())
+                    })?;
+                    PublicationSource::Shared {
+                        storage_key: record.storage_key.clone(),
+                        digest,
+                        byte_length: record.byte_length,
+                    }
+                }
+                // A stylesheet or font the rendering produced, rather than a
+                // figure somebody uploaded: nothing else holds it.
+                _ => PublicationSource::Owned(
+                    self.read_staged(storage_id, request_id, &asset.object)
+                        .await?,
+                ),
+            };
             files.push(PublicationFile {
-                path: validate_path(&asset.path)?,
-                bytes: self
-                    .read_staged(storage_id, request_id, &asset.object)
-                    .await?,
-                media_type: asset.object.mime.clone(),
+                path,
+                media_type,
+                source,
             });
         }
         files.push(PublicationFile {
             path: "_librepaper/metadata.json".into(),
-            bytes: serde_json::to_vec(manifest)
-                .map_err(|e| PublicationError::Invalid(e.to_string()))?,
             media_type: "application/json".into(),
+            source: PublicationSource::Owned(
+                serde_json::to_vec(manifest)
+                    .map_err(|e| PublicationError::Invalid(e.to_string()))?,
+            ),
         });
         let actor = self.actor.clone().ok_or(PublicationError::Denied)?;
         PublicationStorage::new(catalog, self.blobs.clone())

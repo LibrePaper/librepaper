@@ -391,22 +391,22 @@
       <ExplorerMenu>
         <div class="changes-menu-label">Status</div>
         {#each [["pending", "Pending"], ["accepted", "Accepted"], ["rejected", "Rejected"], ["all", "All"]] as [key, label]}
-          <Menu.Item value={`status:${key}`} class="menuitem"><span class="w-4">{activeFilters.status === key ? "✓" : ""}</span>{label}</Menu.Item>
+          <Menu.Item value={`status:${key}`} class="menuitem"><span class="menuitem-check">{activeFilters.status === key ? "✓" : ""}</span>{label}</Menu.Item>
         {/each}
         {#if derivedAuthors.length > 1}
           <hr class="hr my-1" />
           <div class="changes-menu-label">Author</div>
-          <Menu.Item value="author:" class="menuitem"><span class="w-4">{activeFilters.author ? "" : "✓"}</span>Anyone</Menu.Item>
+          <Menu.Item value="author:" class="menuitem"><span class="menuitem-check">{activeFilters.author ? "" : "✓"}</span>Anyone</Menu.Item>
           {#each derivedAuthors as author}
-            <Menu.Item value={`author:${author}`} class="menuitem"><span class="w-4">{activeFilters.author === author ? "✓" : ""}</span>{authorFilterLabel(author)}</Menu.Item>
+            <Menu.Item value={`author:${author}`} class="menuitem"><span class="menuitem-check">{activeFilters.author === author ? "✓" : ""}</span>{authorFilterLabel(author)}</Menu.Item>
           {/each}
         {/if}
         {#if derivedFiles.length > 1}
           <hr class="hr my-1" />
           <div class="changes-menu-label">File</div>
-          <Menu.Item value="file:" class="menuitem"><span class="w-4">{activeFilters.file ? "" : "✓"}</span>Every file</Menu.Item>
+          <Menu.Item value="file:" class="menuitem"><span class="menuitem-check">{activeFilters.file ? "" : "✓"}</span>Every file</Menu.Item>
           {#each derivedFiles as file}
-            <Menu.Item value={`file:${file}`} class="menuitem"><span class="w-4">{activeFilters.file === file ? "✓" : ""}</span>{file}</Menu.Item>
+            <Menu.Item value={`file:${file}`} class="menuitem"><span class="menuitem-check">{activeFilters.file === file ? "✓" : ""}</span>{file}</Menu.Item>
           {/each}
         {/if}
       </ExplorerMenu>

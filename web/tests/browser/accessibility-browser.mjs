@@ -76,7 +76,7 @@ const SCREENS = {
   landing: {
     shell: "web/pages/index.html",
     script: "../src/entries/landing.js",
-    ready: "Boolean(document.querySelector('input[type=file]'))",
+    ready: "Boolean([...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'New project'))",
     entry: `
       import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
       import Landing from ${JSON.stringify(join(root, "web/src/components/Landing.svelte"))};
@@ -190,6 +190,12 @@ try {
 
     // The panels are most of the Reader's markup and none of it is on the
     // screen until its icon is pressed, so each one is opened and read.
+    if (name === "landing") {
+      await tab.evaluate("[...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'New project').click()");
+      await tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))");
+      failures.push(...await violations(tab, "landing: new project"));
+    }
+
     if (name === "reader") {
       const panels = await tab.evaluate(`[...document.querySelectorAll('.activity-sections .icon-control')].map(node => node.getAttribute('aria-label'))`);
       for (const panel of panels) {

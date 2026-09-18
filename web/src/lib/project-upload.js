@@ -4,6 +4,7 @@
 import { checkPath, collisionKey, normalisePath } from "./paths.js";
 
 const extension = (path) => path.slice(path.lastIndexOf(".")).toLowerCase();
+const basename = (path) => path.slice(path.lastIndexOf("/") + 1);
 const stem = (path) => path.slice(0, path.lastIndexOf("."));
 const editorial = new Set([".qmd", ".md", ".bib", ".csl", ".yml", ".yaml", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".pdf", ".r", ".py", ".jl", ".lua"]);
 const generatedFolders = new Set(["_freeze", "_site", "_book", "site_libs", "node_modules", "renv", "venv", "env"]);
@@ -81,4 +82,49 @@ export function archiveSelection(project, main, config) {
   if (size("text") > config.max_document) throw new Error("The archive's document files exceed the document size limit.");
   if (size("asset") > config.max_assets) throw new Error("The archive's figures exceed the combined asset size limit.");
   return { files, skipped };
+}
+
+/// The folders a set of paths implies, parents before children, so a caller
+/// that has to make each one before writing into it can walk this in order.
+function foldersFor(paths) {
+  const seen = new Set();
+  for (const path of paths) {
+    const parts = path.split("/");
+    for (let depth = 1; depth < parts.length; depth++) seen.add(parts.slice(0, depth).join("/"));
+  }
+  return [...seen].sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b));
+}
+
+/// A ZIP among a set of dropped or chosen files becomes the files inside it.
+///
+/// This is how an existing paper gets into a project: the archive's own rules
+/// still apply -- the wrapper folder is stripped, `.librepaper-share.json` is
+/// honoured, and Quarto's rendered output is left behind -- but which file is
+/// the main one is no longer asked here. The project already has a main file,
+/// and the explorer's own "Set as main file" is where that changes. What the
+/// archive nominates is used only to decide what it renders and therefore what
+/// not to carry in.
+export async function expandArchives(items, rules, unzip) {
+  const files = [];
+  const folders = [];
+  for (const item of items) {
+    if (!/\.zip$/i.test(item.path)) {
+      files.push(item);
+      continue;
+    }
+    const entries = await unzip(item.file, {
+      maxBytes: (rules.max_document || 0) + (rules.max_assets || 0),
+      maxFiles: (rules.max_files || 200) * 9,
+    });
+    const project = archiveProject(entries, rules);
+    const selected = archiveSelection(project, project.main || project.candidates[0], rules);
+    // Paths are relative to the archive, so the whole tree lands under
+    // whatever folder it was dropped on, and the caller's own collision
+    // handling decides what happens where it meets a file already there.
+    for (const entry of selected.files) {
+      files.push({ file: new File([entry.bytes], basename(entry.path)), path: entry.path });
+    }
+    folders.push(...foldersFor(selected.files.map((entry) => entry.path)));
+  }
+  return { files, folders };
 }

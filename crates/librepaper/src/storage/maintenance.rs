@@ -129,7 +129,13 @@ impl Maintenance {
                    SELECT DISTINCT ON (archive_key) archive_bytes
                    FROM document_versions ORDER BY archive_key, id
                  ) distinct_archives
-                 UNION ALL SELECT byte_length FROM publication_files
+                 UNION ALL SELECT byte_length FROM (
+                   SELECT DISTINCT ON (f.storage_key) f.byte_length
+                   FROM publication_files f
+                   WHERE NOT EXISTS(SELECT 1 FROM document_assets a
+                                    WHERE a.storage_key = f.storage_key)
+                   ORDER BY f.storage_key, f.publication_id, f.path
+                 ) distinct_publication_files
                ) held
              )",
         )

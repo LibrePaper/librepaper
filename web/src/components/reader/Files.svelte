@@ -8,6 +8,8 @@
   import ExplorerMenu from "../ExplorerMenu.svelte";
   import { checkPath, collisionKey } from "../../lib/paths.js";
   import { basename, parentPath, inside, nodeKey, fileTree, folderPaths, topEntries, checkPlacement, copyPath, droppedFiles } from "../../lib/file-manager.js";
+  import { expandArchives } from "../../lib/project-upload.js";
+  import { unzip } from "../../lib/zip.js";
 
   let { files = [], folders = [], open = "", mayEdit = false, rules = {},
     onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onmain, onfigure, ontext, ondownload, ondownloaditem } = $props();
@@ -140,6 +142,14 @@
     refusal = "";
     const errors = [];
     try {
+      // A ZIP is the files inside it. Expanding before anything is written
+      // means a broken archive refuses the whole import rather than leaving
+      // half of one behind, and an archive dropped on a folder unpacks there.
+      if (items.some((item) => /\.zip$/i.test(item.path))) {
+        const opened = await expandArchives(items, rules, unzip);
+        items = opened.files;
+        incomingFolders = [...incomingFolders, ...opened.folders];
+      }
       for (const folder of incomingFolders) {
         const path = [target, folder].filter(Boolean).join("/");
         if (!directories.includes(path)) await onmkdir?.(path);
@@ -231,7 +241,8 @@
         <IconButton icon="download" label="Download project" tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />
       </div>
       {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
-        onchange={(event) => { const picked = [...event.target.files]; event.target.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
+        accept="{(rules.extensions || []).join(',')},.zip"
+      onchange={(event) => { const picked = [...event.target.files]; event.target.value = ""; upload(picked.map((file) => ({ file, path: file.name })), uploadTarget); }} />{/if}
     {/snippet}
     {#if chosen.length > 1 && mayEdit}
       <span class="panel-meta">{chosen.length} selected</span>

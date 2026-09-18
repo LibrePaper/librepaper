@@ -57,7 +57,7 @@
 
   import { tick, untrack } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
-  import ExplorerMenu from "./ExplorerMenu.svelte";
+  import MenubarMenu from "./MenubarMenu.svelte";
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -129,7 +129,12 @@
     committedTree: () => session?.tree?.() || liveTreeNow(),
     heading: (tree) => headingOf(tree),
     gather: (digests) => figures.gather(SLUG, digests, authHeaders(KEY), { strict: true }),
-    facts: () => ({ canEdit: mayEdit, hasSession: Boolean(session), source: sourceGeneration }),
+    facts: () => ({
+      canEdit: mayEdit, hasSession: Boolean(session), source: sourceGeneration,
+      // A failed render has nothing to publish; readers keep the last one
+      // that worked.
+      renderable: !previewProblem && !unrendered,
+    }),
     say: (message) => say(message, { kind: "problem", id: "reader:publication-load" }),
     disposed: () => readerDisposed,
   });
@@ -138,6 +143,8 @@
   const publicationStatus = $derived(publication.state.stale);
   const publicationMetadataReady = $derived(publication.state.metadataReady);
   const publicationMetadataFailed = $derived(publication.state.metadataFailed);
+  const publicationPublishing = $derived(publication.state.publishing);
+  const publicationBlocked = $derived(publication.state.blocked);
   let me = $state({});
   // The displayed name, since this is what goes on a comment and what the
   // reader is shown commenting as. A Google account's handle is its email and
@@ -2138,6 +2145,11 @@
     if (mayEdit && publishedPublication?.source_sha256) {
       void refreshPublicationStatus();
     }
+    // Readers hold a link, not the source, so the only rendering they can be
+    // shown is one this browser builds for them. Every edit puts that
+    // rebuild back on the clock rather than leaving it for somebody to
+    // remember to press.
+    if (mayEdit) publication.keepCurrent();
     outlineRevision += 1;
     if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
       clearTimeout(quartoLiveSyncTimer);
@@ -2466,6 +2478,21 @@
     [["select-all", "Select All"]],
     [["find", "Find…"], ["replace", "Replace…"]],
   ];
+
+  // What the keyboard already does, named beside the item the way a desktop
+  // menu names it: the menu is where people go to learn the shortcut, not
+  // only to avoid it. Only for the default binding -- in Vim or Emacs mode
+  // these keys belong to the mode, and a menu naming them would be lying.
+  // Replace has no binding of its own, so it claims none.
+  const APPLE = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || "");
+  const MOD = APPLE ? "⌘" : "Ctrl+";
+  const DEFAULT_EDIT_KEYS = {
+    undo: `${MOD}Z`, redo: APPLE ? "⇧⌘Z" : "Ctrl+Y",
+    cut: `${MOD}X`, copy: `${MOD}C`, paste: `${MOD}V`,
+    "select-all": `${MOD}A`, find: `${MOD}F`,
+  };
+  const EDIT_KEYS = $derived(keys === "vim" || keys === "emacs" ? {} : DEFAULT_EDIT_KEYS);
+
   function chooseEditCommand(command) {
     showMobileView("source");
     const target = editor;
@@ -2589,7 +2616,6 @@
     }
   }
 
-  const publishCurrent = () => publication.publish();
   // Open a panel from the menu: unlike the activity bar, choosing an item
   // that is already open leaves it open rather than closing the column.
   function openPanel(name) {
@@ -3173,23 +3199,23 @@
 {#snippet layoutItems()}
   {#each [["source", "Source"], ["document", "Preview"], ["split", "Split"]] as [value, label]}
     <Menu.Item value="layout-{value}" class="menuitem" disabled={compact && value === "split"}>
-      <span class="w-4">{(compact ? activeMobileView === value : layout === value) ? "✓" : ""}</span>{label}
+      <span class="menuitem-check">{(compact ? activeMobileView === value : layout === value) ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
   <hr class="hr my-1" />
   {#each [["left", "Source on left"], ["right", "Source on right"]] as [side, label]}
     <Menu.Item value="side-{side}" class="menuitem" disabled={compact}>
-      <span class="w-4">{sourceSide === side ? "✓" : ""}</span>{label}
+      <span class="menuitem-check">{sourceSide === side ? "✓" : ""}</span>{label}
     </Menu.Item>
   {/each}
   {#each RATIOS as ratio}
     <Menu.Item value="ratio-{ratio.share}" class="menuitem" disabled={compact}>
-      <span class="w-4">{sizes[PANES.editor.key] === ratio.share ? "✓" : ""}</span>{ratio.says}
+      <span class="menuitem-check">{sizes[PANES.editor.key] === ratio.share ? "✓" : ""}</span>{ratio.says}
     </Menu.Item>
   {/each}
   <hr class="hr my-1" />
   <Menu.Item value="linked" class="menuitem">
-    <span class="w-4">{linked ? "✓" : ""}</span>Keep in step
+    <span class="menuitem-check">{linked ? "✓" : ""}</span>Keep in step
   </Menu.Item>
 {/snippet}
 
@@ -3198,10 +3224,10 @@
   {@const selectableFormat = ["latex", "typst"].includes(displayedFormat)}
   <div class="menu-section-label">Format</div>
   <Menu.Item value="format-html" class="menuitem" disabled={!selectableFormat}>
-    <span class="w-4">{selectedFormat === "html" ? "✓" : ""}</span>HTML
+    <span class="menuitem-check">{selectedFormat === "html" ? "✓" : ""}</span>HTML
   </Menu.Item>
   <Menu.Item value="format-pdf" class="menuitem" disabled={!selectableFormat}>
-    <span class="w-4">{selectedFormat === "pdf" ? "✓" : ""}</span>PDF
+    <span class="menuitem-check">{selectedFormat === "pdf" ? "✓" : ""}</span>PDF
   </Menu.Item>
   <hr class="hr my-1" />
   <div class="menu-section-label">Engine</div>
@@ -3212,7 +3238,7 @@
          the document on this computer through the local app and its own page
          is what appears here. Nothing rendered is ever uploaded. -->
     <Menu.Item value="engine-quarto" class="menuitem" disabled>
-      <span class="w-4">✓</span>{localExecution && quartoPreviewMode === "quarto" ? "Quarto" : "Markdown"}
+      <span class="menuitem-check">✓</span>{localExecution && quartoPreviewMode === "quarto" ? "Quarto" : "Markdown"}
     </Menu.Item>
   {:else if displayedFormat === "typst"}
     <!-- The same, for a Typst document: this browser's own Typst rendering,
@@ -3220,18 +3246,18 @@
          this computer. HTML is always the browser Typst renderer, even while
          local execution is on. -->
     <Menu.Item value="engine-typst" class="menuitem" disabled>
-      <span class="w-4">✓</span>{localExecution && typstPreviewMode === "calepin" && typstOutput !== "html" ? "Calepin" : "Typst"}
+      <span class="menuitem-check">✓</span>{localExecution && typstPreviewMode === "calepin" && typstOutput !== "html" ? "Calepin" : "Typst"}
     </Menu.Item>
   {:else if displayedFormat === "latex"}
     {#each [["auto", "Automatic"], ["pdflatex", "pdfLaTeX"], ["xelatex", "XeLaTeX"], ["lualatex", "LuaLaTeX"]] as [engine, label]}
       <Menu.Item value="engine-latex-{engine}" class="menuitem">
-        <span class="w-4">{(latexSettingsState.engine || "auto") === engine ? "✓" : ""}</span>{label}
+        <span class="menuitem-check">{(latexSettingsState.engine || "auto") === engine ? "✓" : ""}</span>{label}
       </Menu.Item>
     {/each}
   {:else if displayedFormat === "markdown"}
-    <Menu.Item value="engine-markdown" class="menuitem" disabled><span class="w-4">✓</span>Markdown</Menu.Item>
+    <Menu.Item value="engine-markdown" class="menuitem" disabled><span class="menuitem-check">✓</span>Markdown</Menu.Item>
   {:else if displayedFormat === "html"}
-    <Menu.Item value="engine-html" class="menuitem" disabled><span class="w-4">✓</span>HTML</Menu.Item>
+    <Menu.Item value="engine-html" class="menuitem" disabled><span class="menuitem-check">✓</span>HTML</Menu.Item>
   {/if}
   <hr class="hr my-1" />
 {/snippet}
@@ -3250,7 +3276,7 @@
          nothing at all. -->
     <div class="menu-section-label">Local execution</div>
     <Menu.Item value="local-execution" class="menuitem">
-      <span class="w-4">{localExecution ? "✓" : ""}</span>Execute code locally
+      <span class="menuitem-check">{localExecution ? "✓" : ""}</span>Execute code locally
     </Menu.Item>
     <hr class="hr my-1" />
   {/if}
@@ -3301,52 +3327,47 @@
   {#snippet menus()}
     {#if shown.document}
       <div class="desktop-workspace-menu">
-        <Menu onSelect={(chosen) => void chooseFileCommand(chosen.value)}>
-          <Menu.Trigger class="menubar-item">File</Menu.Trigger>
-          <ExplorerMenu>{@render fileItems()}</ExplorerMenu>
-        </Menu>
+        <MenubarMenu id="file" label="File" onselect={(command) => void chooseFileCommand(command)}>
+          {@render fileItems()}
+        </MenubarMenu>
       </div>
     {/if}
     {#if editing && mayEdit}
-      <Menu onOpenChange={(event) => { if (event.open) editAvailability = editor?.editAvailability() || {}; }} onSelect={(chosen) => chooseEditCommand(chosen.value)}>
-        <Menu.Trigger class="menubar-item" disabled={!editor || !!mergeTarget || !!shownFigure}>Edit</Menu.Trigger>
-        <ExplorerMenu>
-          {#each editGroups as group, index}
-            {#if index}<hr class="hr my-1" />{/if}
-            {#each group as [command, label]}
-              <Menu.Item value={command} class="menuitem" disabled={!editAvailability[command]}>{label}</Menu.Item>
-            {/each}
+      <MenubarMenu id="edit" label="Edit" disabled={!editor || !!mergeTarget || !!shownFigure}
+                   onopen={() => { editAvailability = editor?.editAvailability() || {}; }}
+                   onselect={chooseEditCommand}>
+        {#each editGroups as group, index}
+          {#if index}<hr class="hr my-1" />{/if}
+          {#each group as [command, label]}
+            <Menu.Item value={command} class="menuitem" disabled={!editAvailability[command]}>
+              <span class="menuitem-label">{label}</span>{#if EDIT_KEYS[command]}<span class="menuitem-keys">{EDIT_KEYS[command]}</span>{/if}
+            </Menu.Item>
           {/each}
-        </ExplorerMenu>
-      </Menu>
+        {/each}
+      </MenubarMenu>
       <InsertMenu getContext={insertContext} oninsert={applyInsertion} onupload={uploadInsertAsset} onpreview={previewInsertAsset} oncancel={(context) => editor?.releaseInsertContext?.(context)} onfocus={() => editor?.focus?.()} disabled={!mayEdit || !editor} />
     {/if}
     {#if editing}
       <div class="desktop-workspace-menu">
-        <Menu onSelect={(chosen) => chooseViewCommand(chosen.value)}>
-          <Menu.Trigger class="menubar-item">View</Menu.Trigger>
-          <ExplorerMenu>{@render viewItems()}</ExplorerMenu>
-        </Menu>
+        <MenubarMenu id="view" label="View" onselect={chooseViewCommand}>
+          {@render viewItems()}
+        </MenubarMenu>
       </div>
     {/if}
     {#if mayEdit}
       <div class="desktop-workspace-menu">
-        <Menu onSelect={(chosen) => chooseToolCommand(chosen.value)}>
-          <Menu.Trigger class="menubar-item">Tools</Menu.Trigger>
-          <ExplorerMenu>{@render toolItems()}</ExplorerMenu>
-        </Menu>
+        <MenubarMenu id="tools" label="Tools" onselect={chooseToolCommand}>
+          {@render toolItems()}
+        </MenubarMenu>
       </div>
     {/if}
     {#if shown.document}
       <div class="compact-workspace-menu">
-        <Menu onSelect={(chosen) => chooseCompactCommand(chosen.value)}>
-          <Menu.Trigger class="menubar-item" aria-label="File, view and tools">Menu</Menu.Trigger>
-          <ExplorerMenu>
-            {@render fileItems()}<hr class="hr my-1" />
-            {#if editing}{@render viewItems()}<hr class="hr my-1" />{/if}
-            {#if mayEdit}{@render toolItems()}{/if}
-          </ExplorerMenu>
-        </Menu>
+        <MenubarMenu id="compact" label="Menu" aria-label="File, view and tools" onselect={chooseCompactCommand}>
+          {@render fileItems()}<hr class="hr my-1" />
+          {#if editing}{@render viewItems()}<hr class="hr my-1" />{/if}
+          {#if mayEdit}{@render toolItems()}{/if}
+        </MenubarMenu>
       </div>
     {/if}
   {/snippet}
@@ -3429,7 +3450,8 @@
       canShare={doc.role === "owner"} {canSeeSharing} mayPublish={canPublish}
       publishedVersion={publishedPublication} unpublishedChanges={publicationStatus}
       publicationReady={publicationMetadataReady} publicationFailed={publicationMetadataFailed}
-      onpublish={publishCurrent} onrefreshpublication={refreshPublicationMetadata}
+      publishing={publicationPublishing} publicationBlocked={publicationBlocked}
+      onrefreshpublication={refreshPublicationMetadata}
       onclose={() => showPanel("")} />
   {/snippet}
 
@@ -3816,7 +3838,9 @@
   .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-surface-200-800); color: var(--color-surface-700-300); font-size: .65rem; }
   .preview-status-details { display: grid; gap: calc(var(--spacing) * 2); }
-  .menu-section-label { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2); color: var(--color-surface-600-400); font-size: var(--text-xs); font-weight: 600; }
+  /* A heading over a run of items. Aligned with the names rather than with
+     the panel edge, so the column the items make starts once. */
+  .menu-section-label { padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5) calc(var(--spacing) * 0.5) calc(var(--spacing) * 7); color: var(--color-surface-600-400); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
   .preview-status-details :global(.latex-status) { display: flex; }
   @media (max-width: 600px) {
     .desktop-workspace-menu { display: none; }
