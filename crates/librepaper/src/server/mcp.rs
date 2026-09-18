@@ -252,9 +252,12 @@ impl Server {
             return plain(401, "authentication expired or revoked");
         }
         // MCP exposes source views, ranges, candidate trees, and source
-        // mutations. Readers/commenters cannot use it through a link or an
-        // ambient signed-in identity.
-        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
+        // mutations. A commenter is admitted because an anchored suggestion
+        // has to be written against the source it quotes; every mutation is
+        // gated per tool below, so a commenter reaches suggestions and
+        // comments and nothing that touches source. A reader cannot use it at
+        // all, through a link or an ambient signed-in identity.
+        if !who.at_least(Role::Commenter) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
         match method {

@@ -4,17 +4,15 @@ title: "Agents"
 
 Give an agent a LibrePaper link and it can work on the document with that link's permissions. A read link reads, a comment link also annotates, and an edit link also changes source. Signing in supplies attribution and satisfies the deployment's sign-in policy; it does not give an agent using a read link the owner's editing rights.
 
-LibrePaper bundles three agent skills and their reference files in the binary. Read them directly, offline, without installing a separate skills package:
+LibrePaper bundles three agent skills and their reference files in the binary, and every deployment serves them over HTTP at `/skills/<name>/SKILL.md`. An agent can read them from there without installing anything.
+
+Reading a skill and holding it are different things. An agent that discovers skills through a directory needs the files on disk, because that is where its harness reads the frontmatter that grants tool permissions; a copy fetched over HTTP is documentation and carries no authority. Install them with:
 
 ```sh
-librepaper skills list
-librepaper skills show librepaper-document
-librepaper skills show librepaper-document --file references/editing.md
+npx skills add LibrePaper/librepaper
 ```
 
-Updating LibrePaper updates its bundled instructions at the same time. Check `librepaper --version` and the required commands' `--help` for compatibility; using bundled skills does not require an online latest-release check. The sidebar's connection prompt tells the agent how to read them.
-
-For agents that discover skills through directories, export the complete bundle with `librepaper skills export ./librepaper-skills`, then copy the desired skill directories into your agent's skill directory. The export target must be new and its parent must exist; existing files are never overwritten. Export again to a fresh directory after upgrading. Installing from the repository with `npx skills add LibrePaper/librepaper` remains an optional alternative.
+Updating LibrePaper updates its bundled instructions at the same time, so add them again after an upgrade. Check `librepaper --version` and the required commands' `--help` for compatibility; using bundled skills does not require an online latest-release check. The sidebar's connection prompt tells the agent how to read them.
 
 - [`librepaper-document`](https://github.com/LibrePaper/librepaper/blob/main/skills/librepaper-document/SKILL.md): read, comment on, and edit through the configured MCP tools.
 - [`librepaper-pair`](https://github.com/LibrePaper/librepaper/blob/main/skills/librepaper-pair/SKILL.md): pair live in the sidebar chat.

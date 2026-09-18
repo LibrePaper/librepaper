@@ -1,7 +1,7 @@
 ---
 name: librepaper-pair
 description: Start and manage a local LibrePaper assistant runner when the user asks to pair in the document sidebar or provides setup instructions with a conversation ID. The runner owns a dedicated Codex session.
-allowed-tools: Bash(librepaper agent:*), Bash(librepaper --version:*), Bash(codex --version:*), Read, Write
+allowed-tools: Bash(librepaper agent:*), Bash(librepaper --version:*), Bash(librepaper login:*), Bash(codex --version:*), Bash(curl -fsSL https://raw.githubusercontent.com/LibrePaper/librepaper/*), Bash(sh /tmp/librepaper-install.sh:*), Read, Write
 ---
 
 # LibrePaper assistant setup

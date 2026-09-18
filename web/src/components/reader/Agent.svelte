@@ -7,6 +7,7 @@
   import ChatTranscript from "../ChatTranscript.svelte";
   import ChatComposer from "../ChatComposer.svelte";
   import { createAgentClient } from "../../lib/agent-client.js";
+  import { companion } from "../../lib/companion/status.svelte.js";
   import {
     captureAttachment, capabilityAllows, diagnosticLabel, suggestionContext,
     normalizeCapabilities, scopeLabel, visibleResults,
@@ -41,13 +42,30 @@
   let extra = $state("");
   let agentLink = $state("");
   let copyFallback = $state("");
+  // The four access levels, as a choice rather than four commands: each row
+  // carries its own explanation, so the panel never defines them twice.
   const roles = [
-    { id: "reader", label: "Reader", help: "Read only" },
-    { id: "commenter", label: "Commenter", help: "Read, comment, and suggest changes" },
-    { id: "tracked", role: "commenter", label: "Edit with track changes", help: "Propose tracked changes for review; cannot edit source directly" },
-    { id: "editor", label: "Edit directly", help: "Read, comment, and edit directly" },
+    { id: "reader", label: "Read", help: "Read the document",
+      detail: "The agent reads the document source and its build output. It cannot write anything back." },
+    { id: "commenter", label: "Comment", help: "Read, comment, and suggest changes",
+      detail: "The agent can leave comments and attach suggestions for you to accept or reject." },
+    { id: "tracked", role: "commenter", label: "Track changes", help: "Changes require your approval",
+      detail: "The agent proposes source changes as tracked suggestions. You review and accept or reject each one." },
+    { id: "editor", label: "Edit", help: "Changes do not require approval", warn: true,
+      detail: "The agent writes to the document source directly, with no accept or reject step in between." },
   ];
   const currentRole = $derived(!caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
+  // Without sharing rights the panel can only hand out the access the reader
+  // already holds, so the other rows are visible but not selectable.
+  const roleOffered = (entry) => canShare || currentRole === (entry.role || entry.id);
+  let access = $state("");
+  let copied = $state(false);
+  const chosenAccess = $derived(roles.find((entry) => entry.id === access) || null);
+  // The browser can see that the companion is answering on loopback; it can
+  // never prove it is absent (companion/client.js, "What detection means"),
+  // so silence reads as "install it if you have not", not as "missing".
+  const companionRunning = $derived(["reachable", "unauthorized", "connected", "incompatible"].includes(companion.status?.state));
+  $effect(() => companion.watch());
   let tab = $state("connection");
   const TABS = [
     { id: "connection", label: "Connection" },
@@ -115,8 +133,10 @@
     if (!connection.id || !connection.token || !validDocumentLink()) return "";
     const documentLink = agentLink || link;
     return [
-      "Reuse recent LibrePaper CLI/version checks from this session when the installation has not changed; connecting another document does not require checking for a newer release. Otherwise check: librepaper --version && librepaper agent connect --help. If missing or this command is unavailable, install or upgrade from https://github.com/LibrePaper/librepaper#install before continuing.",
-      "The LibrePaper runner supplies its bundled document and writing instructions to the agent. Reuse those instructions for the installed version and refresh the runner after an upgrade or command/version mismatch. No separate skill installation is needed.",
+      "First, before running anything: if you do not already have the librepaper-pair skill, ask the user to install the LibrePaper skills with `npx skills add LibrePaper/librepaper`, then follow that skill. It covers prerequisites, installing or upgrading the binary, connecting, and stopping, and it carries the tool permissions those steps need. If you already have it, skip this and follow it directly.",
+      "Without that skill, your harness may refuse the connect command below because running a detached process is not permitted by default. That is a standing permission granted once, not a LibrePaper failure. Report it plainly, offer the install above or an explicit settings rule for `librepaper agent`, and do not work around the refusal.",
+      "Reuse recent LibrePaper CLI/version checks from this session when the installation has not changed; connecting another document does not require checking for a newer release. Otherwise check: librepaper --version && librepaper agent connect --help.",
+      "The LibrePaper runner supplies its bundled document and writing instructions to the agent. Reuse those instructions for the installed version and refresh the runner after an upgrade or command/version mismatch. No separate skill installation is needed for those.",
       "Run each command below as written. Each is self-contained and can run in a separate shell.",
       `LIBREPAPER_CHAT_TOKEN=${shell(connection.token)} librepaper agent connect ${shell(documentLink)} ${shell(connection.id)} --background`,
       mode === "tracked"
@@ -267,10 +287,17 @@
     return sent;
   }
 
+  function chooseAccess(id) {
+    access = id;
+    copied = false;
+    copyFallback = "";
+  }
+
   async function copyInstructions(mode) {
     const role = mode === "tracked" ? "commenter" : mode;
     await act(async () => {
       copyFallback = "";
+      copied = false;
       if (canShare) {
         const endpoint = `/api/documents/${encodeURIComponent(slug)}/share`;
         let sharing = await getPrivate(endpoint);
@@ -287,6 +314,7 @@
       if (currentRole !== role) throw new Error("This access level is unavailable. Ask the document owner for an access link.");
       try {
         await navigator.clipboard.writeText(instructions(mode));
+        copied = true;
       } catch { copyFallback = instructions(mode); }
     });
   }
@@ -406,12 +434,47 @@
              value={tab} onchange={(value) => tab = value}>
   <Tabs.Content value="connection">
   <div class="agent-setup">
-    <p class="panel-muted">Click a button below to copy connection instructions to your clipboard. Paste them into a new message in your local coding agent (Codex, Claude, Pi, etc.) and send it to connect the agent to this document. Choose <strong>Reader</strong> to let it read, <strong>Commenter</strong> to let it read, comment, and suggest changes, <strong>Edit with track changes</strong> to require suggestions you can accept or reject, or <strong>Edit directly</strong> to allow source edits.</p>
-    <div class="access-buttons" role="group" aria-label="Copy setup prompt with access">
-      {#each roles as role}
-        <button class="btn btn-sm preset-outlined-surface-300-700" disabled={busy || starting || !connection.id || (!canShare && currentRole !== (role.role || role.id))} data-access={role.id} title={role.help} onclick={() => void copyInstructions(role.id)}>{role.label}</button>
+    <div class="setup-intro">
+      <h3 class="setup-title">Connect a coding agent</h3>
+      <p class="panel-muted">Use Codex, Claude, Pi, or another local coding agent with this document.</p>
+    </div>
+
+    <div class="companion-note" data-state={companionRunning ? "ready" : "unknown"}>
+      {#if companionRunning}
+        <strong>LibrePaper Companion connected</strong>
+        <span class="panel-meta">Your local agent can reach this document.</span>
+      {:else}
+        <strong>Requires LibrePaper on this computer</strong>
+        <span class="panel-meta">The companion app and its <code>librepaper</code> command connect a local agent to this document.</span>
+        <a href="https://github.com/LibrePaper/librepaper#install" target="_blank" rel="noreferrer">Install LibrePaper Companion →</a>
+      {/if}
+    </div>
+
+    <h4 class="setup-subtitle">Choose access</h4>
+    <!-- Pressed buttons rather than radios: each row stays in the tab order
+         and needs no roving-tabindex arrow handling to be usable. -->
+    <div class="access-choices" role="group" aria-label="Choose access">
+      {#each roles as entry}
+        <button type="button" class="access-choice" data-access={entry.id}
+                aria-pressed={access === entry.id} data-warn={entry.warn ? "true" : undefined}
+                disabled={busy || starting || !connection.id || !roleOffered(entry)}
+                onclick={() => chooseAccess(entry.id)}>
+          <span class="access-label">{entry.label}</span>
+          <span class="access-help panel-meta">{entry.help}</span>
+        </button>
       {/each}
     </div>
+
+    {#if chosenAccess}
+      <div class="access-detail" data-access={chosenAccess.id}>
+        <p class="panel-muted">{chosenAccess.detail}</p>
+        <button class="btn btn-sm preset-filled-primary-500" disabled={busy || starting || !connection.id}
+                onclick={() => void copyInstructions(chosenAccess.id)}>
+          {copied ? "Copied" : "Copy connection instructions"}
+        </button>
+        <p class="panel-meta">Paste the instructions into a new message in your local coding agent.</p>
+      </div>
+    {/if}
     {#if copyFallback}<textarea class="input setup-prompt" readonly rows="6" aria-label="Setup prompt to copy" value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>{/if}
   </div>
   {#if !connection.id}<button class="btn preset-filled-primary-500" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Retry connection"}</button>{/if}
@@ -563,8 +626,35 @@
   .agent-panel :global(.agent-tab-content .chat-form) { flex-shrink:0; }
   .agent-setup, .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
   .agent-setup p { margin:0; }
-  .access-buttons { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:var(--spacing); }
-  .access-buttons button { min-width:0; padding-inline:var(--spacing); white-space:normal; }
+  .agent-setup h3, .agent-setup h4 { margin:0; }
+  .setup-intro { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
+  .setup-title { font-weight:600; }
+  .setup-subtitle { font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+                    color:var(--color-surface-600-400); margin-bottom:calc(var(--spacing) * -1); }
+  .companion-note { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);
+                    padding:calc(var(--spacing) * 2); background:var(--color-surface-100-900);
+                    border-left:3px solid var(--color-surface-300-700); }
+  .companion-note[data-state="ready"] { border-left-color:var(--color-success-500); }
+  .companion-note a { font-size:var(--panel-meta-size); }
+  /* The access levels are one decision, not four commands: a vertical list of
+     rows, each explaining itself, reads in a narrow panel where a grid of
+     equal-looking buttons does not. */
+  .access-choices { display:flex; flex-direction:column; gap:var(--spacing); }
+  .access-choice { display:flex; flex-direction:column; gap:calc(var(--spacing) * .25);
+                   width:100%; min-width:0; padding:calc(var(--spacing) * 1.5) calc(var(--spacing) * 2);
+                   border:1px solid var(--color-surface-300-700); border-radius:var(--radius-base, .25rem);
+                   background:transparent; text-align:left; cursor:pointer; }
+  .access-choice:hover:not(:disabled) { background:var(--color-surface-100-900); }
+  .access-choice[aria-pressed="true"] { border-color:var(--color-primary-500); background:var(--color-surface-100-900); }
+  /* Direct editing is the one level with no accept or reject step, so it is
+     marked apart from the other three rather than left to read like them. */
+  .access-choice[data-warn="true"] { border-left:3px solid var(--color-warning-500); }
+  .access-choice[data-warn="true"][aria-pressed="true"] { border-color:var(--color-warning-500); }
+  .access-choice:disabled { opacity:.45; cursor:not-allowed; }
+  .access-label { font-weight:600; }
+  .access-help, .access-choice .access-help { white-space:normal; }
+  .access-detail { display:flex; flex-direction:column; align-items:flex-start; gap:var(--spacing); }
+  .access-detail p { margin:0; }
   .setup-prompt { width:100%; min-width:0; }
   .setup-actions, .agent-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
   .agent-actions { justify-content:space-between; }

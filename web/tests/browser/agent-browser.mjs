@@ -110,7 +110,14 @@ try {
   await until("live agent panel",()=>page.evaluate("Boolean(document.querySelector('.agent-panel textarea[aria-label=Message]'))"),10000);
   await until("runner connected",()=>page.evaluate('document.querySelector("[role=status]")?.textContent.includes("Waiting")'),10000);
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), true);
-  assert.deepEqual(await page.evaluate('Array.from(document.querySelectorAll(".access-buttons button")).map(b=>b.textContent)'), ["Reader", "Commenter", "Edit with track changes", "Edit directly"]);
+  assert.deepEqual(await page.evaluate('Array.from(document.querySelectorAll(".access-choices .access-label")).map(b=>b.textContent)'), ["Read", "Comment", "Track changes", "Edit"]);
+  // The copy action appears only once an access level is chosen.
+  assert.equal(await page.evaluate("Boolean(document.querySelector('.access-detail'))"), false);
+  if (process.env.AGENT_SCREENSHOT) {
+    await page.evaluate("document.querySelector('.access-choice[data-access=tracked]').click()");
+    const shot = await page.command("Page.captureScreenshot", { format: "png" });
+    writeFileSync(process.env.AGENT_SCREENSHOT, Buffer.from(shot.data, "base64"));
+  }
   await page.evaluate('document.querySelector("#agent-tab-chat").click()');
   const beforeResize = await page.evaluate("document.querySelector('.chat-form textarea').getBoundingClientRect().toJSON()");
   const handle = await page.evaluate("document.querySelector('.resize-handle').getBoundingClientRect().toJSON()");
@@ -196,7 +203,14 @@ try {
   const response = await page.evaluate("window.sockets[0].sent.find(frame=>frame.context?.thread?.id==='comment-1')");
   assert.deepEqual(response.context.thread.replies, [{body:"Could you expand?"}]);
 
-  await page.evaluate(`(()=>{const clipboard={writeText:value=>{window.copiedInstructions=value;return Promise.resolve();}};Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});document.querySelector('.access-buttons button:nth-child(2)').click();})()`);
+  // Choosing an access level, then copying, is the whole connection flow.
+  const copyAccess = async (role) => {
+    await page.evaluate(`document.querySelector('.access-choice[data-access=${role}]').click()`);
+    await until(role + " chosen", () => page.evaluate(`Boolean(document.querySelector('.access-detail[data-access=${role}] button'))`), 1000);
+    await page.evaluate(`document.querySelector('.access-detail[data-access=${role}] button').click()`);
+  };
+  await page.evaluate(`(()=>{const clipboard={writeText:value=>{window.copiedInstructions=value;return Promise.resolve();}};Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});})()`);
+  await copyAccess("commenter");
   await until("instructions copied",()=>page.evaluate('typeof window.copiedInstructions==="string"'),1000);
   assert.match(await page.evaluate("window.copiedInstructions"),/librepaper agent connect/);
   assert.doesNotMatch(await page.evaluate("window.copiedInstructions"),/chat watch/);
@@ -266,14 +280,16 @@ try {
   // Every role copies a real bounded link, and reuses existing share links.
   for (const [index, role] of ["reader", "commenter", "editor"].entries()) {
     await page.evaluate('document.querySelector("#agent-tab-connection").click()');
-    await page.evaluate(`document.querySelector('.access-buttons button[data-access=${role}]').click()`);
+    await copyAccess(role);
     await until(role + " prompt", () => page.evaluate(`window.copiedInstructions.includes('#k=${role}')`), 1000);
   }
-  await page.evaluate("window.copiedInstructions=''; document.querySelector('[data-access=tracked]').click()");
+  await page.evaluate("window.copiedInstructions=''");
+  await copyAccess("tracked");
   await until("tracked prompt", () => page.evaluate("window.copiedInstructions.includes('Use track changes for every edit')"), 1000);
   assert.match(await page.evaluate("window.copiedInstructions"), /#k=commenter/);
   assert.doesNotMatch(await page.evaluate("window.copiedInstructions"), /#k=editor/);
-  await page.evaluate("window.missingAccess=true; window.copiedInstructions=''; document.querySelector('.access-buttons button').click()");
+  await page.evaluate("window.missingAccess=true; window.copiedInstructions=''");
+  await copyAccess("reader");
   await until("created reader access", () => page.evaluate("window.copiedInstructions.includes('#k=reader')"), 1000);
   assert.deepEqual(await page.evaluate("window.createdAccess"), {link:{role:"reader",until:"180d",label:"Agent"}});
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
@@ -285,7 +301,8 @@ try {
   await until("preset opens chat", () => page.evaluate('!document.querySelector("#agent-pane-chat").hidden'), 1000);
 
   await page.evaluate("window.setProps({comments:[{id:'task-comment',body:'Clarify this',replies:[]}],diagnostics:[{message:'Compile error',file:'error.typ',revision:'old-sha',source:'old source'}]})");
-  await page.evaluate('document.querySelector("#agent-tab-connection").click(); document.querySelectorAll(".access-buttons button")[1].click()');
+  await page.evaluate('document.querySelector("#agent-tab-connection").click()');
+  await copyAccess("commenter");
   await until("comment access", () => page.evaluate("window.copiedInstructions.includes('#k=commenter')"), 1000);
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
   await page.evaluate('Array.from(document.querySelectorAll(".context-tasks .task-row span")).find(s=>s.textContent==="Address comment").closest("button").click()');

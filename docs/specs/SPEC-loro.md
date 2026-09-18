@@ -606,8 +606,8 @@ deciding one all go through the branch path now.
 
 Both fields survive on the wire as projections, filled in when a comment is
 served so a reader or an export need not assemble a suggestion out of its
-branch. Nothing writes them back and the columns are dropped (migration 0010),
-so one of them being wrong is a stale display rather than a second answer to
+branch. Nothing writes them back and the catalogue has no columns for them, so
+one of them being wrong is a stale display rather than a second answer to
 "was this accepted" that can disagree with the first. That distinction is the
 whole of what this phase was for.
 

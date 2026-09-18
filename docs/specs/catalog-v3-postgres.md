@@ -221,8 +221,8 @@ create table share_links (
 
 Titles are display labels and need not be unique within an account. Document
 IDs and slugs provide identity. An earlier draft carried a normalized
-`title_key` beside the title, for a search and sort that was never built;
-migration 0007 drops it, since it is a pure function of `title` and a search
+`title_key` beside the title, for a search and sort that was never built; the
+schema does not carry it, since it is a pure function of `title` and a search
 feature can derive it again in one backfill.
 
 A share token is a random bearer secret. What admits a caller is `token_hash`
@@ -236,9 +236,9 @@ working link to get its URL back.
 
 There is no key-rotation workflow. A deployment that replaces its session key
 loses only the ability to restate a URL: the links go on admitting callers, and
-the panel offers to replace the ones it can no longer show. Links minted before
-migration 0019 have an empty `sealed_token` and are not backfillable, since a
-token cannot be recovered from its hash.
+the panel offers to replace the ones it can no longer show. A link whose
+`sealed_token` is empty is not backfillable, since a token cannot be recovered
+from its hash.
 
 The circular current-version and current-bundle foreign keys on
 `documents` are added after their target tables are created. They use
