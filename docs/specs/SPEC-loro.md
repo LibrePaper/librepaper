@@ -245,9 +245,16 @@ cursor whose content was deleted to the boundary it occupied, so a resolved
 pair is checked against the quoted text before it is believed, and a collapsed
 one is reported as `deleted` rather than as a position. Loro's replacement
 cursors are stored back into the cache and never into the anchor. When there
-are no usable cursors it falls back to source context, including the boundary
-around a point note, and two equally good candidates are `ambiguous` rather
-than the first of them.
+are no usable cursors it falls back to the quoted words in their source
+context, and two equally good candidates are `ambiguous` rather than the first
+of them.
+
+Every anchor is a range of words, because every annotation is made by
+selecting some. There was a second kind -- a note at a point between two
+words, an empty range -- and it needed its own way to be located, its own way
+to be followed, and its own reading of what `exact` and `deleted` mean for a
+range with no width. That is a parallel implementation of §3.7 for a remark
+that selecting the neighbouring words makes as well, so it is gone.
 
 A rendered quotation survives as `PresentationContext`: what the page said,
 kept for display and for explaining a comment to a person. Nothing resolves

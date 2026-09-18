@@ -222,17 +222,17 @@ try {
   await b.evaluate('document.querySelector(\'[style*="--librepaper-sidebar"]\').style.removeProperty("--librepaper-sidebar")');
   await flush();
   await b.evaluate(`window.roomReceive({type:'hello',comments:[
-    {id:'point',seq:1,motivation:'commenting',exact:'',point:true,position:0,suffix:'A long document',body:'Point discussion',resolved:true,replies:[]},
+    {id:'passage',seq:1,motivation:'commenting',exact:'A long',position:0,suffix:' document',body:'Passage discussion',resolved:true,replies:[]},
     {id:'plain-highlight',seq:2,motivation:'highlighting',exact:'long',position:2,color:'#aabbcc',body:'',replies:[]},
     {id:'discussed-highlight',seq:3,motivation:'highlighting',exact:'document',position:7,color:'#ddeeff',body:'Discuss this highlight',replies:[]}
   ]})`);
   await frameMessage({type:'ready',text:'A long document'});
-  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Point discussion")'), true);
+  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Passage discussion")'), true);
   assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Discuss this highlight")'), true);
   assert.equal(await visible('.collaboration article[id$=plain-highlight]'), false);
   await selectDiscussionTab('Highlights');
   assert.equal(await b.evaluate('Array.from(document.querySelectorAll(".collaboration article")).filter(node=>node.getClientRects().length).length'), 2);
-  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Point discussion")'), false);
+  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Passage discussion")'), false);
   await click('#collaboration-highlight-plain-highlight [aria-label="Reply"]');
   await b.evaluate(`(() => {
     const field=document.querySelector('#collaboration-highlight-plain-highlight textarea');
@@ -257,18 +257,15 @@ try {
   await selectDiscussionTab('Chat');
   assert.equal(await b.evaluate('document.querySelector(".collaboration .chat-form textarea").value'), 'Draft for co-authors');
   assert.equal(await b.evaluate('Boolean(document.querySelector(".collab-tabs .unread"))'), false);
-  await frameMessage({type:'focus',id:'point'});
+  await frameMessage({type:'focus',id:'passage'});
   assert.equal(await b.evaluate('document.querySelector(".collab-tabs [aria-selected=true]").textContent.trim()'), 'Comments');
-  assert.equal(await b.evaluate('document.querySelector(".collaboration article[id$=point]").classList.contains("collapsed")'), false);
+  assert.equal(await b.evaluate('document.querySelector(".collaboration article[id$=passage]").classList.contains("collapsed")'), false);
   assert.equal(await b.evaluate('Array.from(document.querySelectorAll("[id]")).map(node=>node.id).length === new Set(Array.from(document.querySelectorAll("[id]")).map(node=>node.id)).size'), true, 'tab instances never duplicate DOM IDs');
 
-  // A note at a point is one of the two gestures that is still a mode: there
-  // is nothing to select, so it is armed first and says so over the document.
-  await click('.collaboration [aria-label="Note at a point"]');
-  assert.equal(await visible('#modestrip'), true, 'an armed mode says so over the document');
-  await frameMessage({type:'selection',selector:{exact:'',point:true,position:0,prefix:'',suffix:'A long document'},rect:{top:80,bottom:80,left:80,right:80}});
-  assert.equal(await b.evaluate('document.querySelectorAll("#selectionbar .verb").length'), 1,
-    'a point has no words, so the bar offers Comment alone');
+  // Every annotation starts the same way: select the words, choose the verb.
+  // There is no mode to arm and nothing to put away afterwards.
+  await frameMessage({type:'selection',selector:{exact:'A long',position:0,prefix:'',suffix:' document'},rect:{top:80,bottom:100,left:80,right:120}});
+  assert.equal(await visible('#selectionbar'), true, 'a selection raises the bar over it');
   await click('#selectionbar .verb');
   // No dialog: the draft is a card in the column, in the place its note will
   // take, and the column it is in is the one that opens.
@@ -276,42 +273,41 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".collab-tabs [aria-selected=true]").textContent.trim()'), 'Comments');
   await b.evaluate(`(() => {
     const input=document.querySelector('.composer textarea');
-    input.value='A new point comment'; input.dispatchEvent(new Event('input',{bubbles:true}));
+    input.value='A new comment'; input.dispatchEvent(new Event('input',{bubbles:true}));
   })()`);
   await flush();
   await b.evaluate(`Array.from(document.querySelectorAll('.composer button')).find(node=>node.textContent.trim()==='Comment').click()`);
   await flush();
   assert.equal(await visible('.composer'), false, 'sending closes the draft');
-  const submittedPoint = await b.evaluate('window.roomSent.filter(message=>message.type==="comment").at(-1)');
-  assert.equal(submittedPoint.point, true);
-  assert.equal(submittedPoint.position, 0);
-  assert.equal(submittedPoint.exact, '');
-  assert.equal(submittedPoint.motivation, 'commenting');
-  assert.equal(submittedPoint.body, 'A new point comment');
-  await b.evaluate(`window.roomReceive({type:'submission-failed',temp_id:${JSON.stringify(submittedPoint.temp_id)},message:'Offline'})`);
+  const submitted = await b.evaluate('window.roomSent.filter(message=>message.type==="comment").at(-1)');
+  assert.equal(submitted.position, 0);
+  assert.equal(submitted.exact, 'A long');
+  assert.equal(submitted.motivation, 'commenting');
+  assert.equal(submitted.body, 'A new comment');
+  await b.evaluate(`window.roomReceive({type:'submission-failed',temp_id:${JSON.stringify(submitted.temp_id)},message:'Offline'})`);
   await flush();
   assert.equal(await visible('.pending-recovery'), true);
   await b.evaluate(`(() => {
-    const item=Array.from(document.querySelectorAll('.pending-recovery details')).find(node=>node.textContent.includes('A new point comment'));
+    const item=Array.from(document.querySelectorAll('.pending-recovery details')).find(node=>node.textContent.includes('A new comment'));
     item.open=true;
     Array.from(item.querySelectorAll('button')).find(node=>node.textContent==='Retry').click();
   })()`);
-  assert.equal(await b.evaluate(`window.roomSent.filter(message=>message.temp_id===${JSON.stringify(submittedPoint.temp_id)}).length`), 2, 'retry retains the annotation idempotency key');
+  assert.equal(await b.evaluate(`window.roomSent.filter(message=>message.temp_id===${JSON.stringify(submitted.temp_id)}).length`), 2, 'retry retains the annotation idempotency key');
   await b.evaluate(`(() => {
-    const item=Array.from(document.querySelectorAll('.pending-recovery details')).find(node=>node.textContent.includes('A new point comment'));
+    const item=Array.from(document.querySelectorAll('.pending-recovery details')).find(node=>node.textContent.includes('A new comment'));
     Array.from(item.querySelectorAll('button')).find(node=>node.textContent==='Discard draft').click();
   })()`);
   await flush();
-  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("A new point comment")'), false);
+  assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("A new comment")'), false);
 
-  // Escape puts the armed mode away. It is the only thing that made a click
-  // in the document mean something other than a click, so it has to be
-  // reachable without hunting for the button that armed it.
+  // Nothing is ever armed, so Escape has only the bar to put away.
+  await frameMessage({type:'selection',selector:{exact:'long',position:2,prefix:'A ',suffix:' document'},rect:{top:80,bottom:100,left:80,right:120}});
+  assert.equal(await visible('#selectionbar'), true);
   await b.evaluate("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
   await flush();
-  assert.equal(await visible("#modestrip"), false, "Escape puts the armed mode away");
+  assert.equal(await visible('#selectionbar'), false, 'Escape puts the bar away');
 
-  // Highlighting arms nothing at all now: select the words, choose the verb.
+  // Highlighting arms nothing either: select the words, choose the verb.
   // The swatches hang off Highlight, and picking one is the highlight.
   await frameMessage({type:'selection',selector:{exact:'long',position:2,prefix:'A ',suffix:' document'},rect:{top:80,bottom:100,left:80,right:120}});
   assert.equal(await b.evaluate('Array.from(document.querySelectorAll("#selectionbar .verb")).map(node=>node.textContent.trim()).join("|")'),
@@ -327,7 +323,6 @@ try {
   const submittedHighlight = await b.evaluate('window.roomSent.filter(message=>message.type==="comment").at(-1)');
   assert.equal(submittedHighlight.motivation, 'highlighting');
   assert.equal(submittedHighlight.color, '#123abc');
-  assert.equal(submittedHighlight.point, undefined);
   if (process.env.LIBREPAPER_REVIEW_SCREENSHOT) {
     const screenshot = await b.command('Page.captureScreenshot', {format:'png'});
     writeFileSync(process.env.LIBREPAPER_REVIEW_SCREENSHOT, Buffer.from(screenshot.data,'base64'));
@@ -400,5 +395,5 @@ try {
     await bounded();
   }
   assert.deepEqual(await b.evaluate('window.testErrors'),[]);
-  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, point comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds and saved layouts passed');
+  console.log('responsive-browser: panel minimum widths, rail overflow, collaboration tabs, comments, highlight discussions, custom colors, retry/discard, unread chat, drafts, viewport bounds and saved layouts passed');
 } finally { await b?.close(); serverHttp?.close(); rmSync(temp,{recursive:true,force:true}); }

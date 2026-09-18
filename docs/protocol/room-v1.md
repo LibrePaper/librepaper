@@ -104,10 +104,7 @@ A stored comment carries three things a client can read:
   reader is never sent source identities or source quotations.
 - `attachment`: `{checkpoint_id, status, resolved_range_utf16, diagnostic}`,
   where that passage is now. `status` is `exact`, `modified`, `ambiguous`,
-  `deleted` or `unresolved`. A point -- an empty range -- is `exact` while the
-  source on either side of it still reads the same and `modified` when it does
-  not; it is never `deleted`, because a place between two characters is not
-  content that can be removed. It is a cache: the server recomputes it from the
+  `deleted` or `unresolved`. It is a cache: the server recomputes it from the
   document's own history whenever the document changes, and broadcasts one
   `{"type": "attachments", "attachments": [{comment_id, attachment}]}` event
   per pass to editor peers -- a single edit moves every comment after it, so
@@ -116,17 +113,20 @@ A stored comment carries three things a client can read:
   rendered_position_utf16}`, the words as the page had them. Display evidence,
   sent to everyone who can see the comment, and never resolved through.
 
-Figure-region annotations are not part of this version. A rectangle over a
-rendered image names no range of any source file, and naming what it is about
-needs provenance the renderers do not emit.
+Every annotation is about words somebody selected. Two gestures that were not
+have been withdrawn. A rectangle over a rendered figure names no range of any
+source file, and naming what it is about needs provenance the renderers do not
+emit. A note at a point between two words named one, but cost a second way to
+locate a range and a second way to follow one through later edits -- a
+parallel implementation of the hardest part of this protocol, for a remark
+that selecting the neighbouring words makes just as well.
 
-Set `point: true` for a comment bubble at a single rendered-text position. A
-point comment must use `motivation: "commenting"`, an empty `exact`, and a
-nonnegative `position`; it still requires a nonempty body. It is anchored to
-the place between the words on either side of it, which is what `prefix` and
-`suffix` are for. `color`, when
-present, must be a six-digit `#RRGGBB` value and is retained for commenting or
-highlighting annotations. `point: false` is omitted from wire responses.
+`position` remains. It is the offset in the rendered text: display evidence,
+and a tie-breaker of last resort between passages that read alike. It is never
+a place of its own.
+
+`color`, when present, must be a six-digit `#RRGGBB` value and is retained for
+commenting or highlighting annotations.
 
 The result is the created or changed event:
 

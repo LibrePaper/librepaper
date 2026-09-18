@@ -10,12 +10,6 @@ const comments = [
     outcome: "", resolved: false,
     presentation: { rendered_exact: "quote", rendered_position_utf16: 4 },
   },
-  {
-    // A note left between two words: no quotation of its own, so the frame is
-    // told to draw a mark rather than a range.
-    id: "point", start: 7, end: 7, motivation: "commenting", resolved: false,
-    presentation: { rendered_position_utf16: 7 },
-  },
   { id: "orphan", start: 10, end: 12, orphaned: true, motivation: "commenting" },
 ];
 
@@ -30,12 +24,8 @@ assert.deepEqual(sent, [
     type: "highlight",
     ranges: [
       {
-        id: "passage", point: false, start: 4, end: 9, motivation: "editing",
+        id: "passage", start: 4, end: 9, motivation: "editing",
         resolved: false, proposed: "after", outcome: "",
-      },
-      {
-        id: "point", point: true, start: 7, end: 7, motivation: "commenting",
-        resolved: false, proposed: "", outcome: "",
       },
     ],
   },

@@ -403,7 +403,6 @@ fn anchor_for(
     published: Option<&PublishedSource>,
     quote: &Quote<'_>,
     whole_document: bool,
-    point: bool,
 ) -> Result<OriginalAnchor, String> {
     let checkpoint = published.map(|p| p.checkpoint.as_str()).unwrap_or(current);
     if checkpoint.is_empty() {
@@ -412,7 +411,7 @@ fn anchor_for(
     let checkpoint_id = CheckpointId(checkpoint.to_string());
     // A remark about the document as a whole, which is the one kind of
     // comment that cannot be orphaned because it is not about a passage.
-    if whole_document || (!point && quote.exact.trim().is_empty()) {
+    if whole_document || quote.exact.trim().is_empty() {
         return Ok(OriginalAnchor {
             checkpoint_id,
             target: CommentTarget::Document,
@@ -433,12 +432,7 @@ fn anchor_for(
             text,
         })
         .collect();
-    let found = if point {
-        locate::locate_point(&candidates, quote)
-    } else {
-        locate::locate(&candidates, quote)
-    };
-    match found {
+    match locate::locate(&candidates, quote) {
         Ok(target) => Ok(OriginalAnchor {
             checkpoint_id,
             target: CommentTarget::SourceText(target),
@@ -1376,7 +1370,6 @@ impl Room {
                 prefix: raw_prefix,
                 suffix: raw_suffix,
                 position,
-                point,
                 document,
                 color: raw_color,
                 proposed: raw_proposed,
@@ -1385,16 +1378,6 @@ impl Room {
             } => {
                 let body = clean(&raw_body, config.caps.body).trim().to_string();
                 let motivation = config.allowed_motivation(&raw_motivation);
-                if point
-                    && (motivation != "commenting"
-                        || document
-                        || !raw_exact.is_empty()
-                        || !position.is_some_and(|at| at >= 0))
-                {
-                    return fail(
-                        "a point note needs a rendered position and commenting motivation",
-                    );
-                }
                 // A highlight is the passage itself: marking something as worth
                 // returning to needs no words. A suggestion is its proposal: the
                 // words are the replacement, and `body` beside it is an optional
@@ -1445,7 +1428,6 @@ impl Room {
                     published.as_ref(),
                     &quote,
                     document,
-                    point,
                 ) {
                     Ok(anchor) => anchor,
                     Err(reason) => return fail(&reason),

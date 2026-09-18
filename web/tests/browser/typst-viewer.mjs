@@ -358,63 +358,58 @@ async function run() {
     JSON.stringify(tracked));
   check("PDF suggestions clear cleanly", tracked?.cleared, JSON.stringify(tracked));
 
-  // Point comments use an empty text quote and a zero-width inline marker. A
-  // custom colour must remain visible in the PDF text layer, while the marker
-  // must not become part of the published text or trigger a ready loop.
-  const point = await tab.eval(`
+  // A highlight with a reader's own colour must stay visible over the PDF
+  // text layer, must not become part of the published text or trigger a ready
+  // loop, and must take a click through to its thread.
+  const coloured = await tab.eval(`
     const doc = window.doc();
     const text = window.text();
     const at = window.anchor({ exact: 'Typst PDF fixture', prefix: '', suffix: '' });
     if (!at) return null;
-    const pointAt = at.start + 5;
-    const selector = {
-      exact: '', prefix: text.slice(Math.max(0, pointAt - 12), pointAt),
-      suffix: text.slice(pointAt, pointAt + 12), position: pointAt, point: true,
-    };
-    const anchored = window.anchor(selector);
-    if (!anchored) return { error: 'point failed to anchor' };
     const readyBefore = window.seen.ready.length;
     window.seen.focus.length = 0;
-    window.paint([
-      { id: 'pdf-point', ...anchored, point: true, motivation: 'commenting' },
-      { id: 'pdf-colour', start: at.start, end: at.end, motivation: 'highlighting', color: '#ff8800' },
-    ]);
+    window.paint([{ id: 'pdf-colour', start: at.start, end: at.end, motivation: 'highlighting', color: '#ff8800' }]);
     await new Promise(resolve => setTimeout(resolve, 150));
-    const marker = doc.querySelector('.librepaper-point-marker');
-    const bubble = doc.querySelector('.librepaper-point-bubble');
     const mark = doc.querySelector('mark[data-librepaper~="pdf-colour"]');
-    const first = marker?.getBoundingClientRect();
-    const before = { text, readyBefore, markers: doc.querySelectorAll('.librepaper-point-marker').length,
-      bubbleText: bubble?.textContent || '', markColour: doc.defaultView.getComputedStyle(mark).backgroundColor,
-      marker: first ? [first.left, first.top, first.width, first.height] : null };
-    bubble?.click();
+    const box = mark?.getBoundingClientRect();
+    const before = {
+      markColour: mark && doc.defaultView.getComputedStyle(mark).backgroundColor,
+      placed: box ? [box.left, box.top, box.width, box.height] : null,
+    };
+    mark?.click();
     await new Promise(resolve => setTimeout(resolve, 80));
-    before.focused = window.seen.focus.includes('pdf-point');
+    before.focused = window.seen.focus.includes('pdf-colour');
     before.textStable = window.text() === text && window.seen.ready.length === readyBefore;
     return before;
   `);
-  check("PDF point comment has a textless anchored marker and custom colour", point?.markers === 1 && point.bubbleText === '' && point.textStable && point.markColour && !/transparent|rgba\(0, 0, 0, 0\)/.test(point.markColour), JSON.stringify(point));
-  check("PDF point bubble focuses its comment thread", point?.focused, JSON.stringify(point));
+  check("a reader's own colour survives the PDF text layer without disturbing the text",
+    coloured?.textStable && coloured.markColour && !/transparent|rgba\(0, 0, 0, 0\)/.test(coloured.markColour),
+    JSON.stringify(coloured));
+  check("a PDF highlight takes a click through to its thread", coloured?.focused, JSON.stringify(coloured));
 
-  const pointZoom = await tab.eval(`
+  // Zooming rerenders the page under the marks, and the parent repaints them
+  // against the text it reads back. Both have to land somewhere real.
+  const markZoom = await tab.eval(`
     const doc = window.doc();
-    const marker = () => doc.querySelector('.librepaper-point-marker')?.getBoundingClientRect();
-    const before = marker();
+    const box = () => doc.querySelector('mark[data-librepaper~="pdf-colour"]')?.getBoundingClientRect();
+    const before = box();
     frame.contentWindow.postMessage({ librepaper: true, type: 'viewer-scale', mode: '2' }, '*');
-    for (let i = 0; i < 100 && !marker(); i++) await new Promise(r => setTimeout(r, 50));
+    for (let i = 0; i < 100 && !box(); i++) await new Promise(r => setTimeout(r, 50));
     await new Promise(r => setTimeout(r, 150));
-    const zoomed = marker();
+    const zoomed = box();
     const text = window.text();
-    // Reanchor using the same contextual selector as the parent would after
-    // rerender; then repaint the actual point at its original location.
-    const pointAt = text.indexOf('Typst PDF fixture') + 5;
-    const anchored = window.anchor({ exact: '', prefix: text.slice(pointAt - 12, pointAt), suffix: text.slice(pointAt, pointAt + 12), position: pointAt, point: true });
-    window.paint([{ id: 'pdf-point', ...anchored, point: true, motivation: 'commenting' }, { id: 'pdf-colour', start: pointAt - 5, end: pointAt + 12, motivation: 'highlighting', color: '#ff8800' }]);
+    const at = window.anchor({ exact: 'Typst PDF fixture', prefix: '', suffix: '' });
+    window.paint([{ id: 'pdf-colour', start: at.start, end: at.end, motivation: 'highlighting', color: '#ff8800' }]);
     await new Promise(r => setTimeout(r, 120));
-    const rerendered = marker();
-    return { before: before && [before.left, before.top], zoomed: zoomed && [zoomed.left, zoomed.top], rerendered: rerendered && [rerendered.left, rerendered.top], text, markers: doc.querySelectorAll('.librepaper-point-marker').length };
+    const rerendered = box();
+    return { before: before && [before.left, before.top], zoomed: zoomed && [zoomed.left, zoomed.top],
+      rerendered: rerendered && [rerendered.left, rerendered.top], text,
+      marks: doc.querySelectorAll('mark[data-librepaper~="pdf-colour"]').length };
   `);
-  check("PDF point marker follows zoom and parent repaint", pointZoom?.markers === 1 && pointZoom?.text.includes('Typst PDF fixture') && pointZoom.rerendered?.every(Number.isFinite), JSON.stringify(pointZoom));
+  check("a PDF mark follows zoom and parent repaint",
+    markZoom?.marks >= 1 && markZoom?.text.includes('Typst PDF fixture')
+      && markZoom.rerendered?.every(Number.isFinite),
+    JSON.stringify(markZoom));
 
   // Empty PDF end-of-line items must leave a separator in the live DOM.
   // Without it the last word of a line runs into the first word of the next --

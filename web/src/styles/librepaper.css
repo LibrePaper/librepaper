@@ -618,22 +618,11 @@ main.reader.source-right .editorpane {
 
 /* -------------------------------------------------------------- annotating */
 
-/* One palette for the tools, shared with the marks the agent paints into the
-   document and the labels in the sidebar: hue says which kind of annotation,
-   and it stays desaturated so a page of them reads as a document rather than
-   as a highlighter set. The point mode is armed here; commenting,
-   highlighting and suggesting act on a selection and live on the bar over
-   it. */
-.tools [data-tool="point"] {
-  --librepaper-tint: hsl(42 55% 45%);
-}
-.tools [data-tool][aria-pressed="true"] {
-  border-color: var(--librepaper-tint);
-  color: var(--librepaper-tint);
-  background: color-mix(in srgb, var(--librepaper-tint) 12%, transparent);
-}
+/* Every annotation acts on a selection, so the bar over that selection is
+   the whole of the interface for making one: there is no armed mode and no
+   tool strip to keep a palette in step with.
 
-/* The bar that appears over a selection in the document, offering the verbs
+   The bar that appears over a selection in the document, offering the verbs
    that can act on it. Hidden until a selection places it: the inline style is
    what shows it, so a bar with nowhere to be is never on the screen. */
 #selectionbar {

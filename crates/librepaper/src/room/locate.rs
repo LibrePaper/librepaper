@@ -317,57 +317,6 @@ pub(crate) fn locate(
     Err(search.failure())
 }
 
-/// Finds the place in the source that a click between two words was pointing
-/// at.
-///
-/// A point has no words of its own, so it is located by the words on either
-/// side of it: the end of the text before it, which is what the caret was put
-/// after. The range returned is empty -- a position, not a passage -- and it
-/// is followed through later edits by the same cursors as any other, which is
-/// the only thing that can follow a position.
-pub(crate) fn locate_point(
-    files: &[Candidate<'_>],
-    quote: &Quote<'_>,
-) -> Result<SourceTextTarget, Failure> {
-    let before = trimmed(&flatten(quote.prefix, false).chars);
-    let after = trimmed(&flatten(quote.suffix, false).chars);
-    if before.is_empty() && after.is_empty() {
-        return Err(Failure::Empty);
-    }
-    let search = Search::over(files, quote);
-    // The words nearest the point are the ones that say where it is, so the
-    // text before it is shortened from its front and the text after it from
-    // its end -- both keeping the end that touches the caret.
-    //
-    // What is left over on the far side of each needle is the context it is
-    // scored against: the words the needle dropped still surrounded the
-    // point, and are still evidence for which occurrence of it is the right
-    // one. The needle itself is not.
-    for needle in shortening_from_the_front(&before) {
-        let dropped = &before[..before.len() - needle.len()];
-        if let Some(hit) = search.find_between(needle, dropped, &after) {
-            let (_, flat) = &search.flattened[hit.file];
-            let at = flat.from[hit.at + hit.length] as usize;
-            return Ok(point_at(&files[hit.file], at));
-        }
-        if needle.len() < ENOUGH {
-            break;
-        }
-    }
-    for needle in shortening_from_the_end(&after) {
-        let dropped = &after[needle.len()..];
-        if let Some(hit) = search.find_between(needle, &before, dropped) {
-            let (_, flat) = &search.flattened[hit.file];
-            let at = flat.from[hit.at] as usize;
-            return Ok(point_at(&files[hit.file], at));
-        }
-        if needle.len() < ENOUGH {
-            break;
-        }
-    }
-    Err(search.failure())
-}
-
 fn trimmed(chars: &[char]) -> Vec<char> {
     let mut out = chars.to_vec();
     while out.first().is_some_and(|c| is_space(*c)) {
@@ -409,15 +358,6 @@ fn shortening_from_the_end(phrase: &[char]) -> impl Iterator<Item = &[char]> {
     })
 }
 
-/// The phrase, then the phrase without its first word, and so on.
-fn shortening_from_the_front(phrase: &[char]) -> impl Iterator<Item = &[char]> {
-    let starts = word_starts(phrase);
-    starts
-        .into_iter()
-        .filter(move |from| *from < phrase.len())
-        .map(move |from| &phrase[from..])
-}
-
 /// One question, asked of every file of a document.
 struct Search<'a> {
     flattened: Vec<(bool, Flat)>,
@@ -448,22 +388,11 @@ impl<'a> Search<'a> {
     /// trying again a word shorter, while a phrase that is in several places
     /// that the context cannot separate is a refusal in the making.
     fn find(&self, needle: &[char]) -> Option<Hit> {
-        self.find_between(needle, &self.prefix, &self.suffix)
-    }
-
-    /// The same search, told explicitly what surrounded the needle.
-    ///
-    /// A point is located by its own context -- the needle *is* part of the
-    /// prefix or the suffix -- so scoring it against the whole of that context
-    /// would be asking the words whether they are themselves. What is left of
-    /// the context on either side of the needle is the evidence; the rest of
-    /// it is the needle and says nothing.
-    fn find_between(&self, needle: &[char], prefix: &[char], suffix: &[char]) -> Option<Hit> {
         let _ = self.files;
         let mut hits = Vec::new();
         for (index, (_, flat)) in self.flattened.iter().enumerate() {
             for at in occurrences(&flat.chars, needle) {
-                let score = score_of(flat, at, needle.len(), prefix, suffix);
+                let score = score_of(flat, at, needle.len(), &self.prefix, &self.suffix);
                 hits.push(Hit {
                     file: index,
                     at,
@@ -495,23 +424,6 @@ impl<'a> Search<'a> {
         } else {
             Failure::NotFound
         }
-    }
-}
-
-/// A position rather than a passage: no words, and the source on either side
-/// of it as the evidence of where it was.
-fn point_at(file: &Candidate<'_>, at: usize) -> SourceTextTarget {
-    let units: Vec<u16> = file.text.encode_utf16().collect();
-    let at = at.min(units.len());
-    SourceTextTarget {
-        file_id: FileId(file.file_id.to_string()),
-        start_utf16: at as u32,
-        end_utf16: at as u32,
-        start_side: AnchorSide::Left,
-        end_side: AnchorSide::Right,
-        exact: String::new(),
-        prefix: slice16(&units, at.saturating_sub(CONTEXT), at),
-        suffix: slice16(&units, at, (at + CONTEXT).min(units.len())),
     }
 }
 

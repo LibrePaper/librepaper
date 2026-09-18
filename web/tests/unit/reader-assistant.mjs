@@ -37,16 +37,8 @@ for (const field of ["source", "path", "revision", "file_id", "start", "end"]) {
   assert.ok(!(field in captured), `a selection must not carry ${field}`);
 }
 
-// A note left between two words: no quotation, and the position is the whole
-// of where it is.
-vm.runInContext("showSelection({exact:'',prefix:'before',suffix:' after',position:6,point:true}, {})", ctx);
-assert.equal(ctx.pending.point, true);
-assert.equal(ctx.pending.position, 6);
-
-// A point with no position is not a point, and a range with no words is not a
-// range: neither is something to comment on.
-vm.runInContext("showSelection({exact:'',prefix:'',suffix:'',position:null,point:true}, {})", ctx);
-assert.equal(ctx.pending, null);
+// A selection with no words is not a passage, and so is not something to
+// comment on. There is nothing else an annotation can be about.
 vm.runInContext("showSelection({exact:'',prefix:'',suffix:'',position:3}, {})", ctx);
 assert.equal(ctx.pending, null);
 vm.runInContext("showSelection(null, {})", ctx);

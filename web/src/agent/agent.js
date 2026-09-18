@@ -84,11 +84,11 @@ import { createMathTypesetter } from "../lib/math.js";
   // written in at build time, beside the copy of KaTeX the build made.
   const typesetMath = createMathTypesetter({ base: __KATEX__, document, window });
 
-  // The marks this file draws that are not the document's: a point comment's
-  // bubble and the ring around whichever annotation the sidebar has singled
-  // out. Installed once, up front: unlike the document's own styles, nothing
-  // here ever needs to change, and it survives every body replacement
-  // `adoptStyles` does for a live preview.
+  // The one mark this file draws that is not the document's: the ring around
+  // whichever annotation the sidebar has singled out. Installed once, up
+  // front: unlike the document's own styles, nothing here ever needs to
+  // change, and it survives every body replacement `adoptStyles` does for a
+  // live preview.
   //
   // A proposal used to be generated content on the mark itself, so that it
   // added no text node; it is a real span now -- the synthetic span below --
@@ -96,20 +96,15 @@ import { createMathTypesetter } from "../lib/math.js";
   const markStyle = document.createElement("style");
   markStyle.dataset.librepaperMarks = "1";
   markStyle.textContent = `
-    .librepaper-point-bubble::before { content: "\\1F4AC"; }
     /* The annotation the sidebar has singled out: a ring around every piece
-       of its passage or its point bubble, so that it stands
-       out from the wash the others sit under. */
+       of its passage, so that it stands out from the wash the others sit
+       under. */
     mark[data-librepaper][data-librepaper-selected] {
       outline: 2px solid hsl(220 85% 50%);
       outline-offset: 1px;
       border-radius: 2px;
       box-decoration-break: clone;
       -webkit-box-decoration-break: clone;
-    }
-    .librepaper-point-bubble[data-librepaper-selected] {
-      outline: 2px solid hsl(220 85% 50%);
-      outline-offset: 2px;
     }
   `;
   document.head.appendChild(markStyle);
@@ -264,7 +259,6 @@ import { createMathTypesetter } from "../lib/math.js";
   // The ranges last asked for, so a repaint of the document can put the marks
   // back in the same breath rather than a round trip later.
   let lastRanges = [];
-  let pointBubbles = [];
   // The annotation singled out, by either side. Marks are rebuilt on every
   // repaint, so the ring is put back after each one rather than kept on a node.
   let selectedId = "";
@@ -273,7 +267,7 @@ import { createMathTypesetter } from "../lib/math.js";
     if (!selectedId) return;
     const id = CSS.escape(selectedId);
     document
-      .querySelectorAll(`mark[data-librepaper~="${id}"], .librepaper-point-bubble[data-librepaper="${id}"]`)
+      .querySelectorAll(`mark[data-librepaper~="${id}"]`)
       .forEach((node) => (node.dataset.librepaperSelected = ""));
   }
   function select(id) {
@@ -284,33 +278,6 @@ import { createMathTypesetter } from "../lib/math.js";
   const annotationColor = (item) =>
     typeof item?.color === "string" && /^#[0-9a-f]{6}$/i.test(item.color)
       ? item.color.toLowerCase() : null;
-
-  function pointBubble(item, position) {
-    const range = document.createRange();
-    if (!table.nodes.length) return;
-    const at = Math.max(0, Math.min(position, text().length));
-    const index = nodeAt(Math.max(0, Math.min(at, text().length - 1)));
-    const node = table.nodes[index];
-    if (!node) return;
-    const offset = Math.max(0, Math.min(node.data.length, at - table.starts[index]));
-    range.setStart(node, offset);
-    range.setEnd(node, offset);
-    const marker = document.createElement("span");
-    marker.className = "librepaper-point-marker";
-    marker.dataset.librepaper = String(item.id);
-    marker.style.cssText = "position:relative;display:inline-block;width:0;height:0;vertical-align:baseline";
-    const bubble = document.createElement("button");
-    bubble.type = "button";
-    bubble.className = "librepaper-point-bubble";
-    bubble.dataset.librepaper = String(item.id);
-    bubble.setAttribute("aria-label", "Open comment");
-    bubble.style.cssText = `position:absolute;left:0;top:-1.2em;color:${annotationColor(item) || edge(tintOf(item.motivation))};` +
-      "z-index:20;cursor:pointer;background:transparent;border:0;padding:2px;font-size:14px;line-height:1";
-    bubble.onclick = (event) => { event.preventDefault(); event.stopPropagation(); select(item.id); post({ type: "focus", id: item.id }); };
-    marker.appendChild(bubble);
-    range.insertNode(marker);
-    pointBubbles.push(marker);
-  }
 
   // Those ranges are offsets into the text as it was, and the text has just
   // changed. Typing is one edit at one place, so the difference is entirely
@@ -340,14 +307,11 @@ import { createMathTypesetter } from "../lib/math.js";
       document
         .querySelectorAll("mark[data-librepaper]")
         .forEach((mark) => mark.replaceWith(...mark.childNodes));
-      for (const bubble of pointBubbles) bubble.remove();
-      pointBubbles = [];
       document.body.normalize(); // restore the pristine text-node structure
     });
     scan();
 
-    const points = ranges.filter((item) => item.point === true && Number.isInteger(item.start) && item.start >= 0);
-    const painted = ranges.filter((item) => item.end > item.start && item.point !== true);
+    const painted = ranges.filter((item) => item.end > item.start);
     const pendingSuggestions = painted.filter((item) => item.motivation === "editing" && !item.resolved);
     const overlapping = new Set();
     for (const one of pendingSuggestions) for (const other of pendingSuggestions) {
@@ -425,18 +389,7 @@ import { createMathTypesetter } from "../lib/math.js";
         mark.onclick = () => { select(inner.id); post({ type: "focus", id: inner.id }); };
       }
     });
-    // Mark wrapping splits text nodes, so point ranges must resolve against
-    // the rebuilt table rather than the pre-paint node offsets.
-    // Work backwards so inserting a point splits only the tail of a node
-    // whose earlier offsets are still needed. One scan serves every point.
-    scan();
-    const length = text().length;
-    quietly(() => {
-      for (const item of points.sort((a, b) => b.start - a.start)) {
-        if (item.start <= length) pointBubble(item, item.start);
-      }
-      applySelected();
-    });
+    quietly(applySelected);
     // surroundContents splits the text nodes it wraps, so the table built above
     // no longer describes the document. A selection made after a highlight
     // would land in a node the table has never seen, and report offsets against
@@ -467,12 +420,9 @@ import { createMathTypesetter } from "../lib/math.js";
     return null;
   }
 
-  let tool = "commenting";
-
   function captureSelection() {
     const selection = document.getSelection();
     if (!selection || selection.isCollapsed) {
-      if (tool === "point") return;
       post({ type: "selection", selector: null });
       return;
     }
@@ -541,7 +491,6 @@ import { createMathTypesetter } from "../lib/math.js";
     // race.
     if (message.type === "reader-ready") publish(true);
     if (message.type === "highlight") highlight(message.ranges || []);
-    if (message.type === "tool") tool = String(message.tool || "commenting");
     // The editor's live preview. The document being previewed is not yet
     // published, so it arrives as HTML over this channel rather than as a
     // page to load -- which keeps it on this origin, where a document belongs,
@@ -616,10 +565,9 @@ import { createMathTypesetter } from "../lib/math.js";
     if (message.type === "select") select(message.id);
     if (message.type === "reveal") {
       select(message.id);
-      // A passage is painted as a mark; a point note has its own bubble.
       const id = CSS.escape(String(message.id));
       document
-        .querySelector(`mark[data-librepaper~="${id}"], .librepaper-point-bubble[data-librepaper="${id}"]`)
+        .querySelector(`mark[data-librepaper~="${id}"]`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   });
@@ -637,10 +585,9 @@ import { createMathTypesetter } from "../lib/math.js";
   // the editor can put its caret in the same place. Only the position is sent;
   // a click that lands on nothing textual says nothing.
   document.addEventListener("click", (event) => {
-    if (tool === "point" && event.target.closest("a,button,input,textarea,select,mark[data-librepaper]")) return;
     const pdf = globalThis.librepaperViewer?.pointFromClient?.(event.clientX, event.clientY) || null;
     if (!table.nodes.length) {
-      if (pdf && tool !== "point") post({ type: "pdf-caret", pdf });
+      if (pdf) post({ type: "pdf-caret", pdf });
       return;
     }
     const caret = document.caretPositionFromPoint
@@ -648,28 +595,12 @@ import { createMathTypesetter } from "../lib/math.js";
       : null;
     const node = caret?.offsetNode;
     if (!node || node.nodeType !== Node.TEXT_NODE) {
-      if (pdf && tool !== "point") post({ type: "pdf-caret", pdf });
+      if (pdf) post({ type: "pdf-caret", pdf });
       return;
     }
     const index = table.index.get(node);
     if (index === undefined) return;
     const offset = table.starts[index] + (caret.offset || 0);
-    if (tool === "point") {
-      event.preventDefault();
-      const all = text();
-      post({
-        type: "selection",
-        selector: {
-          exact: "",
-          prefix: all.slice(Math.max(0, offset - 64), offset),
-          suffix: all.slice(offset, offset + 64),
-          position: Math.max(0, offset),
-          point: true,
-        },
-        rect: { top: event.clientY, left: event.clientX, right: event.clientX, bottom: event.clientY },
-      });
-      return;
-    }
     post({ type: "caret", offset, pdf });
   });
 

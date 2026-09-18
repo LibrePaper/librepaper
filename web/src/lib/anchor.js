@@ -74,21 +74,6 @@ const flat = (value) => value.replace(/\s+/g, " ").trim();
  * `view` is the flattened text from `flatten`, used only as a fallback.
  */
 export function anchorOne(text, selector, view = null) {
-  // A point has no selected words: the boundary between its surrounding
-  // context locates it after edits, and the old offset breaks repeated ties.
-  if (selector?.point === true) {
-    const position = selector.position;
-    if (!Number.isInteger(position) || position < 0) return null;
-    const prefix = String(selector.prefix || "");
-    const suffix = String(selector.suffix || "");
-    if (prefix || suffix) {
-      const context = search(text, { exact: prefix + suffix, position: position - prefix.length });
-      if (!context) return null;
-      const at = context.start + prefix.length;
-      return { start: at, end: at };
-    }
-    return position <= text.length ? { start: position, end: position } : null;
-  }
   const found = search(text, selector);
   if (found) return found;
   if (!view) return null;
@@ -172,9 +157,6 @@ export function shownSelector(comment) {
     prefix: String(seen.rendered_prefix || ""),
     suffix: String(seen.rendered_suffix || ""),
     position,
-    // A note left between two words has no words of its own; the position and
-    // the context on either side are the whole of it.
-    point: !exact && position !== null,
   };
 }
 
@@ -183,16 +165,15 @@ export function shownSelector(comment) {
  *
  * An editor is told so outright, in the anchor the server wrote. A reader is
  * never sent that anchor -- source identity is not a reader's to have -- but is
- * sent what the page had, and a remark about the whole document is the one
- * that quoted nothing and pointed nowhere. The two roads reach the same
- * answer, so the card reads the same either way instead of telling a reader
- * that a general remark's passage is missing from the page.
+ * sent what the page had, and every other annotation quotes words. So a
+ * comment that quoted none is the remark about the document, and the card
+ * reads the same either way instead of telling a reader that a general
+ * remark's passage is missing from the page.
  */
 export function aboutWholeDocument(comment) {
   const anchor = comment?.original_anchor;
   if (anchor) return anchor.kind === "document";
-  const seen = comment?.presentation || {};
-  return !seen.rendered_exact && !Number.isInteger(seen.rendered_position_utf16);
+  return !comment?.presentation?.rendered_exact;
 }
 
 /**

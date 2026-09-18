@@ -101,7 +101,7 @@
   const summary = $derived(
     [
       comment.outcome === "accepted" ? "Accepted" : comment.outcome === "rejected" ? "Rejected" : "",
-      shown.point ? "Point comment" : shown.exact.trim(),
+      shown.exact.trim(),
       (comment.body || "").trim(),
     ]
       .filter(Boolean)
@@ -217,12 +217,7 @@
       </Row>
 
       <!-- The passage itself is not repeated here: it is painted in the
-           document, and ringed there while this card is the selected one.
-           Only a note with no words to point at says what it is on. -->
-      {#if shown.point}
-        <p class="panel-muted">Comment at this point</p>
-      {/if}
-
+           document, and ringed there while this card is the selected one. -->
       {#if isSuggestion}
         <!-- The word-level diff of the quotation against the proposal:
              deletion struck through, insertion underlined. Deletion in full

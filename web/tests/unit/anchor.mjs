@@ -18,20 +18,11 @@ function check(what, condition) {
 
 const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: "", position: null, ...extra });
 
+// Every annotation is about words somebody selected, so a selector with none
+// is not a place in the document -- it is nothing to look for.
 {
-  const point = { path: "chapter.typ", exact: "", prefix: "before", suffix: " after", position: 6, point: true };
-  const found = anchorOne("before after", point);
-  check("a point selector keeps its nonnegative position", found?.start === 6 && found?.end === 6);
-  const stale = anchorOne("short", { ...point, position: 999 });
-  check("a stale point outside the document is refused", stale === null);
-  const shifted = anchorOne("before new after", point);
-  check("a point whose surrounding context was replaced is refused", shifted === null);
-  check("a point follows an insertion before its context", anchorOne("New paragraph. before after", point)?.start === 21);
-  check("a point follows deletion before its context", anchorOne("before after", { ...point, position: 999 })?.start === 6);
-  check("a null point position is refused", anchorOne("before after", { ...point, position: null }) === null);
-  check("a string point position is refused", anchorOne("before after", { ...point, position: "6" }) === null);
-  check("a point can sit at document start", anchorOne("before after", { point:true, exact:"", position:0, suffix:"before after" })?.start === 0);
-  check("a point can sit at document end", anchorOne("before after", { point:true, exact:"", position:12, prefix:"before after" })?.start === 12);
+  check("a selector with no words anchors nowhere",
+    anchorOne("before after", source("chapter.typ", "")) === null);
 }
 
 /* -------------------------------------------------------------- placeSources */
@@ -84,11 +75,11 @@ const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: 
     },
   });
   check("the display selector is the rendered quotation", shown.exact === "the passage" && shown.prefix === "before ");
-  check("a quotation is not a point", shown.point === false);
-  const point = shownSelector({ presentation: { rendered_position_utf16: 12 } });
-  check("no words and a position is a point", point.point === true && point.position === 12);
+  check("the recorded position comes with it, to break ties between repeats",
+    shown.position === 7);
   const bare = shownSelector({});
-  check("a comment with no presentation at all is not a point", bare.point === false && bare.exact === "");
+  check("a comment with no presentation at all selects nothing",
+    bare.exact === "" && bare.position === null);
 }
 
 {

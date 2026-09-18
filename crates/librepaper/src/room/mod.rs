@@ -95,10 +95,6 @@ pub struct Message {
     /// tie-breaker of last resort; never an offset into any file.
     #[serde(default)]
     pub position: Option<i64>,
-    /// A point annotation has no selected text: it is a place between two
-    /// words, found from the words on either side of it.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub point: bool,
     /// A remark about the document as a whole rather than about any passage
     /// of it. It has nothing to anchor and so can never be orphaned.
     #[serde(default, skip_serializing_if = "is_false")]

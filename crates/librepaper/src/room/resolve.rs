@@ -210,28 +210,6 @@ fn through_cursors(
     let range = session::offsets_of_cursors_in_file(doc, &target.file_id.0, &start, &end)
         .map_err(diagnostic_of)?;
     let (from, to) = (range.start_utf16, range.end_utf16);
-    // A point is an empty range by construction -- a place between two
-    // characters rather than a passage -- so its two cursors resolving onto
-    // one another is that place, not a deletion. It is still here; whether it
-    // is still between the same words is what its context says.
-    if target.start_utf16 == target.end_utf16 {
-        let status = if point_context_holds(units, from, target) {
-            AnchorStatus::Exact
-        } else {
-            AnchorStatus::Modified
-        };
-        return Ok(attached(
-            "",
-            status,
-            Some(replaced(
-                live,
-                &range.start_replacement,
-                &range.end_replacement,
-            )),
-            Some((from, from)),
-            None,
-        ));
-    }
     // Loro relocates a cursor whose content was deleted to the boundary the
     // content used to occupy, so a pair that resolves may well have collapsed
     // onto that boundary. Crossed endpoints mean the same thing.
@@ -267,50 +245,6 @@ fn through_cursors(
     ))
 }
 
-/// Whether the source still reads the same on either side of a point.
-///
-/// This is to a point what comparing the quoted words is to a passage. A
-/// point *is* the place between two words, so those two words are what it was
-/// made about and all that is compared -- not the whole stored context, which
-/// runs to `CONTEXT` units and would call a point modified because somebody
-/// edited a sentence nearby. A passage is not modified by an edit beside it
-/// either.
-///
-/// A point resting against whitespace has no word on that side, and nothing
-/// is what it agrees with.
-fn point_context_holds(units: &[u16], at: u32, target: &SourceTextTarget) -> bool {
-    let at = (at as usize).min(units.len());
-    let prefix: Vec<u16> = target.prefix.encode_utf16().collect();
-    let suffix: Vec<u16> = target.suffix.encode_utf16().collect();
-    let before = last_word(&prefix);
-    let after = first_word(&suffix);
-    before.len() <= at
-        && after.len() <= units.len() - at
-        && units[at - before.len()..at] == before[..]
-        && units[at..at + after.len()] == after[..]
-}
-
-/// UTF-16 whitespace, by the only characters a source file collapses on.
-fn is_space16(unit: u16) -> bool {
-    matches!(unit, 0x20 | 0x09 | 0x0a | 0x0d | 0x0b | 0x0c)
-}
-
-fn last_word(units: &[u16]) -> &[u16] {
-    let at = units
-        .iter()
-        .rposition(|unit| is_space16(*unit))
-        .map_or(0, |at| at + 1);
-    &units[at..]
-}
-
-fn first_word(units: &[u16]) -> &[u16] {
-    let end = units
-        .iter()
-        .position(|unit| is_space16(*unit))
-        .unwrap_or(units.len());
-    &units[..end]
-}
-
 /// What Loro says to store for next time: its replacements where it offered
 /// them, and what was already there where it did not.
 fn replaced(
@@ -337,8 +271,11 @@ fn replaced(
 /// it cannot say what the comment is about, and it never writes an answer back
 /// into the anchor. Two equally good candidates are reported as such.
 fn by_words(target: &SourceTextTarget, units: &[u16], checkpoint: &str) -> DerivedAttachment {
+    // Every source range has words: `locate` refuses a selection that
+    // flattens to nothing, so a target with no `exact` is a record from
+    // before that was true and there is nothing to look for.
     if target.exact.is_empty() {
-        return point_by_context(target, units, checkpoint);
+        return attached(checkpoint, AnchorStatus::Unresolved, None, None, None);
     }
     let wanted: Vec<u16> = target.exact.encode_utf16().collect();
     let prefix: Vec<u16> = target.prefix.encode_utf16().collect();
@@ -382,48 +319,6 @@ fn by_words(target: &SourceTextTarget, units: &[u16], checkpoint: &str) -> Deriv
         Some((at as u32, (at + wanted.len()) as u32)),
         None,
     )
-}
-
-/// A point has no selected words. When its original cursors are unavailable
-/// (as with a note on a published checkpoint), locate the boundary using the
-/// source on either side. Equal best matches remain unresolved: choosing an
-/// arbitrary occurrence would turn a display guess into a source position.
-fn point_by_context(
-    target: &SourceTextTarget,
-    units: &[u16],
-    checkpoint: &str,
-) -> DerivedAttachment {
-    let prefix: Vec<u16> = target.prefix.encode_utf16().collect();
-    let suffix: Vec<u16> = target.suffix.encode_utf16().collect();
-    if prefix.is_empty() && suffix.is_empty() {
-        return attached(checkpoint, AnchorStatus::Unresolved, None, None, None);
-    }
-    let mut best: Option<(usize, usize)> = None;
-    let mut ties = 0;
-    for at in 0..=units.len() {
-        let score = common_suffix(&prefix, &units[..at]) + common_prefix(&suffix, &units[at..]);
-        match best {
-            Some((_, previous)) if score < previous => {}
-            Some((_, previous)) if score == previous => ties += 1,
-            _ => {
-                best = Some((at, score));
-                ties = 1;
-            }
-        }
-    }
-    let Some((at, score)) = best else {
-        return attached(checkpoint, AnchorStatus::Unresolved, None, None, None);
-    };
-    let exact_context = score == prefix.len() + suffix.len();
-    if ties > 1 || (!exact_context && score < 8) {
-        return attached(checkpoint, AnchorStatus::Ambiguous, None, None, None);
-    }
-    let status = if exact_context && at as u32 == target.start_utf16 {
-        AnchorStatus::Exact
-    } else {
-        AnchorStatus::Modified
-    };
-    attached(checkpoint, status, None, Some((at as u32, at as u32)), None)
 }
 
 fn attached(
@@ -562,77 +457,6 @@ pub(super) mod tests {
         let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), None);
         assert_eq!(found.status, AnchorStatus::Modified);
         assert_eq!(found.resolved_range_utf16, Some((10, 18)));
-    }
-
-    /// A point note is an empty range, and an empty range is exactly what a
-    /// deleted passage collapses to. Telling the two apart is the difference
-    /// between a point note that works and one that reports itself removed
-    /// the moment anybody types.
-    #[test]
-    fn a_point_is_a_place_and_not_a_deleted_passage() {
-        let (doc, id) = document("paper.md", "Before after.");
-        let mut wanted = target(&id, 7, 7, "");
-        wanted.prefix = "Before ".into();
-        wanted.suffix = "after.".into();
-        let live = capture(&doc, &wanted).expect("cursors");
-        let found = resolve(
-            &doc,
-            &Sources::of(&doc),
-            "b",
-            &anchor(wanted.clone()),
-            Some(&live),
-        );
-        assert_eq!(found.status, AnchorStatus::Exact);
-        assert_eq!(found.resolved_range_utf16, Some((7, 7)));
-    }
-
-    #[test]
-    fn a_point_follows_its_cursors_through_an_edit_before_it() {
-        let (doc, id) = document("paper.md", "Before after.");
-        let mut wanted = target(&id, 7, 7, "");
-        wanted.prefix = "Before ".into();
-        wanted.suffix = "after.".into();
-        let live = capture(&doc, &wanted).expect("cursors");
-        session::put_text(&doc, "paper.md", "Added. Before after.");
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), Some(&live));
-        assert_eq!(found.status, AnchorStatus::Exact);
-        assert_eq!(found.resolved_range_utf16, Some((14, 14)));
-    }
-
-    #[test]
-    fn a_point_whose_surroundings_were_rewritten_is_modified_not_lost() {
-        let (doc, id) = document("paper.md", "Before after.");
-        let mut wanted = target(&id, 7, 7, "");
-        wanted.prefix = "Before ".into();
-        wanted.suffix = "after.".into();
-        let live = capture(&doc, &wanted).expect("cursors");
-        session::put_text(&doc, "paper.md", "Before then.");
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), Some(&live));
-        assert_eq!(found.status, AnchorStatus::Modified);
-        assert_eq!(found.resolved_range_utf16, Some((7, 7)));
-    }
-
-    #[test]
-    fn published_point_without_cursors_finds_its_source_boundary() {
-        let (doc, id) = document("paper.md", "Before after.");
-        let mut wanted = target(&id, 7, 7, "");
-        wanted.prefix = "Before ".into();
-        wanted.suffix = "after.".into();
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), None);
-        assert_eq!(found.status, AnchorStatus::Exact);
-        assert_eq!(found.resolved_range_utf16, Some((7, 7)));
-        assert!(found.live_source_range.is_some());
-    }
-
-    #[test]
-    fn published_point_moves_with_its_context_without_cursors() {
-        let (doc, id) = document("paper.md", "Added. Before after.");
-        let mut wanted = target(&id, 7, 7, "");
-        wanted.prefix = "Before ".into();
-        wanted.suffix = "after.".into();
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), None);
-        assert_eq!(found.status, AnchorStatus::Modified);
-        assert_eq!(found.resolved_range_utf16, Some((14, 14)));
     }
 
     #[test]

@@ -30,7 +30,7 @@
   let field = $state(null);
 
   const quotation = $derived(
-    pending?.point ? "A note at this point" : `“${pending?.exact ?? ""}”`,
+    `“${pending?.exact ?? ""}”`,
   );
 
   $effect(() => {

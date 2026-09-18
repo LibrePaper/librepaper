@@ -86,7 +86,7 @@
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
   import { correctedLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
-  import { MODES, motivationFor, nextMode, verbsFor } from "../lib/annotating.js";
+  import { VERBS, motivationFor } from "../lib/annotating.js";
   import InsertMenu from "./InsertMenu.svelte";
   import ReaderSidebar from "./reader/ReaderSidebar.svelte";
   import PanelRail from "./reader/PanelRail.svelte";
@@ -444,7 +444,6 @@
         const first = framePreview.markReady();
         frameReady = true;
         if (first && !publishedMode) replayPreview();
-        tell({ type: "tool", tool: mode });
         // Whatever was painted before is gone with the rebuilt DOM.
         frameOverlays.reset();
         reanchor();
@@ -464,9 +463,6 @@
       case "annotate":
         if (pending) annotate("comment");
         break;
-      case "disarm":
-        disarm();
-        break;
       case "caret":
         followDocumentClick(Number(message.offset) || 0, message.pdf);
         break;
@@ -481,22 +477,14 @@
 
   /* --------------------------------------------------------------- selection */
 
-  // Making an annotation is two different gestures, and the state says which.
-  //
-  // `mode` is armed in advance and is empty almost always: only a note at a
-  // point has nothing to select, so it is the only mode. Arming it changes
-  // what a click in the document does, so an armed mode says so across the
-  // top of the document and Escape puts it away.
-  //
-  // `verb` is chosen from the bar over a selection, after the passage is
-  // already in hand. It is what the draft in the column is being written
-  // under. See `lib/annotating.js`.
-  let mode = $state("");
+  // Making an annotation is one gesture: select the words, then choose what
+  // to do to them. `verb` is what was chosen from the bar over that
+  // selection, and it is what the draft in the column is being written under.
+  // See `lib/annotating.js`.
   let verb = $state("comment");
-  // What the bar offers over what is selected: everything for a passage,
-  // and Comment alone for a point or a box, which have no words to highlight
-  // or to propose a replacement for.
-  const shownVerbs = $derived(verbsFor(pending));
+  // What the bar offers over what is selected. Nothing is offered when
+  // nothing is.
+  const shownVerbs = $derived(pending ? VERBS : []);
   let highlightColor = $state(HIGHLIGHT_COLORS[0]);
   let palette = $state(false);
   let pending = $state(null);
@@ -510,20 +498,16 @@
   // holds -- a reader of a published document has no source here to answer it
   // from, and an editor's answer would still have to be checked.
   function showSelection(selector, rect) {
-    const point = selector?.point === true;
-    if (!selector || (point
-      ? Boolean(selector.exact) || !Number.isInteger(selector.position) || selector.position < 0
-      : !selector.exact)) {
+    if (!selector?.exact) {
       bar = { ...bar, shown: false };
       pending = null;
       return;
     }
     pending = {
-      exact: String(selector.exact || ""),
+      exact: String(selector.exact),
       prefix: String(selector.prefix || ""),
       suffix: String(selector.suffix || ""),
       position: Number.isInteger(selector.position) && selector.position >= 0 ? selector.position : null,
-      ...(point ? { point: true } : {}),
     };
     pending.publication_id = publishedMode ? publishedPublication?.id || "" : "";
     placeBar(rect);
@@ -683,24 +667,6 @@
     const left = correctedLeft({ left: bar.left, width: barElement.offsetWidth, windowWidth: innerWidth });
     if (left !== null) bar = { ...bar, left };
   });
-
-  // Arming the point mode, or putting it away. A
-  // mode always starts from a clean slate: whatever was selected belongs to
-  // the gesture that is being abandoned.
-  function arm(which) {
-    if (!mayChat) return;
-    mode = nextMode(mode, which);
-    pending = null;
-    bar = { ...bar, shown: false };
-    tell({ type: "tool", tool: mode });
-    if (compact && mode) showMobileView("document");
-  }
-
-  function disarm() {
-    if (!mode) return;
-    mode = "";
-    tell({ type: "tool", tool: "" });
-  }
 
   /* -------------------------------------------------------------- annotating */
 
@@ -3156,13 +3122,12 @@
   // an editor usually puts a split on, and nothing here or in CodeMirror wants
   // it.
   function shortcut(event) {
-    // One Escape, one thing: the swatches, then the bar, then the armed mode.
-    // Nothing here touches a dialog -- those close themselves -- and nothing
-    // happens when none of the three is up, so Escape stays the browser's.
+    // One Escape, one thing: the swatches, then the bar. Nothing here
+    // touches a dialog -- those close themselves -- and nothing happens when
+    // neither is up, so Escape stays the browser's.
     if (event.key === "Escape") {
       if (palette) { palette = false; return; }
       if (bar.shown) { bar = { ...bar, shown: false }; return; }
-      if (mode) disarm();
       return;
     }
     if (editing && (event.ctrlKey || event.metaKey) && event.altKey && event.key.toLowerCase() === "l") {
@@ -3432,8 +3397,8 @@
   {#snippet collaborationPanel()}
     <Collaboration messages={liveChat} {connected} canPost={mayChat} onsend={sendLiveChat}
       {unreadChat} bind:tab={prefs.collaborationTab} {comments} {identity}
-      commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {mode} {went} {replacements}
-      canComment={mayChat} ontool={arm}
+      commentingAs={doc.commenting_as || "Anonymous"} {canModerate} {went} {replacements}
+      canComment={mayChat}
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply}
       {composing} {needsLogin} signInHref={signInHref()}
@@ -3750,18 +3715,6 @@
   </div>
 {/if}
 
-<!-- An armed mode changes what a click in the document does, which is not
-     visible in the document itself, so it is said here, over the document,
-     for as long as it is true -- and the way out is in the same place as the
-     news. -->
-{#if mode && mayChat}
-  <div id="modestrip" role="status">
-    <span class="what">{MODES.find((item) => item.id === mode)?.label}</span>
-    <span class="how">Click a place in the document</span>
-    <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={disarm}>Done (Esc)</button>
-  </div>
-{/if}
-
 <!-- The preferences, opened from the navbar menu rather than the column:
      the sidebar is for what its icons offer, and a page of settings reads
      better at the width of the window than in a column beside the text. -->
@@ -3884,9 +3837,5 @@
   .color-swatch.selected { border-color:var(--color-surface-900-100); box-shadow:0 0 0 1px var(--color-primary-500); }
   .custom-color { display:grid; place-items:center; width:1.5rem; height:1.5rem; }
   .custom-color input { width:1.5rem; height:1.5rem; padding:0; border:0; background:transparent; }
-  /* An armed mode, said over the document for as long as it is armed. */
-  #modestrip { position:fixed; z-index:20; left:50%; top:calc(var(--librepaper-bar) + var(--spacing) * 2); display:flex; align-items:center; gap:calc(var(--spacing) * 2); padding:calc(var(--spacing) * 1) calc(var(--spacing) * 2); transform:translateX(-50%); border:1px solid var(--color-primary-500); border-radius:var(--radius-base); background:var(--color-surface-50-950); box-shadow:var(--shadow-lg); font-size:var(--panel-meta-size); }
-  #modestrip .what { font-weight:600; }
-  #modestrip .how { color:var(--panel-muted); }
   .pending-recovery { flex-shrink: 0; max-height: 35%; overflow-y: auto; border-top: 1px solid var(--color-surface-300-700); background: var(--color-surface-100-900); }
 </style>

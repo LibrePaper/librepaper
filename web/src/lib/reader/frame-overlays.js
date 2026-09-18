@@ -1,4 +1,3 @@
-import { shownSelector } from "../anchor.js";
 
 // Owns the replay caches for decorations painted by the document frame.
 // A rebuilt frame invalidates these caches; ordinary reactive updates cross
@@ -31,7 +30,6 @@ export function createFrameOverlays({ ready, send }) {
       .filter((comment) => !comment.orphaned && comment.start != null)
       .map((comment) => ({
         id: comment.id,
-        point: shownSelector(comment).point,
         start: comment.start,
         end: comment.end,
         motivation: comment.motivation,

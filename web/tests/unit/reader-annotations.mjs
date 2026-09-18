@@ -104,18 +104,18 @@ annotations.receive({ type: "delete", comment_id: "remote" });
 assert.equal(view.comments.length, 1);
 assert.equal(annotations.receive({ type: "doc-state" }), false);
 
-// Annotation appearance and zero-width anchors survive the optimistic write,
-// retry payload, and authoritative confirmation without creating a second row.
-annotations.comment({ exact: "", point: true, position: 7, prefix: "Before ", suffix: "after" },
-  { motivation: "commenting", body: "Insert a reference here" }, "Name");
-const point = view.comments.at(-1);
-assert.equal(point.point, true);
+// The recorded position travels with the quotation and survives the
+// optimistic write and the authoritative confirmation without creating a
+// second row.
+annotations.comment({ exact: "a passage", position: 7, prefix: "Before ", suffix: "after" },
+  { motivation: "commenting", body: "Say something about this" }, "Name");
+const placed = view.comments.at(-1);
 assert.equal(sent.at(-1).position, 7);
-assert.equal(sent.at(-1).exact, "");
-annotations.receive({ type: "comment", temp_id: point.temp_id,
-  comment: { id: "point", point: true, position: 7, exact: "", replies: [] } });
-assert.equal(view.comments.at(-1), point);
-assert.equal(point.id, "point");
+assert.equal(sent.at(-1).exact, "a passage");
+annotations.receive({ type: "comment", temp_id: placed.temp_id,
+  comment: { id: "placed", position: 7, exact: "a passage", replies: [] } });
+assert.equal(view.comments.at(-1), placed);
+assert.equal(placed.id, "placed");
 
 annotations.comment({ exact: "colored passage" },
   { motivation: "highlighting", body: "", color: "#AAbbCC" }, "Name");

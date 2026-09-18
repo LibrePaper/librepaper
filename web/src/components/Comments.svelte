@@ -4,7 +4,6 @@
   import CommentComposer from "./CommentComposer.svelte";
   import PanelHeader from "./PanelHeader.svelte";
   import { reviewGroups, rejectPass } from "../lib/assistant-review.js";
-  import { MODES } from "../lib/annotating.js";
   import { tick } from "svelte";
 
   // The annotations, in document order: an annotation is about a place in the
@@ -18,9 +17,6 @@
     commentingAs = "Anonymous",
     canModerate = false,
     canComment = true,
-    // The armed mode, if any: "point", or "" for the ordinary
-    // state, where a selection in the document is what starts an annotation.
-    mode = "",
     // The draft being written, if any: `{ pending, verb, prefill }`. It is
     // shown as a card in the column, in the place the saved note will take.
     composing = null,
@@ -35,7 +31,6 @@
     // Inserted side of a historical word diff, keyed by comment id. The page
     // owns fetching and anchoring this data; cards only present it.
     replacements = {},
-    ontool,
     onreveal,
     onresolve,
     ondelete,
@@ -115,7 +110,6 @@
   // a passage, and the bar over the selection is where they belong. What is
   // left are the two annotations with nothing to select, which is why they
   // are still armed in advance. See `lib/annotating.js`.
-  const shownModes = $derived(filter === "highlights" ? [] : MODES);
 
   // Where the draft's card goes: before the first group whose passage is
   // later in the document than the one being written about, or at the end.
@@ -139,24 +133,6 @@
   >
     {#snippet actions()}
       <div class="flex flex-wrap items-center gap-1">
-        <!-- Not a radiogroup: neither of these is on by default, and choosing
-             the one that is on puts it away again, which is a pair of toggles
-             rather than a choice between two. -->
-        <div class="tools flex gap-1" role="group" aria-label="Add a note">
-        {#each shownModes as item (item.id)}
-          <IconButton
-            icon={item.icon}
-            size="btn-icon-sm"
-            label={item.label}
-            tool={item.id}
-            pressed={mode === item.id}
-            disabled={!canComment}
-            title={!canComment ? "Read-only access"
-              : mode === item.id ? `${item.label} · on. Choose again to stop.` : item.title}
-            onclick={() => ontool?.(item.id)}
-          />
-        {/each}
-        </div>
         {#if onhistory}
           <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={onhistory}>Show changes since…</button>
         {/if}

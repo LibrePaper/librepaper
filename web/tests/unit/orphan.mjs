@@ -44,13 +44,11 @@ assert.equal(orphanState({ renderedFound: true, sourceFound: false }).orphaned, 
 // missing from the page.
 {
   const editor = { original_anchor: { kind: "document" }, presentation: {} };
-  const reader = { presentation: { rendered_exact: "", rendered_position_utf16: null } };
+  const reader = { presentation: { rendered_exact: "" } };
   const passage = { presentation: { rendered_exact: "the interval" } };
-  const point = { presentation: { rendered_exact: "", rendered_position_utf16: 42 } };
   assert.equal(aboutWholeDocument(editor), true);
   assert.equal(aboutWholeDocument(reader), true);
   assert.equal(aboutWholeDocument(passage), false);
-  assert.equal(aboutWholeDocument(point), false);
   // An editor's anchor is the answer even when the page quoted nothing.
   assert.equal(aboutWholeDocument({ original_anchor: { kind: "source_text" }, presentation: {} }), false);
   assert.equal(orphanState({
