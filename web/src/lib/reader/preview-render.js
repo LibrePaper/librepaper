@@ -142,7 +142,7 @@ export function createPreviewRenderer({
       if (paged || htmlPreview) status.begin({ clearFailure: !facts().everPainted });
       // Keep a transient source identity for diagnostics and race checks. It
       // is never sent to the server as a rendering name or persisted result.
-      identity = await snapshotDigest(source, source.assets || {});
+      identity = await snapshotDigest(source);
       debug("preview: rendering", format, identity);
       if (facts().disposed) return;
       const manual = takeManual();

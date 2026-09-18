@@ -330,3 +330,73 @@ mod tests {
         assert!(before.changed_from(&before).is_empty());
     }
 }
+
+#[cfg(test)]
+mod digest_parity_tests {
+    use super::*;
+
+    /// The browser computes this same digest, in `web/src/lib/tree-digest.js`,
+    /// and a publication names the checkpoint it was rendered from by it. The
+    /// two implementations agree only by hand, so these fixtures are pinned in
+    /// both: `web/tests/unit/tree-digest.mjs` asserts the same two hashes.
+    fn entry(kind: &str, sha: &str, id: &str, size: i64) -> TreeEntry {
+        TreeEntry {
+            kind: kind.into(),
+            id: id.into(),
+            sha: sha.into(),
+            size,
+        }
+    }
+
+    fn sha_of(bytes: &[u8]) -> String {
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn the_browser_and_the_server_name_a_tree_alike() {
+        let text = "Résumé — 𝜆\n";
+        let image = [0_u8, 1, 2, 255];
+        let mut files = BTreeMap::new();
+        files.insert(
+            "é.tex".to_string(),
+            entry("text", &sha_of(text.as_bytes()), "text-id", text.len() as i64),
+        );
+        files.insert(
+            "图.png".to_string(),
+            entry("asset", &sha_of(&image), "", image.len() as i64),
+        );
+        let tree = Tree {
+            main: "main.tex".into(),
+            files,
+            settings: None,
+        };
+        assert_eq!(
+            tree.digest(),
+            "0c041c37dc28ea9fa74f58ca267b637f57afa50098568e7425e49245cc5063e4"
+        );
+    }
+
+    #[test]
+    fn paths_are_ordered_as_a_btreemap_orders_them() {
+        let mut files = BTreeMap::new();
+        for (path, body, id) in [
+            ("10", "ten", "ten-id"),
+            ("2", "two", "two-id"),
+            ("__proto__", "prototype", "proto-id"),
+        ] {
+            files.insert(
+                path.to_string(),
+                entry("text", &sha_of(body.as_bytes()), id, body.len() as i64),
+            );
+        }
+        let tree = Tree {
+            main: "2".into(),
+            files,
+            settings: None,
+        };
+        assert_eq!(
+            tree.digest(),
+            "7ccdf7d3941897d88c4db258a9a4397c66f3982757e25171da439ec6a8bce533"
+        );
+    }
+}

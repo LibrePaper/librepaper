@@ -1,4 +1,9 @@
 // Behavioural checks for the browser's rendering snapshot identity.
+//
+// The digest is a contract with the server: a publication names the source
+// checkpoint it was rendered from by this value, and the server looks that
+// checkpoint up by the digest its own `Tree::to_bytes` produces. The pinned
+// hashes below are asserted from Rust as well, in `document::history`.
 import { createHash } from "node:crypto";
 import { snapshotDigest } from "../../src/lib/tree-digest.js";
 import { join } from "../../src/lib/collab.js";
@@ -29,25 +34,29 @@ const tree = {
   },
 };
 
-// Rust's BTreeMap orders UTF-8 bytes, and serde omits an empty asset id.
+// Rust's BTreeMap orders UTF-8 bytes, and each entry is the `(kind, sha)`
+// tuple `Tree::to_bytes` writes -- never the stored entry, whose `id` is
+// minted per session and whose `size` follows from the bytes it names.
 const canonical = JSON.stringify({
   main: "main.tex",
   files: {
-    "é.tex": { kind: "text", id: "text-id", sha: textSha, size: Buffer.byteLength(text) },
-    "图.png": { kind: "asset", sha: imageSha, size: image.byteLength },
+    "é.tex": ["text", textSha],
+    "图.png": ["asset", imageSha],
   },
 });
 const actual = await snapshotDigest(tree);
-const canonicalHash = "460596c52b6ba3f77aeddc5b579ad804dce0330ffe0235d44d489cc3819780d8";
-check("the canonical fixture has the Rust hash", sha(Buffer.from(canonical)) === canonicalHash);
+const canonicalHash = "0c041c37dc28ea9fa74f58ca267b637f57afa50098568e7425e49245cc5063e4";
+check("the canonical fixture has the Rust hash", sha(Buffer.from(canonical)) === canonicalHash, sha(Buffer.from(canonical)));
 check(
   "matches the canonical Rust tree serialization",
   actual === canonicalHash,
   actual,
 );
 
+// The stored entry's id and size are not what the document says: two sessions
+// holding the same bytes must produce the same name for them.
 const changedId = await snapshotDigest({ ...tree, files: { ...tree.files, "é.tex": { kind: "text", id: "another-id" } } });
-check("text identity participates in the digest", changedId !== actual);
+check("text identity stays out of the digest", changedId === actual);
 
 const changedText = await snapshotDigest({ ...tree, texts: { "é.tex": `${text}!` } });
 check("source bytes participate in the digest", changedText !== actual);
@@ -63,28 +72,25 @@ const numeric = {
   },
 };
 const numericDigest = await snapshotDigest(numeric);
-const ten = { kind: "text", id: "ten-id", sha: sha(Buffer.from("ten")), size: 3 };
-const two = { kind: "text", id: "two-id", sha: sha(Buffer.from("two")), size: 3 };
-const proto = { kind: "text", id: "proto-id", sha: sha(Buffer.from("prototype")), size: 9 };
-const numericCanonical = `{"main":"2","files":{"10":${JSON.stringify(ten)},"2":${JSON.stringify(two)},"__proto__":${JSON.stringify(proto)}}}`;
-const numericHash = "551f66ceb8f7358e5e34c9b7752273eb3242862c2e6c5b34cc7d447101895dfd";
+const numericCanonical = `{"main":"2","files":{"10":${JSON.stringify(["text", sha(Buffer.from("ten"))])},"2":${JSON.stringify(["text", sha(Buffer.from("two"))])},"__proto__":${JSON.stringify(["text", sha(Buffer.from("prototype"))])}}}`;
+const numericHash = "7ccdf7d3941897d88c4db258a9a4397c66f3982757e25171da439ec6a8bce533";
 check(
   "preserves Rust ordering for numeric and prototype paths",
   sha(Buffer.from(numericCanonical)) === numericHash && numericDigest === numericHash,
   numericDigest,
 );
 
-// Exercise the producer used by Reader, including the stable file ids,
-// rather than only handing the helper a hand-written renderer tree.
+// Exercise the producer used by Reader, including the tree a live session
+// hands out, rather than only handing the helper a hand-written tree.
 const sent = [];
 const session = join({ send: (message) => sent.push(message), slug: "digest-check", mayEdit: true });
-const tenId = session.addText("10", "ten");
+session.addText("10", "ten");
 const twoId = session.addText("2", "two");
 session.setMain(twoId);
 const liveTree = session.tree();
 const liveDigest = await snapshotDigest(liveTree);
-const liveCanonical = `{"main":"2","files":{"10":${JSON.stringify({ kind: "text", id: tenId, sha: sha(Buffer.from("ten")), size: 3 })},"2":${JSON.stringify({ kind: "text", id: twoId, sha: sha(Buffer.from("two")), size: 3 })}}}`;
-check("matches the canonical serialization of an actual collab tree", liveDigest === sha(Buffer.from(liveCanonical)));
+const liveCanonical = `{"main":"2","files":{"10":${JSON.stringify(["text", sha(Buffer.from("ten"))])},"2":${JSON.stringify(["text", sha(Buffer.from("two"))])}}}`;
+check("a live collab tree names itself as the server would", liveDigest === sha(Buffer.from(liveCanonical)), liveDigest);
 session.leave();
 
 // Compile settings, mirroring Rust's `Tree.settings: Option<CompileSettings>`.
@@ -97,7 +103,7 @@ const emptySettings = await snapshotDigest({ ...tree, settings: { engine: "", re
 check("an empty settings object changes nothing", emptySettings === noSettings);
 
 const engineOnly = await snapshotDigest({ ...tree, settings: { engine: "pdflatex", release: "" } });
-const engineOnlyCanonical = `{"main":"main.tex","files":{"é.tex":${JSON.stringify({ kind: "text", id: "text-id", sha: textSha, size: Buffer.byteLength(text) })},"图.png":${JSON.stringify({ kind: "asset", sha: imageSha, size: image.byteLength })}},"settings":{"engine":"pdflatex"}}`;
+const engineOnlyCanonical = `{"main":"main.tex","files":{"é.tex":${JSON.stringify(["text", textSha])},"图.png":${JSON.stringify(["asset", imageSha])}},"settings":{"engine":"pdflatex"}}`;
 check(
   "an engine alone is written without a release key",
   engineOnly === sha(Buffer.from(engineOnlyCanonical)),
@@ -108,7 +114,7 @@ const both = await snapshotDigest({
   ...tree,
   settings: { engine: "xelatex", release: "2026-8b7946970153c52e+2026-ba38749b8714505a" },
 });
-const bothCanonical = `{"main":"main.tex","files":{"é.tex":${JSON.stringify({ kind: "text", id: "text-id", sha: textSha, size: Buffer.byteLength(text) })},"图.png":${JSON.stringify({ kind: "asset", sha: imageSha, size: image.byteLength })}},"settings":{"engine":"xelatex"}}`;
+const bothCanonical = `{"main":"main.tex","files":{"é.tex":${JSON.stringify(["text", textSha])},"图.png":${JSON.stringify(["asset", imageSha])}},"settings":{"engine":"xelatex"}}`;
 check(
   "the release pin is ignored in the snapshot",
   both === sha(Buffer.from(bothCanonical)),

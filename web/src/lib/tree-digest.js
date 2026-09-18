@@ -1,12 +1,15 @@
 // The digest the server gives a document tree.
 //
-// Rust hashes serde_json::to_vec(Tree), where Tree's files are a BTreeMap and
-// TreeEntry omits an empty id. Keep the serialization here deliberately close
-// to that shape: the rendering name must identify the exact source that was
-// compiled, rather than the source that happened to be current a moment later.
+// Rust hashes `Tree::to_bytes`, which is deliberately not the whole stored
+// object: a text's `id` is minted afresh whenever a file is created, and an
+// entry's `size` follows from its bytes. Neither says anything about what the
+// document says, so the canonical form is the main path, every path with the
+// kind and digest of what is at it, and the compile settings. Keep the
+// serialization here exactly that shape: the rendering name must identify the
+// exact source that was compiled, and a publication names the checkpoint it
+// was rendered from by this digest.
 
 import { sha256Hex as digest } from "./digest.js";
-import { maybeBytes as bytesOf } from "./bytes.js";
 
 const encoder = new TextEncoder();
 
@@ -20,35 +23,18 @@ function compareUtf8(left, right) {
   return a.length - b.length;
 }
 
-/// Returns the server's canonical digest for a renderer tree. `tree.files`,
-/// when present, is the session's path-to-entry metadata and supplies the
-/// stable file id and asset size. The fallback shape remains useful for old
-/// sessions, but a live text without its id cannot equal a server checkpoint.
-export async function snapshotDigest(tree, assets = tree?.assets || {}) {
+/// Returns the server's canonical digest for a renderer tree.
+export async function snapshotDigest(tree) {
   const texts = tree?.texts || {};
   const digests = tree?.digests || {};
-  const supplied = tree?.files || {};
   const paths = [...new Set([...Object.keys(texts), ...Object.keys(digests)])].sort(compareUtf8);
   const files = [];
 
   for (const path of paths) {
-    const metadata = Object.prototype.hasOwnProperty.call(supplied, path) ? supplied[path] || {} : {};
     if (Object.prototype.hasOwnProperty.call(texts, path)) {
-      const body = String(texts[path]);
-      const entry = {
-        kind: "text",
-        ...(metadata.id ? { id: String(metadata.id) } : {}),
-        sha: await digest(encoder.encode(body)),
-        size: encoder.encode(body).byteLength,
-      };
-      files.push([path, entry]);
+      files.push([path, ["text", await digest(encoder.encode(String(texts[path])))]]);
     } else {
-      const body = bytesOf(assets[path]);
-      files.push([path, {
-        kind: "asset",
-        sha: String(digests[path]),
-        size: body ? body.byteLength : Number.isInteger(metadata.size) ? metadata.size : 0,
-      }]);
+      files.push([path, ["asset", String(digests[path])]]);
     }
   }
 
@@ -59,9 +45,7 @@ export async function snapshotDigest(tree, assets = tree?.assets || {}) {
   // `settings` mirrors the engine-only compile setting. Legacy release pins
   // are intentionally omitted and therefore have no effect on compilation.
   const engine = tree?.settings?.engine || "";
-  const settingsFields = [];
-  if (engine) settingsFields.push(`"engine":${JSON.stringify(engine)}`);
-  const settingsJson = settingsFields.length ? `,"settings":{${settingsFields.join(",")}}` : "";
+  const settingsJson = engine ? `,"settings":{"engine":${JSON.stringify(engine)}}` : "";
   const json = `{"main":${JSON.stringify(String(tree?.main || ""))},"files":{${files
     .map(([path, entry]) => `${JSON.stringify(path)}:${JSON.stringify(entry)}`)
     .join(",")}}${settingsJson}}`;
