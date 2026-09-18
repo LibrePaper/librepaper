@@ -10,20 +10,18 @@ use sqlx::{ConnectOptions, PgPool};
 
 mod access;
 mod annotations;
+mod bundles;
 mod collaboration;
 mod jobs;
 mod marks;
 mod proposals;
-mod publications;
 mod repository;
 
+pub use bundles::{BundleFileRecord, BundleRecord, NewBundle, NewBundleFile};
 pub use collaboration::{ActivityBucket, CollaborationBase, CollaborationState, PersistedUpdate};
 pub use jobs::{Job, JobClaim, JobStatus, NewJob};
 pub use marks::{CountRecord, MarkRecord};
 pub use proposals::{NewProposal, StoredDecision, StoredProposal};
-pub use publications::{
-    NewPublication, NewPublicationFile, PublicationFileRecord, PublicationRecord,
-};
 pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, NewAccount, NewAsset, NewDocument, NewVersion,
     VersionRecord,
@@ -173,9 +171,9 @@ mod tests {
 
     use super::*;
     use crate::storage::blob::{BlobError, BlobInfo, BlobResult, BlobStore, FsStore};
+    use crate::storage::bundle::{BundleFile, BundleStorage, StoreBundle};
     use crate::storage::collaboration::CollaborationStorage;
     use crate::storage::maintenance::Maintenance;
-    use crate::storage::publication::{PublicationFile, PublicationStorage, Publish};
     use crate::storage::source::{CommitProject, ProjectFile, SourceStorage};
     use crate::storage::source_archive::ArchiveLimits;
     use crate::storage::worker::Worker;
@@ -221,7 +219,7 @@ mod tests {
             .unwrap();
         catalog.migrate().await.unwrap();
         sqlx::query!(
-            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
+            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
              document_versions,document_assets,replies,annotations,share_links,grants,documents,
              accounts CASCADE",
         )
@@ -480,7 +478,7 @@ mod tests {
                 checkpoint_id: crate::room::annotation::CheckpointId("checkpoint".into()),
                 target: crate::room::CommentTarget::Document,
             },
-            publication_id: None,
+            bundle_id: None,
             color: None,
             presentation: Default::default(),
             attachment: None,
@@ -532,7 +530,7 @@ mod tests {
                         checkpoint_id: crate::room::annotation::CheckpointId("checkpoint".into()),
                         target: crate::room::CommentTarget::Document,
                     },
-                    publication_id: None,
+                    bundle_id: None,
                     color: None,
                     presentation: Default::default(),
                     attachment: None,
@@ -742,9 +740,9 @@ mod tests {
         assert!(!blobs.exists(&orphan_key).await.unwrap());
         assert!(blobs.exists(&temporary_key).await.unwrap());
 
-        let publications = PublicationStorage::new(Arc::new(catalog.clone()), blobs.clone());
-        let first_publication = publications
-            .publish(Publish {
+        let bundles = BundleStorage::new(Arc::new(catalog.clone()), blobs.clone());
+        let first_bundle = bundles
+            .publish(StoreBundle {
                 document_id: first.id,
                 source_version_id: catalog
                     .current_version(first.id)
@@ -753,23 +751,23 @@ mod tests {
                     .map(|v| v.id),
                 request_key: "publish-one".into(),
                 expected_current_id: None,
-                publisher_account_id: Some(account.id),
-                publisher_label: "Owner".into(),
-                files: vec![PublicationFile {
+                rendered_by_account_id: Some(account.id),
+                rendered_by_label: "Owner".into(),
+                files: vec![BundleFile {
                     path: "index.html".into(),
-                    source: crate::storage::publication::PublicationSource::Owned(b"<h1>One</h1>".to_vec()),
+                    source: crate::storage::bundle::BundleSource::Owned(b"<h1>One</h1>".to_vec()),
                     media_type: "text/html".into(),
                 }],
             })
             .await
             .unwrap();
         let object_count = blobs
-            .list(&format!("documents/{}/publications/", first.id))
+            .list(&format!("documents/{}/bundles/", first.id))
             .await
             .unwrap()
             .len();
-        let retry = publications
-            .publish(Publish {
+        let retry = bundles
+            .publish(StoreBundle {
                 document_id: first.id,
                 source_version_id: catalog
                     .current_version(first.id)
@@ -778,28 +776,28 @@ mod tests {
                     .map(|v| v.id),
                 request_key: "publish-one".into(),
                 expected_current_id: None,
-                publisher_account_id: Some(account.id),
-                publisher_label: "Owner".into(),
-                files: vec![PublicationFile {
+                rendered_by_account_id: Some(account.id),
+                rendered_by_label: "Owner".into(),
+                files: vec![BundleFile {
                     path: "index.html".into(),
-                    source: crate::storage::publication::PublicationSource::Owned(b"<h1>One</h1>".to_vec()),
+                    source: crate::storage::bundle::BundleSource::Owned(b"<h1>One</h1>".to_vec()),
                     media_type: "text/html".into(),
                 }],
             })
             .await
             .unwrap();
-        assert_eq!(retry.id, first_publication.id);
+        assert_eq!(retry.id, first_bundle.id);
         assert_eq!(
             blobs
-                .list(&format!("documents/{}/publications/", first.id))
+                .list(&format!("documents/{}/bundles/", first.id))
                 .await
                 .unwrap()
                 .len(),
             object_count,
-            "idempotent publication retry must not upload objects"
+            "idempotent bundle retry must not upload objects"
         );
-        let second_publication = publications
-            .publish(Publish {
+        let second_bundle = bundles
+            .publish(StoreBundle {
                 document_id: first.id,
                 source_version_id: catalog
                     .current_version(first.id)
@@ -807,29 +805,29 @@ mod tests {
                     .unwrap()
                     .map(|v| v.id),
                 request_key: "publish-two".into(),
-                expected_current_id: Some(first_publication.id),
-                publisher_account_id: Some(account.id),
-                publisher_label: "Owner".into(),
-                files: vec![PublicationFile {
+                expected_current_id: Some(first_bundle.id),
+                rendered_by_account_id: Some(account.id),
+                rendered_by_label: "Owner".into(),
+                files: vec![BundleFile {
                     path: "index.html".into(),
-                    source: crate::storage::publication::PublicationSource::Owned(b"<h1>Two</h1>".to_vec()),
+                    source: crate::storage::bundle::BundleSource::Owned(b"<h1>Two</h1>".to_vec()),
                     media_type: "text/html".into(),
                 }],
             })
             .await
             .unwrap();
-        assert_ne!(second_publication.id, first_publication.id);
-        // The current publication is not something a cleanup may forget, and
+        assert_ne!(second_bundle.id, first_bundle.id);
+        // The current bundle is not something a cleanup may forget, and
         // says so by refusing rather than by removing nothing.
         assert!(
             !catalog
-                .finish_publication_cleanup(second_publication.id)
+                .finish_bundle_cleanup(second_bundle.id)
                 .await
                 .unwrap(),
             "the page readers are on cannot be cleaned up"
         );
         assert!(catalog
-            .finish_publication_cleanup(first_publication.id)
+            .finish_bundle_cleanup(first_bundle.id)
             .await
             .unwrap());
         // Publishing over a page queues its retirement, and queues it due
@@ -839,9 +837,9 @@ mod tests {
         assert_eq!(
             queued.len(),
             1,
-            "superseding a publication queues exactly one retirement"
+            "superseding a bundle queues exactly one retirement"
         );
-        assert_eq!(queued[0].job.kind, "publication_cleanup");
+        assert_eq!(queued[0].job.kind, "bundle_cleanup");
         catalog
             .complete_job(&queued[0], json!({"retired": true}))
             .await
@@ -1114,7 +1112,7 @@ mod tests {
             .unwrap();
         catalog.migrate().await.unwrap();
         sqlx::query!(
-            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
+            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
              document_versions,document_assets,replies,annotations,share_links,grants,documents,
              accounts CASCADE",
         )
@@ -1651,7 +1649,7 @@ mod tests {
             .unwrap();
         catalog.migrate().await.unwrap();
         sqlx::query!(
-            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
+            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
              document_versions,document_assets,replies,annotations,share_links,grants,documents,
              accounts CASCADE",
         )
@@ -1772,8 +1770,8 @@ mod tests {
     ///
     /// This is the one way this design can lose somebody's work. A figure is
     /// stored once, content-addressed, and shared between the live document
-    /// and every publication that shows it. The cleanup that runs an hour
-    /// after a publication is superseded deletes the blobs that publication
+    /// and every bundle that shows it. The cleanup that runs an hour
+    /// after a bundle is superseded deletes the blobs that bundle
     /// named -- so it has to delete only the ones nothing else names, or it
     /// takes the figure out of the paper its author is still writing.
     #[tokio::test]
@@ -1786,7 +1784,7 @@ mod tests {
             .unwrap();
         catalog.migrate().await.unwrap();
         sqlx::query!(
-            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
+            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
              document_versions,document_assets,replies,annotations,share_links,grants,documents,
              accounts CASCADE",
         )
@@ -1833,68 +1831,65 @@ mod tests {
                 digest: figure_digest,
                 byte_length: figure.len() as i64,
                 media_type: "application/octet-stream".into(),
-            original_name: Some("plot.png".into()),
+                original_name: Some("plot.png".into()),
             })
             .await
             .unwrap();
         let held_after_upload = catalog.usage_bytes(None).await.unwrap();
 
-        let publications = PublicationStorage::new(Arc::new(catalog.clone()), blobs.clone());
-        let page = |body: &'static [u8], key: &str| Publish {
+        let bundles = BundleStorage::new(Arc::new(catalog.clone()), blobs.clone());
+        let page = |body: &'static [u8], key: &str| StoreBundle {
             document_id: document.id,
             source_version_id: None,
             request_key: key.to_string(),
             expected_current_id: None,
-            publisher_account_id: Some(account.id),
-            publisher_label: "Owner".into(),
+            rendered_by_account_id: Some(account.id),
+            rendered_by_label: "Owner".into(),
             files: vec![
-                PublicationFile {
+                BundleFile {
                     path: "index.html".into(),
                     media_type: "text/html".into(),
-                    source: crate::storage::publication::PublicationSource::Owned(body.to_vec()),
+                    source: crate::storage::bundle::BundleSource::Owned(body.to_vec()),
                 },
-                PublicationFile {
+                BundleFile {
                     path: "figures/plot.png".into(),
                     media_type: "image/png".into(),
-                    source: crate::storage::publication::PublicationSource::Shared {
+                    source: crate::storage::bundle::BundleSource::Shared {
                         storage_key: figure_key.clone(),
                         digest: figure_digest,
                         byte_length: figure.len() as i64,
                     },
                 },
                 // Not a figure anybody uploaded: the renderer emits it, it is
-                // the same every time, and no publication before this one
+                // the same every time, and no bundle before this one
                 // holds it. It is owned -- and named by its own digest, so
-                // the next publication of the same stylesheet finds it
+                // the next bundle of the same stylesheet finds it
                 // already written instead of rewriting it.
-                PublicationFile {
+                BundleFile {
                     path: "style.css".into(),
                     media_type: "text/css".into(),
-                    source: crate::storage::publication::PublicationSource::Owned(
+                    source: crate::storage::bundle::BundleSource::Owned(
                         b"body{font-family:serif}".to_vec(),
                     ),
                 },
             ],
         };
-        let first = publications
-            .publish(page(b"<h1>One</h1>", "one"))
-            .await
-            .unwrap();
+        let first = bundles.publish(page(b"<h1>One</h1>", "one")).await.unwrap();
 
         // The figure was not copied: what went into the blob store for this
-        // publication is the rendering and the manifest, and nothing else.
+        // bundle is the rendering and the manifest, and nothing else.
         let written = blobs
-            .list(&format!("documents/{}/publications/", document.id))
+            .list(&format!("documents/{}/bundles/", document.id))
             .await
             .unwrap();
         assert_eq!(
             written.len(),
             3,
-            "a publication writes its rendering, its stylesheet and its manifest -- not the figures in it"
+            "a bundle writes its rendering, its stylesheet and its manifest -- not the figures in it"
         );
 
         // And it was not charged for a second time. The quota counts
-        // `publication_files`, so what this publication added to it is its
+        // `bundle_files`, so what this bundle added to it is its
         // rendering alone -- not the figure, which is counted once where it
         // lives, in `document_assets`.
         assert_eq!(
@@ -1903,7 +1898,7 @@ mod tests {
             "a shared figure is counted where it lives and not again here"
         );
         // The reader still gets it: the row points at the document's own blob.
-        let files = catalog.publication_files(first.id).await.unwrap();
+        let files = catalog.bundle_files(first.id).await.unwrap();
         let shown = files
             .iter()
             .find(|file| file.path == "figures/plot.png")
@@ -1914,14 +1909,14 @@ mod tests {
 
         let mut second = page(b"<h1>Two</h1>", "two");
         second.expected_current_id = Some(first.id);
-        let second = publications.publish(second).await.unwrap();
+        let second = bundles.publish(second).await.unwrap();
         assert_ne!(second.id, first.id);
 
         // The second page differs only in its rendering, so that is all it
         // wrote: one more HTML object and one more manifest. The stylesheet
         // it names is the object the first page already wrote.
         let after_second = blobs
-            .list(&format!("documents/{}/publications/", document.id))
+            .list(&format!("documents/{}/bundles/", document.id))
             .await
             .unwrap();
         assert_eq!(
@@ -1930,10 +1925,10 @@ mod tests {
             "republishing rewrites the rendering, not the files that did not change"
         );
         let mut stylesheets = Vec::new();
-        for publication in [first.id, second.id] {
+        for bundle in [first.id, second.id] {
             stylesheets.push(
                 catalog
-                    .publication_files(publication)
+                    .bundle_files(bundle)
                     .await
                     .unwrap()
                     .into_iter()
@@ -1944,16 +1939,12 @@ mod tests {
         }
         assert_eq!(
             stylesheets[0], stylesheets[1],
-            "two publications of the same stylesheet name one object"
+            "two bundles of the same stylesheet name one object"
         );
-
 
         // Superseding the first page schedules its cleanup. It must take the
         // rendering it owned and leave the figure it only pointed at.
-        assert!(catalog
-            .finish_publication_cleanup(first.id)
-            .await
-            .unwrap());
+        assert!(catalog.finish_bundle_cleanup(first.id).await.unwrap());
         // Cleanup forgets rows. What the blobs are worth keeping is the
         // sweeper's question, asked against every reference at the moment it
         // deletes -- so the figure the document still holds and the
@@ -1974,17 +1965,13 @@ mod tests {
             "the figure survived the retirement of a page that showed it",
         );
         assert!(
-            catalog
-                .publication_files(first.id)
-                .await
-                .unwrap()
-                .is_empty(),
+            catalog.bundle_files(first.id).await.unwrap().is_empty(),
             "a retired page keeps no files: nothing could reach them anyway",
         );
         // What it does keep is what it says. A reader who has not taken the
         // newer version yet is still looking at this page, and commenting on
         // it means finding their words in the source it was rendered from.
-        let retired = catalog.publication(first.id).await.unwrap().unwrap();
+        let retired = catalog.bundle(first.id).await.unwrap().unwrap();
         assert_eq!(retired.document_id, document.id);
         assert!(
             retired.manifest_key.is_none(),
@@ -1994,55 +1981,46 @@ mod tests {
         // A retired row is kept only while somebody could still be reading
         // the page it describes. Nothing is old enough yet.
         assert_eq!(
-            catalog
-                .forget_retired_publications(document.id)
-                .await
-                .unwrap(),
+            catalog.forget_retired_bundles(document.id).await.unwrap(),
             0,
             "a page retired a moment ago may still have a reader on it"
         );
-        assert!(catalog.publication(first.id).await.unwrap().is_some());
+        assert!(catalog.bundle(first.id).await.unwrap().is_some());
 
         // Older than the frame a reader is signed into, and it goes.
         sqlx::query!(
-            "UPDATE publications SET created_at = now() - interval '3 days' WHERE id=$1",
+            "UPDATE bundles SET created_at = now() - interval '3 days' WHERE id=$1",
             first.id,
         )
         .execute(catalog.pool())
         .await
         .unwrap();
         assert_eq!(
-            catalog
-                .forget_retired_publications(document.id)
-                .await
-                .unwrap(),
+            catalog.forget_retired_bundles(document.id).await.unwrap(),
             1
         );
-        assert!(catalog.publication(first.id).await.unwrap().is_none());
+        assert!(catalog.bundle(first.id).await.unwrap().is_none());
         // Never the page readers are on, however old it is.
         sqlx::query!(
-            "UPDATE publications SET created_at = now() - interval '30 days' WHERE id=$1",
+            "UPDATE bundles SET created_at = now() - interval '30 days' WHERE id=$1",
             second.id,
         )
         .execute(catalog.pool())
         .await
         .unwrap();
         assert_eq!(
-            catalog
-                .forget_retired_publications(document.id)
-                .await
-                .unwrap(),
+            catalog.forget_retired_bundles(document.id).await.unwrap(),
             0,
             "the current page is not a retired one"
         );
-        assert!(catalog.publication(second.id).await.unwrap().is_some());
+        assert!(catalog.bundle(second.id).await.unwrap().is_some());
         assert_eq!(
             blobs.get(&figure_key).await.unwrap(),
             figure,
             "and is byte-for-byte what was uploaded"
         );
         // The page that is still current can still serve both of them.
-        let still = catalog.publication_files(second.id).await.unwrap();
+        let still = catalog.bundle_files(second.id).await.unwrap();
         assert!(still
             .iter()
             .any(|file| file.storage_key == figure_key && file.path == "figures/plot.png"));
@@ -2070,7 +2048,7 @@ mod tests {
             .unwrap();
         catalog.migrate().await.unwrap();
         sqlx::query!(
-            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
+            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
              document_versions,document_assets,replies,annotations,share_links,grants,document_marks,documents,
              accounts CASCADE",
         )

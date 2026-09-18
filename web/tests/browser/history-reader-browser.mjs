@@ -84,7 +84,7 @@ try {
       docs_origin:`http://${request.headers.host}`, can_see_sharing:true, can_moderate:true,
     });
     if (url.pathname === "/api/documents/paper/share") return json(response, {links:{}});
-    if (url.pathname === "/api/documents/paper/publication") return json(response, {publication:null});
+    if (url.pathname === "/api/documents/paper/bundle") return json(response, {bundle:null});
     if (url.pathname === "/api/documents/paper/history") {
       const list = points.map(({texts, files, ...point}) => point).reverse();
       return json(response, url.searchParams.has('after') ? {checkpoints:list.slice(-1)} : {checkpoints:list.slice(0, -1),next_cursor:2});
@@ -183,8 +183,11 @@ try {
   await until('live editor after leaving history', () => tab.evaluate(`!document.querySelector('.history-workspace') && document.querySelector('.cm-content')?.textContent === ${JSON.stringify(current)}`), 3000);
   console.log('history reader: loading, errors, retry, out-of-order responses, and leaving history');
 
-  await tab.navigate(`${origin}/docs/paper?at=${points[1].sha}&slowjoin=1`);
-  await until('checkpoint URL loads source diff', () => tab.evaluate(`document.querySelector('.cm-merge-a .cm-content')?.textContent === ${JSON.stringify(sources[1])}`), 10000);
+  await tab.navigate(`${origin}/docs/paper?slowjoin=1`);
+  await until("initial current source after reload", () => tab.evaluate(`document.querySelector('.cm-content')?.textContent.includes('current purple')`), 10000);
+  await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
+  await until("checkpoint timeline after reload", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[1].sha}"]'))`), 10000);
+  await select(1);
   await expectDiff(sources[1], current);
   assert.equal(await tab.evaluate(`document.querySelector('.reader')?.classList.contains('no-preview')`), true, 'history hides the preview');
   assert.equal(await tab.evaluate(`window.historyLive.source()`), current, 'a comparison never modifies the live source');
@@ -198,7 +201,7 @@ try {
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
   await tab.navigate(`${origin}/docs/paper?slowjoin=1`);
   await until('remembered history opens current source after connecting', () => tab.evaluate(`document.querySelector('.history-workspace .cm-content')?.textContent === ${JSON.stringify(current + addition)}`), 10000);
-  console.log('history reader: paged history, checkpoint URLs, and preview isolation passed');
+  console.log('history reader: paged history and preview isolation passed');
   assert.deepEqual(await tab.evaluate("window.testErrors"), []);
 } catch (error) {
   if (tab) console.error(await tab.evaluate(`JSON.stringify({errors:window.testErrors,selected:[...document.querySelectorAll('.timeline-here')].map(node=>node.textContent),source:[...document.querySelectorAll('.cm-content')].map(node=>node.textContent)})`));

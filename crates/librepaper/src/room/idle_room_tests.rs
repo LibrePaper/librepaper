@@ -3,10 +3,11 @@
 //! These need `LIBREPAPER_TEST_POSTGRES_URL` and are skipped without it, like
 //! the rest of the catalogue coverage. They are here rather than with the
 //! repositories because what they check is a room's decision, not a row's
-//! shape: the sweeper's, when it is asked whether anything has changed.
+//! shape: that a version is written when somebody asks for one and at no
+//! other time, and that the past stays reachable without one.
 
 use super::*;
-use crate::document::store::{MutationActor, Publication, Store};
+use crate::document::store::{DocumentInput, MutationActor, Store};
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
 
@@ -27,8 +28,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     );
     catalog.migrate().await.unwrap();
     sqlx::query!(
-        "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,
-         publications,document_versions,document_assets,replies,annotations,share_links,
+        "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,
+         bundles,document_versions,document_assets,replies,annotations,share_links,
          grants,documents,accounts CASCADE",
     )
     .execute(catalog.pool())
@@ -56,7 +57,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     );
     store
         .put_directory_as_actor(
-            Publication {
+            DocumentInput {
                 slug: slug.into(),
                 title: "A Paper".into(),
                 source: "\\documentclass{article}\n".into(),
@@ -101,22 +102,12 @@ async fn opening_a_document_nobody_edits_writes_no_version() {
         return;
     };
     let before = versions(&deployment.catalog, deployment.document).await;
-    assert_eq!(before, vec!["publish".to_string()]);
+    assert_eq!(before, vec!["created".to_string()]);
 
     let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
-    // Before anything is asked of it: a room that recovered the document
-    // its newest version already holds has nothing waiting to be marked,
-    // and must not tell its reader that it has.
-    assert!(
-        !room.history_durability().await.checkpoint_pending,
-        "a document nobody has edited has no checkpoint pending"
-    );
     for _ in 0..3 {
         room.tick().await;
     }
-    // And what the last editor leaving asks for, which is the other way a
-    // document that was only read used to acquire a version.
-    let _ = room.checkpoint("left", "Owner").await;
     assert_eq!(
         versions(&deployment.catalog, deployment.document).await,
         before,
@@ -125,10 +116,10 @@ async fn opening_a_document_nobody_edits_writes_no_version() {
     deployment.catalog.close().await;
 }
 
-/// The same, across the room being let go of and loaded again -- which is
-/// what a deployment does all day, and what used to write one duplicate
-/// archive per cycle because the newest version's tree digest lived only
-/// in the memory of the process that wrote it.
+/// Asking twice for a version of the same text writes one -- across the room
+/// being let go of and loaded again, which is what a deployment does all day.
+/// The newest version's tree digest is a column rather than a field precisely
+/// so that the second process can recognise the first one's work.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_reloaded_room_recognises_its_own_newest_version() {
@@ -144,30 +135,22 @@ async fn a_reloaded_room_recognises_its_own_newest_version() {
         state.session.generation += 1;
         state.session.mark_dirty(now_unix());
     }
-    room.checkpoint("quiet", "Owner").await.unwrap();
+    room.checkpoint("label", "Owner").await.unwrap();
     let after_edit = versions(&deployment.catalog, deployment.document).await;
-    assert_eq!(after_edit, vec!["publish".to_string(), "quiet".to_string()]);
+    assert_eq!(after_edit, vec!["created".to_string(), "label".to_string()]);
 
     for _ in 0..3 {
         let rooms = RoomSet::new(deployment.rooms.store.get().unwrap().clone());
         let room = rooms.try_get(&deployment.slug).await.unwrap();
-        // A recovered session begins with a generation taken from its
-        // update sequence. Without a content comparison at load, that
-        // alone would read as unmarked edits, and the reader would be
-        // told a checkpoint was owing from the moment the page opened.
-        assert!(
-            !room.history_durability().await.checkpoint_pending,
-            "a reloaded room must not invent a pending checkpoint"
-        );
         for _ in 0..3 {
             room.tick().await;
         }
-        let _ = room.checkpoint("left", "Owner").await;
+        room.checkpoint("label", "Owner").await.unwrap();
     }
     assert_eq!(
         versions(&deployment.catalog, deployment.document).await,
         after_edit,
-        "reopening a document must not duplicate the version it already has"
+        "asking again for the text a version already holds must write nothing"
     );
     deployment.catalog.close().await;
 }
@@ -187,7 +170,7 @@ async fn a_checkpoint_records_the_paths_it_moved() {
         state.session.generation += 1;
         state.session.mark_dirty(now_unix());
     }
-    let sha = room.checkpoint("quiet", "Owner").await.unwrap().unwrap();
+    let sha = room.checkpoint("label", "Owner").await.unwrap().unwrap();
     let point = room.checkpoint_by_sha(&sha).await.unwrap().unwrap();
     assert_eq!(point.changed, Some(vec!["references.bib".to_string()]));
     assert!(
@@ -197,14 +180,14 @@ async fn a_checkpoint_records_the_paths_it_moved() {
     deployment.catalog.close().await;
 }
 
-/// The other direction from the two above, and the one nothing covered: a
-/// working session -- several edits, each left long enough for the sweeper to
-/// mark -- must leave one version for each. The tests beside this one all
-/// check that no spurious version is written, which a room that had stopped
-/// checkpointing altogether would also pass.
+/// A working session -- several edits, each left long enough that the sweeper
+/// would once have marked it -- leaves no versions at all. The clock is not
+/// somebody asking. What the sweeper owes is durability, so the edits must
+/// still be readable from storage afterwards, and they are: from the
+/// operation log, which is where every keystroke went.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn a_session_of_edits_leaves_a_version_for_each() {
+async fn a_session_of_edits_leaves_no_versions() {
     let Some(deployment) = deployment("probe-paper").await else {
         return;
     };
@@ -227,18 +210,32 @@ async fn a_session_of_edits_leaves_a_version_for_each() {
             state.session.updated_at = long_ago;
             state.session.dirty_since = long_ago;
             state.session.last_persist_at = long_ago;
-            if state.session.pending_checkpoint_since > 0 {
-                state.session.pending_checkpoint_since = long_ago;
-            }
         }
         room.tick().await;
     }
     let seen = versions(&deployment.catalog, deployment.document).await;
     assert_eq!(
-        seen.len(),
-        6,
-        "one version per edit, plus the publish: {seen:?}"
+        seen,
+        vec!["created".to_string()],
+        "the sweeper writes no versions: {seen:?}"
     );
+    // But it did write. The document a copy of this project would be made
+    // from is the last round, not the publish it started as.
+    let files = deployment
+        .rooms
+        .store
+        .get()
+        .unwrap()
+        .project_files(&deployment.slug)
+        .await
+        .unwrap()
+        .expect("the project must be readable without a version of it");
+    let paper = files
+        .iter()
+        .find(|(path, _)| path == "paper.tex")
+        .map(|(_, bytes)| String::from_utf8_lossy(bytes).to_string())
+        .expect("paper.tex must be in the project");
+    assert_eq!(paper, "\\documentclass{article}\n% round 4\n");
     deployment.catalog.close().await;
 }
 
@@ -260,7 +257,7 @@ async fn a_restore_puts_an_earlier_version_back() {
         state.session.generation += 1;
         state.session.mark_dirty(now_unix());
     }
-    room.checkpoint("quiet", "Owner").await.unwrap();
+    room.checkpoint("label", "Owner").await.unwrap();
     // And one more edit nobody has checkpointed, which is the work a restore
     // would otherwise discard without trace.
     {
@@ -282,8 +279,8 @@ async fn a_restore_puts_an_earlier_version_back() {
     assert_eq!(
         versions(&deployment.catalog, deployment.document).await,
         vec![
-            "publish".to_string(),
-            "quiet".to_string(),
+            "created".to_string(),
+            "label".to_string(),
             "superseded".to_string(),
             "restore".to_string()
         ],
@@ -326,16 +323,20 @@ async fn a_frontier_reproduces_the_document_as_it_stood() {
     let second = write("\\documentclass{article}\n% a second thought\n").await;
     write("\\documentclass{article}\n% and a third\n").await;
 
-    let (main, texts, _assets) = room.project_at_frontier(&first).await.unwrap();
-    assert_eq!(main, "paper.tex");
+    let at_first = room.project_at_frontier(&first).await.unwrap();
+    assert_eq!(at_first.main, "paper.tex");
+    assert!(
+        at_first.text_ids.contains_key("paper.tex"),
+        "a moment names which id held which path, for a comment to be read against"
+    );
     assert_eq!(
-        texts.get("paper.tex").map(String::as_str),
+        at_first.texts.get("paper.tex").map(String::as_str),
         Some("\\documentclass{article}\n% the first draft\n"),
         "a frontier must reproduce the document as it stood, not as it stands"
     );
-    let (_, later, _) = room.project_at_frontier(&second).await.unwrap();
+    let later = room.project_at_frontier(&second).await.unwrap();
     assert_eq!(
-        later.get("paper.tex").map(String::as_str),
+        later.texts.get("paper.tex").map(String::as_str),
         Some("\\documentclass{article}\n% a second thought\n"),
     );
     // The live document is untouched by having been read from: a fork is a

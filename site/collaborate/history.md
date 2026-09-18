@@ -2,17 +2,19 @@
 title: "History and revisions"
 ---
 
-## Checkpoints
+## What is kept
 
-Live saving and retained history are separate. The server takes checkpoints
-after editing pauses and at explicit milestones; each retained checkpoint
+Everything. Editing is recorded as a graph of operations, and that graph is
+retained in full, so any state the document has ever been in can be
+reproduced from it. Nothing is written on a timer and nothing is thinned as
+it ages.
+
+Versions are the moments somebody asked for: a checkpoint you name in the
+History panel, a publication, a restore, a commit from the CLI. Each of those
 records the whole directory, so a chapter and the file that includes it can
-never come back out of step. Routine recovery points become less dense as
-they age. Retention does not delay ordinary live saving.
-
-In the browser's History panel, name a moment so it stands out and is
-preferentially retained. Names do not guarantee permanent storage: deployment
-count and storage limits still apply.
+never come back out of step. A comment on the live draft is anchored to the
+moment it was made rather than to a version, so a round of review no longer
+leaves a copy of the paper behind for every remark.
 
 In the reader, the history button opens the same list beside the document,
 newest first, with the live document as the top row. Picking a moment shows
@@ -31,12 +33,8 @@ comparison instead. A checkpoint's actor identifies who recorded the event,
 not necessarily who authored every changed passage; uncertain authorship is
 shown as unknown.
 
-Signed-in owners can choose a soft history budget, retention density, warning
-thresholds, and display timezone in Storage settings. Retention buckets always
-use UTC. Material reductions require a preview and confirmation, with a grace
-period before routine thinning. Existing histories keep their legacy policy
-until the owner applies preferences. These preferences cannot raise the
-deployment's hard quota.
+Signed-in owners choose their display timezone in Storage settings. A
+deployment's storage limits still apply to what a project holds in total.
 
 The changes are also listed as prose, folded away under the count, and the
 files that changed open source comparisons; editors can compare two
@@ -44,8 +42,7 @@ checkpoints and bring individual changes into the live source.
 
 The same comparisons and whole-version restore are available from the History
 panel in the browser. Restore requires editor access; it records the current
-version before applying the earlier directory, so both versions remain
-available subject to the deployment's history quota.
+version before applying the earlier directory, so both remain available.
 
 ## Track changes
 

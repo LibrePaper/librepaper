@@ -11,7 +11,30 @@
   // open, Escape and the cross at the top right close, the page behind does
   // not scroll, and the heading names the dialog for a screen reader. Five hand-written <dialog> elements
   // did some of that and none of them did all of it.
-  let { open = $bindable(false), title, description = null, children, footer, onclose, wide = false, full = false } = $props();
+  //
+  // `confirm` is how a dialog asks for an answer: give it a label and what to
+  // do, and the footer is written here -- Cancel, then the action, in that
+  // order, everywhere -- and the action is what has focus when the dialog
+  // opens, so a dialog that asks one question is answered with Enter. A
+  // dialog whose body is a <form id="..."> passes that id as `confirm.form`
+  // instead: the action submits the form, so Enter in any of its fields
+  // commits too, and focus is left to the field the form autofocuses.
+  //
+  // `cancelLabel` renames the way out where "Cancel" would be wrong ("Skip",
+  // "Sign in"), and `confirm.cancel: false` drops it for a dialog that only
+  // has to be closed. A dialog with no footer at all -- the settings page,
+  // the storage report -- passes no `confirm`.
+  let {
+    open = $bindable(false),
+    title,
+    description = null,
+    children,
+    confirm = null,
+    cancelLabel = "Cancel",
+    onclose,
+    wide = false,
+    full = false,
+  } = $props();
 
   // Three sizes: a question, a result to read, or a page -- the settings --
   // which is as wide as a page and a fixed height, so what is inside it can
@@ -24,6 +47,11 @@
     open = false;
     onclose?.();
   }
+
+  let confirmButton = $state(null);
+  // A form dialog has a field to type in; Zag's default lands on it. Only the
+  // question-shaped dialogs move focus to the action.
+  const initialFocusEl = $derived(confirm && !confirm.form ? () => confirmButton : undefined);
 </script>
 
 <!-- The backdrop and the card are portalled to <body>. `fixed` only means
@@ -31,7 +59,7 @@
      filter; the navbar has one, so a dialog opened from a navbar menu was
      confined to the navbar and drawn behind the page. Rendering at the body
      removes the question of where the dialog happens to be mounted. -->
-<Dialog {open} onOpenChange={(event) => { open = event.open; if (!open) onclose?.(); }}>
+<Dialog {open} {initialFocusEl} onOpenChange={(event) => { open = event.open; if (!open) onclose?.(); }}>
   <Portal>
     <Dialog.Backdrop class="fixed inset-0 z-50 bg-surface-950/50 backdrop-blur-xs" />
     <Dialog.Positioner class="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -48,9 +76,23 @@
         <div class="flex min-h-0 flex-col gap-3 {full ? 'flex-1 overflow-hidden' : 'overflow-y-auto'}">
           {@render children?.()}
         </div>
-        {#if footer}
+        {#if confirm}
           <footer class="flex shrink-0 justify-end gap-2 pt-2">
-            {@render footer()}
+            {#if confirm.cancel !== false}
+              <button type="button" class="btn preset-outlined-surface-300-700" onclick={confirm.oncancel ?? close}>
+                {cancelLabel}
+              </button>
+            {/if}
+            <button
+              bind:this={confirmButton}
+              type={confirm.form ? "submit" : "button"}
+              form={confirm.form}
+              class="btn {confirm.tone === 'error' ? 'preset-filled-error-500' : 'preset-filled-primary-500'}"
+              disabled={confirm.disabled}
+              onclick={confirm.form ? undefined : confirm.onclick}
+            >
+              {confirm.label}
+            </button>
           </footer>
         {/if}
       </Dialog.Content>

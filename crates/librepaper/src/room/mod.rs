@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use sha2::Digest;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::config::{Configuration, CHECKPOINT_DEFER_SECONDS};
+use crate::config::Configuration;
 use crate::document::history::{Checkpoint, Manifest};
 use crate::document::session;
 use crate::storage::blob::BlobStore;
@@ -42,7 +42,9 @@ pub(crate) mod error;
 mod figures;
 #[cfg(test)]
 mod idle_room_tests;
-pub(crate) mod locate;
+// Public so that `tools/fuzz/` can reach the anchoring path: everything a
+// reader selects crosses it. See the note in `lib.rs`.
+pub mod locate;
 #[cfg(test)]
 mod locate_corpus_tests;
 pub(crate) mod outgoing;
@@ -170,10 +172,10 @@ pub struct Message {
     /// version of the text it was written against.
     #[serde(default)]
     pub revision: String,
-    /// Publication the rendered selection came from. The server treats this
+    /// DocumentInput the rendered selection came from. The server treats this
     /// as a compare-and-swap guard before accepting a reader annotation.
     #[serde(default)]
-    pub publication_id: String,
+    pub bundle_id: String,
     #[serde(default)]
     pub revision_id: String,
     #[serde(default)]
@@ -223,10 +225,6 @@ pub struct Session {
     /// Start of the current dirty interval. It is deliberately not refreshed
     /// by every edit: the flush deadline is a deadline, not a debounce timer.
     pub dirty_since: i64,
-    /// Start of edits not yet covered by a checkpoint. Unlike `dirty_since`,
-    /// this survives durable session writes and resets only when a checkpoint
-    /// captures the current generation.
-    pub pending_checkpoint_since: i64,
     /// Last successful durable update, used for the deployment-wide flush
     /// floor. It is separate from version time: a busy room still gets a
     /// bounded flush cadence without creating history entries.
@@ -240,28 +238,16 @@ pub struct Session {
     pub generation: u64,
     /// Encoded size for one exact generation; quota checks reuse it until an edit.
     encoded_size: Option<(u64, i64)>,
-    /// The generation the newest checkpoint's tree actually covers. Compared
-    /// against `generation` to say whether the document has changed since
-    /// then, so an idle room is not re-hashed every second to answer that.
-    pub checkpoint_generation: u64,
     /// The newest checkpoint's tree, once this room has seen it: what the next
     /// checkpoint is diffed against to record the paths it moved. `None` until
     /// a load establishes it or a checkpoint writes one.
     pub checkpoint_tree: Option<crate::document::history::Tree>,
-    /// When the last update arrived, and who sent it. Both feed the quiet
-    /// checkpoint, whose `by` is the editor whose update last landed. The
-    /// stable account travels with the display name so an automatic
-    /// checkpoint of somebody else's keystrokes is attributed to them and
-    /// can be reached by their erasure.
+    /// When the last update arrived, and who sent it. `by` is the editor
+    /// whose update last landed, carried so that a version written on their
+    /// behalf -- the one a comment sits on, the one a publish names -- is
+    /// attributed to them and can be reached by their erasure.
     pub updated_at: i64,
     pub by: Attribution,
-    /// A checkpoint asked for from outside and not yet taken, with the reason
-    /// it was asked for and who asked. Deferred rather than refused when it
-    /// arrives inside `CHECKPOINT_DEFER_SECONDS` of the last one.
-    pub asked: Option<(String, Attribution)>,
-    pub last_checkpoint_at: i64,
-    /// The SHA of the newest checkpoint, so quiet after quiet costs nothing.
-    pub last_checkpoint: String,
     /// What the source is written in, which travels with every checkpoint.
     pub format: String,
     /// Every asset this document holds, by digest, and what it costs. Read
@@ -273,22 +259,15 @@ pub struct Session {
 
 impl Session {
     fn mark_dirty(&mut self, at: i64) {
-        if self.generation == self.checkpoint_generation && self.pending_checkpoint_since == 0 {
-            self.pending_checkpoint_since = at;
-        }
         if !self.dirty {
             self.dirty_since = at;
         }
         self.dirty = true;
     }
 
-    /// Record that the newest checkpoint covers what the document says now.
-    /// Taken by the checkpoint that wrote the tree and by the one that found
-    /// it already written: both leave the document covered, and a covered
-    /// document is not asked for a checkpoint again until it changes.
+    /// Remember the tree the newest version holds, so the next version can
+    /// say which paths it moved without reading that version's archive back.
     pub(super) fn cover_checkpoint(&mut self, tree: crate::document::history::Tree) {
-        self.checkpoint_generation = self.generation;
-        self.pending_checkpoint_since = 0;
         self.checkpoint_tree = Some(tree);
     }
 
@@ -298,10 +277,10 @@ impl Session {
     }
 }
 
-/// The two independent durability boundaries a history reader may need to
-/// explain.  A live save covers the durable session snapshot; a history
-/// checkpoint is a separately scheduled recovery point.  Neither field says
-/// anything about who authored the text.
+/// Whether this room's live text has reached durable storage. A version is
+/// not scheduled and so has no pending state to report: one exists exactly
+/// when somebody asked for it, and the operation history covers everything
+/// between them. Neither field says anything about who authored the text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HistoryDurability {
     /// Whether this room loaded enough durable state to make the two
@@ -311,9 +290,6 @@ pub struct HistoryDurability {
     /// The in-memory session has changed since the last successful durable
     /// session write.
     pub live_save_pending: bool,
-    /// The live generation is not covered by the newest checkpoint, or an
-    /// explicit checkpoint request is waiting for its admission window.
-    pub checkpoint_pending: bool,
 }
 
 pub struct RoomState {
@@ -360,16 +336,16 @@ pub struct Room {
     catalog: Arc<std::sync::OnceLock<Arc<crate::storage::postgres::PostgresCatalog>>>,
     /// Serializes session snapshots and conditional writes without blocking edits.
     session_write: Mutex<()>,
-    /// Serializes mutations that must remain one publication operation from
+    /// Serializes mutations that must remain one bundle operation from
     /// live CRDT apply through checkpoint/commit (or rollback).  Socket edits
-    /// and route-driven CRDT writes use the same gate, so a failed publication
+    /// and route-driven CRDT writes use the same gate, so a failed bundle
     /// cannot restore over an editor update that arrived halfway through it.
-    pub(crate) publication_write: Mutex<()>,
-    /// Prevents an ordinary checkpoint from snapshotting a publication's
+    pub(crate) bundle_write: Mutex<()>,
+    /// Prevents an ordinary checkpoint from snapshotting a bundle's
     /// transient CRDT state. Ordinary checkpoints hold a read permit while
-    /// doing their normal storage work; a publication holds the write permit
+    /// doing their normal storage work; a bundle holds the write permit
     /// for its mutation and compensating rollback.
-    pub(crate) publication_checkpoint: RwLock<()>,
+    pub(crate) bundle_checkpoint: RwLock<()>,
     /// Serialize asset deletion with uploads and CRDT asset references.
     assets_write: Mutex<()>,
     /// Bytes reserved by uploads whose blob write has not registered its
@@ -496,17 +472,12 @@ impl RoomSet {
                     point.by = "Deleted account".to_string();
                 }
             }
-            // The pending attribution a quiet, automatic or deferred
-            // checkpoint would be written with. Left alone, the next tick
-            // would name the erasing account on a checkpoint taken after the
-            // worker had already passed that document.
+            // The attribution a version written on this room's behalf would
+            // carry. Left alone, a comment or a publish landing after the
+            // worker had already passed that document would name the erasing
+            // account on the version it writes.
             if state.session.by.is_account(account_id) {
                 state.session.by = Attribution::erased();
-            }
-            if let Some((_, asked)) = state.session.asked.as_mut() {
-                if asked.is_account(account_id) {
-                    *asked = Attribution::erased();
-                }
             }
         }
     }
@@ -696,8 +667,8 @@ impl RoomSet {
             store: self.store.clone(),
             catalog: self.catalog.clone(),
             session_write: Mutex::new(()),
-            publication_write: Mutex::new(()),
-            publication_checkpoint: RwLock::new(()),
+            bundle_write: Mutex::new(()),
+            bundle_checkpoint: RwLock::new(()),
             assets_write: Mutex::new(()),
             asset_uploads: std::sync::Mutex::new(HashMap::new()),
             checkpoint_write: Mutex::new(()),
@@ -714,17 +685,12 @@ impl RoomSet {
                     durable_sequence: 0,
                     dirty: false,
                     dirty_since: 0,
-                    pending_checkpoint_since: 0,
                     last_persist_at: 0,
                     generation: 0,
                     encoded_size: None,
-                    checkpoint_generation: 0,
                     checkpoint_tree: None,
                     updated_at: 0,
                     by: Attribution::system(),
-                    asked: None,
-                    last_checkpoint_at: 0,
-                    last_checkpoint: String::new(),
                     format: String::new(),
                     asset_sizes: HashMap::new(),
                 },
@@ -818,12 +784,10 @@ impl RoomSet {
         self.rooms.lock().await.remove(slug);
     }
 
-    /// One pass over every open room: write the ones that have gone quiet,
-    /// checkpoint the ones that have been quiet long enough to be worth a
-    /// mark, and let go of the ones nobody has open. Run on a timer by
-    /// `serve`, so a document nobody is watching is still persisted and still
-    /// gets its checkpoints -- which is the whole difference between a session
-    /// the server holds and a session it relays.
+    /// One pass over every open room: write the ones that have gone quiet and
+    /// let go of the ones nobody has open. Run on a timer by `serve`, so a
+    /// document nobody is watching is still persisted -- which is the whole
+    /// difference between a session the server holds and a session it relays.
     pub async fn sweep(&self) {
         let open: Vec<(String, Arc<Room>)> = {
             let rooms = self.rooms.lock().await;
@@ -896,7 +860,6 @@ impl RoomSet {
         };
         if !state.sockets.is_empty()
             || state.session.dirty
-            || state.session.asked.is_some()
             || stale_at.is_some_and(|now| now.saturating_sub(state.touched) <= 60)
         {
             return false;
@@ -983,19 +946,16 @@ impl Room {
         Ok(value)
     }
 
-    /// Immutable storage identity shared by catalog and rendered-publication
+    /// Immutable storage identity shared by catalog and rendered-bundle
     /// operations. The slug is only a public handle and is not sufficient
-    /// for publication object serialization.
+    /// for bundle object serialization.
     pub(crate) fn storage_id(&self) -> &str {
         &self.storage_id
     }
 
-    /// Reports the independently observable live-save and history-version
-    /// boundaries without forcing either operation.  `dirty` is cleared only
-    /// after the session snapshot has been accepted by storage; generation
-    /// coverage is advanced only after the checkpoint is committed.  In
-    /// particular, this does not treat an update sequence or version delay
-    /// as proof of the other boundary.
+    /// Whether this room's live text has reached durable storage. `dirty` is
+    /// cleared only after the session snapshot has been accepted by storage,
+    /// so this never reports an update sequence as proof of a write.
     pub async fn history_durability(&self) -> HistoryDurability {
         let state = self.state.lock().await;
         let reason = FenceReason::from_stored(self.fence_reason.load(Ordering::Relaxed));
@@ -1003,9 +963,6 @@ impl Room {
             known: !self.read_only.load(Ordering::Relaxed)
                 || matches!(reason, FenceReason::Oversized),
             live_save_pending: state.session.dirty,
-            checkpoint_pending: state.session.generation != state.session.checkpoint_generation
-                || state.session.pending_checkpoint_since > 0
-                || state.session.asked.is_some(),
         }
     }
 
@@ -1110,8 +1067,8 @@ impl Room {
             && recovered.update_sequence <= 1
             && recovered.project_generation == 0;
         let starter_repair = starter_bibliography(entry.as_ref()).is_some();
-        let published_seed = if cold || repair_first_save || starter_repair {
-            self.published_project(document_id, entry.as_ref()).await
+        let stored_seed = if cold || repair_first_save || starter_repair {
+            self.stored_project(document_id, entry.as_ref()).await
         } else {
             None
         };
@@ -1132,12 +1089,12 @@ impl Room {
             state.session.durable_sequence = recovered.update_sequence;
             state.session.dirty = false;
             if repair_first_save {
-                if let Some((project, _)) = published_seed.as_ref() {
+                if let Some((project, _)) = stored_seed.as_ref() {
                     state.session.dirty =
                         hydrate_project(&state.session.doc, &project.archive, true);
                 }
             }
-            if let Some((project, bibliography_added)) = published_seed.as_ref() {
+            if let Some((project, bibliography_added)) = stored_seed.as_ref() {
                 if *bibliography_added
                     && !session::has_meta(
                         &state.session.doc,
@@ -1162,7 +1119,7 @@ impl Room {
                     state.session.dirty = true;
                 }
             }
-        } else if let Some((project, _)) = published_seed.as_ref() {
+        } else if let Some((project, _)) = stored_seed.as_ref() {
             state.session.format = project.archive.source_format.clone();
             hydrate_project(&state.session.doc, &project.archive, false);
             state.session.dirty = false;
@@ -1170,38 +1127,6 @@ impl Room {
         state.session.last_persist_at = now_unix().saturating_sub(15);
         drop(state);
         self.load_asset_sizes().await;
-        self.adopt_checkpoint_baseline().await;
-    }
-
-    /// Whether the document this room just recovered is the document the
-    /// newest checkpoint already holds, and if so, saying so.
-    ///
-    /// The sweeper decides whether to take a checkpoint by comparing two
-    /// counters, which costs nothing per second. But a recovered session
-    /// starts with a generation taken from its update sequence and a coverage
-    /// of zero, so without this every room would open believing it had
-    /// unmarked edits: one checkpoint a second after every load, of a
-    /// document nobody had touched.
-    ///
-    /// The comparison is against content, once, here -- the only place where
-    /// reading the whole tree is both necessary and affordable. Leaving the
-    /// counters apart is the safe direction: it costs a checkpoint of a
-    /// document that is already checkpointed, where the reverse would lose
-    /// edits that a crash left in the update log and no version covers.
-    async fn adopt_checkpoint_baseline(&self) {
-        let mut state = self.state.lock().await;
-        let Some(point) = state.manifest.latest().cloned() else {
-            return;
-        };
-        if point.tree_sha.is_empty() {
-            return;
-        }
-        let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
-        if tree.digest() != point.tree_sha {
-            return;
-        }
-        state.session.last_checkpoint = point.sha;
-        state.session.cover_checkpoint(tree);
     }
 
     /// What each of this document's figures weighs, read once when the room is
@@ -1254,7 +1179,7 @@ impl Room {
     /// the format becomes `html`, because that is what the bytes are. Seeding
     /// markdown's slot with HTML and still calling it markdown is how a
     /// migrated document would come back rendered twice.
-    async fn published_project(
+    async fn stored_project(
         &self,
         document_id: uuid::Uuid,
         entry: Option<&crate::document::store::IndexEntry>,
@@ -1302,7 +1227,7 @@ impl Room {
     }
 
     /// Whether another server holds this room, as of the last time we asked.
-    /// Recheck after a publication-gated read: a caller may have acquired its
+    /// Recheck after a bundle-gated read: a caller may have acquired its
     /// room reference before an overlapping agent write became ambiguous.
     pub(crate) fn agent_recovery_pending(&self) -> bool {
         self.fence_reason.load(Ordering::Relaxed) == FenceReason::AgentRecoveryPending as u8
@@ -1359,7 +1284,7 @@ impl Room {
         std::collections::BTreeMap<String, String>,
         Vec<CommentView>,
     ) {
-        let _publication_writer = self.publication_write.lock().await;
+        let _bundle_writer = self.bundle_write.lock().await;
         let state = self.state.lock().await;
         let source = session::text_of(&state.session.doc);
         let format = state.session.format.clone();
@@ -1471,13 +1396,13 @@ impl Room {
     /// The source as it stands, which is what a checkpoint is made of and what
     /// the command line reads.
     pub async fn source(&self) -> String {
-        let _publication_writer = self.publication_write.lock().await;
+        let _bundle_writer = self.bundle_write.lock().await;
         let state = self.state.lock().await;
         session::text_of(&state.session.doc)
     }
 
     pub async fn format(&self) -> String {
-        let _publication_writer = self.publication_write.lock().await;
+        let _bundle_writer = self.bundle_write.lock().await;
         self.state.lock().await.session.format.clone()
     }
 
@@ -1492,7 +1417,7 @@ impl Room {
     /// The response and server vector describe the same locked snapshot.
     /// Browsers use this vector to upload only state the server is missing.
     pub async fn open_state_with_vector(&self, vector: Option<&[u8]>) -> (Vec<u8>, usize, Vec<u8>) {
-        let _publication_writer = self.publication_write.lock().await;
+        let _bundle_writer = self.bundle_write.lock().await;
         let state = self.state.lock().await;
         let update = match vector {
             Some(raw) => session::encode_diff(&state.session.doc, raw)
@@ -1527,7 +1452,7 @@ impl Room {
         by: impl Into<Attribution>,
     ) -> Applied {
         let by = by.into();
-        let _publication_writer = self.publication_write.lock().await;
+        let _bundle_writer = self.bundle_write.lock().await;
         if self.read_only() {
             // A fenced room cannot persist changes. Applying and relaying
             // the update anyway would show every other peer a document this
@@ -1711,12 +1636,12 @@ impl Room {
         only_dirty: bool,
         acknowledge: bool,
     ) -> Result<Option<(i64, i64)>, WriteError> {
-        let _publication_checkpoint = self.publication_checkpoint.read().await;
+        let _bundle_checkpoint = self.bundle_checkpoint.read().await;
         self.write_session_inner(only_dirty, acknowledge).await
     }
 
     /// Session writer for checkpoint and rollback callers that already hold
-    /// the publication checkpoint read/write barrier.
+    /// the bundle checkpoint read/write barrier.
     pub(crate) async fn write_session_inner(
         &self,
         only_dirty: bool,
@@ -1845,47 +1770,25 @@ impl Room {
     }
 
     /// What the sweeper does to one room, once a second: write the document if
-    /// it has been quiet long enough to be worth writing, and take a
-    /// checkpoint if it has been quiet long enough to be worth a mark.
+    /// it has been quiet long enough to be worth writing.
+    ///
+    /// It takes no versions. Durability here is the operation log, which holds
+    /// every keystroke; a version is a name somebody put on a moment, and the
+    /// clock is not somebody.
     ///
     /// Returns whether the room is idle and durable, which is what says it may
     /// be let go of.
     pub async fn tick(&self) -> bool {
         let limits = self.config.session;
         let now = now_unix();
-        // Whether the document has moved on since its last checkpoint is a
-        // generation comparison rather than a digest of the whole tree: the
-        // tree's identity used to be a text digest, and comparing today's
-        // tree digest against that meant hashing the whole document every
-        // second even for a room nobody has touched (R26).
-        let (
-            dirty,
-            quiet_for,
-            dirty_for,
-            pending_checkpoint_for,
-            last_persist_at,
-            asked,
-            sockets,
-            since_checkpoint,
-            differs,
-            by,
-        ) = {
+        let (dirty, quiet_for, dirty_for, last_persist_at, sockets) = {
             let state = self.state.lock().await;
             (
                 state.session.dirty,
                 now - state.session.updated_at,
                 now - state.session.dirty_since,
-                if state.session.pending_checkpoint_since > 0 {
-                    now - state.session.pending_checkpoint_since
-                } else {
-                    0
-                },
                 state.session.last_persist_at,
-                state.session.asked.clone(),
                 state.sockets.len(),
-                now - state.session.last_checkpoint_at,
-                state.session.generation != state.session.checkpoint_generation,
-                state.session.by.clone(),
             )
         };
         let floor_elapsed = if last_persist_at > 0 {
@@ -1906,29 +1809,6 @@ impl Room {
                 );
                 return false;
             }
-        }
-        // A deferred request comes due once the window has passed.
-        if let Some((why, by)) = asked {
-            if since_checkpoint >= CHECKPOINT_DEFER_SECONDS {
-                let _ = self.checkpoint(&why, &by).await;
-                return false;
-            }
-        }
-        if differs
-            && (quiet_for >= limits.checkpoint_seconds
-                // The maximum interval is from the first edit still pending,
-                // rather than from the preceding checkpoint. This prevents a
-                // continuously edited document from postponing its checkpoint
-                // forever, while preserving the quiet-time tuning knob.
-                || pending_checkpoint_for >= limits.history_interval_seconds)
-        {
-            let why = if pending_checkpoint_for >= limits.history_interval_seconds {
-                "automatic"
-            } else {
-                "quiet"
-            };
-            let _ = self.checkpoint(why, &by).await;
-            return false;
         }
         sockets == 0 && !dirty
     }

@@ -140,7 +140,7 @@ impl Server {
                 {
                     return write_json(403, &json!({"error": "comment access changed"}));
                 }
-                // A read link can open the rendered publication but never
+                // A read link can open the rendered bundle but never
                 // mutate its annotation channel. Refuse at the HTTP boundary
                 // so a role failure is not misreported as a room validation
                 // error after work has already begun.
@@ -148,55 +148,54 @@ impl Server {
                     return write_json(403, &json!({"error": "commenter access is required"}));
                 }
                 // Readers and commenters only annotate the current rendered
-                // publication. An empty ID is never a fallback to source or
+                // bundle. An empty ID is never a fallback to source or
                 // an unchecked annotation write. Editors still use empty IDs
                 // for source-side comments and suggestions.
                 if incoming.kind == "comment"
                     && !current_who.at_least(Role::Editor)
-                    && incoming.publication_id.is_empty()
+                    && incoming.bundle_id.is_empty()
                 {
                     return write_json(
                         409,
-                        &json!({"error": "publication is required; refresh before annotating"}),
+                        &json!({"error": "bundle is required; refresh before annotating"}),
                     );
                 }
                 let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
                 // A rendered annotation is checked and committed under the
-                // same per-storage gate as publication activation. Do not
+                // same per-storage gate as bundle activation. Do not
                 // take this for source suggestions: they remain editor work
-                // against the editable revision and have no publication.
-                let _rendered_publication_guard =
-                    if incoming.kind == "comment" && !incoming.publication_id.is_empty() {
+                // against the editable revision and have no bundle.
+                let _rendered_bundle_guard =
+                    if incoming.kind == "comment" && !incoming.bundle_id.is_empty() {
                         Some(
-                            crate::server::publication::publication_lock(&current_entry.storage_id)
+                            crate::server::bundle::bundle_lock(&current_entry.storage_id)
                                 .lock_owned()
                                 .await,
                         )
                     } else {
                         None
                     };
-                if let Some(publication_id) = (incoming.kind == "comment"
-                    && !incoming.publication_id.is_empty())
-                .then_some(incoming.publication_id.as_str())
+                if let Some(bundle_id) = (incoming.kind == "comment"
+                    && !incoming.bundle_id.is_empty())
+                .then_some(incoming.bundle_id.as_str())
                 {
-                    let current =
-                        crate::server::publication::PublicationStore::for_store(self.store.clone())
-                            .current(&current_entry.storage_id)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|publication| publication.publication_id);
-                    if current.as_deref() != Some(publication_id) {
+                    let current = crate::server::bundle::BundleStore::for_store(self.store.clone())
+                        .current(&current_entry.storage_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|bundle| bundle.bundle_id);
+                    if current.as_deref() != Some(bundle_id) {
                         return write_json(
                             409,
-                            &json!({"error": "publication changed; refresh before annotating"}),
+                            &json!({"error": "bundle changed; refresh before annotating"}),
                         );
                     }
                 }
-                // Keep source/session publication work ordered after the
-                // rendered-publication gate; activation never takes this
+                // Keep source/session bundle work ordered after the
+                // rendered-bundle gate; activation never takes this
                 // room-local lock, so this order cannot invert.
-                let _publication_guard = room.publication_write.lock().await;
+                let _bundle_guard = room.bundle_write.lock().await;
                 if incoming.kind == "accept" || incoming.kind == "reject" {
                     return write_json(
                         410,
@@ -282,7 +281,7 @@ impl Server {
             unowned_publisher: false,
         };
         // Publishing over a document is an edit into its live Room.  The Room
-        // holds the restore/publication/version gates while merging the
+        // holds the restore/bundle/version gates while merging the
         // directory, so concurrent CRDT edits are preserved and the resulting
         // version sees the same source generation it admitted.
         if mine {
@@ -335,7 +334,7 @@ impl Server {
         let entry = match self
             .store
             .put_directory_as_actor(
-                Publication {
+                DocumentInput {
                     slug: key.clone(),
                     title: parsed.title.clone(),
                     source: parsed.source.clone(),
@@ -402,12 +401,12 @@ impl Server {
         existing: &IndexEntry,
     ) -> Result<IndexEntry, Reply> {
         // Restore and suggestion acceptance use this gate already. Take it
-        // first so a publication cannot mutate the live CRDT between their
+        // first so a bundle cannot mutate the live CRDT between their
         // merge-base read and their checkpoint; ordinary socket edits remain
         // free to proceed while either operation is in storage I/O.
         let _restore_writer = room.restore_write.lock().await;
-        let _publication_writer = room.publication_write.lock().await;
-        let _publication_checkpoint = room.publication_checkpoint.write().await;
+        let _bundle_writer = room.bundle_write.lock().await;
+        let _bundle_checkpoint = room.bundle_checkpoint.write().await;
         let (current, rollback_bodies, rollback_format) = {
             let state = room.state.lock().await;
             let (tree, bodies) =
@@ -608,7 +607,7 @@ impl Server {
             Ok(None) => existing.sha.clone(),
             Err(error) => {
                 if let Err(error) = room
-                    .rollback_publication_inner(&current, &rollback_bodies, &rollback_format)
+                    .rollback_bundle_inner(&current, &rollback_bodies, &rollback_format)
                     .await
                 {
                     eprintln!("warning: could not roll back {}: {error}", existing.slug);
@@ -1075,7 +1074,7 @@ impl Server {
         // holding it. Who may read is asked again, from the request itself,
         // which is the same rule the socket answers `y-open` under.
         // Full document state is a source synchronization transport. Readers and
-        // commenters receive the rendered publication and annotation channel.
+        // commenters receive the rendered bundle and annotation channel.
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
@@ -1143,7 +1142,7 @@ impl Server {
             return write_json(404, &json!({"error": "not found"}));
         }
         // Source is editable project material. Readers receive the current
-        // publication through the publication route and never this endpoint.
+        // bundle through the bundle route and never this endpoint.
         let room = match self.rooms.try_get(slug).await {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
@@ -1443,7 +1442,7 @@ impl Server {
         match self
             .store
             .put_directory_as_actor(
-                Publication {
+                DocumentInput {
                     slug: base,
                     title: title.clone(),
                     source,

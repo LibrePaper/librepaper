@@ -108,3 +108,23 @@ refused. Start worker-capable LibrePaper processes before
 admitting traffic after a restore. Horizontally scaled deployments use the same
 schema and object interface; use a bounded pool per process and route a
 document's WebSocket connections consistently to one application process.
+
+## Containers
+
+`deploy/docker` holds a compose file for the whole of the above: PostgreSQL,
+LibrePaper, and a proxy that holds a certificate for each of the two origins
+and passes `Host` through unchanged. The LibrePaper image is the released
+static binary on Alpine, fetched at build time and checked against the release
+checksums; there is no toolchain in it and nothing is assembled at start-up.
+
+```sh
+cd deploy/docker
+cp .env.example .env
+docker compose up -d
+```
+
+`DOMAIN` and `docs.DOMAIN` must both resolve to the host before the first
+start, because the proxy takes its certificates over HTTP-01. The container
+runs with `--no-local`: the loopback companion renders Quarto with the tools on
+the editor's own machine, and in a container there are none. `deploy/docker/README.md`
+covers backups, upgrades, and moving objects to a bucket.

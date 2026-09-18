@@ -22,21 +22,36 @@ fn reject_removed_settings() {
     let removed = [
         (
             "LIBREPAPER_MAX_ASSETS",
-            "--document-assets-limit / LIBREPAPER_BUDGET_DOCUMENT_ASSETS",
+            "use --document-assets-limit / LIBREPAPER_BUDGET_DOCUMENT_ASSETS instead",
         ),
         (
             "LIBREPAPER_LATEX",
-            "--latex-mirror / LIBREPAPER_LATEX_MIRROR",
+            "use --latex-mirror / LIBREPAPER_LATEX_MIRROR instead",
         ),
-        ("LIBREPAPER_FONTS", "--typst-fonts / LIBREPAPER_TYPST_FONTS"),
+        (
+            "LIBREPAPER_FONTS",
+            "use --typst-fonts / LIBREPAPER_TYPST_FONTS instead",
+        ),
         (
             "LIBREPAPER_BIBER_VM",
-            "Biber WASM from the configured LaTeX mirror",
+            "use Biber WASM from the configured LaTeX mirror instead",
+        ),
+        // Versions are no longer scheduled or pruned, so there is no interval
+        // to tune and no cap to set. Neither has a replacement: the thing
+        // they configured is gone rather than renamed, so the message says
+        // what happens now instead of naming a flag that does the same job.
+        (
+            "LIBREPAPER_HISTORY",
+            "there is no cap: every version is kept until the document is deleted",
+        ),
+        (
+            "LIBREPAPER_CHECKPOINT",
+            "there is no interval: a version is written when somebody asks for one, never on a timer",
         ),
     ];
     for (name, replacement) in removed {
         if std::env::var_os(name).is_some() {
-            die(format!("{name} was removed; use {replacement} instead"));
+            die(format!("{name} was removed; {replacement}"));
         }
     }
     for argument in std::env::args_os().skip(1) {
@@ -44,17 +59,32 @@ fn reject_removed_settings() {
             continue;
         };
         let (name, replacement) = if argument == "--latex" || argument.starts_with("--latex=") {
-            ("--latex", "--latex-mirror")
+            ("--latex", "use --latex-mirror instead")
         } else if argument == "--fonts" || argument.starts_with("--fonts=") {
-            ("--fonts", "--typst-fonts")
+            ("--fonts", "use --typst-fonts instead")
         } else if argument == "--max-assets" || argument.starts_with("--max-assets=") {
-            ("--max-assets", "--document-assets-limit")
+            ("--max-assets", "use --document-assets-limit instead")
         } else if argument == "--biber-vm" || argument.starts_with("--biber-vm=") {
-            ("--biber-vm", "Biber WASM from the configured LaTeX mirror")
+            (
+                "--biber-vm",
+                "use Biber WASM from the configured LaTeX mirror instead",
+            )
+        } else if argument == "--history-limit" || argument.starts_with("--history-limit=") {
+            (
+                "--history-limit",
+                "there is no cap: every version is kept until the document is deleted",
+            )
+        } else if argument == "--history-checkpoint-minutes"
+            || argument.starts_with("--history-checkpoint-minutes=")
+        {
+            (
+                "--history-checkpoint-minutes",
+                "there is no interval: a version is written when somebody asks for one, never on a timer",
+            )
         } else {
             continue;
         };
-        die(format!("{name} was removed; use {replacement} instead"));
+        die(format!("{name} was removed; {replacement}"));
     }
 }
 
@@ -180,16 +210,6 @@ pub(crate) struct ServiceFlags {
         value_name = "N"
     )]
     uploads_per_hour: Option<usize>,
-    /// Minutes of quiet before a document is checkpointed (default: 30 seconds)
-    #[arg(
-        long = "history-checkpoint-minutes",
-        env = "LIBREPAPER_CHECKPOINT",
-        value_name = "MINUTES"
-    )]
-    checkpoint: Option<usize>,
-    /// Most checkpoints one document keeps (default unlimited); 0 keeps only the current text
-    #[arg(long = "history-limit", env = "LIBREPAPER_HISTORY", value_name = "N")]
-    history: Option<usize>,
     /// Write each new account's starter documents as though they had been
     /// typed over this many days, so a demonstration deployment has a history
     /// panel with something in it. The operations are real; only the clock is
@@ -207,7 +227,7 @@ pub(crate) struct ServiceFlags {
         value_name = "DURATION"
     )]
     expire_after: Option<String>,
-    /// Start expiry at 'updated' (default; last publication) or 'created'
+    /// Start expiry at 'updated' (default; last bundle) or 'created'
     #[arg(
         long = "document-expire-from",
         env = "LIBREPAPER_EXPIRE_FROM",
@@ -231,6 +251,16 @@ pub(crate) struct ServiceFlags {
         requires = "origin"
     )]
     docs_origin: Option<String>,
+    /// Where this deployment's marketing site lives, for example
+    /// https://paper.example. Signing out goes there. Without it, signing out
+    /// goes to this deployment's own front page, which is what a deployment
+    /// with no separate site in front of it wants.
+    #[arg(
+        long = "site-origin",
+        env = "LIBREPAPER_SITE_ORIGIN",
+        value_name = "URL"
+    )]
+    site_origin: Option<String>,
     /// HTTPS static mirror from which browsers fetch LaTeX distributions.
     #[arg(
         long,
@@ -307,13 +337,8 @@ impl ServiceFlags {
                     "checkpoint_deployment_per_hour" => {
                         config.session.checkpoint_deployment_per_hour = signed
                     }
-                    "history_max" => config.session.history_max = value,
-                    "checkpoint_seconds" => config.session.checkpoint_seconds = signed,
                     "write_after_seconds" if value > 0 => {
                         config.session.write_after_seconds = signed
-                    }
-                    "history_interval_seconds" if value > 0 => {
-                        config.session.history_interval_seconds = signed
                     }
                     _ => die(format!("unknown or invalid advanced session limit: {name}")),
                 }
@@ -370,9 +395,6 @@ impl ServiceFlags {
         if let Err(err) = config.set_counts(self.max_documents, self.uploads_per_hour) {
             die(err);
         }
-        if let Err(err) = config.set_history(self.checkpoint, self.history) {
-            die(err);
-        }
         if let Some(transfer) = self.budget_transfer {
             config.cost.transfer_bytes = Some(transfer);
         }
@@ -427,18 +449,6 @@ impl ServiceFlags {
                 "publisher-upload-limit",
                 "LIBREPAPER_UPLOADS_PER_HOUR",
                 self.uploads_per_hour.is_some(),
-            ),
-            (
-                "session.history_max",
-                "history-limit",
-                "LIBREPAPER_HISTORY",
-                self.history.is_some(),
-            ),
-            (
-                "session.checkpoint_seconds",
-                "history-checkpoint-minutes",
-                "LIBREPAPER_CHECKPOINT",
-                self.checkpoint.is_some(),
             ),
         ] {
             if present {
@@ -894,6 +904,7 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
                 simulate_activity: service.simulate_activity,
                 origin: service.origin,
                 docs_origin: service.docs_origin,
+                site_origin: service.site_origin,
                 expire_after: service.expire_after,
                 expire_from: service.expire_from,
                 latex_mirror: service.latex_mirror,

@@ -2,10 +2,10 @@
 
 pub mod backup;
 pub mod blob;
+pub mod bundle;
 pub mod collaboration;
 pub mod maintenance;
 pub mod postgres;
-pub mod publication;
 pub mod source;
 pub mod source_archive;
 pub mod worker;

@@ -49,7 +49,7 @@ The storage architecture supports:
 - comments, highlights, replies, and source suggestions;
 - named access grants and revocable share links;
 - immutable source versions and labeled history;
-- explicit rendered publications;
+- explicit rendered bundles;
 - rendering in the browser or local companion and agent work in the user's
   attached runner, with server-owned maintenance in background workers;
 - ownership transfer and document/account deletion;
@@ -137,7 +137,7 @@ bounded connection pool. SQL transactions must not span blob I/O, rendering,
 compression, hashing, or network calls.
 
 Database constraints enforce local row relationships and uniqueness. Product
-code may use optimistic concurrency for source and publication heads. The
+code may use optimistic concurrency for source and bundle heads. The
 system does not attempt to make PostgreSQL and blob storage one atomic system.
 Every database row that references a completed blob is inserted only after the
 application has verified that blob's key, digest, and byte length.
@@ -190,7 +190,7 @@ create table documents (
     uncompacted_update_bytes bigint not null default 0,
     project_generation bigint not null default 0,
     current_version_id uuid,
-    current_publication_id uuid,
+    current_bundle_id uuid,
     settings jsonb not null default '{"version":1}'::jsonb,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
@@ -228,7 +228,7 @@ A share token is a random bearer secret. PostgreSQL stores only its hash; there
 is no encrypted token to reseal and no key-rotation workflow. The owner may
 create a replacement link and revoke the old one.
 
-The circular current-version and current-publication foreign keys on
+The circular current-version and current-bundle foreign keys on
 `documents` are added after their target tables are created. They use
 `on delete set null` or explicit deletion ordering as selected by the final
 migration.
@@ -244,7 +244,7 @@ create table annotations (
     author_account_id uuid references accounts(id),
     author_key text not null,
     author_label text not null,
-    publication_id uuid,
+    bundle_id uuid,
     color text,
     -- What the comment is about, written once: the checkpoint, and either a
     -- range of one source file or the document as a whole. A CHECK requires
@@ -289,9 +289,9 @@ create table annotation_live_state (
 create index annotations_timeline
     on annotations(document_id, created_at, id);
 
-create index annotations_publication_timeline
-    on annotations(document_id, publication_id, created_at, id)
-    where publication_id is not null;
+create index annotations_bundle_timeline
+    on annotations(document_id, bundle_id, created_at, id)
+    where bundle_id is not null;
 
 create table replies (
     id uuid primary key,
@@ -379,10 +379,10 @@ Each source version has exactly one compressed source archive. The archive
 contains the current small text files and an asset manifest. There is one
 database row per version, not one row per version/file or version/object.
 
-### 5.4 Publications
+### 5.4 Bundles
 
 ```sql
-create table publications (
+create table bundles (
     id uuid primary key,
     document_id uuid not null references documents(id) on delete cascade,
     source_version_id uuid references document_versions(id),
@@ -396,21 +396,21 @@ create table publications (
     unique (document_id, request_key)
 );
 
-create table publication_files (
-    publication_id uuid not null references publications(id) on delete cascade,
+create table bundle_files (
+    bundle_id uuid not null references bundles(id) on delete cascade,
     path text not null,
     storage_key text not null,
     digest bytea not null,
     byte_length bigint not null check (byte_length >= 0),
     media_type text not null,
-    primary key (publication_id, path)
+    primary key (bundle_id, path)
 );
 ```
 
-Publication files are direct immutable outputs, independent of source assets.
-The current publication pointer determines what readers may fetch. Old
-publication blobs may be retained for a configured grace period and then
-deleted by a simple job. Historical publication metadata may be deleted with
+Bundle files are direct immutable outputs, independent of source assets.
+The current bundle pointer determines what readers may fetch. Old
+bundle blobs may be retained for a configured grace period and then
+deleted by a simple job. Historical bundle metadata may be deleted with
 the files or retained without promising continued download availability.
 
 ### 5.5 Durable collaboration state
@@ -524,12 +524,12 @@ query requeues expired `running` rows only after replacing their claim token.
 
 Active dedupe keys identify a concrete work generation, for example
 `compact:<through-update-sequence>` or
-`publication-cleanup:<publication-id>`. Completed rows do not reserve a dedupe
+`bundle-cleanup:<bundle-id>`. Completed rows do not reserve a dedupe
 key and are pruned after their result-retention period. Externally visible
 idempotency belongs on the domain result row, such as
-`publications.request_key`.
+`bundles.request_key`.
 
-The baseline job kinds are source compaction, publication cleanup, document
+The baseline job kinds are source compaction, bundle cleanup, document
 deletion, account deletion, and maintenance. Each kind has a typed Rust payload
 and handler. The table is transport, not a generic workflow language. Multi-step
 jobs express their small progress in their own payload or result only when
@@ -655,21 +655,21 @@ temporary object. No capacity reservation or recovery operation is created.
 A blob left by a failed final transaction is harmless. A periodic orphan sweep
 or storage lifecycle rule removes it after a minimum seven-day grace period.
 
-### 7.3 Publication
+### 7.3 Bundle
 
-The client or renderer uploads publication files under a temporary publication
+The client or renderer uploads bundle files under a temporary bundle
 prefix. The finalize request includes paths, digests, byte lengths, media types,
-the source version, and the expected current publication.
+the source version, and the expected current bundle.
 
 The server verifies uploaded objects, creates a manifest, and writes it before
 opening the final transaction. The transaction locks the document, compares
-the request's expected current publication, generates the publication UUID,
-inserts `publications` and `publication_files`, and moves the current pointer.
+the request's expected current bundle, generates the bundle UUID,
+inserts `bundles` and `bundle_files`, and moves the current pointer.
 The expectation is not persisted after commit. A retry supplies the same
-document-scoped `request_key` and returns the existing publication row. Reusing
+document-scoped `request_key` and returns the existing bundle row. Reusing
 that key with a different request digest is a conflict.
 
-The previous publication remains readable during preparation. A failed finalize
+The previous bundle remains readable during preparation. A failed finalize
 does not change it. Temporary uploads expire through bucket lifecycle rules or
 a cleanup job. No general prepared operation or object lease is required.
 
@@ -763,7 +763,7 @@ The application enforces:
 - maximum request bodies before or while reading them;
 - maximum inline source bytes and file count per document;
 - maximum individual assets and aggregate retained document asset bytes;
-- maximum publication files and total publication bytes;
+- maximum bundle files and total bundle bytes;
 - maximum retained versions per document;
 - per-account upload and version-creation rates;
 - deployment-wide concurrent uploads and server-owned jobs, plus bounded
@@ -777,7 +777,7 @@ The application enforces:
 The per-document retained-asset limit is enforced from completed
 `document_assets` rows at upload finalization. Account and deployment usage
 shown to users may be delayed and approximate. A periodic query computes all
-retained source archives, all retained assets, retained publication files, and
+retained source archives, all retained assets, retained bundle files, and
 temporary-upload estimates by account. Admission may use a cached account or
 deployment total with conservative margins. The system does not reserve the
 maximum possible blob size before upload and does not promise exact byte-level
@@ -816,7 +816,7 @@ Object namespaces are simple and inspectable:
 documents/<document-id>/assets/<asset-id>
 documents/<document-id>/versions/<version-id>.tar.zst
 documents/<document-id>/collaboration/<base-id>.loro.zst
-documents/<document-id>/publications/<publication-id>/<path>
+documents/<document-id>/bundles/<bundle-id>/<path>
 temporary/<document-id>/<random-id>
 jobs/<job-id>/<random-id>
 ```
@@ -827,7 +827,7 @@ use new keys. Provider bucket versioning is recommended but not required.
 The maintenance worker scans `documents/` and `temporary/` in bounded,
 lexicographic pages. It stores only one opaque cursor per namespace in a small
 `maintenance_cursors` table. For document objects, one `ANY(text[])` query over
-the asset, version, publication, publication-file, and collaboration-base rows
+the asset, version, bundle, bundle-file, and collaboration-base rows
 identifies references in that page. Unreferenced objects older than seven days
 are deleted. Temporary objects use the provider or filesystem modification
 time; final UUIDv7 object names provide a conservative timestamp fallback when
@@ -860,7 +860,7 @@ For the single-machine profile:
 A database dump may omit a concurrently uploaded blob that has not yet gained a
 row, which is harmless. The dump fixes the reference set, so continuous new
 writes cannot make backup copying unbounded. Version archives, collaboration
-bases, and publication files are not physically deleted until a grace period
+bases, and bundle files are not physically deleted until a grace period
 longer than the supported maximum backup duration has elapsed. This ensures a
 key referenced by the snapshot remains available for step 5. Extra blobs are
 harmless and need not be copied. Remote object storage supplies its own
@@ -878,7 +878,7 @@ starts workers before admitting traffic. A restore may contain harmless extra
 blobs.
 
 The project export feature is separate from disaster recovery. It emits a
-portable archive of source, assets, annotations, and selected publications for
+portable archive of source, assets, annotations, and selected bundles for
 one document.
 
 ## 13. Security
@@ -912,7 +912,7 @@ LibrePaper reports at least:
 - job counts by kind/status, claim latency, attempts, and oldest age;
 - blob put/get/delete counts, bytes, latency, and errors;
 - temporary and orphan cleanup counts;
-- source-version and publication creation latency;
+- source-version and bundle creation latency;
 - current database and bucket size;
 - HTTP, WebSocket, room, renderer, and agent resource limits.
 
@@ -931,7 +931,7 @@ The design deliberately accepts these outcomes:
 | Worker dies | PostgreSQL job lease expires and another worker retries |
 | Room process dies | Clients reconnect and room rebuilds from base plus updates |
 | Compaction blob succeeds, transaction fails | Old base and updates remain authoritative |
-| Publication preparation fails | Current publication remains unchanged |
+| Bundle preparation fails | Current bundle remains unchanged |
 | Old blob deletion fails | Bytes remain and cleanup retries |
 | Provider usage estimate drifts | Alert and conservative admission; no ledger repair protocol |
 | Single machine is lost | Restore PostgreSQL backup and remote/local blob backup |
@@ -959,7 +959,7 @@ Required scenarios include:
 - compaction concurrent with new updates;
 - multiple workers claiming jobs without duplicate claims;
 - expired job claim recovery;
-- publication conflict and retry;
+- bundle conflict and retry;
 - deletion with partial blob failures;
 - quota/rate/concurrency refusal at every boundary;
 - database backup during writes and restore into an empty deployment;
@@ -980,7 +980,7 @@ Before release, record reproducible measurements for:
 - versions containing 1, 100, and 512 reused assets;
 - document listing and annotation timelines at product limits;
 - job claim throughput with 1, 4, and 16 workers;
-- publication upload and activation at configured limits;
+- bundle upload and activation at configured limits;
 - PostgreSQL database size for 10,000 documents and 500,000 versions;
 - blob bytes and operations for repeated small edits to projects with large
   unchanged images;

@@ -45,6 +45,20 @@
 
   // A suggestion is a comment whose motivation is `editing` (the W3C term).
   const isSuggestion = $derived(comment.motivation === "editing");
+  // A highlight is the one kind of card with nothing of its own to say: no
+  // body, no proposal, just a badge. Without the passage it marks, the card
+  // is a coloured label for a place the reader cannot see from here, so it
+  // carries a few words of what was highlighted.
+  const isHighlight = $derived(!isSuggestion && Boolean(comment.motivation) && comment.motivation !== "commenting");
+  // Enough to recognise the passage by, not enough to reprint it: the words
+  // that fit in about sixty characters, cut on a word boundary.
+  const excerpt = $derived.by(() => {
+    const text = shown.exact.replace(/\s+/g, " ").trim();
+    if (text.length <= 60) return text;
+    const head = text.slice(0, 60);
+    const cut = head.lastIndexOf(" ");
+    return `${(cut > 20 ? head.slice(0, cut) : head).trimEnd()}…`;
+  });
   const annotationColor = $derived(/^#[0-9a-f]{6}$/i.test(comment.color || "") ? comment.color : null);
 
   // The word-level diff between the quoted passage and its proposal, kept in
@@ -189,7 +203,7 @@
   {:else}
     <div class="flex flex-col gap-2">
       <Row gap={1} wrap>
-        {#if comment.earlierPublication}
+        {#if comment.earlierBundle}
           <span class="badge preset-tonal-warning">Earlier published version</span>
         {/if}
         {#if comment.orphaned}
@@ -215,7 +229,11 @@
       </Row>
 
       <!-- The passage itself is not repeated here: it is painted in the
-           document, and ringed there while this card is the selected one. -->
+           document, and ringed there while this card is the selected one.
+           A highlight is the exception -- it says nothing else. -->
+      {#if isHighlight && excerpt}
+        <p class="quote border-l-2 pl-3 text-sm" style={annotationColor ? `border-color: ${annotationColor}` : undefined}>{excerpt}</p>
+      {/if}
       {#if isSuggestion}
         <!-- The word-level diff of the quotation against the proposal:
              deletion struck through, insertion underlined. Deletion in full
@@ -284,9 +302,9 @@
     </div>
   {/if}
 
-  <!-- One row of verbs for the whole thread, and it keeps out of the way: a
-       card that is hovered, focused into, or selected shows them, and so does
-       every card on a device with no pointer to hover with.
+  <!-- One row of verbs for the whole thread, and it stays put: a verb you
+       cannot see is a verb you do not know you have, so reply, resolve and
+       delete are painted on every card rather than only the hovered one.
 
        Delete was behind a "•••" menu whose only item was Delete -- a menu
        is for choosing, and there was nothing to choose. It is its own button
@@ -361,16 +379,10 @@
   .run-head { display: flex; align-items: center; gap: var(--spacing); min-width: 0; }
   .run-author { min-width: 0; overflow: hidden; font-size: var(--panel-meta-size); line-height: var(--panel-line-height); text-overflow: ellipsis; white-space: nowrap; }
   .post { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  /* The highlighted words, in the highlight's own colour when it has one.
+     Quiet enough to read as a quotation rather than as something said. */
+  .quote { margin: 0; border-color: color-mix(in oklab, currentColor 30%, transparent); color: var(--panel-muted); overflow-wrap: anywhere; }
 
-  .actions { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 0.5); margin-top: var(--spacing); opacity: 0; transition: opacity 120ms ease-in-out; }
-  /* Visible whenever the card is the one in hand. `:focus-within` is what
-     keeps them reachable from the keyboard: they are always in the tab order,
-     and tabbing to one is what paints it. */
-  .card:hover .actions,
-  .card:focus-within .actions,
-  .selected .actions { opacity: 1; }
-  /* Nothing hovers on a touch screen, so there they simply stay. */
-  @media (hover: none) { .actions { opacity: 1; } }
-  @media (prefers-reduced-motion: reduce) { .actions { transition: none; } }
+  .actions { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 0.5); margin-top: var(--spacing); }
 
 </style>

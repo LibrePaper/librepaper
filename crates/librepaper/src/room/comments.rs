@@ -2,7 +2,7 @@
 //! the anchor that ties it to a passage.
 
 use super::annotation::{
-    AnchorStatus, CheckpointId, FileId, PresentationContext, SourceTextTarget,
+    AnchorStatus, CheckpointId, FileId, PresentationContext, SourceTextTarget, MOMENT,
 };
 use super::locate::{self, Quote};
 use super::resolve;
@@ -59,7 +59,7 @@ pub struct Comment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<DerivedAttachment>,
     /// The page the comment was made on: the words as the render had them,
-    /// and which publication that was. Display evidence only.
+    /// and which bundle that was. Display evidence only.
     #[serde(default, skip_serializing_if = "PresentationContext::is_empty")]
     pub presentation: PresentationContext,
     #[serde(default)]
@@ -70,11 +70,11 @@ pub struct Comment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// Published rendering the reader selected from. Empty only for editor
-    /// annotations which are not tied to a rendered publication. Kept beside
+    /// annotations which are not tied to a rendered bundle. Kept beside
     /// the comment rather than inside its presentation because who may see a
     /// comment is decided by it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub publication_id: String,
+    pub bundle_id: String,
 
     /// The proposal this comment offers, when its motivation is `editing`.
     ///
@@ -237,10 +237,10 @@ impl CommentView {
 }
 
 /// Editorial annotations belong to the editable project, so only an editor
-/// may receive them. A nonempty publication id identifies a rendered
-/// annotation, including one retained from an earlier publication.
+/// may receive them. A nonempty bundle id identifies a rendered
+/// annotation, including one retained from an earlier bundle.
 pub fn visible_to_reader(comment: &Comment) -> bool {
-    comment.motivation != "editing" && !comment.publication_id.is_empty()
+    comment.motivation != "editing" && !comment.bundle_id.is_empty()
 }
 
 /// Rule H's authorization test: the document's owner may delete anything on
@@ -284,25 +284,29 @@ fn source_files(doc: &loro::LoroDoc) -> Vec<(String, String, String)> {
     files
 }
 
-/// Checks a range somebody else worked out.
+/// Checks a range somebody else worked out, and stamps it with the state it
+/// was checked against.
 ///
 /// An assistant reads the source itself and sends offsets into it, so there is
 /// nothing to locate -- but there is something to verify, and it is not the
 /// bounds. It is that the text at the range is the text the caller says is
-/// there. A range that passes this is a range into the checkpoint's own text,
-/// which is the same guarantee [`anchor_for`] gets by construction.
+/// there. A range that passes this is a range into the live document's own
+/// text, which is the same guarantee [`anchor_for`] gets by construction.
+///
+/// The revision a caller sends is never stored. A client does not get to say
+/// what state its work is on record against: `revision` is the room's own
+/// name for the document it just verified this range in, and it replaces
+/// whatever the caller put there. The caller's own claim about what it read is
+/// checked once for the whole pass, against the tree digest, before any of
+/// this.
 fn validate_original_anchor(
     config: &Configuration,
     doc: &loro::LoroDoc,
-    checkpoint: &str,
+    revision: &str,
     anchor: OriginalAnchor,
 ) -> Result<OriginalAnchor, &'static str> {
-    // The checkpoint is the room's own name for a state of the document, not
-    // a shape a client chooses: what matters is that the caller worked against
-    // the one this is being written against, not what it looks like.
-    if anchor.checkpoint_id.0.is_empty() || anchor.checkpoint_id.0 != checkpoint {
-        return Err("a comment needs the current checkpoint provenance");
-    }
+    let mut anchor = anchor;
+    anchor.checkpoint_id = CheckpointId(revision.to_string());
     let Some(source) = anchor.target.source() else {
         return Ok(anchor);
     };
@@ -344,27 +348,27 @@ fn validate_original_anchor(
 /// where that passage has got to since is the resolver's question like any
 /// other. Anchoring it to the current draft instead would either fail to find
 /// the passage or, worse, find a different one.
-pub(super) struct PublishedSource {
+pub(super) struct BundledSource {
     checkpoint: String,
     files: Vec<(String, String, String)>,
 }
 
 impl Room {
-    /// The checkpoint a publication was built from, and its files.
+    /// The checkpoint a bundle was built from, and its files.
     ///
-    /// `None` when there is no such publication, it kept no source version,
+    /// `None` when there is no such bundle, it kept no source version,
     /// or its source archive cannot be read. A rendered selection cannot be
     /// anchored to the current draft in any of those cases.
-    async fn published_source(&self, publication_id: &str) -> Option<PublishedSource> {
-        let id = uuid::Uuid::parse_str(publication_id).ok()?;
+    async fn bundled_source(&self, bundle_id: &str) -> Option<BundledSource> {
+        let id = uuid::Uuid::parse_str(bundle_id).ok()?;
         let catalog = self.catalog.as_ref().get()?;
-        let publication = catalog.publication(id).await.ok()??;
+        let bundle = catalog.bundle(id).await.ok()??;
         let document_id = uuid::Uuid::parse_str(&self.storage_id).ok()?;
-        if publication.document_id != document_id {
+        if bundle.document_id != document_id {
             return None;
         }
         let version = catalog
-            .version(document_id, publication.source_version_id?)
+            .version(document_id, bundle.source_version_id?)
             .await
             .ok()??;
         let point = super::checkpoint::checkpoint_from_version(&version);
@@ -380,7 +384,7 @@ impl Room {
                     .map(|body| (file.id.clone(), path.clone(), body.clone()))
             })
             .collect();
-        Some(PublishedSource { checkpoint, files })
+        Some(BundledSource { checkpoint, files })
     }
 }
 
@@ -400,7 +404,7 @@ fn anchor_for(
     config: &Configuration,
     doc: &loro::LoroDoc,
     current: &str,
-    published: Option<&PublishedSource>,
+    published: Option<&BundledSource>,
     quote: &Quote<'_>,
     whole_document: bool,
 ) -> Result<OriginalAnchor, String> {
@@ -548,11 +552,6 @@ impl Room {
     }
 }
 
-/// A comment refused only because the document moved between its checkpoint
-/// and the lock that would record it. Nothing about the comment is wrong, so
-/// the caller checkpoints again and retries rather than reporting it.
-pub(crate) const STALE_CHECKPOINT: &str = "stale_checkpoint";
-
 /// Installs a comment the durable write has already accepted.
 ///
 /// The comment is found again by identity rather than by the index the
@@ -608,17 +607,29 @@ impl Room {
             None => None,
         };
         let mut state = self.state.lock().await;
-        let latest = state.manifest.latest();
+        // The caller read the source at a revision and is now proposing
+        // changes to it. What has to be true is that the source still says
+        // what it said then, which is the tree digest -- the same name
+        // `agent_view` hands the caller when it reads. It is not a checkpoint:
+        // nothing writes an archive to answer this question, and the digest
+        // answers it exactly, including for the states nobody saved.
         let live_digest = tree_of(&state.session.doc, &state.session.asset_sizes)
             .0
             .digest();
-        if latest.map(|point| point.sha.as_str()) != Some(revision)
-            || latest.map(|point| point.tree_sha.as_str()) != Some(live_digest.as_str())
-        {
+        if revision != live_digest {
             return Err(BatchRefusal(
-                "source changed since that checkpoint; read it again".into(),
+                "source changed since you read it; read it again".into(),
             ));
         }
+        // What every anchor in this pass goes on record against: the position
+        // in the operation history the document is at right now, read under
+        // the lock the ranges are verified under. The digest above says the
+        // text has not moved; this says which state that is, in a way the
+        // history can be asked to reproduce.
+        let at = format!(
+            "{MOMENT}{}",
+            encode_update(&state.session.doc.state_frontiers().encode())
+        );
         let existing_comments = durable_comments.unwrap_or_else(|| state.comments.len());
         let max_comments = config.max_comments.min(500);
         if existing_comments.saturating_add(items.len()) > max_comments {
@@ -653,7 +664,7 @@ impl Room {
             let original_anchor = match validate_original_anchor(
                 &config,
                 &state.session.doc,
-                revision,
+                &at,
                 item.original_anchor.clone(),
             ) {
                 Ok(anchor) => anchor,
@@ -713,7 +724,7 @@ impl Room {
                 id: new_id(),
                 seq: next_seq,
                 attachment: Some(DerivedAttachment {
-                    checkpoint_id: CheckpointId(revision.to_string()),
+                    checkpoint_id: CheckpointId(at.clone()),
                     status: AnchorStatus::Exact,
                     live_source_range: resolve::capture(&state.session.doc, source),
                     resolved_range_utf16: Some((source.start_utf16, source.end_utf16)),
@@ -723,7 +734,7 @@ impl Room {
                 presentation: PresentationContext::default(),
                 motivation: "editing".into(),
                 color: None,
-                publication_id: String::new(),
+                bundle_id: String::new(),
                 proposal: String::new(),
                 // Projections, filled in when this is served rather than stored.
                 proposed: Some(proposed.clone()),
@@ -871,7 +882,7 @@ impl Room {
         };
         if !is_owner && !visible_to_reader(comment) {
             // Editorial suggestions contain source anchors and proposed source
-            // text. Other empty-publication annotations are likewise local to
+            // text. Other empty-bundle annotations are likewise local to
             // the editable project. Neither belongs in the public annotation
             // channel.
             return json!({"type": "annotation-redacted", "annotation_revision": comment.seq});
@@ -924,13 +935,13 @@ impl Room {
         // here -- before the room state is taken, because it reads storage and
         // because the comment gate above already keeps other writers out.
         let published = match &command {
-            Command::Comment { publication_id, .. } if !publication_id.is_empty() => {
-                self.published_source(publication_id).await
+            Command::Comment { bundle_id, .. } if !bundle_id.is_empty() => {
+                self.bundled_source(bundle_id).await
             }
             _ => None,
         };
-        if matches!(&command, Command::Comment { publication_id, .. }
-            if !publication_id.is_empty())
+        if matches!(&command, Command::Comment { bundle_id, .. }
+            if !bundle_id.is_empty())
             && published.is_none()
         {
             return (
@@ -1004,34 +1015,30 @@ impl Room {
             })
         });
 
-        // What the document says at this moment, by name. The socket takes a
-        // checkpoint before a comment reaches here, so for a comment this is
-        // the text the reviewer was looking at; for a resolve it is the text
-        // the author was looking at when they called it done. Either way it is
-        // the server's to record and never the client's to send.
-        let current = state
-            .manifest
-            .latest()
-            .map(|point| point.sha.clone())
-            .unwrap_or_default();
-        if matches!(&command, Command::Comment { publication_id, .. } if publication_id.is_empty())
-        {
-            let live_digest = tree_of(&state.session.doc, &state.session.asset_sizes)
-                .0
-                .digest();
-            let checkpoint_digest = state.manifest.latest().map(|point| point.tree_sha.as_str());
-            if checkpoint_digest != Some(live_digest.as_str()) {
-                // Somebody typed between the checkpoint and this lock. The
-                // comment is fine; the moment it would be recorded against is
-                // not. Named so the caller can take a fresh checkpoint and
-                // come straight back rather than handing the reviewer an
-                // error for somebody else's keystroke.
-                let (mut payload, ok) =
-                    fail("source changed since its checkpoint; retry the comment");
-                payload["code"] = json!(STALE_CHECKPOINT);
-                return (payload, ok);
-            }
-        }
+        // What the document says at this moment, by name: the frontier of the
+        // live document, read under the lock the anchor is taken under. For a
+        // comment this is the text the reviewer was looking at; for a resolve
+        // it is the text the author was looking at when they called it done.
+        // Either way it is the server's to record and never the client's to
+        // send.
+        //
+        // It is a frontier rather than a checkpoint because a checkpoint is a
+        // whole source archive and a comment is not a reason to write one. A
+        // frontier is a position in the operation log, which holds every one
+        // of these states already, so naming one costs nothing and the room
+        // can name the state it is actually in rather than the nearest state
+        // somebody happened to save. It also removes the race the old
+        // checkpoint-then-write had: there is no window between the name and
+        // the anchor, because they are taken from the same borrow.
+        //
+        // `frontier:` is the same spelling the activity timeline hands out for
+        // a moment nobody checkpointed, so a revision is self-describing:
+        // anything else is a checkpoint id, and the two are told apart by
+        // reading them rather than by knowing where they came from.
+        let current = format!(
+            "{MOMENT}{}",
+            encode_update(&state.session.doc.state_frontiers().encode())
+        );
 
         // Resolving and deleting cost a slot too, the same as posting: a
         // caller who could resolve or delete without limit could still make a
@@ -1363,7 +1370,7 @@ impl Room {
             }
             Command::Comment {
                 motivation: raw_motivation,
-                publication_id,
+                bundle_id,
                 body: raw_body,
                 creator: raw_creator,
                 exact: raw_exact,
@@ -1505,7 +1512,7 @@ impl Room {
                     presentation: seen,
                     motivation,
                     color,
-                    publication_id,
+                    bundle_id,
 
                     proposal: String::new(),
                     proposed: proposed.clone(),

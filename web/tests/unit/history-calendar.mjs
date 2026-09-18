@@ -16,7 +16,7 @@ import {
 } from "../../src/lib/history-calendar.js";
 
 const mark = (at, extra = {}) => ({
-  sha: String(at).replace(/\D/g, "").padEnd(64, "0"), at, by: "Vincent", why: "quiet", label: "", ...extra,
+  sha: String(at).replace(/\D/g, "").padEnd(64, "0"), at, by: "Vincent", why: "sync", label: "", ...extra,
 });
 const row = (at, changes, state_bytes, frontier = "") => ({ at, changes, state_bytes, frontier, peer: "" });
 
@@ -322,12 +322,15 @@ const coarse = (points, options = {}) =>
 {
   // What counts as asked for. A name is the most deliberate thing anybody
   // does to a checkpoint, whatever the document's own reason for taking it.
-  assert.equal(deliberate({ why: "quiet" }), false);
-  assert.equal(deliberate({ why: "left" }), false);
   assert.equal(deliberate({ why: "sync" }), false);
-  assert.equal(deliberate({ why: "quiet", label: "Draft" }), true);
+  assert.equal(deliberate({ why: "sync", label: "Draft" }), true);
   assert.equal(deliberate({ why: "cli" }), true);
   assert.equal(deliberate({ why: "restore" }), true);
+  // Rows the clock wrote before versions stopped being scheduled. Nothing
+  // produces them now, and documents that were edited then are still full of
+  // them, so they keep folding.
+  assert.equal(deliberate({ why: "quiet" }), false);
+  assert.equal(deliberate({ why: "left" }), false);
 }
 
 // --- what was written and never saved --------------------------------------
@@ -348,6 +351,10 @@ const coarse = (points, options = {}) =>
   assert.deepEqual(left.map((one) => one.minute), [840, 545],
     "only the minutes no version covers");
   assert.equal(left[1].changes, 3, "a minute sums the writes in it");
+  // 1000 arriving and 1100 after it: the first row of all is the document
+  // turning up, and the second is the hundred bytes it grew by.
+  assert.equal(left[1].work, 1100, "and what the document grew by across them");
+  assert.equal(left[0].work, 50, "a later minute grows only over the one before it");
   assert.deepEqual(left.map((one) => one.frontier), ["four", "two"],
     "and each opens the last anchor left in it");
   assert.ok(!left.some((one) => one.frontier === "elsewhere"), "the day holds only its own");

@@ -46,7 +46,7 @@ include a UUID-shaped `temp_id`, kept unchanged across retries.
 
 | `type` | Required action fields | Optional action fields |
 |---|---|---|
-| `comment` | `body`, `exact` (the selected words), `publication_id` for rendered annotations | `motivation` (defaults to commenting), `prefix`, `suffix`, `position`, `point`, `document`, `color` |
+| `comment` | `body`, `exact` (the selected words), `bundle_id` for rendered annotations | `motivation` (defaults to commenting), `prefix`, `suffix`, `position`, `point`, `document`, `color` |
 | `reply` | `comment_id`, `body` | — |
 | `resolve` | `comment_id`, `resolved` (boolean; false reopens) | — |
 | `delete` | `comment_id` | — |
@@ -59,12 +59,12 @@ Readers and commenters connect for annotation events only. They must not send
 and sends source-bearing updates only to editor peers. Source suggestions and
 source selectors are private to editors.
 
-Rendered comments carry the publication ID visible during selection. An empty
-or obsolete ID is refused for commenters. A publication changing while a comment
+Rendered comments carry the bundle ID visible during selection. An empty
+or obsolete ID is refused for commenters. A bundle changing while a comment
 is submitted is serialized with the annotation commit; a refusal keeps the client
 submission available for recovery. Editor source annotations can omit the ID.
 
-`publication-updated` carries only `publication_id`. It announces availability;
+`bundle-updated` carries only `bundle_id`. It announces availability;
 clients offer Refresh without replacing the visible page or discarding drafts.
 
 A client sends what it saw: `exact` and, around it, `prefix` and `suffix`,

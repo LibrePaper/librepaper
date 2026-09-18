@@ -4,7 +4,7 @@
 // putting the bar somewhere nobody can use it: off the edge of the window, or
 // underneath the bar at the top of the page.
 import assert from "node:assert/strict";
-import { LIFT, MARGIN, correctedLeft, placeBar, withinWindow } from "../../src/lib/annotation-bar.js";
+import { LIFT, MARGIN, placeBar, recenteredLeft, withinWindow } from "../../src/lib/annotation-bar.js";
 
 const frame = { left: 100, top: 50 };
 const place = (rect, extra = {}) => placeBar({ rect, frame, width: 200, minTop: 60, windowWidth: 1000, ...extra });
@@ -40,20 +40,34 @@ const place = (rect, extra = {}) => placeBar({ rect, frame, width: 200, minTop: 
   assert.equal(place({ left: 300, right: 500, top: 200 }, { width: 1200, windowWidth: 1000 }).left, MARGIN);
 }
 
-// The bar is placed before it is drawn and corrected once its real width is
-// known -- but only when the correction is worth a redraw, because the effect
-// that applies it reads the width it is about to move.
+// The bar is placed before it is drawn, at a guessed width, and re-centred on
+// the same point once the real width is known -- but only when the correction
+// is worth a redraw, because the effect that applies it reads the width it is
+// about to move.
 {
-  assert.equal(correctedLeft({ left: 400, width: 200, windowWidth: 1000 }), null, "already in bounds");
-  assert.equal(correctedLeft({ left: -50, width: 200, windowWidth: 1000 }), MARGIN, "out of bounds is corrected");
   assert.equal(
-    correctedLeft({ left: MARGIN - 0.5, width: 200, windowWidth: 1000 }),
+    recenteredLeft({ center: 500, left: 400, width: 200, windowWidth: 1000 }),
+    null,
+    "already centred at this width",
+  );
+  // The guess was 250 wide and the bar came out 200: without this the bar
+  // sits 25px to the left of the words it is about.
+  assert.equal(
+    recenteredLeft({ center: 500, left: 375, width: 200, windowWidth: 1000 }),
+    400,
+    "re-centred once the real width is known",
+  );
+  assert.equal(
+    recenteredLeft({ center: 500, left: 399.5, width: 200, windowWidth: 1000 }),
     null,
     "a sub-pixel difference is not a redraw",
   );
   // Widening the bar (choosing the highlight tool adds five swatches) can
-  // push it off the right edge, which is exactly what this corrects.
-  assert.equal(correctedLeft({ left: 900, width: 300, windowWidth: 1000 }), 1000 - 300 - MARGIN);
+  // push it off the right edge, which the window rules still catch.
+  assert.equal(
+    recenteredLeft({ center: 980, left: 900, width: 300, windowWidth: 1000 }),
+    1000 - 300 - MARGIN,
+  );
 }
 
 console.log("annotation bar: centred on the selection, inside the window, clear of the top bar");

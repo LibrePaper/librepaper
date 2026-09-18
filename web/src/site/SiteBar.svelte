@@ -1,9 +1,15 @@
 <script>
   // The bar every page of the static site wears: the mark, a way back to the
-  // docs, and the button that opens the application. Not Nav.svelte -- that
-  // bar asks the application who is signed in, and this site has no
-  // application behind it to ask.
+  // docs, and the button that signs you in. Not Nav.svelte -- that bar asks
+  // the application who is signed in and shows their account; this site has
+  // no application behind it to ask, so the button always reads "Sign in" and
+  // sends you to the application to find out.
   import Logo from "../components/Logo.svelte";
+  import Icon from "../components/Icon.svelte";
+
+  // Replaced at build time by vite.site.config.js: the published site points
+  // at the deployment, a local build at whatever `make deploy` started.
+  const app = __APP_ORIGIN__;
 </script>
 
 <nav class="flex items-center justify-between gap-4 px-4 py-3">
@@ -12,13 +18,20 @@
     <span>LibrePaper</span>
   </a>
   <div class="flex items-center gap-4">
-    <a class="text-surface-600-400 hover:text-primary-500 text-sm" href="/start/index.html">Docs</a>
-    <a class="text-surface-600-400 hover:text-primary-500 text-sm" href="https://github.com/LibrePaper/librepaper">GitHub</a>
+    <a class="text-surface-600-400 hover:text-primary-500 text-sm" href="/start.html">Docs</a>
+    <a
+      class="text-surface-600-400 hover:text-primary-500 flex items-center"
+      href="https://github.com/LibrePaper/librepaper"
+      aria-label="LibrePaper on GitHub"
+      title="GitHub"
+    >
+      <Icon name="github" size={18} />
+    </a>
     <a
       class="btn btn-sm preset-filled-primary-500"
-      href="https://app.librepaper.org/try"
+      href={`${app}/auth/login`}
     >
-      Try it now
+      Sign in
     </a>
   </div>
 </nav>

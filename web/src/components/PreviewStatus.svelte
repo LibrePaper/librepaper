@@ -26,13 +26,14 @@
           {#if busy}<span class="spinner" aria-hidden="true"></span>
           {:else if tone === "error" || tone === "warning"}<Icon name="triangle-alert" />
           {:else}<Icon name="check" />{/if}
-          <span>{label}</span>
+          <span class="preview-status-label">{label}</span>
           <Icon name="chevron-down" />
         </button>
       {/snippet}
     </Popover.Trigger>
-    <!-- Sent to the body: the preview header is a positioned, clipping row,
-         and a panel this wide opened from inside it was confined to it. -->
+    <!-- Sent to the body: this sits in the bar along the top of the window,
+         a positioned, clipping row, and a panel this wide opened from inside
+         it was confined to it. -->
     <Portal>
       <Popover.Positioner class="preview-status-positioner">
         <Popover.Content class="preview-status-popover">
@@ -49,6 +50,11 @@
   .preview-status-trigger :global(svg) { width: .875rem; height: .875rem; }
   .preview-status-trigger.warning { color: var(--color-warning-700-300); }
   .preview-status-trigger.error { color: var(--color-error-600-400); }
+  /* On a narrow bar the icon carries it. The label is the longer half of this
+     control, and the bar has a document title to keep. */
+  @media (max-width: 600px) {
+    .preview-status-label { display: none; }
+  }
   /* The panel's width is the pane's business, not the window's: it is capped
      against the positioner's available width, which Zag measures. */
   :global(.preview-status-positioner) { z-index: 30; }

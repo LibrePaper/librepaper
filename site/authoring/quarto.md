@@ -4,12 +4,8 @@ title: "Quarto"
 
 ## Quarto documents
 
-Publish and synchronize the actual source:
-
-```sh
-librepaper publish paper.qmd
-librepaper sync <document> paper.qmd
-```
+Publish and synchronize the actual `.qmd` source rather than a rendered
+result; see [the CLI](../cli.html).
 
 The Tools menu offers exactly one active preview mode at a time, remembered
 per document (default: **Quarto preview**):
@@ -24,12 +20,8 @@ per document (default: **Quarto preview**):
   PDF; DOCX is available only as an export.
 
 Rendering runs on your own computer, with Quarto and R or Python installed
-there. Enable local rendering from the preview banner, or start the companion
-from a terminal:
-
-```sh
-librepaper local launch
-```
+there. Enable local rendering from the preview banner, or start the companion from a
+terminal; see [the companion](../cli.html#the-companion).
 
 The first time you pick Quarto preview, a small window from the local app
 asks whether to allow that site to use this computer's tools; click
@@ -53,8 +45,8 @@ scope are hidden and network access is disabled. For an isolated one-shot
 render, additional local data must be named explicitly as a project-relative
 input; only those inputs are copied into the temporary workspace.
 
-When `librepaper admin serve` runs on the machine you browse from, it runs the
-local app itself: nothing to start. Pass `--no-local` to turn that off.
+When the server runs on the machine you browse from, it runs the local app
+itself and there is nothing to start. `--no-local` turns that off.
 
 Publishing a project directory includes editorial resources and code, but skips
 generated output directories, execution caches, environments, and raw data by
@@ -79,14 +71,6 @@ receives an opaque binding identifier, not the folder's absolute path.
 Terminal users can make the same explicit link, which takes precedence for
 render jobs for the document:
 
-```sh
-librepaper local doctor
-librepaper local quarto bind https://your-librepaper-server.example <document-slug> \
-  --root /path/to/project --main paper.qmd
-```
-
-The paired app renders against that project instead of its hosted workspace
-for this document. Revoke it with `librepaper local quarto unbind <binding>`.
-
-For parser inspection without execution, use
-`librepaper quarto inspect paper.qmd`.
+The paired app can render against a project folder on your disk instead of its
+hosted workspace for this document. Binding and revoking are terminal
+commands; see [the companion](../cli.html#the-companion).

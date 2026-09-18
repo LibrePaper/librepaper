@@ -55,9 +55,9 @@ impl Room {
         self.put_asset_inner(body, ceilings, actor).await
     }
 
-    /// Asset staging used by a publication that already owns the mutation
+    /// Asset staging used by a bundle that already owns the mutation
     /// gate.  The public route wrapper above keeps standalone asset writes
-    /// serialized with publications without deadlocking the replacement path.
+    /// serialized with bundles without deadlocking the replacement path.
     async fn put_asset_inner(
         &self,
         body: Vec<u8>,

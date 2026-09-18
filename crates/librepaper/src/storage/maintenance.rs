@@ -131,11 +131,11 @@ impl Maintenance {
                  ) distinct_archives
                  UNION ALL SELECT byte_length FROM (
                    SELECT DISTINCT ON (f.storage_key) f.byte_length
-                   FROM publication_files f
+                   FROM bundle_files f
                    WHERE NOT EXISTS(SELECT 1 FROM document_assets a
                                     WHERE a.storage_key = f.storage_key)
-                   ORDER BY f.storage_key, f.publication_id, f.path
-                 ) distinct_publication_files
+                   ORDER BY f.storage_key, f.bundle_id, f.path
+                 ) distinct_bundle_files
                ) held
              )",
         )
@@ -216,8 +216,8 @@ async fn referenced_keys(
     let found = sqlx::query_scalar!(
         r#"SELECT storage_key AS "key!" FROM document_assets WHERE storage_key=ANY($1)
            UNION SELECT archive_key FROM document_versions WHERE archive_key=ANY($1)
-           UNION SELECT manifest_key FROM publications WHERE manifest_key=ANY($1)
-           UNION SELECT storage_key FROM publication_files WHERE storage_key=ANY($1)
+           UNION SELECT manifest_key FROM bundles WHERE manifest_key=ANY($1)
+           UNION SELECT storage_key FROM bundle_files WHERE storage_key=ANY($1)
            UNION SELECT snapshot_key FROM document_bases WHERE snapshot_key=ANY($1)
            UNION SELECT previous_snapshot_key FROM document_bases
              WHERE previous_snapshot_key=ANY($1)"#,

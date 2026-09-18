@@ -13,7 +13,6 @@ pub mod hunks;
 pub mod needs;
 pub mod paths;
 
-pub mod quota;
 pub mod render;
 pub mod retention;
 pub mod session;

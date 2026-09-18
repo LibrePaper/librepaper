@@ -1,0 +1,16 @@
+# The reader and the documents, on the two names the deployment was configured
+# with. Caddy gets a certificate for each over HTTP-01, so both must already
+# resolve here; no wildcard is needed, since the second name is a concrete one.
+#
+# Host is passed through unchanged -- Caddy's default, and a requirement: the
+# server decides which of its two origins a request arrived on from that header
+# alone, and answers 421 to a name it does not serve.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN}, docs.{$DOMAIN} {
+	encode zstd gzip
+	# Collaboration is a WebSocket; Caddy carries the upgrade itself.
+	reverse_proxy librepaper:8080
+}

@@ -143,9 +143,9 @@ const context = (values) => {
     refreshReview: () => {},
     // An edit also puts the readers' copy of the document back on the clock.
     // The block that cares overrides this to count the calls.
-    publication: { keepCurrent: () => {} },
+    bundle: { keepCurrent: () => {} },
     mayEdit: true,
-    publishedPublication: null,
+    publishedBundle: null,
     editing: true,
     latexOutput: "pdf",
     outlineRevision: 0,
@@ -343,10 +343,15 @@ console.log("reader-races: all checks passed");
 {
   let refreshes = 0;
   let changes = 0;
-  // Containers are named by id, so the fakes are ids rather than objects.
+  // Containers are named by id, so the fakes are ids rather than objects. The
+  // session says which of them are the directory, exactly as the real one
+  // does: the texts, their paths, the figures and the metadata.
   const files = { id: "cid:root-files:Map" };
+  const paths = { id: "cid:root-paths:Map" };
   const mainText = { id: "cid:1@1:Text" };
-  const active = { files, text: mainText };
+  const directory = new Set([files.id, paths.id, "cid:root-assets:Map", "cid:root-meta:Map"]);
+  const active = { files, text: mainText,
+    directoryChanged: (events) => !Array.isArray(events) || events.some((event) => directory.has(event.target)) };
   const ctx = context({ session: active, needsSourceRefresh, refreshFiles: () => refreshes++, sourceChanged: () => changes++ });
   vm.runInContext(body("  function filesChanged(events, active = session)", "  function refreshPeers()"), ctx);
   ctx.events = [{ target: "cid:2@1:Text" }];
@@ -363,15 +368,22 @@ console.log("reader-races: all checks passed");
   assert.equal(changes, 3);
   // One commit is one batch, so a batch that touches both an included file and
   // the directory rebuilds the list once and repaints once.
+  // A rename moves a name in `paths` and touches nothing else. The list used
+  // to be redrawn only for the texts, so a renamed file kept its old name on
+  // screen until the page was reloaded.
+  ctx.events = [{ target: paths.id }];
+  vm.runInContext("filesChanged(events)", ctx);
+  assert.equal(refreshes, 3, "a rename rebuilds the directory");
+  assert.equal(changes, 4);
   ctx.events = [{ target: "cid:2@1:Text" }, { target: files.id }];
   vm.runInContext("filesChanged(events)", ctx);
-  assert.equal(changes, 4, "one batch schedules one repaint");
-  assert.equal(refreshes, 3, "and one rebuild");
-  const other = { files: { id: "cid:root-files:Map" }, text: { id: "cid:9@9:Text" } };
+  assert.equal(changes, 5, "one batch schedules one repaint");
+  assert.equal(refreshes, 4, "and one rebuild");
+  const other = { files: { id: "cid:root-files:Map" }, text: { id: "cid:9@9:Text" }, directoryChanged: () => false };
   ctx.events = [{ target: "cid:2@1:Text" }];
   ctx.other = other;
   vm.runInContext("filesChanged(events, other)", ctx);
-  assert.equal(changes, 4, "stale session events are ignored");
+  assert.equal(changes, 5, "stale session events are ignored");
 }
 
 // Renaming the main file into LaTeX configures the already joined project,
@@ -596,13 +608,13 @@ for (const invalidate of [null, "navigation", "main"]) {
   let reviewed = 0;
   let rescheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, mayEdit: true, publishedPublication: null,
+    sourceGeneration: 0, historyLiveVersion: 0, mayEdit: true, publishedBundle: null,
     outlineRevision: 0, sourceFormat: "", editing: false,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     setTimeout: () => 1, clearTimeout: () => {}, paintPreview: () => {},
     diagnosticPainter: { typed: () => {} },
     refreshReview: () => { reviewed += 1; },
-    publication: { keepCurrent: () => { rescheduled += 1; } },
+    bundle: { keepCurrent: () => { rescheduled += 1; } },
   });
   vm.runInContext(body("  function sourceChanged()", "  /* ------------------------------------------------------- keeping in step */"), ctx);
   vm.runInContext("sourceChanged()", ctx);
@@ -616,7 +628,7 @@ for (const invalidate of [null, "navigation", "main"]) {
 {
   let scheduled = 0;
   const ctx = context({
-    sourceGeneration: 0, historyLiveVersion: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedPublication: null,
+    sourceGeneration: 0, historyLiveVersion: 0, editing: true, sourceFormat: "markdown", pdfOutput: false, mayEdit: true, publishedBundle: null,
     previewTimer: null, PASSIVE_PREVIEW_DEBOUNCE: 1000,
     diagnosticPainter: { typed: () => {} },
     setTimeout: (fn, ms) => {
@@ -995,7 +1007,7 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
     toggleLocalExecution: () => commands.push('local-execution'),
     setLatexOutput: mode => commands.push(`latex-${mode}`),
     chose: value => commands.push(value),
-    FILE_COMMANDS: [], chooseToolCommand: () => { throw Error('preview dispatched to Tools'); },
+    FILE_COMMANDS: [],
   });
   vm.runInContext(body('  function chooseViewCommand(value)', '  // The File menu.'), ctx);
   vm.runInContext(body('  function chooseCompactCommand(value)', '  /* ------------------------------------------------------------------- boot */'), ctx);
@@ -1003,16 +1015,19 @@ assert.doesNotMatch(reader, /createRenderingStore|holdRendering|\/renderings\//)
   assert.deepEqual(commands, ['file','local-execution','local-execution','layout-split']);
   vm.runInContext('chooseViewCommand("preview-latex-html"); chooseCompactCommand("preview-latex-pdf")', ctx);
   assert.deepEqual(commands.slice(-2), ['latex-html', 'latex-pdf']);
-  const view = body('{#snippet viewItems()}', '{#snippet toolItems()}');
-  const tools = body('{#snippet toolItems()}', '<Nav {me} documentation={false}>');
+  const view = body('{#snippet viewItems()}', '<Nav {me}>');
+  const file = body('{#snippet fileItems()}', '{#snippet layoutItems()}');
   assert.match(view, /Preview this file/);
   assert.match(view, /@render previewItems\(\)/);
   // Local execution is its own section of the View menu, not another engine.
   assert.match(view, /menu-section-label">Local execution<\/div>/);
   assert.match(view, /value="local-execution"/);
   assert.doesNotMatch(reader, /preview-quarto|preview-calepin|preview-markdown|preview-typst"/);
-  assert.doesNotMatch(tools, /preview-/);
-  assert.match(reader, /icon="eye" label="Preview this file"/);
+  assert.doesNotMatch(file, /preview-/);
+  // Settings and Compile now live under File; there is no Tools menu left.
+  assert.match(file, /value="settings"/);
+  assert.match(file, /value="compile"/);
+  assert.doesNotMatch(reader, /label="Tools"/);
 }
 console.log('reader-races: View and compact menus expose the same explicit preview controls');
 

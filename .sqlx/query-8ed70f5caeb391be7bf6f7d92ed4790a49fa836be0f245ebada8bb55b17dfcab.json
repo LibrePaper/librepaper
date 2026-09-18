@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE bundles SET created_at = now() - interval '3 days' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8ed70f5caeb391be7bf6f7d92ed4790a49fa836be0f245ebada8bb55b17dfcab"
+}

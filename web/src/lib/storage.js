@@ -31,9 +31,6 @@ export const LINKED = "librepaper-linked";
 // editor lands where they left it.
 export const LAYOUT = "librepaper-layout";
 export const SOURCE_SIDE = "librepaper-source-side";
-// Which panel the column last showed -- the files, the comments or the history
-// -- or "" for closed. Absent on a first visit, which opens on the files.
-export const PANEL = "librepaper-panel";
 // The link keys this browser has been given, by slug. A key is a secret, and
 // this is the right place for one: it is per browser, so opening the link on a
 // phone means pasting it again, and it is cleared with everything else.

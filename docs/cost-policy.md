@@ -21,7 +21,7 @@ The initial application limits are:
 | Jobs claimed per worker pass | 8 |
 
 Retained storage includes source-version archives, all completed document
-assets, and publication files. Dereferencing an asset does not restore quota;
+assets, and bundle files. Dereferencing an asset does not restore quota;
 the asset remains until its document is deleted. Reusing identical bytes in
 later versions reuses the existing document asset and does not issue another
 sequential object-store PUT.

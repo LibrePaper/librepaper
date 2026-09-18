@@ -24,6 +24,8 @@
 
 import { anchorOne, flatten } from "./anchor.js";
 import * as history from "./history.js";
+import * as activity from "./activity.js";
+import { anchorOf, isMoment } from "./moment.js";
 
 // Passage lookups can outlive a single comment card in a long-lived reader.
 // A bisection reads the same handful of checkpoints for every comment it
@@ -80,13 +82,20 @@ export function clearPassageCache() {
   scopes.clear();
 }
 
-/// The text of one file of a checkpoint, as it was written. A historical
-/// comment asks by stable file ID, so a rename between checkpoints is harmless.
-/// A path is accepted for callers already holding a checkpoint-local name.
+/// The text of one file at one moment, as it was written. A historical
+/// comment asks by stable file ID, so a rename since then is harmless. A path
+/// is accepted for callers already holding a name from that moment.
+///
+/// The moment is either a checkpoint or a `frontier:` position in the editing
+/// history -- a comment made on the live draft carries the second, because
+/// nothing writes a source archive for a comment. Both answer with the same
+/// shape, so only the fetch differs.
 export async function sourceTextAt(slug, sha, file, headers = {}) {
   const key = cacheKey(slug, sha, headers);
   if (!points.has(key)) {
-    const pending = history.checkpoint(slug, sha, headers);
+    const pending = isMoment(sha)
+      ? activity.documentAt(slug, anchorOf(sha), headers)
+      : history.checkpoint(slug, sha, headers);
     remember(points, key, pending);
     // A failed request must not poison this checkpoint forever. The identity
     // check preserves a newer retry if eviction or another caller replaced it.

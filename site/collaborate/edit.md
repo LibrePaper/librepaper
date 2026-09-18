@@ -39,27 +39,27 @@ indicator opens that section. Saving and compiling previews do not publish.
 
 Comments retain their source checkpoint, source passage, and the rendering on
 which they were made. Edits move their displayed source attachment without
-changing what they refer to. A new publication may move their highlight in
+changing what they refer to. A new bundle may move their highlight in
 the rendered page; comments whose rendered words cannot be found still retain
-their discussion and indicate an earlier publication. Only the current full
+their discussion and indicate an earlier bundle. Only the current full
 rendering is retained, so old comments do not preserve an old page.
 
-Several people can edit at once. The source is a CRDT (Yjs), so two people
+Several people can edit at once. The source is a CRDT, so two people
 typing in the same sentence converge without either waiting for the other, and
 the status row under the toolbar says how many are in the session. The server holds the document source,
 relays every update and keeps it, so closing the last tab loses nothing
-and whoever opens the document next, in a browser or with `librepaper sync`, joins
+and whoever opens the document next, in a browser or from the terminal, joins
 what is there.
 
-Editors synchronize source and render previews locally. Explicit publication
+Editors synchronize source and render previews locally. Explicit bundle
 uploads compressed HTML and only missing public display assets. Readers reuse
-unchanged assets and refresh deliberately when a newer publication is available.
-The origin pays for source transfer between editors, publication delivery,
+unchanged assets and refresh deliberately when a newer bundle is available.
+The origin pays for source transfer between editors, bundle delivery,
 collaboration, persistence, and history maintenance.
 
 History is kept for you. The server takes a checkpoint of the source when the
 document has been quiet for a while, when the last editor leaves, when someone
-comments, and whenever `librepaper publish` writes to it. Unchanged text reuses its
+comments, and whenever a terminal publishes to it. Unchanged text reuses its
 checkpoint; an explicit restore records a new event. The history panel lets you
 read earlier versions, compare changes, and restore a whole version or bring
 back individual passages in the editor.
@@ -72,13 +72,13 @@ readable and downloadable; private inputs must be excluded from the display bund
 
 The formats, and they are not available in the same places:
 
-| | Source uploaded with | Editor renderer | Editor compiler download |
-|---|---|---|---|
-| **Markdown** | `librepaper publish paper.md` | comrak | ~130 KB compressed |
-| **Quarto** | `librepaper publish paper.qmd` | Markdown draft; optional local Quarto render | Reuses the Markdown renderer |
-| **Typst** | `librepaper publish paper.typ` | typst | ~13 MB compressed |
-| **HTML** | `librepaper publish paper.html` | the identity | nothing |
-| **LaTeX** | `librepaper publish paper.tex` | the browser engine, fetched directly from the mirror | ~6 MB and requested packages from the mirror; these are not origin transfer |
+| Source | Editor renderer | Editor compiler download |
+|---|---|---|
+| Markdown | comrak | ~130 KB compressed |
+| Quarto | Markdown draft; optional local Quarto render | Reuses the Markdown renderer |
+| Typst | typst | ~13 MB compressed |
+| HTML | the identity | nothing |
+| LaTeX | the browser engine, fetched directly from the mirror | ~6 MB and requested packages from the mirror; these are not origin transfer |
 
 Both renderers are the same crate the binary itself renders with, compiled to
 WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs

@@ -4,25 +4,26 @@
 // grid, each cell knowing how many versions landed on it and whether anybody
 // wrote on it at all. *Which version?* -- that day's versions, in order.
 //
-// The second answer has to survive the volume. The server saves a version
-// after thirty seconds of quiet and at least every five minutes of continuous
-// work, so an afternoon of writing is dozens of them and a paper's life is
-// thousands. Listing them all is the one thing the panel must not do.
+// The second answer has to survive the volume. Nothing writes a version on a
+// timer any more, but the command line asks for one on every save, so a day
+// spent editing a paper locally is still dozens of them. Listing them all is
+// the one thing the panel must not do.
 //
-// The coarsening is by *significance*, not by the clock. A run of autosaves
-// is one entry that says what the whole of it changed and opens into the
-// individual times when asked, and a run ends where something happened that a
-// reader would recognise as a boundary: a version somebody asked for, or a
-// pause long enough to be a break in the work.
+// The coarsening is by *significance*, not by the clock. A run of machine
+// saves is one entry that says what the whole of it changed and opens into
+// the individual times when asked, and a run ends where something happened
+// that a reader would recognise as a boundary: a version somebody asked for
+// by name, or a pause long enough to be a break in the work.
 //
 // A different person at the keyboard would be the third such boundary, and it
 // is deliberately not one, because nothing in the history can tell us. A
-// checkpoint's author is whoever sent the most recent update before it fired
-// -- `session.by` is overwritten by every edit -- so on a document two people
-// are writing at once it names whoever typed last, while the checkpoint holds
-// both their work. `document_activity.peer` is written as the empty string on
-// every path. Splitting on either would cut a collaborative afternoon into
-// runs that reflect typing order and credit each of them to one person.
+// checkpoint's author is whoever sent the most recent update before it was
+// written -- `session.by` is overwritten by every edit -- so on a document two
+// people are writing at once it names whoever typed last, while the checkpoint
+// holds both their work. `document_activity.peer` is written as the empty
+// string on every path. Splitting on either would cut a collaborative
+// afternoon into runs that reflect typing order and credit each of them to one
+// person.
 //
 // None of those is a time bucket, and the depth stops here on purpose. A tree
 // of finer and finer intervals answers "when" more precisely at every level,
@@ -158,38 +159,40 @@ export function dayVersions(checkpoints, day, timeZone) {
     .map((point) => ({ point, minute: Math.max(0, minutesIn(point.at, timeZone)) }));
 }
 
-/// The reasons a version was taken by the document rather than asked for.
+/// The reasons a version was written by a machine rather than asked for by a
+/// person. They are worth keeping and worth reaching, and they are never
+/// worth a line each in a list somebody is scanning.
 ///
-/// These are the volume: a quiet period, or an editor closing the tab, or a
-/// sync. They are worth keeping and worth reaching, and they are never worth
-/// a line each in a list somebody is scanning.
-const QUIET = new Set(["quiet", "left", "automatic", "sync"]);
+/// Only `sync` is still written -- a command-line sync asks for a version on
+/// every save of a file. The other three are rows the clock wrote before
+/// versions stopped being scheduled. Nothing produces them now, but documents
+/// hold thousands of them, and a panel that stopped folding them would open
+/// on a wall of them.
+const QUIET = new Set(["sync", "quiet", "left", "automatic"]);
 
 /// Whether a version is one somebody asked for. A name is enough on its own:
 /// giving a checkpoint a name is the most deliberate thing anybody does to
 /// one, whatever the document's own reason for taking it was.
 export const deliberate = (point) => Boolean(point?.label) || !QUIET.has(point?.why);
 
-/// How many autosaves in a row are worth gathering. Two collapse into an
+/// How many machine saves in a row are worth gathering. Two collapse into an
 /// entry that opens into two, which is the same height and one more click.
 const WORTH_GATHERING = 3;
 
-/// How long a pause between two autosaves has to be before it reads as a
+/// How long a pause between two machine saves has to be before it reads as a
 /// break in the work rather than as thinking.
 ///
-/// The server saves after thirty seconds of quiet and at least every five
-/// minutes of continuous writing, so anything up to five minutes apart is
-/// somebody still working. Ten leaves room either side of that.
+/// Ten minutes without saving a file is somebody who stopped, not somebody
+/// mid-paragraph.
 const RUN_PAUSE_MINUTES = 10;
 
 /// How many versions one run may stand for.
 ///
 /// The ceiling exists because the arithmetic says it has to. Between two
-/// deliberate versions, checkpoints are at least thirty seconds apart and --
-/// or the pause above would have ended the run -- at most ten minutes apart,
-/// so an unbroken afternoon of writing can reach several hundred. Opening one
-/// entry onto three hundred near-identical times is not a way to find
-/// anything.
+/// deliberate versions, machine saves are at most ten minutes apart -- or the
+/// pause above would have ended the run -- and somebody who saves on every
+/// keystroke pause is several hundred in an afternoon. Opening one entry onto
+/// three hundred near-identical times is not a way to find anything.
 ///
 /// Twenty-five is about a screenful in a sidebar. It is a ceiling on what one
 /// entry may hide, not a bucket size: a run under it is never divided.
@@ -336,14 +339,20 @@ function changedAcross(points) {
 ///
 /// A minute a version already covers is that version's minute, and appears
 /// only as the version.
+///
+/// Each minute carries what was written in it -- `changes`, the writes the
+/// minute admitted, and `work`, what the document grew by across them -- so
+/// that the list is not a column of bare clock times in which every row reads
+/// like the one above it.
 export function unsavedMinutes(checkpoints, rows, day, timeZone) {
   const saved = new Set(dayVersions(checkpoints, day, timeZone).map((one) => one.minute));
   const byMinute = new Map();
   for (const row of momentsOf(rows, day, timeZone)) {
     const minute = minutesIn(row.at, timeZone);
     if (minute < 0 || saved.has(minute)) continue;
-    const found = byMinute.get(minute) || { minute, changes: 0, frontier: "" };
+    const found = byMinute.get(minute) || { minute, changes: 0, work: 0, frontier: "" };
     found.changes += row.changes;
+    found.work += row.work;
     found.frontier = row.frontier || found.frontier;
     byMinute.set(minute, found);
   }

@@ -658,7 +658,7 @@ impl Server {
                                     continue 'reader;
                                 };
                                 match room
-                                    .receive_update(socket_id, &update, incoming.seq, who.attributed_as(&author))
+                                    .receive_update(socket_id, &update, incoming.seq, who.authorship(&author))
                                     .await
                                 {
                                     Applied::Ignored => {
@@ -719,7 +719,7 @@ impl Server {
                                 // call some time ago.
                                 let immediate = who.automation || !incoming.request_id.is_empty();
                                 let result =
-                                    room.checkpoint(&why, who.attributed_as(&author)).await;
+                                    room.checkpoint(&why, who.authorship(&author)).await;
                                 let payload = match result {
                                     Ok(Some(sha)) => json!({
                                         "type": "doc-checkpoint", "sha": sha,
@@ -970,52 +970,52 @@ impl Server {
                     }
 
                     // A commenter can only create annotations against a
-                    // rendered publication. Do not let an omitted ID evade
-                    // the stale-publication check; editors retain empty IDs
+                    // rendered bundle. Do not let an omitted ID evade
+                    // the stale-bundle check; editors retain empty IDs
                     // for source-side comments and suggestions.
-                    if incoming.kind == "comment" && !may_edit && incoming.publication_id.is_empty() {
+                    if incoming.kind == "comment" && !may_edit && incoming.bundle_id.is_empty() {
                         let _ = send_outgoing(&tx, Outgoing::Text(
-                            json!({"type":"error","message":"publication is required; refresh before annotating","temp_id":incoming.temp_id,"request_id":incoming.request_id}).to_string(),
+                            json!({"type":"error","message":"bundle is required; refresh before annotating","temp_id":incoming.temp_id,"request_id":incoming.request_id}).to_string(),
                         )).await;
                         continue 'reader;
                     }
 
-                    // Rendered annotations share PublicationStore's global
+                    // Rendered annotations share BundleStore's global
                     // per-storage gate with activation. Take it before the
                     // room-local source gate, recheck while held, then commit
                     // the comment. Source suggestions deliberately skip this
                     // path because they are tied to editable revisions.
-                    let _rendered_publication_guard = if incoming.kind == "comment"
-                        && !incoming.publication_id.is_empty()
+                    let _rendered_bundle_guard = if incoming.kind == "comment"
+                        && !incoming.bundle_id.is_empty()
                     {
                         Some(
-                            crate::server::publication::publication_lock(room.storage_id())
+                            crate::server::bundle::bundle_lock(room.storage_id())
                                 .lock_owned()
                                 .await,
                         )
                     } else {
                         None
                     };
-                    if let Some(publication_id) = (incoming.kind == "comment"
-                        && !incoming.publication_id.is_empty())
-                        .then_some(incoming.publication_id.as_str())
+                    if let Some(bundle_id) = (incoming.kind == "comment"
+                        && !incoming.bundle_id.is_empty())
+                        .then_some(incoming.bundle_id.as_str())
                     {
-                        let current = crate::server::publication::PublicationStore::for_store(
+                        let current = crate::server::bundle::BundleStore::for_store(
                             self.store.clone(),
                         )
                         .current(room.storage_id())
                         .await
                         .ok()
                         .flatten()
-                        .map(|publication| publication.publication_id);
-                        if current.as_deref() != Some(publication_id) {
+                        .map(|bundle| bundle.bundle_id);
+                        if current.as_deref() != Some(bundle_id) {
                             let _ = send_outgoing(&tx, Outgoing::Text(
-                                json!({"type":"error","message":"publication changed; refresh before annotating","request_id":incoming.request_id,"temp_id":incoming.temp_id}).to_string(),
+                                json!({"type":"error","message":"bundle changed; refresh before annotating","request_id":incoming.request_id,"temp_id":incoming.temp_id}).to_string(),
                             )).await;
                             continue 'reader;
                         }
                     }
-                    let _publication_guard = room.publication_write.lock().await;
+                    let _bundle_guard = room.bundle_write.lock().await;
                     let (result, ok) = self.apply_from(&room, incoming, &address, &who, &author).await;
                     if !ok {
                         if send_outgoing(&tx, Outgoing::Text(result.to_string())).await.is_err() {
@@ -1063,20 +1063,16 @@ impl Server {
         self.connections.lock().await.remove(&socket_id);
         room.detach(socket_id).await;
         // The last editor leaving is the rule that replaces `end_editing`'s
-        // forgetting: what they wrote is written out and marked, rather than
-        // dropped when the last tab closes.
+        // forgetting: what they wrote is written out, rather than dropped
+        // when the last tab closes. No version is taken here. Leaving a room
+        // is not an act of naming a moment, and the operation log already
+        // holds every keystroke that led to this one.
         if may_edit && room.editors_connected().await == 0 {
             if let Err(err) = room.persist().await {
                 eprintln!(
                     "warning: could not write the session for {}: {err}",
                     room.slug
                 );
-            }
-            // Only if there is something to mark. A visit that read the
-            // document and closed the tab wrote nothing, and a version of
-            // nothing is a row a reader opens to find the document unchanged.
-            if room.history_durability().await.checkpoint_pending {
-                let _ = room.checkpoint("left", who.attributed_as(&author)).await;
             }
         }
         room.broadcast(&json!({"type": "doc-peers", "count": room.editors().await}))

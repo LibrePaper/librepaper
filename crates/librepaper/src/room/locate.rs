@@ -44,7 +44,7 @@ const DECISIVE: usize = 4;
 const CONTEXT: usize = 64;
 
 /// One file a passage might have come from.
-pub(crate) struct Candidate<'a> {
+pub struct Candidate<'a> {
     pub file_id: &'a str,
     pub path: &'a str,
     pub text: &'a str,
@@ -53,7 +53,7 @@ pub(crate) struct Candidate<'a> {
 /// What the browser saw: the selected words and the text around them, as the
 /// rendered page had it. None of it is identity -- it is the question, and
 /// the range this module returns is the answer.
-pub(crate) struct Quote<'a> {
+pub struct Quote<'a> {
     pub exact: &'a str,
     pub prefix: &'a str,
     pub suffix: &'a str,
@@ -62,7 +62,7 @@ pub(crate) struct Quote<'a> {
 /// Why a selection could not be made into a source range. Each is a different
 /// thing to tell the person who selected it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Failure {
+pub enum Failure {
     /// Nothing was selected, or all of it was markup.
     Empty,
     /// The words are not in any file of this document.
@@ -73,7 +73,7 @@ pub(crate) enum Failure {
 }
 
 impl Failure {
-    pub(crate) fn message(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
             Failure::Empty => "that selection has no words to comment on",
             Failure::NotFound => "that passage is not in this document's source",
@@ -118,9 +118,9 @@ fn is_space(character: char) -> bool {
 /// `chars` is the flattened copy; `from[i]` is the UTF-16 offset in the source
 /// that `chars[i]` was taken from, with one extra entry past the end so a
 /// match that runs to the end of the file still has somewhere to point.
-pub(crate) struct Flat {
-    chars: Vec<char>,
-    from: Vec<u32>,
+pub struct Flat {
+    pub chars: Vec<char>,
+    pub from: Vec<u32>,
 }
 
 /// The named entities worth decoding in an HTML source. Anything else is
@@ -155,7 +155,7 @@ fn numeric_entity(body: &str) -> Option<char> {
 }
 
 /// Whether this file's markup is tags rather than characters.
-pub(crate) fn is_html(path: &str) -> bool {
+pub fn is_html(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.ends_with(".html") || lower.ends_with(".htm")
 }
@@ -166,7 +166,7 @@ pub(crate) fn is_html(path: &str) -> bool {
 /// Blanking keeps the length, so blanked syntax costs nothing; the whitespace
 /// collapse does not, which is why the map exists. Without it a match found
 /// here would be a position in a text nobody has.
-pub(crate) fn flatten(text: &str, html: bool) -> Flat {
+pub fn flatten(text: &str, html: bool) -> Flat {
     let mut chars = Vec::new();
     let mut from = Vec::new();
     let mut at16: u32 = 0;
@@ -189,7 +189,13 @@ pub(crate) fn flatten(text: &str, html: bool) -> Flat {
             // An entity is a word spelled sideways. Decode it at its own
             // first character and let the rest of it collapse as whitespace,
             // so the offsets on either side still hold.
-            let limit = rest.len().min(12);
+            // An entity is short, so look no further than twelve bytes --
+            // and not into the middle of a character, which is a slice the
+            // language refuses.
+            let mut limit = rest.len().min(12);
+            while !rest.is_char_boundary(limit) {
+                limit -= 1;
+            }
             if let Some(semicolon) = rest[..limit].find(';') {
                 let body = &rest[1..semicolon];
                 let decoded = named_entity(body).or_else(|| numeric_entity(body));
@@ -293,10 +299,7 @@ fn score_of(flat: &Flat, at: usize, length: usize, prefix: &[char], suffix: &[ch
 /// -- a figure number, a footnote marker -- and stopped agreeing with the
 /// source partway through. A candidate too short to be sure of is only ever
 /// accepted when it occurs exactly once.
-pub(crate) fn locate(
-    files: &[Candidate<'_>],
-    quote: &Quote<'_>,
-) -> Result<SourceTextTarget, Failure> {
+pub fn locate(files: &[Candidate<'_>], quote: &Quote<'_>) -> Result<SourceTextTarget, Failure> {
     let wanted = trimmed(&flatten(quote.exact, false).chars);
     if wanted.is_empty() {
         return Err(Failure::Empty);
@@ -702,5 +705,27 @@ mod html_whitespace_tests {
         )
         .unwrap();
         assert_eq!(found.exact, "Tea &nbsp; and coffee");
+    }
+
+    /// An `&` that is not an entity, with a character straddling the twelfth
+    /// byte after it. The window an entity is looked for in is bytes, and the
+    /// character is not: slicing one in half is a panic, and it took nothing
+    /// more than an ampersand and a euro sign in an HTML source to reach it.
+    #[test]
+    fn an_ampersand_before_a_wide_character_is_not_sliced_in_half() {
+        let files = vec![Candidate {
+            file_id: "f1",
+            path: "index.html",
+            text: "<p>Tea &aaaaaaaaaa\u{20ac}; and coffee, together.</p>\n",
+        }];
+        // The point is that this returns at all.
+        let _ = locate(
+            &files,
+            &Quote {
+                exact: "and coffee",
+                prefix: "",
+                suffix: "",
+            },
+        );
     }
 }

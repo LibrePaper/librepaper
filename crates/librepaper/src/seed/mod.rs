@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use crate::cli::{server_or_die, stored_token_for};
 use crate::config::Configuration;
 use crate::document::render::{document_format, render_markdown_document};
-use crate::document::store::{example_suffix, slugify, Publication, Store};
+use crate::document::store::{example_suffix, slugify, DocumentInput, Store};
 use crate::http::{detail_of, get_json, post_directory, post_json, text};
 use crate::room::Message;
 
@@ -163,7 +163,7 @@ pub async fn seed_with_backup(
         die("refusing to reset a nonempty deployment without --backup <verified-point>")
     }
     if count > 0 {
-        sqlx::query!("TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,document_versions,document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE").execute(catalog.pool()).await.unwrap_or_else(|e|die(e));
+        sqlx::query!("TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,document_versions,document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE").execute(catalog.pool()).await.unwrap_or_else(|e|die(e));
     }
     let handle = if owner.trim().is_empty() {
         "examples"
@@ -202,7 +202,7 @@ pub async fn seed_with_backup(
             slugify(document.title, &store.config),
             example_suffix(document.title, &store.config)
         );
-        let publication = Publication {
+        let bundle = DocumentInput {
             slug: slug.clone(),
             title: document.title.into(),
             source,
@@ -218,7 +218,7 @@ pub async fn seed_with_backup(
             unowned_publisher: false,
         };
         let entry = store
-            .put_directory_as_actor(publication, files, actor)
+            .put_directory_as_actor(bundle, files, actor)
             .await
             .unwrap_or_else(|e| die(e));
         println!("  {:<28} {}", slug, document.title);

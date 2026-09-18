@@ -1195,9 +1195,9 @@ pub async fn run_job_with_bindings(
         return failed(&request, &job_id, &error);
     }
     // Declaring a local computation input does not grant permission to publish it.
-    let publication_inventory = SourceInventory {
+    let bundle_inventory = SourceInventory {
         // Declared data inputs are execution inputs.  They are deliberately
-        // excluded from the shared source freshness identity and publication
+        // excluded from the shared source freshness identity and bundle
         // inventory, especially for isolated snapshots.
         tree_sha256: shared_inventory_before.tree_sha256.clone(),
         files: request
@@ -1213,7 +1213,7 @@ pub async fn run_job_with_bindings(
             ..options.clone()
         },
         &output,
-        &publication_inventory,
+        &bundle_inventory,
         quarto_version,
         started,
         &dependencies,

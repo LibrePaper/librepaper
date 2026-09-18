@@ -314,7 +314,7 @@ fn managed_dependency_closure_skips_missing_or_unshared_navigation() {
         "paper.html",
         b"<a href=\"chapters/missing.html\">next</a><a href=\"private.html\">private</a>",
     )
-    .expect("navigation links do not require publication inputs");
+    .expect("navigation links do not require bundle inputs");
     assert!(references.is_empty());
 }
 

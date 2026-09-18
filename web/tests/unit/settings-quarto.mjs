@@ -30,8 +30,13 @@ assert.match(local, /placeholder=\{quarto \? "main\.qmd" : sourceFormat === "typ
 // while still requiring the local service controls above.
 assert.match(registry, /const latex = \(\{ format, mayEdit \}\) => format === "latex" && mayEdit;/);
 assert.match(registry, /id: "build", says: "Build", offered: build,/);
-assert.match(registry, /id: "storage", says: "Storage", offered: latex,/);
+assert.match(registry, /id: "storage-latex",.*offered: latex }/);
 assert.match(storage, /id="storage-latex"/);
+// The account's own storage is a section of the same category, gated on being
+// signed in rather than on the format, and it lives in the settings dialog
+// rather than behind the account menu.
+assert.match(registry, /id: "storage-account",.*offered: account }/);
+assert.doesNotMatch(await readFile(new URL("../../src/components/Nav.svelte", import.meta.url), "utf8"), /QuotaSettings|storage/);
 
 // The Quarto page offers only what the live preview actually reads: a
 // profile and parameters. There is no format picker (the preview is always

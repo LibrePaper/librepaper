@@ -9,6 +9,124 @@
       content="A free platform to read, write, and review together."
     />
     <link rel="icon" type="image/svg+xml" href="/assets/librepaper-icon.svg" />
+    <!-- The formats line under the tagline, and nothing else. It is inline
+         because this page's stylesheet arrives with the script bundle, and
+         the one rule that changes the shape of a word -- the LaTeX wordmark --
+         must not wait for it. Everything else on the page is a utility class,
+         which Tailwind generates from the copy of this file in site/.build. -->
+    <style>
+      /* These rules are unlayered; every Tailwind utility sits in
+         @layer utilities, and an unlayered rule beats a layered one
+         whatever the source order. So a shorthand here silently overrides a
+         utility on the same element: a margin shorthand on .shot ate an
+         mt-14 in the markup, three times, with nothing to show for it. Set
+         only the axis that is meant and leave the other to the markup. */
+      .formats {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: baseline;
+        gap: 0 0.5rem;
+        font-variant-caps: all-small-caps;
+        /* Small capitals are drawn at about three quarters of cap height, so
+           this line renders a good deal smaller than its font size says. At
+           14px it came out around 11px of actual letter and was the quietest
+           thing in a hero whose first job it is: 16px and a little weight put
+           it back at a legible size without making it shout. */
+        font-weight: 500;
+        letter-spacing: 0.08em;
+      }
+      .formats .dot { letter-spacing: 0; opacity: 0.6; }
+      /* The wordmark at the size of its neighbours: the two letters that move
+         are the whole of it, so they move and nothing else does. The A and the
+         E are written lowercase because small capitals supply the shapes
+         either way, and a browser without them still reads "LaTeX". */
+      .latex { letter-spacing: 0; }
+      .latex-a { font-size: 0.9em; vertical-align: 0.22em; margin-left: -0.32em; margin-right: -0.12em; }
+      .latex-e { vertical-align: -0.22em; margin-left: -0.1em; margin-right: -0.06em; }
+
+      /* The screenshot under the formats, and the larger view a click on it
+         opens. The overlay is a :target rather than a script: this page is
+         read before any bundle has run, and a thumbnail that does nothing
+         until JavaScript arrives is worse than one that never promised.
+
+         The width is the largest of three limits rather than a fraction. The
+         shot is a two-pane editor, and its job is to show that one pane is
+         source and the other is a typeset paper -- at a third of the column
+         both panes were grey texture.
+
+         48rem is where it stops being wider than the words above it. The
+         wordmark is 28rem and the sentence sets to 42rem, so an image at
+         56rem made the copy read as a label stuck above a larger object;
+         near the measure of the sentence, the hero reads as one column. The
+         second cap turns a height back into a width through the image own
+         ratio of 1.918, so a short window keeps the whole hero on screen.
+         The file is 2852px wide, so either cap is still better than two
+         device pixels per CSS pixel. */
+      .shot {
+        position: relative;
+        display: block;
+        width: min(100%, 48rem, calc(52vh * 1.918));
+        margin-inline: auto;
+        overflow: hidden;
+        cursor: zoom-in;
+      }
+      .shot img { display: block; width: 100%; height: auto; }
+      /* Say that it opens. A hover state alone says nothing on a touch screen
+         and nothing at a glance, so the badge is always there and hover only
+         strengthens it. */
+      .shot-badge {
+        position: absolute;
+        right: 0.625rem;
+        bottom: 0.625rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        padding: 0.3rem 0.6rem;
+        border-radius: 999px;
+        font-size: 0.8125rem;
+        line-height: 1;
+        color: #fff;
+        background: rgb(0 0 0 / 0.6);
+        transition: background 120ms ease;
+      }
+      .shot:hover .shot-badge, .shot:focus-visible .shot-badge { background: rgb(0 0 0 / 0.85); }
+      .shot-badge svg { width: 0.875rem; height: 0.875rem; }
+      @media (max-width: 640px) { .shot { width: 100%; } }
+
+      .lightbox { display: none; }
+      .lightbox:target {
+        display: grid;
+        place-items: center;
+        position: fixed;
+        inset: 0;
+        z-index: 60;
+        padding: 2rem;
+        background: rgb(0 0 0 / 0.75);
+      }
+      .lightbox img { max-width: min(96vw, 1600px); max-height: 92vh; width: auto; height: auto; border-radius: 0.5rem; }
+      /* Two ways out of the same overlay: the backdrop, which is the whole of
+         it and takes a click anywhere, and the X, which is what somebody
+         looks for. The X sits above the backdrop and is reachable by keyboard,
+         which the backdrop is not. */
+      .lightbox-dismiss { position: absolute; inset: 0; cursor: zoom-out; }
+      .lightbox-close {
+        position: absolute;
+        top: 1rem;
+        right: 1rem;
+        z-index: 1;
+        display: grid;
+        place-items: center;
+        width: 2.5rem;
+        height: 2.5rem;
+        border-radius: 999px;
+        color: #fff;
+        background: rgb(0 0 0 / 0.55);
+        transition: background 120ms ease;
+      }
+      .lightbox-close:hover, .lightbox-close:focus-visible { background: rgb(0 0 0 / 0.85); }
+      .lightbox-close svg { width: 1.125rem; height: 1.125rem; }
+    </style>
   </head>
   <!-- web/tools/build-site.mjs copies this file, unchanged, to
        site/.build/index.html: vite.site.config.js's root is site/.build,
@@ -22,107 +140,155 @@
        not in a bundle that has to run first. Only the bar is mounted, and it
        is furniture: the page reads correctly without it. -->
   <body>
-    <header class="border-surface-200-800 border-b">
-      <div class="mx-auto max-w-6xl"><div id="siteBar"></div></div>
-    </header>
+    <div id="siteBar"></div>
 
     <main class="flex flex-col">
       <!-- ----------------------------------------------------------- hero -->
-      <section class="mx-auto flex w-full max-w-6xl flex-col items-center gap-4 px-4 py-10 text-center">
+      <!-- No `gap` on this stack. Every step in it used to be the same 16px,
+           which is what made the hero read as four things dropped into a
+           canvas rather than as one sequence: a wordmark, the sentence under
+           it, the formats under that, and then the product. The steps grow
+           instead -- 18, 20, 32 -- so the eye is handed down them, and the
+           last step is the largest because it is the one that changes the
+           subject, from what this is to what it looks like. -->
+      <section class="mx-auto flex w-full max-w-6xl flex-col items-center px-4 pt-7 pb-10 text-center">
         <img src="/assets/librepaper-logo.svg" alt="LibrePaper" class="w-full max-w-md" />
-        <p class="text-surface-600-400 max-w-2xl text-lg">
+        <p class="text-surface-600-400 mt-4.5 max-w-2xl text-xl">
           A free platform to read, write, and review together.
         </p>
-        <div class="flex flex-wrap items-center justify-center gap-3">
-          <a class="btn preset-filled-primary-500" href="https://app.librepaper.org/try">Try it now</a>
-          <a class="btn preset-outlined-surface-300-700" href="/start/index.html">Read the docs</a>
-        </div>
-        <!-- shot: the full LibrePaper editor, source and annotated paper side by side -->
+        <!-- The formats, said before anything else: whether it takes what you
+             already write in is the first question a visitor has. -->
+        <p class="formats text-surface-600-400 mt-5 text-base">
+          <span>HTML</span>
+          <span aria-hidden="true" class="dot">·</span>
+          <span class="latex">L<span class="latex-a">a</span>T<span class="latex-e">e</span>X</span>
+          <span aria-hidden="true" class="dot">·</span>
+          <span>Typst</span>
+          <span aria-hidden="true" class="dot">·</span>
+          <span>Markdown</span>
+          <span aria-hidden="true" class="dot">·</span>
+          <span>Quarto</span>
+          <span aria-hidden="true" class="dot">·</span>
+          <span>Calepin</span>
+        </p>
+        <a class="shot border-surface-200-800 rounded-container mt-8 border" href="#editor" aria-label="See the editor larger">
+          <img
+            src="/images/editor-latex.png"
+            alt="The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right."
+            width="2852"
+            height="1487"
+          />
+          <span class="shot-badge" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 3H3v6" /><path d="m3 3 7 7" /><path d="M15 21h6v-6" /><path d="m21 21-7-7" />
+            </svg>
+            Expand
+          </span>
+        </a>
       </section>
 
-      <!-- --------------------------------------------------------- formats -->
-      <section class="bg-primary-50-950 border-surface-200-800 border-y px-4 py-10 text-center">
-        <div class="mx-auto flex max-w-3xl flex-col items-center gap-4">
-          <h2 class="text-3xl font-semibold">Any format</h2>
-          <div class="flex flex-wrap justify-center gap-2" aria-label="Supported formats">
-            <span class="border-surface-300-700 rounded-full border px-4 py-1.5">Markdown</span>
-            <span class="border-surface-300-700 rounded-full border px-4 py-1.5">HTML</span>
-            <span class="border-surface-300-700 rounded-full border px-4 py-1.5">Typst</span>
-            <span class="border-surface-300-700 rounded-full border px-4 py-1.5">LaTeX</span>
-            <span class="border-surface-300-700 rounded-full border px-4 py-1.5">Quarto</span>
-          </div>
-          <ul class="text-surface-600-400 grid list-disc gap-x-10 gap-y-2 pl-5 text-left sm:grid-cols-2">
-            <li>Compile in the browser.</li>
-            <li>Nothing to install for reviewers.</li>
-            <li>BibTeX and BibLaTeX.</li>
-            <li>Mathematics, figures and multi-file projects.</li>
-          </ul>
-        </div>
-      </section>
+      <!-- The larger view. It sits outside the hero so the overlay is not
+           inside a centred, padded column when it covers the window. -->
+      <div class="lightbox" id="editor">
+        <a class="lightbox-dismiss" href="#" aria-label="Close the larger view"></a>
+        <a class="lightbox-close" href="#" aria-label="Close the larger view">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+          </svg>
+        </a>
+        <img
+          src="/images/editor-latex.png"
+          alt="The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right."
+          width="2852"
+          height="1487"
+        />
+      </div>
 
-      <!-- --------------------------------------------------------- features -->
-      <section class="mx-auto flex w-full max-w-6xl flex-col px-4">
-        <article class="grid items-center gap-8 border-b border-surface-200-800 py-10 lg:grid-cols-2">
-          <div class="flex max-w-xl flex-col gap-3">
-            <h2 class="text-3xl font-semibold sm:text-4xl">Collaborate</h2>
-            <p class="text-surface-600-400 text-lg">Real-time reading, annotation and editing.</p>
+      <!-- ------------------------------------------------------ the four -->
+      <!-- Four boxes, two by two on a wide window and stacked on a narrow
+           one: what you write in, what a paper does with other people in it,
+           what an agent may do to it, and what it costs. Everything the page
+           has to say belongs under one of the four, and a visitor decides
+           from the headings which one is theirs. Each line is a fact about
+           the software; a line that cannot be checked does not go here. -->
+      <section class="bg-primary-50-950 border-surface-200-800 border-y px-4 py-12">
+        <div class="mx-auto grid max-w-6xl items-start gap-6 lg:grid-cols-2">
+          <article class="bg-surface-50-950 border-surface-200-800 rounded-container flex h-full flex-col gap-3 border p-6">
+            <h2 class="text-2xl font-semibold">Write</h2>
             <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
-              <li>Named carets and personal undo.</li>
-              <li>Comments anchored to text or figures.</li>
-              <li>Reader, commenter, editor and owner links.</li>
+              <li><strong>Live preview</strong>: Markdown, HTML, Typst and LaTeX</li>
+              <li><strong>Computational notebooks</strong>: Quarto and Calepin</li>
+              <li><strong>Authoring</strong>: mathematics, figures, multi-file projects</li>
+              <li><strong>Bibliographies</strong>: BibTeX and Zotero</li>
+              <li><strong>Track changes</strong>: accept or reject each edit</li>
             </ul>
-          </div>
-          <!-- shot: two named carets in one paragraph, with its comment thread open -->
-        </article>
+            <!-- shot: source on the left, a compiled page with equations on the right -->
+          </article>
 
-        <article class="grid items-center gap-8 border-b border-surface-200-800 py-10 lg:grid-cols-2">
-          <!-- shot: original passage and revision beside a response to reviewers -->
-          <div class="flex max-w-xl flex-col gap-3 lg:col-start-2">
-            <h2 class="text-3xl font-semibold sm:text-4xl">Review every change</h2>
-            <p class="text-surface-600-400 text-lg">Follow a passage from comment to revision and response.</p>
+          <article class="bg-surface-50-950 border-surface-200-800 rounded-container flex h-full flex-col gap-3 border p-6">
+            <h2 class="text-2xl font-semibold">Collaborate</h2>
             <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
-              <li>Original passages alongside revisions.</li>
-              <li>Named checkpoints and word-level diffs.</li>
-              <li>Accept or reject each change.</li>
-              <li>Responses to reviewers from comment threads.</li>
+              <li><strong>Simultaneous editors</strong>: named carets and personal undo</li>
+              <li><strong>Annotate</strong>: highlights and threaded comments</li>
+              <li><strong>Share</strong>: readers, commenters or editors</li>
+              <li><strong>Chat</strong>: with collaborators and AI agents</li>
+              <li><strong>History</strong>: granular and infinite</li>
             </ul>
-          </div>
-        </article>
+            <!-- shot: two named carets in one paragraph, with its comment thread open -->
+          </article>
 
-        <article class="bg-surface-100-900 my-8 grid items-start gap-6 rounded-container p-8 lg:grid-cols-2">
-          <div class="flex max-w-xl flex-col gap-3">
-            <h2 class="text-3xl font-semibold sm:text-4xl">Work with agents</h2>
-            <p class="text-surface-600-400 text-lg">Bring your own agent. No additional subscription.</p>
-          </div>
-          <ul class="text-surface-600-400 list-disc space-y-2 pl-5 lg:pt-2">
-              <li>Three agent skills included.</li>
-              <li>Permissions limited by the link.</li>
-              <li>Credentials and inference stay local.</li>
-          </ul>
-          <!-- shot: an agent's anchored suggestion awaiting review -->
-        </article>
-      </section>
+<article class="bg-surface-50-950 border-surface-200-800 rounded-container flex h-full flex-col gap-3 border p-6">
+            <h2 class="text-2xl font-semibold">AI agents</h2>
+            <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+              <li><strong>Bring your own agent</strong>: no new subscription</li>
+              <li><strong>MCP</strong>: any commercial model or local weights</li>
+              <li><strong>Skills</strong>: three ship inside the binary</li>
+              <li><strong>Constrain your agent</strong>: reader, commenter, or editor</li>
+              <li><strong>Keys and inference</strong>: never leave your machine</li>
+            </ul>
+            <!-- shot: an agent's anchored suggestion awaiting review -->
+          </article>
 
-      <!-- -------------------------------------------------------- self-host -->
-      <section class="bg-primary-50-950 border-surface-200-800 border-y px-4 py-10">
-        <div class="mx-auto grid max-w-6xl gap-6 lg:grid-cols-2">
-          <div class="flex flex-col items-start gap-3">
-            <h2 class="text-3xl font-semibold sm:text-4xl">Your papers stay yours.</h2>
-            <p class="text-surface-600-400 max-w-xl text-lg">
-              Self-host LibrePaper with one static binary. Run it on a laptop or a small server, and
-              choose your own access and retention policies.
-            </p>
-            <pre class="bg-surface-50-950 rounded-container border-surface-200-800 overflow-x-auto border px-4 py-3 text-sm"><code>librepaper admin serve</code></pre>
-          </div>
-          <ul class="text-surface-600-400 list-disc space-y-2 pl-5 lg:pt-2">
-              <li>Every feature is free.</li>
-              <li>Open server, reader and renderers.</li>
-              <li>Markdown and W3C JSON-LD exports.</li>
-          </ul>
+          <article class="bg-surface-50-950 border-surface-200-800 rounded-container flex h-full flex-col gap-3 border p-6">
+            <h2 class="text-2xl font-semibold">Free</h2>
+            <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+              <li><strong>Free</strong>: no gated features</li>
+              <li><strong>Open source</strong>: server, reader and renderers</li>
+              <li><strong>Public host</strong>: 100&nbsp;MB and 50 free projects at librepaper.org</li>
+              <li><strong>Self-host</strong>: one static binary and a Postgres DB</li>
+              <li><strong>Export</strong>: projects and comments as ordinary files</li>
+            </ul>
+            <!-- shot: the terminal running `librepaper admin serve`, and the page it puts up -->
+          </article>
         </div>
       </section>
+
     </main>
 
+    <!-- Escape closes the larger view. The overlay itself is CSS, so it opens
+         and closes without this; what a script adds is the key a reader
+         expects, and nothing else depends on it. Closing is a step back
+         through history when this page opened the view, which is the same
+         thing the browser Back button does and leaves no entry behind. A
+         reader who arrived on the link directly has no such entry, so that
+         case clears the fragment instead. -->
+    <script>
+      (function () {
+        var opened = false;
+        document.addEventListener("click", function (event) {
+          if (event.target.closest && event.target.closest('a[href="#editor"]')) opened = true;
+        });
+        document.addEventListener("keydown", function (event) {
+          if (event.key !== "Escape" || location.hash !== "#editor") return;
+          if (opened) {
+            opened = false;
+            history.back();
+          } else {
+            location.hash = "";
+          }
+        });
+      })();
+    </script>
     <script type="module" src="../../web/src/site/index.js"></script>
   </body>
 </html>

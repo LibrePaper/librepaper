@@ -34,7 +34,14 @@ SHELL_OUT := web/dist/index.html
 LCM_DIR := web/vendor/loro-codemirror
 LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
            $(LCM_DIR)/awareness.ts $(LCM_DIR)/ephemeral.ts $(LCM_DIR)/utils.ts
-WEB     := $(shell find web/src web/public -type f) $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
+# web/src/site is deliberately not in this list. The marketing page and the
+# docs chrome are built by vite.site.config.js into site/_site, which the
+# binary does not embed, and no page under web/pages reaches them. Counting
+# them here made a one-line copy change rebuild the application bundle, which
+# rewrites every file in web/dist, which build.rs watches -- so editing the
+# landing page recompiled the whole crate. The site builds on its own: see the
+# site target at the bottom of this file.
+WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
 
@@ -155,11 +162,14 @@ smoke: $(BIN)  ## Drive the reader in headless chromium (needs chromium)
 fmt:  ## Format every crate
 	@cargo fmt
 
-# The fuzz targets in tools/fuzz/: libFuzzer over the functions that read what a
-# peer sends -- the word diff and merge, the path rules, the shared document
-# and its repair, and a v1 update against the admission ceilings. Each runs
-# for FUZZ_SECONDS, then stops; a finding is left in tools/fuzz/artifacts/. Needs a
-# nightly toolchain and cargo-fuzz (`cargo install cargo-fuzz`). No sanitizer:
+# The fuzz targets in tools/fuzz/: libFuzzer over the functions that read what
+# somebody else wrote -- the path rules, the shared document and its repair, a
+# v1 update against the admission ceilings, a catalog source archive off object
+# storage, the anchoring that places a reader's selection in a source file
+# the author uploaded, and what a page in the browser may say to the loopback
+# build service. Each runs for FUZZ_SECONDS, then stops; a finding is left in
+# tools/fuzz/artifacts/. Needs a nightly toolchain and cargo-fuzz
+# (`cargo install cargo-fuzz`). No sanitizer:
 # the code under test is safe Rust, the oracle is the assertions, and the
 # sanitizer doubles the build time to find nothing the panics do not.
 FUZZ_SECONDS ?= 60
@@ -187,6 +197,10 @@ clean:  ## Remove build output
 
 # The port is fixed because the GitHub OAuth app's callback URL names it.
 PORT       ?= 8081
+# The static site is a second server on a second port: it is a directory of
+# files with no application behind it, and the application is what the Sign in
+# button on it points at.
+SITE_PORT  ?= 8082
 DATA       ?= librepaper-data
 # Ownership for the manual admin seed command, derived from .env's own
 # LIBREPAPER_PUBLISHERS (exported above). Account onboarding creates private
@@ -207,8 +221,10 @@ LATEX_MIRROR_FLAG ?= $(if $(LATEX_MIRROR),--latex-mirror $(LATEX_MIRROR))
 # does on its own; `deploy` supplies a default below.
 SIMULATE_ACTIVITY_FLAG ?= $(if $(filter-out 0,$(SIMULATE_ACTIVITY)),--simulate-activity $(SIMULATE_ACTIVITY))
 
+OPEN ?= 1
+
 serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX_MIRROR=; everything else through .env)
-	@command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
+	@test "$(OPEN)" = 1 && command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
 	@$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(LATEX_MIRROR_FLAG) $(SIMULATE_ACTIVITY_FLAG)
 
 # One tutorial project per source format LibrePaper accepts. Each project has
@@ -313,14 +329,28 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # once, and any other number overrides the three weeks. It applies to the
 # examples an account is given at first sign-in, so changing it means `wipe`
 # and signing in again.
+# The whole product, locally: the marketing site on one port and the
+# application on the other, with the site built to point its Sign in button at
+# the application this target just started rather than at the published
+# deployment. Firefox opens the site, because that is where a stranger
+# arrives; `serve` is told not to open the application on top of it.
+#
+# The site server is a background process, so the recipe traps its own exit
+# and takes it down: a preview server left holding SITE_PORT would make the
+# next `make deploy` fail on --strictPort.
 deploy: SIMULATE_ACTIVITY ?= 21
-deploy: latex-check $(BIN)  ## Serve locally; sign in for your five examples (with three weeks of history) and share links to test roles
-	@if [ -n "$(LIBREPAPER_DATABASE_URL)" ]; then \
-		$(MAKE) serve LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY); \
-	else \
-		$(MAKE) postgres-dev; \
-		LIBREPAPER_DATABASE_URL='$(DEV_POSTGRES_URL)' $(MAKE) serve LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY); \
-	fi
+deploy: latex-check $(BIN)  ## Serve the site and the application locally and open the site in Firefox
+	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
+	@test -n "$(LIBREPAPER_DATABASE_URL)" || $(MAKE) --no-print-directory postgres-dev
+	@set -e; \
+	(cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort >/dev/null 2>&1) & \
+	trap "kill $$! 2>/dev/null || true" EXIT INT TERM; \
+	command -v firefox >/dev/null && (sleep 2; firefox http://localhost:$(SITE_PORT) >/dev/null 2>&1 &) || true; \
+	echo "site  http://localhost:$(SITE_PORT)"; \
+	echo "app   http://localhost:$(PORT)"; \
+	LIBREPAPER_DATABASE_URL="$${LIBREPAPER_DATABASE_URL:-$(DEV_POSTGRES_URL)}" \
+	LIBREPAPER_SITE_ORIGIN=http://localhost:$(SITE_PORT) \
+		$(MAKE) serve OPEN=0 LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY)
 
 # The deployment keys -- the Cloudflare token, the endpoints, the GitHub app
 # -- live sops-encrypted in deploy/keys.yaml. A target cannot export into the
@@ -386,17 +416,14 @@ loro-update:  ## Move the binding pin (COMMIT=<full 40-char sha>)
 # wrapped in the sidebar from site/nav.js, beside the landing page authored in
 # web/src/site/. Built by vite.site.config.js into site/_site, which nothing
 # else reads -- it is deployed on its own by .github/workflows/site.yml.
-.PHONY: site site-preview
+.PHONY: site site-serve
 
 site: wasm  ## Build the static docs site into site/_site
 	@command -v bun >/dev/null || { echo "bun is not installed: https://bun.sh"; exit 1; }
 	@cd web && bun install --silent && bun run build:site
 
-# --open rather than launching a browser here as `serve` does: vite picks the
-# port, moving off 4173 when something already has it, so a URL guessed in this
-# file would open the wrong page. It opens $BROWSER, or the system default.
-site-preview: site  ## Build the docs site, serve it and open it in a browser (Ctrl-C to stop)
-	@cd web && bun run preview:site
+site-serve: site  ## Serve the built docs site on SITE_PORT (Ctrl-C to stop)
+	@cd web && bun run serve:site -- --port $(SITE_PORT) --strictPort
 
 # --- the browser renderers -------------------------------------------------
 #

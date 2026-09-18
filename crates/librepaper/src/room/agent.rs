@@ -524,7 +524,7 @@ impl Room {
         }
         let _restore = self.restore_write.lock().await;
         let _comment = self.comment_write.lock().await;
-        let _publication = self.publication_write.lock().await;
+        let _bundle = self.bundle_write.lock().await;
         if !self.hold().await {
             return Err(AgentError::Storage(self.fenced().to_string()));
         }
@@ -582,11 +582,11 @@ impl Room {
         self.write_session_inner(false, true)
             .await
             .map_err(AgentError::from)?;
+        let signature = self
+            .signed_by(&authority.account_id, &authority.owner_key)
+            .await;
         let checkpoint = self
-            .checkpoint(
-                "cli",
-                super::Attribution::account(&authority.account_id, &authority.account_id),
-            )
+            .checkpoint("cli", signature)
             .await
             .map_err(AgentError::from)?;
 

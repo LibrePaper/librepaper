@@ -9,6 +9,7 @@
   import { offered, search } from "./registry.js";
   import EditorSettings from "./EditorSettings.svelte";
   import StorageSettings from "./StorageSettings.svelte";
+  import QuotaSettings from "./QuotaSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
   import LocalAppSettings from "./LocalAppSettings.svelte";
@@ -83,7 +84,8 @@
         {#if shown.id === "editor"}
           <EditorSettings {keys} {onkeys} />
         {:else if shown.id === "storage"}
-          <StorageSettings />
+          {#if context.signedIn}<QuotaSettings />{/if}
+          {#if context.format === "latex" && mayEdit}<StorageSettings />{/if}
         {:else if shown.id === "build"}
           <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
         {:else if shown.id === "rendering"}

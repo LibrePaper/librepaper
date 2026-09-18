@@ -42,6 +42,68 @@ if (drawer) {
   });
 }
 
+/* -------------------------------------------------------- the nav’s place */
+
+// Every link in the navigation loads a whole new page, so the column starts
+// at the top again and a reader partway down a long list loses the place they
+// were working through. It keeps its offset for the session and puts it back
+// before the first paint.
+//
+// Only this column. The contents on the right are scrolled by the scrollspy
+// below, which follows the heading being read, and two mechanisms moving one
+// element would fight.
+//
+// Storage can be absent or throw outright in a private window or with site
+// data blocked, so every access is guarded: a column that cannot remember
+// behaves as it did before.
+const rail = document.querySelector(".sitenav");
+if (rail) {
+  const key = "librepaper.docs.sitenav.scroll";
+
+  let saved = null;
+  try {
+    saved = sessionStorage.getItem(key);
+  } catch {
+    // No session storage here. Nothing to restore, and nothing to save.
+  }
+
+  if (saved !== null) {
+    rail.scrollTop = Number(saved) || 0;
+  } else {
+    // Nothing remembered yet, so show the entry for the page being read.
+    // Scrolling the rail directly rather than calling scrollIntoView, which
+    // would also move the page the reader has just arrived at.
+    const current = rail.querySelector("a[aria-current]");
+    if (current) {
+      const offset = current.offsetTop - rail.clientHeight / 2;
+      if (offset > 0) rail.scrollTop = offset;
+    }
+  }
+
+  // Written on a frame rather than on every scroll event, and once more on
+  // the way out, because a rail scrolled and then clicked in the same frame
+  // would otherwise be saved at its old offset.
+  let queued = false;
+  const remember = () => {
+    queued = false;
+    try {
+      sessionStorage.setItem(key, String(rail.scrollTop));
+    } catch {
+      // Full or blocked. The rail still works; it just will not remember.
+    }
+  };
+  rail.addEventListener(
+    "scroll",
+    () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(remember);
+    },
+    { passive: true },
+  );
+  addEventListener("pagehide", remember);
+}
+
 /* ---------------------------------------------------------------- images */
 
 const lightbox = document.getElementById("imageLightbox");
@@ -75,7 +137,7 @@ if (lightbox && expanded) {
 
 const toc = document.getElementById("tableOfContents");
 if (toc && toc.querySelector("a")) {
-  const headings = [...document.querySelectorAll(".prose h2, .prose h3")];
+  const headings = [...document.querySelectorAll(".prose h2")];
   const links = new Map([...toc.querySelectorAll("a")].map((a) => [a.hash.slice(1), a]));
 
   // Which section is being read, rather than which heading last crossed a

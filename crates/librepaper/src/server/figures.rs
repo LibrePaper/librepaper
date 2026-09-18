@@ -1,16 +1,16 @@
 //! What a document carries beside its text: the figures an editor uploads,
-//! editable input assets and the publication display capability
+//! editable input assets and the bundle display capability
 //! that lets the documents origin serve an explicitly published bundle.
 
 use super::*;
 
-/// A display capability is long enough for lazy publication assets. It is
+/// A display capability is long enough for lazy bundle assets. It is
 /// never the authorization boundary: every response rechecks live access.
 pub(super) const FRAME_TOKEN_SECONDS: i64 = 24 * 60 * 60;
 
 /// What a display capability signs.
-pub(super) fn frame_claim(slug: &str, publication_id: &str, scope: &str, until: i64) -> String {
-    format!("frame:{slug}:{publication_id}:{scope}:{until}")
+pub(super) fn frame_claim(slug: &str, bundle_id: &str, scope: &str, until: i64) -> String {
+    format!("frame:{slug}:{bundle_id}:{scope}:{until}")
 }
 
 /// A display capability deliberately contains no cookie, bearer token, or
@@ -36,28 +36,28 @@ pub(super) fn display_scope(entry: &crate::document::store::IndexEntry, who: &Vi
 }
 
 impl Server {
-    /// Build the isolated document-origin URL for one current publication.
-    /// The query contains only a short-lived, publication-scoped capability;
+    /// Build the isolated document-origin URL for one current bundle.
+    /// The query contains only a short-lived, bundle-scoped capability;
     /// it never carries a session cookie or source credential.
-    pub(super) fn publication_frame_url(
+    pub(super) fn bundle_frame_url(
         &self,
         entry: &crate::document::store::IndexEntry,
         who: &Viewer,
         arrival: &Arrival,
-        publication_id: &str,
+        bundle_id: &str,
     ) -> String {
         let scope = display_scope(entry, who);
         let until = crate::util::now_unix() + FRAME_TOKEN_SECONDS;
         let token = crate::auth::sign(
             &self.key,
             "figure-frame-v1",
-            &frame_claim(entry.slug.as_str(), publication_id, &scope, until),
+            &frame_claim(entry.slug.as_str(), bundle_id, &scope, until),
         );
         format!(
-            "{}/published/{}/index.html?publication_id={}&scope={}&until={}&token={}",
+            "{}/published/{}/index.html?bundle_id={}&scope={}&until={}&token={}",
             arrival.docs_origin(),
             entry.slug,
-            url::form_urlencoded::byte_serialize(publication_id.as_bytes()).collect::<String>(),
+            url::form_urlencoded::byte_serialize(bundle_id.as_bytes()).collect::<String>(),
             url::form_urlencoded::byte_serialize(scope.as_bytes()).collect::<String>(),
             until,
             url::form_urlencoded::byte_serialize(token.as_bytes()).collect::<String>(),

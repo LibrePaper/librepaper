@@ -1,4 +1,7 @@
 <script>
+  // What this account is storing on this deployment, and what a version is.
+  // The account's, not the document's: it says the same thing whatever
+  // happens to be open.
   import { onMount } from "svelte";
   import SettingRow from "./SettingRow.svelte";
   import { loadStorageStatus, storageBytes } from "../../lib/quota-preferences.js";
@@ -15,7 +18,13 @@
       ? Math.round((100 * usage.chargedBytes) / usage.hardQuotaBytes)
       : null,
   );
-  const policy = $derived(snapshot?.policy || {});
+  // One line under the title, whatever the status of the request: the row
+  // keeps its shape while the numbers are on their way or never arrive.
+  const used = $derived(
+    error ? error
+    : loading ? "Measuring…"
+    : `${storageBytes(usage?.chargedBytes)} of ${storageBytes(usage?.hardQuotaBytes)}${percent == null ? "" : ` (${percent}%)`} used.`,
+  );
 
   async function reload() {
     const job = ++generation;
@@ -40,21 +49,18 @@
   });
 </script>
 
-<div class="flex flex-col gap-6">
-  {#if error}<p role="alert">{error}</p>{/if}
-  {#if loading}<p>Loading storage status…</p>
-  {:else if snapshot}
-    <section aria-label="Storage usage" class="flex flex-col gap-2">
-      <h3 class="h5">Storage</h3>
-      <p>{storageBytes(usage?.chargedBytes)} of {storageBytes(usage?.hardQuotaBytes)}{percent == null ? "" : ` (${percent}%)`}</p>
-      <button class="btn btn-sm preset-outlined-surface-300-700 self-start" type="button" onclick={reload}>Refresh storage status</button>
-    </section>
+<SettingRow id="storage-account" title="Account storage" description={used}>
+  <button class="btn btn-sm preset-outlined-surface-300-700" type="button" onclick={reload}>Refresh</button>
+</SettingRow>
 
-    <SettingRow id="quota-policy" title="Retention policy" description="Automatic checkpoint cleanup is fixed across this deployment.">
-      <p>Keep up to {policy.routineVersionCount} unlabeled checkpoints and keep only checkpoints newer than {policy.routineVersionAgeDays} days.</p>
-      <p>Named checkpoints remain protected indefinitely.</p>
-      <p>Checkpoints are pruned during maintenance; a checkpoint may remain briefly until maintenance catches up.</p>
-      <p>Maximum retained checkpoints per account: {policy.maxCheckpointCount || "undefined"}.</p>
-    </SettingRow>
-  {/if}
-</div>
+{#if snapshot}
+  <SettingRow id="storage-retention" stacked title="Versions"
+              description="Nothing is deleted on a schedule.">
+    <p>A version is written when you name one, publish, restore an earlier
+      version, or leave a comment — never on a timer.</p>
+    <p>Every version is kept until you delete the document.</p>
+    <p>Editing between versions is not lost: the full editing history is kept
+      separately, and the history panel can show the document as it stood at
+      any moment in it, whether or not anybody named that moment.</p>
+  </SettingRow>
+{/if}

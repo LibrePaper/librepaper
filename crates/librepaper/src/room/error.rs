@@ -1,7 +1,7 @@
 //! Why a room write did not happen, as a value rather than as prose.
 //!
 //! Every mutator that can refuse answers with a [`WriteError`]. A caller
-//! decides what to do -- stop a publication, close a socket, pick a status
+//! decides what to do -- stop a bundle, close a socket, pick a status
 //! code -- by matching on the variant, never by
 //! reading the message. That is the whole point of the type: the wording of a
 //! refusal is for the person reading it, so rewording one must not silently

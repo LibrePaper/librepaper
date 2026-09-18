@@ -33,7 +33,7 @@ pub struct NewAnnotation {
     pub author_account_id: Option<Uuid>,
     pub author_key: String,
     pub author_label: String,
-    pub publication_id: Option<Uuid>,
+    pub bundle_id: Option<Uuid>,
     pub color: Option<String>,
     /// Written once to `annotations`; an update that changes it is refused.
     pub original_anchor: OriginalAnchor,
@@ -54,7 +54,7 @@ pub struct AnnotationRecord {
     pub author_account_id: Option<Uuid>,
     pub author_key: String,
     pub author_label: String,
-    pub publication_id: Option<Uuid>,
+    pub bundle_id: Option<Uuid>,
     pub color: Option<String>,
     pub checkpoint_id: String,
     pub target_kind: String,
@@ -190,7 +190,7 @@ impl PostgresCatalog {
             .await?;
         let inserted = sqlx::query!(
             "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,
-                                     publication_id,color,checkpoint_id,target_kind,file_id,
+                                     bundle_id,color,checkpoint_id,target_kind,file_id,
                                      start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,
                                      rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16)
              VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
@@ -202,7 +202,7 @@ impl PostgresCatalog {
             input.author_account_id,
             input.author_key,
             input.author_label,
-            input.publication_id,
+            input.bundle_id,
             input.color,
             input.original_anchor.checkpoint_id.0,
             anchor.kind,
@@ -476,7 +476,7 @@ impl PostgresCatalog {
     pub async fn annotations(
         &self,
         document_id: Uuid,
-        publication_id: Option<Uuid>,
+        bundle_id: Option<Uuid>,
         after: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
     ) -> Result<Vec<AnnotationRecord>> {
@@ -485,8 +485,8 @@ impl PostgresCatalog {
                 "annotation page limit must be 1..=500".into(),
             ));
         }
-        // Two queries rather than one with `($2 IS NULL OR publication_id=$2)`:
-        // the timeline and the publication-scoped timeline have a purpose-built
+        // Two queries rather than one with `($2 IS NULL OR bundle_id=$2)`:
+        // the timeline and the bundle-scoped timeline have a purpose-built
         // index each, and a predicate that is sometimes a constant and
         // sometimes a match cannot be planned against either.
         //
@@ -496,12 +496,12 @@ impl PostgresCatalog {
         // cannot use as a scan bound.
         let after_time = after.map(|v| v.0);
         let after_id = after.map(|v| v.1);
-        match publication_id {
-            Some(publication_id) => {
+        match bundle_id {
+            Some(bundle_id) => {
                 sqlx::query_as!(
                     AnnotationRecord,
                     r#"SELECT a.id,a.document_id,a.kind,a.body,a.author_account_id,a.author_key,a.author_label,
-                              a.publication_id,a.color,a.checkpoint_id,a.target_kind,a.file_id,
+                              a.bundle_id,a.color,a.checkpoint_id,a.target_kind,a.file_id,
                               a.start_utf16,a.end_utf16,a.start_side,a.end_side,a.exact,a.prefix,a.suffix,
                               a.rendered_exact,a.rendered_prefix,a.rendered_suffix,a.rendered_position_utf16,
                               a.resolved_at,
@@ -514,12 +514,12 @@ impl PostgresCatalog {
                               l.diagnostic AS "diagnostic?",
                               a.created_at
                        FROM annotations a LEFT JOIN annotation_live_state l ON l.annotation_id=a.id
-                       WHERE a.document_id=$1 AND a.publication_id=$2
+                       WHERE a.document_id=$1 AND a.bundle_id=$2
                          AND (a.created_at,a.id) > (COALESCE($3::timestamptz,'-infinity'),
                                                     COALESCE($4::uuid,'00000000-0000-0000-0000-000000000000'))
                        ORDER BY a.created_at,a.id LIMIT $5"#,
                     document_id,
-                    publication_id,
+                    bundle_id,
                     after_time,
                     after_id,
                     limit,
@@ -531,7 +531,7 @@ impl PostgresCatalog {
                 sqlx::query_as!(
                     AnnotationRecord,
                     r#"SELECT a.id,a.document_id,a.kind,a.body,a.author_account_id,a.author_key,a.author_label,
-                              a.publication_id,a.color,a.checkpoint_id,a.target_kind,a.file_id,
+                              a.bundle_id,a.color,a.checkpoint_id,a.target_kind,a.file_id,
                               a.start_utf16,a.end_utf16,a.start_side,a.end_side,a.exact,a.prefix,a.suffix,
                               a.rendered_exact,a.rendered_prefix,a.rendered_suffix,a.rendered_position_utf16,
                               a.resolved_at,
@@ -587,7 +587,7 @@ async fn annotation_by_id(
     Ok(sqlx::query_as!(
         AnnotationRecord,
         r#"SELECT a.id,a.document_id,a.kind,a.body,a.author_account_id,a.author_key,a.author_label,
-                  a.publication_id,a.color,a.checkpoint_id,a.target_kind,a.file_id,
+                  a.bundle_id,a.color,a.checkpoint_id,a.target_kind,a.file_id,
                   a.start_utf16,a.end_utf16,a.start_side,a.end_side,a.exact,a.prefix,a.suffix,
                   a.rendered_exact,a.rendered_prefix,a.rendered_suffix,a.rendered_position_utf16,
                   a.resolved_at,
@@ -825,7 +825,7 @@ mod tests {
             author_account_id: None,
             author_key: "a".into(),
             author_label: "A".into(),
-            publication_id: None,
+            bundle_id: None,
             color: None,
             checkpoint_id: "checkpoint".into(),
             target_kind: "source_text".into(),

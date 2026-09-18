@@ -83,15 +83,15 @@ const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: 
 }
 
 {
-  const oldPublication = { exact: "passage", position: 0, requireUnique: true };
-  check("old-publication positions cannot break an ambiguous quote tie",
-    anchorOne("passage and passage", oldPublication) === null);
-  check("an old publication follows a uniquely moved quote",
-    anchorOne("new introduction passage", oldPublication)?.start === 17);
-  check("distinct rendered context can select a repeated old-publication quote",
-    anchorOne("left passage right; other passage end", { ...oldPublication, prefix: "other ", suffix: " end" })?.start === 26);
-  check("a missing old-publication quote remains unmatched",
-    anchorOne("a replacement paragraph", oldPublication) === null);
+  const oldBundle = { exact: "passage", position: 0, requireUnique: true };
+  check("old-bundle positions cannot break an ambiguous quote tie",
+    anchorOne("passage and passage", oldBundle) === null);
+  check("an old bundle follows a uniquely moved quote",
+    anchorOne("new introduction passage", oldBundle)?.start === 17);
+  check("distinct rendered context can select a repeated old-bundle quote",
+    anchorOne("left passage right; other passage end", { ...oldBundle, prefix: "other ", suffix: " end" })?.start === 26);
+  check("a missing old-bundle quote remains unmatched",
+    anchorOne("a replacement paragraph", oldBundle) === null);
 }
 
 if (failures) process.exit(1);

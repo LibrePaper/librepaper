@@ -3,10 +3,7 @@
   import ExplorerMenu from "./ExplorerMenu.svelte";
   import Menubar from "./Menubar.svelte";
   import Logo from "./Logo.svelte";
-  import IconButton from "./IconButton.svelte";
   import Avatar from "./Avatar.svelte";
-  import Modal from "./Modal.svelte";
-  import QuotaSettings from "./settings/QuotaSettings.svelte";
   import { signInHref, signOut } from "../lib/api.js";
 
   // The bar every page wears: the logo, whatever the page puts in the middle,
@@ -19,8 +16,7 @@
   // Page-specific tools may include compact global state, such as the
   // Reader's connection and presence indicator. Pane-specific state stays
   // with the pane it describes.
-  let { me = {}, children, menus, tools, documentation = true } = $props();
-  let storageOpen = $state(false);
+  let { me = {}, children, menus, tools } = $props();
 </script>
 
 <!-- The way past the bar. Every page puts twenty-odd controls between the
@@ -49,13 +45,6 @@
 
   <div class="nav-actions flex shrink-0 items-center gap-2">
     {@render tools?.()}
-    <!-- The one link that is the same on every page: what LibrePaper is and how
-         to use it, from the project's own README. An icon among the other
-         icons rather than a phrase in the middle of the bar, which is width
-         the document title wanted and a shape nothing else in the bar had. -->
-    {#if documentation}
-      <IconButton icon="help" label="Documentation" href="https://librepaper.org" target="_blank" rel="noopener" />
-    {/if}
     <!-- The account's own picture, from GitHub or Google, in a circle, and
          nothing else: the name waits in the menu behind it. A GitHub account
          is its login, and the @ is what says so. A Google account is a
@@ -63,13 +52,12 @@
          is its handle and is shown to nobody, here least of all. -->
     {#if me.name}
       {@const shown = me.provider === "github" ? `@${me.name}` : me.name}
-      <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(); if (chosen.value === "storage") storageOpen = true; }}>
+      <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(me.site); }}>
         <Menu.Trigger class="account icon-control" aria-label={`Account menu, signed in as ${shown}`} title={shown}>
           <Avatar name={me.name} key={me.handle || me.name} src={me.picture || ""} size={7} title="" />
         </Menu.Trigger>
         <ExplorerMenu>
           <div class="account-who" aria-hidden="true">{shown}</div>
-          <Menu.Item value="storage" class="menuitem">Storage and history</Menu.Item>
           <Menu.Item value="signout" class="menuitem">Sign out</Menu.Item>
         </ExplorerMenu>
       </Menu>
@@ -78,10 +66,6 @@
     {/if}
   </div>
 </nav>
-
-<Modal bind:open={storageOpen} title="Storage and history" wide>
-  {#if storageOpen}<QuotaSettings />{/if}
-</Modal>
 
 <style>
   .skip-link { position: absolute; left: calc(var(--spacing) * 2); top: calc(var(--spacing) * -12); z-index: 200; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3); border-radius: var(--radius-base); background: var(--color-primary-500); color: white; font-size: var(--text-sm); transition: top 0.15s; }

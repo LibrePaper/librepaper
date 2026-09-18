@@ -423,7 +423,7 @@ window.activityCheck = async () => {
   const versions = () => [...host.querySelectorAll(".day-row")];
   const unsaved = () => [...host.querySelectorAll(".unsaved-row")];
   const more = () => host.querySelector(".unsaved-more");
-  const back = async () => { host.querySelector(".crumb-back").click(); await tick(); };
+  const back = async () => { host.querySelector("#history-tab-calendar").click(); await tick(); };
   const into = async (day) => {
     host.querySelector('[data-history-day="' + day + '"]').click();
     await tick();

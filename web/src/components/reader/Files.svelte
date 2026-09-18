@@ -11,7 +11,7 @@
   import { expandArchives } from "../../lib/project-upload.js";
   import { unzip } from "../../lib/zip.js";
 
-  let { files = [], folders = [], open = "", mayEdit = false, rules = {},
+  let { files = [], folders = [], open = "", preview = "", mayEdit = false, rules = {},
     onopen, onadd, onmkdir, onrelocate, ondelete, onduplicate, onmain, onfigure, ontext, ondownload, ondownloaditem } = $props();
 
   let selected = $state([]);
@@ -35,6 +35,7 @@
   const collection = $derived(createTreeViewCollection({ rootNode: root, nodeToValue: (node) => node.id, nodeToString: (node) => node.name,
     nodeToChildrenCount: (node) => node.kind === "folder" ? node.children.length : undefined }));
   const directories = $derived(folderPaths(files, folders));
+  const allFolders = $derived(directories.map((path) => `folder:${path}`));
   const entries = $derived([...files, ...directories.map((path) => ({ kind: "folder", id: path, path }))]);
   const chosen = $derived(entries.filter((entry) => selected.includes(nodeKey(entry))));
   const currentFolder = $derived(chosen.length === 1 ? (chosen[0].kind === "folder" ? chosen[0].path : parentPath(chosen[0].path)) : "");
@@ -231,13 +232,20 @@
   ondragover={(event) => dragOver(event, "")} ondrop={(event) => drop(event, "")} ondragleave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) dragEnd(); }}>
   <PanelHeader title="Files">
     {#snippet actions()}
+      <!-- One run of controls, left to right: what makes something in the
+           tree, what folds it, then what moves files across its edge. They
+           are all the same kind of thing to press, so they sit in one group
+           rather than a pair pushed off to the far end of the header. -->
       <div class="explorer-actions" aria-label="File actions">
         {#if mayEdit}
           <IconButton icon="file-plus" label="New file" tone="plain" size="btn-icon-sm" onclick={() => start("file")} />
           <IconButton icon="folder-plus" label="New folder" tone="plain" size="btn-icon-sm" onclick={() => start("folder")} />
+        {/if}
+        <IconButton icon="chevrons-down" label="Expand all folders" tone="plain" size="btn-icon-sm" disabled={allFolders.every((value) => expanded.includes(value))} onclick={() => expanded = allFolders} />
+        <IconButton icon="chevrons-up" label="Collapse all folders" tone="plain" size="btn-icon-sm" disabled={!expanded.length} onclick={() => expanded = []} />
+        {#if mayEdit}
           <IconButton icon="upload" label="Upload files" tone="plain" size="btn-icon-sm" disabled={busy} onclick={() => choose()} />
         {/if}
-        <IconButton icon="chevrons-up" label="Collapse all folders" tone="plain" size="btn-icon-sm" disabled={!expanded.length} onclick={() => expanded = []} />
         <IconButton icon="download" label="Download project" tone="plain" size="btn-icon-sm" onclick={() => ondownload?.()} />
       </div>
       {#if mayEdit}<input class="chooser" type="file" multiple bind:this={chooser} aria-label="Choose files to upload"
@@ -299,6 +307,12 @@
     <TreeView.BranchText class="explorer-name">{node.name}</TreeView.BranchText>
   {:else}
     <span class="explorer-name">{node.name}</span>
+  {/if}
+  <!-- Which file the preview is rendering, marked where the files are rather
+       than only in the View menu: the name pushes it to the far end, so the
+       column of eyes reads as one mark down the tree and not as a control. -->
+  {#if node.kind !== "folder" && node.path === preview}
+    <span class="explorer-preview" role="img" aria-label="Shown in the preview"><Icon name="eye" /></span>
   {/if}
 {/snippet}
 
@@ -363,7 +377,14 @@
   </TreeView.NodeProvider>
 {/snippet}
 
-<Modal open={dialog !== null} onclose={() => { dialog = null; refusal = ""; }} title={dialog?.type === "delete" ? "Delete selected items?" : "Move selected items"}>
+<Modal open={dialog !== null} onclose={() => { dialog = null; refusal = ""; }} title={dialog?.type === "delete" ? "Delete selected items?" : "Move selected items"}
+  confirm={{
+    label: dialog?.type === "delete" ? "Delete" : "Move",
+    tone: dialog?.type === "delete" ? "error" : "primary",
+    disabled: protectedSelection,
+    onclick: confirm,
+    oncancel: () => { dialog = null; refusal = ""; },
+  }}>
   {#if dialog?.type === "delete"}
     <p>{dialog.entries.map((entry) => basename(entry.path)).join(", ")}</p>
     <p>{deleting.length} {deleting.length === 1 ? "file" : "files"} will be deleted. This cannot be undone.</p>
@@ -379,23 +400,23 @@
     <p class="text-sm text-surface-600-400">References in source files are not changed automatically.</p>
   {/if}
   {#if refusal}<p class="refusal" role="alert">{refusal}</p>{/if}
-  {#snippet footer()}
-    <button class="btn preset-outlined-surface-300-700" onclick={() => { dialog = null; refusal = ""; }}>Cancel</button>
-    <button class="btn {dialog?.type === 'delete' ? 'preset-filled-error-500' : 'preset-filled-primary-500'}" disabled={protectedSelection} onclick={confirm}>{dialog?.type === "delete" ? "Delete" : "Move"}</button>
-  {/snippet}
 </Modal>
-<Modal open={conflict !== null} onclose={() => resolveConflict(false)} title="This name is already in use">
+<Modal open={conflict !== null} onclose={() => resolveConflict(false)} title="This name is already in use"
+  cancelLabel="Skip"
+  confirm={{ label: "Keep both", onclick: () => resolveConflict(true), oncancel: () => resolveConflict(false) }}>
   <p>{conflict}</p><p>Keep both files with a new name, or skip this upload.</p>
-  {#snippet footer()}
-    <button class="btn preset-outlined-surface-300-700" onclick={() => resolveConflict(false)}>Skip</button>
-    <button class="btn preset-filled-primary-500" onclick={() => resolveConflict(true)}>Keep both</button>
-  {/snippet}
 </Modal>
 
 <style>
   .filelist { display: flex; flex-direction: column; overflow: hidden; }
   .filelist > :global(*) { flex-shrink: 0; }
+  /* The toolbar and the tree are one thing: what you can make, and what is
+     there. A panel's standard gap under its actions is meant to separate
+     sections, and it reads here as a hole above the first file. */
+  .filelist > :global(.panel-actions) { margin-bottom: calc(var(--spacing) * 1.5); }
   .explorer-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  /* Pushed to the far end by the name, which takes the free width. */
+  .explorer-preview { display: flex; flex: none; color: var(--color-surface-600-400); }
   .explorer-actions {
     display: flex;
     align-items: center;

@@ -30,8 +30,8 @@ struct AccountDeletionPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PublicationCleanupPayload {
-    publication_id: Uuid,
+struct BundleCleanupPayload {
+    bundle_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -85,7 +85,7 @@ impl Worker {
             "source_compaction" => self.compact(claim).await,
             "document_deletion" => self.delete_document(claim).await,
             "account_deletion" => self.delete_account(claim).await,
-            "publication_cleanup" => self.cleanup_publication(claim).await,
+            "bundle_cleanup" => self.cleanup_bundle(claim).await,
             "maintenance" => self.maintenance(claim).await,
             other => Err(format!("unsupported job kind {other}")),
         }
@@ -181,11 +181,11 @@ impl Worker {
         Ok(())
     }
 
-    /// Forgets a superseded publication. It deletes rows and no blobs.
+    /// Forgets a superseded bundle. It deletes rows and no blobs.
     ///
     /// This is what version pruning already does with shared archives, and
     /// for the same reason. A published file is named by the digest of its
-    /// contents, so two publications that hold the same stylesheet hold one
+    /// contents, so two bundles that hold the same stylesheet hold one
     /// object, and a figure is the document's own asset. Deciding what is
     /// unreferenced here would mean deciding it before the delete and acting
     /// on it after: a publish landing in between would commit a row naming an
@@ -194,14 +194,14 @@ impl Worker {
     ///
     /// The orphan sweeper is where that decision belongs. It re-reads every
     /// reference at the moment it deletes, and only touches objects that have
-    /// also gone untouched for its grace period, so a publication written a
+    /// also gone untouched for its grace period, so a bundle written a
     /// second ago is never a candidate. Quota is freed here regardless: it
     /// counts rows, not bytes on disk.
-    async fn cleanup_publication(&self, claim: &JobClaim) -> Result<(), String> {
-        let payload: PublicationCleanupPayload = serde_json::from_value(claim.job.payload.clone())
-            .map_err(|error| format!("invalid publication cleanup payload: {error}"))?;
+    async fn cleanup_bundle(&self, claim: &JobClaim) -> Result<(), String> {
+        let payload: BundleCleanupPayload = serde_json::from_value(claim.job.payload.clone())
+            .map_err(|error| format!("invalid bundle cleanup payload: {error}"))?;
         self.catalog
-            .finish_publication_cleanup(payload.publication_id)
+            .finish_bundle_cleanup(payload.bundle_id)
             .await
             .map_err(|error| error.to_string())?;
         // And forget the pages retired long enough ago that nobody can still
@@ -209,7 +209,7 @@ impl Worker {
         // makes another one, so it is the only moment the answer changes.
         if let Some(document_id) = claim.job.document_id {
             self.catalog
-                .forget_retired_publications(document_id)
+                .forget_retired_bundles(document_id)
                 .await
                 .map_err(|error| error.to_string())?;
         }

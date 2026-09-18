@@ -370,6 +370,7 @@ impl Server {
                                 "providers": self.providers(),
                                 "publishers": self.publishers.public_description(),
                                 "commenters": self.commenters.public_description(),
+                                "site": self.site.clone().unwrap_or_default(),
                             }),
                         );
                         self.clear_dead_session(&mut response, headers, arrival)
@@ -401,6 +402,10 @@ impl Server {
                         "providers": self.providers(),
                         "publishers": self.publishers.public_description(),
                         "commenters": self.commenters.public_description(),
+                        // Where signing out goes: the site in front of this
+                        // deployment, or nothing at all, which the page reads
+                        // as its own front page.
+                        "site": self.site.clone().unwrap_or_default(),
                     }),
                 );
                 if !id.is_signed_in() {

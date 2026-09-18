@@ -57,6 +57,22 @@ impl From<&Attribution> for Attribution {
 }
 
 impl Room {
+    /// An account signing a version with its own name rather than with the
+    /// id it authenticated as.
+    ///
+    /// A signed-in caller carries the catalogue uuid as its id, so a version
+    /// attributed straight from that id is one the timeline can only call
+    /// "Unknown editor". `display` is what the caller already knew to show --
+    /// a pseudonym, a link label -- and stands when the catalogue cannot
+    /// answer.
+    pub(crate) async fn signed_by(&self, account_id: &str, display: &str) -> Attribution {
+        let name = match (self.catalog.get(), uuid::Uuid::parse_str(account_id)) {
+            (Some(catalog), Ok(id)) => catalog.account_display_name(id).await,
+            _ => String::new(),
+        };
+        Attribution::account(account_id, if name.is_empty() { display } else { &name })
+    }
+
     /// Records the document as it stands, under a reason and an author.
     ///
     /// There used to be three of these -- `checkpoint`, `checkpoint_now` and
@@ -211,8 +227,6 @@ impl Room {
         let point = checkpoint_from_version(&stored.version);
         let sha = point.sha.clone();
         let mut state = self.state.lock().await;
-        state.session.last_checkpoint = sha.clone();
-        state.session.last_checkpoint_at = now_unix();
         state.session.cover_checkpoint(tree);
         state.manifest.checkpoints.push(point);
         Ok(Some(sha))
@@ -226,7 +240,7 @@ impl Room {
         Ok(crate::storage::source_archive::tree_of(&project.archive))
     }
     /// The document as it stood at `frontier`: its main path, its text files,
-    /// and the digests of its assets.
+    /// the digests of its assets, and which id held which path.
     ///
     /// This is the other way to read the past, and it is not the checkpoint
     /// way. A checkpoint is a source archive somebody's work was saved into;
@@ -238,17 +252,7 @@ impl Room {
     /// A frontier this room's history does not contain is refused rather than
     /// approximated: answering with the nearest state would be a different
     /// document presented as the one that was asked for.
-    pub async fn project_at_frontier(
-        &self,
-        frontier: &[u8],
-    ) -> Result<
-        (
-            String,
-            std::collections::BTreeMap<String, String>,
-            std::collections::BTreeMap<String, String>,
-        ),
-        String,
-    > {
+    pub async fn project_at_frontier(&self, frontier: &[u8]) -> Result<ProjectAtFrontier, String> {
         let at = loro::Frontiers::decode(frontier)
             .map_err(|error| format!("invalid frontier: {error}"))?;
         let state = self.state.lock().await;
@@ -257,11 +261,12 @@ impl Room {
             .doc
             .fork_at(&at)
             .map_err(|error| format!("this document has no such version: {error}"))?;
-        Ok((
-            session::main_path(&past),
-            session::texts_of(&past),
-            session::assets_of(&past),
-        ))
+        Ok(ProjectAtFrontier {
+            main: session::main_path(&past),
+            texts: session::texts_of(&past),
+            assets: session::assets_of(&past),
+            text_ids: session::text_ids_of(&past),
+        })
     }
 
     pub async fn checkpoint_by_sha(&self, sha: &str) -> Result<Option<Checkpoint>, String> {
@@ -350,8 +355,7 @@ impl Room {
             let state = self.state.lock().await;
             state.session.format.clone()
         };
-        self.rollback_publication_memory(&tree, &bodies, &format)
-            .await?;
+        self.rollback_bundle_memory(&tree, &bodies, &format).await?;
         let update = {
             let state = self.state.lock().await;
             session::encode_diff(&state.session.doc, &before).map_err(WriteError::Storage)?
@@ -363,21 +367,20 @@ impl Room {
         Ok((update, sha))
     }
     pub async fn tree(&self) -> crate::document::history::Tree {
-        let _g = self.publication_write.lock().await;
+        let _g = self.bundle_write.lock().await;
         let state = self.state.lock().await;
         tree_of(&state.session.doc, &state.session.asset_sizes).0
     }
-    pub(crate) async fn rollback_publication_inner(
+    pub(crate) async fn rollback_bundle_inner(
         &self,
         tree: &crate::document::history::Tree,
         bodies: &HashMap<String, String>,
         format: &str,
     ) -> Result<(), WriteError> {
-        self.rollback_publication_memory(tree, bodies, format)
-            .await?;
+        self.rollback_bundle_memory(tree, bodies, format).await?;
         self.write_session_inner(false, false).await.map(|_| ())
     }
-    pub(crate) async fn rollback_publication_memory(
+    pub(crate) async fn rollback_bundle_memory(
         &self,
         tree: &crate::document::history::Tree,
         bodies: &HashMap<String, String>,
@@ -458,4 +461,17 @@ pub(crate) fn checkpoint_from_version(v: &crate::storage::postgres::VersionRecor
         tree: true,
         ..Default::default()
     }
+}
+
+/// One past state of the project, read out of the operation history.
+///
+/// Shaped like what the checkpoint route answers with, because a reader that
+/// wants a passage as it was should not have to know which of the two kinds of
+/// moment it is holding. `text_ids` is what makes that possible: a comment
+/// names its file by id, and only this can say which path that id had then.
+pub struct ProjectAtFrontier {
+    pub main: String,
+    pub texts: std::collections::BTreeMap<String, String>,
+    pub assets: std::collections::BTreeMap<String, String>,
+    pub text_ids: std::collections::BTreeMap<String, String>,
 }

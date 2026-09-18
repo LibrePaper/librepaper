@@ -1,4 +1,4 @@
-// ZIP imports use the same path rules and multipart publication as directories.
+// ZIP imports use the same path rules and multipart bundle as directories.
 // Keep selection separate from extraction so choosing another main file can
 // recompute which generated or local-only inputs should be omitted.
 import { checkPath, collisionKey, normalisePath } from "./paths.js";

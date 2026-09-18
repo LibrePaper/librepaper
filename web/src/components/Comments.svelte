@@ -46,7 +46,10 @@
     // uses the same card and action plumbing with a narrower list.
     filter = "all",
     title = "Comments",
-    emptyMessage = "Select a passage in the document, then choose Comment.",
+    // The standing line at the top of the panel: how a comment gets made at
+    // all. It is not an empty state -- someone who has read one comment still
+    // has to be told where the next one comes from -- so it stays put.
+    hint = "Select text in the preview window to comment.",
     onhistory,
     cardIdPrefix = "comment",
     // The id of the annotation the page has singled out, if any.
@@ -125,7 +128,7 @@
 
 <!-- One of the column's panels: the column itself, with the tabs that choose
      between them, is the reader's. -->
-<div class="panel comments-panel">
+<div class="comments-panel">
   <PanelHeader
     title={title}
     meta={filtered.length ? `${open} open · ${filtered.length} total` : undefined}
@@ -160,10 +163,8 @@
     {/snippet}
     {#if !canComment}
       <p class="panel-muted">Read-only access. Ask the owner for a Comment or Edit link to participate.</p>
-    {:else if filtered.length === 0}
-      <p class="panel-muted">
-        {emptyMessage}
-      </p>
+    {:else}
+      <p class="panel-muted">{hint}</p>
     {/if}
   </PanelHeader>
 
@@ -228,7 +229,8 @@
 </div>
 
 <style>
-  .comments-panel { display: flex; flex-direction: column; overflow: hidden; }
+  /* The pane the collaboration panel puts this in carries the padding. */
+  .comments-panel { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; overflow: hidden; }
   .comments-panel > :global(*) { flex-shrink: 0; }
   .comments-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .pass-header { padding: calc(var(--spacing) * 2); border-left: 3px solid var(--color-primary-500); }

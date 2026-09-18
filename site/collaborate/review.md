@@ -4,27 +4,19 @@ title: "Getting the review out"
 
 ## Export annotations
 
-
-Export annotations as readable Markdown. `export` takes the short ID from
-`list` (a full slug also works):
-
-```sh
-librepaper export c9k --format markdown --output comments.md
-```
-
-Without `--format markdown`, LibrePaper exports W3C Web Annotation JSON-LD.
+A document's annotations come out as readable Markdown, or as W3C Web
+Annotation JSON-LD for anything that wants to process them. Both are exports
+from the terminal; see [Export](../cli.html#export).
 
 ## Response to reviewers
 
-
-The one export that is not a list of what was said. `--format response` writes
+The one export that is not a list of what was said. The response format writes
 the document an author has to produce anyway: grouped by reviewer, numbered
 within each, with the remark, the passage as that reviewer saw it, what became
-of it since, and the thread underneath as the answer.
+of it since, and the thread underneath as the answer. It can be limited to the
+comments made since a given checkpoint, so a second round covers only what is
+new.
 
-```sh
-librepaper export c9k --format response --since 4f2a91c --output response.md
-```
 
 ```markdown
 ## Reviewer: annegrandchamp

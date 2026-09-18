@@ -33,9 +33,11 @@ pub struct Checkpoint {
     #[serde(skip)]
     pub by_account: Option<String>,
     /// One of `quiet`, `left`, `comment`, `cli`, `sync`, `restore`, `label`,
-    /// `render` for the moment a browser stored a rendering of, `accept` for
-    /// an editor taking a suggestion, and `recovered` for one the manifest
-    /// lost and a later checkpoint found.
+    /// `created` for a whole document written at once from outside a room --
+    /// an upload, a fork, a starter -- `render` for the moment a browser
+    /// stored a rendering of, `publish` for the source a reader bundle was
+    /// made from, `accept` for an editor taking a suggestion, and `recovered`
+    /// for one the manifest lost and a later checkpoint found.
     pub why: String,
     #[serde(default)]
     pub source_format: String,
@@ -336,7 +338,7 @@ mod digest_parity_tests {
     use super::*;
 
     /// The browser computes this same digest, in `web/src/lib/tree-digest.js`,
-    /// and a publication names the checkpoint it was rendered from by it. The
+    /// and a bundle names the checkpoint it was rendered from by it. The
     /// two implementations agree only by hand, so these fixtures are pinned in
     /// both: `web/tests/unit/tree-digest.mjs` asserts the same two hashes.
     fn entry(kind: &str, sha: &str, id: &str, size: i64) -> TreeEntry {
@@ -359,7 +361,12 @@ mod digest_parity_tests {
         let mut files = BTreeMap::new();
         files.insert(
             "é.tex".to_string(),
-            entry("text", &sha_of(text.as_bytes()), "text-id", text.len() as i64),
+            entry(
+                "text",
+                &sha_of(text.as_bytes()),
+                "text-id",
+                text.len() as i64,
+            ),
         );
         files.insert(
             "图.png".to_string(),

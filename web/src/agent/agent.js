@@ -624,9 +624,32 @@ import { createMathTypesetter } from "../lib/math.js";
     post({ type: "annotate" });
   });
 
-  document.addEventListener("mouseup", () => scheduleSelection(0));
-  document.addEventListener("touchend", () => scheduleSelection(120), { passive: true });
-  document.addEventListener("selectionchange", () => scheduleSelection(80));
+  // A selection is only reported once the gesture that made it is over. Mid
+  // drag the passage is still growing, and a bar that follows it is a target
+  // that moves under the pointer and lands somewhere else the moment the
+  // button comes up -- so while the pointer is down nothing is reported, and
+  // the bar from the last selection goes away as soon as the new one starts.
+  //
+  // `selectionchange` still speaks for the keyboard, which has no drag: a
+  // selection extended with shift and the arrows reports as it grows.
+  let dragging = false;
+  function beginDrag() {
+    dragging = true;
+    clearTimeout(selectionTimer);
+    post({ type: "selection", selector: null });
+  }
+  function endDrag(delay) {
+    dragging = false;
+    scheduleSelection(delay);
+  }
+
+  document.addEventListener("mousedown", beginDrag);
+  document.addEventListener("mouseup", () => endDrag(0));
+  document.addEventListener("touchstart", beginDrag, { passive: true });
+  document.addEventListener("touchend", () => endDrag(120), { passive: true });
+  document.addEventListener("selectionchange", () => {
+    if (!dragging) scheduleSelection(80);
+  });
 
   // The agent is injected before </body>, so the markup has parsed by the time
   // it runs -- but a document that builds itself in JavaScript has not. Its own
@@ -657,10 +680,10 @@ import { createMathTypesetter } from "../lib/math.js";
 
   function watch() {
     publish();
-    // The first publication runs in the child frame's load handler. The
+    // The first bundle runs in the child frame's load handler. The
     // parent's iframe load handler, and therefore Svelte's authenticated
     // frame binding, can settle just afterward. Repeat once on the next task;
-    // later publications remain mutation-driven.
+    // later bundles remain mutation-driven.
     setTimeout(() => publish(true), 0);
     observer = new MutationObserver(republish);
     observer.observe(document.body, {

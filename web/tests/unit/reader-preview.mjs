@@ -59,7 +59,9 @@ assert.match(readerSource, /const toggleLocalExecution = \(\) => \{\s*if \(local
 // The control asks before it runs: the warning is a dialog somebody has to
 // answer, not a tooltip a mouse might hover over.
 assert.match(readerSource, /\{#snippet previewStatusControl\(\)\}[\s\S]*?sourceFormat === "quarto" && mayEdit && !localExecution\}[\s\S]*?<button[\s\S]*?localExecutionConsent = true[\s\S]*?<\/button>/);
-assert.match(readerSource, /<Modal bind:open=\{localExecutionConsent\}[\s\S]*?LOCAL_EXECUTION_WARNING[\s\S]*?>Cancel<\/button>[\s\S]*?startLocalExecution\(\)[\s\S]*?>OK<\/button>/);
+// The dialog's buttons come from Modal's `confirm`, which is what puts focus
+// on the action: this one is answered with Enter like every other question.
+assert.match(readerSource, /<Modal bind:open=\{localExecutionConsent\}[\s\S]*?LOCAL_EXECUTION_WARNING[\s\S]*?confirm=\{\{ label: "OK", onclick: \(\) => void startLocalExecution\(\) \}\}/);
 assert.match(readerSource, /const LOCAL_EXECUTION_WARNING = "Quarto and Calepin execution can run arbitrary code/);
 // A PDF from Markdown or Quarto source is a local build, and the preview
 // header -- where the gesture that starts one lives -- is hidden for as long

@@ -13,7 +13,7 @@ remain live shared implementation.
 
 Project export uses the existing authenticated snapshot route. That route
 captures source text, the file manifest, comments, and the live tree identity
-while holding the room and publication locks. Text is carried in that response;
+while holding the room and bundle locks. Text is carried in that response;
 binary assets are fetched by the immutable SHA-256 identity recorded in the
 captured tree. The CLI checks paths, sizes, and hashes in a sibling staging
 directory before renaming it to a destination that must not exist.
@@ -24,7 +24,7 @@ The following representations still have distinct responsibilities:
   state.
 - A history tree identifies a recoverable source version and its immutable
   assets.
-- Publication manifests identify rendered display output.
+- Bundle manifests identify rendered display output.
 - Companion job manifests describe isolated local build inputs and results.
 - Project export is a disposable filesystem projection of one captured tree.
 

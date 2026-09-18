@@ -38,7 +38,7 @@ const shellHeaders = { "x-librepaper-client": "shell" };
 
 // This is the same session envelope as the OAuth callback writes. The account
 // row is seeded below so the configured provider and session generation are
-// checked by the real binary before it accepts the publication.
+// checked by the real binary before it accepts the bundle.
 function signedGithubSession() {
   const key = Buffer.from(readFileSync(join(data, "secrets", "session.key"), "utf8").trim(), "hex");
   const generation = "1";

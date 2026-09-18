@@ -15,12 +15,34 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Opaque checkpoint identity. A checkpoint is an immutable state of the
-/// document's source; a path is never part of an anchor's identity, and
-/// neither is a render.
+/// How a revision that is a position in the operation history is spelled,
+/// rather than a checkpoint. The browser's history panel uses the same
+/// spelling for a moment picked off the activity timeline, so one reader can
+/// tell the two apart without being told which it is holding.
+pub const MOMENT: &str = "frontier:";
+
+/// Opaque identity of one immutable state of the document's source.
+///
+/// Two things are such a state and both are spelled here. A checkpoint id
+/// names a version somebody asked for -- a label, a bundle, a restore.
+/// A `frontier:`-prefixed anchor names a position in the operation log, which
+/// is every state the document has ever been in, including the ones nobody
+/// saved. A comment made on the live draft carries the second kind: it is
+/// exact, it is free, and the alternative was writing a whole source archive
+/// for every remark somebody made.
+///
+/// A path is never part of an anchor's identity, and neither is a render.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CheckpointId(pub String);
+
+impl CheckpointId {
+    /// Whether this names a position in the operation history rather than a
+    /// checkpoint, and the anchor if it does.
+    pub fn moment(&self) -> Option<&str> {
+        self.0.strip_prefix(MOMENT)
+    }
+}
 
 /// Stable Loro `files` map key. Resolve it to a path only against the current
 /// document view, after the identity has already been established -- a path is

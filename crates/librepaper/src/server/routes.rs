@@ -42,18 +42,15 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
             "/api/documents/{slug}/assistant/capabilities",
             get(assistant_capabilities),
         )
-        .route("/api/documents/{slug}/publication", any(publication_meta))
+        .route("/api/documents/{slug}/bundle", any(bundle_meta))
+        .route("/api/documents/{slug}/bundle/prepare", any(bundle_prepare))
         .route(
-            "/api/documents/{slug}/publication/prepare",
-            any(publication_prepare),
+            "/api/documents/{slug}/bundle/objects/{hash}",
+            any(bundle_object),
         )
         .route(
-            "/api/documents/{slug}/publication/objects/{hash}",
-            any(publication_object),
-        )
-        .route(
-            "/api/documents/{slug}/publication/activate",
-            any(publication_activate),
+            "/api/documents/{slug}/bundle/activate",
+            any(bundle_activate),
         )
         .route("/api/documents/{slug}/assets", any(document_assets))
         .route("/api/documents/{slug}/assets/{sha}", get(document_asset))
@@ -364,47 +361,47 @@ async fn assistant_capabilities(
         .await
 }
 
-async fn publication_meta(
+async fn bundle_meta(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_publication(request, &ctx.arrival, &slug, "meta")
+        .handle_bundle(request, &ctx.arrival, &slug, "meta")
         .await
 }
 
-async fn publication_prepare(
+async fn bundle_prepare(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_publication(request, &ctx.arrival, &slug, "prepare")
+        .handle_bundle(request, &ctx.arrival, &slug, "prepare")
         .await
 }
 
-async fn publication_object(
+async fn bundle_object(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
     Path((slug, hash)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_publication(request, &ctx.arrival, &slug, &format!("objects/{hash}"))
+        .handle_bundle(request, &ctx.arrival, &slug, &format!("objects/{hash}"))
         .await
 }
 
-async fn publication_activate(
+async fn bundle_activate(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_publication(request, &ctx.arrival, &slug, "activate")
+        .handle_bundle(request, &ctx.arrival, &slug, "activate")
         .await
 }
 
@@ -578,9 +575,9 @@ pub(super) async fn dispatch(
     // and nothing else: no shell, no API, no session. That is the whole point
     // of the separate hostname.
     if arrival.is_docs_host() {
-        // Keep the document path stable across publications. Relative
+        // Keep the document path stable across bundles. Relative
         // `assets/<hash>` references then have stable cache keys too; the
-        // signed query chooses which current publication index is displayed.
+        // signed query chooses which current bundle index is displayed.
         if let ["published", slug, tail @ ..] = &parts[..] {
             return server
                 .serve_published(
@@ -969,7 +966,7 @@ pub(super) async fn dispatch(
             });
             // Paths and source format are project metadata. They are useful to
             // editors and local source rendering, but have no place in a
-            // publication reader response.
+            // bundle reader response.
             if owned {
                 body["sha"] = json!(entry.sha);
                 body["execution_engine"] = json!(metadata.execution_engine);
@@ -1066,7 +1063,7 @@ pub(super) fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 impl Server {
     /// Serve one explicitly published object on the isolated document origin.
-    /// The token is scoped to the publication and the live link digest that
+    /// The token is scoped to the bundle and the live link digest that
     /// authorized it; every fetch rechecks that digest against the current
     /// document entry, so revocation prevents new HTML and asset responses.
     pub(super) async fn serve_published(
@@ -1091,7 +1088,7 @@ impl Server {
             })
             .unwrap_or_default();
         // Relative authored assets do not inherit the frame URL query. Keep
-        // the display capability in a document- and publication-scoped,
+        // the display capability in a document- and bundle-scoped,
         // HttpOnly cookie so they present the same non-secret capability. It
         // is still checked against current access state for every response.
         if !fields.contains_key("token") {
@@ -1114,8 +1111,8 @@ impl Server {
                         if let Some(until) = values.next() {
                             fields.insert("until".into(), until.into());
                         }
-                        if let Some(publication_id) = values.next() {
-                            fields.insert("publication_id".into(), publication_id.into());
+                        if let Some(bundle_id) = values.next() {
+                            fields.insert("bundle_id".into(), bundle_id.into());
                         }
                     }
                 }
@@ -1126,20 +1123,17 @@ impl Server {
             .and_then(|value| value.parse::<i64>().ok());
         let scope = fields.get("scope").cloned().unwrap_or_default();
         let token = fields.get("token").cloned().unwrap_or_default();
-        let publication_id = fields
-            .get("publication_id")
-            .map(String::as_str)
-            .unwrap_or("");
+        let bundle_id = fields.get("bundle_id").map(String::as_str).unwrap_or("");
         let Some(until) = until else {
             return plain(404, "not found");
         };
-        let authorized = self.publication_display_authorized(&entry, &scope).await;
+        let authorized = self.bundle_display_authorized(&entry, &scope).await;
         if until < crate::util::now_unix()
             || !authorized
             || !crate::auth::verifies(
                 &self.key,
                 "figure-frame-v1",
-                &crate::server::figures::frame_claim(slug, publication_id, &scope, until),
+                &crate::server::figures::frame_claim(slug, bundle_id, &scope, until),
                 &token,
             )
         {
@@ -1149,7 +1143,7 @@ impl Server {
         let Ok(path) = percent_encoding::percent_decode_str(&encoded_path).decode_utf8() else {
             return plain(404, "not found");
         };
-        let store = crate::server::publication::PublicationStore::for_store(self.store.clone());
+        let store = crate::server::bundle::BundleStore::for_store(self.store.clone());
         let Some(current) = store.current(&entry.storage_id).await.ok().flatten() else {
             return plain(404, "not found");
         };
@@ -1157,7 +1151,7 @@ impl Server {
         // An old open page may still fetch unchanged lazy assets. Its live
         // display authority remains valid, but only the current manifest can
         // authorize bytes; removed assets and old HTML are never recovered.
-        if is_html && current.publication_id != publication_id {
+        if is_html && current.bundle_id != bundle_id {
             return plain(404, "not found");
         }
         // Asset object names are content hashes. Once the current manifest has
@@ -1178,7 +1172,7 @@ impl Server {
                 // An activation may have replaced the manifest after the
                 // membership lookup. Do not authorize a response from a
                 // pointer that has ceased to be current.
-                if !matches!(store.current(&entry.storage_id).await, Ok(Some(manifest)) if manifest.publication_id == current.publication_id)
+                if !matches!(store.current(&entry.storage_id).await, Ok(Some(manifest)) if manifest.bundle_id == current.bundle_id)
                 {
                     return plain(404, "not found");
                 }
@@ -1198,10 +1192,10 @@ impl Server {
         let Ok((object, mut body)) = store.deliver(&entry.storage_id, &path).await else {
             return plain(404, "not found");
         };
-        // `deliver` reads the manifest itself. Recheck the publication pointer
+        // `deliver` reads the manifest itself. Recheck the bundle pointer
         // after its object read so an activation racing this request cannot
         // make an old manifest authorize a new object (or vice versa).
-        if !matches!(store.current(&entry.storage_id).await, Ok(Some(manifest)) if manifest.publication_id == current.publication_id)
+        if !matches!(store.current(&entry.storage_id).await, Ok(Some(manifest)) if manifest.bundle_id == current.bundle_id)
         {
             return plain(404, "not found");
         }
@@ -1233,7 +1227,7 @@ impl Server {
         }
         let etag = format!("\"{}\"", hex::encode(Sha256::digest(&body)));
         // A hash identifies bytes, never permission. Browser cache entries
-        // may be revalidated across publications, but must not become a
+        // may be revalidated across bundles, but must not become a
         // shared-cache authorization bypass when a document is restricted.
         let cache_control = "private, max-age=0, must-revalidate";
         if headers
@@ -1278,7 +1272,7 @@ impl Server {
                 &mut response,
                 "set-cookie",
                 &format!(
-                    "librepaper_display={token}~{scope}~{until}~{publication_id}; Path=/published/{slug}; HttpOnly; SameSite=None; Secure"
+                    "librepaper_display={token}~{scope}~{until}~{bundle_id}; Path=/published/{slug}; HttpOnly; SameSite=None; Secure"
                 ),
             );
         }
@@ -1289,7 +1283,7 @@ impl Server {
     /// the live document. The capability is transport-only: it never replaces
     /// a link revocation, named-editor removal, account erasure, or session
     /// generation change.
-    async fn publication_display_authorized(&self, entry: &IndexEntry, scope: &str) -> bool {
+    async fn bundle_display_authorized(&self, entry: &IndexEntry, scope: &str) -> bool {
         if scope == "public" {
             return entry.example || entry.unowned;
         }
@@ -1407,8 +1401,8 @@ impl Server {
         // shell below.
         //
         // The shell contains no project bytes. It is intentionally available
-        // before a first publication so editors keep their local preview;
-        // reader display bytes use the publication route above instead.
+        // before a first bundle so editors keep their local preview;
+        // reader display bytes use the bundle route above instead.
         let empty =
             b"<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>"
                 .to_vec();

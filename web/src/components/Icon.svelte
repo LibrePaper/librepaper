@@ -15,6 +15,7 @@
     eye: [["path", "M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"], ["circle", { cx: 12, cy: 12, r: 3 }]],
     bot: [["path", "M12 8V4H8"], ["rect", { width: 16, height: 12, x: 4, y: 8, rx: 2 }], ["path", "M2 14h2"], ["path", "M20 14h2"], ["path", "M15 13v2"], ["path", "M9 13v2"]],
     "chevrons-up": [["path", "m17 11-5-5-5 5"], ["path", "m17 18-5-5-5 5"]],
+    "chevrons-down": [["path", "m7 6 5 5 5-5"], ["path", "m7 13 5 5 5-5"]],
     copy: [["rect", { width: 14, height: 14, x: 8, y: 8, rx: 2, ry: 2 }], ["path", "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"]],
     // Lucide git-fork, for making a project of your own from somebody else's.
     // A copy icon said the wrong thing: the new project is a branch off this
@@ -25,6 +26,10 @@
       ["circle", { cx: 18, cy: 6, r: 3 }],
       ["path", "M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"],
       ["path", "M12 12v3"],
+    ],
+    github: [
+      ["path", "M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"],
+      ["path", "M9 18c-4.51 2-5-2-7-2"],
     ],
     "folder-input": [["path", "M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1"], ["path", "M2 13h10"], ["path", "m9 16 3-3-3-3"]],
 
@@ -80,6 +85,10 @@
       ["path", "M16 13H8"],
       ["path", "M16 17H8"],
     ],
+    // Lucide's bookmark, for the versions somebody marked to find again. It
+    // is drawn filled where the mark is set and hollow where it is not, which
+    // is the whole of the state it has to show.
+    bookmark: [["path", "m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"]],
     // Lucide's pencil, for renaming a file in the directory.
     pencil: [
       ["path", "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"],
@@ -109,6 +118,15 @@
       ["path", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"],
     ],
     check: [["path", "M20 6 9 17l-5-5"]],
+    // Lucide's refresh-cw, for minting a share link's key again. The two arrows
+    // chasing each other say "same link, new key", which is what a rotation
+    // is; an undo arrow would say the opposite.
+    "refresh-cw": [
+      ["path", "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"],
+      ["path", "M21 3v5h-5"],
+      ["path", "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"],
+      ["path", "M8 16H3v5"],
+    ],
     reply: [["path", "M7 17 2 12l5-5"], ["path", "M2 12h12a8 8 0 0 1 8 8"]],
     // Lucide's history, for the timeline.
     history: [
@@ -164,6 +182,13 @@
       ["path", "M3 6h18"],
       ["path", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"],
       ["path", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"],
+    ],
+    // Lucide's undo-2, for putting a project back out of the trash. An arrow
+    // that turns back on itself says "undo the deletion"; a folder or a
+    // circular arrow would say "move" or "reload" instead.
+    "undo-2": [
+      ["path", "M9 14 4 9l5-5"],
+      ["path", "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"],
     ],
     // The PDF controls, which used to be a set of their own inside the frame.
     // They sit in the preview header now, so they are drawn from here like

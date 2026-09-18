@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::document::session;
-use crate::document::store::{MutationActor, Publication, Store};
+use crate::document::store::{DocumentInput, MutationActor, Store};
 use crate::room::proposals::{Decision, ProposalError};
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
@@ -37,7 +37,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     catalog.migrate().await.unwrap();
     sqlx::query(
         "TRUNCATE document_proposal_hunks,document_proposals,maintenance_cursors,jobs,
-         document_updates,document_bases,publication_files,publications,document_versions,
+         document_updates,document_bases,bundle_files,bundles,document_versions,
          document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE",
     )
     .execute(catalog.pool())
@@ -65,7 +65,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     );
     store
         .put_directory_as_actor(
-            Publication {
+            DocumentInput {
                 slug: slug.into(),
                 title: "A Paper".into(),
                 source: "The cat sat.\n".into(),

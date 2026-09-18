@@ -34,8 +34,8 @@
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { prepareOfflineProject, preparedProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
-  import { createPublication } from "../lib/reader/publication.svelte.js";
-  import { buildDisplayBundle } from "../lib/publication-builder.js";
+  import { createBundle } from "../lib/reader/bundle.svelte.js";
+  import { buildDisplayBundle } from "../lib/bundle-builder.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import {
     SHELL_HEADERS,
@@ -61,7 +61,6 @@
   import Nav from "./Nav.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
-  import CopyLink from "./CopyLink.svelte";
   import Modal from "./Modal.svelte";
   import Toasts from "./Toasts.svelte";
   import { say } from "../lib/toast.svelte.js";
@@ -86,7 +85,7 @@
   import { createSteadyBusy } from "../lib/reader/steady-busy.js";
   import { createLocalPreview } from "../lib/reader/local-preview.svelte.js";
   import { HIGHLIGHT_COLORS, colorName } from "../lib/annotation-colors.js";
-  import { correctedLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
+  import { recenteredLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import { VERBS, motivationFor } from "../lib/annotating.js";
   import InsertMenu from "./InsertMenu.svelte";
   import Sidebar from "./layout/Sidebar.svelte";
@@ -119,11 +118,11 @@
   let offlinePrepared = $state(false);
   let preparingOffline = $state(false);
   // The published version, whether the source has moved past it, and what
-  // publishing a new one involves. An existing publication makes the
-  // expected-publication pointer part of a publish request, so the Share
+  // publishing a new one involves. An existing bundle makes the
+  // expected-bundle pointer part of a publish request, so the Share
   // panel stays available while that pointer arrives but its publish control
   // waits for it.
-  const publication = createPublication({
+  const bundle = createBundle({
     slug: SLUG,
     key: KEY,
     liveTree: () => liveTreeNow(),
@@ -136,16 +135,15 @@
       // that worked.
       renderable: !previewProblem && !unrendered,
     }),
-    say: (message) => say(message, { kind: "problem", id: "reader:publication-load" }),
+    say: (message) => say(message, { kind: "problem", id: "reader:bundle-load" }),
     disposed: () => readerDisposed,
   });
-  const publishedPublication = $derived(publication.state.publication);
-  const publicationUpdate = $derived(publication.state.update);
-  const publicationStatus = $derived(publication.state.stale);
-  const publicationMetadataReady = $derived(publication.state.metadataReady);
-  const publicationMetadataFailed = $derived(publication.state.metadataFailed);
-  const publicationPublishing = $derived(publication.state.publishing);
-  const publicationBlocked = $derived(publication.state.blocked);
+  const publishedBundle = $derived(bundle.state.bundle);
+  const bundleUpdate = $derived(bundle.state.update);
+  const bundleStatus = $derived(bundle.state.stale);
+  const bundleMetadataReady = $derived(bundle.state.metadataReady);
+  const bundleMetadataFailed = $derived(bundle.state.metadataFailed);
+  const bundleBlocked = $derived(bundle.state.blocked);
   let me = $state({});
   // The displayed name, since this is what goes on a comment and what the
   // reader is shown commenting as. A Google account's handle is its email and
@@ -186,7 +184,7 @@
     anchor: anchorComments,
     repaint: applyHighlights,
     send: (message) => collaboration?.send(message),
-    publicationId: () => publication.id(),
+    bundleId: () => bundle.id(),
   });
   const comments = $derived(annotations.state.comments);
   const unconfirmed = $derived(annotations.state.unconfirmed);
@@ -419,11 +417,11 @@
     anchorAll(docText || "", list, docText === null ? null : docView);
     if (publishedMode) {
       for (const comment of list) {
-        if (comment.publication_id === publishedPublication?.id) continue;
+        if (comment.bundle_id === publishedBundle?.id) continue;
         const found = anchorOne(docText || "", { ...shownSelector(comment), position: null, requireUnique: true }, docView);
         comment.start = found?.start ?? null;
         comment.end = found?.end ?? null;
-        comment.earlierPublication = !found;
+        comment.earlierBundle = !found;
       }
     } else if (mayEdit) placeSources(session, list);
     for (const comment of list) applyAnchorFlags(comment);
@@ -497,7 +495,7 @@
   let pending = $state(null);
   let assistantRequest = $state(null);
   let selectionRevision = Promise.resolve("");
-  let bar = $state({ shown: false, left: 0, top: 0 });
+  let bar = $state({ shown: false, left: 0, top: 0, center: 0 });
 
   // What was selected, as the page had it. That is all this browser sends and
   // all it can honestly send: which passage of which source file those words
@@ -516,7 +514,7 @@
       suffix: String(selector.suffix || ""),
       position: Number.isInteger(selector.position) && selector.position >= 0 ? selector.position : null,
     };
-    pending.publication_id = publishedMode ? publishedPublication?.id || "" : "";
+    pending.bundle_id = publishedMode ? publishedBundle?.id || "" : "";
     placeBar(rect);
   }
 
@@ -666,10 +664,16 @@
   }
 
   // How wide the bar is is only knowable once it is drawn, so the placing
-  // above is made good here, after it is.
+  // above is made good here, after it is: re-centred on the point it was
+  // centred on, now that the width it was centred with is the real one.
   $effect(() => {
     if (!bar.shown || !barElement) return;
-    const left = correctedLeft({ left: bar.left, width: barElement.offsetWidth, windowWidth: innerWidth });
+    const left = recenteredLeft({
+      center: bar.center,
+      left: bar.left,
+      width: barElement.offsetWidth,
+      windowWidth: innerWidth,
+    });
     if (left !== null) bar = { ...bar, left };
   });
 
@@ -730,7 +734,7 @@
 
   function submitAnnotation({ motivation, body }) {
     if (!pending || !mayChat) return false;
-    if (publishedMode && (publicationUpdate || pending.publication_id !== publishedPublication?.id)) {
+    if (publishedMode && (bundleUpdate || pending.bundle_id !== publishedBundle?.id)) {
       say("This document has been published to since the passage was selected. Refresh, select it again, and submit; the draft is kept.", { kind: "problem", id: "reader:published-moved" });
       return false;
     }
@@ -748,14 +752,14 @@
   // One exception, and it is the recovery this reader asks for by name: when
   // the document has been published to since the draft was started, it says
   // "refresh, select it again, and submit". Selecting it again has to mean
-  // something, so a fresh selection made against the publication now on
+  // something, so a fresh selection made against the bundle now on
   // screen replaces the one the draft was holding -- which is stale by then
   // and would only be refused.
   function sendDraft({ body }) {
     if (!composing) return false;
     const held = composing.pending;
-    const moved = publishedMode && held.publication_id !== publishedPublication?.id;
-    const reselected = moved && pending && pending.publication_id === publishedPublication?.id;
+    const moved = publishedMode && held.bundle_id !== publishedBundle?.id;
+    const reselected = moved && pending && pending.bundle_id === publishedBundle?.id;
     pending = reselected ? { ...pending } : held;
     if (!submitAnnotation({ motivation: motivationFor("comment"), body })) return false;
     composing = null;
@@ -849,7 +853,13 @@
     }
     const path = session.paths?.get(target.file_id) || "";
     try {
-      const point = await history.checkpoint(SLUG, madeOn, keyHeaders(KEY));
+      // A suggestion is made against whatever the document was at the time,
+      // which is usually a position in the operation history rather than a
+      // checkpoint -- nothing writes an archive for a comment. Both are read
+      // the same way here, by asking whichever endpoint holds that kind.
+      const point = isMoment(madeOn)
+        ? await activity.documentAt(SLUG, anchorOf(madeOn), keyHeaders(KEY))
+        : await history.checkpoint(SLUG, madeOn, keyHeaders(KEY));
       const baseText = point.texts?.[path] ?? "";
       const oldText = suggestions.applyProposal(baseText, target, comment.proposed ?? "");
       const tree = treeNow();
@@ -1222,9 +1232,9 @@
         ?.start(event)
         .then(() => {
           // Binding the initial tree does not produce an observed source
-          // edit. Publication metadata must therefore begin only after this
+          // edit. Bundle metadata must therefore begin only after this
           // state has been applied, rather than waiting for a later edit.
-          if (mayEdit && publication.begin()) void refreshPublicationMetadata();
+          if (mayEdit && bundle.begin()) void refreshBundleMetadata();
           return paintPreview();
         })
         .catch((error) => say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" }));
@@ -1261,8 +1271,8 @@
       return;
     }
 
-    if (event.type === "publication-updated") {
-      publication.announce({ publication_id: event.publication_id });
+    if (event.type === "bundle-updated") {
+      bundle.announce({ bundle_id: event.bundle_id });
       return;
     }
 
@@ -1525,11 +1535,9 @@
     untrack(() => { void historySource.select(""); });
   });
   let navigationGeneration = 0;
-  // Which checkpoint the reader arrived asking for, out of the link somebody
-  // sent them. Read once, because after that the panel is where the answer is.
-  const ARRIVED_AT = new URLSearchParams(location.search).get("at") || "";
-  // And which file, when the landing page's search found the project by one
-  // of its files. Honoured once the directory has arrived, and once only.
+  // Which file the reader arrived asking for, when the landing page's search
+  // found the project by one of its files. Honoured once the directory has
+  // arrived, and once only.
   const ARRIVED_FILE = new URLSearchParams(location.search).get("file") || "";
 
   const loadHistory = () => timeline.load();
@@ -1585,15 +1593,6 @@
   const restoreCheckpoint = (sha) => timeline.ask(sha, projectSignature());
   const confirmRestore = () => timeline.confirm(projectSignature());
   const nameCheckpoint = (sha, given) => timeline.name(sha, given);
-
-  // The link to a moment: the document's own link with the checkpoint on it.
-  // A query rather than a fragment, because the fragment is where a link key
-  // travels and the two must not have to share.
-  function checkpointLink(sha) {
-    const link = new URL(linkFor(SLUG));
-    link.searchParams.set("at", sha);
-    return link.href;
-  }
 
   /* -------------------------------------------- the passage, then and now */
 
@@ -2163,11 +2162,11 @@
   // pause, so remote changes and preview-only views do not render every word.
   const PASSIVE_PREVIEW_DEBOUNCE = 1000;
 
-  // A publication records both the complete source tree and the HTML renderer
+  // A bundle records both the complete source tree and the HTML renderer
   // identity. `document.sha` is only the main source file's digest, so it
   // cannot answer whether a multi-file project is still the one published.
-  const refreshPublicationStatus = (against) => publication.refreshStatus(against);
-  const refreshPublicationMetadata = () => publication.refreshMetadata();
+  const refreshBundleStatus = (against) => bundle.refreshStatus(against);
+  const refreshBundleMetadata = () => bundle.refreshMetadata();
 
   function sourceChanged() {
     if (readerDisposed) return;
@@ -2178,14 +2177,14 @@
     // that into a card marked stale rather than a card that still offers to
     // replace words nobody is looking at any more.
     refreshReview();
-    if (mayEdit && publishedPublication?.source_sha256) {
-      void refreshPublicationStatus();
+    if (mayEdit && publishedBundle?.source_sha256) {
+      void refreshBundleStatus();
     }
     // Readers hold a link, not the source, so the only rendering they can be
     // shown is one this browser builds for them. Every edit puts that
     // rebuild back on the clock rather than leaving it for somebody to
     // remember to press.
-    if (mayEdit) publication.keepCurrent();
+    if (mayEdit) bundle.keepCurrent();
     outlineRevision += 1;
     if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
       clearTimeout(quartoLiveSyncTimer);
@@ -2376,10 +2375,15 @@
   }
   // The tabs this browser is offered. Which reader may see which panel is
   // written with the panels, in lib/panels.js; this only says who is asking.
-  const tabs = $derived(tabsFor({ mayEdit, editing, canSeeSharing, canPublish }));
+  const tabs = $derived(tabsFor({ role: doc.role, mayEdit, editing, canSeeSharing, canPublish }));
   // Where the column goes back to when what it showed is taken away: the
-  // files for an editor, the comments for everybody else.
-  const home = $derived(mayEdit ? "files" : "collaboration");
+  // files for an editor, the comments for a commenter, and for a reader no
+  // column at all -- there is nothing they are offered to go back to.
+  const home = $derived(
+    mayEdit ? "files"
+    : tabs.some((tab) => tab.id === "collaboration") ? "collaboration"
+    : "",
+  );
   // Whether the document has said who this browser is. Until it has, the
   // column is drawn empty rather than as one audience's and then the other's.
   let settled = $state(false);
@@ -2412,11 +2416,11 @@
   // fetches the manifest; leaving it drops the comparison, which is all the
   // panel ever held -- the document pane shows the current document
   // throughout.
-  function showPanel(name, remembered = true) {
+  function showPanel(name) {
     if (panel === "history" && name !== "history") historySource.close();
     // Reopening starts at the current source.
     const enteringHistory = name === "history" && panel !== "history";
-    preferences.setPanel(name, remembered);
+    preferences.setPanel(name);
     if (enteringHistory) void historySource.select("");
     // Changes is a source-review queue. On desktop, opening it establishes a
     // source-only workspace; on compact screens the sidebar remains visible
@@ -2426,8 +2430,8 @@
         if (panel === "changes") showMobileView("source");
       });
     }
-    // Not remembered: a panel opening the sidebar on a narrow screen is what
-    // this visit is doing, not what the reader asked to come back to.
+    // A panel opening the sidebar on a narrow screen is what this visit is
+    // doing, not a view to come back to, so it is set rather than remembered.
     if (compact) prefs.mobileView = name ? "sidebar" : "document";
     if (name !== "history") return Promise.resolve();
     void loadActivity();
@@ -2567,11 +2571,6 @@
     if (what === "linked") return setLinked(!linked);
   }
 
-  function chooseToolCommand(value) {
-    if (value === "settings") return openSettings("editor");
-    if (value === "compile") return compileNow();
-  }
-
   function chooseViewCommand(value) {
     if (value === "format-pdf") {
       if (displayedFormat === "latex") return void setLatexOutput("pdf");
@@ -2597,11 +2596,15 @@
 
   // The File menu. Its first three items are what the Files panel's toolbar
   // does, reached without first switching layouts and opening the panel; the
-  // rest open the panels a person looks for under File. The Files panel is
-  // mounted on its first visit and draws the name field it focuses, so the
-  // panel is opened and the DOM given a turn before the panel is asked.
-  const FILE_COMMANDS = ["new-file", "new-folder", "upload", "offline", "download-pdf", "download-html", "download-docx", "download", "share", "history"];
+  // rest open the panels a person looks for under File, and its last lines
+  // are the two commands that are about the workspace rather than a document.
+  // The Files panel is mounted on its first visit and draws the name field it
+  // focuses, so the panel is opened and the DOM given a turn before the panel
+  // is asked.
+  const FILE_COMMANDS = ["new-file", "new-folder", "upload", "offline", "download-pdf", "download-html", "download-docx", "download", "share", "history", "compile", "settings"];
   async function chooseFileCommand(value) {
+    if (value === "settings") return openSettings("editor");
+    if (value === "compile") return compileNow();
     if (value === "offline") return makeAvailableOffline();
     if (value === "download") return downloadTree();
     if (value === "download-docx") return downloadDocx();
@@ -2664,8 +2667,7 @@
   // The one menu a narrow screen has stands in for all of them.
   function chooseCompactCommand(value) {
     if (FILE_COMMANDS.includes(value)) return void chooseFileCommand(value);
-    if (value.startsWith("preview-") || value.startsWith("layout-") || value.startsWith("side-") || value.startsWith("ratio-") || value === "linked" || value === "local-execution") return chooseViewCommand(value);
-    return chooseToolCommand(value);
+    return chooseViewCommand(value);
   }
 
   /* ------------------------------------------------------------------- boot */
@@ -2763,11 +2765,10 @@
   // changing the main Y.Text.
   function filesChanged(events, active = session) {
     if (!active || active !== session) return;
-    // Nested text edits change the preview, but not the file list. An event
-    // names the container it happened to by id, so that is what the directory
-    // is compared against -- not the handle this component is holding.
-    const directory = active.files?.id;
-    if (!Array.isArray(events) || events.some((event) => event.target === directory)) refreshFiles();
+    // Nested text edits change the preview, but not the file list. Which
+    // events are the directory's is the session's to say: the list moves with
+    // four maps, not one.
+    if (active.directoryChanged(events)) refreshFiles();
     if (needsSourceRefresh(events, active.text)) sourceChanged();
   }
 
@@ -2942,8 +2943,8 @@
       },
       onSource: (active) => {
         // The first source of a session is what says the document exists to
-        // be compared against a publication; later ones are edits.
-        if (mayEdit && publication.begin()) void refreshPublicationMetadata();
+        // be compared against a bundle; later ones are edits.
+        if (mayEdit && bundle.begin()) void refreshBundleMetadata();
         sourceChanged();
       },
       onSwap: () => (sourceEpoch += 1),
@@ -2978,25 +2979,25 @@
         .then((record) => { offlinePrepared = Boolean(record); })
         .catch(() => {});
     }
-    if (mayEdit) publication.watchAsEditor();
+    if (mayEdit) bundle.watchAsEditor();
     // Reader and commenter links receive the current immutable display bundle.
     // They never join the source room, ask for a snapshot, or start a local
-    // renderer. The publication URL is an authenticated server response and
-    // remains useful even when there is no publication yet.
+    // renderer. The bundle URL is an authenticated server response and
+    // remains useful even when there is no bundle yet.
     if (!mayEdit) {
       publishedMode = true;
       await startCollaboration(document_, { sourceSync: false });
-      const visitor = publication.watchAsVisitor({
+      const visitor = bundle.watchAsVisitor({
         // Where the published bundle is served from. Checked against the
         // origin this document names: a URL from anywhere else is refused
         // rather than loaded into the frame.
-        onPublication: (value) => {
+        onBundle: (value) => {
           if (!value?.html_url) return;
           const source = value.html_url;
           if (typeof source !== "string" || !/^https?:\/\//.test(source)) return;
           const resolved = new URL(source);
           if (document_.docs_origin && resolved.origin !== document_.docs_origin) {
-            say("The published version is hosted somewhere this deployment does not allow, so it was not shown.", { kind: "problem", id: "reader:publication-origin" });
+            say("The published version is hosted somewhere this deployment does not allow, so it was not shown.", { kind: "problem", id: "reader:bundle-origin" });
             return;
           }
           frameSrc = resolved.href;
@@ -3006,7 +3007,7 @@
         },
       });
       await visitor.refresh();
-      // No publication is an explicit state, never a reason to fall back to
+      // No bundle is an explicit state, never a reason to fall back to
       // source rendering. Keep the document pane available for the notice.
       sourceFormat = "html";
       settled = true;
@@ -3027,10 +3028,9 @@
       settled = true;
       return;
     }
-    // A panel remembered from an editor's visit is not one a link-holder is
-    // offered. Coerced without being remembered: the preference is this
-    // browser's, and an editor coming back to their own document keeps it.
-    if (panel && !tabs.some((tab) => tab.id === panel)) showPanel(home, false);
+    // The column opens on the files, which a link-holder is not offered; and
+    // a panel this visit has already moved to may not be theirs either.
+    if (panel && !tabs.some((tab) => tab.id === panel)) showPanel(home);
     settled = true;
     // Load the browser renderer for readers as well as editors; this is all
     // transient and does not create a server-side result.
@@ -3043,7 +3043,7 @@
     // until then.
     void restoreLastPreview();
     await startCollaboration(document_);
-    // `onSource` starts publication metadata only after the initial document state
+    // `onSource` starts bundle metadata only after the initial document state
     // has populated the source tree. A session object alone is not a snapshot.
     // No chooser and no saved distribution: `latex.configure` tells the
     // controller which project this is and what it is allowed to do, and the
@@ -3055,16 +3055,7 @@
     // A document its author may edit opens ready to be worked on: that is what
     // they came for.
     if (mayEdit) startEditing();
-    // Somebody sent a link to a moment rather than to the document. Opening
-    // it opens the panel on that version's comparison with the document as it
-    // stands, which is what a link to a moment is for.
-    if (ARRIVED_AT) {
-      showPanel("history", false).then(() => {
-        // The history request may outlive the panel. Do not select a version
-        // after the reader has explicitly left history.
-        if (panel === "history") void viewPoint(ARRIVED_AT);
-      });
-    } else if (panel === "history") {
+    if (panel === "history") {
       // The column reopened where it was left, and this panel has to fetch
       // what it shows.
       loadHistory();
@@ -3125,7 +3116,7 @@
       renderCoordinator.invalidate();
       navigationGeneration += 1;
       renderers.cancelPreview();
-      publication.dispose();
+      bundle.dispose();
       clearTimeout(reviewTimer);
       clearTimeout(previewTimer);
       previewTimer = null;
@@ -3240,7 +3231,17 @@
   {/if}
   <hr class="hr my-1" />
   {#if canSeeSharing || canPublish}<Menu.Item value="share" class="menuitem">Share…</Menu.Item>{/if}
-  <Menu.Item value="history" class="menuitem">History</Menu.Item>
+  <!-- Only where the panel behind it is one this reader is offered: a menu
+       that opens a column the rail does not have is the second list of who
+       may see what that lib/panels.js exists to prevent. -->
+  {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem">History</Menu.Item>{/if}
+  {#if mayEdit}
+    <hr class="hr my-1" />
+    {#if sourceFormat === "latex" && compilesHere}
+      <Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>
+    {/if}
+    <Menu.Item value="settings" class="menuitem">Settings…</Menu.Item>
+  {/if}
 {/snippet}
 
 {#snippet layoutItems()}
@@ -3330,14 +3331,49 @@
   {@render layoutItems()}
 {/snippet}
 
-{#snippet toolItems()}
-  {#if mayEdit && sourceFormat === "latex" && compilesHere}
-    <Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>
+{#snippet previewStatusDetails()}
+  <div class="preview-status-details">
+    {#if renderState.provenance}
+      <p>Built with {renderState.provenance.builder} · {renderState.provenance.backend}{renderState.provenance.engine ? ` · ${renderState.provenance.engine}` : ""}{renderState.provenance.version ? ` · ${renderState.provenance.version}` : ""}{renderState.provenance.preset ? ` · preset ${renderState.provenance.preset}` : ""}</p>
+    {/if}
+    {#if latexHtmlPreview}
+      {#if compileBadge}<p>{compileBadge}</p>{/if}
+      {#if renderState.failureReason}<p>{renderState.failureReason}</p>{/if}
+    {:else if sourceFormat === "latex" && editing}
+      <LatexStatus />
+    {:else if sourceFormat === "typst" && compileBadge}
+      <p>{compileBadge}</p>
+    {/if}
+    {#if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
+      <p>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Use Quarto on this computer to generate the full preview."}</p>
+      <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void startLocalExecution()}>
+        {quartoNeedsLocalApp ? "Enable local rendering" : "Retry Quarto preview"}
+      </button>
+      {#if quartoNeedsLocalApp}<button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => openSettings("local")}>Install or configure companion</button>{/if}
+    {/if}
+    {#if quartoReaderNeedsLocalTool}
+      <p>Showing the browser's Markdown draft. Full Quarto preview requires the local LibrePaper app with Quarto and its execution tools.</p>
+    {/if}
+    {#if sourceFormat === "typst" && !typstHtmlPreview && (typstNeedsLocalApp || typstNeedsCalepinCommand || calepinPreviewError)}
+      <p>{calepinPreviewError || localConnectionError || (typstNeedsCalepinCommand ? "Install the calepin command to use this preview." : "Connect the local LibrePaper app to use Calepin preview.")}</p>
+    {/if}
+    {#if previewProblem}
+      <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => showPanel("diagnostics")}>Open Diagnostics</button>
+    {/if}
+  </div>
+{/snippet}
+{#snippet previewStatusControl()}
+  {#if sourceFormat === "quarto" && mayEdit && !localExecution}
+    <button class="btn btn-sm preset-filled-primary-500" onclick={() => (localExecutionConsent = true)}>Turn on local execution</button>
+  {:else}
+    <PreviewStatus label={previewStatusLabel} busy={previewBusy}
+      tone={previewProblem ? "error" : "neutral"}>
+      {#snippet details()}{@render previewStatusDetails()}{/snippet}
+    </PreviewStatus>
   {/if}
-  <Menu.Item value="settings" class="menuitem">Settings…</Menu.Item>
 {/snippet}
 
-<Nav {me} documentation={false}>
+<Nav {me}>
   {#snippet tools()}
     <!-- The two faces of the one thing this bar already names. On a wide
          window the choice is the layout menu and the split; on a narrow one
@@ -3354,12 +3390,19 @@
                     onclick={() => showMobileView("source")} />
       </div>
     {/if}
-    {#if publishedMode && publicationUpdate}
-      <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void publication.acceptUpdate()}>
+    <!-- How the last build went. This stood in a band across the top of the
+         preview pane, which was a second bar under this one, present on every
+         format, mostly saying a filename this bar already names and the Files
+         pane already marks with an eye. The build is the document's state
+         rather than the frame's, so it belongs with the rest of what this bar
+         says about the document. -->
+    {@render previewStatusControl()}
+    {#if publishedMode && bundleUpdate}
+      <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void bundle.acceptUpdate()}>
         New published version available · Refresh
       </button>
     {/if}
-    {#if mayEdit && publicationStatus}
+    {#if mayEdit && bundleStatus}
       <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => openPanel("share")}>Unpublished changes</button>
     {/if}
     <div class="presence" role="group" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
@@ -3372,13 +3415,15 @@
     </div>
   {/snippet}
   {#snippet menus()}
-    {#if shown.document}
-      <div class="desktop-workspace-menu">
-        <MenubarMenu id="file" label="File" onselect={(command) => void chooseFileCommand(command)}>
-          {@render fileItems()}
-        </MenubarMenu>
-      </div>
-    {/if}
+    <!-- The File menu is the project's, not the preview's: new files, uploads,
+         downloads, sharing, history and settings all belong to the project
+         whatever pane is on screen, so it stays put when the document pane is
+         hidden. -->
+    <div class="desktop-workspace-menu">
+      <MenubarMenu id="file" label="File" onselect={(command) => void chooseFileCommand(command)}>
+        {@render fileItems()}
+      </MenubarMenu>
+    </div>
     {#if editing && mayEdit}
       <MenubarMenu id="edit" label="Edit" disabled={!editor || !!mergeTarget || !!shownFigure}
                    onopen={() => { editAvailability = editor?.editAvailability() || {}; }}
@@ -3401,31 +3446,17 @@
         </MenubarMenu>
       </div>
     {/if}
-    {#if mayEdit}
-      <div class="desktop-workspace-menu">
-        <MenubarMenu id="tools" label="Tools" onselect={chooseToolCommand}>
-          {@render toolItems()}
-        </MenubarMenu>
-      </div>
-    {/if}
-    {#if shown.document}
-      <div class="compact-workspace-menu">
-        <MenubarMenu id="compact" label="Menu" aria-label="File, view and tools" onselect={chooseCompactCommand}>
-          {@render fileItems()}<hr class="hr my-1" />
-          {#if editing}{@render viewItems()}<hr class="hr my-1" />{/if}
-          {#if mayEdit}{@render toolItems()}{/if}
-        </MenubarMenu>
-      </div>
-    {/if}
+    <div class="compact-workspace-menu">
+      <MenubarMenu id="compact" label="Menu" aria-label="File and view" onselect={chooseCompactCommand}>
+        {@render fileItems()}
+        {#if editing}<hr class="hr my-1" />{@render viewItems()}{/if}
+      </MenubarMenu>
+    </div>
   {/snippet}
   {#snippet children()}
     <span id="docTitle" class="nav-document truncate" title={toolbarPath || doc.title || ""}>
       {toolbarPath ? basename(toolbarPath) : doc.title || "LibrePaper"}
     </span>
-    {#if editing}
-      <IconButton icon="eye" label="Preview this file" disabled={!canPreviewFile}
-                  pressed={toolbarPath === previewMain} onclick={previewThisFile} />
-    {/if}
   {/snippet}
 </Nav>
 
@@ -3442,7 +3473,7 @@
        of these its rail has selected; none of it travels through the column
        as props, so a panel can grow a field without the column hearing of it. -->
   {#snippet filesPanel()}
-    <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile}
+    <Files bind:this={fileList} {files} {folders} open={openFile} peers={peersByFile} preview={previewMain || session?.mainPath() || ""}
       {mayEdit} {rules} onopen={openTheFile} onadd={addFile}
       onmkdir={(path) => workspace.addFolder(path)} onrelocate={relocateFiles}
       ondelete={deleteFiles} onduplicate={(entry, path) => workspace.duplicate(entry, path)}
@@ -3494,11 +3525,10 @@
 
   {#snippet sharePanel()}
     <Share open={panel === "share" && shown.comments} inline slug={SLUG}
-      canShare={doc.role === "owner"} {canSeeSharing} mayPublish={canPublish}
-      publishedVersion={publishedPublication} unpublishedChanges={publicationStatus}
-      publicationReady={publicationMetadataReady} publicationFailed={publicationMetadataFailed}
-      publishing={publicationPublishing} publicationBlocked={publicationBlocked}
-      onrefreshpublication={refreshPublicationMetadata}
+      canShare={doc.role === "owner"}
+      bundleReady={bundleMetadataReady} bundleFailed={bundleMetadataFailed}
+      bundleBlocked={bundleBlocked}
+      onrefreshbundle={refreshBundleMetadata}
       onclose={() => showPanel("")} />
   {/snippet}
 
@@ -3517,7 +3547,7 @@
       durability={historyDurability} problem={historyProblem} onview={viewPoint}
       activity={activityRows} activityProblem={activityProblem} activityLoading={activityLoading}
       {viewingMoment} onmoment={viewMoment}
-      onname={nameCheckpoint} oncopy={checkpointLink} />
+      onname={nameCheckpoint} />
   {/snippet}
 
   <!-- Annotations the server has not acknowledged, offered back wherever
@@ -3672,37 +3702,6 @@
 
   <!-- Kept mounted whatever the arrangement: taking the frame out of the tree
        would reload the document and lose the reader's place in it. -->
-  {#snippet previewStatusDetails()}
-    <div class="preview-status-details">
-      {#if renderState.provenance}
-        <p>Built with {renderState.provenance.builder} · {renderState.provenance.backend}{renderState.provenance.engine ? ` · ${renderState.provenance.engine}` : ""}{renderState.provenance.version ? ` · ${renderState.provenance.version}` : ""}{renderState.provenance.preset ? ` · preset ${renderState.provenance.preset}` : ""}</p>
-      {/if}
-      {#if latexHtmlPreview}
-        {#if compileBadge}<p>{compileBadge}</p>{/if}
-        {#if renderState.failureReason}<p>{renderState.failureReason}</p>{/if}
-      {:else if sourceFormat === "latex" && editing}
-        <LatexStatus />
-      {:else if sourceFormat === "typst" && compileBadge}
-        <p>{compileBadge}</p>
-      {/if}
-      {#if sourceFormat === "quarto" && (quartoNeedsLocalApp || quartoPreviewError)}
-        <p>Showing Markdown preview. {quartoPreviewError || localConnectionError || "Use Quarto on this computer to generate the full preview."}</p>
-        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void startLocalExecution()}>
-          {quartoNeedsLocalApp ? "Enable local rendering" : "Retry Quarto preview"}
-        </button>
-        {#if quartoNeedsLocalApp}<button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => openSettings("local")}>Install or configure companion</button>{/if}
-      {/if}
-      {#if quartoReaderNeedsLocalTool}
-        <p>Showing the browser's Markdown draft. Full Quarto preview requires the local LibrePaper app with Quarto and its execution tools.</p>
-      {/if}
-      {#if sourceFormat === "typst" && !typstHtmlPreview && (typstNeedsLocalApp || typstNeedsCalepinCommand || calepinPreviewError)}
-        <p>{calepinPreviewError || localConnectionError || (typstNeedsCalepinCommand ? "Install the calepin command to use this preview." : "Connect the local LibrePaper app to use Calepin preview.")}</p>
-      {/if}
-      {#if previewProblem}
-        <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => showPanel("diagnostics")}>Open Diagnostics</button>
-      {/if}
-    </div>
-  {/snippet}
   {#snippet previewControls()}
     {#if viewerView}
       <PreviewControls mode={viewerView.mode} scale={viewerView.scale} tool={viewerTool}
@@ -3718,24 +3717,15 @@
         }} />
     {/if}
   {/snippet}
-  {#snippet previewStatusControl()}
-    {#if sourceFormat === "quarto" && mayEdit && !localExecution}
-      <button class="btn btn-sm preset-filled-primary-500" onclick={() => (localExecutionConsent = true)}>Turn on local execution</button>
-    {:else}
-      <PreviewStatus label={previewStatusLabel} busy={previewBusy}
-        tone={previewProblem ? "error" : "neutral"}>
-        {#snippet details()}{@render previewStatusDetails()}{/snippet}
-      </PreviewStatus>
-    {/if}
-  {/snippet}
-  {#if publishedMode && !publishedPublication?.id}
+  {#if publishedMode && !publishedBundle?.id}
     <section class="latexpane"><div class="notyet" role="status">
-      <h2 class="h4">Not published yet</h2>
-      <p class="text-surface-700-300 text-sm">The publisher has not published a reader version of this document.</p>
+      <h2 class="h4">Nothing to read yet</h2>
+      <p class="text-surface-700-300 text-sm">This document has not been rendered for readers yet. It appears here as
+        soon as somebody with access opens it and it renders.</p>
     </div></section>
   {/if}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
-           path={previewMain} status={previewStatusControl} controls={previewControls}
+           controls={previewControls}
            away={!shown.document || unrendered || failedBeforeRender} />
 
   <!-- The panels, and only the panels. Which face the main area wears -- the
@@ -3744,9 +3734,13 @@
        head of a row that scrolls, saying what you are reading rather than
        what you could open. It is in the bar above now, beside the file it
        names. -->
-  <nav class="mobile-pane-nav" aria-label="Workspace panels">
-    <PanelRail tabs={compact ? tabs : []} {panel} open={shown.comments} onselect={selectPanel} />
-  </nav>
+  <!-- A reader is offered no panels, so there is no row of them: an empty bar
+       along the bottom of the window is a strip of furniture saying nothing. -->
+  {#if compact && tabs.length}
+    <nav class="mobile-pane-nav" aria-label="Workspace panels">
+      <PanelRail tabs={tabs} {panel} open={shown.comments} onselect={selectPanel} />
+    </nav>
+  {/if}
 
   <!-- Shown only while a separator is dragged: a line that follows the pointer
        so the split can be seen moving without the iframe reflowing on every
@@ -3825,23 +3819,18 @@
                 account={me} />
 
 <Modal bind:open={localExecutionConsent} title="Run this document's code on this computer?"
-  description="{LOCAL_EXECUTION_WARNING} Only turn this on for a document whose authors you trust.">
-  {#snippet footer()}
-    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (localExecutionConsent = false)}>Cancel</button>
-    <button type="button" class="btn preset-filled-primary-500" onclick={() => void startLocalExecution()}>OK</button>
-  {/snippet}
-</Modal>
+  description="{LOCAL_EXECUTION_WARNING} Only turn this on for a document whose authors you trust."
+  confirm={{ label: "OK", onclick: () => void startLocalExecution() }}></Modal>
 
 <Modal bind:open={timeline.state.restoring} title="Restore this version?"
   description={restoreMoved
     ? `The project changed while this was open. Restore ${restoreName} over the project as it now stands? The current version will be preserved in history.`
-    : `Restore ${restoreName}. Every file in the project is replaced, and the current version is preserved in history.`}>
-  {#snippet footer()}
-    <button type="button" class="btn preset-outlined-surface-300-700" disabled={restoreBusy} onclick={() => (timeline.state.restoring = false)}>Cancel</button>
-    <button type="button" class="btn preset-filled-primary-500" disabled={restoreBusy || !mayEdit} onclick={confirmRestore}>
-      {restoreBusy ? "Restoring…" : restoreMoved ? "Restore anyway" : "Restore version"}
-    </button>
-  {/snippet}
+    : `Restore ${restoreName}. Every file in the project is replaced, and the current version is preserved in history.`}
+  confirm={{
+    label: restoreBusy ? "Restoring…" : restoreMoved ? "Restore anyway" : "Restore version",
+    disabled: restoreBusy || !mayEdit,
+    onclick: confirmRestore,
+  }}>
   {#if historyProblem}
     <p class="text-error-500 text-sm" role="alert">{historyProblem}</p>
   {/if}
@@ -3854,38 +3843,21 @@
   description={pendingDelete.length > 1
     ? "This removes these comments and their replies for everyone. It cannot be undone."
     : "This removes the comment and its replies for everyone. It cannot be undone."}
->
-  {#snippet footer()}
-    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (deleting = false)}>
-      Cancel
-    </button>
-    <button type="button" class="btn preset-filled-error-500" onclick={confirmDelete}>Delete</button>
-  {/snippet}
-</Modal>
+  confirm={{ label: "Delete", tone: "error", onclick: confirmDelete }}
+></Modal>
 
 <!-- Signed out, a commenter chooses how to be named before they write. -->
 <Modal
   bind:open={identifying}
   title="Who are you?"
   description="Choose how to identify yourself in this comment."
->
-  {#snippet footer()}
-    <button
-      type="button"
-      class="btn preset-outlined-surface-300-700"
-      onclick={() => { identifying = false; location.href = signInHref(); }}
-    >
-      Sign in
-    </button>
-    <button
-      type="button"
-      class="btn preset-filled-primary-500"
-      onclick={() => { identifying = false; openDraft(); }}
-    >
-      Continue as {doc.commenting_as || "Anonymous"}
-    </button>
-  {/snippet}
-</Modal>
+  cancelLabel="Sign in"
+  confirm={{
+    label: `Continue as ${doc.commenting_as || "Anonymous"}`,
+    oncancel: () => { identifying = false; location.href = signInHref(); },
+    onclick: () => { identifying = false; openDraft(); },
+  }}
+></Modal>
 
 <Toasts />
 

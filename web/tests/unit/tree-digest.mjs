@@ -1,6 +1,6 @@
 // Behavioural checks for the browser's rendering snapshot identity.
 //
-// The digest is a contract with the server: a publication names the source
+// The digest is a contract with the server: a bundle names the source
 // checkpoint it was rendered from by this value, and the server looks that
 // checkpoint up by the digest its own `Tree::to_bytes` produces. The pinned
 // hashes below are asserted from Rust as well, in `document::history`.

@@ -58,17 +58,17 @@ session dirty, relays it, and persists before acknowledging it.
 
 | Command | Entry point | Live mutation | Durable effects |
 | --- | --- | --- | --- |
-| Add/reply/resolve/delete/refine/anchor a comment | room WebSocket or `POST /comments` | `Command` → `Room::apply_command_with_actor` | Annotation row and room cache |
+| Add/reply/resolve/delete/refine/anchor a comment | room WebSocket or `POST /comments` | `Command` → `Room::apply_command_with_actor` | Annotation row and room cache. No source version: a comment records the frontier it was anchored at, not an archive |
 | Accept or decline a proposal hunk | `proposal-decide` WebSocket command | `room::proposals::decide_hunk` merges the branch and reverts the declined hunks | Decision row, resulting room update, and broadcast, in one transaction |
 | Apply an agent/automation patch | document MCP/agent route | `Room::apply_agent_request` → `session::apply_path_edits` inside `checked_edit` | Session write, optional accepted suggestion, checkpoint, receipt |
-| Apply a batch of assistant suggestions | `POST /suggestions` | Opens proposal branches; does not change the room document | Proposal rows and checkpoint provenance |
+| Apply a batch of assistant suggestions | `POST /suggestions` | Opens proposal branches; does not change the room document | Proposal rows and frontier provenance |
 | Restore a historical version | `POST /restore` | `Room::restore_and_checkpoint` → `session::restore` | Session write, update broadcast, restore checkpoint |
 | Replace/republish source | `POST /documents` for an existing document | `Server::edit_into_session` constructs a wanted tree, then `session::restore` | Assets, session write, checkpoint, title, broadcast |
 | Request a checkpoint | `doc-checkpoint` | No source mutation | Immutable source version and manifest entry |
 | Upload asset bytes | document asset route | No CRDT mutation until a peer names the digest | Authorized content-addressed blob |
 | Delete a document | `POST /delete` | Removes the live room from service | Catalogue and stored roots are retired by storage policy |
 | Change sharing or ownership | share/transfer routes | No source mutation | Authoritative catalogue permissions/ownership |
-| Prepare and activate a publication | publication routes | No live-source mutation | Immutable display objects and atomic current-publication pointer |
+| Prepare and activate a bundle | bundle routes | No live-source mutation | Immutable display objects and atomic current-bundle pointer |
 
 HTTP and WebSocket comment commands deliberately converge at
 `Message::into_command` and `Room::apply_command_with_actor`. They are two
@@ -87,9 +87,9 @@ identities is one implementation.
 | Normalize historical tree | stored manifest/archive | normalized `history::Tree` | History and restore |
 | Construct republish candidate | live tree plus uploaded directory | wanted tree and bodies | `Server::edit_into_session`, before authoritative restore |
 | Validate/apply agent patches | immutable `SourceTree` plus expected passages | candidate `SourceTree` or conflict | Preview/validation before `Room::apply_agent_request` commits edits |
-| Capture browser render tree | local Loro session | plain texts, asset digests, main path | Preview, download, assistant candidate preview, publication |
+| Capture browser render tree | local Loro session | plain texts, asset digests, main path | Preview, download, assistant candidate preview, bundle |
 | Render source | captured tree plus render options | HTML/PDF/DOCX, diagnostics and provenance | Browser renderer or local companion |
-| Build display bundle | rendered HTML plus captured assets | self-contained publication HTML and objects | Publication prepare/activate |
+| Build display bundle | rendered HTML plus captured assets | self-contained bundle HTML and objects | Bundle prepare/activate |
 | Compute history comparison | one checkpoint tree and a captured current tree | per-file source differences | History panel; never changes live source |
 | Assemble project download | captured tree plus fetched assets | ZIP/blob | Browser download only |
 
@@ -110,7 +110,7 @@ it.
 | Annotation validation and permissions | `room/command.rs` and `room/comments.rs` | Client optimistic state is recoverable, not authoritative |
 | Source-edit conflicts | `wasm_helpers::text` edits plus guarded room operations | Browser previews may predict the result |
 | Source snapshot identity | immutable source store/checkpoint code | Browser tree digests identify transient render inputs |
-| Publication identity and activation | publication store and server publication gate | Browser builds and uploads the proposed bundle |
+| Bundle identity and activation | bundle store and server bundle gate | Browser builds and uploads the proposed bundle |
 
 ## Duplication decisions
 
@@ -145,7 +145,7 @@ it.
 ### Candidate duplication requiring evidence
 
 - Browser render trees, source checkpoint trees, agent `SourceTree`, Quarto
-  result bundles, local builder responses, and publication display bundles use
+  result bundles, local builder responses, and bundle display bundles use
   overlapping terms. Inventory their fields before introducing another common
   package. Consolidate vocabulary only where lifecycle and trust semantics are
   identical.

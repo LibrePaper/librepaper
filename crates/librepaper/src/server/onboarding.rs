@@ -2,7 +2,7 @@
 //! The catalogue records each completed copy independently of its lifetime.
 
 use super::*;
-use crate::document::store::Publication;
+use crate::document::store::DocumentInput;
 
 struct Starter {
     main: &'static str,
@@ -166,7 +166,7 @@ impl Server {
                 let entry = self
                     .store
                     .put_directory_as_actor(
-                        Publication {
+                        DocumentInput {
                             slug: slug.clone(),
                             title: starter.title.into(),
                             source: starter.source.into(),

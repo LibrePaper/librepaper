@@ -49,7 +49,7 @@ The 10,000-document/500,000-version fixture occupied 301,810,191 PostgreSQL
 bytes and loaded in 13.6 seconds. That is about 30.2 KiB per active document at
 50 retained versions, including indexes and page overhead. Update acknowledgment
 p95 at 100 active rooms was 28.24 ms, below both the 50 ms interactive target
-and the 100 ms acknowledgment gate. The 256 MiB publication measurement
+and the 100 ms acknowledgment gate. The 256 MiB bundle measurement
 includes hashing, filesystem transfer, and verification outside the final
 PostgreSQL transaction.
 
@@ -91,9 +91,9 @@ migration.
 
 Rendering and attached agent execution run in the browser or the user's local
 runner and do not consume server compute by default. Transfer grows with actual
-publication and asset downloads and must be modeled from traffic.
+bundle and asset downloads and must be modeled from traffic.
 
-Application limits meter retained asset bytes, archives, publications, upload
+Application limits meter retained asset bytes, archives, bundles, upload
 rates, version rates, document counts, and bounded request/concurrency sizes.
 The PostgreSQL contract suite exercises refusal at exact limits. Operators must
 also configure provider billing alerts or hard caps; the application cannot

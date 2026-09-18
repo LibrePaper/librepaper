@@ -3,7 +3,7 @@
 //! The service owns admission, authentication, queueing, cancellation and
 //! persistence.  This module owns the small amount of engine selection needed
 //! to hand a request to the implementation that knows its source inventory,
-//! invocation policy, output capture and publication exclusions. Quarto is
+//! invocation policy, output capture and bundle exclusions. Quarto is
 //! the only computation engine currently supported by this adapter surface.
 //! LaTeX is built in the browser, so no TeX or Biber job reaches here.
 
@@ -239,7 +239,7 @@ pub fn quarto_capture(
     quarto_capture::collect(manifest_path, source_path, source, output_root)
 }
 
-/// The files selected for a Quarto publication.  Quarto's source and
+/// The files selected for a Quarto bundle.  Quarto's source and
 /// editorial inputs are shareable by default; generated output and local
 /// environments require an explicit `.librepaper-share.json` include.
 #[allow(dead_code)]

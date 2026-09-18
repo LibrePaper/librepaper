@@ -32,7 +32,7 @@ const got = (key) => JSON.parse(store.get(key));
   assert.equal(prefs.state.layout, "split");
   assert.equal(prefs.state.sourceSide, "left");
   assert.equal(prefs.state.keys, "default");
-  assert.equal(prefs.state.panel, "files", "an editor's first visit opens on the shape of the project");
+  assert.equal(prefs.state.panel, "files", "every open starts on the shape of the project");
   assert.equal(prefs.state.mobileView, "document");
   assert.equal(store.size, 0, "reading remembers nothing");
 }
@@ -43,27 +43,11 @@ const got = (key) => JSON.parse(store.get(key));
   store.clear();
   put("librepaper-layout", "three-columns");
   put("librepaper-source-side", "middle");
-  put("librepaper-panel", "something-retired");
   put("librepaper-mobile-view", "elsewhere");
   const prefs = createPreferences();
   assert.equal(prefs.state.layout, "split");
   assert.equal(prefs.state.sourceSide, "left");
-  assert.equal(prefs.state.panel, "files");
   assert.equal(prefs.state.mobileView, "document");
-}
-
-// Two panels were folded into one. A browser that last left the column on
-// either of the old names finds where they went.
-for (const old of ["comments", "chat"]) {
-  store.clear();
-  put("librepaper-panel", old);
-  const prefs = createPreferences();
-  assert.equal(prefs.state.panel, "collaboration", `${old} became the collaboration panel`);
-  assert.equal(
-    prefs.state.collaborationTab,
-    old === "chat" ? "chat" : "comments",
-    "and it opens on the tab that name meant",
-  );
 }
 
 // Every setter writes. This is the whole reason the module exists: setting
@@ -91,16 +75,16 @@ for (const old of ["comments", "chat"]) {
   assert.equal(got(PANES.editor.key), 0.35);
 }
 
-// A panel opened for this visit only is shown but not remembered: following
-// a link into the timeline is not choosing to start there next time.
+// The panel is the one arrangement that is not remembered: which panel the
+// last document was left on says nothing about the one being opened now, so
+// every open starts on the files.
 {
   store.clear();
   const prefs = createPreferences();
-  prefs.setPanel("history", false);
+  prefs.setPanel("history");
   assert.equal(prefs.state.panel, "history");
-  assert.equal(store.has("librepaper-panel"), false, "an unremembered panel writes nothing");
-  prefs.setPanel("files");
-  assert.equal(got("librepaper-panel"), "files");
+  assert.equal(store.size, 0, "showing a panel writes nothing");
+  assert.equal(createPreferences().state.panel, "files", "and the next open is back on the files");
 }
 
 // Storage can be switched off, and a page that threw when it was would be a

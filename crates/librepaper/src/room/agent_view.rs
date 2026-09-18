@@ -7,7 +7,7 @@ impl Room {
         author: &str,
         editor: bool,
     ) -> Result<crate::agent_query::QuerySnapshot, crate::room::agent::AgentError> {
-        let _publication = self.publication_write.lock().await;
+        let _bundle = self.bundle_write.lock().await;
         if self.fence_reason.load(std::sync::atomic::Ordering::Relaxed)
             == super::FenceReason::AgentRecoveryPending as u8
         {

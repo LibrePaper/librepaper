@@ -363,15 +363,15 @@ pub struct Store {
 /// browser that shows the document renders it. So there is no HTML here, and
 /// no digest of any.
 #[derive(Clone, Debug, Default)]
-pub struct Publication {
+pub struct DocumentInput {
     pub slug: String,
     pub title: String,
-    /// The document itself. A document published as HTML has HTML for its
+    /// The document itself. A document written as HTML has HTML for its
     /// source and the identity for its renderer.
     pub source: String,
     pub source_format: String,
-    /// The path of the main file. A publish of one file is a directory of one
-    /// file, and this is what it is called in it.
+    /// The path of the main file. A document of one file is a directory of
+    /// one file, and this is what it is called in it.
     pub main: String,
 }
 
@@ -637,11 +637,13 @@ impl Store {
     /// touched simply has no entry.
     /// Every file in a project, by path, as it currently stands.
     ///
-    /// Read from the committed source archive rather than from the live room:
-    /// the archive is what a project *is* between edits, and reading it needs
-    /// no room to be resident. A project whose newest edits have not been
-    /// checkpointed yet is copied as of its last checkpoint, which is the same
-    /// thing a download of it gives you.
+    /// Read from the durable operation history rather than from a version or
+    /// from the live room. Versions are moments somebody named, so the newest
+    /// one can be hours behind the text; the operation log is never behind,
+    /// and replaying it needs no room to be resident. A document that has no
+    /// operation history yet -- one created from a template and never opened
+    /// -- is read from the version it was created with, which is the only
+    /// thing that exists to read.
     pub async fn project_files(
         &self,
         slug: &str,
@@ -654,13 +656,72 @@ impl Store {
         else {
             return Ok(None);
         };
+        let collaboration = crate::storage::collaboration::CollaborationStorage::new(
+            self.catalog.clone(),
+            self.blobs.clone(),
+        );
+        let recovered = collaboration
+            .recover(document.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if recovered.base.is_none() && recovered.updates.is_empty() {
+            return self.seeded_project_files(document.id).await;
+        }
+        let doc = crate::document::session::new_doc();
+        if let Some(base) = recovered.base {
+            crate::document::session::apply_update(&doc, &base)
+                .map_err(|error| error.to_string())?;
+        }
+        for update in recovered.updates {
+            crate::document::session::apply_update(&doc, &update.update_bytes)
+                .map_err(|error| error.to_string())?;
+        }
+        let mut files: Vec<(String, Vec<u8>)> = crate::document::session::texts_of(&doc)
+            .into_iter()
+            .map(|(path, text)| (path, text.into_bytes()))
+            .collect();
+        // Figures live in the store under their digest, and the document
+        // carries only the name somebody gave them. One whose bytes have gone
+        // is skipped rather than failing the copy: a project missing a figure
+        // is still worth having.
+        let named = crate::document::session::assets_of(&doc);
+        let digests: Vec<_> = named.values().cloned().collect();
+        if !digests.is_empty() {
+            let records = self
+                .catalog
+                .assets_by_digests(document.id, &digests)
+                .await
+                .map_err(|error| error.to_string())?;
+            let keys: std::collections::HashMap<String, String> = records
+                .into_iter()
+                .map(|record| (hex::encode(&record.digest), record.storage_key))
+                .collect();
+            for (path, digest) in named {
+                let Some(key) = keys.get(&digest) else {
+                    continue;
+                };
+                if let Ok(bytes) = self.blobs.get(key).await {
+                    files.push((path, bytes));
+                }
+            }
+        }
+        Ok(Some(files))
+    }
+
+    /// The files of a document that has never been edited, read from the
+    /// version it was created with. Only `project_files` needs this, and only
+    /// for the window between a document being created and first opened.
+    async fn seeded_project_files(
+        &self,
+        document_id: uuid::Uuid,
+    ) -> Result<Option<Vec<(String, Vec<u8>)>>, String> {
         let source = crate::storage::source::SourceStorage::new(
             self.catalog.clone(),
             self.blobs.clone(),
             Default::default(),
         );
         let Some(project) = source
-            .read_current(document.id)
+            .read_current(document_id)
             .await
             .map_err(|error| format!("{error:?}"))?
         else {
@@ -673,10 +734,6 @@ impl Store {
                     files.push((path.clone(), bytes.clone()));
                 }
                 crate::storage::source_archive::SourceFile::Asset { path, asset_id, .. } => {
-                    // A figure the archive names by reference. Its bytes came
-                    // back beside the archive; one that did not is skipped
-                    // rather than failing the copy, because a project missing
-                    // one figure is still worth having.
                     if let Some(bytes) = project.assets.get(asset_id) {
                         files.push((path.clone(), bytes.clone()));
                     }
@@ -763,7 +820,7 @@ impl Store {
 
     pub async fn put_directory_as_actor(
         &self,
-        value: Publication,
+        value: DocumentInput,
         files: Vec<(String, Vec<u8>)>,
         actor: MutationActor,
     ) -> Result<IndexEntry, PutError> {
@@ -771,7 +828,7 @@ impl Store {
         let account_id =
             uuid::Uuid::parse_str(&actor.account_id).map_err(|_| PutError::Authorization {
                 status: 401,
-                message: "publication actor account is invalid",
+                message: "bundle actor account is invalid",
             })?;
         let document = match catalog
             .document_by_slug(&value.slug)
@@ -825,10 +882,19 @@ impl Store {
             files: project_files,
             through_update_sequence: document.update_sequence,
             project_generation: document.project_generation,
-            reason: "publish".into(),
+            // What this is: a whole document written at once, from outside
+            // any room -- an upload, a fork, a starter, a seeded example. It
+            // used to be called "publish", from when publishing was something
+            // a person did; nothing here publishes anything.
+            reason: "created".into(),
             label: None,
             author_account_id: Some(account_id),
-            author_label: actor.account_id,
+            // The name, not the id. `actor.account_id` is the catalogue uuid,
+            // and a timeline signed with it can only say "Unknown editor".
+            author_label: match catalog.account_display_name(account_id).await {
+                name if name.is_empty() => actor.owner_key.clone(),
+                name => name,
+            },
             make_current: true,
         })
         .await

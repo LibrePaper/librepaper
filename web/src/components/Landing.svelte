@@ -15,6 +15,7 @@
   // the sentence, and a way in. That is the only part of this file that is a
   // landing page.
   import Nav from "./Nav.svelte";
+  import DataTable from "./DataTable.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import Modal from "./Modal.svelte";
@@ -33,6 +34,11 @@
   import { preparedProjects } from "../lib/offline-projects.js";
 
   let me = $state({});
+  // Whether /api/me answered at all. Without it the signed-out page is also
+  // the page shown while the request is in flight and the page shown when the
+  // server never answers, so a dead server is indistinguishable from being
+  // signed out -- it just sits there.
+  let reachedServer = $state(true);
   let documents = $state([]);
   let trashed = $state([]);
   // Every path in each project, by slug. What a search matches besides the
@@ -75,9 +81,54 @@
   // directory, so it is slow enough to need saying that it is happening.
   let forking = $state("");
 
-  // The columns a narrow screen drops; see `.col-when` at the foot of this
-  // file for why these and not the others.
-  const DATE_COLUMNS = new Set(["updated"]);
+  // Which columns each place has. The table itself is DataTable's; what
+  // differs between the places is this list, which is data rather than three
+  // copies of a table with the differences written into ternaries.
+  //
+  // A width here is where a column starts, not where it stays: every one of
+  // them can be dragged, and what the reader drags it to is what it keeps.
+  // Only the two columns that hold controls rather than content are fixed --
+  // there is nothing in them to make room for.
+  //
+  // On a narrow window the two widest columns of metadata go. They are
+  // dropped from the list rather than hidden in CSS, because a column that is
+  // still in the table still has a width, and the table would keep its room.
+  let narrow = $state(false);
+  $effect(() => {
+    const query = window.matchMedia("(max-width: 760px)");
+    const watch = () => (narrow = query.matches);
+    watch();
+    query.addEventListener("change", watch);
+    return () => query.removeEventListener("change", watch);
+  });
+
+  const columns = $derived.by(() => {
+    const trash = place === "trash";
+    // Typed loosely on purpose: the list is grown by `push` below, and a
+    // literal inferred from its first two entries refuses every later one.
+    const list = /** @type {Record<string, any>[]} */ ([
+      { key: "mark", label: "", width: 44, resizable: false },
+      { key: "title", label: "Project", sortable: true, min: 160 },
+    ]);
+    if (!narrow) list.push({ key: "owner", label: "Owner", sortable: true, width: 210, min: 120 });
+    if (!trash && !narrow) list.push({ key: "files", label: "Files", sortable: true, width: 90, min: 60 });
+    list.push({
+      key: "updated",
+      label: trash ? "Deleted" : place === "recent" ? "Opened" : "Updated",
+      sortable: true,
+      width: 130,
+      min: 90,
+      class: "col-when",
+    });
+    list.push({
+      key: "actions",
+      label: "",
+      width: trash ? 88 : 150,
+      resizable: false,
+      align: "right",
+    });
+    return list;
+  });
 
   function placeFromUrl() {
     const asked = new URLSearchParams(location.search).get("in") || "";
@@ -107,7 +158,6 @@
       title: (doc) => doc.title.toLowerCase(),
       owner: (doc) => (doc.owner || "").toLowerCase(),
       files: (doc) => doc.files ?? -1,
-      comments: (doc) => doc.comments ?? -1,
       updated: (doc) => doc.updated_at,
       opened: (doc) => doc.opened_at || "",
     }[column];
@@ -615,14 +665,21 @@
 
   $effect(() => {
     void showOfflineProjects();
-    whoami().then(async (who) => {
-      me = who;
-      if (who.can_publish) {
-        await showList();
-        await showOfflineProjects();
-        if (place === "trash") await showTrash();
-      }
-    });
+    // Not the shared me(), which folds a failed request into an empty account:
+    // this page needs to tell the two apart in order to say which it is.
+    get("/api/me")
+      .catch(() => {
+        reachedServer = false;
+        return {};
+      })
+      .then(async (who) => {
+        me = who;
+        if (who.can_publish) {
+          await showList();
+          await showOfflineProjects();
+          if (place === "trash") await showTrash();
+        }
+      });
   });
 </script>
 
@@ -638,7 +695,7 @@
       <input class="input project-search" type="search" placeholder="Search projects"
              aria-label="Search projects by title or file" bind:value={search} />
       {#if me.can_publish}
-        <button type="button" class="btn btn-sm preset-filled-primary-500" onclick={() => askName()}>
+        <button type="button" class="btn btn-sm nav-new preset-filled-primary-500" onclick={() => askName()}>
           <Icon name="file-plus" size={16} />
           New project
         </button>
@@ -684,7 +741,7 @@
             <!-- The trash has both verbs: everything selected goes back, or
                  everything selected goes for good. -->
             <button type="button" class="btn btn-sm preset-tonal-primary" onclick={restoreSelected}>
-              Put back
+              <Icon name="undo-2" size={16} /> Put back
             </button>
             <button type="button" class="btn btn-sm preset-tonal-error"
                     onclick={() => askPurge(shown.filter((doc) => selected.has(doc.slug)))}>
@@ -707,161 +764,147 @@
         </div>
       {/if}
 
-      <div class="table-wrap">
-        <table class="table projects-table">
-          <thead>
-            <tr>
-              <th class="col-mark">
-                {#if selectable > 0}
-                  <input
-                    type="checkbox"
-                    class="tickbox"
-                    aria-label="Select every project shown"
-                    checked={selectable > 0 && hereSelected === selectable}
-                    indeterminate={hereSelected > 0 && hereSelected < selectable}
-                    onchange={(event) => tickAll(event.currentTarget.checked)}
-                  />
-                {/if}
-              </th>
-              {#each place === "trash" ? [["title", "Project"], ["owner", "Owner"], ["updated", "Deleted"]] : [["title", "Project"], ["owner", "Owner"], ["comments", "Comments"], ["files", "Files"], ["updated", place === "recent" ? "Opened" : "Updated"]] as [column, label]}
-                <th class="{DATE_COLUMNS.has(column) ? 'col-when' : ''} {column === 'files' ? 'col-files' : ''}"
-                    aria-sort={sortBy === column ? (ascending ? "ascending" : "descending") : "none"}>
-                  <button
-                    type="button"
-                    class="cursor-pointer {sortBy === column ? 'text-primary-500 font-semibold' : ''}"
-                    onclick={() => sortColumn(column)}
-                  >
-                    {label}
-                    {#if sortBy === column}<span aria-hidden="true">{ascending ? "▲" : "▼"}</span>{/if}
-                  </button>
-                </th>
-              {/each}
-              <th class="col-star"><span class="sr-only">Favorite</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each shown as doc (doc.slug)}
-              <tr class:picked={selected.has(doc.slug)}>
-                <!-- Just the checkbox. One narrow cell, so a row that can be
-                     selected is no wider than one that cannot and the title
-                     starts at the same x in both. -->
-                <td class="col-mark">
-                  <span class="mark">
-                    {#if mine(doc)}
-                      <input
-                        type="checkbox"
-                        class="tickbox pick"
-                        aria-label="Select {doc.title}"
-                        checked={selected.has(doc.slug)}
-                        onchange={(event) => tick(doc.slug, event.currentTarget.checked)}
-                      />
-                    {/if}
-                  </span>
-                </td>
-                <td class="col-title">
-                  {#if place === "trash"}
-                    <span class="title-line">{doc.title}</span>
-                  {:else}
-                    <a class="title-line" href="/docs/{doc.slug}">{doc.title}</a>
-                  {/if}
-                  <span class="title-note">
-                    {#if doc.offline_prepared}<span>Offline</span>{/if}
-                    <!-- The file the search found, when it was not the
-                         title. Opening it opens the project on that file. -->
-                    {#if found(doc, needle).path}
-                      <a href="/docs/{doc.slug}?file={encodeURIComponent(found(doc, needle).path)}">
-                        {found(doc, needle).path}
-                      </a>
-                    {/if}
-                    {#if place === "trash" && doc.purge_due}
-                      <span>Deleted for good {since(doc.purge_due)}</span>
-                    {/if}
-                  </span>
-                </td>
-                <!-- Who it belongs to. Yours says so rather than saying
-                     nothing: a column that is blank on most rows reads as a
-                     column that failed to load. -->
-                <td class="col-owner">
-                  {#if doc.owner}
-                    <span class="owner">
-                      <Avatar name={doc.owner} key={doc.owner_id || doc.owner} size={5} title="" />
-                      <span class="owner-name">{mine(doc) ? "You" : doc.owner}</span>
-                      {#if !mine(doc)}
-                        <span class="badge preset-tonal-secondary text-xs" title="What you may do here">{doc.role}</span>
-                      {/if}
-                      <!-- And whoever else has been in. Three faces and a
-                           count: the question this answers is "am I working
-                           on this with anyone", which four faces answer no
-                           better than three. Only shown on your own projects,
-                           because on somebody else's it would tell you who
-                           else holds the link you came in on. -->
-                      {#if doc.people?.length}
-                        <span class="people" title={doc.people.map((person) => person.name).join(", ")}>
-                          {#each doc.people.slice(0, 3) as person (person.id)}
-                            <Avatar name={person.name} key={person.id} size={5} title="" />
-                          {/each}
-                          {#if doc.people.length > 3}<span class="people-more">+{doc.people.length - 3}</span>{/if}
-                        </span>
-                      {/if}
-                    </span>
-                  {/if}
-                </td>
-                {#if place !== "trash"}
-                  <td>{doc.comments || "—"}</td>
-                  <td class="col-files">{doc.files ?? "—"}</td>
-                {/if}
-                <!-- Relative, with the date itself in the tooltip. Six copies
-                     of today's date answer nothing; "12 min ago" answers the
-                     question the column is here for. -->
-                <td class="col-when whitespace-nowrap" title={isoDay(place === "recent" ? doc.opened_at : doc.updated_at)}>
-                  {since(place === "recent" ? doc.opened_at : doc.updated_at)}
-                </td>
-                <td class="col-star">
-                  {#if place === "trash"}
-                    <span class="trash-actions">
-                      <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => restore(doc)}>Put back</button>
-                      <IconButton icon="trash" label="Delete {doc.title} for good" onclick={() => askPurge([doc])} />
-                    </span>
-                  {:else}
-                    <!-- What can be done to a project without opening it.
-                         Renaming keeps the slug, so every link already shared
-                         still arrives; forking makes a project of your own,
-                         which is why it is offered on somebody else's too. Deleting is one of
-                         these rather than something the selection toolbar
-                         alone can do: throwing one project away should not
-                         need a mode. -->
-                    {#if mine(doc)}
-                      <IconButton icon="pencil" label="Rename {doc.title}" onclick={() => askRename(doc)} />
-                    {/if}
-                    <IconButton icon="git-fork" label="Fork {doc.title}"
-                                disabled={forking === doc.slug} onclick={() => askFork(doc)} />
-                    {#if mine(doc)}
-                      <IconButton icon="trash" colour="text-surface-400-600 hover:text-error-500"
-                                  label="Move {doc.title} to the trash" onclick={() => askDelete(doc)} />
-                    {/if}
-                    <IconButton
-                      icon="star"
-                      tone="plain"
-                      size="btn-icon-sm"
-                      colour={doc.favorite ? "text-tertiary-600" : "text-surface-400-600"}
-                      filled={doc.favorite}
-                      pressed={doc.favorite}
-                      label={doc.favorite ? "Remove from favorites" : "Add to favorites"}
-                      onclick={() => star(doc)}
-                    />
-                  {/if}
-                </td>
-              </tr>
+      <DataTable
+        id="projects:{place}"
+        {columns}
+        rows={shown}
+        rowKey={(doc) => doc.slug}
+        rowClass={(doc) => (selected.has(doc.slug) ? "picked" : "")}
+        className="projects-table"
+        label={PLACE_NAMES[place]}
+        {sortBy}
+        {ascending}
+        onsort={sortColumn}
+      >
+        {#snippet head(column)}
+          {#if column.key === "mark" && selectable > 0}
+            <!-- The same square the rows use, so the box at the head of the
+                 column sits on the same centre as the ones under it. -->
+            <span class="tickcell">
+              <input
+                type="checkbox"
+                class="tickbox pick"
+                aria-label="Select every project shown"
+                checked={hereSelected === selectable}
+                indeterminate={hereSelected > 0 && hereSelected < selectable}
+                onchange={(event) => tickAll(event.currentTarget.checked)}
+              />
+            </span>
+          {/if}
+        {/snippet}
+
+        {#snippet cell(column, doc)}
+          {#if column.key === "mark"}
+            <!-- Just the checkbox. One narrow cell, so a row that can be
+                 selected is no wider than one that cannot and the title
+                 starts at the same x in both. -->
+            <span class="tickcell">
+              {#if mine(doc)}
+                <input
+                  type="checkbox"
+                  class="tickbox pick"
+                  aria-label="Select {doc.title}"
+                  checked={selected.has(doc.slug)}
+                  onchange={(event) => tick(doc.slug, event.currentTarget.checked)}
+                />
+              {/if}
+            </span>
+          {:else if column.key === "title"}
+            {#if place === "trash"}
+              <span class="title-line">{doc.title}</span>
             {:else}
-              <tr>
-                <td colspan="7" class="text-surface-600-400 h-48 text-center align-middle">
-                  {nothingHere()}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+              <a class="title-line" href="/docs/{doc.slug}">{doc.title}</a>
+            {/if}
+            <span class="title-note">
+              {#if doc.offline_prepared}<span>Offline</span>{/if}
+              <!-- The file the search found, when it was not the title.
+                   Opening it opens the project on that file. -->
+              {#if found(doc, needle).path}
+                <a href="/docs/{doc.slug}?file={encodeURIComponent(found(doc, needle).path)}">
+                  {found(doc, needle).path}
+                </a>
+              {/if}
+              {#if place === "trash" && doc.purge_due}
+                <span>Deleted for good {since(doc.purge_due)}</span>
+              {/if}
+            </span>
+          {:else if column.key === "owner"}
+            <!-- Who it belongs to. Yours says so rather than saying nothing:
+                 a column that is blank on most rows reads as a column that
+                 failed to load. -->
+            {#if doc.owner}
+              <span class="owner">
+                <Avatar name={doc.owner} key={doc.owner_id || doc.owner} size={5} title="" />
+                <span class="owner-name">{mine(doc) ? "You" : doc.owner}</span>
+                {#if !mine(doc)}
+                  <span class="badge preset-tonal-secondary text-xs" title="What you may do here">{doc.role}</span>
+                {/if}
+                <!-- And whoever else has been in. Three faces and a count:
+                     the question this answers is "am I working on this with
+                     anyone", which four faces answer no better than three.
+                     Only shown on your own projects, because on somebody
+                     else's it would tell you who else holds the link you came
+                     in on. -->
+                {#if doc.people?.length}
+                  <span class="people" title={doc.people.map((person) => person.name).join(", ")}>
+                    {#each doc.people.slice(0, 3) as person (person.id)}
+                      <Avatar name={person.name} key={person.id} size={5} title="" />
+                    {/each}
+                    {#if doc.people.length > 3}<span class="people-more">+{doc.people.length - 3}</span>{/if}
+                  </span>
+                {/if}
+              </span>
+            {/if}
+          {:else if column.key === "files"}
+            {doc.files ?? "—"}
+          {:else if column.key === "updated"}
+            <!-- Relative, with the date itself in the tooltip. Six copies of
+                 today's date answer nothing; "12 min ago" answers the
+                 question the column is here for. -->
+            <span title={isoDay(place === "recent" ? doc.opened_at : doc.updated_at)}>
+              {since(place === "recent" ? doc.opened_at : doc.updated_at)}
+            </span>
+          {:else if column.key === "actions"}
+            {#if place === "trash"}
+              <span class="trash-actions">
+                <!-- The tooltip says the action; the accessible name says the
+                     action and which project, because a row of identical
+                     icons read aloud is otherwise four unplaced verbs. -->
+                <IconButton icon="undo-2" title="Put back" label="Put {doc.title} back in your projects" onclick={() => restore(doc)} />
+                <IconButton icon="trash" title="Delete for good" label="Delete {doc.title} for good" onclick={() => askPurge([doc])} />
+              </span>
+            {:else}
+              <!-- What can be done to a project without opening it. Renaming
+                   keeps the slug, so every link already shared still arrives;
+                   forking makes a project of your own, which is why it is
+                   offered on somebody else's too. Deleting is one of these
+                   rather than something the selection toolbar alone can do:
+                   throwing one project away should not need a mode. -->
+              {#if mine(doc)}
+                <IconButton icon="pencil" title="Rename" label="Rename {doc.title}" onclick={() => askRename(doc)} />
+              {/if}
+              <IconButton icon="git-fork" title="Fork" label="Fork {doc.title}"
+                          disabled={forking === doc.slug} onclick={() => askFork(doc)} />
+              {#if mine(doc)}
+                <IconButton icon="trash" colour="text-surface-400-600 hover:text-error-500"
+                            title="Move to trash" label="Move {doc.title} to the trash" onclick={() => askDelete(doc)} />
+              {/if}
+              <IconButton
+                icon="star"
+                tone="plain"
+                size="btn-icon-sm"
+                colour={doc.favorite ? "text-tertiary-600" : "text-surface-400-600"}
+                filled={doc.favorite}
+                pressed={doc.favorite}
+                label={doc.favorite ? "Remove from favorites" : "Add to favorites"}
+                onclick={() => star(doc)}
+              />
+            {/if}
+          {/if}
+        {/snippet}
+
+        {#snippet empty()}{nothingHere()}{/snippet}
+      </DataTable>
     </section>
   </main>
 {:else}
@@ -875,6 +918,12 @@
           Start a project, write it with whoever you like, and share its link to collect comments.
         </p>
       </header>
+      {#if !reachedServer}
+        <aside class="card preset-tonal-warning p-4">
+          This page could not reach the server, so it cannot tell whether you
+          are signed in. Your projects will appear once the server answers.
+        </aside>
+      {/if}
       <!-- The handle, not the name: this is about the allowlist, which is
            written in handles, and it is shown only to the person it refuses. -->
       {#if me.handle && !me.can_publish}
@@ -893,6 +942,7 @@
   title="New project"
   description="Name it, then drop your files into its explorer."
   onclose={() => (nameError = "")}
+  confirm={{ form: "new-project", label: busy ? "Creating…" : "Create project", disabled: busy, oncancel: () => (naming = false) }}
 >
   {#snippet children()}
     <form id="new-project" onsubmit={create}>
@@ -917,17 +967,12 @@
       </Stack>
     </form>
   {/snippet}
-  {#snippet footer()}
-    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (naming = false)}>Cancel</button>
-    <button type="submit" form="new-project" class="btn preset-filled-primary-500" disabled={busy}>
-      {busy ? "Creating…" : "Create project"}
-    </button>
-  {/snippet}
 </Modal>
 
 <Modal open={Boolean(renaming)} title="Rename project"
        description="The name changes; the link does not, so anything already shared still works."
-       onclose={() => { renaming = null; renameError = ""; }}>
+       onclose={() => { renaming = null; renameError = ""; }}
+       confirm={{ form: "rename-project", label: "Rename", oncancel: () => (renaming = null) }}>
   {#snippet children()}
     <form id="rename-project" onsubmit={reallyRename}>
       <label class="label">
@@ -938,10 +983,6 @@
       {#if renameError}<p class="text-error-500 text-sm">{renameError}</p>{/if}
     </form>
   {/snippet}
-  {#snippet footer()}
-    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (renaming = null)}>Cancel</button>
-    <button type="submit" form="rename-project" class="btn preset-filled-primary-500">Rename</button>
-  {/snippet}
 </Modal>
 
 <!-- Naming the copy, not confirming it. The suggestion is already in the box
@@ -949,7 +990,8 @@
      numbered name will do and one sentence if it will not. -->
 <Modal open={Boolean(copying)} title="Make a copy"
        description="The copy is a project of its own: its own link, its own history, nothing pointing back."
-       onclose={() => { copying = null; copyError = ""; }}>
+       onclose={() => { copying = null; copyError = ""; }}
+       confirm={{ form: "copy-project", label: forking ? "Copying..." : "Make a copy", disabled: Boolean(forking), oncancel: () => (copying = null) }}>
   {#snippet children()}
     <form id="copy-project" onsubmit={fork}>
       <label class="label">
@@ -960,27 +1002,16 @@
       {#if copyError}<p class="text-error-500 text-sm">{copyError}</p>{/if}
     </form>
   {/snippet}
-  {#snippet footer()}
-    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (copying = null)}>Cancel</button>
-    <button type="submit" form="copy-project" class="btn preset-filled-primary-500" disabled={Boolean(forking)}>
-      {forking ? "Copying..." : "Make a copy"}
-    </button>
-  {/snippet}
 </Modal>
 
 <Modal bind:open={confirming}
        title={confirmKind === "purge" ? "Delete for good?" : "Move to the trash?"}
-       description={confirmText}>
-  {#snippet footer()}
-    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (confirming = false)}>
-      Cancel
-    </button>
-    <button type="button" class="btn preset-filled-error-500"
-            onclick={confirmKind === "purge" ? reallyPurge : reallyDelete}>
-      {confirmKind === "purge" ? "Delete for good" : "Move to trash"}
-    </button>
-  {/snippet}
-</Modal>
+       description={confirmText}
+       confirm={{
+         label: confirmKind === "purge" ? "Delete for good" : "Move to trash",
+         tone: "error",
+         onclick: confirmKind === "purge" ? reallyPurge : reallyDelete,
+       }}></Modal>
 
 <Toasts />
 
@@ -988,6 +1019,10 @@
   /* The place, in the bar, where a project's title goes when one is open. */
   .nav-place { font-weight: 600; }
   .project-search { width: 16rem; max-width: 32vw; }
+  /* The bar decides the height of its own row: the button takes the height
+     of the search field beside it rather than a size of its own, so the two
+     read as one row of controls however either is restyled later. */
+  .nav-new { align-self: stretch; }
 
   .projects { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto; padding: calc(var(--spacing) * 6) calc(var(--spacing) * 6) calc(var(--spacing) * 10); gap: calc(var(--spacing) * 4); }
   .place-heading { font-size: var(--text-2xl); font-weight: 600; margin: 0; }
@@ -1002,31 +1037,44 @@
   /* Rows, not boxes. The separators are the faintest thing that still reads
      as a row, because everything on this page was outlined before and the
      effect was that nothing on it was more important than anything else. */
-  .projects-table :global(th) { border: 0; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--color-surface-600-400); font-weight: 600; }
-  .projects-table :global(td) { border: 0; border-top: 1px solid var(--color-pane-edge); vertical-align: middle; }
-  .projects-table :global(tbody tr:hover) { background: var(--color-surface-100-900); }
-  .projects-table :global(tbody tr.picked) { background: var(--color-primary-100-900); }
+  :global(.projects-table th) { border: 0; font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--color-surface-600-400); font-weight: 600; }
+  :global(.projects-table td) { border: 0; border-top: 1px solid var(--color-pane-edge); vertical-align: middle; }
+  :global(.projects-table tbody tr:hover) { background: var(--color-surface-100-900); }
+  :global(.projects-table tbody tr.picked) { background: var(--color-primary-100-900); }
 
-  .col-mark { width: 2.75rem; }
-  .col-star { width: 1px; white-space: nowrap; text-align: right; }
-  .col-owner { white-space: nowrap; }
+  /* The one column that has to say more than its width allows. Every other
+     width is in the column list at the head of this file. */
+  :global(.projects-table .col-when) { white-space: nowrap; }
 
   /* The checkbox occupies one square. It used to share that square with a
      two-letter format mark and fade in over it; the mark is gone -- which
      language a project's source is written in is not what anybody comes to
-     this list to read -- so the box is simply always there. */
-  .mark { position: relative; display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; }
-  .mark .pick { position: absolute; inset: 0; margin: auto; }
+     this list to read -- so the box is simply always there.
 
-  /* Native boxes, sized down and mostly faded. Skeleton's .checkbox drew a
-     full primary outline on every row, which made the one column nobody
-     reads the loudest thing in a list whose point is the titles. The accent is
-     ink rather than the brand green, because a browser tints the *edge* of an
-     unchecked box with it: at this size the edge is most of what the box is,
-     and a column of them read as a column of green rings. */
-  .tickbox { appearance: auto; width: .9rem; height: .9rem; accent-color: var(--color-surface-800); cursor: pointer; opacity: .45; transition: opacity 120ms ease; }
-  .tickbox:hover, .tickbox:checked, .tickbox:indeterminate, .tickbox:focus-visible { opacity: 1; }
-  .projects-table :global(tbody tr:hover .tickbox) { opacity: .8; }
+     Not `.mark`: Skeleton has a utility of that name, the highlighter pen,
+     which fills whatever wears it with tertiary-500 and gives it a radius and
+     padding. A utility beats a scoped component rule for the properties it
+     sets, so the square came out as a green lozenge behind the box, and the
+     checkbox itself inherited its text colour -- `input { color: inherit }`
+     in Tailwind's base. A component class has to be a name no utility has. */
+  /* The type size is pinned here because the box below is sized in em and
+     the head of a column is smaller type than its rows: without this the
+     select-all box comes out narrower than the boxes it selects. */
+  .tickcell { position: relative; display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; font-size: var(--text-sm); }
+  .tickcell .pick { position: absolute; inset: 0; margin: auto; }
+
+  /* The box the browser draws, at the size of the text beside it. Skeleton's
+     .checkbox painted a full brand-green outline on every row, which made the
+     one column nobody reads the loudest thing in a list whose point is the
+     titles.
+
+     The size is in em, so it tracks the row's type rather than sitting at
+     whatever the browser's own default happens to be -- a control that reads
+     as part of a line of text is about as tall as that text. It also has to
+     be said: the box is absolutely positioned into its square with `inset: 0`,
+     and a replaced element told to fill a box with no size of its own fills
+     all 28px of it. */
+  .tickbox { appearance: auto; width: 1em; height: 1em; margin: 0; cursor: pointer; }
 
   .title-line { display: block; font-weight: 500; color: var(--color-primary-600-400); text-decoration: none; }
   .title-line:hover { text-decoration: underline; }
@@ -1048,7 +1096,6 @@
      that is the only thing left distinguishing one row from another. Sorting
      by the hidden ones still works from a wider window. */
   @media (max-width: 760px) {
-    .col-files, .col-owner { display: none; }
     .projects { padding-inline: calc(var(--spacing) * 3); }
     .project-search { width: 9rem; }
   }

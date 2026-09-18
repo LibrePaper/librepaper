@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node tests/unit/vocabulary.js && vite build && vite build --config vite.agent.config.js && node tools/vendor-katex.mjs && node tools/compress-shell.mjs",
     "build:site": "node tools/build-site.mjs && vite build --config vite.site.config.js",
-    "preview:site": "vite preview --config vite.site.config.js --open",
+    "serve:site": "vite preview --config vite.site.config.js",
     "dev": "vite build --watch",
     "check:types": "svelte-check --tsconfig ./jsconfig.json --output human",
     "check:review": "node tests/unit/proposal-marks.mjs && node tests/browser/changes-browser.mjs",
@@ -30,8 +30,8 @@
     "check:agent-browser": "node tests/browser/agent-browser.mjs",
     "check:responsive-browser": "node tests/browser/responsive-browser.mjs",
     "check:accessibility": "node tests/browser/accessibility-browser.mjs",
-    "check:publication-browser": "node tests/browser/publication-browser.mjs && node tests/browser/publication-editor-browser.mjs",
-    "check:publication-builder-browser": "node tests/browser/publication-builder-browser.mjs",
+    "check:bundle-browser": "node tests/browser/bundle-browser.mjs && node tests/browser/bundle-editor-browser.mjs",
+    "check:bundle-builder-browser": "node tests/browser/bundle-builder-browser.mjs",
     "check:assistant-browser": "node tests/browser/agent-browser.mjs && node tests/browser/assistant-review-browser.mjs",
     "check:insert": "node tests/unit/insert.mjs && node tests/integration/insert-markdown-render.mjs && node tests/browser/insert-browser.mjs",
     "check:insert-renderers": "node tests/integration/insert-latex-render.mjs && node tests/integration/insert-typst-render.mjs && node tests/integration/insert-quarto-render.mjs"

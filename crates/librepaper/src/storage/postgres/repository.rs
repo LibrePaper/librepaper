@@ -3,7 +3,6 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{new_id, Error, PostgresCatalog, Result};
-use crate::document::quota::{DEFAULT_ROUTINE_VERSION_AGE_DAYS, DEFAULT_ROUTINE_VERSION_COUNT};
 
 #[derive(Clone, Debug)]
 pub struct NewAccount {
@@ -55,7 +54,7 @@ pub struct DocumentRecord {
     pub update_sequence: i64,
     pub project_generation: i64,
     pub current_version_id: Option<Uuid>,
-    pub current_publication_id: Option<Uuid>,
+    pub current_bundle_id: Option<Uuid>,
     pub settings: Value,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -269,8 +268,8 @@ impl PostgresCatalog {
         .execute(&mut *tx)
         .await?;
         sqlx::query!(
-            "UPDATE publications SET publisher_account_id=NULL,publisher_label='Deleted user'
-             WHERE publisher_account_id=$1",
+            "UPDATE bundles SET rendered_by_account_id=NULL,rendered_by_label='Deleted user'
+             WHERE rendered_by_account_id=$1",
             account_id,
         )
         .execute(&mut *tx)
@@ -425,6 +424,28 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
+    /// The name a version written by this account is signed with.
+    ///
+    /// A signed-in caller's `Identity::id` is this row's id -- the catalogue
+    /// uuid, minted here and stable across a renamed handle -- so anything
+    /// that signs a version with the id it authenticated as signs it with a
+    /// uuid, and the timeline has nobody's name to show. The account row is
+    /// the only place the two are side by side.
+    ///
+    /// Empty when the account cannot be read, rather than a fabricated name
+    /// or the id again: a caller that has nothing to show must be free to
+    /// fall back to whatever it knew before asking.
+    pub async fn account_display_name(&self, id: Uuid) -> String {
+        let Ok(Some(account)) = self.account(id).await else {
+            return String::new();
+        };
+        if !account.display_name.is_empty() {
+            account.display_name
+        } else {
+            account.handle
+        }
+    }
+
     pub async fn create_document(&self, input: NewDocument) -> Result<DocumentRecord> {
         validate_document(&input)?;
         let id = new_id();
@@ -435,7 +456,7 @@ impl PostgresCatalog {
              VALUES($1,$2,$3,$4,$5,'active',$6,$7,$8)
              RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,
                        main_path,update_sequence,project_generation,current_version_id,
-                       current_publication_id,settings,created_at,updated_at,deleted_at",
+                       current_bundle_id,settings,created_at,updated_at,deleted_at",
             id,
             input.slug,
             input.owner_id,
@@ -455,7 +476,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,project_generation,current_version_id,
-                    current_publication_id,settings,created_at,updated_at,deleted_at
+                    current_bundle_id,settings,created_at,updated_at,deleted_at
              FROM documents WHERE slug=$1",
             slug,
         )
@@ -469,7 +490,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,project_generation,current_version_id,
-                    current_publication_id,settings,created_at,updated_at,deleted_at
+                    current_bundle_id,settings,created_at,updated_at,deleted_at
              FROM documents WHERE id=$1",
             id,
         )
@@ -490,7 +511,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,project_generation,current_version_id,
-                    current_publication_id,settings,created_at,updated_at,deleted_at
+                    current_bundle_id,settings,created_at,updated_at,deleted_at
              FROM documents
              WHERE status='active'
                AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
@@ -517,7 +538,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,project_generation,current_version_id,
-                    current_publication_id,settings,created_at,updated_at,deleted_at
+                    current_bundle_id,settings,created_at,updated_at,deleted_at
              FROM documents WHERE owner_id=$1 AND status='active'
              ORDER BY updated_at DESC,id DESC LIMIT $2",
             owner_id,
@@ -541,7 +562,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
                     main_path,update_sequence,project_generation,current_version_id,
-                    current_publication_id,settings,created_at,updated_at,deleted_at
+                    current_bundle_id,settings,created_at,updated_at,deleted_at
              FROM documents WHERE owner_id=$1 AND status='active'
              AND (updated_at,id) < (COALESCE($2::timestamptz,'infinity'),
                                     COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
@@ -570,7 +591,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
                     d.source_format,d.main_path,d.update_sequence,d.project_generation,
-                    d.current_version_id,d.current_publication_id,d.settings,d.created_at,
+                    d.current_version_id,d.current_bundle_id,d.settings,d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
              WHERE d.status='active'
@@ -923,9 +944,13 @@ impl PostgresCatalog {
         digest: &[u8],
     ) -> Result<Option<VersionRecord>> {
         sqlx::query_as::<_, VersionRecord>(
+            // Every column `VersionRecord` has, because this is the one
+            // version query that is not the checked macro: `FromRow` looks
+            // the fields up by name at run time, so a column left out here is
+            // a request that fails rather than a build that does.
             "SELECT id,document_id,sequence,parent_id,through_update_sequence,
                     project_generation,archive_key,archive_encoding_version,archive_digest,
-                    archive_bytes,logical_bytes,tree_digest,changed_paths,reason,label,
+                    archive_bytes,logical_bytes,tree_digest,changed_paths,file_count,reason,label,
                     author_account_id,author_label,created_at
              FROM document_versions WHERE document_id=$1 AND tree_digest=$2
              ORDER BY sequence DESC LIMIT 1",
@@ -976,35 +1001,10 @@ impl PostgresCatalog {
                 ));
             }
         }
-        sqlx::query!(
-            "WITH ranked AS (
-               SELECT v.id,
-                      row_number() OVER (ORDER BY v.sequence DESC,v.id DESC) AS rank
-               FROM document_versions v
-               JOIN documents d ON d.id=v.document_id
-               WHERE v.document_id=$1
-                 AND v.label IS NULL
-                 AND v.id IS DISTINCT FROM d.current_version_id
-                 -- The source a publication was built from is what a comment
-                 -- on that publication is anchored against, and a comment can
-                 -- no longer be made without it. Every publication's source
-                 -- is spared, not just the current one: an earlier
-                 -- publication is still a page a reader can open and annotate,
-                 -- and the foreign key would set this to null underneath it.
-                 AND NOT EXISTS (
-                     SELECT 1 FROM publications p WHERE p.source_version_id=v.id
-                 )
-             )
-             DELETE FROM document_versions v
-             USING ranked r
-             WHERE v.id = r.id
-               AND (r.rank > $2 OR v.created_at < now() - make_interval(days => $3))",
-            input.document_id,
-            i64::from(DEFAULT_ROUTINE_VERSION_COUNT),
-            DEFAULT_ROUTINE_VERSION_AGE_DAYS,
-        )
-        .execute(&mut *tx)
-        .await?;
+        // Nothing is pruned here. A version exists because somebody asked for
+        // one -- a label, a bundle, a restore, a comment's anchor -- and
+        // there is no routine churn left to shed. What a document did between
+        // two of them is in the operation history, which is kept whole.
         let recent = sqlx::query_scalar!(
             r#"SELECT count(*) AS "count!" FROM document_versions v
                JOIN documents d ON d.id=v.document_id
@@ -1255,7 +1255,7 @@ impl PostgresCatalog {
             DocumentRecord,
             "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
                     d.source_format,d.main_path,d.update_sequence,d.project_generation,
-                    d.current_version_id,d.current_publication_id,d.settings,d.created_at,
+                    d.current_version_id,d.current_bundle_id,d.settings,d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
              WHERE d.owner_id=$1 AND d.status='deleting'
@@ -1412,8 +1412,8 @@ where
              ) v
              UNION ALL SELECT a.byte_length FROM document_assets a
                JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
-             UNION ALL SELECT f.byte_length FROM publication_files f
-               JOIN publications p ON p.id=f.publication_id
+             UNION ALL SELECT f.byte_length FROM bundle_files f
+               JOIN bundles p ON p.id=f.bundle_id
                JOIN documents d ON d.id=p.document_id WHERE d.owner_id=$1
            ) usage"#,
         account_id,

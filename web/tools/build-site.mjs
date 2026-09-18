@@ -80,20 +80,23 @@ function bodyOf(html) {
 // links point at.
 function tableOfContents(body) {
   const links = [];
-  for (const match of body.matchAll(/<h([23])\s+id="([^"]+)"[^>]*>([\s\S]*?)<\/h\1>/g)) {
-    const [, level, id, inner] = match;
+  for (const match of body.matchAll(/<h2\s+id="([^"]+)"[^>]*>([\s\S]*?)<\/h2>/g)) {
+    const [, id, inner] = match;
     const text = inner.replace(/<[^>]*>/g, "").trim();
-    links.push(`<a href="#${id}" data-level="${level}">${text}</a>`);
+    links.push(`<a href="#${id}">${text}</a>`);
   }
   return links.join("\n");
 }
 
 /* ------------------------------------------------------------------ pages */
 
-// Flatten site/nav.js into the order pages are walked and linked in, keeping
-// each page's section title beside it so the sidebar can group them without
-// re-deriving the grouping from the list.
-const pages = nav.flatMap((section) => section.pages.map((page) => ({ ...page, section: section.title })));
+// Flatten site/nav.js into the order pages are walked and linked in. A group
+// with a path of its own is a page as well as a heading, and comes before the
+// pages under it.
+const pages = nav.flatMap((entry) => [
+  ...(entry.path ? [{ path: entry.path, label: entry.label }] : []),
+  ...(entry.pages ?? []),
+]);
 
 async function collectMarkdownFiles(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -113,15 +116,23 @@ async function collectMarkdownFiles(dir) {
 // styles in documentation.css, so a page reading this sidebar looks exactly
 // like one reading its own table of contents.
 function renderNav(currentPath) {
+  const link = (entry, className) => {
+    const current = entry.path === currentPath ? ' aria-current="page"' : "";
+    const attr = className ? ` class="${className}"` : "";
+    return `<a${attr} href="/${entry.path}.html"${current}>${entry.label}</a>`;
+  };
   return nav
-    .map((section) => {
-      const links = section.pages
-        .map((entry) => {
-          const current = entry.path === currentPath ? ' aria-current="page"' : "";
-          return `<a href="/${entry.path}.html"${current}>${entry.label}</a>`;
-        })
-        .join("\n");
-      return `<p class="mt-4 mb-1 font-semibold first:mt-0">${section.title}</p>\n<nav>\n${links}\n</nav>`;
+    .map((entry) => {
+      // A group's heading is a link when the group has a page of its own, and
+      // plain text when it does not. Either way its children sit in a list
+      // under it, indented, so the sidebar shows which pages belong to what
+      // rather than one flat run of names.
+      const heading = entry.path
+        ? link(entry, "sitenav-parent")
+        : `<p class="sitenav-parent">${entry.label}</p>`;
+      if (!entry.pages) return `<nav class="sitenav-group">${heading}</nav>`;
+      const children = entry.pages.map((child) => link(child)).join("\n");
+      return `<nav class="sitenav-group">${heading}\n<nav class="sitenav-children">\n${children}\n</nav>\n</nav>`;
     })
     .join("\n");
 }
@@ -143,7 +154,7 @@ function template({ title, currentPath, toc, body, scriptSrc }) {
   </head>
   <body>
     <div id="siteBar"></div>
-    <main class="documentation mx-auto w-full max-w-6xl px-4 py-8">
+    <main class="documentation mx-auto w-full max-w-[88rem] px-4 py-8">
       <div class="documentation-layout">
         <aside class="sitenav" aria-label="Site navigation">
           <!-- A details rather than a button and a class: the drawer opens and

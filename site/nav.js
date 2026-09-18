@@ -1,29 +1,30 @@
-// The sidebar manifest for the static docs site. A section is a heading and
-// an ordered list of pages; a page is the path of its markdown source,
-// relative to this file and without the extension, and the label the sidebar
-// shows for it. web/tools/build-site.mjs reads this once, renders it into
-// every page's <aside>, and marks whichever entry matches the page being
-// built as the current one -- so adding a page here is the whole of adding it
-// to the sidebar, and the order below is the order it appears in.
+// The sidebar manifest for the static docs site.
+//
+// An entry is either a link on its own -- `{ path, label }` -- or a group
+// with `pages` under it. A group whose own `path` is set is a page as well as
+// a heading: "Authoring" is both the landing page and the name of the three
+// beneath it, so the sidebar says it once rather than repeating it as the
+// first child of itself. A group without a `path` is a heading only, for a
+// set of pages with no landing page of its own.
+//
+// A path is relative to this file and without the extension.
+// web/tools/build-site.mjs reads this once, renders it into every page's
+// <aside>, and marks whichever entry matches the page being built -- so
+// adding a page here is the whole of adding it to the sidebar, and the order
+// below is the order it appears in.
 export const nav = [
+  { path: "start", label: "Getting started" },
   {
-    title: "Start",
+    path: "authoring/index",
+    label: "Authoring",
     pages: [
-      { path: "start/index", label: "Start" },
-      { path: "start/sandbox", label: "The sandbox" },
-    ],
-  },
-  {
-    title: "Authoring",
-    pages: [
-      { path: "authoring/index", label: "Authoring" },
       { path: "authoring/latex", label: "LaTeX" },
       { path: "authoring/typst", label: "Typst" },
       { path: "authoring/quarto", label: "Quarto" },
     ],
   },
   {
-    title: "Collaborate",
+    label: "Collaborate",
     pages: [
       { path: "collaborate/share", label: "Share" },
       { path: "collaborate/edit", label: "Edit in the browser" },
@@ -31,31 +32,9 @@ export const nav = [
       { path: "collaborate/review", label: "Review" },
     ],
   },
-  {
-    title: "Agents",
-    pages: [{ path: "agents", label: "Agents" }],
-  },
-  {
-    title: "CLI",
-    pages: [
-      { path: "cli/index", label: "CLI" },
-      { path: "cli/publish", label: "Publish" },
-    ],
-  },
-  {
-    title: "Host",
-    pages: [
-      { path: "host/index", label: "Host" },
-      { path: "host/access", label: "Access" },
-      { path: "host/storage", label: "Storage" },
-    ],
-  },
-  {
-    title: "Privacy",
-    pages: [{ path: "privacy", label: "Privacy" }],
-  },
-  {
-    title: "Internals",
-    pages: [{ path: "internals", label: "Internals" }],
-  },
+  { path: "agents", label: "Agents" },
+  { path: "cli", label: "CLI" },
+  { path: "host", label: "Running a server" },
+  { path: "architecture", label: "Architecture" },
+  { path: "privacy", label: "Privacy" },
 ];

@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id,document_id,source_version_id,request_key,request_digest,manifest_key,\n                    manifest_digest,rendered_by_account_id,rendered_by_label,created_at\n             FROM bundles WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "source_version_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "request_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "request_digest",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "manifest_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "manifest_digest",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 7,
+        "name": "rendered_by_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "rendered_by_label",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "3b0912a0aa39cf3412701ba61f2f55ba24c3f92a13f0da1ed367355aa86b4172"
+}

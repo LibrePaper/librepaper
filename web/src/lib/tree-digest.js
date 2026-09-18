@@ -6,7 +6,7 @@
 // document says, so the canonical form is the main path, every path with the
 // kind and digest of what is at it, and the compile settings. Keep the
 // serialization here exactly that shape: the rendering name must identify the
-// exact source that was compiled, and a publication names the checkpoint it
+// exact source that was compiled, and a bundle names the checkpoint it
 // was rendered from by this digest.
 
 import { sha256Hex as digest } from "./digest.js";

@@ -60,11 +60,20 @@ export const config = () => get("/api/config");
 /// string. `providers` is empty on a deployment with no sign-in at all.
 export const me = () => get("/api/me").catch(() => ({}));
 
-export async function signOut() {
+/// Signs out and leaves. `site` is what `/api/me` answered with: the
+/// marketing site in front of this deployment, when there is one. A
+/// deployment that is its own front page answers with nothing, and the
+/// signed-out reader lands there instead.
+export async function signOut(site = "") {
   // A GET can be forced onto a signed-in reader cross-site, so signing out is
   // a POST carrying the same header every other state change does.
   await fetch("/auth/logout", { method: "POST", headers: SHELL_HEADERS }).catch(() => {});
-  location.reload();
+  // The landing page, not this one. Reloading left you wherever you happened
+  // to be signing out from -- a project you can no longer open, a panel with
+  // nothing in it -- and somebody who has just signed out is a stranger
+  // again, so they get what a stranger gets. `replace`, so Back does not
+  // return to a page that is now somebody else's.
+  location.replace(site || "/");
 }
 
 /// Asks the server to erase the signed-in account: what it owns is queued for

@@ -470,17 +470,11 @@ pub struct SessionLimit {
     /// acknowledgment, and nothing tells a browser its work is safe until the
     /// write has landed.
     pub write_after_seconds: i64,
-    /// Seconds of quiet before a checkpoint is taken.
-    pub checkpoint_seconds: i64,
-    /// Maximum interval between automatic checkpoints for changed rooms,
-    /// independent of quiet-time debounce and room eviction.
-    pub history_interval_seconds: i64,
-    /// Rolling-hour exact/automatic checkpoint budget for one owner.
+    /// Rolling-hour version budget for one owner. Versions are asked for
+    /// rather than scheduled, so this bounds a client asking in a loop.
     pub checkpoint_owner_per_hour: i64,
-    /// Rolling-hour checkpoint budget shared by the deployment.
+    /// Rolling-hour version budget shared by the deployment.
     pub checkpoint_deployment_per_hour: i64,
-    /// The most checkpoints one document keeps. Zero is no cap.
-    pub history_max: usize,
     /// A state larger than this is fetched over HTTP instead of being sent
     /// down the socket, so one cold join of a large document does not sit in a
     /// text frame.
@@ -502,19 +496,6 @@ pub struct SessionLimit {
 /// The quiet period before an edited document receives an automatic checkpoint.
 /// Keep this separate from the configurable session limit so deployments can
 /// tune policy without changing the scheduling algorithm.
-pub const CHECKPOINT_QUIET_SECONDS: i64 = 30;
-
-/// The maximum age of a pending edit before an automatic checkpoint is due.
-/// This is measured from the first uncheckpointed edit, not from the previous
-/// checkpoint, so continuous editing cannot postpone it indefinitely.
-pub const CHECKPOINT_MAX_INTERVAL_SECONDS: i64 = 5 * 60;
-
-/// A checkpoint asked for within this many seconds of the last one waits until
-/// they have passed. A burst of saves is one mark in the timeline, and a sync
-/// client writing all day is two marks a minute at most. A constant rather
-/// than a flag, on purpose.
-pub const CHECKPOINT_DEFER_SECONDS: i64 = 30;
-
 /// The maximum length of each free-text field on an annotation.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct CapLimit {
@@ -625,11 +606,8 @@ impl Default for Configuration {
             max_replies: 100,
             session: SessionLimit {
                 write_after_seconds: 2,
-                checkpoint_seconds: CHECKPOINT_QUIET_SECONDS,
-                history_interval_seconds: CHECKPOINT_MAX_INTERVAL_SECONDS,
                 checkpoint_owner_per_hour: 300,
                 checkpoint_deployment_per_hour: 10_000,
-                history_max: 0,
                 inline_state_max: 256 * 1024,
                 rooms_max: 200,
                 rooms_bytes_max: 512 * 1024 * 1024,
@@ -835,24 +813,6 @@ impl Configuration {
             Some(3600),
         );
         add(
-            "session.checkpoint_seconds",
-            json!(self.session.checkpoint_seconds),
-            "seconds",
-            "document quiet period",
-            None,
-        );
-        add(
-            "session.history_max",
-            if self.session.history_max == 0 {
-                json!("unlimited")
-            } else {
-                json!(self.session.history_max)
-            },
-            "checkpoints",
-            "document",
-            None,
-        );
-        add(
             "persistence.max_encoded_snapshot_bytes",
             json!(self.persistence.max_encoded_snapshot_bytes),
             "bytes",
@@ -1043,7 +1003,7 @@ impl Configuration {
 
     /// The persistence policy this configuration implies: the source ceiling
     /// an operator set, and the encoded and memory ceilings the collaboration
-    /// storage format supports. One value, so admission, publication, append
+    /// storage format supports. One value, so admission, bundle, append
     /// and compaction cannot drift apart.
     pub fn persistence(&self) -> PersistenceLimits {
         PersistenceLimits {
@@ -1170,26 +1130,6 @@ impl Configuration {
                 self.storage.per_owner >> 20,
                 self.storage.total >> 20
             ));
-        }
-        Ok(())
-    }
-
-    /// Overrides the history settings an operator has a reason to change: how
-    /// long a document has to be quiet before a checkpoint is taken, in
-    /// minutes, and how many checkpoints one document keeps. `None` leaves a
-    /// default alone; `--history-limit 0` is "no history beyond the session state",
-    /// which is expressed as a cap of one, since the newest checkpoint is
-    /// never shed.
-    pub fn set_history(
-        &mut self,
-        checkpoint_minutes: Option<usize>,
-        keep: Option<usize>,
-    ) -> Result<(), String> {
-        if let Some(checkpoint_minutes) = checkpoint_minutes {
-            self.session.checkpoint_seconds = (checkpoint_minutes * 60) as i64;
-        }
-        if let Some(keep) = keep {
-            self.session.history_max = keep.max(1);
         }
         Ok(())
     }

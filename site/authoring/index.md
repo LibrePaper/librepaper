@@ -2,7 +2,7 @@
 title: "Authoring"
 ---
 
-LibrePaper accepts several source formats. The pages in this section cover [LaTeX](./latex.md), [Typst](./typst.md), and [Quarto](./quarto.md), as well as common concerns like bibliographies and mathematical notation.
+LibrePaper accepts several source formats. The pages in this section cover [LaTeX](./latex.html), [Typst](./typst.html), and [Quarto](./quarto.html), as well as common concerns like bibliographies and mathematical notation.
 
 ## Bibliographies
 

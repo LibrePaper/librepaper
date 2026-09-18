@@ -20,6 +20,23 @@ const outDir = resolve(import.meta.dirname, "../site/_site");
 // The screenshots the docs and the landing page link to. Nothing builds
 // them; they are only copied beside whatever this build produced, once, at
 // the end, so plugin ordering elsewhere never matters.
+// Where the application lives, which is a different host from this static
+// site. The published site points at the deployment; a local run points at
+// whatever `make deploy` started, so the Sign in button reaches a server that
+// is actually listening instead of hanging on one that is not.
+//
+// Two places need it, so it is applied two ways: `define` for the Svelte bar,
+// which is bundled JavaScript, and a transform for the pages, whose links are
+// written as literal HTML so a crawler sees them without running anything.
+const appOrigin = process.env.LIBREPAPER_APP_ORIGIN || "https://app.librepaper.org";
+
+const pointAtApp = {
+  name: "librepaper-site-app-origin",
+  transformIndexHtml(html) {
+    return html.split("https://app.librepaper.org").join(appOrigin);
+  },
+};
+
 const copyImages = {
   name: "librepaper-site-copy-images",
   closeBundle() {
@@ -50,7 +67,8 @@ export default defineConfig({
   // .../librepaper-logo.svg unconditionally, and those absolute paths only
   // resolve if this build carries the same files at the same place.
   publicDir: resolve(import.meta.dirname, "public"),
-  plugins: [copyImages, tailwindcss(), svelte()],
+  plugins: [pointAtApp, copyImages, tailwindcss(), svelte()],
+  define: { __APP_ORIGIN__: JSON.stringify(appOrigin) },
   base: "/",
   build: {
     outDir,

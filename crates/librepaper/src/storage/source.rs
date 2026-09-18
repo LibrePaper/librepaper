@@ -170,20 +170,30 @@ impl SourceStorage {
                 media_type: asset.media_type.clone(),
             });
         }
+        let archive = SourceArchive {
+            source_format: document.source_format,
+            main_path: document.main_path,
+            files: archive_files,
+        };
+        // What this commit moved. A project commit is handed files rather
+        // than a tree, so the parent has to be read to answer -- but it is
+        // one archive, not its assets, and a project commit is a document
+        // arriving or being replaced wholesale rather than anything typed.
+        //
+        // The timeline cannot say what a version holds differently unless
+        // every version in a run can: one unanswered row makes the run's
+        // total a guess. So the arrival at the head of a document's history
+        // has to answer too, and its answer is every path in it.
+        let changed = self
+            .changed_by(input.document_id, &document.current_version_id, &archive)
+            .await;
         self.commit_archive(CommitArchive {
             document_id: input.document_id,
-            archive: SourceArchive {
-                source_format: document.source_format,
-                main_path: document.main_path,
-                files: archive_files,
-            },
+            archive,
             through_update_sequence: input.through_update_sequence,
             project_generation: input.project_generation,
-            // A project commit is given files rather than a tree, and has no
-            // parent tree to diff against: `commit_archive` names what this
-            // holds, and what it moved stays unanswered.
             tree_digest: None,
-            changed_paths: None,
+            changed_paths: changed,
             reason: input.reason,
             label: input.label,
             author_account_id: input.author_account_id,
@@ -191,6 +201,34 @@ impl SourceStorage {
             make_current: input.make_current,
         })
         .await
+    }
+
+    /// The paths at which `archive` differs from the version `parent` names,
+    /// or every path in it when there is no parent: a document arriving
+    /// brings all of its files with it.
+    ///
+    /// `None` only where the question could not be asked -- an unreadable or
+    /// undecodable parent -- because `None` and an empty list say different
+    /// things to the timeline, and "nothing moved" must never be the answer
+    /// to a parent nobody could open.
+    ///
+    /// Only the archive is read, never the assets it names: an asset's digest
+    /// is in the archive, and a tree is digests.
+    async fn changed_by(
+        &self,
+        document_id: Uuid,
+        parent: &Option<Uuid>,
+        archive: &SourceArchive,
+    ) -> Option<Vec<String>> {
+        let here = source_archive::tree_of(archive).0;
+        let Some(parent) = parent else {
+            return Some(here.files.into_keys().collect());
+        };
+        let version = self.catalog.version(document_id, *parent).await.ok()??;
+        let bytes = self.blobs.get(&version.archive_key).await.ok()?;
+        verify(&bytes, &version.archive_digest, version.archive_bytes).ok()?;
+        let before = source_archive::decode(&bytes, self.limits).ok()?;
+        Some(here.changed_from(&source_archive::tree_of(&before).0))
     }
 
     pub async fn commit_archive(&self, input: CommitArchive) -> Result<StoredProject, Error> {

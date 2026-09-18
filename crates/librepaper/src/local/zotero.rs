@@ -64,7 +64,7 @@ pub struct ItemData {
     #[serde(default, deserialize_with = "null_string")]
     pub date: String,
     #[serde(default, deserialize_with = "null_string")]
-    pub publication_title: String,
+    pub bundle_title: String,
     #[serde(default, deserialize_with = "null_string")]
     pub proceedings_title: String,
     #[serde(default, deserialize_with = "null_string")]
@@ -391,7 +391,7 @@ fn bib_entry(item: &Item) -> (String, String) {
             .map(|v| v.to_string())
             .unwrap_or_default(),
     );
-    add("journal", &data.publication_title);
+    add("journal", &data.bundle_title);
     add(
         "booktitle",
         if data.proceedings_title.is_empty() {

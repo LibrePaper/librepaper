@@ -16,7 +16,7 @@ const start = reader.indexOf("  function showSelection(");
 const end = reader.indexOf("  function placeBar(", start);
 assert.ok(start > 0 && end > start);
 const ctx = vm.createContext({
-  mayEdit: true, publishedMode: false, publishedPublication: null,
+  mayEdit: true, publishedMode: false, publishedBundle: null,
   pending: null, docText: "same phrase",
   bar: { shown: true },
   placeBar: () => {},
@@ -32,7 +32,7 @@ assert.equal(captured.exact, "same phrase");
 assert.equal(captured.prefix, "before ");
 assert.equal(captured.suffix, " after");
 assert.equal(captured.position, 7);
-assert.equal(captured.publication_id, "");
+assert.equal(captured.bundle_id, "");
 for (const field of ["source", "path", "revision", "file_id", "start", "end"]) {
   assert.ok(!(field in captured), `a selection must not carry ${field}`);
 }
@@ -46,8 +46,8 @@ assert.equal(ctx.pending, null);
 
 // A reader annotating a published rendering says which one they were reading.
 ctx.publishedMode = true;
-ctx.publishedPublication = { id: "publication-1" };
+ctx.publishedBundle = { id: "bundle-1" };
 vm.runInContext("showSelection({exact:'same phrase',prefix:'',suffix:'',position:0}, {})", ctx);
-assert.equal(ctx.pending.publication_id, "publication-1");
+assert.equal(ctx.pending.bundle_id, "bundle-1");
 
 console.log("reader-assistant: a selection is what the page showed, and carries no source identity");

@@ -33,7 +33,7 @@ const source = `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
 import { tick, createRawSnippet } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import Files from ${JSON.stringify(join(root, "web/src/components/reader/Files.svelte"))};
-import Comments from ${JSON.stringify(join(root, "web/src/components/Comments.svelte"))};
+import Collaboration from ${JSON.stringify(join(root, "web/src/components/reader/Collaboration.svelte"))};
 import History from ${JSON.stringify(join(root, "web/src/components/reader/History.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import Share from ${JSON.stringify(join(root, "web/src/components/reader/Share.svelte"))};
@@ -48,7 +48,7 @@ session.setMain(main);
 const child = session.addText("chapters/one.tex", "chapter");
 session.addFolder("empty", rules);
 const component = createClassComponent({ component: Files, target: document.body, props: {
-  files: session.list(), folders: session.folders(), rules, mayEdit: true, open: main,
+  files: session.list(), folders: session.folders(), rules, mayEdit: true, open: main, preview: "main.tex",
   onadd: (path) => session.addText(path), onmkdir: (path) => session.addFolder(path, rules),
   onrelocate: (...args) => session.relocate(args[0], args[1], rules, args[2]),
   ondelete: (entries) => session.removeEntries(entries),
@@ -112,6 +112,12 @@ window.filesCheck = async () => {
   await name('Rename renamed-main.tex', 'main.tex');
   check(row('main.tex').getBoundingClientRect().height <= 40, 'compact file rows');
   check(document.querySelector('.explorer-row svg').getBoundingClientRect().width <= 24, 'compact icons');
+  // The file the preview is rendering is marked in the tree, at the far end
+  // of its row, and nowhere else.
+  const eye = row('main.tex').querySelector('[aria-label="Shown in the preview"]');
+  check(eye, 'the previewed file carries an eye');
+  check(document.querySelectorAll('[aria-label="Shown in the preview"]').length === 1, 'only the previewed file carries one');
+  check(row('main.tex').getBoundingClientRect().right - eye.getBoundingClientRect().right < 16, 'the eye sits at the right edge of its row');
   // The chevron and the guide are the tree machine's own parts, so what they
   // say is what it thinks: a second copy of the expansion kept in this
   // component could disagree with the folder it is drawn on.
@@ -227,11 +233,16 @@ window.sharingSetup = async () => {
     open: true,
     slug: 'paper',
     canShare: true,
-    mayPublish: false,
-    publicationReady: true,
+    bundleReady: true,
   } });
   await flush();
 };
+// A word in the panel that is not an aria-label: the form's own commit
+// button says "Create link" or "Save" and belongs to whichever permission is
+// open, which is the one thing the panel never has two of.
+const word = (says) => [...document.querySelectorAll('.share-form button')]
+  .find((node) => node.textContent.trim() === says);
+
 window.sharingCheck = async () => {
   // The links are the whole of the sharing: there is no access setting beside
   // them, and the owner has no link of their own here; they open the document
@@ -240,37 +251,36 @@ window.sharingCheck = async () => {
   check(!document.querySelector('[aria-label="General access"]'), 'no general access setting');
   check(!button('Copy Read link'), 'a read link has to be created before it can be copied');
   check(!document.querySelector('input[readonly]'), 'raw URLs are hidden');
+  // A permission with no link is not a form: the fields arrive when one is
+  // asked for, and for that permission alone.
+  check(!button('Read link expiry'), 'no configuration until a link is asked for');
   button('Create Read link').click(); await flush();
+  check(button('Read link expiry') && document.querySelectorAll('.share-form').length === 1,
+    'creating opens the form for that permission and no other');
+  word('Create link').click(); await flush();
+  check(!document.querySelector('.share-form'), 'and it collapses once the link exists');
   button('Copy Read link').click(); await flush();
   check(window.copiedLink.includes('#k=reader-token-'), 'a read link carries its key');
-  const editLabel = button('Edit link label');
-  editLabel.value = 'CI'; editLabel.dispatchEvent(new Event('input', { bubbles: true }));
+  button('Create Edit link').click(); await flush();
+  // The budget is a field of the form rather than something behind a
+  // disclosure, so it is filled in the same breath as everything else.
   const editBudget = button('Edit link budget');
   editBudget.value = '8'; editBudget.dispatchEvent(new Event('input', { bubbles: true }));
-  button('Create Edit link').click(); await flush();
-  check(window.shareRequests.at(-1).link.label === 'CI', 'the link label reaches the share change');
+  await flush();
+  word('Create link').click(); await flush();
+  check(!('label' in window.shareRequests.at(-1).link), 'a link is not named');
   check(window.shareRequests.at(-1).link.budget === 8, 'the link budget reaches the share change');
-  check(document.body.textContent.includes('CI') && document.body.textContent.includes('8 comments/hour'), 'link metadata is shown on its row');
+  check(document.body.textContent.includes('8 comments/hour'),
+    'link metadata is shown on its row');
+  check(!button('Edit link expiry'), 'and nowhere else: the fields are gone with the form');
   check(button('Copy Edit link'), 'new edit link can be copied');
   button('Copy Edit link').click(); await flush();
   check(window.copiedLink.includes('#k='), 'copies access token link');
-  window.expireShareLink('editor');
-  window.testShare.$set({ open: false }); await flush();
-  window.testShare.$set({ open: true }); await flush();
-  check(button('Replace Edit link'), 'expired links offer replacement');
-  button('Replace Edit link').click(); await flush();
-  check(button('Copy Edit link'), 'replacement link can be copied');
-  button('Revoke Edit link').click(); await flush();
-  check(!button('Copy Edit link') && button('Create Edit link'), 'revoking restores link creation');
-  check(button('Edit link label').value === '' && button('Edit link budget').value === '', 'revoking drops link metadata');
-  button('Copy Read link').click(); await flush();
-  const previousReadLink = window.copiedLink;
-  button('Revoke Read link').click(); await flush();
-  check(!button('Copy Read link') && button('Create Read link'), 'read revocation restores creation');
-  check(window.shareRequests.at(-1).revoke === 'reader', 'read revocation uses the reader role');
-  button('Create Read link').click(); await flush();
-  button('Copy Read link').click(); await flush();
-  check(window.copiedLink !== previousReadLink, 'recreating issues a new read link');
+  // Rotating and revoking are in the row like everything else now, each an
+  // icon of its own; that they ask before they act is share-panel-browser.mjs.
+  check(button('Replace Edit link') && button('Revoke Edit link'),
+    'rotation and revocation are icons in the row, not an overflow menu');
+  check(!document.querySelector('[aria-label="More Edit link options"]'), 'and there is no overflow left');
   check(window.shareRequests.every((body) => !('visibility' in body)), 'the pane never sends a visibility');
   window.testShare.$set({ open: false }); await flush();
   // The bar carries no status of its own any more: warnings go in the
@@ -286,12 +296,16 @@ window.shareSidebarCheck = async () => {
   const panel = document.querySelector('.share-sidebar');
   check(panel && !panel.closest('[role="dialog"]'), 'sharing opens inside a panel');
   panel.style.width = '384px';
-  panel.style.height = '320px';
+  panel.style.height = '120px';
   await flush();
   check(panel.scrollWidth <= panel.clientWidth + 1, 'sharing controls fit the fixed sidebar width');
-  check(panel.scrollHeight > panel.clientHeight, 'long sharing settings scroll in the panel');
+  check(panel.scrollHeight > panel.clientHeight, 'a panel shorter than its permissions scrolls');
   panel.style.width = '192px'; await flush();
   check(panel.scrollWidth <= panel.clientWidth + 1, 'controls wrap when workspace is narrow');
+  // The form is the widest thing in here, so it is the one to measure.
+  button('Create Comment link').click(); await flush();
+  check(panel.scrollWidth <= panel.clientWidth + 1, 'and so does the form when one is open');
+  word('Cancel').click(); await flush();
   button('Copy Read link').click(); await flush();
   check(window.copiedLink.includes('#k=reader-token-'), 'sidebar copies the read link');
   check(!panel.textContent.includes('Document link'), 'no duplicate document link');
@@ -310,7 +324,7 @@ window.shareSidebarCheck = async () => {
 window.panelTypographyCheck = async () => {
   const samples = [];
   const mounted = [];
-  for (const [component, props] of [[Files, {}], [Comments, {}], [History, {}], [Diagnostics, {}], [Share, { open: true, inline: true, slug: 'paper' }]]) {
+  for (const [component, props] of [[Files, {}], [Diagnostics, {}], [Share, { open: true, inline: true, slug: 'paper' }]]) {
     const host = document.createElement('div');
     host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
     document.body.append(host);
@@ -326,7 +340,31 @@ window.panelTypographyCheck = async () => {
     const bodyStyle = getComputedStyle(panel);
     samples.push([bodyStyle.fontFamily, bodyStyle.fontSize, bodyStyle.lineHeight, bodyStyle.padding]);
   }
-  check(samples.every((sample) => JSON.stringify(sample) === JSON.stringify(samples[0])), 'all five sidebar panels have identical base typography and padding');
+  check(samples.every((sample) => JSON.stringify(sample) === JSON.stringify(samples[0])), 'the plain sidebar panels have identical base typography and padding');
+
+  // A panel whose body is a tab strip puts the padding on each pane instead,
+  // so that the strip is flush to the top of the panel and runs its full
+  // width. The reader must not be able to tell the two arrangements apart:
+  // what a pane holds has to sit exactly where a plain panel's contents sit.
+  for (const component of [Collaboration, History]) {
+    const host = document.createElement('div');
+    host.style.cssText = 'display:flex;flex-direction:column;width:360px;height:500px';
+    document.body.append(host);
+    const instance = createClassComponent({ component, target: host, props: {} });
+    mounted.push({ instance, host });
+    await flush();
+    const panel = host.querySelector('.panel.panel-tabbed');
+    const strip = host.querySelector('.panel-tabs');
+    const pane = [...host.querySelectorAll('[role="tabpanel"]')].find((node) => !node.hidden);
+    check(panel && strip && pane, 'a tabbed panel draws a strip and an open pane');
+    check(parseFloat(getComputedStyle(panel).paddingTop) === 0, 'the panel keeps no padding of its own');
+    check(Math.abs(strip.getBoundingClientRect().top - panel.getBoundingClientRect().top) < 1
+      && Math.abs(strip.getBoundingClientRect().width - panel.getBoundingClientRect().width) < 1,
+      'the strip is flush to the top of the panel and runs its full width');
+    const paneStyle = getComputedStyle(pane);
+    check(JSON.stringify([paneStyle.fontFamily, paneStyle.fontSize, paneStyle.lineHeight, paneStyle.padding])
+      === JSON.stringify(samples[0]), 'a pane matches the typography and padding of a plain panel');
+  }
   for (const { instance, host } of mounted) { instance.$destroy(); host.remove(); }
   return true;
 };

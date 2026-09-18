@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,\n                    main_path,update_sequence,project_generation,current_version_id,\n                    current_bundle_id,settings,created_at,updated_at,deleted_at\n             FROM documents WHERE slug=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "slug",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "ownership_mode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "source_format",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "main_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "update_sequence",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "project_generation",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "current_version_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 11,
+        "name": "current_bundle_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 12,
+        "name": "settings",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 13,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 15,
+        "name": "deleted_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "afd4f7e0a3183ad116b3a8aca7780ae1863f3bb4f974c3222e76e1caa0defeec"
+}

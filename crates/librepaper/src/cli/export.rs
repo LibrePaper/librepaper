@@ -24,7 +24,7 @@ struct ProjectSnapshot {
 
 /// Download an immutable, server-captured project tree into a new directory.
 /// Text bodies arrive in the snapshot response; assets are fetched by the
-/// content digest recorded in that response and verified before publication.
+/// content digest recorded in that response and verified before bundle.
 pub async fn export_project(
     identifier: &str,
     server: Option<String>,

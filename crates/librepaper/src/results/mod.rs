@@ -346,7 +346,7 @@ impl DraftFormat {
     }
 }
 
-/// Explicit document metadata used at API and publication boundaries.  The
+/// Explicit document metadata used at API and bundle boundaries.  The
 /// persisted `source_format` remains the compatibility wire value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DocumentMetadata {

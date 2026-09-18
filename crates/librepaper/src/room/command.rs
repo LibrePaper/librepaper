@@ -10,7 +10,7 @@ use super::Message;
 pub enum Command {
     Comment {
         motivation: String,
-        publication_id: String,
+        bundle_id: String,
         body: String,
         creator: String,
         /// The selection as the page had it. Made into a source range by the
@@ -127,10 +127,6 @@ impl CommandError {
 }
 
 impl Command {
-    pub fn is_comment(&self) -> bool {
-        matches!(self, Self::Comment { .. })
-    }
-
     pub fn request_id(&self) -> &str {
         match self {
             Self::Comment { request_id, .. }
@@ -174,7 +170,7 @@ impl Command {
         match self {
             Self::Comment {
                 motivation,
-                publication_id,
+                bundle_id,
                 body,
                 exact,
                 prefix,
@@ -199,7 +195,7 @@ impl Command {
                 proposed,
                 temp_id,
                 request_id,
-                publication_id,
+                bundle_id,
             },
             Self::Reply {
                 comment_id,
@@ -238,7 +234,7 @@ impl Message {
         match kind.as_str() {
             "comment" => Ok(Command::Comment {
                 motivation: self.motivation,
-                publication_id: self.publication_id,
+                bundle_id: self.bundle_id,
                 body: self.body,
                 creator: self.creator,
                 exact: self.exact,

@@ -123,7 +123,9 @@ try {
   assert.equal(await page.evaluate("Boolean(document.querySelector('.chat-form label'))"), false, "the input needs no visible Message label");
   await page.evaluate("document.querySelector('.resize-handle').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}))");
   assert.ok(await page.evaluate("document.querySelector('.chat-form textarea').getBoundingClientRect().height") < afterResize.height, "keyboard resizing shrinks the input");
-  assert.equal(await page.evaluate("(()=>{const panel=document.querySelector('.agent-panel');const form=document.querySelector('.chat-form').getBoundingClientRect();const bottom=panel.getBoundingClientRect().bottom-parseFloat(getComputedStyle(panel).paddingBottom);return Math.abs(form.bottom-bottom)<2;})()"), true, "composer stays at the bottom of the pane");
+  // The pane carries the padding, not the panel: the tab strip is flush to
+  // the top of the panel, as the collaboration panel's is.
+  assert.equal(await page.evaluate("(()=>{const pane=document.querySelector('#agent-pane-chat');const form=document.querySelector('.chat-form').getBoundingClientRect();const bottom=pane.getBoundingClientRect().bottom-parseFloat(getComputedStyle(pane).paddingBottom);return Math.abs(form.bottom-bottom)<2;})()"), true, "composer stays at the bottom of the pane");
   assert.equal(await page.evaluate('window.sockets[0].url.includes("secret-token")'),false);
   assert.equal(await page.evaluate('new URL(window.sockets[0].url).searchParams.get("k")'),"secret");
   assert.deepEqual(await page.evaluate('window.sockets[0].sent[0]'),{type:"join",token:"secret-token",role:"user"});
@@ -284,7 +286,9 @@ try {
   await page.evaluate("document.body.style.width='240px'; document.body.style.height='400px'; document.querySelector('textarea').scrollIntoView({block:'center'})");
   assert.equal(await page.evaluate("(()=>{const r=document.querySelector('textarea').getBoundingClientRect(); return r.top>=0 && r.bottom<=innerHeight;})()"), true);
 
-  assert.equal(await page.evaluate("(()=>{const panel=document.querySelector('.agent-panel');const form=document.querySelector('.chat-form').getBoundingClientRect();const bottom=panel.getBoundingClientRect().bottom-parseFloat(getComputedStyle(panel).paddingBottom);return Math.abs(form.bottom-bottom)<2;})()"), true, "composer stays at the bottom of the pane");
+  // The pane carries the padding, not the panel: the tab strip is flush to
+  // the top of the panel, as the collaboration panel's is.
+  assert.equal(await page.evaluate("(()=>{const pane=document.querySelector('#agent-pane-chat');const form=document.querySelector('.chat-form').getBoundingClientRect();const bottom=pane.getBoundingClientRect().bottom-parseFloat(getComputedStyle(pane).paddingBottom);return Math.abs(form.bottom-bottom)<2;})()"), true, "composer stays at the bottom of the pane");
   for (const tab of ["connection", "chat", "tasks"]) {
     await page.evaluate(`document.querySelector('#agent-tab-${tab}').click()`);
     assert.equal(await page.evaluate("document.querySelector('.agent-panel').scrollWidth <= document.querySelector('.agent-panel').clientWidth"), true, tab + " fits the narrow sidebar");

@@ -67,7 +67,7 @@ answer and takes on the consent question with it.
 - **The LaTeX mirror.** Browsers download the compiler and its packages from
   the project mirror, which sees the browser's address and which files it
   asks for. Document source never goes there. See
-  [Privacy and the LaTeX mirror](./host/index.md).
+  [Privacy and the LaTeX mirror](./host.html#privacy-and-the-latex-mirror).
 - **The local companion.** The writing assistant runs on your own computer.
   The server relays messages between the browser and the companion while both
   are connected and keeps no transcript.
@@ -79,12 +79,15 @@ what they store. Which ones those are, and where, is theirs to name.
 
 - **Projects** are kept until somebody deletes them, unless the operator set a
   lifetime with `--document-expire-after`. Expiry is measured from the most
-  recent publication by default, or from creation with
+  recent bundle by default, or from creation with
   `--document-expire-from created`, and an hourly pass removes what has lapsed.
-  See [Retention](./host/index.md).
-- **Checkpoints** are pruned during maintenance: by default the fifty most
-  recent unlabelled ones, and none older than thirty days. Named checkpoints
-  are kept.
+  See [Retention](./host.html#retention).
+- **Checkpoints** are kept until the project is deleted. Nothing prunes them:
+  one exists only because somebody named a moment, published, restored an
+  earlier version, or left a comment on a passage.
+- **Edit history** -- the operation log behind the checkpoints -- is kept whole
+  for the life of the project. It is what the History panel reads to show the
+  document at a moment nobody checkpointed.
 - **Sessions** last thirty days, and are invalidated at once by signing out,
   by the operator, or by erasing the account.
 - **Backups** last as long as the operator keeps them, and a restored backup
@@ -105,7 +108,7 @@ your handle to confirm. What then happens:
    in — including to change its mind. There is no way back from the browser.
 2. Every project the account owns is marked for deletion and removed after a
    recovery window, seven days on a default deployment.
-3. Comments, replies, checkpoints and publications the account left on *other
+3. Comments, replies, checkpoints and bundles the account left on *other
    people's* documents stay where they are, relabelled "Deleted user" and no
    longer linked to any account. Those documents belong to somebody else, and
    a conversation cannot be silently rewritten under them.

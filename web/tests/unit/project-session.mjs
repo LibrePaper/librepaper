@@ -75,4 +75,43 @@ const recreated = projectIdentity({ server: "https://paper.example", slug: "pape
 assert.equal(sameProject(first, same), true);
 assert.throws(() => assertSameProject(first, recreated), { code: "project-identity-changed" });
 
-console.log("project-session: persistence, identity, swap and acknowledgement boundaries passed");
+// What counts as a change to the directory. The file list moves with four
+// maps -- the texts, their paths, the figures and the metadata -- and only the
+// session knows which containers those are. A reader that decided for itself,
+// by watching the texts alone, drew every rename and every move as no change
+// at all: the name moved in `paths`, the list was never told, and the file
+// kept its old name on screen until the page was reloaded.
+{
+  const rules = { extensions: [".md"], text_extensions: [".md"], asset_extensions: [], derived_extensions: [],
+    max_path: 200, max_files: 200, max_document: 1000000, max_assets: 1000000, max_asset: 500000 };
+  const directory = createProjectSession({ send: () => {}, onState: () => {} });
+  try {
+    const main = directory.addText("paper.md", "hello");
+    directory.setMain(main);
+    directory.doc.commit();
+    await new Promise((resume) => setTimeout(resume, 20));
+    const batches = [];
+    const stop = directory.onFiles((events) => batches.push(directory.directoryChanged(events)));
+
+    directory.relocate([{ id: main, kind: "text", path: "paper.md" }], "renamed.md", rules, true);
+    await new Promise((resume) => setTimeout(resume, 20));
+    assert.deepEqual(directory.list().map((file) => file.path), ["renamed.md"]);
+    assert.equal(batches.at(-1), true, "a rename is a change to the directory");
+
+    directory.addFolder("chapters", rules);
+    await new Promise((resume) => setTimeout(resume, 20));
+    assert.equal(batches.at(-1), true, "a new folder is a change to the directory");
+
+    const seen = batches.length;
+    directory.textOf(main).insert(5, " there");
+    directory.doc.commit();
+    await new Promise((resume) => setTimeout(resume, 20));
+    assert.equal(batches.length, seen + 1, "typing still reaches the watcher, for the preview");
+    assert.equal(batches.at(-1), false, "but typing inside a file is not a change to the directory");
+    stop();
+  } finally {
+    directory.leave();
+  }
+}
+
+console.log("project-session: persistence, identity, swap, directory changes and acknowledgement boundaries passed");

@@ -1,5 +1,7 @@
 <script>
-  // The document's past: a month to pick a day, and that day's versions.
+  // The document's past, in three views: the day's versions, a month to pick
+  // another day, and the marks somebody left on the versions worth finding
+  // again.
   //
   // This panel had a great deal more in it, and all of it went. A day was an
   // axis of clock time, then a feed of sittings with sparklines, then an
@@ -10,8 +12,8 @@
   //
   // What is left is what the panel is for: a list of times, a word beside the
   // few that have one, and the details of the one being looked at. A version
-  // the document took by itself says nothing but its time -- "Autosaved" on
-  // three rows out of four is the absence of information set in type.
+  // a machine asked for says nothing but its time -- "Synced" on three rows
+  // out of four is the absence of information set in type.
   //
   // The structure -- entries that open in place rather than steps that
   // replace the view -- is the one every version history settles on, and
@@ -33,9 +35,11 @@
     dayEntries, deliberate, monthGrid, monthOf, monthSpan, shiftDay,
     shiftMonth, unsavedMinutes, versionDays,
   } from "../../lib/history-calendar.js";
+  import { Tabs } from "@skeletonlabs/skeleton-svelte";
+  import Icon from "../Icon.svelte";
   import IconButton from "../IconButton.svelte";
   import PanelHeader from "../PanelHeader.svelte";
-  import CopyLink from "../CopyLink.svelte";
+  import PanelTabs from "../PanelTabs.svelte";
 
   let {
     checkpoints = [],
@@ -43,7 +47,6 @@
     viewing = null,
     canEdit = false,
     onview,
-    oncopy,
     problem = "",
     onname,
     currentLabel = "",
@@ -59,24 +62,30 @@
   let timezone = $state(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
   const today = $derived(dayOf(new Date(), timezone));
 
-  // The checkpoint being named, and what it is being named. One at a time,
-  // because naming two moments at once is not a thing anybody does.
+  // The checkpoint being bookmarked, and what it is being called. One at a
+  // time, because naming two moments at once is not a thing anybody does.
   let naming = $state("");
   let draft = $state("");
   let field = $state(null);
 
-  // Which of the two steps is on screen. The panel opens on the day, not on
-  // the month: somebody opening a version history almost always wants the
-  // last thing they did, and the month is one click above it.
-  let picking = $state(false);
+  // Three views of the same past, and the panel opens on the one somebody
+  // opening a version history almost always wants: the day they were last
+  // working on. The month is a tab away rather than a step above, and the
+  // marks somebody left are a tab away rather than a list under the month.
+  const TABS = [
+    { id: "timeline", label: "Timeline" },
+    { id: "calendar", label: "Calendar" },
+    { id: "bookmarks", label: "Bookmarks" },
+  ];
+  let tab = $state("timeline");
   let pickedDay = $state("");
   let pickedMonth = $state("");
 
   const byDay = $derived(versionDays(checkpoints, activity, timezone));
   const span = $derived(monthSpan(byDay, today));
   const latest = $derived([...byDay.keys()].sort().pop() || today);
-  // The day the selection is on, so that opening a version from a link, or
-  // from the named list, brings its own day with it.
+  // The day the selection is on, so that opening a version from the
+  // bookmarks brings its own day with it.
   const viewingDay = $derived.by(() => {
     if (viewing) {
       const point = checkpoints.find((one) => one.sha === viewing);
@@ -91,7 +100,12 @@
   const day = $derived(pickedDay || viewingDay || latest);
   const month = $derived(pickedMonth || monthOf(day));
   const grid = $derived(monthGrid(month, byDay, { today }));
-  const named = $derived(checkpoints.filter((point) => point.label));
+  // A bookmark is a version somebody put a name on. Nothing else writes a
+  // label, so the two are the same thing said twice.
+  const bookmarks = $derived(
+    checkpoints.filter((point) => point.label).sort((a, b) => (a.at < b.at ? 1 : -1)),
+  );
+  const bookmarked = (point) => Boolean(point?.label);
   const anything = $derived(checkpoints.length > 0 || activity.length > 0);
 
   const entries = $derived(dayEntries(checkpoints, day, timezone));
@@ -117,10 +131,12 @@
   const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
   const versions = (n) => `${n} version${n === 1 ? "" : "s"}`;
 
+  // Choosing a day anywhere -- on the month, or by opening a bookmark -- is
+  // asking to see that day's versions, so it answers on the timeline.
   function open(value) {
     pickedDay = value;
     pickedMonth = monthOf(value);
-    picking = false;
+    tab = "timeline";
   }
 
   function step(months) {
@@ -135,15 +151,17 @@
       : when.toLocaleDateString([], { year: "numeric", month: "long", timeZone: "UTC" });
   });
 
-  function dayLabel(value, long = true) {
+  // Only ever spoken, never shown: what a calendar cell tells a reader who
+  // stops on it, so it says the day in full.
+  function dayLabel(value) {
     if (!value) return "";
     if (value === today) return "Today";
     if (value === shiftDay(today, -1)) return "Yesterday";
     const when = new Date(`${value}T12:00:00Z`);
     if (Number.isNaN(when.getTime())) return value;
     return when.toLocaleDateString([], {
-      weekday: long ? "long" : undefined,
-      month: long ? "long" : "short",
+      weekday: "long",
+      month: "long",
       day: "numeric",
       timeZone: "UTC",
     });
@@ -152,7 +170,7 @@
   // What a cell says when a reader stops on it.
   function says(cell) {
     const when = dayLabel(cell.day);
-    if (cell.count) return `${when}: ${versions(cell.count)}${cell.named ? ", one of them named" : ""}`;
+    if (cell.count) return `${when}: ${versions(cell.count)}${cell.named ? ", one of them bookmarked" : ""}`;
     if (cell.worked) return `${when}: written on, nothing saved`;
     return `${when}: nothing`;
   }
@@ -193,10 +211,36 @@
     return `${half && from.endsWith(half) ? from.slice(0, -half.length).trim() : from} – ${to}`;
   };
   const saves = (n) => `${n} autosave${n === 1 ? "" : "s"}`;
+  const writes = (n) => `${n} write${n === 1 ? "" : "s"}`;
+
+  // What a minute added, in the only measure the activity index has: the
+  // document's own size, differenced between minutes. Said only when it is
+  // positive -- a minute of deleting grows nothing and is not therefore a
+  // minute in which nobody worked, so silence here means "no more than
+  // before" and never "nothing happened".
+  const grew = (bytes) => {
+    if (!(bytes > 0)) return "";
+    if (bytes < 1e3) return `${bytes} bytes more`;
+    if (bytes < 1e6) return `${(bytes / 1e3).toFixed(1)} kB more`;
+    return `${(bytes / 1e6).toFixed(1)} MB more`;
+  };
+
+  // The one row that has no room to say anything says it here instead.
+  const wrote = (one) =>
+    `Show the document as it stood at ${at(one.minute)} · ` +
+    [writes(one.changes), grew(one.work)].filter(Boolean).join(", ");
   const at = (minute) =>
     new Date(Date.UTC(2000, 0, 1, Math.floor(minute / 60), minute % 60)).toLocaleTimeString([], {
       hour: "numeric", minute: "2-digit", timeZone: "UTC",
     });
+
+  // The same time to the second, for the one row that has room to say it.
+  const precise = (value) => {
+    const when = new Date(value);
+    return Number.isNaN(when.getTime())
+      ? ""
+      : when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit", timeZone: timezone });
+  };
 
   const clock = (value) => {
     const when = new Date(value);
@@ -215,28 +259,32 @@
   /* ------------------------------------------------------------ a version */
 
   // What a checkpoint was taken for, in words rather than in the manifest's
-  // own vocabulary -- and only when there is something to say. `quiet` and
-  // `left` are the two nobody asked for and they are the common case: three
-  // rows out of four reading "Autosaved" is the absence of information set in
-  // type, and a row with no word on it already says the document saved it by
-  // itself. The tooltip and the screen reader do have to name it, so `told`
-  // is there for them.
+  // own vocabulary -- and only when there is something to say. `sync` is the
+  // one nobody asked for by hand, and on a document edited from the command
+  // line it is most of the rows: a word on every one of them is the absence
+  // of information set in type, and a row with no word on it already says a
+  // machine wrote it. The tooltip and the screen reader do have to name it,
+  // so `told` is there for them.
+  // Nothing here says "Published". Publishing was something a person did,
+  // and it is not any more: a document arrives, and what a reader is shown
+  // follows the source on its own.
   const WHY = {
     comment: "Commented",
-    cli: "Published",
-    publish: "Published",
+    created: "Created",
+    cli: "Saved",
+    publish: "Shown to readers",
     restore: "Restored",
     superseded: "Replaced by a restore",
     recovered: "Recovered",
     accept: "Accepted a suggestion",
   };
   const said = (point) => point.label || WHY[point.why] || "";
-  const told = (point) => said(point) || "Autosaved";
+  const told = (point) => said(point) || "Synced";
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   // Who, but only where the manifest can answer. A version somebody asked for
-  // names the person who asked. An autosave names whoever sent the last
-  // update before it fired, which on a document two people are writing at
-  // once is a coin toss between them -- so it names nobody.
+  // names the person who asked. A machine save names whoever sent the last
+  // update before it was written, which on a document two people are writing
+  // at once is a coin toss between them -- so it names nobody.
   const actor = (point) => {
     if (!deliberate(point) || !point?.by || point.by === "system") return "";
     return uuid.test(point.by) ? "Unknown editor" : point.by;
@@ -260,9 +308,23 @@
     return `${paths.length} files changed`;
   };
 
+  // What a new bookmark is called before anybody calls it anything.
+  //
+  // A bookmark is looked for later, in a list, by somebody who remembers
+  // roughly when rather than exactly what -- so the name it arrives with says
+  // which version it is. It is a default and not a suggestion: it comes up
+  // selected, so the first key typed replaces the whole of it.
+  const defaultName = (point) => {
+    const when = new Date(point?.at || Date.now());
+    const day = Number.isNaN(when.getTime()) ? new Date() : when;
+    return `Draft of ${day.toLocaleDateString([], {
+      month: "short", day: "numeric", year: "numeric", timeZone: timezone,
+    })}`;
+  };
+
   async function startNaming(point) {
     naming = point.sha;
-    draft = point.label || "";
+    draft = point.label || defaultName(point);
     await Promise.resolve();
     field?.select();
   }
@@ -275,38 +337,67 @@
     if (sha === "current" && !given) return;
     onname?.(sha, given);
   }
+
+  // Taking the bookmark off a version. The version itself is untouched --
+  // this removes the name, which is all a bookmark ever was.
+  function unbookmark(point) {
+    if (naming === point.sha) naming = "";
+    onname?.(point.sha, "");
+  }
 </script>
 
 <!-- One of the column's panels: the column itself, with the tabs that choose
-     between them, is the reader's. -->
-<div class="panel timeline">
-  <PanelHeader title="Version history">
-    {#if problem}
-      <p class="text-error-500" role="status">{problem}</p>
-    {:else if !anything && !activityLoading}
-      <p class="panel-muted">
-        Nothing yet. A version is saved when the typing stops, when the last
-        editor leaves, and whenever the document is published to.
-      </p>
-    {/if}
-  </PanelHeader>
-
-  {#if durability?.live_save === "pending"}
-    <p class="panel-muted px-2 pb-1 text-xs" role="status">Live edits are still being saved.</p>
-  {/if}
-
-  {#if activityProblem && !checkpoints.length}
-    <p class="text-error-500 px-2 py-1 text-sm" role="status">{activityProblem}</p>
-  {:else if activityLoading && !anything}
-    <p class="panel-muted px-2 py-1">Reading this document's past…</p>
-  {:else if anything && picking}
-    {@render monthStep()}
-  {:else if anything}
-    {@render dayStep()}
-  {/if}
+     between them, is the reader's. The three inside it are this panel's own,
+     and they are the strip every tabbed panel wears. -->
+<div class="panel panel-tabbed timeline">
+  <PanelHeader title="Version history" />
+  <PanelTabs id="history" label="Version history views" listClass="history-tabs"
+             tabs={TABS} value={tab} onchange={(value) => (tab = value)}>
+    <!-- Only the view being read is built. A hidden pane holding a busy day's
+         ninety rows, or a whole month of cells, is work nobody asked for and
+         a second set of rows for anything counting them to find. -->
+    <Tabs.Content value="timeline">
+      {#if tab === "timeline"}
+        {@render notices()}
+        {#if anything}{@render dayStep()}{/if}
+      {/if}
+    </Tabs.Content>
+    <Tabs.Content value="calendar">
+      {#if tab === "calendar"}
+        {@render notices()}
+        {#if anything}{@render monthStep()}{/if}
+      {/if}
+    </Tabs.Content>
+    <Tabs.Content value="bookmarks">
+      {#if tab === "bookmarks"}
+        {@render notices()}
+        {@render bookmarkList()}
+      {/if}
+    </Tabs.Content>
+  </PanelTabs>
 </div>
 
-<!-- Step one: which day. The month has one job and no other furniture. -->
+<!-- What the panel has to say before any of its views can say anything. -->
+{#snippet notices()}
+  {#if problem}
+    <p class="text-error-500" role="status">{problem}</p>
+  {:else if !anything && !activityLoading}
+    <p class="panel-muted">
+      Nothing yet. A version is saved when the typing stops, when the last
+      editor leaves, and whenever the document is published to.
+    </p>
+  {/if}
+  {#if durability?.live_save === "pending"}
+    <p class="panel-muted text-xs" role="status">Live edits are still being saved.</p>
+  {/if}
+  {#if activityProblem && !checkpoints.length}
+    <p class="text-error-500 text-sm" role="status">{activityProblem}</p>
+  {:else if activityLoading && !anything}
+    <p class="panel-muted">Reading this document's past…</p>
+  {/if}
+{/snippet}
+
+<!-- Which day. The month has one job and no other furniture. -->
 {#snippet monthStep()}
   <div class="cal">
     <div class="cal-head">
@@ -354,37 +445,53 @@
       {/each}
     </div>
   </div>
-  {#if named.length}
-    <!-- The one way into the past that is not a date: somebody wrote these
-         names down precisely so they would not have to remember when. -->
-    <div class="names">
-      <h4 class="panel-section-title">Named versions</h4>
+{/snippet}
+
+<!-- The marks somebody left. The one way into the past that is not a date:
+     these names were written down precisely so that nobody would have to
+     remember when. The row is the timeline's row, because a bookmark is a
+     version and reading one should not be a different act here; what changes
+     is what can be done with it, which is rename it and take the mark off. -->
+{#snippet bookmarkList()}
+  <div class="marks">
+    {#if bookmarks.length}
       <ol>
-        {#each named as point (point.sha)}
-          <li>
-            <button type="button" class="names-row" class:timeline-here={viewing === point.sha}
-                    onclick={() => { open(dayOf(point.at, timezone)); onview?.(point.sha); }}>
-              <strong>{point.label}</strong>
-              <span class="panel-meta">{stamp(point.at)}</span>
-            </button>
+        {#each bookmarks as point (point.sha)}
+          <li class="mark-row" data-sha={point.sha}>
+            {#if naming === point.sha}
+              {@render nameField("sent to the journal", "Name this bookmark")}
+            {:else}
+              <button type="button" class="timeline-point mark-point"
+                      class:timeline-here={viewing === point.sha}
+                      aria-current={viewing === point.sha ? "true" : undefined}
+                      title="Compare {point.label} from {stamp(point.at) || shortSha(point.sha)} with the current source"
+                      onclick={() => { open(dayOf(point.at, timezone)); onview?.(point.sha); }}>
+                <span class="mark-name">{point.label}</span>
+                <span class="mark-when panel-meta">{stamp(point.at)}</span>
+              </button>
+              {#if canEdit}
+                <span class="day-tools">
+                  <IconButton icon="pencil" tone="plain" size="btn-icon-sm"
+                              label="Rename this bookmark" onclick={() => startNaming(point)} />
+                  <IconButton icon="trash" tone="plain" size="btn-icon-sm"
+                              label="Remove this bookmark" onclick={() => unbookmark(point)} />
+                </span>
+              {/if}
+            {/if}
           </li>
         {/each}
       </ol>
-    </div>
-  {/if}
+    {:else if anything}
+      <p class="panel-muted">
+        No bookmarks yet. Bookmark a version on the timeline to find it again
+        by name rather than by the day it happened on.
+      </p>
+    {/if}
+  </div>
 {/snippet}
 
-<!-- Step two: which version. A list of times, and a word beside the few that
-     have one. -->
+<!-- Which version. A list of times, and a word beside the few that have one. -->
 {#snippet dayStep()}
-  <div class="crumb">
-    <button type="button" class="crumb-back" onclick={() => (picking = true)}
-            aria-label="Back to {monthLabel}">
-      <span aria-hidden="true">‹</span> {monthLabel}
-    </button>
-    <span class="crumb-day">{dayLabel(day, false)}</span>
-  </div>
-
   <div class="day">
     <ol>
       <!-- The live document. It is not a checkpoint, but it is what every
@@ -393,22 +500,28 @@
            the month: the list runs newest first, and nothing is newer. -->
       <li class="day-row day-now">
         {#if naming === "current"}
-          {@render nameField("Name this version", "Name the current version")}
+          {@render nameField("sent to the journal", "Name this bookmark")}
         {:else}
+          <!-- Not an event, so not shaped like one: a label at the left and
+               what it points at at the right, rather than a time and a word
+               in the columns every version below it uses. -->
           <button
             type="button"
-            class="timeline-point day-point"
+            class="timeline-point now-point"
             class:timeline-here={!viewing}
             aria-current={!viewing ? "true" : undefined}
-            title="Show the current source"
+            aria-label="Show the current source"
             onclick={() => onview?.("")}
           >
-            <span class="day-when">Now</span>
-            <span class="day-what">{currentLabel || "Current version"}</span>
+            <span class="now-label">Now</span>
+            <span class="now-what">{currentLabel || "Current version"}</span>
           </button>
           {#if canEdit && !viewing}
-            <IconButton icon="pencil" tone="plain" size="btn-icon-sm" label="Name the current version"
-                        onclick={() => startNaming({ sha: "current", label: currentLabel })} />
+            <span class="day-tools" class:on={Boolean(currentLabel)}>
+              <IconButton icon="bookmark" tone="plain" size="btn-icon-sm" filled={Boolean(currentLabel)}
+                          label={currentLabel ? "Rename this bookmark" : "Bookmark the current version"}
+                          onclick={() => startNaming({ sha: "current", label: currentLabel })} />
+            </span>
           {/if}
         {/if}
       </li>
@@ -462,8 +575,9 @@
                 <button type="button" class="unsaved-row"
                         class:unsaved-here={one.frontier === viewingMoment}
                         aria-current={one.frontier === viewingMoment ? "true" : undefined}
-                        title="Show the document as it stood at {at(one.minute)}"
-                        onclick={() => onmoment?.(one.frontier, one)}>{at(one.minute)}</button>
+                        title={wrote(one)}
+                        onclick={() => onmoment?.(one.frontier, one)}>{at(one.minute)}<span
+                          class="unsaved-writes">{one.changes}</span></button>
               </li>
             {/each}
           </ol>
@@ -476,42 +590,52 @@
 <!-- One version: the time it was taken, and a word only where there is one.
      The same row whether it stands on its own or inside a run. -->
 {#snippet version(point)}
+  {@const here = viewing === point.sha}
+  {@const who = actor(point)}
   <li class="day-row" data-sha={point.sha}>
     {#if naming === point.sha}
-      {@render nameField("sent to the journal", "Name this point")}
+      {@render nameField("sent to the journal", "Name this bookmark")}
     {:else}
       <button
         type="button"
         class="timeline-point day-point"
-        class:timeline-here={viewing === point.sha}
-        aria-current={viewing === point.sha ? "true" : undefined}
+        class:timeline-here={here}
+        aria-current={here ? "true" : undefined}
         title="Compare {told(point)} from {stamp(point.at) || shortSha(point.sha)} with the current source"
         onclick={() => onview?.(point.sha)}
       >
         <span class="day-when">{clock(point.at)}</span>
-        {#if said(point)}
-          <span class="day-what">{said(point)}</span>
-        {:else}
-          <span class="sr-only">Autosaved</span>
+        <!-- The word, where there is one. The cell stays either way, so that
+             what follows it keeps its column; the word an autosave withholds
+             from the page is still owed to a screen reader, and it is said
+             out of the flow, beside the cell rather than in it. -->
+        <span class="day-what">{said(point)}</span>
+        {#if !said(point)}<span class="sr-only">Synced</span>{/if}
+        <!-- Who, at the right edge, where it can be ignored. It is metadata
+             on a list whose job is moving through time, so it is the first
+             thing to go: it stands down for the controls when this is the row
+             being read, and says itself in full on the line below. -->
+        {#if who && !here}<span class="day-who">{who}</span>{/if}
+        {#if here}
+          {@const about = [who, precise(point.at), moved(point)].filter(Boolean).join(" · ")}
+          {#if about}<span class="day-about">{about}</span>{/if}
         {/if}
       </button>
-      {#if viewing === point.sha}
-        {@const about = [actor(point), moved(point)].filter(Boolean).join(" · ")}
-        <!-- What the chosen version holds, and what can be done with it. Only
-             ever the chosen one: the list is for finding a moment, and what
-             the moment holds is a question asked after it has been found. -->
-        <div class="day-card">
-          {#if about}<p class="panel-meta">{about}</p>{/if}
-          <div class="day-card-actions">
-            {#if canEdit}
-              <IconButton icon="pencil" tone="plain" size="btn-icon-sm"
-                          label={point.label ? "Rename this version" : "Name this version"}
-                          onclick={() => startNaming(point)} />
-            {/if}
-            <CopyLink href={oncopy?.(point.sha) || undefined}
-                      label="Copy the link to this version" tone="plain" />
-          </div>
-        </div>
+      <!-- The one thing that can be done to a version from the timeline: mark
+           it, so that it can be found again by name. It is on every row, since
+           a row has to be markable before it is the one being read; but a
+           control on every line of a list is noise, so it is drawn only under
+           the pointer, on the row being read, on the row a keyboard has
+           reached -- and always where the mark is already set, because there
+           the icon is not a control offering itself, it is the answer. -->
+      {#if canEdit}
+        <span class="day-tools" class:on={bookmarked(point)}>
+          <IconButton icon="bookmark" tone="plain" size="btn-icon-sm" filled={bookmarked(point)}
+                      label={bookmarked(point) ? "Rename this bookmark" : "Bookmark this version"}
+                      onclick={() => startNaming(point)} />
+        </span>
+      {:else if bookmarked(point)}
+        <span class="day-tools on mark-still"><Icon name="bookmark" filled /></span>
       {/if}
     {/if}
   </li>
@@ -540,7 +664,7 @@
 
   /* --------------------------------------------------------------- the month */
 
-  .cal { flex: none; padding: 0 calc(var(--spacing) * 2); }
+  .cal { flex: none; }
   /* The two arrows sit against the month rather than at the ends of the
      panel: they belong to the word they step, and a control at each margin
      reads as a pair of unrelated buttons. */
@@ -628,83 +752,94 @@
     opacity: 0.5;
   }
 
-  .names {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: auto;
-    padding: calc(var(--spacing) * 3) calc(var(--spacing) * 2);
+  /* ----------------------------------------------------------- the marks */
+
+  .marks { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+  /* The name and what can be done to it, at the two ends of the row. The
+     controls do not wait to be hovered here: this view is about the marks
+     themselves, so the two things that can be done to one are simply on it. */
+  .mark-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
   }
-  .names-row {
+  /* The name is the row's subject and the date is its metadata, which is the
+     reverse of the timeline, where the time is how a version is found. */
+  .mark-point {
     display: flex;
     flex-direction: column;
     gap: 1px;
     width: 100%;
-    padding: var(--spacing);
-    border-radius: var(--radius-container);
+    min-width: 0;
+    padding: calc(var(--spacing) * 0.5) var(--spacing);
+    border-radius: 4px;
     line-height: 1.25;
     text-align: left;
     cursor: pointer;
   }
-  .names-row:hover { background: var(--color-row-hover); }
+  .mark-point:hover { background: var(--color-row-hover); }
+  .mark-name {
+    min-width: 0;
+    font-size: var(--panel-font-size);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mark-when { font-variant-numeric: tabular-nums; }
+  /* A reader who cannot set one still has to see that a version carries a
+     mark, so the icon is drawn where the button would be. */
+  .mark-still {
+    width: var(--spacing);
+    padding-inline: calc(var(--spacing) * 1.5);
+    color: var(--color-primary-500);
+    box-sizing: content-box;
+  }
 
   /* ----------------------------------------------------------------- the day */
-
-  /* The month, once it has answered: a way back, and the date it chose. */
-  .crumb {
-    flex: none;
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: calc(var(--spacing) * 2);
-    padding: 0 calc(var(--spacing) * 2) calc(var(--spacing) * 2);
-  }
-  .crumb-back {
-    padding-right: calc(var(--spacing) * 1.5);
-    font-size: var(--panel-meta-size);
-    color: var(--panel-muted);
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .crumb-back:hover { color: var(--color-surface-950-50); }
-  .crumb-day { font-size: var(--panel-font-size); font-weight: 600; }
 
   .day {
     flex: 0 1 auto;
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2) calc(var(--spacing) * 4);
+    padding-top: calc(var(--spacing) * 2);
     border-top: 1px solid var(--color-surface-200-800);
   }
-  /* A version: the time it was taken, and a word only where there is one.
-     Nothing else -- the row is already a row, and a marker beside it would be
-     a second way of saying so. */
-  /* The live document's row: the same row as the others, with its one
-     control beside it rather than under it. */
-  .day-now {
-    display: flex;
-    align-items: center;
-    gap: calc(var(--spacing) * 0.5);
+  /* A revision log, not a column of controls. A row has no border, no pill,
+     no icon and no ground of its own; the only rows that are drawn at all are
+     the one under the pointer and the one being read.
+  
+     Three columns, the same three on every row: when, what, who. The time is
+     a fixed width so that the words start at one x down the whole day, and is
+     set in tabular numerals so the digits line up within it. */
+  .day-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
   }
-  .day-now .day-point { flex: 1; min-width: 0; }
   .day-point {
-    display: flex;
-    align-items: baseline;
-    gap: calc(var(--spacing) * 2);
+    display: grid;
+    grid-template-columns: 3.75rem minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: calc(var(--spacing) * 2);
     width: 100%;
     min-width: 0;
-    padding: calc(var(--spacing) * 0.75) var(--spacing);
-    border-radius: var(--radius-container);
+    min-height: 2.125rem;
+    padding: calc(var(--spacing) * 0.5) var(--spacing);
+    border-radius: 4px;
     line-height: 1.3;
     text-align: left;
     cursor: pointer;
   }
   .day-point:hover { background: var(--color-row-hover); }
+  /* The time is the key to the row but not its subject: muted, so that the
+     word beside it is what the eye lands on going down the list. */
   .day-when {
-    flex: none;
     font-size: var(--panel-font-size);
     font-variant-numeric: tabular-nums;
-    color: var(--color-surface-600);
+    color: var(--panel-muted);
+    white-space: nowrap;
   }
   .day-what {
     min-width: 0;
@@ -713,18 +848,75 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .timeline-here .day-when,
-  .timeline-here .day-what { font-weight: 600; }
-  .timeline-here .day-when { color: var(--color-primary-700-300); }
-  .day-card {
-    padding: calc(var(--spacing) * 0.5) var(--spacing) var(--spacing)
-             calc(var(--spacing) * 2);
-    line-height: 1.3;
+  .day-who {
+    max-width: 7rem;
+    font-size: var(--panel-meta-size);
+    color: var(--panel-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .day-card-actions {
+  /* The chosen row says what it holds on a second line, under the word rather
+     than under the time, and that is the whole of the difference: medium
+     weight and a tinted ground, no rule, no box, no third row. */
+  .timeline-here .day-what { font-weight: 500; }
+  .day-about {
+    grid-column: 2 / -1;
+    padding-bottom: 2px;
+    font-size: var(--panel-meta-size);
+    color: var(--panel-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The controls, at the right of the row they belong to. A control offering
+     itself on every line of a list is noise, so on the timeline it waits for
+     the pointer, for the keyboard, or for the row to be the one being read.
+     A mark already set is not an offer and does not hide. */
+  .day-tools {
     display: flex;
+    align-items: center;
     gap: calc(var(--spacing) * 0.5);
-    margin-top: calc(var(--spacing) * 0.5);
+    padding-top: 1px;
+  }
+  .day-row .day-tools:not(.on) { opacity: 0; }
+  .day-row:hover .day-tools,
+  .day-row:focus-within .day-tools,
+  .day-row:has(.timeline-here) .day-tools { opacity: 1; }
+  /* The mark itself is coloured; an empty bookmark waiting to be set is not,
+     or every row would read as half-marked. */
+  .day-tools.on { color: var(--color-primary-500); }
+
+  /* The live document. A label and what it points at, at the two ends of a
+     row that is plainly not one of the events below it. */
+  .day-now { margin-bottom: calc(var(--spacing) * 1.5); }
+  .now-point {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(var(--spacing) * 2);
+    width: 100%;
+    min-width: 0;
+    min-height: 2.125rem;
+    padding: calc(var(--spacing) * 0.5) var(--spacing);
+    border-radius: 4px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .now-point:hover { background: var(--color-row-hover); }
+  .now-label {
+    font-size: var(--panel-meta-size);
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--panel-muted);
+  }
+  .now-what {
+    min-width: 0;
+    font-size: var(--panel-font-size);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* A run of autosaves, gathered. It reads like a version row with a caret
@@ -733,11 +925,12 @@
   .run-head {
     display: grid;
     grid-template-columns: 0.75rem minmax(0, 1fr);
-    align-items: baseline;
+    align-items: center;
     gap: 0 calc(var(--spacing) * 1.5);
     width: 100%;
-    padding: calc(var(--spacing) * 0.75) var(--spacing);
-    border-radius: var(--radius-container);
+    min-height: 2.125rem;
+    padding: calc(var(--spacing) * 0.5) var(--spacing);
+    border-radius: 4px;
     line-height: 1.3;
     text-align: left;
     cursor: pointer;
@@ -747,7 +940,7 @@
   .run-when {
     font-size: var(--panel-font-size);
     font-variant-numeric: tabular-nums;
-    color: var(--color-surface-600);
+    color: var(--panel-muted);
     white-space: nowrap;
   }
   /* What the run changed -- the thing "3:14 to 4:02" cannot say, and nearly
@@ -792,6 +985,14 @@
     cursor: pointer;
   }
   .unsaved-row:hover { color: var(--color-surface-950-50); }
+  /* How much was written in that minute, so that two minutes side by side are
+     told apart by something other than the clock. A count rather than a word:
+     the chips wrap, and a word each would be a paragraph of them. */
+  .unsaved-writes { opacity: 0.65; }
+  .unsaved-writes::before {
+    content: "·";
+    margin: 0 calc(var(--spacing) * 0.5);
+  }
   .unsaved-here {
     background: var(--color-primary-500);
     color: var(--color-surface-50);

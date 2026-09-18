@@ -156,16 +156,33 @@
   color: var(--color-primary-500);
 }
 
-/* The section headings in the site navigation. */
-.sitenav p {
+/* The site navigation is two levels: a group, and the pages under it. The
+   group name is a link when the group has a page of its own, so it reads as
+   one entry rather than as a heading repeated by its own first child. */
+.sitenav-group {
+  display: grid;
+  gap: --spacing(1);
   margin-top: --spacing(5);
-  margin-bottom: --spacing(2);
-  font-weight: 600;
-  font-size: var(--text-sm);
 }
-.sitenav p:first-child {
+.sitenav-group:first-child {
   margin-top: 0;
 }
+.sitenav .sitenav-parent {
+  font-weight: 600;
+  font-size: var(--text-sm);
+  color: var(--color-surface-900-100);
+}
+.sitenav a.sitenav-parent:hover {
+  color: var(--color-primary-500);
+}
+
+/* The children, set in from the name they belong to and hung on a rule, so a
+   glance says where a group starts and stops. */
+.sitenav-children {
+  padding-left: --spacing(3);
+  border-left: 1px solid var(--color-surface-200-800);
+}
+
 .sitenav a[aria-current] {
   color: var(--color-primary-500);
   font-weight: 600;
@@ -191,10 +208,6 @@
   margin-left: -1px;
   transition: color 120ms, border-color 120ms;
 }
-.pagetoc a[data-level="3"] {
-  padding-left: --spacing(6);
-  font-size: var(--text-xs);
-}
 .pagetoc a[aria-current] {
   color: var(--color-primary-500);
   border-left-color: var(--color-primary-500);
@@ -207,7 +220,7 @@
    wide window would otherwise stretch a paragraph past the point where the
    eye finds the next line reliably. */
 .prose {
-  max-width: 46rem;
+  max-width: 58rem;
   line-height: 1.7;
   color: var(--color-surface-900-100);
 }

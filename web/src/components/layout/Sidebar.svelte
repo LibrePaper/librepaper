@@ -56,7 +56,12 @@
 </script>
 
 <!-- The sidebar owns panel selection and the shape of the column. Reader keeps
-     document state and actions; this component only presents them. -->
+     document state and actions; this component only presents them.
+
+     Offered no panels, it is not a narrow column but nothing at all: the rail
+     is a way to the panels, so a rail with no panels behind it is a margin
+     the window pays for and nobody can use. -->
+{#if tabs.length}
 <aside class="sidebar" class:collapsed={!shown.comments} aria-label={label}
        ondragover={(event) => event.preventDefault()} ondrop={ondrop}>
   <div class="sidebar-activity">
@@ -80,8 +85,9 @@
     </div>
   {/if}
 </aside>
+{/if}
 
-{#if shown.comments && resizable && !compact}
+{#if tabs.length && shown.comments && resizable && !compact}
   <Grip pane={sidebarPane} label="Resize the left-hand column" {panes}
     controls={panel ? slotId(panel) : undefined}
     onsize={onsize} onguide={onguide} ongrab={ongrab} />

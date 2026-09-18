@@ -164,10 +164,24 @@ impl Server {
         // A frontier this document never had is the caller's mistake, not a
         // failure of the room: it is refused as a bad request rather than
         // reported as one.
-        let (main, texts, assets) = match room.project_at_frontier(&frontier).await {
+        let found = match room.project_at_frontier(&frontier).await {
             Ok(found) => found,
             Err(error) => return write_json(400, &json!({"error": error})),
         };
+        // Shaped like a checkpoint's tree, so a caller holding a moment and a
+        // caller holding a checkpoint read the same answer. A comment names
+        // its file by id, and only the id says which path held it then.
+        let files: serde_json::Map<String, Value> = found
+            .text_ids
+            .iter()
+            .map(|(path, id)| (path.clone(), json!({"kind": "text", "id": id})))
+            .chain(
+                found
+                    .assets
+                    .iter()
+                    .map(|(path, sha)| (path.clone(), json!({"kind": "asset", "sha": sha}))),
+            )
+            .collect();
         let mut response = write_json(
             200,
             &json!({
@@ -175,12 +189,13 @@ impl Server {
                 "storage_id": entry.storage_id,
                 "frontier": asked,
                 "source_format": entry.source_format,
-                "main": main,
-                "texts": texts,
+                "main": found.main,
+                "texts": found.texts,
                 // Path to digest, as the tree holds them: the bytes are the
                 // asset routes' business, and a historical state names the
                 // same objects the live one does.
-                "assets": assets,
+                "assets": found.assets,
+                "files": files,
             }),
         );
         set(&mut response, "cache-control", "private, no-store");
@@ -249,10 +264,9 @@ impl Server {
             "slug": entry.slug,
             "main": entry.main,
             "checkpoints": checkpoints,
-            // Live session persistence and historical checkpoint admission
-            // are separate.  Keep the states explicit so the panel cannot
-            // turn a delayed checkpoint into a false unsaved-edit claim (or
-            // the reverse).
+            // Whether the live text has reached storage, and nothing else. A
+            // version is not scheduled, so there is no second boundary here
+            // that could be reported as pending.
             "durability": {
                 "live_save": if !durability.known {
                     "unknown"
@@ -260,13 +274,6 @@ impl Server {
                     "pending"
                 } else {
                     "saved"
-                },
-                "history_checkpoint": if !durability.known {
-                    "unknown"
-                } else if durability.checkpoint_pending {
-                    "pending"
-                } else {
-                    "current"
                 },
             },
         });

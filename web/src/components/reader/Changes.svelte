@@ -339,7 +339,7 @@
        than a screen down it. -->
   <header class="changes-header">
     <div class="changes-title-row">
-      <h2>Changes</h2>
+      <h2 class="panel-section-title">Changes</h2>
       <div class="title-controls">
         <!-- A real switch rather than a checkbox with a switch painted over it:
              the state is the control's own, so the name no longer has to carry
@@ -478,26 +478,30 @@
      the first change, where the settings area this replaced took several
      hundred. Both stay put while the queue scrolls beneath them. */
   .changes-header { position: sticky; top: 0; z-index: 2; flex: 0 0 auto; padding: .4rem var(--spacing) .25rem; background: var(--color-sidebar); }
-  .changes-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; } h2 { margin: 0; flex: 1 1 auto; min-width: 0; font-size: .95rem; }
+  .changes-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .5rem; }
+  h2 { margin: 0; flex: 1 1 auto; min-width: 0; }
   .title-controls { display: flex; align-items: center; gap: .15rem; margin-left: auto; min-width: 0; }
-  .changes-meta, .row-meta, .changes-hint, .changes-menu-hint { color: var(--color-surface-500-400); font-size: .72rem; }
+  /* The quiet tier. Only -400 is grey in the surface ramp -- -500 and -600
+     are the theme's ink -- so these read as body text rather than as meta.
+     `--panel-muted` is what every other panel means by quiet. */
+  .changes-meta, .row-meta, .changes-hint, .changes-menu-hint { color: var(--panel-muted); font-size: var(--panel-meta-size); }
   .changes-meta { margin-top: .1rem; }
   /* The track and thumb are `.switch` in librepaper.css, worn here and in the
      settings dialog alike; this is only where the words sit beside them. */
-  .changes-panel :global(.tracking-toggle) { display: flex; align-items: center; gap: .35rem; flex: 0 0 auto; font-size: .72rem; white-space: nowrap; }
+  .changes-panel :global(.tracking-toggle) { display: flex; align-items: center; gap: .35rem; flex: 0 0 auto; font-size: var(--panel-meta-size); white-space: nowrap; }
   .filter-bar { flex: 0 0 auto; padding: 0 var(--spacing) .3rem; background: var(--color-sidebar); border-bottom: 1px solid var(--color-surface-200-800); }
-  .filter-trigger { display: flex; align-items: center; gap: .3rem; max-width: 100%; padding: .2rem .35rem; margin-left: -.35rem; border: 0; border-radius: .25rem; background: none; color: inherit; font-size: .78rem; line-height: 1.3; text-align: left; cursor: pointer; }
+  .filter-trigger { display: flex; align-items: center; gap: .3rem; max-width: 100%; padding: .2rem .35rem; margin-left: -.35rem; border: 0; border-radius: .25rem; background: none; color: inherit; font-size: var(--panel-font-size); line-height: var(--panel-line-height); text-align: left; cursor: pointer; }
   .filter-trigger:hover, .filter-trigger[data-state="open"] { background: var(--color-surface-200-800); }
-  .caret { color: var(--color-surface-600-400); font-size: .85rem; line-height: 1; }
+  .caret { color: var(--panel-muted); font-size: var(--panel-font-size); line-height: 1; }
   .changes-menu { flex: 0 0 auto; padding: .1rem .35rem; border: 0; border-radius: .25rem; background: none; line-height: 1; cursor: pointer; }
   .changes-menu:hover, .changes-menu[data-state="open"] { background: var(--color-surface-200-800); }
-  .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--color-surface-600-400); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
   .changes-menu-hint { padding: .2rem .65rem .35rem; line-height: var(--panel-line-height); }
   /* The contextual bar: only while a selection or a confirmation is open, and
      gone the moment it is answered or dismissed. */
-  .select-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; padding: .35rem var(--spacing); border-bottom: 1px solid var(--color-surface-200-800); background: color-mix(in srgb, var(--color-primary-500) 6%, var(--color-sidebar)); font-size: .75rem; }
-  .select-count { flex: 1 1 auto; color: var(--color-surface-600-400); }
-  .bar-action, .row-action, .empty-link { border: 0; background: none; padding: .2rem .3rem; border-radius: .25rem; font-size: .75rem; cursor: pointer; }
+  .select-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; padding: .35rem var(--spacing); border-bottom: 1px solid var(--color-surface-200-800); background: color-mix(in srgb, var(--color-primary-500) 6%, var(--color-sidebar)); font-size: var(--panel-meta-size); }
+  .select-count { flex: 1 1 auto; color: var(--panel-muted); }
+  .bar-action, .row-action, .empty-link { border: 0; background: none; padding: .2rem .3rem; border-radius: .25rem; font-size: var(--panel-meta-size); cursor: pointer; }
   .row-action { padding-inline: .4rem; }
   .bar-action:hover:not(:disabled), .row-action:hover:not(:disabled), .empty-link:hover { background: var(--color-surface-200-800); }
   .bar-action:disabled, .row-action:disabled { opacity: .4; cursor: default; }
@@ -513,15 +517,17 @@
   .change-row.active, .contested-option.active { border-left-color: var(--color-primary-500); }
   .change-row.blocked { border-left-color: var(--color-warning-500); }
   .change-row.contested { border-left-color: var(--color-tertiary-500); }
-  .contested-head { margin: 0 0 .4rem; font-size: .72rem; color: var(--color-surface-600-400); }
-  .contested-badge { display: inline-block; padding: 0 .3rem; border-radius: .2rem; background: var(--color-tertiary-500); color: var(--color-tertiary-contrast-500); font-size: .64rem; text-transform: uppercase; letter-spacing: .04em; }
+  .contested-head { margin: 0 0 .4rem; font-size: var(--panel-meta-size); color: var(--panel-muted); }
+  .contested-badge { display: inline-block; padding: 0 .3rem; border-radius: .2rem; background: var(--color-tertiary-500); color: var(--color-tertiary-contrast-500); font-size: var(--panel-meta-size); text-transform: uppercase; letter-spacing: .04em; }
   .contested-option { padding-left: .4rem; border-left: 3px solid transparent; }
   .contested-option + .contested-option { border-top: 1px dashed var(--color-surface-200-800); padding-top: .4rem; margin-top: .4rem; }
   .row-head { display: flex; align-items: flex-start; gap: .4rem; }
   .row-pick { flex: none; margin-top: .25rem; }
   .row-main { min-width: 0; flex: 1; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; }
   .row-diff, .row-meta { display: block; }
-  .row-diff { font: .82rem/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+  /* The diff quotes the source, so it wears the source's monospace at the
+     panel's own size rather than a hand-set one. */
+  .row-diff { font-family: var(--font-editor); font-size: var(--panel-font-size); line-height: var(--panel-line-height); overflow-wrap: anywhere; }
   .row-diff > span { display: block; }
   /* A change nobody is looking at shows its first couple of lines; the one
      being reviewed shows all of it. */
@@ -536,9 +542,9 @@
   .row-warning { color: var(--color-warning-700-300); }
   .row-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .3rem; }
   .change-detail { margin-top: .35rem; max-height: 12rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .conflict { padding-left: .5rem; border-left: 2px solid var(--color-warning-500); font-size: .75rem; }
+  .conflict { padding-left: .5rem; border-left: 2px solid var(--color-warning-500); font-size: var(--panel-meta-size); }
   .conflict p { margin: 0; }
-  .discussion { margin-top: .35rem; font-size: .75rem; } .discussion li { margin-top: .3rem; }
+  .discussion { margin-top: .35rem; font-size: var(--panel-meta-size); } .discussion li { margin-top: .3rem; }
   .changes-empty { padding: 1rem var(--spacing); }
   .changes-hint { flex: 0 0 auto; padding: .35rem var(--spacing); border-top: 1px solid var(--color-surface-200-800); text-align: center; }
   @media (max-width: 32rem) { .changes-header, .filter-bar, .select-bar, .change-row { padding-inline: calc(var(--spacing) * .75); } .change-row { padding-left: calc(var(--spacing) * .75 - 3px); } .row-context { max-width: 10rem; } }

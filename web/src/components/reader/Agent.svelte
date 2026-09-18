@@ -3,6 +3,7 @@
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import { getPrivate, post } from "../../lib/api.js";
   import PanelHeader from "../PanelHeader.svelte";
+  import PanelTabs from "../PanelTabs.svelte";
   import ChatTranscript from "../ChatTranscript.svelte";
   import ChatComposer from "../ChatComposer.svelte";
   import { createAgentClient } from "../../lib/agent-client.js";
@@ -40,6 +41,11 @@
   ];
   const currentRole = $derived(!caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
   let tab = $state("connection");
+  const TABS = [
+    { id: "connection", label: "Connection" },
+    { id: "chat", label: "Chat" },
+    { id: "tasks", label: "Tasks" },
+  ];
   let pendingRequest = $state(null);
   let commentContext = $state(null);
   let inputDraft = $state("");
@@ -369,16 +375,12 @@
 
 </script>
 
-<section class="panel agent-panel" aria-label="Agent chat">
+<section class="panel panel-tabbed agent-panel" aria-label="Agent chat">
   <PanelHeader title="Agent" />
-  <Tabs class="agent-tabs-root" value={tab} onValueChange={({ value }) => tab = value}
-        ids={{ trigger: value => `agent-tab-${value}`, content: value => `agent-pane-${value}` }}>
-    <Tabs.List class="panel-tabs agent-tabs" aria-label="Agent">
-      {#each [{id:"connection",label:"Connection"},{id:"chat",label:"Chat"},{id:"tasks",label:"Tasks"}] as item}
-        <Tabs.Trigger class="agent-tab" value={item.id} title={item.label}>{item.label}</Tabs.Trigger>
-      {/each}
-      <Tabs.Indicator class="agent-tab-indicator" />
-    </Tabs.List>
+  <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with
+       the collaboration panel. What is left here is what the tabs contain. -->
+  <PanelTabs id="agent" label="Agent" listClass="agent-tabs" tabs={TABS}
+             value={tab} onchange={(value) => tab = value}>
   <Tabs.Content value="connection">
   <div class="agent-setup">
     <p class="panel-muted">Click a button below to copy connection instructions to your clipboard. Paste them into a new message in your local coding agent (Codex, Claude, Pi, etc.) and send it to connect the agent to this document. Choose <strong>Reader</strong> to let it read, <strong>Commenter</strong> to let it read, comment, and suggest changes, <strong>Edit with track changes</strong> to require suggestions you can accept or reject, or <strong>Edit directly</strong> to allow source edits.</p>
@@ -483,25 +485,24 @@
   </div>
 
   </Tabs.Content>
-  </Tabs>
+  </PanelTabs>
   {#if problem || connection.error}<p class="panel-muted" role="alert">{problem || connection.error}</p>{/if}
 </section>
 
 <style>
-  .agent-panel { display:flex; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 3); overflow:hidden; }
+  /* The panel's arrangement -- padding off the panel and onto each pane, the
+     strip flush at the top -- is `.panel-tabbed`, shared with the
+     collaboration panel. What is left here is this panel's own: its panes
+     scroll as a whole, except the chat, whose transcript scrolls under a
+     composer that stays put. */
+  .agent-panel { gap:calc(var(--spacing) * 3); }
   .agent-panel > :global(*) { flex-shrink:0; }
-  .agent-panel :global(.agent-tabs-root) { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 3); }
-  /* Layout, truncation and the narrow-panel step live on .panel-tabs. */
-  .agent-panel :global(.agent-tab) { color:var(--color-surface-500-500); }
-  .agent-panel :global(.agent-tab[data-selected]) { color:var(--color-primary-700-300); font-weight:700; background:color-mix(in srgb, var(--color-primary-500) 18%, transparent); box-shadow:inset 0 -3px 0 var(--color-primary-500); }
-  .agent-panel :global(.agent-tab-indicator) { height:3px; bottom:0; background:var(--color-primary-500); }
-  .agent-panel :global([role="tabpanel"]) { flex:1 1 0; min-height:0; overflow-y:auto; }
+  .agent-panel :global([role="tabpanel"]) { overflow-y:auto; gap:calc(var(--spacing) * 3); }
   .agent-panel :global(#agent-pane-chat) { overflow:hidden; }
+  .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
   .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 3); overflow-y:auto; }
   .chat-history > :global(*) { flex-shrink:0; }
   .agent-panel :global(.agent-tab-content .chat-form) { flex-shrink:0; }
-  .agent-panel :global(.agent-tab-content) { display:flex; flex-direction:column; gap:calc(var(--spacing) * 3); min-height:0; }
-  .agent-panel :global([hidden]) { display:none; }
   .agent-setup, .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
   .agent-setup p { margin:0; }
   .access-buttons { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:var(--spacing); }

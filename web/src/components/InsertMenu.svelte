@@ -161,12 +161,16 @@
   </div>
 </MenubarMenu>
 
-{#snippet footer()}
-  <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={closeDialog}>Cancel</button>
-  <button type="button" class="btn btn-sm preset-filled-primary-500" disabled={busy || Boolean(error) || !(preview?.text || preview?.additionalEdits?.length)} onclick={submit}>Insert</button>
-{/snippet}
-
-<Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : "Insert"} description={captured?.format ? `Generated for ${captured.format}` : null} {footer} onclose={closeDialog} wide>
+<Modal bind:open={dialogOpen} title={dialog ? actionLabel(dialog) : "Insert"} description={captured?.format ? `Generated for ${captured.format}` : null} onclose={closeDialog} wide
+  confirm={{
+    form: "insert-dialog",
+    label: "Insert",
+    disabled: busy || Boolean(error) || !(preview?.text || preview?.additionalEdits?.length),
+    oncancel: closeDialog,
+  }}>
+  <!-- A form, so Enter in any of these fields inserts, the way Enter in the
+       name field of the rename dialog renames. -->
+  <form id="insert-dialog" class="flex min-h-0 flex-col gap-3" onsubmit={(event) => { event.preventDefault(); void submit(); }}>
   {#if dialog === "citation"}
     <input class="input" type="search" placeholder="Search author, title, year, or key" aria-label="Search bibliography" bind:value={query} />
     <div class="insert-results" role="group" aria-label="Bibliography entries">
@@ -224,6 +228,7 @@
     <details class="insert-preview" open><summary>Source preview</summary>{#if preview.text}<pre>{preview.text}</pre>{:else}<p class="panel-muted">No source will be inserted.</p>{/if}{#if preview.notes?.length}<ul>{#each preview.notes as note}<li>{note}</li>{/each}</ul>{/if}{#if preview.additionalEdits?.length}<p class="panel-muted">Additional source edits:</p>{#each preview.additionalEdits as edit}<pre>{edit.path ? `${edit.path}: ` : ""}{edit.insert || "(delete)"}</pre>{/each}{/if}</details>
   {/if}
   {#if error}<p class="insert-error" role="alert">{error}</p>{/if}
+  </form>
 </Modal>
 
 <style>

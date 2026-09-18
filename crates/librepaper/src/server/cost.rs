@@ -621,20 +621,20 @@ pub(super) async fn middleware(
             .exact()
             .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(ceiling);
-        // A gzip publication object can be tiny on the wire yet expand to a
+        // A gzip bundle object can be tiny on the wire yet expand to a
         // 16 MiB HTML document or a 64 MiB asset. `stage_object` retains both
         // the encoded request body and its decoded buffer, so reserve that
         // bounded decoded peak before accepting the body.
-        let compressed_publication_object = matches!(method, Method::PUT)
+        let compressed_bundle_object = matches!(method, Method::PUT)
             && path.starts_with("/api/documents/")
-            && path.contains("/publication/objects/")
+            && path.contains("/bundle/objects/")
             && request
                 .headers()
                 .get(header::CONTENT_ENCODING)
                 .and_then(|value| value.to_str().ok())
                 == Some("gzip");
-        let reservation = if compressed_publication_object {
-            length.saturating_add(crate::server::publication::MAX_ASSET_BYTES)
+        let reservation = if compressed_bundle_object {
+            length.saturating_add(crate::server::bundle::MAX_ASSET_BYTES)
         } else {
             length.saturating_mul(4)
         };
@@ -731,11 +731,11 @@ pub(super) async fn middleware(
             None,
         );
     }
-    let publication_object_upload = matches!(method, Method::PUT)
+    let bundle_object_upload = matches!(method, Method::PUT)
         && path.starts_with("/api/documents/")
-        && path.contains("/publication/objects/");
+        && path.contains("/bundle/objects/");
     let permit = if matches!(class, 1..=3)
-        || publication_object_upload
+        || bundle_object_upload
         || path.starts_with("/wasm/")
         || path.starts_with("/assets/")
     {

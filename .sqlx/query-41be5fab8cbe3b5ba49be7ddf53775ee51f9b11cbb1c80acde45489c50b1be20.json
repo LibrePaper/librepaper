@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,\n         bundles,document_versions,document_assets,replies,annotations,share_links,\n         grants,documents,accounts CASCADE",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "41be5fab8cbe3b5ba49be7ddf53775ee51f9b11cbb1c80acde45489c50b1be20"
+}

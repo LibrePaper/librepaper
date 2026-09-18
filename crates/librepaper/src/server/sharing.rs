@@ -27,6 +27,11 @@ pub(super) struct ShareRequest {
     pub(super) revoke: Option<String>,
     #[serde(default)]
     pub(super) link: Option<LinkRequest>,
+    /// Changes to the link a role already holds -- its memo, its expiry, its
+    /// comment budget -- leaving the key alone. Minting is what kills a link,
+    /// so an owner correcting a label is not made to hand out a new URL.
+    #[serde(default)]
+    pub(super) settings: Option<LinkRequest>,
 }
 
 #[derive(Deserialize, Default)]
@@ -34,7 +39,8 @@ pub(super) struct LinkRequest {
     #[serde(default)]
     pub(super) role: String,
     /// A duration such as `180d` or `24h`, `never` for a link that does not
-    /// expire, or absent for the default.
+    /// expire, or absent: absent keeps the expiry a link already has, and is
+    /// the default for a link that is new.
     #[serde(default)]
     pub(super) until: String,
     /// A memo for the owner, not an identity or an additional grant. Omitted
@@ -45,6 +51,16 @@ pub(super) struct LinkRequest {
     /// deployment's ordinary comment limit.
     #[serde(default)]
     pub(super) budget: Option<i64>,
+}
+
+/// A change to the link a role already holds, once the request's words have
+/// been read: the role it names, an expiry only where one was asked for, a memo
+/// only where one was sent, and the budget as it stands.
+struct LinkSettings {
+    role: Role,
+    until: Option<String>,
+    label: Option<String>,
+    budget: Option<i64>,
 }
 
 /// The word a link's role or a revoke may be spelled with. The document
@@ -275,6 +291,47 @@ impl Server {
             ));
         }
 
+        // A settings change is the mint's opposite number: the same four
+        // fields, read the same way, applied to the row already there. It is
+        // checked out here, where a bad role or a bad duration can still be
+        // answered with the reason rather than a refused mutation.
+        let mut adjusted: Option<LinkSettings> = None;
+        if let Some(wanted) = &asked.settings {
+            let Some(role) = parse_role_word(&wanted.role) else {
+                return write_json(
+                    400,
+                    &json!({"error": "a link is 'reader', 'commenter' or 'editor'"}),
+                );
+            };
+            // An omitted duration leaves the expiry where it is, rather than
+            // taking the default a new link would get: a change of memo is not
+            // a request to start the clock again.
+            let until = if wanted.until.trim().is_empty() {
+                None
+            } else {
+                match link_expiry(&wanted.until) {
+                    Ok(until) => Some(until),
+                    Err(message) => return write_json(400, &json!({"error": message})),
+                }
+            };
+            if wanted.budget.is_some_and(|budget| budget < 0) {
+                return write_json(
+                    400,
+                    &json!({"error": "a link budget is a non-negative number of comments per hour"}),
+                );
+            }
+            let label = wanted
+                .label
+                .as_deref()
+                .map(|label| clean(label, MAX_LINK_LABEL).trim().to_string());
+            adjusted = Some(LinkSettings {
+                role,
+                until,
+                label,
+                budget: wanted.budget,
+            });
+        }
+
         let revoke = asked.revoke.clone().unwrap_or_default();
         let now = crate::util::now_unix();
         let mutation_actor = crate::document::store::MutationActor {
@@ -311,12 +368,39 @@ impl Server {
                         {
                             link.label.clone_from(&existing.label);
                         }
+                        // The same for the expiry: a rotation asked for
+                        // without a duration is a new key for the link that is
+                        // there, not a link that now runs to a different day.
+                        if asked
+                            .link
+                            .as_ref()
+                            .is_some_and(|wanted| wanted.until.trim().is_empty())
+                        {
+                            link.until.clone_from(&existing.until);
+                        }
                     }
                     entry.set_link(link);
                     // A rotated link's old hash names nothing any more, so a
                     // guest recorded against it is not a guest of this
                     // document's link any longer either.
                     entry.prune_guests(now);
+                }
+                if let Some(settings) = &adjusted {
+                    let role = settings.role;
+                    let Some(existing) = entry.link_for(role) else {
+                        return Err(format!("nothing shared with {:?} to change", role.as_str()));
+                    };
+                    let mut link = existing.clone();
+                    if let Some(until) = &settings.until {
+                        link.until.clone_from(until);
+                    }
+                    // An omitted label keeps the memo, the way rotation does;
+                    // an empty one clears it.
+                    if let Some(label) = &settings.label {
+                        link.label.clone_from(label);
+                    }
+                    link.budget = settings.budget;
+                    entry.set_link(link);
                 }
                 Ok(())
             })

@@ -326,7 +326,7 @@ pub(super) fn annotation_input(
         } else {
             comment.creator.clone()
         },
-        publication_id: Uuid::parse_str(&comment.publication_id).ok(),
+        bundle_id: Uuid::parse_str(&comment.bundle_id).ok(),
         color: comment.color.clone(),
         original_anchor,
         presentation: comment.presentation.clone(),
@@ -354,10 +354,7 @@ pub(crate) fn room_comment_from_catalog_row(
         .into(),
         presentation: presentation_from_record(&row),
         color: row.color.clone(),
-        publication_id: row
-            .publication_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
+        bundle_id: row.bundle_id.map(|id| id.to_string()).unwrap_or_default(),
         proposal: String::new(),
         // Projections. A row does not carry them; whoever serves this comment
         // fills them in from the proposal named above.

@@ -1,7 +1,6 @@
-//! Account storage status and fixed retention policy reporting.
+//! Account storage status.
 
 use super::*;
-use crate::document::quota::RetentionPolicy;
 
 #[derive(Clone)]
 struct AccountStorageUsage {
@@ -84,7 +83,6 @@ impl Server {
             Ok(usage) => usage,
             Err(reply) => return reply,
         };
-        let policy = RetentionPolicy::fixed();
         let mut response = write_json(
             200,
             &json!({
@@ -96,9 +94,7 @@ impl Server {
                 },
                 "constraints": {
                     "hardQuotaBytes": self.config.storage.per_owner,
-                    "maxCheckpointCount": policy.max_checkpoint_count,
                 },
-                "policy": policy,
             }),
         );
         set(&mut response, "cache-control", "private, no-store");

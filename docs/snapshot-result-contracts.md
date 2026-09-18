@@ -8,14 +8,14 @@ match without collapsing distinct authority and lifecycle boundaries.*
 
 | Contract | Owner | Lifetime | Authority | Primary consumers |
 | --- | --- | --- | --- | --- |
-| Browser render tree | `collab.js::tree`, `capturePreviewTree` | Mutable capture used for one operation | Local observation; not durable authority | Renderers, previews, downloads, publication builder |
+| Browser render tree | `collab.js::tree`, `capturePreviewTree` | Mutable capture used for one operation | Local observation; not durable authority | Renderers, previews, downloads, bundle builder |
 | Checkpoint tree | `document/history.rs::Tree` | Immutable and durable | Server source history | Restore, history, snapshot API, source archives |
 | Agent source tree | `room/agent.rs::SourceTree` | Immutable request candidate | Validation input; room command commits separately | Patch validation and agent receipts |
-| Renderer result | `renderers.js::render` return value | Transient | Local computation result | Reader preview and publication preparation |
+| Renderer result | `renderers.js::render` return value | Transient | Local computation result | Reader preview and bundle preparation |
 | Local job status | `local/protocol.rs::JobStatus` | Transient, queryable until job cleanup | Companion report | Browser renderer adapter and diagnostics UI |
 | Quarto collector bundle | `local/quarto.rs::QuartoBundle` | Transient wire input | Untrusted collector output until validated | Local Quarto adapter |
 | Validated result bundle | `results/mod.rs::BundleManifest` | Transient validated computation evidence | Host-validated result contract | Quarto reuse and result consumers |
-| Publication manifest | `server/publication.rs::PublicationManifest` | Immutable and durable | Server activation transaction | Publication storage and reader delivery |
+| Bundle manifest | `server/bundle.rs::BundleManifest` | Immutable and durable | Server activation transaction | Bundle storage and reader delivery |
 
 ## Source tree fields
 
@@ -52,10 +52,10 @@ Several existing fields contain SHA-256 values but identify different things:
 | Local request `snapshot` / `inputRevision` | Browser job identity, normally the captured tree digest | Job correlation and stale-result rejection |
 | Quarto `shared_tree_sha256` | Durable shared source inventory supplied to local execution | Verification against a companion workspace |
 | Result `source.tree_sha256` | Shared source tree used for a validated result | Computation provenance |
-| Publication `source_sha256` | Canonical source tree from which display bytes were built | Published-source freshness |
+| Bundle `source_sha256` | Canonical source tree from which display bytes were built | Published-source freshness |
 | Cell `source_sha256` | One executable cell's normalized source | Cell reuse; not a project revision |
-| Publication `bundle_sha256` | HTML/object descriptor | Display package identity |
-| Publication `render_config_sha256` | Renderer configuration identity | Freshness independent of source |
+| Bundle `bundle_sha256` | HTML/object descriptor | Display package identity |
+| Bundle `render_config_sha256` | Renderer configuration identity | Freshness independent of source |
 | Result `computation_sha256` | Computation context | Quarto output reuse |
 
 Use **source tree digest** in documentation and internal variable names for the
@@ -69,18 +69,18 @@ migration with compatibility evidence.
 
 ## Artifact and asset fields
 
-| Meaning | Renderer result | Local job | Validated result bundle | Publication |
+| Meaning | Renderer result | Local job | Validated result bundle | Bundle |
 | --- | --- | --- | --- | --- |
 | Primary bytes | `html`, `pdf`, or `artifact` | Raw endpoint selected by `outputs`/`artifact` descriptor | External blob named by `artifact.sha256` | `html` object plus asset objects |
 | Kind | `artifactKind`; otherwise inferred from `html`/`pdf` | Job `kind`, output-map key | `artifact.kind` enum | HTML fixed; asset MIME types |
 | Entrypoint/path | Source tree supplies it | Output-map key or request entrypoint | `artifact.entrypoint` | Asset `path`; HTML is root object |
-| Digest | Usually computed by adapter/caller | `OutputEntry.sha256` | `ArtifactDescriptor.sha256` | `PublicationObject.sha256` |
-| Size | Byte array length | `OutputEntry.size` | `ArtifactDescriptor.size` | `PublicationObject.bytes` |
+| Digest | Usually computed by adapter/caller | `OutputEntry.sha256` | `ArtifactDescriptor.sha256` | `BundleObject.sha256` |
+| Size | Byte array length | `OutputEntry.size` | `ArtifactDescriptor.size` | `BundleObject.bytes` |
 | MIME type | Usually implicit | Implicit in output route/key | Optional `ArtifactDescriptor.mime` | Required on every object |
 
 These shapes should remain distinct. A local job describes retrievable
 temporary outputs, a validated result describes computation evidence, and a
-publication describes immutable public display objects. A universal artifact
+bundle describes immutable public display objects. A universal artifact
 structure would either lose lifecycle information or acquire optional fields
 for most consumers.
 
@@ -89,7 +89,7 @@ Convergence should happen in adapters and terminology:
 - adapters should expose `{kind, bytes, diagnostics, provenance}` to the
   reader regardless of browser or companion backend;
 - use `size` for in-memory/internal byte counts and translate to the existing
-  publication wire field `bytes` at its boundary;
+  bundle wire field `bytes` at its boundary;
 - use `sha256` for serialized fields and “digest” in explanatory prose;
 - require MIME types only at storage/delivery boundaries.
 
@@ -130,7 +130,7 @@ These must not be merged. The local protocol Rust type is named
 serialized `provenance` field. The result type remains `results::Provenance`
 inside its computation-specific module.
 
-Publication manifests currently retain source and render-configuration
+Bundle manifests currently retain source and render-configuration
 identity but not either detailed provenance record. Persisting build or
 computation provenance would be a product/schema decision, not a vocabulary
 cleanup, and is outside this simplification pass.
@@ -159,7 +159,7 @@ cleanup, and is outside this simplification pass.
 - Patch-oriented agent source tree versus asset-complete checkpoint tree
 - Temporary local job output versus validated computation result
 - Computation provenance versus build provenance
-- Result bundle versus publication display bundle
+- Result bundle versus bundle display bundle
 - UI diagnostics versus computation-coverage diagnostics
 
 ### No new contract

@@ -14,20 +14,13 @@ command line keeps them where the `typst` binary keeps its own, under
 `~/.cache/typst/packages`. A font file beside the document is used as
 `--font-path` would use it.
 
-Any other family comes from the deployment's own font library:
-
-```sh
-librepaper admin serve --typst-fonts /srv/librepaper/fonts      # a directory of .ttf/.otf files
-```
-
-The directory is read once at startup for the families each file carries, and
-served by family at `/api/fonts/`. The editor asks for a family the compiler
-warned about; `publish` asks the same deployment for the same files, so the
-preview uses the same faces. Without `--typst-fonts`, a
-document naming a family the compiler does not embed is set in Typst's
-default faces and warned about, as it would be by the binary on a machine
-without that font. Which fonts a deployment offers, and under what licence, is
-the operator's decision.
+Any other family comes from the deployment's own font library, which an
+operator configures; see [Fonts](../host.html#fonts). The editor asks for a
+family the compiler warned about, and publishing asks the same deployment for
+the same files, so the preview uses the same faces. Where a deployment offers
+no library, a document naming a family the compiler does not embed is set in
+Typst's default faces and warned about, as it would be on a machine without
+that font installed.
 
 ## Typst documents with Calepin
 

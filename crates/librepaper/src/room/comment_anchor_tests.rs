@@ -11,7 +11,7 @@
 //! the rest of the catalogue coverage.
 
 use super::*;
-use crate::document::store::{MutationActor, Publication, Store};
+use crate::document::store::{DocumentInput, MutationActor, Store};
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
 
@@ -34,8 +34,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     );
     catalog.migrate().await.unwrap();
     sqlx::query!(
-        "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,
-         publications,document_versions,document_assets,replies,annotation_live_state,annotations,
+        "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,
+         bundles,document_versions,document_assets,replies,annotation_live_state,annotations,
          share_links,grants,documents,accounts CASCADE",
     )
     .execute(catalog.pool())
@@ -71,7 +71,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     };
     store
         .put_directory_as_actor(
-            Publication {
+            DocumentInput {
                 slug: slug.into(),
                 title: "A Paper".into(),
                 source: PAPER.into(),
@@ -97,7 +97,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
 fn selection(exact: &str, prefix: &str, suffix: &str) -> Command {
     Command::Comment {
         motivation: "commenting".into(),
-        publication_id: String::new(),
+        bundle_id: String::new(),
         body: "A remark.".into(),
         creator: "Reviewer".into(),
         exact: exact.into(),
@@ -159,16 +159,37 @@ async fn a_quotation_becomes_a_range_the_browser_never_sent() {
         "the range is the source's own, markup and all",
     );
     assert_eq!(target["exact"], "*interval* covers the mean");
-    // And what it was made against is the checkpoint the room is on.
-    let current = {
-        let state = room.state.lock().await;
-        state
-            .manifest
-            .latest()
-            .map(|point| point.sha.clone())
-            .unwrap_or_default()
-    };
-    assert_eq!(anchor["checkpoint_id"], json!(current));
+    // And what it was made against is the position in the editing history the
+    // room was at, not a checkpoint: a comment writes no source archive, and
+    // the frontier names the state exactly rather than naming the nearest
+    // state somebody happened to save.
+    let made_on = anchor["checkpoint_id"].as_str().unwrap_or_default();
+    let recorded = made_on
+        .strip_prefix(crate::room::annotation::MOMENT)
+        .expect("a comment on the live draft is anchored to a frontier");
+    let frontier = crate::room::decode_update(recorded).expect("the frontier is base64");
+    let at = room
+        .project_at_frontier(&frontier)
+        .await
+        .expect("the document is readable at the frontier a comment names");
+    assert!(
+        at.texts
+            .values()
+            .any(|text| text.contains(target["exact"].as_str().unwrap())),
+        "the state a comment names holds the passage it is about",
+    );
+
+    // Nothing was written to say so. The harness truncates the catalogue and
+    // creates one document, so the only version in it is the one that document
+    // arrived with.
+    // Asked at runtime rather than through the checked macro: this is the only
+    // place that counts versions, and one test is not worth an entry in the
+    // offline query cache.
+    let versions: i64 = sqlx::query_scalar("SELECT count(*) FROM document_versions")
+        .fetch_one(deployment.catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(versions, 1, "a comment writes no source archive");
     // The words the page had are kept beside it, and are not the anchor.
     assert_eq!(
         response["comment"]["presentation"]["rendered_exact"],

@@ -7,12 +7,10 @@
 import { createGeneration } from "./generation.js";
 
 /// A selection is a checkpoint's id, or a position in the operation history
-/// written `frontier:<anchor>` -- the activity timeline hands those out for
-/// minutes nobody checkpointed. Both are read into the same shape, so
+/// written `frontier:<anchor>`. Both are read into the same shape, so
 /// everything below this line, and every panel above it, treats them alike.
-export const MOMENT = "frontier:";
-export const isMoment = (selected) => String(selected || "").startsWith(MOMENT);
-export const anchorOf = (selected) => (isMoment(selected) ? String(selected).slice(MOMENT.length) : "");
+import { anchorOf, isMoment } from "../moment.js";
+export { MOMENT, isMoment, anchorOf } from "../moment.js";
 
 export function createHistorySource({ checkpoint, moment, currentTree, checkpoints = () => [], preferredPath = () => "" }) {
   const state = $state({ selected: "", path: "", loading: false, problem: "", result: null });

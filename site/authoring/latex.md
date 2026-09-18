@@ -4,10 +4,10 @@ title: "LaTeX"
 
 ## LaTeX
 
-`librepaper publish paper.tex` stores a `.tex` file as `latex`, and
-`librepaper publish paper/` takes the whole directory: the chapters, the `.bib`,
-the figures. Nothing is compiled on the way: LibrePaper carries no TeX, no build
-embeds one, and there is no `make latex`.
+Publishing a `.tex` file stores it as `latex`, and publishing a directory takes
+the whole project: the chapters, the `.bib`, the figures. Nothing is compiled
+on the way: LibrePaper carries no TeX, and no build embeds one. See
+[the CLI](../cli.html#publish).
 
 LaTeX is compiled in the browser, by LibrePaper's own pinned release of the
 browser engines: pdfTeX, XeTeX and BibTeX built for WebAssembly, with
@@ -58,24 +58,10 @@ permission to connect to a local service; allow that for the LibrePaper site
 you use. Compilation permissions do not grant the website access to these
 local management controls.
 
-The companion is the same binary as the CLI. Terminal users can still use:
+The companion is the same binary as the CLI, and can be run and inspected from
+a terminal instead; see [the companion](../cli.html#the-companion).
 
-```sh
-librepaper local launch       # run in the background
-librepaper local start        # run in a terminal; prints a fallback pairing code
-librepaper local stop         # stop the background companion
-librepaper local startup enable   # optional: start when you log in
-librepaper local startup disable
-librepaper local doctor       # which TeX tools it found, and whether it can confine them
-librepaper local status
-librepaper local disconnect --all
-```
-
-`local start` takes `--code` to fix the pairing code instead of a fresh random
-one each run, and `--tex-path` (colon-separated directories) when a TeX
-installation lives somewhere `start` and `doctor` would not otherwise search.
-
-Enter the code once in the document's Settings dialog and later fallbacks are
+Enter the pairing code once in the document's Settings dialog and later fallbacks are
 automatic. When browser compilation fails outright (an engine that will not
 start, a package the mirror lacks, a crash, a TeX error), the reader asks the
 app to compile the whole project natively with your installed TeX, once per
@@ -85,18 +71,9 @@ runs the tools with shell escape off, confines them with `bwrap` or
 `sandbox-exec` where the platform has them, and says so when it cannot. It
 never installs packages or changes your TeX installation.
 
-A self-hoster says where the browser distribution comes from:
-
-```sh
-# in the wasm-latex repository: build and push the mirror
-make mirror
-make push
-# back here: use that mirror
-make deploy LATEX_MIRROR=https://bucket.example.com  # use that mirror locally
-librepaper admin serve --latex-mirror https://bucket.example.com
-librepaper admin serve                                     # defaults to the project mirror:
-                                                      # https://latex.librepaper.workers.dev/
-```
+A self-hoster can serve the browser distribution from their own mirror rather
+than the project one; see
+[Privacy and the LaTeX mirror](../host.html#privacy-and-the-latex-mirror).
 
 `make deploy` checks that the selected mirror contains a default engine
 release with its TeX Live bundles (`tools/latex/tools/check-mirror.mjs`; see

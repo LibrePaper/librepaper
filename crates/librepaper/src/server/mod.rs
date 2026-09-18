@@ -32,7 +32,7 @@ use crate::auth::{
 use crate::config::Configuration;
 use crate::document::render::{title_from_html, title_from_markdown};
 use crate::document::store::{
-    random_suffix, slugify, Ceiling, IndexEntry, LinkGrant, ModifyError, Publication, PutError,
+    random_suffix, slugify, Ceiling, DocumentInput, IndexEntry, LinkGrant, ModifyError, PutError,
     Role, Store,
 };
 use crate::room::{
@@ -45,6 +45,8 @@ use crate::server::shell::{renderers, ShellFile};
 use crate::util::clean;
 
 mod assistant;
+pub mod bundle;
+mod bundle_http;
 mod chat;
 pub mod cost;
 mod documents;
@@ -55,8 +57,6 @@ mod host_metrics;
 mod mcp;
 mod onboarding;
 pub mod origins;
-pub mod publication;
-mod publication_http;
 mod quarto_checkpoint;
 mod quota;
 mod reply;
@@ -163,6 +163,12 @@ pub struct Server {
     /// do is offer a browser anywhere to fetch a compiler from, which is why
     /// `/api/config` reports whether it is set and `renderers` counts it.
     pub latex: Option<String>,
+    /// The marketing site in front of this deployment, or nothing. Reported
+    /// by `/api/me` because it is where signing out goes: the page a stranger
+    /// sees is the site, not this deployment's front door, and a reader who
+    /// has just signed out is a stranger again. Nothing here for a deployment
+    /// that is its own front page.
+    pub site: Option<String>,
     /// The fonts this deployment serves to typst documents that name a
     /// family the compiler does not embed, or nothing. See
     /// `crate::server::fonts`.
@@ -305,6 +311,27 @@ impl Viewer {
     /// a comment pseudonym, a link label. The display never becomes the
     /// account id and the account id never becomes the display.
     pub fn attributed_as(&self, display: &str) -> crate::room::Attribution {
+        crate::room::Attribution::account(&self.id.id, display)
+    }
+
+    /// What a version this caller writes is signed with.
+    ///
+    /// Deliberately not `attributed_as(comment_author(..))`, which is how the
+    /// timeline came to be full of "Unknown editor": a comment's author is a
+    /// stable key, and a signed-in caller's stable key is the catalogue uuid,
+    /// which is no name at all. A person's own name is in the credential they
+    /// arrived with, so this costs nothing to ask for.
+    ///
+    /// `pseudonym` is what the caller is known as when there is no account
+    /// behind them -- a visitor digest, a link -- and stands unchanged.
+    pub fn authorship(&self, pseudonym: &str) -> crate::room::Attribution {
+        let display = if !self.id.is_signed_in() {
+            pseudonym
+        } else if self.id.name.is_empty() {
+            &self.id.handle
+        } else {
+            &self.id.name
+        };
         crate::room::Attribution::account(&self.id.id, display)
     }
 }
@@ -460,6 +487,7 @@ impl Server {
             chat: chat::Hub::default(),
             mcp_capacity,
             latex: None,
+            site: None,
             fonts: None,
             cost,
             socket_budget,
@@ -982,7 +1010,6 @@ impl Server {
     ) -> (Value, bool) {
         let id = &who.id;
         let request_id = incoming.request_id.clone();
-        let temp_id = incoming.temp_id.clone();
         // The rung, not the switch: a document may name a commenter on a
         // deployment whose switch names nobody, and may be closed to a caller
         // the switch would have allowed.
@@ -1010,7 +1037,6 @@ impl Server {
             Ok(command) => command,
             Err(error) => return (error.response(), false),
         };
-        let is_comment = command.is_comment();
         // The client's name is never trusted, for a comment or for a reply to
         // one: a signed-in commenter is named by their account, and anyone
         // else is given the same pseudonym every time they return to this
@@ -1029,65 +1055,23 @@ impl Server {
         // from reviewer three without either having signed anything. Empty for
         // a commenter by name.
         let command = command.with_creator(creator.clone());
-        // Every source-side comment sits on a checkpoint by construction: what
-        // the reviewer was looking at is on record the moment they say
-        // something about it, rather than being reconstructed later from a
-        // document that has moved on. A checkpoint whose text is already the
-        // current one costs nothing and adds no entry.
-        let needs_checkpoint = is_comment
-            && matches!(&command, crate::room::Command::Comment { publication_id, .. } if publication_id.is_empty());
-        // A co-editor typing between the checkpoint and the write invalidates
-        // the moment, not the comment. Take the checkpoint again and come
-        // back; only a room being edited continuously enough to lose the race
-        // three times in a row is one where there is nothing honest to record.
-        const ATTEMPTS: usize = 3;
-        let (mut result, ok) = 'attempts: {
-            let mut attempt = 0;
-            loop {
-                attempt += 1;
-                if needs_checkpoint {
-                    // The checkpoint a comment sits on is the commenter's
-                    // write. It carries their stable account when they are
-                    // signed in, and the same pseudonym the comment shows as
-                    // its display string.
-                    if let Err(err) = room
-                        .checkpoint("comment", who.attributed_as(&creator))
-                        .await
-                    {
-                        eprintln!(
-                            "warning: could not checkpoint {} for a comment: {err}",
-                            room.slug
-                        );
-                        break 'attempts (
-                            json!({"type":"error","status":503,"message":"source checkpoint is unavailable; retry the comment",
-                                "temp_id":temp_id,"request_id":request_id}),
-                            false,
-                        );
-                    }
-                }
-                let attempted = room
-                    .apply_command_with_actor(
-                        command.clone(),
-                        address,
-                        author,
-                        &who.link,
-                        who.comment_budget,
-                        may_edit,
-                        self.annotation_mutation_actor(who, false),
-                    )
-                    .await;
-                let stale = attempted.0.get("code").and_then(Value::as_str)
-                    == Some(crate::room::comments::STALE_CHECKPOINT);
-                // Retrying is only ever worth it when the next attempt would
-                // take a fresh checkpoint; nothing else about the room would
-                // be different the second time round. The refusal is raised
-                // before any rate slot is spent, so a retry costs the caller
-                // nothing but the round trip.
-                if !stale || !needs_checkpoint || attempt >= ATTEMPTS {
-                    break 'attempts attempted;
-                }
-            }
-        };
+        // Nothing is written here before the comment is. A source-side comment
+        // still records the state of the document the reviewer was looking at,
+        // but it names that state by the frontier the room is at when the
+        // anchor is taken, under the same lock -- so there is no window for a
+        // co-editor to invalidate, nothing to retry, and no source archive
+        // written for the sake of having something to point at.
+        let (mut result, ok) = room
+            .apply_command_with_actor(
+                command,
+                address,
+                author,
+                &who.link,
+                who.comment_budget,
+                may_edit,
+                self.annotation_mutation_actor(who, false),
+            )
+            .await;
         if !request_id.is_empty() {
             result["request_id"] = json!(request_id);
         }

@@ -511,7 +511,7 @@ pub fn session_key_file(path: &std::path::Path, catalog_nonempty: bool) -> Resul
     deployment_secret_key(path, catalog_nonempty, "session")
 }
 
-/// Publish fully written, private bytes, with optional replacement. Creating a
+/// StoreBundle fully written, private bytes, with optional replacement. Creating a
 /// key uses a hard link so a concurrent creator cannot overwrite the winner.
 /// Keyring replacement remains serialized by the deployment writer lock.
 fn write_secret_atomically(

@@ -30,6 +30,8 @@ fn removed_flags_are_rejected_with_migration_messages() {
         ("--latex", "--latex-mirror"),
         ("--fonts", "--typst-fonts"),
         ("--biber-vm", "Biber WASM"),
+        ("--history-limit", "until the document is deleted"),
+        ("--history-checkpoint-minutes", "never on a timer"),
     ] {
         let output = cli(&["admin", "serve", flag, "value"]);
         assert!(!output.status.success(), "{flag} unexpectedly parsed");
@@ -49,6 +51,8 @@ fn removed_environment_settings_are_rejected_even_when_empty() {
         "LIBREPAPER_LATEX",
         "LIBREPAPER_FONTS",
         "LIBREPAPER_BIBER_VM",
+        "LIBREPAPER_HISTORY",
+        "LIBREPAPER_CHECKPOINT",
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
             .args(["skills", "list"])

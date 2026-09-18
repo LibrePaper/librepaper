@@ -45,6 +45,10 @@ pub struct ServeOptions {
     /// loopback alone.
     pub origin: Option<String>,
     pub docs_origin: Option<String>,
+    /// The marketing site in front of this deployment, or nothing. Signing
+    /// out goes there; a deployment without one sends a signed-out reader to
+    /// its own front page.
+    pub site_origin: Option<String>,
     pub expire_after: Option<String>,
     pub expire_from: Option<String>,
     /// HTTPS static mirror URL published to browsers. Distribution bytes are
@@ -81,6 +85,40 @@ pub(crate) fn validate_latex_mirror(value: &str) -> Result<String, String> {
     }
     parsed.set_path(&format!("{}/", parsed.path().trim_end_matches('/')));
     Ok(parsed.to_string())
+}
+
+/// Validate the marketing site's address. It is handed to a browser as the
+/// place signing out goes, so it has to be an origin a browser can be sent
+/// to: a scheme and a host, no credentials, and nothing after the host. Plain
+/// HTTP is allowed because `make deploy` serves the site on localhost, which
+/// is the one place it is not a mistake.
+pub(crate) fn validate_site_origin(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let parsed = url::Url::parse(value).map_err(|_| {
+        format!("--site-origin must be a URL, for example https://paper.example (got {value:?})")
+    })?;
+    let loopback = matches!(parsed.host(), Some(url::Host::Domain("localhost")))
+        || matches!(parsed.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
+        || matches!(parsed.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
+    if parsed.host_str().is_none()
+        || (parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback))
+    {
+        return Err(format!(
+            "--site-origin must be an https: URL, or http: on loopback (got {value:?})"
+        ));
+    }
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !parsed.path().trim_matches('/').is_empty()
+    {
+        return Err(
+            "--site-origin must be an origin alone: no credentials, path, query or fragment"
+                .to_string(),
+        );
+    }
+    Ok(parsed.origin().ascii_serialization())
 }
 
 /// The GitHub and Google OAuth app client secrets. Secrets never travel as
@@ -231,6 +269,14 @@ pub async fn serve(options: ServeOptions) {
     // Read before anything is opened or a port is claimed: a mirror value
     // which cannot work is a typo the operator is still standing in front of.
     let latex = validate_latex_mirror(&options.latex_mirror).unwrap_or_else(|err| die(err));
+    // Likewise the site. It becomes a destination a browser is sent to, so it
+    // is an absolute http(s) origin or it is a mistake -- a bare host would
+    // be read as a path on this deployment and send a signed-out reader to a
+    // page that does not exist.
+    let site = match options.site_origin.as_deref().unwrap_or("").trim() {
+        "" => None,
+        flag => Some(validate_site_origin(flag).unwrap_or_else(|err| die(err))),
+    };
     // The font library likewise: a directory that is not there is a typo,
     // and every file in one that is gets read now, for the families it holds.
     let fonts = match options.typst_fonts.as_deref().unwrap_or("").trim() {
@@ -334,6 +380,7 @@ pub async fn serve(options: ServeOptions) {
     instance.simulate_activity = options.simulate_activity;
     instance.origins = origins.clone();
     instance.latex = Some(latex);
+    instance.site = site;
     instance.fonts = fonts;
     // The local app for this machine: only a browser on this host can reach
     // it, and it lives under the deployment's private state so it shares
@@ -394,11 +441,6 @@ pub async fn serve(options: ServeOptions) {
         println!(
             "{}",
             serde_json::json!({"event":"cost_policy", "policy":config.effective_policy()})
-        );
-    }
-    if config.session.history_max == 0 {
-        eprintln!(
-            "warning: unlimited checkpoint history is enabled; set --history-limit to a finite count"
         );
     }
     if config.cost.transfer_bytes.is_none() {
@@ -596,6 +638,39 @@ mod policy_tests {
             policy.versions_per_hour, config.rate_per_hour,
             "and never by the comment rate that reads like it"
         );
+    }
+}
+
+#[cfg(test)]
+mod site_origin_tests {
+    use super::*;
+
+    /// The value becomes a place a browser is sent after it has just given up
+    /// its session, so what it may be is narrow: an origin, and nothing else.
+    #[test]
+    fn a_site_origin_is_an_origin_and_nothing_else() {
+        assert_eq!(
+            validate_site_origin("https://paper.example/"),
+            Ok("https://paper.example".to_string()),
+            "a trailing slash is a path of nothing, and the origin is what comes back"
+        );
+        assert_eq!(
+            validate_site_origin("http://localhost:8082"),
+            Ok("http://localhost:8082".to_string()),
+            "plain HTTP on loopback is `make deploy`, not a mistake"
+        );
+        for refused in [
+            "paper.example",
+            "http://paper.example",
+            "https://paper.example/start.html",
+            "https://user:pw@paper.example",
+            "https://paper.example?next=x",
+        ] {
+            assert!(
+                validate_site_origin(refused).is_err(),
+                "{refused:?} is not an origin this deployment should send anyone to"
+            );
+        }
     }
 }
 

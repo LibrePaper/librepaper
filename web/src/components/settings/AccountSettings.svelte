@@ -1,8 +1,7 @@
 <script>
-  // The account itself, rather than a preference: what this deployment knows
-  // about you, and the one irreversible thing you can ask it to do. Offered
-  // only to a signed-in browser, because there is no account to erase
-  // otherwise.
+  // The account itself, rather than a preference: the one irreversible thing
+  // you can ask this deployment to do. Offered only to a signed-in browser,
+  // because there is no account to erase otherwise.
   //
   // Erasure is deliberately slow to start and impossible to take back from
   // here: the server invalidates the session on the spot and refuses to sign
@@ -13,10 +12,9 @@
 
   let { account = {} } = $props();
 
-  // A GitHub handle is a login and a Google handle is an email address; both
-  // are the account's own to see and neither is what other readers are shown.
+  // The handle the erasure confirmation is typed against: a GitHub login or a
+  // Google email address, whichever this account signed in with.
   const handle = $derived(account.handle || account.name || "");
-  const shown = $derived(account.provider === "github" && handle ? `@${handle}` : handle);
 
   // "asking" is the typed confirmation, "erasing" the request in flight,
   // "started" the answer. Only the first is reversible.
@@ -53,16 +51,6 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <SettingRow id="account-identity" title="Signed in as"
-              description="What the deployment stores about the account itself: the provider, its identifier for you, your handle and display name, and — for a Google account — the verified email address it signed in with.">
-    <p>{shown || "Unknown"}{account.provider ? ` (${account.provider})` : ""}</p>
-  </SettingRow>
-
-  <SettingRow id="account-privacy" title="Privacy"
-              description="What a LibrePaper deployment keeps, for how long, and who else sees it. A deployment other than the one you are reading may also publish a notice of its own.">
-    <a class="btn btn-sm preset-outlined-surface-300-700" href="https://librepaper.org/privacy.html" target="_blank" rel="noopener">How LibrePaper handles your data</a>
-  </SettingRow>
-
   <SettingRow id="account-erase" stacked title="Erase this account"
               description="Deletes the account and everything it owns. This cannot be undone from here.">
     {#if started}

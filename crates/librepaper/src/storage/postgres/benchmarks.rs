@@ -11,8 +11,8 @@ use time::OffsetDateTime;
 
 use super::{NewAccount, NewDocument, NewJob, PostgresCatalog, PostgresOptions, StoragePolicy};
 use crate::storage::blob::{BlobStore, FsStore};
+use crate::storage::bundle::{BundleFile, BundleStorage, StoreBundle};
 use crate::storage::collaboration::CollaborationStorage;
-use crate::storage::publication::{PublicationFile, PublicationStorage, Publish};
 use crate::storage::source::{CommitProject, ProjectFile, SourceStorage};
 use crate::storage::source_archive::ArchiveLimits;
 
@@ -46,7 +46,7 @@ async fn catalog_v3_release_benchmark() {
     };
     let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
     catalog.migrate().await.expect("migrate");
-    sqlx::query!("TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,document_versions,document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE")
+    sqlx::query!("TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,document_versions,document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE")
         .execute(catalog.pool()).await.expect("empty benchmark database");
     let owner = catalog
         .create_account(NewAccount {
@@ -203,55 +203,55 @@ async fn catalog_v3_release_benchmark() {
         job_results.push(json!({"workers":workers,"claimed":claimed,"elapsed_us":micros(started)}));
     }
 
-    let publication_storage = PublicationStorage::new(catalog.clone(), blobs.clone());
-    let publication_files = (0..4096)
-        .map(|index| PublicationFile {
+    let bundle_storage = BundleStorage::new(catalog.clone(), blobs.clone());
+    let bundle_files = (0..4096)
+        .map(|index| BundleFile {
             path: format!("files/{index}.txt"),
-            source: crate::storage::publication::PublicationSource::Owned(b"x".to_vec()),
+            source: crate::storage::bundle::BundleSource::Owned(b"x".to_vec()),
             media_type: "text/plain".into(),
         })
         .collect();
-    let publication_started = Instant::now();
-    let publication = publication_storage
-        .publish(Publish {
+    let bundle_started = Instant::now();
+    let bundle = bundle_storage
+        .publish(StoreBundle {
             document_id: documents[2].id,
             source_version_id: None,
             request_key: "benchmark-files-limit".into(),
             expected_current_id: None,
-            publisher_account_id: Some(owner.id),
-            publisher_label: "Benchmark".into(),
-            files: publication_files,
+            rendered_by_account_id: Some(owner.id),
+            rendered_by_label: "Benchmark".into(),
+            files: bundle_files,
         })
         .await
-        .expect("publication at file limit");
-    let publication_result = json!({
+        .expect("bundle at file limit");
+    let bundle_result = json!({
         "files":4096,
         "logical_bytes":4096,
-        "elapsed_us":micros(publication_started),
-        "stored_files":catalog.publication_files(publication.id).await.expect("publication files").len()
+        "elapsed_us":micros(bundle_started),
+        "stored_files":catalog.bundle_files(bundle.id).await.expect("bundle files").len()
     });
-    let publication_byte_started = Instant::now();
-    let publication_at_byte_limit = publication_storage
-        .publish(Publish {
+    let bundle_byte_started = Instant::now();
+    let bundle_at_byte_limit = bundle_storage
+        .publish(StoreBundle {
             document_id: documents[4].id,
             source_version_id: None,
             request_key: "benchmark-byte-limit".into(),
             expected_current_id: None,
-            publisher_account_id: Some(owner.id),
-            publisher_label: "Benchmark".into(),
-            files: vec![PublicationFile {
+            rendered_by_account_id: Some(owner.id),
+            rendered_by_label: "Benchmark".into(),
+            files: vec![BundleFile {
                 path: "maximum.bin".into(),
-                source: crate::storage::publication::PublicationSource::Owned(vec![0x5a; 256 * 1024 * 1024]),
+                source: crate::storage::bundle::BundleSource::Owned(vec![0x5a; 256 * 1024 * 1024]),
                 media_type: "application/octet-stream".into(),
             }],
         })
         .await
-        .expect("publication at byte limit");
-    let publication_byte_result = json!({
+        .expect("bundle at byte limit");
+    let bundle_byte_result = json!({
         "files":1,
         "logical_bytes":256 * 1024 * 1024_u64,
-        "elapsed_us":micros(publication_byte_started),
-        "stored_files":catalog.publication_files(publication_at_byte_limit.id).await.expect("publication files").len()
+        "elapsed_us":micros(bundle_byte_started),
+        "stored_files":catalog.bundle_files(bundle_at_byte_limit.id).await.expect("bundle files").len()
     });
 
     sqlx::query!(
@@ -272,13 +272,13 @@ async fn catalog_v3_release_benchmark() {
     let timeline_us = micros(timeline_started);
 
     let scale_started = Instant::now();
-    sqlx::query!("UPDATE documents SET current_version_id=NULL,current_publication_id=NULL")
+    sqlx::query!("UPDATE documents SET current_version_id=NULL,current_bundle_id=NULL")
         .execute(catalog.pool())
         .await
         .expect("clear scale heads");
     for table in [
-        "publication_files",
-        "publications",
+        "bundle_files",
+        "bundles",
         "document_versions",
         "document_assets",
     ] {
@@ -329,7 +329,7 @@ async fn catalog_v3_release_benchmark() {
         "source_versions":source_results,
         "asset_versions":asset_results,
         "job_claims":job_results,
-        "publications":{"file_limit":publication_result,"byte_limit":publication_byte_result},
+        "bundles":{"file_limit":bundle_result,"byte_limit":bundle_byte_result},
         "bounded_reads":{
             "document_listing":{"rows":listing.len(),"elapsed_us":listing_us},
             "annotation_timeline":{"rows":timeline.len(),"elapsed_us":timeline_us}

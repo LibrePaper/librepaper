@@ -178,27 +178,16 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
   border: 0;
   background: var(--color-shell);
 }
-.preview-header {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: --spacing(2);
-  min-height: --spacing(7);
-  padding-inline: --spacing(3);
-  border-bottom: 1px solid var(--color-divider);
-  background: var(--color-shell);
-}
-.preview-filename {
-  flex: 1 1 auto;
-  min-width: 0;
-  color: var(--panel-muted);
-}
 /* The controls for whatever is in the frame. A paged document has zoom and a
-   cursor tool, a flowing one has neither, and the header is the same row
-   either way: the controls the format has, in the middle, between the file it
-   is previewing and how its last build went.
+   cursor tool, a flowing one has neither, and a format with none is a pane
+   with nothing over it.
+
+   They float over the top of the pane rather than standing in a band above
+   it: a row of its own took a strip of the document's height on every format
+   to hold two buttons on one of them, while floating them costs nothing to a
+   format with no controls. Top-trailing is where every other viewer puts
+   them, and the pane is the positioning context, so they ride the split
+   rather than the window.
 
    These were drawn inside the PDF frame in the operating system's button
    colours, which is why the paged preview and the flowing one looked like two
@@ -206,10 +195,18 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
    button, the divider, the radius -- so they are the same controls as the rest
    of the workspace's. */
 .preview-controls {
+  position: absolute;
+  z-index: 2;
+  inset-block-start: --spacing(4);
+  inset-inline-end: --spacing(4);
   display: flex;
   align-items: center;
   gap: --spacing(1);
-  flex: none;
+  padding: --spacing(1);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-container);
+  background: var(--color-shell);
+  box-shadow: var(--shadow-lg);
 }
 /* The rail between "how large" and "what the pointer does": two groups of
    controls, one row, and a line rather than a gap to say they are two. */
@@ -234,8 +231,7 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
 .preview-zoom:hover { background: var(--color-row-hover); }
 .preview-zoom:focus-visible { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
 /* A narrow pane is the frame's room before it is the controls': the zoom
-   modes have their own buttons beside them, and the file being previewed is
-   the one thing the header cannot say twice. */
+   modes have their own buttons beside them, so the select is what goes. */
 @media (max-width: 900px) {
   .preview-zoom { display: none; }
 }
@@ -284,6 +280,25 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
 .panel-muted { color: var(--panel-muted); }
 .panel-meta { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
 .panel :where(input, textarea, select) { font-family: inherit; font-size: inherit; }
+/* A panel whose whole body is a tab strip. The strip is flush to the top and
+   runs the full width -- a rule that stops short of both edges reads as a box
+   floating in the panel rather than as the panel's own head -- so the panel
+   gives up its padding and each pane carries it instead. Both panels with a
+   strip say `panel panel-tabbed` and get the same arrangement; see
+   PanelTabs.svelte, which is the only thing that draws the row. */
+.panel-tabbed { display: flex; min-height: 0; flex-direction: column; overflow: hidden; padding: 0; }
+.panel-tabs-root { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; overflow: hidden; }
+/* A pane is a column that fills the strip and keeps its own overflow: what
+   scrolls inside it is the panel's business, so nothing here scrolls. */
+.panel-tabs-root :where([role="tabpanel"]) {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  padding: var(--panel-padding);
+}
+.panel-tabs-root :where([role="tabpanel"][hidden]) { display: none; }
 /* Two sidebar panels head themselves with a row of tabs, and the sidebar
    narrows to PANES.sidebar.min (240px), so the row has to survive there:
    equal shares that are allowed to shrink, one line, and an ellipsis once a
@@ -315,6 +330,28 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
 @container (max-width: 15rem) {
   .panel-tabs > :where([role="tab"]) { padding-inline: 2px; font-size: 0.8125rem; }
 }
+/* Selected and unselected read the same in every panel that uses this row --
+   an underline in the primary colour and nothing else -- so the recipe lives
+   here beside the layout rather than once per panel, where it drifted. */
+.panel-tabs > :where([role="tab"]) {
+  color: var(--color-surface-600-400);
+  border-bottom: 2px solid transparent;
+}
+.panel-tabs > :where([role="tab"][data-selected]) {
+  color: var(--color-primary-500);
+  border-color: var(--color-primary-500);
+}
+/* The unread mark a tab wears when its pane has something in it nobody has
+   read yet. */
+.panel-tabs .unread {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--color-primary-500);
+}
 /* A dropdown needs the same room between its words and its edge that every
    button and text field has. Skeleton leaves a select's inline padding unset
    deliberately -- the padding is also what the native arrow is drawn in, and
@@ -333,20 +370,18 @@ input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [ty
 
 /* ---------------------------------------------------------------- timeline */
 
-/* The history, in the column the comments otherwise have. The panel is two
-   steps -- a month, then one day on a vertical time axis -- and both of them
-   are its own, in its own file. What is left here is the shape of the panel
-   and the one thing every selectable moment in it shares: which one is being
-   looked at. */
-.panel.timeline {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
+/* The history, in the column the comments otherwise have. The panel wears the
+   shared strip (`panel-tabbed`) and its three views -- the day, the month, the
+   bookmarks -- are its own, in its own file. What is left here is the one
+   thing every selectable moment in it shares: which one is being looked at. */
+/* The moment being looked at. A tinted ground and nothing else: the row was
+   also carrying a left stripe, which is a second way of saying the one thing
+   the background already says, and in a list of revisions two devices for
+   "this one" is one too many. */
 .timeline-here,
 .timeline-here:hover {
   background: var(--color-row-selected);
-  box-shadow: inset 3px 0 0 var(--color-primary-500);
+  border-radius: 4px;
 }
 
 /* Whatever is left when the document is not showing takes the room it would

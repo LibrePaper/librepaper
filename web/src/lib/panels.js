@@ -24,8 +24,28 @@ export const TABS = [
   { id: "share", says: "Share", icon: "users", when: (who) => who.canSeeSharing || who.canPublish },
 ];
 
+// What a role is offered, where that is less than what the conditions above
+// would otherwise allow. Somebody holding a read link is given the document
+// and nothing around it: there is no panel they can act in, and a rail of
+// icons opening columns that only report on work they cannot do is a
+// workspace pretending they have one. A commenter is given the one panel
+// their link is for, and nothing else -- not the changes queue, not the
+// agent, not the history, none of which a comment link can touch.
+//
+// An editor and an owner are not named here: what they are offered is the
+// `when` rules alone. Neither is a role nobody has answered with yet -- the
+// document always says which one this caller holds, so no role means the
+// document has not answered, and a rail drawn then is one audience's
+// furniture put up and taken down again as soon as the reply lands.
+const ROLE_PANELS = { reader: [], commenter: ["collaboration"], "": [] };
+
 // Every panel this browser is offered, in rail order.
-export const tabsFor = (who) => TABS.filter((tab) => !tab.when || tab.when(who));
+export const tabsFor = (who) => {
+  const only = ROLE_PANELS[who?.role || ""];
+  return only
+    ? TABS.filter((tab) => only.includes(tab.id))
+    : TABS.filter((tab) => !tab.when || tab.when(who));
+};
 
 // The same rail, one level up: the places in an account rather than the panels
 // in a document. The landing page draws these through the same components, so

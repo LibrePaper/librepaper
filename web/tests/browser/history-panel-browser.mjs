@@ -1,9 +1,10 @@
-// Browser regression check for the real history panel: a month that chooses a
-// day, and a day coarsened by significance -- a version somebody asked for is
-// always its own row, the autosaves between two of those are one row that
-// says what the run of them changed, and either opens where it stands.
-// Details belong to the chosen version and to no other, and what was written
-// and never saved is folded away behind a single line.
+// Browser regression check for the real history panel: three views of one
+// past -- the day's versions, a month that chooses another day, and the
+// bookmarks somebody left. A day is coarsened by significance: a version
+// somebody asked for is always its own row, the autosaves between two of
+// those are one row that says what the run of them changed, and either opens
+// where it stands. Details belong to the chosen version and to no other, and
+// what was written and never saved is folded away behind a single line.
 //
 // The volume is the point of all of it: the server saves a version after
 // thirty seconds of quiet, so the fixtures here are small but the arrangement
@@ -143,7 +144,10 @@ const flush = async () => { await tick(); await new Promise((resolve) => setTime
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 window.historyPanelCheck = async () => {
   await flush();
-  const crumb = () => document.querySelector('.crumb-back')?.textContent.trim() ?? null;
+  // The three views, and the one control that chooses between them.
+  const strip = () => [...document.querySelectorAll('.history-tabs [role="tab"]')];
+  const show = async (name) => { document.querySelector('#history-tab-' + name).click(); await flush(); };
+  const showing = () => document.querySelector('.history-tabs [aria-selected="true"]')?.textContent.trim();
   const cells = () => [...document.querySelectorAll('[data-history-day]')];
   const cell = (day) => cells().find((node) => node.dataset.historyDay === day);
   const list = () => [...document.querySelectorAll('.day-row:not(.day-now)')];
@@ -152,17 +156,23 @@ window.historyPanelCheck = async () => {
   const text = (node) => node?.textContent.replace(/\\s+/g, ' ').trim() ?? null;
   // What a row puts in front of the eye, which is not all a row says: the
   // word an autosave withholds from the page it still owes a screen reader.
-  const seen = (node) => [...node.querySelectorAll('.day-when, .day-what')].map(text).join(' ');
+  const seen = (node) =>
+    [...node.querySelectorAll('.day-when, .day-what, .now-label, .now-what')]
+      .map(text).filter(Boolean).join(' ');
 
   /* ----------------------------------- a day that fits is a day that is listed */
 
-  // The panel opens on a day, with the month a click above rather than a grid
-  // beside it. Five versions is a day anybody can read, so every one of them
-  // is a row -- and this is the regression guard: coarsening a day of five
+  // The panel opens on a day, with the month behind its own tab rather than
+  // a grid beside it or a line above it. Five versions is a day anybody can
+  // read, so every one of them is a row -- and this is the regression guard: coarsening a day of five
   // into one entry standing for them saved nobody anything and left a panel
   // whose only row could not be chosen, which is the one thing it is for.
+  check(strip().map((node) => node.textContent.trim()).join() === 'Timeline,Calendar,Bookmarks',
+    'three views, in the strip every tabbed panel wears');
+  check(showing() === 'Timeline', 'and it opens on the day, which is what a version history is opened for');
   check(!cells().length, 'the month must not be drawn beside the day');
-  check(crumb() === '‹ September 2026', 'the month is one click above');
+  check(!document.querySelector('.crumb, .crumb-day, .crumb-back'),
+    'and no line above it naming the day: the Calendar tab is where a day is chosen');
   check(list().length === 5 && !runs().length,
     'a day that fits is listed, never gathered: '
     + list().length + ' rows, ' + runs().length + ' runs');
@@ -177,18 +187,25 @@ window.historyPanelCheck = async () => {
   // month: it is what every version is compared against, and nothing is newer.
   check(nowRow() && document.querySelector('.day-row') === nowRow(),
     'the current version is the first row of the list');
+  // Its own shape, though: a label and what it points at, at the two ends of
+  // the row. It is not an event, and giving it the columns the events use
+  // said it was one.
   check(seen(nowRow()) === 'Now Current version',
-    'and reads as a version among versions: ' + seen(nowRow()));
+    'and says what it is: ' + seen(nowRow()));
+  check(nowRow().querySelector('.now-point') && !nowRow().querySelector('.day-when'),
+    'without borrowing the columns the events below it are laid out in');
   check(!document.querySelector('.now, .timeline-now'),
     'with nothing left of the banner it used to be');
   // It still has to name itself to a screen reader and to a tooltip.
   const first = list()[0].querySelector('.timeline-point');
-  check(text(first.querySelector('.sr-only')) === 'Autosaved'
-    && first.title.includes('Autosaved'),
+  check(text(first.querySelector('.sr-only')) === 'Synced'
+    && first.title.includes('Synced'),
     'what it was is said where saying it costs the eye nothing');
   // And one somebody asked for says which, wherever it appears.
   component.$set({ checkpoints: [...all, published] }); await flush();
-  check(seen(list()[0]) === '10:20 AM Published',
+  // "Saved", not "Published": nobody publishes anything any more, and the
+  // word outlived the act by a release.
+  check(seen(list()[0]) === '10:20 AM Saved',
     'a version somebody asked for says which it was: ' + seen(list()[0]));
   component.$set({ checkpoints: all }); await flush();
 
@@ -250,37 +267,49 @@ window.historyPanelCheck = async () => {
 
   /* ----------------------------------------------- one version at a time */
 
-  check(!document.querySelector('.day-card'), 'no version shows its details until it is chosen');
-  check(!document.querySelector('[aria-label="Name this version"]'),
-    'unselected revisions do not expose row actions');
+  check(!document.querySelector('.day-about'), 'no version shows its details until it is chosen');
+  // The one control a row does carry is the bookmark, and an unmarked one
+  // does not offer itself until the row is under the pointer, has the
+  // keyboard, or is the one being read.
+  check(!document.querySelector('.day-tools.on'), 'no version is marked to begin with');
+  check([...document.querySelectorAll('.day-row:not(.day-now) .day-tools')]
+    .every((node) => getComputedStyle(node).opacity === '0'),
+    'and an unmarked row keeps its bookmark out of the way');
+  check(!document.querySelector('[aria-label="Rename this bookmark"], [aria-label="Remove this bookmark"]'),
+    'renaming and removing belong to the bookmarks, not to the timeline');
   const point = (sha) => document.querySelector('[data-sha="' + sha + '"] .timeline-point');
   point(movedPoints[0].sha).click(); await flush();
   check(events.some((event) => event[0] === 'view' && event[1] === movedPoints[0].sha),
     'selecting a version asks for its comparison');
   component.$set({ viewing: movedPoints[0].sha }); await flush();
-  const card = document.querySelector('.day-card');
-  check(card && document.querySelectorAll('.day-card').length === 1,
+  const card = () => document.querySelector('.day-about');
+  check(card() && document.querySelectorAll('.day-about').length === 1,
     'the chosen version, and only that one, shows its details');
-  check(text(card) === '3 files changed',
-    'an autosave says what it moved and claims no author: ' + text(card));
+  // Inside the row it belongs to, rather than in a third row underneath it.
+  check(document.querySelector('.day-row .timeline-here .day-about'),
+    'on the row itself');
+  check(/^\\d.*3 files changed$/.test(text(card())),
+    'an autosave says its exact time and what it moved, and claims no author: ' + text(card()));
   component.$set({ checkpoints: [...all, published], viewing: published.sha }); await flush();
-  check(text(document.querySelector('.day-card')).startsWith('Vincent · '),
-    'a version somebody asked for names the person who asked: '
-    + text(document.querySelector('.day-card')));
+  check(text(card()).startsWith('Vincent · '),
+    'a version somebody asked for names the person who asked: ' + text(card()));
   component.$set({ checkpoints: all }); await flush();
   component.$set({ viewing: movedPoints[0].sha }); await flush();
-  check(card.querySelector('[aria-label="Name this version"]')
-    && card.querySelector('[aria-label="Copy the link to this version"]'),
-    'with the actions that belong to it');
+  const tools = () => document.querySelector('.day-row:not(.day-now):has(.timeline-here) .day-tools');
+  check(tools() && tools().querySelector('[aria-label="Bookmark this version"]')
+    && getComputedStyle(tools()).opacity === '1',
+    'the row being read shows the one thing that can be done to it from here');
+  check(!document.querySelector('.day-tools a, .day-tools [aria-label*="link" i]'),
+    'and nothing that offers a link to a version: the pane is not where links come from');
   check(!document.querySelector('[aria-label="Restore this version"]'),
     'restoring belongs to the comparison, where what it replaces is on the screen');
   component.$set({ viewing: movedPoints[1].sha }); await flush();
-  check(text(document.querySelector('.day-card')).includes('No files changed'));
+  check(text(card()).includes('No files changed'));
   component.$set({ viewing: movedPoints[2].sha }); await flush();
-  check(!text(document.querySelector('.day-card')).includes('file'),
+  check(!text(card()).includes('file'),
     'a version that cannot account for itself does not claim to');
   component.$set({ viewing: otherFilePoint.sha }); await flush();
-  check(text(document.querySelector('.day-card')).includes('references.bib'),
+  check(text(card()).includes('references.bib'),
     'one moved file is named, without its directory');
   component.$set({ viewing: '' }); await flush();
 
@@ -298,8 +327,12 @@ window.historyPanelCheck = async () => {
     'with none of the times built until it is opened');
   more().click(); await flush();
   const moments = [...document.querySelectorAll('.unsaved-row')];
-  check(moments.map(text).join() === '10:14 AM,9:20 AM,9:02 AM',
+  // Each one says its time and how many writes landed in it, because a column
+  // of bare clock times reads as the same row over and over.
+  check(moments.map(text).join() === '10:14 AM4,9:20 AM3,9:02 AM1',
     'opened, it is the minutes nobody saved, latest first: ' + moments.map(text).join());
+  check(moments[0].title.startsWith('Show the document as it stood at 10:14 AM · 4 writes'),
+    'and spells it out where there is room: ' + moments[0].title);
   check(more().getAttribute('aria-expanded') === 'true');
   moments[0].click(); await flush();
   check(events.some((event) => event[0] === 'moment' && event[1] === rows[3].frontier),
@@ -307,10 +340,11 @@ window.historyPanelCheck = async () => {
   more().click(); await flush();
   check(!document.querySelector('.unsaved-row'), 'and it folds again');
 
-  /* ------------------------------------------------ back up to the month */
+  /* ------------------------------------------------ over to the month */
 
-  document.querySelector('.crumb-back').click(); await flush();
-  check(!list().length && !runs().length, 'the day stands down when the month comes back');
+  await show('calendar');
+  check(showing() === 'Calendar', 'the month is where a reader looking for another day goes');
+  check(!list().length && !runs().length, 'the day stands down when the month comes up');
   check(cells().length % 7 === 0 && cells().length > 28, 'the month is whole weeks');
   check(cell('2026-09-01') && cell('2026-09-30'), 'and the whole month');
   // September 2026 begins on a Tuesday, so the grid runs on into August and
@@ -354,31 +388,83 @@ window.historyPanelCheck = async () => {
   document.querySelector('[aria-label="Next month"]').click(); await flush();
   check(document.querySelector('.cal-month').textContent.trim() === 'July 2026');
 
-  /* --------------------------------------------------------- the names */
+  /* ----------------------------------------------------- the bookmarks */
 
-  const names = [...document.querySelectorAll('.names-row strong')].map((node) => node.textContent);
-  check(names.join() === 'Earlier draft,Submitted draft',
-    'the named versions are the one way in that is not a date');
-  document.querySelectorAll('.names-row')[0].click(); await flush();
-  check(!document.querySelector('.cal-grid') && (list().length || runs().length),
+  await show('bookmarks');
+  check(!document.querySelector('.cal-grid') && !list().length,
+    'a view at a time: the month and the day stand down for the marks');
+  const marks = () => [...document.querySelectorAll('.mark-name')].map((node) => node.textContent);
+  // Latest first, as every list in this panel is.
+  check(marks().join() === 'Submitted draft,Earlier draft',
+    'the bookmarks are the one way in that is not a date: ' + marks().join());
+  const markRow = (name) => [...document.querySelectorAll('.mark-row')]
+    .find((node) => node.querySelector('.mark-name')?.textContent === name);
+  // Rename and remove live here, on the row, and nowhere else.
+  check(markRow('Earlier draft').querySelector('[aria-label="Rename this bookmark"]')
+    && markRow('Earlier draft').querySelector('[aria-label="Remove this bookmark"]'),
+    'each carries the two things that can be done to a name');
+  markRow('Earlier draft').querySelector('[aria-label="Rename this bookmark"]').click(); await flush();
+  const rename = document.querySelector('[aria-label="Name this bookmark"]');
+  check(rename && rename.tagName === 'INPUT' && rename.value === 'Earlier draft',
+    'renaming opens on the name it already has');
+  rename.value = 'First draft'; rename.dispatchEvent(new Event('input', { bubbles: true }));
+  rename.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await flush();
+  check(events.some((event) => event[0] === 'name' && event[1] === points[0].sha && event[2] === 'First draft'),
+    'and reports the new one');
+  markRow('Earlier draft').querySelector('[aria-label="Remove this bookmark"]').click(); await flush();
+  check(events.some((event) => event[0] === 'name' && event[1] === points[0].sha && event[2] === ''),
+    'removing a bookmark takes the name off the version, and does not touch the version');
+  document.querySelector('.mark-point').click(); await flush();
+  check(showing() === 'Timeline' && (list().length || runs().length),
     'opening one drills straight into its day');
-  check(events.some((event) => event[0] === 'view' && event[1] === points[0].sha),
+  check(events.some((event) => event[0] === 'view' && event[1] === points[4].sha),
     'and asks for its comparison');
-  document.querySelector('.crumb-back').click(); await flush();
-  check(cell('2026-09-09').getAttribute('aria-pressed') === 'true',
+  await show('calendar');
+  check(cell('2026-09-10').getAttribute('aria-pressed') === 'true',
     'and the day it drilled into is that version’s own day');
+
+  /* ------------------------------------------------- marking a version */
+
+  await show('timeline');
+  component.$set({ viewing: '' }); await flush();
+  const unmarked = list().find((node) => node.querySelector('[aria-label="Bookmark this version"]'));
+  check(unmarked, 'an unmarked version offers the mark');
+  unmarked.querySelector('[aria-label="Bookmark this version"]').click(); await flush();
+  const naming = document.querySelector('[aria-label="Name this bookmark"]');
+  // It arrives with a name rather than empty, because an empty field is a
+  // question and most bookmarks are worth having under any name at all. The
+  // default says which version this is, and it is selected, so typing over it
+  // costs nothing.
+  check(naming && naming.tagName === 'INPUT' && naming.value.startsWith('Draft of ')
+    && naming.value.includes('2026'),
+    'marking one offers a name it can be kept under: ' + (naming && naming.value));
+  check(naming.selectionStart === 0 && naming.selectionEnd === naming.value.length,
+    'and offers it selected, so the first key typed replaces it');
+  naming.value = 'Sent to the journal'; naming.dispatchEvent(new Event('input', { bubbles: true }));
+  naming.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await flush();
+  check(events.some((event) => event[0] === 'name' && event[1] === unmarked.dataset.sha
+    && event[2] === 'Sent to the journal'), 'and the name is what makes it a bookmark');
+  // A version that already carries one says so without being hovered, and
+  // offers the rename rather than a second mark.
+  const marked = () => document.querySelector('[data-sha="' + points[4].sha + '"]');
+  check(marked() && marked().querySelector('.day-tools.on')
+    && getComputedStyle(marked().querySelector('.day-tools')).opacity === '1'
+    && marked().querySelector('[aria-label="Rename this bookmark"]'),
+    'a marked version wears its mark, and the mark does not hide');
 
   /* -------------------------------------------------------- the present */
 
   component.$set({ viewing: '' }); await flush();
+  await show('calendar');
   // The live document is a row in the day, so the month -- which is a day
   // picker and nothing else -- does not carry it.
-  check(!nowRow(), 'the month step is days, and the present is not one of them');
+  check(!nowRow(), 'the month is days, and the present is not one of them');
   cell('2026-09-11').click(); await flush();
-  check(nowRow(), 'and it is back at the head of the list the moment a day is open');
-  const currentName = document.querySelector('[aria-label="Name the current version"]');
-  check(currentName, 'current version has a naming action'); currentName.click(); await flush();
-  const input = document.querySelector('[aria-label="Name the current version"]');
+  check(showing() === 'Timeline' && nowRow(),
+    'and it is back at the head of the list the moment a day is open');
+  const currentName = document.querySelector('[aria-label="Bookmark the current version"]');
+  check(currentName, 'the current version can be bookmarked like any other'); currentName.click(); await flush();
+  const input = document.querySelector('[aria-label="Name this bookmark"]');
   check(input && input.tagName === 'INPUT', 'current naming uses an accessible input');
   input.value = 'Working draft'; input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await flush();
@@ -428,7 +514,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("history panel component", () => tab.evaluate("Boolean(window.historyPanelCheck)"));
   assert.equal(await tab.evaluate("window.historyPanelCheck()"), true);
-  console.log("history panel: a month, a day coarsened by significance, and everything unsaved folded away");
+  console.log("history panel: three views, a day coarsened by significance, bookmarks, and everything unsaved folded away");
 } finally {
   await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
 }

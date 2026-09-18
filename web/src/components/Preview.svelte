@@ -11,9 +11,13 @@
   //
   // `controls` is whatever the format in the frame can be asked for -- zoom
   // and a cursor tool for a PDF, nothing for flowing HTML. It is a snippet
-  // rather than anything this component knows about: the header is one row
-  // for every format, and what stands in it is the reader's business.
-  let { src, docsOrigin, onmessage, onload, path = "", grabbing = false, away = false, status, controls } = $props();
+  // rather than anything this component knows about, and it floats over the
+  // document rather than standing in a row above it: a band across the top of
+  // the pane cost every format a strip of the document's height, including
+  // the formats with nothing to put in it. What is being previewed is said in
+  // the Files pane, by the eye beside the file, rather than spelled out again
+  // here.
+  let { src, docsOrigin, onmessage, onload, grabbing = false, away = false, controls } = $props();
 
   let frame = $state(null);
   let viewport = $state(null);
@@ -56,13 +60,7 @@
 
 <section class="viewport" class:away bind:this={viewport} inert={away}
          style:--held-width="{heldWidth}px" style:--held-height="{heldHeight}px">
-  {#if path || status || controls}
-    <div class="preview-header">
-      {#if path}<div class="preview-filename truncate" title={path} aria-label="Previewed file">{path}</div>{/if}
-      {@render controls?.()}
-      {@render status?.()}
-    </div>
-  {/if}
+  {@render controls?.()}
   <!-- allow-same-origin refers to the document's own origin, not this one, so
        the agent can read the document while the document can read nothing
        here. While a separator is being dragged the frame is deafened: it

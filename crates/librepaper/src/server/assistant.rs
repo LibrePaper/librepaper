@@ -6,6 +6,11 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub(super) struct BatchRequest {
+    /// The `source_revision` the caller read the document at -- the tree
+    /// digest `document_read` hands out. It says the source still says what it
+    /// said when the ranges below were worked out, and it is not stored:
+    /// what each anchor goes on record against is the room's own frontier at
+    /// the moment it verifies the range.
     pub revision: String,
     pub items: Vec<BatchItem>,
 }
@@ -109,20 +114,10 @@ impl Server {
                 body: item.body,
             })
             .collect();
-        // Keep the same durability guarantee as an individual comment: the
-        // current text is recorded once for the whole pass before the room's
-        // batch lock is acquired. A current checkpoint is a no-op; without a
-        // durable checkpoint these source ranges cannot be accepted.
-        if let Err(error) = room.checkpoint("comment", &creator).await {
-            eprintln!(
-                "warning: could not checkpoint {} for an assistant pass: {error}",
-                room.slug
-            );
-            return write_json(
-                503,
-                &json!({"error":"source checkpoint is unavailable; retry the pass","retryable":true}),
-            );
-        }
+        // Nothing is recorded before the pass. Each suggestion's range is
+        // verified against the live document and stamped with the frontier it
+        // was verified at, which is a name for that state that costs nothing
+        // to write and cannot be stale by the time the batch lock is taken.
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
         match room
             .apply_suggestion_batch(

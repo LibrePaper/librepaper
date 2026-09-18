@@ -23,9 +23,11 @@ export const CATEGORIES = [
     entries: [{ id: "editor-keys", says: "Keys", terms: "vim emacs keymap keyboard bindings modal source standard" }],
   },
   {
-    id: "storage", says: "Storage", offered: latex,
+    id: "storage", says: "Storage", offered: (context) => latex(context) || account(context),
     entries: [
-      { id: "storage-latex", says: "Downloaded LaTeX files", terms: "cache clear free space packages compiler" },
+      { id: "storage-account", says: "Account storage", terms: "quota usage space used limit bytes", offered: account },
+      { id: "storage-retention", says: "Versions", terms: "checkpoints versions history retention prune cleanup label publish restore", offered: account },
+      { id: "storage-latex", says: "Downloaded LaTeX files", terms: "cache clear free space packages compiler", offered: latex },
     ],
   },
   {
@@ -60,8 +62,6 @@ export const CATEGORIES = [
     id: "account", says: "Account", offered: account,
     note: "This account on this deployment, not this document.",
     entries: [
-      { id: "account-identity", says: "Signed in as", terms: "github google handle email name provider identity" },
-      { id: "account-privacy", says: "Privacy", terms: "privacy data retention gdpr notice cookies storage" },
       { id: "account-erase", says: "Erase this account", terms: "erase delete account remove close gdpr right erasure forget" },
     ],
   },

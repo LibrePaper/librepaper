@@ -49,7 +49,7 @@ librepaper export DOCUMENT --project --output ./paper-copy
 An exported project is a snapshot copy. Editing it does not update the hosted
 document.
 
-- [Getting started](https://librepaper.org/start/index.html)
-- [Running a server](https://librepaper.org/host/index.html)
-- [Privacy and the LaTeX mirror](https://librepaper.org/host/index.html#privacy-and-the-latex-mirror)
-- [Building from source](https://librepaper.org/internals.html#building-from-source)
+- [Getting started](https://librepaper.org/start.html)
+- [Running a server](https://librepaper.org/host.html)
+- [Privacy and the LaTeX mirror](https://librepaper.org/host.html#privacy-and-the-latex-mirror)
+- [Building from source](https://librepaper.org/architecture.html#building-from-source)

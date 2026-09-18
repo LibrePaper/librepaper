@@ -136,6 +136,30 @@ pub fn texts_of(doc: &LoroDoc) -> BTreeMap<String, String> {
     out
 }
 
+/// Every text in the document, by path, named by the id it is keyed under.
+///
+/// The id is the stable half of a file: a rename moves the path and leaves
+/// this alone. A comment anchored to a file names it by this, so anything
+/// reading a past state on a comment's behalf has to be able to answer which
+/// path held which id at the time.
+pub fn text_ids_of(doc: &LoroDoc) -> BTreeMap<String, String> {
+    let files = doc.get_map(FILES);
+    let path_map = doc.get_map(PATHS);
+    let mut out = BTreeMap::new();
+
+    for key in files.keys() {
+        let id = key.to_string();
+        let Some(ValueOrContainer::Container(Container::Text(_))) = files.get(&id) else {
+            continue;
+        };
+        let Some(path) = string_at(&path_map, &id) else {
+            continue;
+        };
+        out.insert(path, id);
+    }
+    out
+}
+
 /// Every asset in the document, path to digest.
 pub fn assets_of(doc: &LoroDoc) -> BTreeMap<String, String> {
     let assets = doc.get_map(ASSETS);

@@ -121,6 +121,10 @@ export function createProjectSession({
   // name somebody gave it and what is at that name.
   const assets = doc.getMap("assets");
   const meta = doc.getMap("meta");
+  // The four maps that are the directory itself. A change to any of them is a
+  // change to the file list; a change under one of them is not, because a
+  // file's text sits inside `files`.
+  const directory = new Set([files.id, paths.id, assets.id, meta.id]);
   const store = new EphemeralStore(30000);
 
   // The text the editor and the preview are following, and who is following
@@ -591,16 +595,27 @@ export function createProjectSession({
       // path begins at `files`, and a reader that watched only the maps would
       // never repaint for it.
       const roots = new Set(["files", "paths", "assets", "meta"]);
-      const ids = new Set([files.id, paths.id, assets.id, meta.id]);
       const unsub = doc.subscribe((eventBatch) => {
         const relevantEvents = eventBatch.events.filter(
-          (event) => roots.has(event.path?.[0]) || ids.has(event.target),
+          (event) => roots.has(event.path?.[0]) || directory.has(event.target),
         );
         if (relevantEvents.length > 0) {
           watcher(relevantEvents);
         }
       });
       return unsub;
+    },
+
+    /// Whether a batch from `onFiles` moved the directory -- a file added,
+    /// renamed, moved, a folder made, a figure stored -- rather than only the
+    /// words inside a file, which arrive on the same subscription because a
+    /// file's text is a container under `files`. Asked here rather than worked
+    /// out by the caller: which containers are the directory is this module's
+    /// to know, and a caller that guessed at one of them -- the reader watched
+    /// `files` alone -- silently stopped redrawing for every rename and move,
+    /// which are changes to `paths`.
+    directoryChanged(events) {
+      return !Array.isArray(events) || events.some((event) => directory.has(event.target));
     },
 
     /// Says which file this browser's caret is in, so the file list can show
