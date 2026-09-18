@@ -73,13 +73,12 @@ const HARNESS = `<!doctype html><meta charset="utf-8"><body>
 <script type="module">
 import { anchorOne, flatten } from "/src/lib/anchor.js";
 const frame = document.getElementById("frame");
-window.seen = { ready: [], regions: [], focus: [] };
+window.seen = { ready: [], focus: [] };
 addEventListener("message", (event) => {
   const message = event.data;
   if (!message || message.librepaper !== true) return;
   if (message.type === "ready") window.seen.ready.push(message.text);
   if (message.type === "focus") window.seen.focus.push(message.id);
-  if (message.type === "regions-unplaceable") window.seen.regions.push(message);
 });
 window.sendPdf = async (path) => {
   const bytes = await fetch(path).then((r) => r.arrayBuffer());
@@ -89,7 +88,6 @@ window.sendPdf = async (path) => {
 window.text = () => window.seen.ready.at(-1) || "";
 window.anchor = (selector) => anchorOne(window.text(), selector, flatten(window.text()));
 window.paint = (ranges) => frame.contentWindow.postMessage({ librepaper: true, type: "highlight", ranges }, "*");
-window.paintRegions = (regions) => frame.contentWindow.postMessage({ librepaper: true, type: "regions", regions }, "*");
 window.doc = () => frame.contentDocument;
 window.ready = true;
 </script></body>`;
@@ -501,14 +499,6 @@ async function run() {
     return { at, marks: window.doc().querySelectorAll('mark[data-librepaper~="typst-unicode"]').length };
   `);
   check("a repeated Unicode anchor is painted through the shared anchor code", known?.marks > 0, JSON.stringify(known));
-
-  await tab.eval(`
-    window.seen.regions.length = 0;
-    window.paintRegions([{ id: 'legacy-figure', digest: 'old-html-image', index: 0, x: 10, y: 10, w: 20, h: 20 }]);
-    await new Promise((resolve) => setTimeout(resolve, 120));
-  `);
-  const region = await tab.eval("return window.seen.regions.at(-1) || null");
-  check("legacy HTML figure regions are explicitly unplaceable in a Typst PDF", region?.reason === "pdf" && region.ids.includes("legacy-figure"), JSON.stringify(region));
 
   // The history panel's prev/next steps send `locate` at the offset of a
   // change, the same offset `redlines` painted at. The frame is still showing

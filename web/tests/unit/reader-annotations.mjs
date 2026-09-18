@@ -133,5 +133,35 @@ assert.equal(sent.at(-1).color, undefined);
 annotations.comment({ exact: "suggestion" },
   { motivation: "editing", proposed: "replacement", color: "#aabbcc" }, "Name");
 assert.equal(sent.at(-1).color, undefined, "suggestions keep their own review styling");
+// Where the passages got to after an edit. The server resolves the whole
+// document at once and sends one frame for the pass; a card that never took
+// it would keep showing where a passage was when the page was opened.
+{
+  const moved = view.comments.at(-1);
+  const before = anchored.length;
+  const repaints = paints;
+  assert.equal(
+    annotations.receive({
+      type: "attachments",
+      attachments: [
+        { comment_id: moved.id, attachment: { status: "modified", resolved_range_utf16: [10, 20] } },
+        { comment_id: "no-such-comment", attachment: { status: "deleted" } },
+      ],
+    }),
+    true,
+  );
+  assert.deepEqual(moved.attachment, { status: "modified", resolved_range_utf16: [10, 20] });
+  assert.ok(anchored.length > before, "a new attachment re-places the passage");
+  assert.ok(paints > repaints);
+  // A pass naming nothing this browser holds changes nothing and repaints
+  // nothing, but is still this module's message to have swallowed.
+  const quiet = paints;
+  assert.equal(
+    annotations.receive({ type: "attachments", attachments: [{ comment_id: "gone", attachment: {} }] }),
+    true,
+  );
+  assert.equal(paints, quiet);
+}
+
 assert.ok(paints > 0);
 console.log("reader-annotations: optimistic writes, authoritative reconciliation, retries and decisions passed");

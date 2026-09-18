@@ -621,14 +621,11 @@ main.reader.source-right .editorpane {
 /* One palette for the tools, shared with the marks the agent paints into the
    document and the labels in the sidebar: hue says which kind of annotation,
    and it stays desaturated so a page of them reads as a document rather than
-   as a highlighter set. Only the two armed modes are left here -- commenting,
+   as a highlighter set. The point mode is armed here; commenting,
    highlighting and suggesting act on a selection and live on the bar over
    it. */
 .tools [data-tool="point"] {
   --librepaper-tint: hsl(42 55% 45%);
-}
-.tools [data-tool="region"] {
-  --librepaper-tint: hsl(262 30% 50%);
 }
 .tools [data-tool][aria-pressed="true"] {
   border-color: var(--librepaper-tint);
@@ -643,12 +640,6 @@ main.reader.source-right .editorpane {
   position: fixed;
   z-index: 20;
   display: none;
-}
-
-/* A card for an annotation on a figure names the figure rather than quoting
-   words that do not exist. */
-.figureref {
-  font-style: italic;
 }
 
 /* A resolved annotation is settled business: one line, clipped to the width of

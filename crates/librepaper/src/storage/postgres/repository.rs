@@ -908,6 +908,29 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
+    /// The immutable source checkpoint a published bundle names by tree
+    /// digest. The newest match is enough: identical trees have identical
+    /// source bytes and stable file identities.
+    pub async fn version_by_tree_digest(
+        &self,
+        document_id: Uuid,
+        digest: &[u8],
+    ) -> Result<Option<VersionRecord>> {
+        sqlx::query_as::<_, VersionRecord>(
+            "SELECT id,document_id,sequence,parent_id,through_update_sequence,
+                    project_generation,archive_key,archive_encoding_version,archive_digest,
+                    archive_bytes,logical_bytes,tree_digest,changed_paths,reason,label,
+                    author_account_id,author_label,created_at
+             FROM document_versions WHERE document_id=$1 AND tree_digest=$2
+             ORDER BY sequence DESC LIMIT 1",
+        )
+        .bind(document_id)
+        .bind(digest)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
     pub async fn create_version(&self, input: NewVersion) -> Result<VersionRecord> {
         if input.archive_bytes < 0 || input.logical_bytes < 0 || input.archive_key.is_empty() {
             return Err(Error::Invalid("invalid source version".into()));
@@ -956,6 +979,15 @@ impl PostgresCatalog {
                WHERE v.document_id=$1
                  AND v.label IS NULL
                  AND v.id IS DISTINCT FROM d.current_version_id
+                 -- The source a publication was built from is what a comment
+                 -- on that publication is anchored against, and a comment can
+                 -- no longer be made without it. Every publication's source
+                 -- is spared, not just the current one: an earlier
+                 -- publication is still a page a reader can open and annotate,
+                 -- and the foreign key would set this to null underneath it.
+                 AND NOT EXISTS (
+                     SELECT 1 FROM publications p WHERE p.source_version_id=v.id
+                 )
              )
              DELETE FROM document_versions v
              USING ranked r

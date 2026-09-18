@@ -583,7 +583,7 @@ impl Room {
             .await
             .map_err(AgentError::from)?;
         let checkpoint = self
-            .checkpoint_now(
+            .checkpoint(
                 "cli",
                 super::Attribution::account(&authority.account_id, &authority.account_id),
             )

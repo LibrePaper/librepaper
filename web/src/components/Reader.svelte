@@ -3,7 +3,7 @@
   import { decodeProposal, hunksOfProposal, markContention, previewTexts } from "../lib/proposals.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
-  import { anchorAll, anchorOne, flatten, placeSources, shownSelector } from "../lib/anchor.js";
+  import { aboutWholeDocument, anchorAll, anchorOne, flatten, placeSources, shownSelector } from "../lib/anchor.js";
   import * as renderers from "../lib/renderers.js";
   import * as quarto from "../lib/engines/quarto.js";
   import * as figures from "../lib/figures.js";
@@ -383,16 +383,15 @@
     frameOverlays.annotations(comments);
   }
 
-  // Whether a comment's passage is lost is answered from two places, not one:
-  // the rendered quotation, which is what the highlight and the click target
-  // are drawn from, and where the server says the passage is in the source. A
-  // comment is orphaned only when neither has it; when only the source does,
-  // the card says so instead and a click on it goes to the source rather than
-  // nowhere.
+  // Source resolution determines whether the passage survived. Rendered
+  // matching only locates its display mark; for readers, whose source state
+  // is private, the published page is the only available display answer.
   function applyAnchorFlags(comment) {
     const { orphaned, inSourceOnly } = orphanState({
       renderedFound: comment.start != null,
       sourceFound: comment.sourceStart != null,
+      sourceKnown: comment.original_anchor?.kind === "source_text",
+      wholeDocument: aboutWholeDocument(comment),
     });
     comment.orphaned = orphaned;
     comment.inSourceOnly = inSourceOnly;
@@ -422,8 +421,6 @@
     for (const comment of list) applyAnchorFlags(comment);
   }
 
-  // A comment made before the source anchor existed, or whose passage this
-  // browser cannot re-derive from the words alone, is missing the anchor of
   function reanchor() {
     if (!frameReady || !commentsReady || docText === null) return;
     anchorComments(comments);
@@ -687,7 +684,7 @@
     if (left !== null) bar = { ...bar, left };
   });
 
-  // Arming one of the two modes, or putting away the one that is armed. A
+  // Arming the point mode, or putting it away. A
   // mode always starts from a clean slate: whatever was selected belongs to
   // the gesture that is being abandoned.
   function arm(which) {

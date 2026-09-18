@@ -111,12 +111,16 @@ impl Server {
             .collect();
         // Keep the same durability guarantee as an individual comment: the
         // current text is recorded once for the whole pass before the room's
-        // batch lock is acquired. A current checkpoint is a no-op; failures
-        // remain bookkeeping warnings, as in apply_from.
+        // batch lock is acquired. A current checkpoint is a no-op; without a
+        // durable checkpoint these source ranges cannot be accepted.
         if let Err(error) = room.checkpoint("comment", &creator).await {
             eprintln!(
                 "warning: could not checkpoint {} for an assistant pass: {error}",
                 room.slug
+            );
+            return write_json(
+                503,
+                &json!({"error":"source checkpoint is unavailable; retry the pass","retryable":true}),
             );
         }
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);

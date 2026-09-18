@@ -63,10 +63,10 @@ export function createPassageTrace({
         const point = await passages.wentAt(slug, traced, list, keyHeaders(key));
         if (point) went[comment.id] = point;
         if (!traced?.checkpoint) continue;
-        const oldText = traced.path
-          ? await passages.sourceTextAt(slug, traced.checkpoint, traced.path, keyHeaders(key))
-          : await passages.textAt(slug, traced.checkpoint, keyHeaders(key));
-        const against = traced.path ? tree.texts[traced.path] ?? "" : visible;
+        const oldText = await passages.sourceTextAt(
+          slug, traced.checkpoint, { file_id: traced.file_id }, keyHeaders(key),
+        );
+        const against = traced.path ? tree.texts[traced.path] ?? null : null;
         const replacement = await passages.replacementAt(oldText, against, traced.selector);
         if (replacement !== null) replacements[comment.id] = replacement;
       } catch {

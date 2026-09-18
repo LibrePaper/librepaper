@@ -1,8 +1,6 @@
-// Client-side re-anchoring. A port of reanchor_comments() from the Flask app,
-// moved from upload time to read time: the stored {exact, prefix, suffix}
-// selector is the source of truth and offsets are derived on every load. That
-// is what lets a document be replaced by a plain object write, with no
-// migration step and no server-side knowledge of the HTML.
+// Locate a comment's display mark in the rendered page. Source identity and
+// the current source attachment come from the server; these searches only
+// decide where to paint the mark the reader sees.
 
 export function commonPrefix(a, b) {
   let i = 0;
@@ -178,6 +176,23 @@ export function shownSelector(comment) {
     // the context on either side are the whole of it.
     point: !exact && position !== null,
   };
+}
+
+/**
+ * Whether a comment is about the document as a whole rather than a passage.
+ *
+ * An editor is told so outright, in the anchor the server wrote. A reader is
+ * never sent that anchor -- source identity is not a reader's to have -- but is
+ * sent what the page had, and a remark about the whole document is the one
+ * that quoted nothing and pointed nowhere. The two roads reach the same
+ * answer, so the card reads the same either way instead of telling a reader
+ * that a general remark's passage is missing from the page.
+ */
+export function aboutWholeDocument(comment) {
+  const anchor = comment?.original_anchor;
+  if (anchor) return anchor.kind === "document";
+  const seen = comment?.presentation || {};
+  return !seen.rendered_exact && !Number.isInteger(seen.rendered_position_utf16);
 }
 
 /**

@@ -1660,11 +1660,19 @@ impl Room {
         // it. Worked out here, once, against the document this update just
         // produced -- not by each reader against whatever it can see.
         let moved = comments::reattach(&mut state);
-        for (id, attachment) in &moved {
+        if !moved.is_empty() {
+            // One message for the whole pass, not one per comment: a character
+            // typed above a comment moves every comment below it, and a
+            // document with five hundred of them would otherwise put five
+            // hundred frames on the wire between two keystrokes.
+            //
             // Only editors: where a passage is in the source is source, and a
             // reader of a published render is never told about the source.
             let payload = json!({
-                "type": "attachment", "comment_id": id, "attachment": attachment,
+                "type": "attachments",
+                "attachments": moved.iter().map(|(id, attachment)| {
+                    json!({"comment_id": id, "attachment": attachment})
+                }).collect::<Vec<_>>(),
             })
             .to_string();
             send_to(&mut state, None, Outgoing::shared_text(payload), |peer| {
@@ -1674,17 +1682,16 @@ impl Room {
         drop(state);
         if !moved.is_empty() {
             if let Some(catalog) = self.catalog.as_ref().get() {
-                for (id, attachment) in moved {
-                    let Ok(uuid) = uuid::Uuid::parse_str(&id) else {
-                        continue;
-                    };
-                    if catalog.record_attachment(uuid, &attachment).await.is_err() {
-                        // A cache nobody could write is a cache that gets
-                        // worked out again next time. The edit itself is
-                        // already applied and is not put at risk for it.
-                        break;
-                    }
-                }
+                let rows: Vec<_> = moved
+                    .into_iter()
+                    .filter_map(|(id, attachment)| {
+                        Some((uuid::Uuid::parse_str(&id).ok()?, attachment))
+                    })
+                    .collect();
+                // A cache nobody could write is a cache that gets worked out
+                // again next time. The edit itself is already applied and is
+                // not put at risk for it.
+                let _ = catalog.record_attachments(&rows).await;
             }
         }
         Applied::Relay

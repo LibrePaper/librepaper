@@ -57,21 +57,14 @@ impl From<&Attribution> for Attribution {
 }
 
 impl Room {
+    /// Records the document as it stands, under a reason and an author.
+    ///
+    /// There used to be three of these -- `checkpoint`, `checkpoint_now` and
+    /// `checkpoint_after_locked_edit` -- from when one of them was debounced
+    /// and the others were not. They had long since become the same call under
+    /// three names, which is three ways to ask one question and no way to tell
+    /// which one a reader is looking at.
     pub async fn checkpoint(
-        &self,
-        why: &str,
-        by: impl Into<Attribution>,
-    ) -> Result<Option<String>, WriteError> {
-        self.checkpoint_now(why, by).await
-    }
-    pub async fn checkpoint_now(
-        &self,
-        why: &str,
-        by: impl Into<Attribution>,
-    ) -> Result<Option<String>, WriteError> {
-        self.commit_version(why, by.into(), false).await
-    }
-    pub(crate) async fn checkpoint_after_locked_edit(
         &self,
         why: &str,
         by: impl Into<Attribution>,

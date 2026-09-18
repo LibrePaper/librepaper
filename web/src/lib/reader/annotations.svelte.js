@@ -95,6 +95,23 @@ export function createAnnotations({ slug, anchor, repaint, send, publicationId =
         parent.replies = [...parent.replies, event.reply];
       }
       publish();
+    } else if (event.type === "attachments") {
+      // Where every comment's passage got to, after an edit moved it. The
+      // server resolves the whole document at once and sends one frame for
+      // the pass; without this the cards keep saying where the passages were
+      // when the page was opened, and a passage that has since been rewritten
+      // or removed says nothing until a reload.
+      let changed = false;
+      for (const item of event.attachments || []) {
+        const comment = list().find((candidate) => candidate.id === item.comment_id);
+        if (!comment) continue;
+        comment.attachment = item.attachment;
+        changed = true;
+      }
+      if (!changed) return true;
+      anchor(list());
+      publish();
+      repaint();
     } else if (event.type === "delete") {
       update(list().filter((item) => item.id !== event.comment_id));
       repaint();

@@ -193,12 +193,14 @@
       <Row gap={1} wrap>
         {#if comment.earlierPublication}
           <span class="badge preset-tonal-warning">Earlier published version</span>
-        {:else if comment.orphaned}
-          <!-- "Needs re-anchoring" said what the machine could not do. This
-               says what happened to the words, which is what the person who
-               wrote the comment came back to find out. -->
+        {/if}
+        {#if comment.orphaned}
           <span class="badge preset-tonal-warning">
-            {went ? "Passage removed" : "Passage not in the document"}
+            {comment.attachment?.diagnostic === "removed_file" ? "Source file removed"
+              : comment.attachment?.status === "ambiguous" ? "Source passage ambiguous"
+              : comment.attachment?.status === "unresolved" ? "Source passage unresolved"
+              : comment.attachment?.status === "deleted" || went ? "Passage removed"
+              : "Passage not on this page"}
           </span>
         {/if}
         {#if comment.inSourceOnly}
@@ -232,11 +234,6 @@
             {:else}{run.text}{/if}
           {/each}
         </p>
-        {#if !comment.source}
-          <p class="panel-muted text-xs">
-            No source anchor: an editor will have to apply this by hand.
-          </p>
-        {/if}
         {#if comment.outcome === "accepted"}
           <p class="panel-muted">Accepted in {history.shortSha(comment.resolved_in)}.</p>
         {:else if comment.outcome === "rejected"}

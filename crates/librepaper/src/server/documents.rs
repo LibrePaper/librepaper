@@ -599,10 +599,7 @@ impl Server {
                 .unwrap_or_else(|_| crate::document::session::encode_state(&state.session.doc))
         };
         let sha = match room
-            .checkpoint_after_locked_edit(
-                "cli",
-                crate::room::Attribution::account(&who.id, &who.key),
-            )
+            .checkpoint("cli", crate::room::Attribution::account(&who.id, &who.key))
             .await
         {
             Ok(Some(sha)) => sha,

@@ -5,7 +5,6 @@ import { shownSelector } from "../anchor.js";
 // the frame only when their payload has actually changed.
 export function createFrameOverlays({ ready, send }) {
   let selected = null;
-  let regions = null;
   let highlights = null;
 
   function deliver(payload, previous, remember) {
@@ -28,10 +27,6 @@ export function createFrameOverlays({ ready, send }) {
   }
 
   function annotations(comments) {
-    // Nothing draws boxes on figures any more: a comment is a range of the
-    // source, and a rectangle over a rendered image is not one. The frame
-    // keeps the machinery, so the list it is given is simply empty.
-    const nextRegions = [];
     const nextHighlights = comments
       .filter((comment) => !comment.orphaned && comment.start != null)
       .map((comment) => ({
@@ -45,29 +40,21 @@ export function createFrameOverlays({ ready, send }) {
         outcome: comment.outcome || "",
         color: comment.color || undefined,
       }));
-    const paintedRegions = deliver(
-      { type: "regions", regions: nextRegions },
-      () => regions,
-      (value) => (regions = value),
-    );
-    const paintedHighlights = deliver(
+    return deliver(
       { type: "highlight", ranges: nextHighlights },
       () => highlights,
       (value) => (highlights = value),
     );
-    return paintedRegions || paintedHighlights;
   }
 
   return {
     selection,
     annotations,
     resetAnnotations() {
-      regions = null;
       highlights = null;
     },
     reset() {
       selected = null;
-      regions = null;
       highlights = null;
     },
   };

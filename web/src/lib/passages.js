@@ -1,9 +1,8 @@
 // Where a passage went.
 //
-// A comment records what it was made about -- the quotation -- and, since the
-// timeline, which checkpoint it was made on. When the passage is still in the
-// document the reader finds it and there is nothing to say. When it is not,
-// the reader has been saying "Needs re-anchoring", which tells the person who
+// A comment records a source range and the checkpoint it was made on. While
+// the passage is still in the document there is nothing to say. When it is
+// gone, the card used to read "Needs re-anchoring", which told the person who
 // wrote the comment nothing they did not already know. What they want is where
 // it went, and the two records together answer that: the passage was in the
 // text at the comment's own checkpoint and is not in the text now, so there is
@@ -20,19 +19,16 @@
 // here needs nothing beyond the checkpoints, and it is the half of
 // the question a reviewer actually asks.
 //
-// A comment with a source anchor is searched for in the source file itself,
-// which is why it is preferred over the rendered quote whenever there is one:
-// it needs no render and, for a LaTeX document, no PDF either.
+// The source file is followed by its stable ID through historical checkpoints;
+// a rename does not make the passage disappear.
 
 import { anchorOne, flatten } from "./anchor.js";
-import * as figures from "./figures.js";
 import * as history from "./history.js";
-import * as renderers from "./renderers.js";
-import { projectHtml, PROJECTION_VERSION } from "./diff-display.js";
 
 // Passage lookups can outlive a single comment card in a long-lived reader.
-// Keep enough source responses for the usual review, while never retaining
-// generated pages after the active lookup has consumed them.
+// A bisection reads the same handful of checkpoints for every comment it
+// walks, so the entries are what make an N-comment review cost a history's
+// worth of requests rather than N of them.
 const CACHE_LIMIT = 64;
 
 // A checkpoint SHA can be shared by documents and a reader can arrive with a
@@ -68,89 +64,11 @@ function remember(cache, key, value) {
   }
 }
 
-// Simultaneous requests for one historical page share the in-flight work, but
-// generated HTML is released as soon as that work settles. Generated output
-// is never retained as a history or document cache.
-const pendingHtml = new Map();
-
-/// The visible text of a checkpoint, derived from its contemporary HTML
-/// render. Historical PDFs are intentionally not used for passage lookup.
-///
-/// It is not the agent's own walk -- that runs in another origin, over a live
-/// DOM -- so the two can differ at a whitespace boundary. That is what
-/// `anchorOne`'s flattened second pass is for, and it is why this is used to
-/// answer "is the passage here" rather than to place anything.
-export async function htmlAt(slug, sha, headers = {}, services = {}) {
-  const generation = cacheGeneration;
-  const pointApi = services.history || history;
-  const point = await pointApi.checkpoint(slug, sha, headers);
-  if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
-  return (await renderTree(slug, point, headers, services)).html;
-}
-
-// The one render a historical page goes through: the checkpoint source, the
-// figures it named, and the current HTML-capable renderer.
-export async function renderTree(slug, point, headers = {}, services = {}) {
-  const generation = cacheGeneration;
-  const scope = authScope(headers);
-  const rendererApi = services.renderers || renderers;
-  const figureApi = services.figures || figures;
-  const configuration = services.configuration || (rendererApi.htmlConfiguration
-    ? await rendererApi.htmlConfiguration(point) : { identity: services.identity || JSON.stringify(point.settings || {}) });
-  if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
-  if (!configuration || typeof configuration.identity !== "string" || !configuration.identity) {
-    throw new Error("Historical renderer configuration is unavailable");
-  }
-  const key = JSON.stringify([point.storage_id || slug, point.tree_sha || point.sha,
-    scope, configuration.identity, PROJECTION_VERSION]);
-  if (pendingHtml.has(key)) return pendingHtml.get(key);
-  const pending = (async () => {
-    const tree = {
-      main: point.main,
-      texts: point.texts || {},
-      settings: point.settings || {},
-      digests: { ...point.digests },
-      files: point.files || {},
-    };
-    for (const [path, file] of Object.entries(point.files || {})) {
-      if (file.kind !== "text") tree.digests[path] = file.sha;
-    }
-    // A historical page always uses the current HTML-capable renderer over
-    // the checkpoint source. Generated output is never a history input.
-    const gathered = point.assets && Object.keys(tree.digests).every((path) => point.assets[path])
-      ? { assets: point.assets, urls: point.urls || {} }
-      : await figureApi.gather(slug, tree.digests, headers, { strict: true });
-    const capturedAssets = gathered?.assets;
-    if (!capturedAssets || !Object.keys(tree.digests).every((path) =>
-      Object.prototype.hasOwnProperty.call(capturedAssets, path))) {
-      throw new Error("The figures this checkpoint used are unavailable");
-    }
-    if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
-    const result = await rendererApi.render(
-      { ...tree, assets: gathered.assets, urls: gathered.urls },
-      point.label || "Document",
-      { format: "html", configuration },
-    );
-    if (typeof result?.html !== "string") throw new Error("This checkpoint could not be rendered as HTML.");
-    if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
-    return { ...result, cacheKey: key, rendererIdentity: configuration.identity };
-  })();
-  pendingHtml.set(key, pending);
-  pending.then(
-    () => { if (pendingHtml.get(key) === pending) pendingHtml.delete(key); },
-    () => { if (pendingHtml.get(key) === pending) pendingHtml.delete(key); },
-  );
-  return pending;
-}
-
-export async function textAt(slug, sha, headers = {}, services = {}) {
-  const html = await htmlAt(slug, sha, headers, services);
-  return typeof html === "string" ? visibleText(html) : null;
-}
-
-// One checkpoint fetch per document/sha can be shared while concurrent source
-// lookups are active. It is released when the callers finish; generated pages
-// have the separate in-flight map above and are never retained.
+// One checkpoint fetch per document/sha, shared by every comment that asks
+// about that moment. The key carries an opaque per-authorization scope, and
+// `clearPassageCache` retires those scopes when a reader signs out or arrives
+// on a different link, so a cached tree can never outlive the permission that
+// fetched it.
 const points = new Map();
 
 /// Drop historical passage responses when a reader changes link or signs out.
@@ -158,18 +76,14 @@ const points = new Map();
 /// map entry that has since been replaced.
 export function clearPassageCache() {
   cacheGeneration++;
-  pendingHtml.clear();
   points.clear();
   scopes.clear();
 }
 
-/// The text of one file of a checkpoint, as it was written. Unlike `textAt`
-/// this asks for nothing but the tree the server already has on hand: no
-/// render, no figures gathered, no PDF fetched. A path the checkpoint does
-/// not have -- the file did not exist yet, or has since been renamed away --
-/// answers null, which `holds` already reads as "not here" rather than as
-/// "unknown", the same as an empty page would.
-export async function sourceTextAt(slug, sha, path, headers = {}) {
+/// The text of one file of a checkpoint, as it was written. A historical
+/// comment asks by stable file ID, so a rename between checkpoints is harmless.
+/// A path is accepted for callers already holding a checkpoint-local name.
+export async function sourceTextAt(slug, sha, file, headers = {}) {
   const key = cacheKey(slug, sha, headers);
   if (!points.has(key)) {
     const pending = history.checkpoint(slug, sha, headers);
@@ -182,22 +96,12 @@ export async function sourceTextAt(slug, sha, path, headers = {}) {
   }
   const pending = points.get(key);
   const generation = cacheGeneration;
-  try {
-    const point = await pending;
-    if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
-    const texts = point.texts || {};
-    return Object.prototype.hasOwnProperty.call(texts, path) ? texts[path] : null;
-  } finally {
-    // Coalesce simultaneous lookups, but revalidate authorization and
-    // retained membership before every later use of a private source tree.
-    if (points.get(key) === pending) points.delete(key);
-  }
-}
-
-/// The words of a page, with the markup and the things that are not words
-/// taken out.
-export function visibleText(html) {
-  return projectHtml(html).text;
+  const point = await pending;
+  if (generation !== cacheGeneration) throw new Error("Comparison authorization changed");
+  const texts = point.texts || {};
+  const path = typeof file === "string" ? file : Object.entries(point.files || {})
+    .find(([, entry]) => entry?.kind === "text" && entry.id === file?.file_id)?.[0];
+  return Object.prototype.hasOwnProperty.call(texts, path) ? texts[path] : null;
 }
 
 /// Whether a quotation is in a text, by the same match that anchors it in the
@@ -210,14 +114,15 @@ export function holds(text, comment) {
 /// as the source had it, and the file that passage was in.
 ///
 /// This is the comment's own record, not a guess -- the server wrote it when
-/// the comment was made and has not touched it since. `paths` turns the file
-/// id into whatever that file is called now.
+/// the comment was made and has not touched it since. `paths` supplies the
+/// current name only for comparing the old passage with current source.
 export function tracedBy(comment, paths) {
   const anchor = comment?.original_anchor;
   if (anchor?.kind !== "source_text") return null;
   const target = anchor.target;
   return {
     checkpoint: anchor.checkpoint_id || "",
+    file_id: target.file_id,
     path: paths?.get?.(target.file_id) || "",
     selector: { exact: target.exact, prefix: target.prefix || "", suffix: target.suffix || "" },
   };
@@ -231,7 +136,7 @@ export function tracedBy(comment, paths) {
 /// caller has already established that the passage is gone. Returns the
 /// manifest entry, or null when there is nothing to say: no history to look
 /// in, or a passage that turns out still to be there.
-export async function wentAt(slug, traced, checkpoints, headers = {}, at = textAt, atSource = sourceTextAt) {
+export async function wentAt(slug, traced, checkpoints, headers = {}, atSource = sourceTextAt) {
   if (!checkpoints?.length || !traced) return null;
   // A comment from before checkpoints were recorded on one, or one whose
   // checkpoint has since been shed, is read as made on the oldest moment the
@@ -241,14 +146,9 @@ export async function wentAt(slug, traced, checkpoints, headers = {}, at = textA
   let high = checkpoints.length - 1;
   if (low >= high) return null;
 
-  // The passage is looked for in the source file it was quoted from, at each
-  // checkpoint. A comment whose file this browser cannot name -- renamed away,
-  // or a document it only has the rendering of -- falls back to the rendered
-  // text of the checkpoint.
+  // Every checkpoint supplies the name this same file had at that moment.
   const selector = traced.selector;
-  const read = traced.path
-    ? (sha) => atSource(slug, sha, traced.path, headers)
-    : (sha) => at(slug, sha, headers);
+  const read = (sha) => atSource(slug, sha, { file_id: traced.file_id }, headers);
 
   // The passage has to have been there to have gone. A comment whose own
   // checkpoint does not hold it is one whose quotation this cannot reason
@@ -259,7 +159,7 @@ export async function wentAt(slug, traced, checkpoints, headers = {}, at = textA
   if (typeof newestText !== "string" || holds(newestText, selector)) return null;
 
   // Invariant: it is in `low` and not in `high`. Each step halves the gap, so
-  // the answer costs about five renders on a history of thirty.
+  // the answer costs about five checkpoint reads on a history of thirty.
   while (high - low > 1) {
     const middle = (low + high) >> 1;
     const middleText = await read(checkpoints[middle].sha);

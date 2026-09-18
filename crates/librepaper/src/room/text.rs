@@ -1,5 +1,5 @@
 //! Positions in the text, counted the way a browser counts them: UTF-16 code
-//! units, which is what every region a reader sends is measured in.
+//! units, which is what every rendered selection a reader sends is measured in.
 //!
 //! This module holds the primitive ([`utf16_slice`]) that is identical
 //! wherever it is needed: a clamped, surrogate-safe extraction of a unit

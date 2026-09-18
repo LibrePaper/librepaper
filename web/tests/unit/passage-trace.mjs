@@ -34,7 +34,6 @@ function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}
     passages: {
       tracedBy: realPassages.tracedBy,
       wentAt: async (_slug, traced) => { calls.push(`went:${traced.selector.exact}`); return { sha: "sha-1" }; },
-      textAt: async () => "old text",
       sourceTextAt: async () => "old source",
       replacementAt: async () => "what stands there now",
       ...passages,

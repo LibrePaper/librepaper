@@ -233,6 +233,22 @@ impl PublicationStore {
         if current.as_ref().map(|p| p.id) != expected_id {
             return Err(PublicationError::Conflict);
         }
+        let source_digest = hex::decode(&manifest.source_sha256)
+            .map_err(|_| PublicationError::Invalid("invalid source digest".into()))?;
+        let source_version = catalog
+            .version_by_tree_digest(document_id, &source_digest)
+            .await
+            .map_err(|e| PublicationError::Storage(e.to_string()))?
+            .ok_or_else(|| {
+                // Either the capture never reached a checkpoint, or the room
+                // moved past it before activation and the checkpoint taken
+                // there is of newer text. Waiting only helps in the first
+                // case; rendering again is what covers both.
+                PublicationError::Invalid(
+                    "the source this was rendered from has no checkpoint; render and publish again"
+                        .into(),
+                )
+            })?;
         let mut files = Vec::with_capacity(manifest.assets.len() + 2);
         let index = self
             .read_staged(storage_id, request_id, &manifest.html)
@@ -264,7 +280,7 @@ impl PublicationStore {
         PublicationStorage::new(catalog, self.blobs.clone())
             .publish(Publish {
                 document_id,
-                source_version_id: None,
+                source_version_id: Some(source_version.id),
                 request_key: request_id.into(),
                 expected_current_id: expected_id,
                 publisher_account_id: Uuid::parse_str(&actor.account_id).ok(),

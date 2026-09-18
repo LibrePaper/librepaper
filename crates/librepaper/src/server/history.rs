@@ -420,7 +420,7 @@ impl Server {
             Err(error) => return plain(503, &error.to_string()),
         };
         let sha = if current {
-            match room.checkpoint_now("label", who.attribution()).await {
+            match room.checkpoint("label", who.attribution()).await {
                 Ok(Some(sha)) => sha,
                 Ok(None) => return plain(404, "not found"),
                 Err(error) => {

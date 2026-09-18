@@ -26,7 +26,6 @@ assert.deepEqual(sent, []);
 ready = true;
 assert.equal(overlays.annotations(comments), true);
 assert.deepEqual(sent, [
-  { type: "regions", regions: [] },
   {
     type: "highlight",
     ranges: [

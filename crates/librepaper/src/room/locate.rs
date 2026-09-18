@@ -338,8 +338,14 @@ pub(crate) fn locate_point(
     // The words nearest the point are the ones that say where it is, so the
     // text before it is shortened from its front and the text after it from
     // its end -- both keeping the end that touches the caret.
+    //
+    // What is left over on the far side of each needle is the context it is
+    // scored against: the words the needle dropped still surrounded the
+    // point, and are still evidence for which occurrence of it is the right
+    // one. The needle itself is not.
     for needle in shortening_from_the_front(&before) {
-        if let Some(hit) = search.find(needle) {
+        let dropped = &before[..before.len() - needle.len()];
+        if let Some(hit) = search.find_between(needle, dropped, &after) {
             let (_, flat) = &search.flattened[hit.file];
             let at = flat.from[hit.at + hit.length] as usize;
             return Ok(point_at(&files[hit.file], at));
@@ -349,7 +355,8 @@ pub(crate) fn locate_point(
         }
     }
     for needle in shortening_from_the_end(&after) {
-        if let Some(hit) = search.find(needle) {
+        let dropped = &after[needle.len()..];
+        if let Some(hit) = search.find_between(needle, &before, dropped) {
             let (_, flat) = &search.flattened[hit.file];
             let at = flat.from[hit.at] as usize;
             return Ok(point_at(&files[hit.file], at));
@@ -441,11 +448,22 @@ impl<'a> Search<'a> {
     /// trying again a word shorter, while a phrase that is in several places
     /// that the context cannot separate is a refusal in the making.
     fn find(&self, needle: &[char]) -> Option<Hit> {
+        self.find_between(needle, &self.prefix, &self.suffix)
+    }
+
+    /// The same search, told explicitly what surrounded the needle.
+    ///
+    /// A point is located by its own context -- the needle *is* part of the
+    /// prefix or the suffix -- so scoring it against the whole of that context
+    /// would be asking the words whether they are themselves. What is left of
+    /// the context on either side of the needle is the evidence; the rest of
+    /// it is the needle and says nothing.
+    fn find_between(&self, needle: &[char], prefix: &[char], suffix: &[char]) -> Option<Hit> {
         let _ = self.files;
         let mut hits = Vec::new();
         for (index, (_, flat)) in self.flattened.iter().enumerate() {
             for at in occurrences(&flat.chars, needle) {
-                let score = score_of(flat, at, needle.len(), &self.prefix, &self.suffix);
+                let score = score_of(flat, at, needle.len(), prefix, suffix);
                 hits.push(Hit {
                     file: index,
                     at,

@@ -55,7 +55,7 @@ impl Server {
                 &json!({"error":"source changed or edits have not synchronized"}),
             );
         }
-        let revision = match room.checkpoint_now("render", who.attribution()).await {
+        let revision = match room.checkpoint("render", who.attribution()).await {
             Ok(Some(revision)) => revision,
             Ok(None) => {
                 return write_json(

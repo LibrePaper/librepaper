@@ -206,40 +206,64 @@ impl Server {
                 Ok(missing) => write_json(200, &json!({"missing": missing.hashes})),
                 Err(error) => publication_error(error),
             },
-            "activate" => match store
-                .activate(&entry.storage_id, &request_id, expected, &manifest)
-                .await
-            {
-                Ok(activated) => {
-                    let committed = activated.manifest;
-                    if let Ok(room) = self.rooms.try_get(slug).await {
-                        room.broadcast(&json!({"type": "publication-updated", "publication_id": committed.publication_id})).await;
+            "activate" => {
+                // Comment creation takes this same gate before checking the
+                // current publication. Hold it through activation so a
+                // comment cannot validate the old page and commit after the
+                // new one becomes current.
+                let _publication_guard = super::publication::publication_lock(&entry.storage_id)
+                    .lock_owned()
+                    .await;
+                // The bundle was rendered from a captured source tree. Give
+                // that tree a durable checkpoint before publishing it; a
+                // concurrent edit may have moved the live room since capture,
+                // in which case activation can only use an earlier matching
+                // checkpoint and must never claim the newer draft as source.
+                if let Ok(room) = self.rooms.try_get(slug).await {
+                    if room.tree().await.digest() == manifest.source_sha256 {
+                        if let Err(error) = room.checkpoint("publish", who.attribution()).await {
+                            return write_json(
+                                503,
+                                &json!({"error":format!("could not checkpoint published source: {error}"),"retryable":true}),
+                            );
+                        }
                     }
-                    // Published, and then told what will not work. A document
-                    // that fetches code from elsewhere is refused that code by
-                    // the reader policy, and the author is the only person who
-                    // can fix it -- the reader would just see a paper that
-                    // quietly does not work.
-                    let mut body = json!({
-                        "publication": self.publication_metadata(&entry, &who, arrival, &committed).await
-                    });
-                    if !activated.foreign_scripts.is_empty() {
-                        body["warnings"] = json!([{
-                            "kind": "external-scripts",
-                            "hosts": activated.foreign_scripts,
-                            "message": format!(
-                                "This document loads code from {}, which readers will not run. \
-                                 Published documents may run their own code but may not fetch code \
-                                 from another host. Re-render with resources embedded (Quarto: \
-                                 embed-resources: true) so the document carries its own scripts.",
-                                activated.foreign_scripts
-                            ),
-                        }]);
-                    }
-                    write_json(200, &body)
                 }
-                Err(error) => publication_error(error),
-            },
+                match store
+                    .activate(&entry.storage_id, &request_id, expected, &manifest)
+                    .await
+                {
+                    Ok(activated) => {
+                        let committed = activated.manifest;
+                        if let Ok(room) = self.rooms.try_get(slug).await {
+                            room.broadcast(&json!({"type": "publication-updated", "publication_id": committed.publication_id})).await;
+                        }
+                        // Published, and then told what will not work. A document
+                        // that fetches code from elsewhere is refused that code by
+                        // the reader policy, and the author is the only person who
+                        // can fix it -- the reader would just see a paper that
+                        // quietly does not work.
+                        let mut body = json!({
+                            "publication": self.publication_metadata(&entry, &who, arrival, &committed).await
+                        });
+                        if !activated.foreign_scripts.is_empty() {
+                            body["warnings"] = json!([{
+                                "kind": "external-scripts",
+                                "hosts": activated.foreign_scripts,
+                                "message": format!(
+                                    "This document loads code from {}, which readers will not run. \
+                                     Published documents may run their own code but may not fetch code \
+                                     from another host. Re-render with resources embedded (Quarto: \
+                                     embed-resources: true) so the document carries its own scripts.",
+                                    activated.foreign_scripts
+                                ),
+                            }]);
+                        }
+                        write_json(200, &body)
+                    }
+                    Err(error) => publication_error(error),
+                }
+            }
             _ => plain(404, "not found"),
         }
     }

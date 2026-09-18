@@ -226,7 +226,7 @@ try {
     {id:'plain-highlight',seq:2,motivation:'highlighting',exact:'long',position:2,color:'#aabbcc',body:'',replies:[]},
     {id:'discussed-highlight',seq:3,motivation:'highlighting',exact:'document',position:7,color:'#ddeeff',body:'Discuss this highlight',replies:[]}
   ]})`);
-  await frameMessage({type:'ready',text:'A long document',images:[]});
+  await frameMessage({type:'ready',text:'A long document'});
   assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Point discussion")'), true);
   assert.equal(await b.evaluate('document.querySelector(".collaboration").innerText.includes("Discuss this highlight")'), true);
   assert.equal(await visible('.collaboration article[id$=plain-highlight]'), false);

@@ -11,7 +11,6 @@
 // untrusted input rather than as fact.
 
 import { createMathTypesetter } from "../lib/math.js";
-import { sha256HexOfText } from "../lib/digest.js";
 
 (() => {
   // Where this agent is allowed to speak. It is injected into a document on
@@ -22,11 +21,11 @@ import { sha256HexOfText } from "../lib/digest.js";
   // it is named when the script is injected, and without that name the agent
   // says nothing rather than saying it to everybody.
   const READER = new URL(document.currentScript.src).searchParams.get("reader");
-  let table = null; // {nodes, starts, index, offsets, joined}
+  let table = null; // {nodes, starts, index, joined}
 
   // The observer that republishes on the document's own edits (armed in
-  // watch()). Painting -- highlight(), paintRegions(), layerFor() -- mutates
-  // the DOM too, and left running the observer cannot tell our own brushwork
+  // watch()). Painting highlights mutates the DOM too, and left running the
+  // observer cannot tell our own brushwork
   // from the document changing under us. `quietly` disconnects around such a
   // mutation and discards whatever records piled up meanwhile, so only the
   // document's own changes ever reach republish(). It can be called before
@@ -99,7 +98,7 @@ import { sha256HexOfText } from "../lib/digest.js";
   markStyle.textContent = `
     .librepaper-point-bubble::before { content: "\\1F4AC"; }
     /* The annotation the sidebar has singled out: a ring around every piece
-       of its passage, its figure box, or its point bubble, so that it stands
+       of its passage or its point bubble, so that it stands
        out from the wash the others sit under. */
     mark[data-librepaper][data-librepaper-selected] {
       outline: 2px solid hsl(220 85% 50%);
@@ -108,7 +107,7 @@ import { sha256HexOfText } from "../lib/digest.js";
       box-decoration-break: clone;
       -webkit-box-decoration-break: clone;
     }
-    .librepaper-regions [data-librepaper-selected], .librepaper-point-bubble[data-librepaper-selected] {
+    .librepaper-point-bubble[data-librepaper-selected] {
       outline: 2px solid hsl(220 85% 50%);
       outline-offset: 2px;
     }
@@ -193,9 +192,7 @@ import { sha256HexOfText } from "../lib/digest.js";
   }
 
   // One walk of the document builds the text-node table (with a node->index
-  // map for fast lookup), the cumulative-offset table, and the offsets of the
-  // qualifying figures -- all three needed the same walk over the same nodes,
-  // so a second pass just to find the images was a second tree walk for free.
+  // map for fast lookup) and the cumulative-offset table.
   // Rebuilt whenever the highlights change the node structure underneath us.
   // The joined text is a separate, lazy step: a repaint needs the table but
   // not the string, and joining a large document is the most expensive thing
@@ -203,12 +200,11 @@ import { sha256HexOfText } from "../lib/digest.js";
   function scan() {
     const walker = document.createTreeWalker(
       document.body,
-      NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
+      NodeFilter.SHOW_TEXT,
     );
     const nodes = [];
     const starts = [];
     const index = new Map();
-    const offsets = [];
     let total = 0;
     let node;
     while ((node = walker.nextNode())) {
@@ -220,11 +216,9 @@ import { sha256HexOfText } from "../lib/digest.js";
         starts.push(total);
         nodes.push(node);
         total += node.data.length;
-      } else if (node.tagName === "IMG" && node.width > 40 && node.height > 40) {
-        offsets.push(total);
       }
     }
-    table = { nodes, starts, index, offsets, joined: null };
+    table = { nodes, starts, index, joined: null };
   }
 
   const text = () => table.joined ?? (table.joined = table.nodes.map((node) => node.data).join(""));
@@ -279,7 +273,7 @@ import { sha256HexOfText } from "../lib/digest.js";
     if (!selectedId) return;
     const id = CSS.escape(selectedId);
     document
-      .querySelectorAll(`mark[data-librepaper~="${id}"], .librepaper-regions [data-librepaper~="${id}"], .librepaper-point-bubble[data-librepaper="${id}"]`)
+      .querySelectorAll(`mark[data-librepaper~="${id}"], .librepaper-point-bubble[data-librepaper="${id}"]`)
       .forEach((node) => (node.dataset.librepaperSelected = ""));
   }
   function select(id) {
@@ -473,6 +467,8 @@ import { sha256HexOfText } from "../lib/digest.js";
     return null;
   }
 
+  let tool = "commenting";
+
   function captureSelection() {
     const selection = document.getSelection();
     if (!selection || selection.isCollapsed) {
@@ -535,216 +531,6 @@ import { sha256HexOfText } from "../lib/digest.js";
   }
 
 
-  /* --------------------------------------------------------------- figures */
-
-  // Annotating part of a figure. Which image is the harder question: a figure
-  // has no words around it to anchor to. Two identifiers are kept, a digest of
-  // the image source and its position among the document's images, and the
-  // first that matches wins.
-
-  let tool = "commenting"; // set by the sidebar; only "region" draws on figures
-  const digests = new WeakMap();
-  let regionsGeneration = 0;
-
-  const images = () => [...document.images].filter((img) => img.width > 40 && img.height > 40);
-
-  // Markdown figures use a blob URL, which is intentionally recreated on each
-  // page session. The renderer can carry the immutable store digest either as
-  // metadata or in the blob URL fragment; prefer that stable identity and only
-  // hash the URL for documents that provide no asset identity.
-  function stableImageDigest(image) {
-    const metadata =
-      image.dataset.librepaperImageDigest ||
-      image.dataset.librepaperDigest ||
-      image.getAttribute("data-librepaper-image-digest") ||
-      image.getAttribute("data-librepaper-digest");
-    if (metadata) return metadata.slice(0, 16);
-    const source = image.currentSrc || image.src || "";
-    try {
-      const marker = new URL(source, document.baseURI).hash.match(/(?:^#|[?&])librepaper-asset=([^&#]+)/);
-      if (marker) return decodeURIComponent(marker[1]).slice(0, 16);
-    } catch {
-      /* an invalid source is handled by the URL hash fallback below */
-    }
-    return null;
-  }
-
-  async function digestOf(image) {
-    const source = image.currentSrc || image.src || "";
-    const stable = stableImageDigest(image);
-    const identity = stable || source;
-    const cached = digests.get(image);
-    if (cached?.identity === identity) return cached.digest;
-    if (stable) {
-      digests.set(image, { identity, digest: stable });
-      return stable;
-    }
-    const hex = (await sha256HexOfText(source)).slice(0, 16);
-    digests.set(image, { identity, digest: hex });
-    return hex;
-  }
-
-  // Every image gets a positioned wrapper once, so boxes drawn over it move
-  // with it: no recomputing on scroll, no listening to resize.
-  function layerFor(image) {
-    let wrap = image.parentElement;
-    if (!wrap || wrap.dataset.librepaperFigure !== "1") {
-      wrap = document.createElement("span");
-      wrap.dataset.librepaperFigure = "1";
-      wrap.style.cssText = "position:relative;display:inline-block;max-width:100%";
-      image.replaceWith(wrap);
-      wrap.appendChild(image);
-    }
-    let layer = wrap.querySelector(":scope > .librepaper-regions");
-    if (!layer) {
-      layer = document.createElement("span");
-      layer.className = "librepaper-regions";
-      layer.style.cssText = "position:absolute;inset:0;pointer-events:none";
-      wrap.appendChild(layer);
-    }
-    return layer;
-  }
-
-  // Paint the rectangles the sidebar could place, one layer per image.
-  async function paintRegions(regions) {
-    const mine = ++regionsGeneration;
-    quietly(() => {
-      document.querySelectorAll(".librepaper-regions").forEach((layer) => (layer.innerHTML = ""));
-    });
-    const found = images();
-    // The digests touch crypto.subtle, which is the slow part; running them
-    // together rather than one at a time in a loop is free concurrency.
-    const hexes = await Promise.all(found.map((image) => digestOf(image)));
-    if (mine !== regionsGeneration) return;
-    const byDigest = new Map(found.map((image, i) => [hexes[i], image]));
-    const placed = [];
-    const unplaceable = [];
-    const pdf = Boolean(document.querySelector(".pages"));
-
-    quietly(() => {
-      for (const item of regions) {
-        // A known identity that no longer exists must not silently fall back to
-        // a new image at the old position. Positional matching is reserved for
-        // legacy annotations that never had an identity in the first place.
-        const image = item.digest ? byDigest.get(item.digest) : found[item.index];
-        if (!image) {
-          if (item.id != null) unplaceable.push(String(item.id));
-          continue;
-        }
-        const box = document.createElement("span");
-        box.dataset.librepaper = item.id;
-        box.style.cssText =
-          `position:absolute;left:${item.x}%;top:${item.y}%;width:${item.w}%;height:${item.h}%;` +
-          `border:2px solid ${edge(item.resolved ? NEUTRAL : tintOf(item.motivation))};` +
-          `background:${wash(item.resolved ? NEUTRAL : tintOf(item.motivation), 1, 0.35)};` +
-          "pointer-events:auto;cursor:pointer;box-sizing:border-box";
-        box.onclick = () => { select(item.id); post({ type: "focus", id: item.id }); };
-        layerFor(image).appendChild(box);
-        if (item.id != null) placed.push(String(item.id));
-      }
-    });
-    // A PDF has pages, not HTML image elements. Its old figure-region records
-    // remain in the comments, but there is no honest page/figure coordinate
-    // transform, so report them rather than attaching them to a whole page or
-    // to a different image. The same message also labels a missing HTML image
-    // until a later mutation makes it placeable.
-    if (unplaceable.length) {
-      post({ type: "regions-unplaceable", ids: unplaceable, reason: pdf ? "pdf" : "figure-unavailable" });
-    }
-    if (placed.length) post({ type: "regions-placeable", ids: placed });
-    quietly(applySelected);
-  }
-
-  // Dragging a rectangle on a figure, while the region tool is chosen.
-  let drawing = null;
-
-  function percentWithin(image, event) {
-    const box = image.getBoundingClientRect();
-    return {
-      x: ((event.clientX - box.left) / box.width) * 100,
-      y: ((event.clientY - box.top) / box.height) * 100,
-    };
-  }
-
-  document.addEventListener(
-    "pointerdown",
-    (event) => {
-      if (tool !== "region" || event.button !== 0) return;
-      const image = event.target.closest?.("img");
-      if (!image || !images().includes(image)) return;
-      if (image.closest("[data-librepaper-generated='quarto']")) return;
-      event.preventDefault();
-      // A touch drag is claimed by the browser as a scroll unless the element
-      // has given it up (touch-action, set with the tool) and the drag is
-      // captured, which is also what keeps the moves coming when a finger
-      // leaves the figure.
-      image.setPointerCapture?.(event.pointerId);
-
-      const start = percentWithin(image, event);
-      const outline = document.createElement("span");
-      outline.style.cssText =
-        `position:absolute;border:2px dashed ${edge(tintOf("commenting"))};` +
-        `background:${wash(tintOf("commenting"), 1, 0.35)};pointer-events:none;box-sizing:border-box`;
-      quietly(() => layerFor(image).appendChild(outline));
-      drawing = { image, start, outline };
-    },
-    true,
-  );
-
-  document.addEventListener("pointermove", (event) => {
-    if (!drawing) return;
-    const now = percentWithin(drawing.image, event);
-    const { start } = drawing;
-    Object.assign(drawing.outline.style, {
-      left: Math.min(start.x, now.x) + "%",
-      top: Math.min(start.y, now.y) + "%",
-      width: Math.abs(now.x - start.x) + "%",
-      height: Math.abs(now.y - start.y) + "%",
-    });
-  });
-
-  // The browser can take the gesture back mid-drag. Nothing was asked for, so
-  // the outline goes with it rather than being left on the figure.
-  document.addEventListener("pointercancel", () => {
-    if (!drawing) return;
-    drawing.outline.remove();
-    drawing = null;
-  });
-
-  document.addEventListener("pointerup", async (event) => {
-    if (!drawing) return;
-    const { image, start, outline } = drawing;
-    drawing = null;
-    const now = percentWithin(image, event);
-    outline.remove();
-
-    const rectangle = {
-      x: Math.max(0, Math.min(start.x, now.x)),
-      y: Math.max(0, Math.min(start.y, now.y)),
-      w: Math.min(100, Math.abs(now.x - start.x)),
-      h: Math.min(100, Math.abs(now.y - start.y)),
-    };
-    // A click rather than a drag: nothing was asked for.
-    if (rectangle.w < 1 || rectangle.h < 1) return;
-
-    const box = image.getBoundingClientRect();
-    post({
-      type: "region",
-      region: {
-        ...rectangle,
-        image_digest: await digestOf(image),
-        image_index: images().indexOf(image),
-      },
-      // Where to put the button, in the frame's own coordinates.
-      rect: {
-        top: box.top + (rectangle.y / 100) * box.height,
-        left: box.left + (rectangle.x / 100) * box.width,
-        right: box.left + ((rectangle.x + rectangle.w) / 100) * box.width,
-        bottom: box.top + ((rectangle.y + rectangle.h) / 100) * box.height,
-      },
-    });
-  });
-
   addEventListener("message", (event) => {
     if (event.source !== parent) return;
     const message = event.data;
@@ -755,19 +541,7 @@ import { sha256HexOfText } from "../lib/digest.js";
     // race.
     if (message.type === "reader-ready") publish(true);
     if (message.type === "highlight") highlight(message.ranges || []);
-    if (message.type === "regions") paintRegions(message.regions || []);
-    // The tool the sidebar is on: only "region" makes figures draggable, and
-    // it also stops text selection fighting the drag.
-    if (message.type === "tool") {
-      tool = String(message.tool || "commenting");
-      document.body.style.userSelect = tool === "region" ? "none" : "";
-      // touch-action is what decides a touch drag: without giving it up here,
-      // dragging a box on a figure just scrolls the document instead.
-      for (const image of images()) {
-        image.style.cursor = tool === "region" ? "crosshair" : "";
-        image.style.touchAction = tool === "region" ? "none" : "";
-      }
-    }
+    if (message.type === "tool") tool = String(message.tool || "commenting");
     // The editor's live preview. The document being previewed is not yet
     // published, so it arrives as HTML over this channel rather than as a
     // page to load -- which keeps it on this origin, where a document belongs,
@@ -842,11 +616,10 @@ import { sha256HexOfText } from "../lib/digest.js";
     if (message.type === "select") select(message.id);
     if (message.type === "reveal") {
       select(message.id);
-      // A note on a passage is painted as a <mark>; a note on a figure is a box
-      // in that figure's region layer. Either one is what "go to it" means.
+      // A passage is painted as a mark; a point note has its own bubble.
       const id = CSS.escape(String(message.id));
       document
-        .querySelector(`mark[data-librepaper~="${id}"], .librepaper-regions [data-librepaper~="${id}"], .librepaper-point-bubble[data-librepaper="${id}"]`)
+        .querySelector(`mark[data-librepaper~="${id}"], .librepaper-point-bubble[data-librepaper="${id}"]`)
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   });
@@ -940,18 +713,14 @@ import { sha256HexOfText } from "../lib/digest.js";
     const current = text();
     if (!force && current === published) return;
     published = current;
-    // Where each figure sits in the text, so the sidebar can order a note on a
-    // figure against the notes on passages instead of guessing. Computed by
-    // scan() in the same walk that built the text-node table.
-    post({ type: "ready", text: current, images: table.offsets });
+    post({ type: "ready", text: current });
   }
 
   let pending = null;
   const republish = () => {
     clearTimeout(pending);
-    // A style, image source, or other DOM change can leave visible text equal
-    // while still destroying region overlays. The shell needs a fresh ready
-    // signal so it can repaint remembered annotations and figure positions.
+    // A DOM change can leave visible text equal while still destroying
+    // highlights. Signal the shell to repaint remembered annotations.
     pending = setTimeout(() => publish(true), 250);
   };
 

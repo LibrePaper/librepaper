@@ -304,10 +304,75 @@ impl PostgresCatalog {
 
     /// Writes only where a passage has got to, for a resolution pass that has
     /// no business touching anything else.
-    pub async fn record_attachment(&self, id: Uuid, attachment: &DerivedAttachment) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        write_attachment(&mut tx, id, Some(attachment)).await?;
-        tx.commit().await?;
+    /// Where a whole pass of comments ended up, in one statement.
+    ///
+    /// A single character typed at the top of a file moves every comment below
+    /// it, so a pass writes as many rows as the document has comments. One
+    /// round trip per comment made that cost the typist's, rather than the
+    /// database's: five hundred comments were five hundred sequential
+    /// statements between two keystrokes.
+    pub async fn record_attachments(&self, moved: &[(Uuid, DerivedAttachment)]) -> Result<()> {
+        if moved.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<Uuid> = moved.iter().map(|(id, _)| *id).collect();
+        let checkpoints: Vec<String> = moved
+            .iter()
+            .map(|(_, a)| a.checkpoint_id.0.clone())
+            .collect();
+        let statuses: Vec<String> = moved.iter().map(|(_, a)| a.status.name().into()).collect();
+        let live = |pick: fn(&crate::room::annotation::LiveSourceRange) -> Vec<u8>| {
+            moved
+                .iter()
+                .map(|(_, a)| a.live_source_range.as_ref().map(pick))
+                .collect::<Vec<Option<Vec<u8>>>>()
+        };
+        let starts = live(|range| range.start_cursor.clone());
+        let ends = live(|range| range.end_cursor.clone());
+        let formats: Vec<Option<String>> = moved
+            .iter()
+            .map(|(_, a)| {
+                a.live_source_range
+                    .as_ref()
+                    .map(|range| range.cursor_format.clone())
+            })
+            .collect();
+        let from: Vec<Option<i32>> = moved
+            .iter()
+            .map(|(_, a)| a.resolved_range_utf16.map(|r| r.0 as i32))
+            .collect();
+        let to: Vec<Option<i32>> = moved
+            .iter()
+            .map(|(_, a)| a.resolved_range_utf16.map(|r| r.1 as i32))
+            .collect();
+        let diagnostics: Vec<Option<String>> = moved
+            .iter()
+            .map(|(_, a)| a.diagnostic.map(|d| d.name().to_string()))
+            .collect();
+        sqlx::query!(
+            "INSERT INTO annotation_live_state(annotation_id,checkpoint_id,status,start_cursor,end_cursor,cursor_format,resolved_start_utf16,resolved_end_utf16,diagnostic,updated_at)
+             SELECT annotation_id,NULLIF(checkpoint_id,''),status,start_cursor,end_cursor,cursor_format,resolved_start_utf16,resolved_end_utf16,diagnostic,now()
+             FROM UNNEST($1::uuid[],$2::text[],$3::text[],$4::bytea[],$5::bytea[],$6::text[],$7::int4[],$8::int4[],$9::text[])
+               AS t(annotation_id,checkpoint_id,status,start_cursor,end_cursor,cursor_format,resolved_start_utf16,resolved_end_utf16,diagnostic)
+             ON CONFLICT(annotation_id) DO UPDATE SET
+                checkpoint_id=EXCLUDED.checkpoint_id,status=EXCLUDED.status,
+                start_cursor=EXCLUDED.start_cursor,end_cursor=EXCLUDED.end_cursor,
+                cursor_format=EXCLUDED.cursor_format,
+                resolved_start_utf16=EXCLUDED.resolved_start_utf16,
+                resolved_end_utf16=EXCLUDED.resolved_end_utf16,
+                diagnostic=EXCLUDED.diagnostic,updated_at=now()",
+            &ids,
+            &checkpoints,
+            &statuses,
+            &starts as &[Option<Vec<u8>>],
+            &ends as &[Option<Vec<u8>>],
+            &formats as &[Option<String>],
+            &from as &[Option<i32>],
+            &to as &[Option<i32>],
+            &diagnostics as &[Option<String>],
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

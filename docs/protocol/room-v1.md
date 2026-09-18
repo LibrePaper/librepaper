@@ -83,6 +83,13 @@ first of them. Selecting a longer passage resolves it.
 Set `document: true` for a remark about the document as a whole. It takes no
 selection and can never be orphaned.
 
+A comment against the draft is recorded on a checkpoint of the source as it
+stood, which the server takes for it. A co-editor typing between that
+checkpoint and the write invalidates the moment rather than the comment, so
+the server takes the checkpoint again and retries; only a room edited
+continuously enough to lose that race three times running answers `type:
+error` with `"code": "stale_checkpoint"`, which a client may resend.
+
 The server supplies the author, timestamps, and the checkpoint the comment is
 anchored against; a submitted `creator` does not override attribution.
 Highlighting may omit `body`. Text limits and allowed motivations are
@@ -97,9 +104,14 @@ A stored comment carries three things a client can read:
   reader is never sent source identities or source quotations.
 - `attachment`: `{checkpoint_id, status, resolved_range_utf16, diagnostic}`,
   where that passage is now. `status` is `exact`, `modified`, `ambiguous`,
-  `deleted` or `unresolved`. It is a cache: the server recomputes it from the
-  document's own history whenever the document changes, and broadcasts an
-  `attachment` event to editor peers. Editors only.
+  `deleted` or `unresolved`. A point -- an empty range -- is `exact` while the
+  source on either side of it still reads the same and `modified` when it does
+  not; it is never `deleted`, because a place between two characters is not
+  content that can be removed. It is a cache: the server recomputes it from the
+  document's own history whenever the document changes, and broadcasts one
+  `{"type": "attachments", "attachments": [{comment_id, attachment}]}` event
+  per pass to editor peers -- a single edit moves every comment after it, so
+  the pass is the frame rather than the comment. Editors only.
 - `presentation`: `{rendered_exact, rendered_prefix, rendered_suffix,
   rendered_position_utf16}`, the words as the page had them. Display evidence,
   sent to everyone who can see the comment, and never resolved through.

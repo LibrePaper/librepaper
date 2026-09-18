@@ -5,8 +5,8 @@
 
   let {
     messages = [], connected = false, canPost = false, onsend,
-    comments = [], figureAt = [], identity = "", commentingAs = "Anonymous",
-    canModerate = false, canComment = true, mode = "", hasFigures = false,
+    comments = [], identity = "", commentingAs = "Anonymous",
+    canModerate = false, canComment = true, mode = "",
     went = {}, replacements = {}, ontool, onreveal, onresolve, ondelete,
     ondeletemany, onreply, onaccept, onreject, onrejectconfirmed, pending,
     unreadChat = false, selected = "", tab = $bindable("comments"),
@@ -19,8 +19,8 @@
     { id: "comments", label: "Comments" },
     { id: "highlights", label: "Highlights" },
   ];
-  const common = () => ({ figureAt, identity, commentingAs, canModerate, canComment, mode,
-    hasFigures, went, replacements, ontool, onreveal, onresolve, ondelete, ondeletemany,
+  const common = () => ({ identity, commentingAs, canModerate, canComment, mode,
+    went, replacements, ontool, onreveal, onresolve, ondelete, ondeletemany,
     onreply, onaccept, onreject, onrejectconfirmed, pending, selected });
 </script>
 

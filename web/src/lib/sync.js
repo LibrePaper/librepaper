@@ -273,10 +273,5 @@ export function sourcePlaceInTree(rendered, at, tree, { open = "", formatOf } = 
   return null;
 }
 
-// `sourceSelectorFor` used to live here: it took a rendered selection and
-// guessed which passage of which source file it came from, so that a comment
-// could carry a source anchor it had worked out itself. The server works that
-// out now, once, against the checkpoint it holds -- see `room::locate` -- so
-// there is one answer to that question instead of two that could disagree.
-// What remains here is caret syncing, which is a different question: where to
-// put a cursor, where being wrong costs a scroll rather than a record.
+// Caret syncing places a cursor near its rendered position. Comment source
+// anchors are resolved by the server against a checkpoint.

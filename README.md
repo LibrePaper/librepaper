@@ -3,7 +3,7 @@
 Create or upload an HTML, Markdown, Typst, LaTeX or Quarto project in the
 browser, share a link to it, and collect comments and highlights in real time.
 
-- Highlight passages, suggest edits, and comment on figures
+- Highlight passages, suggest edits, and comment on the text
 - Multiple people can annotate simultaneously, with live updates
 - Create, edit, review, share, and render projects in the browser
 - Trivial to deploy: one static binary, on your laptop or on a small server

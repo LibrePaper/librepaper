@@ -37,10 +37,12 @@ project files. In **Share → Published version**, choose **Publish** or **Publi
 update** to prepare a new version for them. The toolbar's **Unpublished changes**
 indicator opens that section. Saving and compiling previews do not publish.
 
-Comments retain their selected quotation and publication identity. When a new
-version is published, passages are located again where possible; unmatched
-comments retain their discussion and indicate an earlier publication. Only the
-current full rendering is retained, so old comments do not preserve an old page.
+Comments retain their source checkpoint, source passage, and the rendering on
+which they were made. Edits move their displayed source attachment without
+changing what they refer to. A new publication may move their highlight in
+the rendered page; comments whose rendered words cannot be found still retain
+their discussion and indicate an earlier publication. Only the current full
+rendering is retained, so old comments do not preserve an old page.
 
 Several people can edit at once. The source is a CRDT (Yjs), so two people
 typing in the same sentence converge without either waiting for the other, and

@@ -239,13 +239,15 @@ at all — and nothing writes to it afterwards.
 
 Where that passage *is* is `room::resolve`'s `DerivedAttachment`: a cache,
 keyed by the checkpoint it was computed against, recomputed on every edit.
-Cursors captured at creation are what it resolves through; Loro relocates a
+Cursors captured at creation, when the source checkpoint is live, are what it
+resolves through; Loro relocates a
 cursor whose content was deleted to the boundary it occupied, so a resolved
 pair is checked against the quoted text before it is believed, and a collapsed
 one is reported as `deleted` rather than as a position. Loro's replacement
 cursors are stored back into the cache and never into the anchor. When there
-are no usable cursors it falls back to looking for the words, and two equally
-good candidates are `ambiguous` rather than the first of them.
+are no usable cursors it falls back to source context, including the boundary
+around a point note, and two equally good candidates are `ambiguous` rather
+than the first of them.
 
 A rendered quotation survives as `PresentationContext`: what the page said,
 kept for display and for explaining a comment to a person. Nothing resolves

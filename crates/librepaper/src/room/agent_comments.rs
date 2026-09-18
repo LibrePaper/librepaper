@@ -45,7 +45,7 @@ impl Room {
         if live != revision {
             return Err("source tree changed".into());
         }
-        self.checkpoint_now("cli", Attribution::account(&authority.account_id, display))
+        self.checkpoint("cli", Attribution::account(&authority.account_id, display))
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "checkpoint was not created".into())

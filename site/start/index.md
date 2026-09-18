@@ -5,7 +5,7 @@ title: "Getting started"
 Publish an HTML or Markdown document, share a link to it, and collect
 comments and highlights in real time.
 
-- Highlight passages, suggest edits, and comment on figures
+- Highlight passages, suggest edits, and comment on the text
 - Multiple people can annotate simultaneously, with live updates
 - Publish documents from the CLI; review and manage them in the browser
 - Trivial to deploy: one static binary, on your laptop or on a small server

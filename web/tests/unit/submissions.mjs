@@ -11,14 +11,12 @@ const make = () => submissions({ slug: "test", changed: (list) => (shown = list)
 let box = make();
 const message = {
   type: "comment", temp_id: "one", body: "Do not lose this paragraph", exact: "selected passage",
-  region: new Proxy({ image_digest: "abc", x: 0.1 }, {}),
 };
 box.keep(message);
 message.body = "mutated elsewhere";
 box.failed("one", "network failed");
 box.reconcile([]);
 assert.equal(shown[0].message.body, "Do not lose this paragraph");
-assert.equal(shown[0].message.region.x, 0.1);
 
 box = make();
 assert.equal(shown.length, 1);

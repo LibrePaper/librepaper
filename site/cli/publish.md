@@ -99,4 +99,4 @@ One file, one document, one session. `--interval` (default `250ms`) sets how
 long either side stays quiet before it is acted on. A lock beside the file
 stops you running two of these on it by accident. Turn off format-on-save for
 a synced file: a formatter that rewrites every line is a change against
-everyone and re-anchors every comment.
+everyone and makes the server recompute where each source-anchored comment belongs.

@@ -352,10 +352,9 @@ pub(super) struct PublishedSource {
 impl Room {
     /// The checkpoint a publication was built from, and its files.
     ///
-    /// `None` when there is no such publication, when it kept no source
-    /// version, or when that version's archive can no longer be read -- all of
-    /// which mean the same thing here: anchor against the document as it
-    /// stands instead, and let the resolution say what it finds.
+    /// `None` when there is no such publication, it kept no source version,
+    /// or its source archive cannot be read. A rendered selection cannot be
+    /// anchored to the current draft in any of those cases.
     async fn published_source(&self, publication_id: &str) -> Option<PublishedSource> {
         let id = uuid::Uuid::parse_str(publication_id).ok()?;
         let catalog = self.catalog.as_ref().get()?;
@@ -456,6 +455,11 @@ fn anchor_for(
 /// whose attachment is unchanged are not reported, so a document nobody is
 /// editing costs one pass and no writes at all.
 pub(super) fn reattach(state: &mut RoomState) -> Vec<(String, DerivedAttachment)> {
+    // Reading the files out of the CRDT is the cost of a pass, and a document
+    // nobody has commented on should not pay it on every keystroke.
+    if state.comments.is_empty() {
+        return Vec::new();
+    }
     let checkpoint = state
         .manifest
         .latest()
@@ -537,20 +541,23 @@ impl Room {
         let Some(catalog) = self.catalog.as_ref().get() else {
             return;
         };
-        for (id, attachment) in moved {
-            let Ok(uuid) = uuid::Uuid::parse_str(&id) else {
-                continue;
-            };
-            if let Err(error) = catalog.record_attachment(uuid, &attachment).await {
-                eprintln!(
-                    "warning: could not record where a comment's passage went in {}: {error}",
-                    self.slug
-                );
-                return;
-            }
+        let rows: Vec<_> = moved
+            .into_iter()
+            .filter_map(|(id, attachment)| Some((uuid::Uuid::parse_str(&id).ok()?, attachment)))
+            .collect();
+        if let Err(error) = catalog.record_attachments(&rows).await {
+            eprintln!(
+                "warning: could not record where a comment's passage went in {}: {error}",
+                self.slug
+            );
         }
     }
 }
+
+/// A comment refused only because the document moved between its checkpoint
+/// and the lock that would record it. Nothing about the comment is wrong, so
+/// the caller checkpoints again and retries rather than reporting it.
+pub(crate) const STALE_CHECKPOINT: &str = "stale_checkpoint";
 
 /// Installs a comment the durable write has already accepted.
 ///
@@ -607,6 +614,17 @@ impl Room {
             None => None,
         };
         let mut state = self.state.lock().await;
+        let latest = state.manifest.latest();
+        let live_digest = tree_of(&state.session.doc, &state.session.asset_sizes)
+            .0
+            .digest();
+        if latest.map(|point| point.sha.as_str()) != Some(revision)
+            || latest.map(|point| point.tree_sha.as_str()) != Some(live_digest.as_str())
+        {
+            return Err(BatchRefusal(
+                "source changed since that checkpoint; read it again".into(),
+            ));
+        }
         let existing_comments = durable_comments.unwrap_or_else(|| state.comments.len());
         let max_comments = config.max_comments.min(500);
         if existing_comments.saturating_add(items.len()) > max_comments {
@@ -912,15 +930,21 @@ impl Room {
         // here -- before the room state is taken, because it reads storage and
         // because the comment gate above already keeps other writers out.
         let published = match &command {
-            Command::Comment {
-                publication_id,
-                document,
-                ..
-            } if !publication_id.is_empty() && !*document => {
+            Command::Comment { publication_id, .. } if !publication_id.is_empty() => {
                 self.published_source(publication_id).await
             }
             _ => None,
         };
+        if matches!(&command, Command::Comment { publication_id, .. }
+            if !publication_id.is_empty())
+            && published.is_none()
+        {
+            return (
+                json!({"type": "error", "message": "published source is unavailable; refresh before annotating",
+                    "temp_id": temp_id, "request_id": request_id}),
+                false,
+            );
+        }
         let mut state = self.state.lock().await;
         let config = self.config.clone();
 
@@ -996,6 +1020,24 @@ impl Room {
             .latest()
             .map(|point| point.sha.clone())
             .unwrap_or_default();
+        if matches!(&command, Command::Comment { publication_id, .. } if publication_id.is_empty())
+        {
+            let live_digest = tree_of(&state.session.doc, &state.session.asset_sizes)
+                .0
+                .digest();
+            let checkpoint_digest = state.manifest.latest().map(|point| point.tree_sha.as_str());
+            if checkpoint_digest != Some(live_digest.as_str()) {
+                // Somebody typed between the checkpoint and this lock. The
+                // comment is fine; the moment it would be recorded against is
+                // not. Named so the caller can take a fresh checkpoint and
+                // come straight back rather than handing the reviewer an
+                // error for somebody else's keystroke.
+                let (mut payload, ok) =
+                    fail("source changed since its checkpoint; retry the comment");
+                payload["code"] = json!(STALE_CHECKPOINT);
+                return (payload, ok);
+            }
+        }
 
         // Resolving and deleting cost a slot too, the same as posting: a
         // caller who could resolve or delete without limit could still make a
@@ -1343,6 +1385,16 @@ impl Room {
             } => {
                 let body = clean(&raw_body, config.caps.body).trim().to_string();
                 let motivation = config.allowed_motivation(&raw_motivation);
+                if point
+                    && (motivation != "commenting"
+                        || document
+                        || !raw_exact.is_empty()
+                        || !position.is_some_and(|at| at >= 0))
+                {
+                    return fail(
+                        "a point note needs a rendered position and commenting motivation",
+                    );
+                }
                 // A highlight is the passage itself: marking something as worth
                 // returning to needs no words. A suggestion is its proposal: the
                 // words are the replacement, and `body` beside it is an optional
@@ -1430,8 +1482,8 @@ impl Room {
                 // put its words in place of.
                 let source = match source_target(&original_anchor) {
                     Some(target) => Some(target.clone()),
-                    None if motivation == "editing" => {
-                        return fail("a suggestion has to be about a passage")
+                    None if matches!(motivation.as_str(), "editing" | "highlighting") => {
+                        return fail("a suggestion or highlight has to be about a passage")
                     }
                     None => None,
                 };

@@ -956,6 +956,7 @@ impl Server {
     ) -> (Value, bool) {
         let id = &who.id;
         let request_id = incoming.request_id.clone();
+        let temp_id = incoming.temp_id.clone();
         // The rung, not the switch: a document may name a commenter on a
         // deployment whose switch names nobody, and may be closed to a caller
         // the switch would have allowed.
@@ -998,42 +999,69 @@ impl Server {
         } else {
             pseudonym_for(author, &room.slug)
         };
-        // Every comment sits on a checkpoint by construction: what the
-        // reviewer was looking at is on record the moment they say something
-        // about it, rather than being reconstructed later from a document that
-        // has moved on. A checkpoint whose text is already the current one
-        // costs nothing and adds no entry.
-        if is_comment {
-            // The checkpoint a comment sits on is the commenter's write. It
-            // carries their stable account when they are signed in, and the
-            // same pseudonym the comment shows as its display string.
-            if let Err(err) = room
-                .checkpoint("comment", who.attributed_as(&creator))
-                .await
-            {
-                // Not a reason to refuse the comment: the comment is the
-                // reader's work, and the checkpoint is bookkeeping about it.
-                eprintln!(
-                    "warning: could not checkpoint {} for a comment: {err}",
-                    room.slug
-                );
-            }
-        }
         // Which link the remark came in on, so an owner can tell reviewer two
         // from reviewer three without either having signed anything. Empty for
         // a commenter by name.
-        let command = command.with_creator(creator);
-        let (mut result, ok) = room
-            .apply_command_with_actor(
-                command,
-                address,
-                author,
-                &who.link,
-                who.comment_budget,
-                may_edit,
-                self.annotation_mutation_actor(who, false),
-            )
-            .await;
+        let command = command.with_creator(creator.clone());
+        // Every source-side comment sits on a checkpoint by construction: what
+        // the reviewer was looking at is on record the moment they say
+        // something about it, rather than being reconstructed later from a
+        // document that has moved on. A checkpoint whose text is already the
+        // current one costs nothing and adds no entry.
+        let needs_checkpoint = is_comment
+            && matches!(&command, crate::room::Command::Comment { publication_id, .. } if publication_id.is_empty());
+        // A co-editor typing between the checkpoint and the write invalidates
+        // the moment, not the comment. Take the checkpoint again and come
+        // back; only a room being edited continuously enough to lose the race
+        // three times in a row is one where there is nothing honest to record.
+        const ATTEMPTS: usize = 3;
+        let (mut result, ok) = 'attempts: {
+            let mut attempt = 0;
+            loop {
+                attempt += 1;
+                if needs_checkpoint {
+                    // The checkpoint a comment sits on is the commenter's
+                    // write. It carries their stable account when they are
+                    // signed in, and the same pseudonym the comment shows as
+                    // its display string.
+                    if let Err(err) = room
+                        .checkpoint("comment", who.attributed_as(&creator))
+                        .await
+                    {
+                        eprintln!(
+                            "warning: could not checkpoint {} for a comment: {err}",
+                            room.slug
+                        );
+                        break 'attempts (
+                            json!({"type":"error","status":503,"message":"source checkpoint is unavailable; retry the comment",
+                                "temp_id":temp_id,"request_id":request_id}),
+                            false,
+                        );
+                    }
+                }
+                let attempted = room
+                    .apply_command_with_actor(
+                        command.clone(),
+                        address,
+                        author,
+                        &who.link,
+                        who.comment_budget,
+                        may_edit,
+                        self.annotation_mutation_actor(who, false),
+                    )
+                    .await;
+                let stale = attempted.0.get("code").and_then(Value::as_str)
+                    == Some(crate::room::comments::STALE_CHECKPOINT);
+                // Retrying is only ever worth it when the next attempt would
+                // take a fresh checkpoint; nothing else about the room would
+                // be different the second time round. The refusal is raised
+                // before any rate slot is spent, so a retry costs the caller
+                // nothing but the round trip.
+                if !stale || !needs_checkpoint || attempt >= ATTEMPTS {
+                    break 'attempts attempted;
+                }
+            }
+        };
         if !request_id.is_empty() {
             result["request_id"] = json!(request_id);
         }

@@ -113,6 +113,38 @@ fn selection(exact: &str, prefix: &str, suffix: &str) -> Command {
     }
 }
 
+/// A note left between two words: no words of its own, and the text on either
+/// side of the caret as the whole of the evidence for where it is.
+fn point(prefix: &str, suffix: &str) -> Command {
+    match selection("", prefix, suffix) {
+        Command::Comment {
+            motivation,
+            publication_id,
+            body,
+            creator,
+            temp_id,
+            request_id,
+            ..
+        } => Command::Comment {
+            motivation,
+            publication_id,
+            body,
+            creator,
+            exact: String::new(),
+            prefix: prefix.into(),
+            suffix: suffix.into(),
+            position: Some(prefix.chars().count() as i64),
+            point: true,
+            document: false,
+            color: None,
+            proposed: None,
+            temp_id,
+            request_id,
+        },
+        other => other,
+    }
+}
+
 async fn send(room: &Arc<Room>, command: Command, actor: &MutationActor) -> Value {
     let (response, _) = room
         .apply_command_with_actor(
@@ -271,6 +303,65 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
     assert!(
         u64::from(start) > started_at,
         "the passage moved down the file: {start} is not after {started_at}",
+    );
+    deployment.catalog.close().await;
+}
+
+/// A point is an empty range, and an empty range is what a deleted passage
+/// collapses to. Telling them apart is the difference between a point note
+/// that follows the text and one that reports itself removed the moment
+/// anybody types -- which is what the whole join looks like from the sidebar.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_point_note_follows_the_text_instead_of_reporting_itself_deleted() {
+    let Some(deployment) = deployment("anchor-point").await else {
+        return;
+    };
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let response = send(
+        &room,
+        point(
+            "Interval estimates The interval covers",
+            " the mean of the posterior.",
+        ),
+        &deployment.actor,
+    )
+    .await;
+    assert_eq!(response["type"], "comment", "{response}");
+    let id = response["comment"]["id"].as_str().unwrap().to_string();
+    let placed = room.agent_comment(&id).await.expect("comment");
+    let at = placed.source().expect("a source range").start_utf16;
+    assert_eq!(
+        placed.attachment.as_ref().expect("an attachment").status,
+        AnchorStatus::Exact,
+    );
+
+    // Somebody writes a paragraph above it.
+    {
+        let state = room.state.lock().await;
+        session::put_text(
+            &state.session.doc,
+            "paper.md",
+            &format!(
+                "# Interval estimates\n\nA new opening paragraph.\n{}",
+                &PAPER[21..]
+            ),
+        );
+    }
+    room.reattach_comments().await;
+
+    let comment = room.agent_comment(&id).await.expect("comment");
+    let attachment = comment.attachment.expect("an attachment");
+    assert_eq!(
+        attachment.status,
+        AnchorStatus::Exact,
+        "a place between two characters is not content that can be deleted",
+    );
+    let (start, end) = attachment.resolved_range_utf16.expect("a resolved range");
+    assert_eq!(start, end, "a point stays a point");
+    assert!(
+        start > at,
+        "the point moved down the file: {start} is not after {at}",
     );
     deployment.catalog.close().await;
 }

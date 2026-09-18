@@ -708,12 +708,18 @@ impl Server {
                                     "sync" | "restore" | "label" => incoming.why.clone(),
                                     _ => "cli".to_string(),
                                 };
+                                // Whether this caller is owed an answer. A
+                                // checkpoint that wrote nothing is worth
+                                // saying so to somebody waiting on a request
+                                // id, and worth nothing to a peer that asked
+                                // in passing. It no longer decides *how* the
+                                // checkpoint is taken: there was one call for
+                                // an immediate checkpoint and another for a
+                                // debounced one, and they became the same
+                                // call some time ago.
                                 let immediate = who.automation || !incoming.request_id.is_empty();
-                                let result = if immediate {
-                                    room.checkpoint_now(&why, who.attributed_as(&author)).await
-                                } else {
-                                    room.checkpoint(&why, who.attributed_as(&author)).await
-                                };
+                                let result =
+                                    room.checkpoint(&why, who.attributed_as(&author)).await;
                                 let payload = match result {
                                     Ok(Some(sha)) => json!({
                                         "type": "doc-checkpoint", "sha": sha,
