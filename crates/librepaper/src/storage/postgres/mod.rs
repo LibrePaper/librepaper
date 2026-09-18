@@ -12,6 +12,7 @@ mod access;
 mod annotations;
 mod collaboration;
 mod jobs;
+mod marks;
 mod proposals;
 mod publications;
 mod repository;
@@ -1974,6 +1975,7 @@ mod tests {
 #[cfg(test)]
 mod benchmarks;
 pub use access::{AccessRole, GrantRecord, ShareLinkRecord};
+pub use marks::MarkRecord;
 pub use annotations::{
     attachment_from_record, original_anchor_from_record, presentation_from_record,
     AnnotationRecord, MutationAuthorization, NewAnnotation, NewReply, ReplyRecord,

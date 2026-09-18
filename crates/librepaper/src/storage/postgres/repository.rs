@@ -1226,6 +1226,110 @@ impl PostgresCatalog {
             == 1)
     }
 
+    /// The documents this account has deleted and can still get back.
+    ///
+    /// Deleting a project has never destroyed it immediately: it is marked
+    /// 'deleting' and a `document_deletion` job is queued to run seven days
+    /// later, and until that job runs every row, blob and comment is still
+    /// here. That window existed for years with no way to reach it, which is
+    /// what this query and `restore_document` are for.
+    ///
+    /// Ordered by when they went rather than by `updated_at`: the trash is
+    /// read as "what did I just do", and the deletion is the event.
+    pub async fn trashed_documents(
+        &self,
+        owner_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<DocumentRecord>> {
+        if !(1..=200).contains(&limit) {
+            return Err(Error::Invalid("document page limit must be 1..=200".into()));
+        }
+        sqlx::query_as!(
+            DocumentRecord,
+            "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
+                    d.source_format,d.main_path,d.update_sequence,d.project_generation,
+                    d.current_version_id,d.current_publication_id,d.settings,d.created_at,
+                    d.updated_at,d.deleted_at
+             FROM documents d
+             WHERE d.owner_id=$1 AND d.status='deleting'
+             ORDER BY d.deleted_at DESC,d.id DESC LIMIT $2",
+            owner_id,
+            limit,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// When the queued purge of a deleted document is due, so a listing can
+    /// say how long is left rather than making the reader count days from the
+    /// deletion themselves. `None` for a document with no purge queued, which
+    /// is a document that is not in the trash.
+    pub async fn deletion_due(&self, document_id: Uuid) -> Result<Option<OffsetDateTime>> {
+        Ok(sqlx::query_scalar!(
+            "SELECT run_after FROM jobs
+             WHERE kind='document_deletion' AND document_id=$1 AND status='queued'
+             ORDER BY run_after LIMIT 1",
+            document_id,
+        )
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    /// Take a document back out of the trash.
+    ///
+    /// Cancelling the queued purge is the operation; flipping the status back
+    /// is bookkeeping that follows from it. They happen in one transaction and
+    /// in that order because the job is the thing that can be lost: if the
+    /// purge has already been claimed and is running, its blobs are already
+    /// going, and a document restored on top of that would be an entry in the
+    /// listing pointing at files that are half gone. So a purge that is no
+    /// longer 'queued' refuses the restore rather than racing it.
+    pub async fn restore_document(&self, document_id: Uuid) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let cancelled = sqlx::query!(
+            "UPDATE jobs SET status='cancelled',updated_at=now()
+             WHERE kind='document_deletion' AND document_id=$1 AND status='queued'",
+            document_id,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if cancelled == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let restored = sqlx::query!(
+            "UPDATE documents SET status='active',deleted_at=NULL,updated_at=now()
+             WHERE id=$1 AND status='deleting'",
+            document_id,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if restored == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Purge a deleted document now instead of when its seven days are up.
+    /// "Delete forever" in the trash: the job is already queued and already
+    /// knows how to do it, so this only brings it forward.
+    pub async fn hasten_deletion(&self, document_id: Uuid) -> Result<bool> {
+        Ok(sqlx::query!(
+            "UPDATE jobs SET run_after=now(),updated_at=now()
+             WHERE kind='document_deletion' AND document_id=$1 AND status='queued'",
+            document_id,
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            > 0)
+    }
+
     pub async fn finish_document_deletion(&self, document_id: Uuid) -> Result<bool> {
         Ok(sqlx::query!(
             "DELETE FROM documents WHERE id=$1 AND status='deleting'",
