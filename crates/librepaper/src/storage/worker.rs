@@ -181,20 +181,25 @@ impl Worker {
         Ok(())
     }
 
+    /// Forgets a superseded publication. It deletes rows and no blobs.
+    ///
+    /// This is what version pruning already does with shared archives, and
+    /// for the same reason. A published file is named by the digest of its
+    /// contents, so two publications that hold the same stylesheet hold one
+    /// object, and a figure is the document's own asset. Deciding what is
+    /// unreferenced here would mean deciding it before the delete and acting
+    /// on it after: a publish landing in between would commit a row naming an
+    /// object this job was already about to remove, and its page would come
+    /// back empty.
+    ///
+    /// The orphan sweeper is where that decision belongs. It re-reads every
+    /// reference at the moment it deletes, and only touches objects that have
+    /// also gone untouched for its grace period, so a publication written a
+    /// second ago is never a candidate. Quota is freed here regardless: it
+    /// counts rows, not bytes on disk.
     async fn cleanup_publication(&self, claim: &JobClaim) -> Result<(), String> {
         let payload: PublicationCleanupPayload = serde_json::from_value(claim.job.payload.clone())
             .map_err(|error| format!("invalid publication cleanup payload: {error}"))?;
-        let keys = self
-            .catalog
-            .publication_cleanup_keys(payload.publication_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        if !keys.is_empty() {
-            self.blobs
-                .delete(&keys)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
         self.catalog
             .finish_publication_cleanup(payload.publication_id)
             .await

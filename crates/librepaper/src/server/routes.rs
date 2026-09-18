@@ -25,6 +25,14 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
             get(checkpoint).patch(label_checkpoint),
         )
         .route("/api/documents/{slug}/restore", post(restore))
+        .route("/api/trash", get(trash))
+        .route("/api/documents/{slug}/untrash", post(untrash))
+        .route("/api/documents/{slug}/purge", post(purge))
+        .route(
+            "/api/documents/{slug}/favorite",
+            post(favorite).delete(favorite),
+        )
+        .route("/api/documents/{slug}/opened", post(opened))
         .route("/api/documents/{slug}/chat", any(chat_root))
         .route("/api/documents/{slug}/chat/{*tail}", any(chat))
         .route("/api/documents/{slug}/suggestions", post(suggestions))
@@ -229,6 +237,66 @@ async fn restore(
     request: Request<Body>,
 ) -> Reply {
     server.handle_restore(request, &ctx.arrival, &slug).await
+}
+
+/// The deleted projects still inside their recovery window. Not
+/// `/api/documents/...`: the trash is a place in the account, and the
+/// documents in it are deliberately invisible to every route that lists them.
+async fn trash(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_trash(request.headers(), &ctx.arrival).await
+}
+
+async fn untrash(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_untrash(request.headers(), &ctx.arrival, &slug, false)
+        .await
+}
+
+async fn purge(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_untrash(request.headers(), &ctx.arrival, &slug, true)
+        .await
+}
+
+/// Starring and unstarring are the same route and differ by method, because
+/// they are one fact being set and unset rather than two things to do.
+async fn favorite(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    let on = request.method() != Method::DELETE;
+    let query = request.uri().query().map(str::to_string);
+    server
+        .handle_favorite(request.headers(), &ctx.arrival, &slug, query.as_deref(), on)
+        .await
+}
+
+async fn opened(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    let query = request.uri().query().map(str::to_string);
+    server
+        .handle_opened(request.headers(), &ctx.arrival, &slug, query.as_deref())
+        .await
 }
 
 async fn chat(
@@ -726,9 +794,28 @@ pub(super) async fn dispatch(
                 return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
             }
         };
+        // What this caller has done with each of these documents. Fetched
+        // beside the listing rather than joined into it, so a mark can never
+        // widen what the listing returns: the rows are chosen by what the
+        // caller may see, and only then decorated with what they did.
+        let marks = if who.id.is_empty() {
+            Default::default()
+        } else {
+            server
+                .store
+                .marks_for(&who.id, &entries)
+                .await
+                .unwrap_or_default()
+        };
         let documents: Vec<Value> = entries
             .iter()
-            .map(|entry| server.listing_row(entry, &who))
+            .map(|entry| {
+                let mut row = server.listing_row(entry, &who);
+                let (favorite, opened) = marks.get(&entry.slug).cloned().unwrap_or_default();
+                row["favorite"] = json!(favorite);
+                row["opened_at"] = json!(opened);
+                row
+            })
             .collect();
         let mut body = json!({"documents": documents});
         if entries.len() == listing_limit as usize {
@@ -805,6 +892,15 @@ pub(super) async fn dispatch(
                     .store
                     .pin_link_guest(slug, &who.id.id, &who.link, who.role)
                     .await;
+            }
+            // And what Recent is made of. Written here rather than asked for
+            // by the reader, because this request *is* the open: a separate
+            // call from the client would be a second round trip that says
+            // something the server already watched happen, and one the reader
+            // could forget to make on the paths that do not go through it.
+            // Never a reason to refuse the document, like the pin above.
+            if who.id.is_signed_in() {
+                let _ = server.store.mark_opened(slug, &who.id.id).await;
             }
             let mut body = json!({
                 "slug": entry.slug, "title": entry.title,

@@ -235,45 +235,6 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
-    pub async fn publication_cleanup_keys(&self, publication_id: Uuid) -> Result<Vec<String>> {
-        let current = sqlx::query_scalar!(
-            r#"SELECT EXISTS(SELECT 1 FROM documents WHERE current_publication_id=$1)
-               AS "exists!""#,
-            publication_id,
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        if current {
-            return Err(Error::Conflict(
-                "current publication cannot be cleaned up".into(),
-            ));
-        }
-        // Only the blobs this publication is the last to name.
-        //
-        // A published page no longer copies the figures in it: it points at
-        // the ones `document_assets` already holds, which are content-
-        // addressed, never deleted, and shared with the live document. So
-        // cleaning up a superseded publication must delete what it owned --
-        // its rendering and its metadata -- and nothing it merely referred
-        // to. Deleting a referenced key here would take the author's figure
-        // out of the document they are still editing.
-        sqlx::query_scalar!(
-            r#"SELECT manifest_key AS "key!" FROM publications WHERE id=$1
-               UNION ALL
-               SELECT f.storage_key FROM publication_files f
-               WHERE f.publication_id=$1
-                 AND NOT EXISTS(SELECT 1 FROM document_assets a
-                                WHERE a.storage_key=f.storage_key)
-                 AND NOT EXISTS(SELECT 1 FROM publication_files o
-                                WHERE o.storage_key=f.storage_key
-                                  AND o.publication_id<>f.publication_id)"#,
-            publication_id,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
     pub async fn finish_publication_cleanup(&self, publication_id: Uuid) -> Result<bool> {
         let removed = sqlx::query!(
             "DELETE FROM publications p WHERE p.id=$1

@@ -541,6 +541,147 @@ impl Store {
         entries_from_documents(catalog, &documents).await
     }
 
+    /// Every document this account has deleted and can still get back, newest
+    /// deletion first, each paired with the moment its purge is due.
+    pub async fn trashed_page(
+        &self,
+        account_id: &str,
+        limit: u32,
+    ) -> Result<Vec<(IndexEntry, Option<String>)>, CatalogError> {
+        let catalog = &self.catalog;
+        let account_id = uuid::Uuid::parse_str(account_id)
+            .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
+        let documents = catalog
+            .trashed_documents(account_id, i64::from(limit))
+            .await?;
+        let entries = entries_from_documents(catalog, &documents).await?;
+        let mut rows = Vec::with_capacity(entries.len());
+        for (entry, document) in entries.into_iter().zip(documents.iter()) {
+            let due = catalog
+                .deletion_due(document.id)
+                .await?
+                .map(|at| crate::util::format_unix(at.unix_timestamp()));
+            rows.push((entry, due));
+        }
+        Ok(rows)
+    }
+
+    /// Put a deleted document back. Refuses once its purge has started, which
+    /// is the only moment at which the answer can be no for a document that
+    /// was in the trash a second ago.
+    pub async fn restore(&self, slug: &str, account_id: &str) -> Result<bool, ModifyError> {
+        let catalog = &self.catalog;
+        let account_id = uuid::Uuid::parse_str(account_id)
+            .map_err(|_| ModifyError::Refused("invalid account".into()))?;
+        let document = catalog
+            .document_by_slug(slug)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))?
+            .ok_or(ModifyError::NotFound)?;
+        // Only the owner has a trash: a document shared with you leaves your
+        // listing when its owner deletes it, and getting it back is theirs to
+        // do, not yours.
+        if document.owner_id != account_id {
+            return Err(ModifyError::Refused("not yours to restore".into()));
+        }
+        catalog
+            .restore_document(document.id)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))
+    }
+
+    /// Bring a deleted document's purge forward to now.
+    pub async fn purge_now(&self, slug: &str, account_id: &str) -> Result<bool, ModifyError> {
+        let catalog = &self.catalog;
+        let account_id = uuid::Uuid::parse_str(account_id)
+            .map_err(|_| ModifyError::Refused("invalid account".into()))?;
+        let document = catalog
+            .document_by_slug(slug)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))?
+            .ok_or(ModifyError::NotFound)?;
+        if document.owner_id != account_id {
+            return Err(ModifyError::Refused("not yours to delete".into()));
+        }
+        catalog
+            .hasten_deletion(document.id)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))
+    }
+
+    /// Star a document for this account, or take the star off it.
+    pub async fn set_favorite(
+        &self,
+        slug: &str,
+        account_id: &str,
+        on: bool,
+    ) -> Result<bool, ModifyError> {
+        let (document_id, account_id) = self.mark_target(slug, account_id).await?;
+        self.catalog
+            .set_favorite(account_id, document_id, on)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))
+    }
+
+    /// Note that this account has just opened this document.
+    pub async fn mark_opened(&self, slug: &str, account_id: &str) -> Result<(), ModifyError> {
+        let (document_id, account_id) = self.mark_target(slug, account_id).await?;
+        self.catalog
+            .mark_opened(account_id, document_id)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))
+    }
+
+    /// The marks this account holds on the documents listed, by slug. The
+    /// listing decorates its rows with these; a document the caller has never
+    /// touched simply has no entry.
+    pub async fn marks_for(
+        &self,
+        account_id: &str,
+        entries: &[IndexEntry],
+    ) -> Result<std::collections::HashMap<String, (bool, String)>, CatalogError> {
+        let account_id = uuid::Uuid::parse_str(account_id)
+            .map_err(|_| CatalogError::Invalid("invalid listing account".into()))?;
+        let mut by_id = std::collections::HashMap::new();
+        for entry in entries {
+            if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
+                by_id.insert(id, entry.slug.clone());
+            }
+        }
+        let ids: Vec<_> = by_id.keys().copied().collect();
+        let marks = self.catalog.marks_for_documents(account_id, &ids).await?;
+        Ok(marks
+            .into_iter()
+            .filter_map(|mark| {
+                let slug = by_id.get(&mark.document_id)?.clone();
+                let opened = mark
+                    .opened_at
+                    .map(|at| crate::util::format_unix(at.unix_timestamp()))
+                    .unwrap_or_default();
+                Some((slug, (mark.favorited_at.is_some(), opened)))
+            })
+            .collect())
+    }
+
+    /// A mark is written against a document the caller can already see, and
+    /// against nothing else: resolving the slug here is what stops a mark from
+    /// being a way to ask whether a private document exists.
+    async fn mark_target(
+        &self,
+        slug: &str,
+        account_id: &str,
+    ) -> Result<(uuid::Uuid, uuid::Uuid), ModifyError> {
+        let account_id = uuid::Uuid::parse_str(account_id)
+            .map_err(|_| ModifyError::Refused("invalid account".into()))?;
+        let document = self
+            .catalog
+            .document_by_slug(slug)
+            .await
+            .map_err(|error| ModifyError::Storage(error.to_string()))?
+            .ok_or(ModifyError::NotFound)?;
+        Ok((document.id, account_id))
+    }
+
     pub async fn put_directory_as_actor(
         &self,
         value: Publication,

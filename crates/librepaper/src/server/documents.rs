@@ -1279,4 +1279,159 @@ impl Server {
             }
         }
     }
+
+    /// What this account has deleted and can still get back.
+    ///
+    /// Deleting has always been a mark and a job queued seven days out rather
+    /// than an erasure, so this reads a recovery window that was already being
+    /// kept and was simply never shown to anybody.
+    pub(super) async fn handle_trash(&self, headers: &HeaderMap, arrival: &Arrival) -> Reply {
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let who = match self.publisher(headers, arrival).await {
+            Ok(who) => who,
+            Err(response) => return response,
+        };
+        if who.id.is_empty() {
+            return write_json(401, &json!({"error": "sign in to see your trash"}));
+        }
+        match self.store.trashed_page(&who.id, 200).await {
+            Ok(rows) => {
+                let documents: Vec<Value> = rows
+                    .iter()
+                    .map(|(entry, due)| {
+                        let mut row = self.listing_row(entry, &who);
+                        // Both halves of the window, so the listing can say
+                        // "6 days left" without knowing what the grace is.
+                        row["deleted_at"] = json!(entry.updated_at);
+                        row["purge_due"] = json!(due);
+                        row
+                    })
+                    .collect();
+                write_json(200, &json!({"documents": documents}))
+            }
+            Err(error) => {
+                eprintln!("could not query the trash: {error}");
+                write_json(503, &json!({"error": "catalogue temporarily unavailable"}))
+            }
+        }
+    }
+
+    /// Take a deleted document back out of the trash, or destroy it now.
+    /// `purge` chooses which: both are the owner acting on the same queued
+    /// job, one cancelling it and one bringing it forward.
+    pub(super) async fn handle_untrash(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        purge: bool,
+    ) -> Reply {
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let who = match self.publisher(headers, arrival).await {
+            Ok(who) => who,
+            Err(response) => return response,
+        };
+        if who.id.is_empty() {
+            return write_json(401, &json!({"error": "sign in first"}));
+        }
+        let done = if purge {
+            self.store.purge_now(slug, &who.id).await
+        } else {
+            self.store.restore(slug, &who.id).await
+        };
+        match done {
+            // Somebody else's document, and a document that was never here,
+            // answer alike: the trash is not a way to probe for slugs.
+            Ok(true) => write_json(200, &json!({"slug": slug, "purged": purge})),
+            // The window closed between the listing and the button. The purge
+            // is already running and its files are already going, so there is
+            // nothing left to put back.
+            Ok(false) => write_json(
+                409,
+                &json!({"error": "this project is already being deleted and cannot be recovered"}),
+            ),
+            Err(ModifyError::NotFound) | Err(ModifyError::Refused(_)) => {
+                write_json(404, &json!({"error": "not found"}))
+            }
+            Err(error) => {
+                eprintln!("could not restore {slug}: {error:?}");
+                write_json(500, &json!({"error": "could not restore the project"}))
+            }
+        }
+    }
+
+    /// Star a document, or take the star off it. A favourite is this account's
+    /// note about a document it can already see, so the gate is the same one
+    /// reading it is: anyone who may open it may star it, which is what makes
+    /// a project shared with you starrable without it becoming yours.
+    pub(super) async fn handle_favorite(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+        on: bool,
+    ) -> Reply {
+        self.handle_mark(headers, arrival, slug, query, Some(on))
+            .await
+    }
+
+    /// Note that this account has just opened a document. Sent by the reader
+    /// on open, and the only thing behind the Recent destination.
+    pub(super) async fn handle_opened(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+    ) -> Reply {
+        self.handle_mark(headers, arrival, slug, query, None).await
+    }
+
+    async fn handle_mark(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+        favorite: Option<bool>,
+    ) -> Reply {
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
+        };
+        let who = self.viewer(&entry, headers, arrival, query).await;
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        if !who.id.is_signed_in() {
+            return write_json(401, &json!({"error": "sign in first"}));
+        }
+        let account = who.id.id.clone();
+        let done = match favorite {
+            Some(on) => self.store.set_favorite(slug, &account, on).await.map(Some),
+            None => self.store.mark_opened(slug, &account).await.map(|()| None),
+        };
+        match done {
+            Ok(starred) => write_json(200, &json!({"slug": slug, "favorite": starred})),
+            Err(error) => {
+                eprintln!("could not mark {slug}: {error:?}");
+                write_json(500, &json!({"error": "could not save that"}))
+            }
+        }
+    }
 }

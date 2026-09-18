@@ -818,16 +818,15 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(second_publication.id, first_publication.id);
-        assert!(catalog
-            .publication_cleanup_keys(second_publication.id)
-            .await
-            .is_err());
-        let old_keys = catalog
-            .publication_cleanup_keys(first_publication.id)
-            .await
-            .unwrap();
-        assert_eq!(old_keys.len(), 2);
-        blobs.delete(&old_keys).await.unwrap();
+        // The current publication is not something a cleanup may forget, and
+        // says so by refusing rather than by removing nothing.
+        assert!(
+            !catalog
+                .finish_publication_cleanup(second_publication.id)
+                .await
+                .unwrap(),
+            "the page readers are on cannot be cleaned up"
+        );
         assert!(catalog
             .finish_publication_cleanup(first_publication.id)
             .await
@@ -1935,23 +1934,36 @@ mod tests {
 
         // Superseding the first page schedules its cleanup. It must take the
         // rendering it owned and leave the figure it only pointed at.
-        let doomed = catalog.publication_cleanup_keys(first.id).await.unwrap();
-        assert!(
-            !doomed.contains(&figure_key),
-            "cleaning up a page must not delete the figure the document still holds",
-        );
-        assert!(
-            !doomed.contains(&stylesheets[0]),
-            "nor the stylesheet the page that replaced it still names",
-        );
-        blobs.delete(&doomed).await.unwrap();
         assert!(catalog
             .finish_publication_cleanup(first.id)
             .await
             .unwrap());
+        // Cleanup forgets rows. What the blobs are worth keeping is the
+        // sweeper's question, asked against every reference at the moment it
+        // deletes -- so the figure the document still holds and the
+        // stylesheet the current page still names are not candidates, while
+        // the rendering nothing names any more is.
+        assert_eq!(
+            Maintenance::new(Arc::new(catalog.clone()), blobs.clone())
+                .delete_orphans(500, Duration::days(7))
+                .await
+                .unwrap(),
+            0,
+            "nothing is old enough to sweep yet, however unreferenced it is",
+        );
+        assert!(blobs.exists(&figure_key).await.unwrap());
+        assert!(blobs.exists(&stylesheets[1]).await.unwrap());
         assert!(
             blobs.exists(&figure_key).await.unwrap(),
             "the figure survived the cleanup of a page that showed it",
+        );
+        assert!(
+            catalog
+                .publication_files(first.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "and the forgotten page took its rows with it",
         );
         assert_eq!(
             blobs.get(&figure_key).await.unwrap(),
@@ -1966,6 +1978,168 @@ mod tests {
         assert!(
             blobs.exists(&stylesheets[1]).await.unwrap(),
             "the stylesheet the current page names survived its predecessor's cleanup",
+        );
+
+        catalog.close().await;
+    }
+
+    /// Marks are one person's, and the trash is a week long.
+    ///
+    /// The two are tested together because they meet: deleting a starred
+    /// project and putting it back has to return it starred, which is the
+    /// whole reason the mark survives the `deleting` status and dies only
+    /// with the row.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn marks_are_private_and_the_trash_is_recoverable() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        sqlx::query!(
+            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
+             document_versions,document_assets,replies,annotations,share_links,grants,document_marks,documents,
+             accounts CASCADE",
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+
+        let owner = catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some("marks-owner".into()),
+                handle: "owner".into(),
+                display_name: "Owner".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let other = catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some("marks-other".into()),
+                handle: "other".into(),
+                display_name: "Other".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let paper = catalog
+            .create_document(NewDocument {
+                slug: "paper".into(),
+                owner_id: owner.id,
+                ownership_mode: "owned".into(),
+                title: "A paper".into(),
+                source_format: "typst".into(),
+                main_path: "main.typ".into(),
+                settings: json!({"version":1}),
+            })
+            .await
+            .unwrap();
+
+        // A star is set, read back, and set again without doubling.
+        assert!(catalog.set_favorite(owner.id, paper.id, true).await.unwrap());
+        assert!(catalog.set_favorite(owner.id, paper.id, true).await.unwrap());
+        let mine = catalog
+            .marks_for_documents(owner.id, &[paper.id])
+            .await
+            .unwrap();
+        assert_eq!(mine.len(), 1, "one row, however many times it was starred");
+        assert!(mine[0].favorited_at.is_some());
+        assert!(
+            mine[0].opened_at.is_none(),
+            "starring is not opening: Recent must not fill up with things nobody read",
+        );
+
+        // And it is nobody else's. This is the property that makes a mark
+        // safe to write for any document its holder can see.
+        assert!(
+            catalog
+                .marks_for_documents(other.id, &[paper.id])
+                .await
+                .unwrap()
+                .is_empty(),
+            "one person's favourites are invisible to everybody else",
+        );
+
+        // Opening joins the same row rather than making a second one.
+        catalog.mark_opened(owner.id, paper.id).await.unwrap();
+        let both = catalog
+            .marks_for_documents(owner.id, &[paper.id])
+            .await
+            .unwrap();
+        assert_eq!(both.len(), 1);
+        assert!(both[0].favorited_at.is_some() && both[0].opened_at.is_some());
+
+        // Un-starring something that has been opened keeps the row, because
+        // Recent still needs it.
+        assert!(!catalog.set_favorite(owner.id, paper.id, false).await.unwrap());
+        let after = catalog
+            .marks_for_documents(owner.id, &[paper.id])
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1, "the visit outlives the star");
+        assert!(after[0].favorited_at.is_none() && after[0].opened_at.is_some());
+
+        // Star it again: this is what has to survive the round trip through
+        // the trash below.
+        catalog.set_favorite(owner.id, paper.id, true).await.unwrap();
+
+        // Into the trash. The row is still here, and so is the mark.
+        assert!(catalog.mark_document_deleting(paper.id).await.unwrap());
+        catalog
+            .enqueue_job(NewJob {
+                kind: "document_deletion".into(),
+                document_id: Some(paper.id),
+                account_id: Some(owner.id),
+                scope_key: format!("document:{}", paper.id),
+                dedupe_key: Some("delete".into()),
+                payload: json!({"document_id": paper.id}),
+                priority: 0,
+                max_attempts: 100,
+                run_after: OffsetDateTime::now_utc() + Duration::days(7),
+            })
+            .await
+            .unwrap();
+        let trash = catalog.trashed_documents(owner.id, 50).await.unwrap();
+        assert_eq!(trash.len(), 1, "a deleted project is in its owner's trash");
+        assert_eq!(trash[0].id, paper.id);
+        assert!(
+            catalog.deletion_due(paper.id).await.unwrap().is_some(),
+            "and the listing can say when it goes",
+        );
+        assert!(
+            catalog
+                .trashed_documents(other.id, 50)
+                .await
+                .unwrap()
+                .is_empty(),
+            "and it is not in anybody else's",
+        );
+
+        // Back out again, still starred.
+        assert!(catalog.restore_document(paper.id).await.unwrap());
+        assert!(catalog.trashed_documents(owner.id, 50).await.unwrap().is_empty());
+        let restored = catalog
+            .marks_for_documents(owner.id, &[paper.id])
+            .await
+            .unwrap();
+        assert!(
+            restored.first().is_some_and(|mark| mark.favorited_at.is_some()),
+            "a project comes back from the trash exactly as it went in",
+        );
+
+        // Restoring what is not in the trash is a no, not a silent yes: this
+        // is the branch that refuses to race a purge that has already been
+        // claimed and is deleting blobs.
+        assert!(
+            !catalog.restore_document(paper.id).await.unwrap(),
+            "there is nothing to restore once the purge is no longer queued",
         );
 
         catalog.close().await;
