@@ -1,6 +1,18 @@
 # LibrePaper keyboard shortcuts
 
-*2026-09-14. Proposed implementation specification; not a claim about completed changes.*
+*2026-09-14. Implemented 2026-09-18 in `web/src/lib/commands.js` and its four
+consumers: the window dispatcher in `Reader.svelte`, the menus, the command
+palette, and the `?` table. Three things were decided differently while
+building it, and this document is otherwise what was built.*
+
+*The help button in the bar carries a keyboard icon rather than a `?` glyph,
+because the rail below it already spends `?` on the documentation link, and it
+is hidden under 600px, where the bar has no room for it and the phone has no
+keyboard to explain. `Mod+Alt+F` for Replace is bound inside CodeMirror rather
+than on the window, so the editor stays the only executor of its own commands.
+An `Alt` chord is read from the physical key rather than the character it
+produces, because `⌥P` types `π` on macOS and the whole `Mod+Alt` namespace
+would otherwise be unreachable there.*
 
 ## Purpose
 

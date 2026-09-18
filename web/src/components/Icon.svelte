@@ -118,6 +118,12 @@
       ["path", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"],
     ],
     check: [["path", "M20 6 9 17l-5-5"]],
+    // Lucide keyboard, for the shortcut help the bar offers.
+    keyboard: [
+      ["path", "M10 8h.01"], ["path", "M12 12h.01"], ["path", "M14 8h.01"], ["path", "M16 12h.01"],
+      ["path", "M18 8h.01"], ["path", "M6 8h.01"], ["path", "M7 16h10"], ["path", "M8 12h.01"],
+      ["rect", { width: 20, height: 16, x: 2, y: 4, rx: 2 }],
+    ],
     // Lucide's refresh-cw, for minting a share link's key again. The two arrows
     // chasing each other say "same link, new key", which is what a rotation
     // is; an undo arrow would say the opposite.

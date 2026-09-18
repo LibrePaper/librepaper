@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import {
-  captureAttachment, capabilityAllows, composeTaskMessage, diagnosticContext,
+  captureAttachment, capabilityAllows, composeTaskMessage, diagnosticContext, diagnosticLabel,
   groupPass, normalizeCapabilities, resultIds, visibleResults, checkContextSize,
+  TASK_CATALOG, TASK_KINDS, findTask, groupTasks, inferScope, searchTasks, taskPrompt, taskScopes,
 } from "../../src/lib/assistant.js";
 
 const selection = {
@@ -68,4 +69,44 @@ const comments = [
 assert.deepEqual(visibleResults(reply, comments), { suggestions: ["s1", "s2"], pass: "p1" });
 assert.deepEqual(groupPass(comments, "p1"), { pass: "p1", total: 2, pending: 1, suggestions: ["s1", "s2"] });
 
-console.log("assistant: anchored tasks, capability gating, diagnostic context and review result mapping passed");
+// Every launcher entry must stay inside the protocol's task vocabulary, and
+// every entry must be reachable by its own id.
+for (const entry of TASK_CATALOG) {
+  assert.ok(TASK_KINDS.includes(entry.kind), `${entry.id} uses an unknown task kind`);
+  assert.equal(findTask(entry.id), entry);
+  assert.ok(taskScopes(entry).length, `${entry.id} has no usable scope`);
+  assert.ok(taskPrompt(entry, "document").includes("the whole document"));
+}
+assert.equal(new Set(TASK_CATALOG.map((entry) => entry.id)).size, TASK_CATALOG.length);
+assert.equal(findTask("nope"), null);
+
+assert.deepEqual(taskScopes(findTask("tighten")), ["selection"]);
+assert.deepEqual(taskScopes(findTask("outline")), ["file", "document"]);
+assert.deepEqual(taskScopes(findTask("proofread")), ["selection", "file", "document"]);
+assert.equal(taskPrompt(findTask("proofread"), "selection"), "Proofread the selected passage.");
+assert.equal(taskPrompt(findTask("summarize"), "file"), "Summarize this file.");
+
+// Scope follows what the reader already has: a passage, then a file.
+assert.equal(inferScope(findTask("proofread"), { attached: attachment, path: "main.md" }), "selection");
+assert.equal(inferScope(findTask("proofread"), { path: "main.md" }), "file");
+assert.equal(inferScope(findTask("proofread"), {}), "document");
+assert.equal(inferScope(findTask("outline"), { attached: attachment, path: "main.md" }), "file");
+assert.equal(inferScope(findTask("tighten"), { path: "main.md" }), "selection");
+
+// Search narrows like a command palette: a label prefix wins over a
+// description hit, and every typed word has to match.
+assert.deepEqual(searchTasks("proof").map((entry) => entry.id), ["proofread", "suggest-improvements"]);
+assert.deepEqual(searchTasks("").map((entry) => entry.id), TASK_CATALOG.map((entry) => entry.id));
+assert.deepEqual(searchTasks("check cit").map((entry) => entry.id), ["check-citations"]);
+assert.deepEqual(searchTasks("zzz"), []);
+assert.deepEqual(groupTasks(searchTasks("")).map((group) => group.category), ["Writing", "Review", "Document"]);
+assert.deepEqual(groupTasks([]), []);
+
+// The launcher names a diagnostic by severity and place. The engine's own
+// message is never part of the label: it is what the Diagnostics panel shows.
+assert.equal(diagnosticLabel({ severity: "error", file: "main.tex", line: 12, message: "html export is under active development and incomplete" }), "Error · main.tex:12");
+assert.equal(diagnosticLabel({ severity: "warning", path: "chapter.typ" }), "Warning · chapter.typ");
+assert.equal(diagnosticLabel({ message: "no place given" }, "main.md"), "Error · main.md");
+assert.equal(diagnosticLabel({ severity: "warning" }), "Warning");
+
+console.log("assistant: anchored tasks, capability gating, diagnostic context and review result mapping, and the task catalog passed");

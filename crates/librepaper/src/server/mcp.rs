@@ -609,10 +609,13 @@ impl Server {
                 ));
             }
             if query["selection"].is_object() {
-                return Err(Failure::new(
-                    "unsupported",
-                    "legacy source selections are unsupported; use a captured range handle",
-                ));
+                let (path, start, end) = locate_selection(&view, &query["selection"])?;
+                query["path"] = json!(path);
+                query["start"] = json!(start);
+                query["end"] = json!(end);
+                if let Some(object) = query.as_object_mut() {
+                    object.remove("selection");
+                }
             }
             if let Some(handle) = query
                 .get("range_id")
@@ -763,6 +766,47 @@ fn decorate_ranges(value: &mut Value, snapshot: &QuerySnapshot, view_id: &str, k
     }
 }
 
+/// Cross from what the browser saw to a range of this view's source, the way
+/// a comment does: the selected words and the words on either side, looked
+/// for once, here. The client's path is not identity -- a passage is where
+/// its words are -- so every file of the view is a candidate, and words that
+/// read the same in several places are refused rather than guessed at.
+fn locate_selection(view: &View, selection: &Value) -> Result<(String, usize, usize), Failure> {
+    let quote = crate::room::locate::Quote {
+        exact: selection["exact"].as_str().unwrap_or_default(),
+        prefix: selection["prefix"].as_str().unwrap_or_default(),
+        suffix: selection["suffix"].as_str().unwrap_or_default(),
+    };
+    let tree = operations::tree_of_view(view)?;
+    let candidates: Vec<crate::room::locate::Candidate<'_>> = tree
+        .files
+        .iter()
+        .map(|(path, file)| crate::room::locate::Candidate {
+            file_id: &file.file_id,
+            path,
+            text: &file.text,
+        })
+        .collect();
+    let target = crate::room::locate::locate(&candidates, &quote).map_err(|failure| {
+        let code = match failure {
+            crate::room::locate::Failure::Empty => "invalid_range",
+            crate::room::locate::Failure::NotFound => "not_found",
+            crate::room::locate::Failure::Ambiguous => "ambiguous_range",
+        };
+        Failure::new(code, failure.message())
+    })?;
+    let (path, file) = tree
+        .files
+        .iter()
+        .find(|(_, file)| file.file_id == target.file_id.0)
+        .ok_or_else(|| Failure::new("internal", "located file left the view"))?;
+    let start = operations::byte_of_utf16(&file.text, target.start_utf16 as usize)
+        .ok_or_else(|| Failure::new("invalid_range", "selection splits a Unicode character"))?;
+    let end = operations::byte_of_utf16(&file.text, target.end_utf16 as usize)
+        .ok_or_else(|| Failure::new("invalid_range", "selection splits a Unicode character"))?;
+    Ok((path.clone(), start, end))
+}
+
 fn resolve_range<'a>(
     view: &'a View,
     view_id: &str,
@@ -801,4 +845,79 @@ fn resolve_range<'a>(
         ));
     }
     Ok((path.as_str(), start, end))
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    fn view_of(path: &str, text: &str) -> View {
+        let mut snapshot = QuerySnapshot {
+            source_revision: "rev".into(),
+            main: path.into(),
+            ..QuerySnapshot::default()
+        };
+        snapshot.texts.insert(path.into(), text.into());
+        snapshot.tree = json!({
+            "main": path,
+            "files": {path: {"kind":"file","id":"f1","sha":"sha","size":text.len()}}
+        });
+        View {
+            snapshot,
+            expires_at: 0,
+            operation_epoch: String::new(),
+        }
+    }
+
+    /// A browser sends the words it saw, not offsets: the markup around them
+    /// is not in the quote, and the range still has to land on the source.
+    #[test]
+    fn a_quote_of_the_page_becomes_a_range_of_the_source() {
+        let text = "= Heading\n\nThe *pinned* compiler runs in a worker. Another line.\n";
+        let view = view_of("paper.typ", text);
+        let (path, start, end) = locate_selection(
+            &view,
+            &json!({
+                "path": "paper.typ",
+                "exact": "The pinned compiler runs in a worker.",
+                "prefix": "Heading",
+                "suffix": " Another line."
+            }),
+        )
+        .expect("selection resolves");
+        assert_eq!(path, "paper.typ");
+        assert_eq!(&text[start..end], "The *pinned* compiler runs in a worker.");
+    }
+
+    /// Offsets are counted in UTF-16 by the anchor and in bytes by a query.
+    #[test]
+    fn a_range_after_an_astral_character_is_counted_in_bytes() {
+        let text = "Intro 𝑛 = 30.\n\nThe estimator is unbiased under sampling.\n";
+        let view = view_of("paper.typ", text);
+        let (_, start, end) = locate_selection(
+            &view,
+            &json!({
+                "path": "paper.typ",
+                "exact": "The estimator is unbiased under sampling.",
+                "prefix": "",
+                "suffix": ""
+            }),
+        )
+        .expect("selection resolves");
+        assert_eq!(
+            &text[start..end],
+            "The estimator is unbiased under sampling."
+        );
+    }
+
+    #[test]
+    fn words_in_no_file_are_refused() {
+        let view = view_of("paper.typ", "The pinned compiler runs in a worker.\n");
+        let failure = locate_selection(
+            &view,
+            &json!({"path":"paper.typ","exact":"nothing here says this at all","prefix":"","suffix":""}),
+        )
+        .expect_err("selection is refused");
+        assert_eq!(failure.code, "not_found");
+    }
 }

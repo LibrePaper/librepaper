@@ -49,6 +49,13 @@
     return true;
   }
 
+  /// Where "Focus Preview" goes. The frame rather than the section around it:
+  /// focusing the iframe puts the keyboard inside the document, so the arrow
+  /// keys scroll the pages instead of whatever was focused behind them.
+  export function focus() {
+    frame?.focus();
+  }
+
   function receive(event) {
     const origin = frame?.src ? new URL(frame.src).origin : docsOrigin;
     if (!origin || event.origin !== origin || event.source !== frame?.contentWindow) return;

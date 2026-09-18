@@ -42,14 +42,10 @@
 
   const linkOf = (role) => sharing?.links?.[role] || null;
   // A link the server sent a row for exists; whether it still works is what
-  // `expired` says. Not `key`: the catalogue stores a link's digest and
-  // cannot recover its key, so every response but the one that minted the
-  // link leaves `key` and `url` empty. Reading existence off the key made a
-  // settings save -- which mints nothing -- look like a deletion.
+  // `expired` says. Not `url`: a link whose key the server cannot unseal --
+  // one minted before the catalogue kept the key, or under a session key that
+  // has since been replaced -- has a row, works, and has no URL to show.
   const live = (link) => Boolean(link) && !link.expired;
-  // Whether this response is still carrying the URL itself, which is the only
-  // moment there is anything to copy.
-  const copyable = (link) => Boolean(link?.url);
   const needsSignin = (role) => (role === "editor" && sharing?.edit_needs_signin) || (role === "commenter" && sharing?.comment_needs_signin);
   // What a link's row says about itself once it exists: when it stops working,
   // and its budget only where one was chosen.
@@ -222,13 +218,14 @@
               {@render form(role)}
             {:else if live(link)}
               <p class="panel-meta">{metaOf(link)}</p>
-              <!-- The URL is shown once, when it is made: the server keeps a
-                   digest of it and cannot say it again. Rather than a copy
-                   button that would copy nothing, the row says so and offers
-                   the one thing that does produce a URL. -->
-              {#if !copyable(link)}<p class="panel-meta">The link is shown only when it is made. Replace it to get a new URL.</p>{/if}
+              <!-- The owner is given the URL whenever the server can read the
+                   key back, which is every link minted since it started
+                   keeping one. A link from before that has no URL to copy and
+                   is offered the one thing that produces one. -->
+              {@const url = link.url}
+              {#if !url}<p class="panel-meta">This link was made before its URL could be kept. Replace it to get a new URL.</p>{/if}
               <div class="share-row">
-                {#if copyable(link)}<button type="button" class="share-icon" disabled={busy} aria-label="Copy {role.label} link" title="Copy link" onclick={() => copy(fullUrl(link.url), role.label + " link copied.")}><Icon name={copied === fullUrl(link.url) ? "check" : "copy"} size={16} /></button>{/if}
+                {#if url}<button type="button" class="share-icon" disabled={busy} aria-label="Copy {role.label} link" title="Copy link" onclick={() => copy(fullUrl(url), role.label + " link copied.")}><Icon name={copied === fullUrl(url) ? "check" : "copy"} size={16} /></button>{/if}
                 <button type="button" class="share-icon" disabled={busy} aria-label="Edit {role.label} link settings" title="Edit settings" onclick={() => startSettings(role.id)}><Icon name="sliders" size={16} /></button>
                 <button type="button" class="share-icon" disabled={busy} aria-label="Replace {role.label} link" title="Replace link" onclick={() => askFirst(role.id, "replace")}><Icon name="refresh-cw" size={16} /></button>
                 <button type="button" class="share-icon share-destructive" disabled={busy} aria-label="Revoke {role.label} link" title="Revoke link" onclick={() => askFirst(role.id, "revoke")}><Icon name="trash" size={16} /></button>

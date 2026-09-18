@@ -16,9 +16,9 @@
 use serde::{Deserialize, Serialize};
 
 /// How a revision that is a position in the operation history is spelled,
-/// rather than a checkpoint. The browser's history panel uses the same
-/// spelling for a moment picked off the activity timeline, so one reader can
-/// tell the two apart without being told which it is holding.
+/// rather than a checkpoint. The browser reads the same spelling, so one
+/// reader can tell the two kinds apart without being told which it is
+/// holding.
 pub const MOMENT: &str = "frontier:";
 
 /// Opaque identity of one immutable state of the document's source.

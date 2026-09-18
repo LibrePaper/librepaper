@@ -15,6 +15,7 @@
     "check:offline-browser": "node tests/browser/editor-browser.mjs",
     "check:render-coordinator": "node tests/unit/render-coordinator.mjs",
     "check:upload": "node tests/unit/zip.mjs && node tests/unit/project-upload.mjs && node tests/unit/landing.mjs && node tests/browser/upload-browser.mjs",
+    "check:shortcuts": "node tests/unit/commands.mjs && node tests/browser/shortcuts-browser.mjs",
     "check:synctex": "node tests/unit/synctex.mjs",
     "check": "node --experimental-transform-types --test 'tests/unit/*.mjs' 'tests/unit/*.js' 'tests/integration/*.mjs' 'tests/integration/*.js'",
     "check:companion": "node tests/integration/local-companion.mjs && node tests/integration/companion-lifecycle.mjs && node tests/browser/local-consent-browser.mjs",

@@ -1,0 +1,19 @@
+-- The URL of a share link, kept where the owner can be given it again.
+--
+-- A link is a capability in a URL, and the catalogue kept only its digest, so
+-- the raw key existed on exactly one response: the one that minted it. Close
+-- the panel and the owner held a link they owned, could see the settings of,
+-- and could no longer hand to anybody. The only answer the panel had was to
+-- tell them to replace a link that was working perfectly well, which revokes
+-- it for everyone already holding it.
+--
+-- The key is kept sealed rather than plain. What seals it is the deployment's
+-- session key, which lives in the secrets directory and never in the
+-- catalogue, so a copy of this database on its own still yields no working
+-- link: the digest goes on doing the whole job of admitting a caller, and this
+-- column only lets the server that owns the secret say the URL again.
+--
+-- Empty for every link minted before this, and deliberately not backfilled:
+-- the key is not recoverable from the digest, which is the point of the
+-- digest. Those links keep working, and the panel offers to replace them.
+ALTER TABLE share_links ADD COLUMN sealed_token bytea NOT NULL DEFAULT ''::bytea;

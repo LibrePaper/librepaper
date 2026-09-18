@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,document_id,role,token_hash,label,comment_budget,generation,\n                    created_at,expires_at,revoked_at\n             FROM share_links WHERE document_id=$1 AND revoked_at IS NULL ORDER BY created_at,id",
+  "query": "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,generation,\n                    created_at,expires_at,revoked_at\n             FROM share_links WHERE document_id=$1 AND revoked_at IS NULL ORDER BY created_at,id",
   "describe": {
     "columns": [
       {
@@ -25,31 +25,36 @@
       },
       {
         "ordinal": 4,
+        "name": "sealed_token",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
         "name": "label",
         "type_info": "Text"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "comment_budget",
         "type_info": "Int8"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "generation",
         "type_info": "Int8"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "revoked_at",
         "type_info": "Timestamptz"
       }
@@ -65,6 +70,7 @@
       false,
       false,
       false,
+      false,
       true,
       false,
       false,
@@ -72,5 +78,5 @@
       true
     ]
   },
-  "hash": "70f62fb59aff2797d4b5610b119198e6a513f4f09f71cf1d244793fe2e30bc9b"
+  "hash": "93479d70ca383119c5b7e586fbb4a5616e660f23113a3bf568e54576ff9b5a54"
 }

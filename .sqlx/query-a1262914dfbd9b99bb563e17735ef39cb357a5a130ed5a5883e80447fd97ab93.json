@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE share_links SET role=$3,label=$5,expires_at=$6,comment_budget=$7,\n                        sealed_token=COALESCE(NULLIF($4,''::bytea),sealed_token),\n                        revoked_at=NULL\n                 WHERE document_id=$1 AND token_hash=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Text",
+        "Bytea",
+        "Text",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a1262914dfbd9b99bb563e17735ef39cb357a5a130ed5a5883e80447fd97ab93"
+}

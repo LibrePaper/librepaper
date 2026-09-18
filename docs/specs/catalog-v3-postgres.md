@@ -210,6 +210,7 @@ create table share_links (
     document_id uuid not null references documents(id) on delete cascade,
     role text not null check (role in ('reader','commenter','editor')),
     token_hash bytea not null unique,
+    sealed_token bytea not null default ''::bytea,
     label text not null default '',
     generation bigint not null default 1,
     created_at timestamptz not null default now(),
@@ -224,9 +225,20 @@ IDs and slugs provide identity. An earlier draft carried a normalized
 migration 0007 drops it, since it is a pure function of `title` and a search
 feature can derive it again in one backfill.
 
-A share token is a random bearer secret. PostgreSQL stores only its hash; there
-is no encrypted token to reseal and no key-rotation workflow. The owner may
-create a replacement link and revoke the old one.
+A share token is a random bearer secret. What admits a caller is `token_hash`
+and nothing else: the token is presented, hashed, and matched. Beside it,
+`sealed_token` holds the token itself under the deployment's session key, which
+lives in the secrets directory and never in the catalogue -- so a copy of this
+database alone yields no working link, while the server that owns the secret
+can say a link's URL again. That is what the sharing panel offers to copy, and
+it is the whole purpose of the column: an owner should not have to revoke a
+working link to get its URL back.
+
+There is no key-rotation workflow. A deployment that replaces its session key
+loses only the ability to restate a URL: the links go on admitting callers, and
+the panel offers to replace the ones it can no longer show. Links minted before
+migration 0019 have an empty `sealed_token` and are not backfillable, since a
+token cannot be recovered from its hash.
 
 The circular current-version and current-bundle foreign keys on
 `documents` are added after their target tables are created. They use

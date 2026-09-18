@@ -135,10 +135,55 @@ pub fn hash_link_key(key: &str) -> String {
 }
 
 /// A new link key: 256 bits from the same source every other secret here comes
-/// from, well past the 128 the spec asks for. It is returned once, to be shown
-/// once; the document keeps only its digest.
+/// from, well past the 128 the spec asks for. The document keeps its digest,
+/// which is what admits a caller, and a sealed copy of the key itself, which
+/// is what lets its owner be handed the URL again.
 pub fn mint_link_key() -> String {
     hex::encode(crate::auth::random_bytes(32))
+}
+
+/// The key that seals a link key, from the deployment's session key. A purpose
+/// string of its own keeps it off the key that signs sessions: the two are
+/// derived from the same root and are used for different things.
+fn sealing_key(session_key: &[u8]) -> chacha20poly1305::Key {
+    let mut digest = Sha256::new();
+    digest.update(b"librepaper-share-link-v1");
+    digest.update(session_key);
+    chacha20poly1305::Key::from(<[u8; 32]>::from(digest.finalize()))
+}
+
+/// A link key as the catalogue holds it: a nonce and the sealed bytes, so what
+/// is written down is useless to anybody who does not also hold the
+/// deployment's session key -- which is a file in the secrets directory, and
+/// never in the catalogue. The digest goes on doing the whole job of admitting
+/// a caller; this is only how the URL is said again.
+pub fn seal_link_key(session_key: &[u8], key: &str) -> Vec<u8> {
+    use chacha20poly1305::aead::{Aead, KeyInit};
+    let cipher = chacha20poly1305::XChaCha20Poly1305::new(&sealing_key(session_key));
+    let nonce = crate::auth::random_bytes(24);
+    let Ok(sealed) = cipher.encrypt(chacha20poly1305::XNonce::from_slice(&nonce), key.as_bytes())
+    else {
+        return Vec::new();
+    };
+    [nonce, sealed].concat()
+}
+
+/// The key back, or nothing. Nothing is an ordinary answer: a link minted
+/// before the catalogue kept the key at all has no sealed copy, and a
+/// deployment whose session key was replaced can no longer read the ones it
+/// has. Either way the link goes on working -- its digest is what admits
+/// anybody -- and only the offer to copy its URL is missing.
+pub fn open_link_key(session_key: &[u8], sealed: &[u8]) -> String {
+    use chacha20poly1305::aead::{Aead, KeyInit};
+    if sealed.len() <= 24 {
+        return String::new();
+    }
+    let cipher = chacha20poly1305::XChaCha20Poly1305::new(&sealing_key(session_key));
+    let (nonce, body) = sealed.split_at(24);
+    match cipher.decrypt(chacha20poly1305::XNonce::from_slice(nonce), body) {
+        Ok(key) => String::from_utf8(key).unwrap_or_default(),
+        Err(_) => String::new(),
+    }
 }
 
 impl Server {
@@ -154,7 +199,7 @@ impl Server {
         let link = LinkGrant {
             hash: hash_link_key(&key),
             role: Role::Reader.as_str().to_string(),
-            key: key.clone(),
+            sealed: seal_link_key(&self.key, &key),
             since: crate::util::timestamp(),
             ..Default::default()
         };
@@ -254,7 +299,7 @@ impl Server {
         // also the rotation: `set_link` below replaces whatever already
         // carried this role, so minting again is how a leaked link is killed
         // without losing the role it stood for.
-        let mut minted: Option<(String, LinkGrant)> = None;
+        let mut minted: Option<LinkGrant> = None;
         if let Some(wanted) = &asked.link {
             let Some(role) = parse_role_word(&wanted.role) else {
                 return write_json(
@@ -277,18 +322,15 @@ impl Server {
                 .as_deref()
                 .map(|label| clean(label, MAX_LINK_LABEL).trim().to_string());
             let key = mint_link_key();
-            minted = Some((
-                key.clone(),
-                LinkGrant {
-                    hash: hash_link_key(&key),
-                    role: role.as_str().to_string(),
-                    key: key.clone(),
-                    since: crate::util::timestamp(),
-                    until,
-                    label: label.unwrap_or_default(),
-                    budget: wanted.budget,
-                },
-            ));
+            minted = Some(LinkGrant {
+                hash: hash_link_key(&key),
+                role: role.as_str().to_string(),
+                sealed: seal_link_key(&self.key, &key),
+                since: crate::util::timestamp(),
+                until,
+                label: label.unwrap_or_default(),
+                budget: wanted.budget,
+            });
         }
 
         // A settings change is the mint's opposite number: the same four
@@ -354,7 +396,7 @@ impl Server {
                     }
                     entry.prune_guests(now);
                 }
-                if let Some((_, link)) = &minted {
+                if let Some(link) = &minted {
                     let mut link = link.clone();
                     // CLI callers may rotate a key without repeating its
                     // memo. An explicit empty label clears it; an omitted one
@@ -420,17 +462,10 @@ impl Server {
         // any socket already open on this document may no longer be entitled
         // to what it is holding.
         self.reauthorize(slug).await;
-        let mut answer = self.sharing_json(&entry);
-        if let Some((key, link)) = minted {
-            // This response is the only time the raw capability exists. Put
-            // it both in the compatibility field and in the role row the
-            // dialog renders; later GETs intentionally expose metadata only.
-            let url = format!("/docs/{slug}#k={key}");
-            answer["key"] = json!(key);
-            answer["links"][link.role.as_str()]["key"] = json!(key);
-            answer["links"][link.role.as_str()]["url"] = json!(url);
-        }
-        write_json(200, &answer)
+        // The minted key needs no special handling on the way out any more:
+        // it was sealed into the row that was just written, and `sharing_json`
+        // says the URL of every link it can open -- this one included.
+        write_json(200, &self.sharing_json(&entry))
     }
 
     /// Everything the share dialog draws: the owner's own link, the three
@@ -447,13 +482,20 @@ impl Server {
             let Some(link) = entry.link_for(role) else {
                 return Value::Null;
             };
-            let url = if link.key.is_empty() {
+            // The key itself, from the sealed copy the catalogue keeps. Only
+            // the owner is ever answered here, and this is the one thing they
+            // cannot get anywhere else: a link is its URL, and a link they
+            // cannot copy is one they cannot hand to anybody. Empty where the
+            // seal cannot be opened, which the dialog reads as "no URL to
+            // offer" and answers with the offer to replace the link.
+            let key = open_link_key(&self.key, &link.sealed);
+            let url = if key.is_empty() {
                 String::new()
             } else {
-                format!("/docs/{}#k={}", entry.slug, link.key)
+                format!("/docs/{}#k={key}", entry.slug)
             };
             json!({
-                "key": link.key,
+                "key": key,
                 "url": url,
                 "since": link.since,
                 "until": link.until,
@@ -666,5 +708,51 @@ impl Server {
                 write_json(500, &json!({"error": "could not record the change"}))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod link_key_tests {
+    use super::*;
+
+    /// What the catalogue holds is the key, and only to the deployment that
+    /// sealed it. The panel's offer to copy a link rests on this: the row
+    /// carries the URL back, and a copy of the catalogue without the secrets
+    /// directory carries nothing.
+    #[test]
+    fn a_sealed_key_comes_back_only_to_the_key_that_sealed_it() {
+        let session = b"a deployment's session key".to_vec();
+        let key = mint_link_key();
+        let sealed = seal_link_key(&session, &key);
+        assert_ne!(
+            sealed,
+            key.as_bytes(),
+            "the key is not written down as it is"
+        );
+        assert!(!sealed
+            .windows(key.len())
+            .any(|window| window == key.as_bytes()));
+        assert_eq!(open_link_key(&session, &sealed), key);
+        assert_eq!(
+            open_link_key(b"another deployment", &sealed),
+            "",
+            "another deployment's secret opens nothing"
+        );
+        assert_eq!(
+            open_link_key(&session, &[]),
+            "",
+            "and a link from before the catalogue kept a key has nothing to open"
+        );
+    }
+
+    /// Two seals of the same key differ, because each carries its own nonce.
+    /// Nothing depends on this, but a deterministic ciphertext would leak that
+    /// two documents were shared with the same key, which is not a thing this
+    /// column should be able to say.
+    #[test]
+    fn sealing_the_same_key_twice_writes_down_two_different_things() {
+        let session = b"a deployment's session key".to_vec();
+        let key = mint_link_key();
+        assert_ne!(seal_link_key(&session, &key), seal_link_key(&session, &key));
     }
 }

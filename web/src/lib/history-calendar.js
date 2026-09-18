@@ -37,7 +37,7 @@
 // minute a timestamp is at once the reader's own timezone is applied -- is
 // the part worth checking without a browser.
 
-import { level, minutesIn, momentsOf, withWork } from "./activity.js";
+import { level, minutesIn, withWork } from "./activity.js";
 import { checkpointOrder } from "./history.js";
 import { day as isoDay } from "./dates.js";
 
@@ -329,36 +329,3 @@ function changedAcross(points) {
   return [...paths].sort();
 }
 
-/// The minutes somebody wrote in that no version was taken in.
-///
-/// These are reachable and sometimes wanted -- the whole operation history is
-/// kept so that a reader can open a minute nobody thought to save -- but they
-/// are not what a version history is for, and there are far more of them than
-/// there are versions. The panel keeps them folded away; this is the list it
-/// unfolds.
-///
-/// A minute a version already covers is that version's minute, and appears
-/// only as the version.
-///
-/// Each minute carries what was written in it -- `changes`, the writes the
-/// minute admitted, and `work`, what the document grew by across them -- so
-/// that the list is not a column of bare clock times in which every row reads
-/// like the one above it.
-export function unsavedMinutes(checkpoints, rows, day, timeZone) {
-  const saved = new Set(dayVersions(checkpoints, day, timeZone).map((one) => one.minute));
-  const byMinute = new Map();
-  for (const row of momentsOf(rows, day, timeZone)) {
-    const minute = minutesIn(row.at, timeZone);
-    if (minute < 0 || saved.has(minute)) continue;
-    const found = byMinute.get(minute) || { minute, changes: 0, work: 0, frontier: "" };
-    found.changes += row.changes;
-    found.work += row.work;
-    found.frontier = row.frontier || found.frontier;
-    byMinute.set(minute, found);
-  }
-  // Newest first, like the versions above them: this list hangs off the end
-  // of the same day and is read the same way.
-  return [...byMinute.values()]
-    .filter((one) => one.frontier)
-    .sort((left, right) => right.minute - left.minute);
-}

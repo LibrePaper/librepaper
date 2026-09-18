@@ -1690,7 +1690,18 @@ mod tests {
 
         let reader = [1u8; 32];
         let commenter = [2u8; 32];
-        let link = |role: &str, hash: [u8; 32]| (role.to_string(), hash, String::new(), None, None);
+        // A sealed key per token, so the save writes the whole row the way the
+        // server does; what is in it is opaque here.
+        let link = |role: &str, hash: [u8; 32]| {
+            (
+                role.to_string(),
+                hash,
+                hash.to_vec(),
+                String::new(),
+                None,
+                None,
+            )
+        };
 
         catalog
             .replace_share_links(document.id, &[link("reader", reader)])

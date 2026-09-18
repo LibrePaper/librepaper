@@ -11,7 +11,8 @@
   import * as figures from "../lib/figures.js";
   import * as activity from "../lib/activity.js";
   import * as history from "../lib/history.js";
-  import { anchorOf, createHistorySource, isMoment, MOMENT } from "../lib/reader/history-source.svelte.js";
+  import { createHistorySource } from "../lib/reader/history-source.svelte.js";
+  import { anchorOf, isMoment } from "../lib/moment.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import * as passages from "../lib/passages.js";
   import * as suggestions from "../lib/suggestions.js";
@@ -55,7 +56,8 @@
     write,
   } from "../lib/storage.js";
   import { ACTIVITY_WIDTH, DOCUMENT_MIN, GRIP, PANES, RATIOS, clamp, measure, pixels, px, showing } from "../lib/panes.js";
-  import { tabsFor } from "../lib/panels.js";
+  import { slotId, tabsFor } from "../lib/panels.js";
+  import { APPLE, availability, commandFor, menuKeys } from "../lib/commands.js";
 
   import { tick, untrack } from "svelte";
   import { Menu } from "@skeletonlabs/skeleton-svelte";
@@ -64,6 +66,8 @@
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import Modal from "./Modal.svelte";
+  import CommandPalette from "./CommandPalette.svelte";
+  import KeyboardShortcuts from "./KeyboardShortcuts.svelte";
   import Toasts from "./Toasts.svelte";
   import { say } from "../lib/toast.svelte.js";
   import { archive, availableDownloads, docxFile, entryDownload, projectFiles, renderingFile, saveBlob } from "../lib/reader/downloads.js";
@@ -1616,7 +1620,6 @@
   // a clicked version appear unselected.
   const historySource = createHistorySource({
     checkpoint: sha => history.checkpoint(SLUG, sha, keyHeaders(KEY)),
-    moment: anchor => activity.documentAt(SLUG, anchor, keyHeaders(KEY)),
     checkpoints: () => checkpoints,
     preferredPath: () => session?.paths?.get(openFile) || "",
     currentTree: () => {
@@ -1674,11 +1677,6 @@
       if (!readerDisposed && mine === activityRead) activityLoading = false;
     }
   }
-
-  // Showing a moment is showing a version: the same selection, the same
-  // comparison against the document as it stands, the same pane.
-  const viewMoment = (anchor) => viewPoint(anchor ? `${MOMENT}${anchor}` : "");
-  const viewingMoment = $derived(isMoment(historySelectedSha) ? anchorOf(historySelectedSha) : "");
 
   // The timeline and the source workspace share one selection. Selecting a
   // version compares it with the current source and nothing else: the
@@ -2435,6 +2433,10 @@
   let settingsOpen = $state(false);
   let settingsCategory = $state("editor");
   function openSettings(category = "editor") {
+    // The editor category carries the shortcut table, and the table greys what
+    // the source cannot currently do, so the editor is asked before the page
+    // that shows the answer is drawn.
+    refreshEditAvailability();
     settingsCategory = category;
     settingsOpen = true;
   }
@@ -2628,17 +2630,13 @@
 
   // What the keyboard already does, named beside the item the way a desktop
   // menu names it: the menu is where people go to learn the shortcut, not
-  // only to avoid it. Only for the default binding -- in Vim or Emacs mode
-  // these keys belong to the mode, and a menu naming them would be lying.
-  // Replace has no binding of its own, so it claims none.
-  const APPLE = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || "");
-  const MOD = APPLE ? "⌘" : "Ctrl+";
-  const DEFAULT_EDIT_KEYS = {
-    undo: `${MOD}Z`, redo: APPLE ? "⇧⌘Z" : "Ctrl+Y",
-    cut: `${MOD}X`, copy: `${MOD}C`, paste: `${MOD}V`,
-    "select-all": `${MOD}A`, find: `${MOD}F`,
-  };
-  const EDIT_KEYS = $derived(keys === "vim" || keys === "emacs" ? {} : DEFAULT_EDIT_KEYS);
+  // only to avoid it. Read from lib/commands.js rather than written here, so a
+  // menu cannot name a key the window has stopped listening for.
+  //
+  // In Vim or Emacs mode the editing keys belong to the mode, and a menu
+  // naming them would be lying about what the next keystroke does; the
+  // workspace's own keys are not the mode's and stay named.
+  const MENU_KEYS = $derived(menuKeys({ modalEditor: keys === "vim" || keys === "emacs", apple: APPLE }));
 
   function chooseEditCommand(command) {
     showMobileView("source");
@@ -3296,6 +3294,88 @@
   // The arrangement is changed often enough to be worth a key. Ctrl-\ is what
   // an editor usually puts a split on, and nothing here or in CodeMirror wants
   // it.
+  /* ------------------------------------------------------------- the keyboard */
+
+  let commandPalette = $state(false);
+  let shortcutsShown = $state(false);
+
+  // What the workspace can currently offer, as facts rather than rules. The
+  // rules are in lib/commands.js, which decides from these whether a command
+  // can be asked for; this is the only place that knows both.
+  const commandContext = $derived({
+    mayEdit, editing, compact,
+    panels: tabs.map((tab) => tab.id),
+    preview: shown.document,
+    compilable: mayEdit && sourceFormat === "latex" && compilesHere,
+    canPreviewFile,
+    downloads: {
+      pdf: previewOutputKind === "pdf" && Boolean(downloads.pdf),
+      html: previewOutputKind !== "pdf" && Boolean(downloads.html),
+      docx: Boolean(docxDownload),
+    },
+    edit: editAvailability,
+  });
+
+  // What each command can do about it, asked once. The menus grey a line by
+  // this and the keyboard refuses a chord by this, so a greyed item and a dead
+  // key are the same answer rather than two rules that can disagree in public.
+  const can = $derived(availability(commandContext));
+
+  // Whether a selection can be cut, whether there is anything to undo: the
+  // editor is asked, because only it knows, and it is asked when something is
+  // about to show the answer rather than on every keystroke. The menu does
+  // this on opening; the palette and the help table are the same question
+  // asked from two more places.
+  function refreshEditAvailability() {
+    editAvailability = editor?.editAvailability() || {};
+  }
+
+  // One dispatcher, and it dispatches: every command here is a call to the
+  // thing the menu already calls, so a command cannot drift from the menu item
+  // that names it. Nothing new is implemented in this function.
+  async function runCommand(id) {
+    if (EDIT_COMMANDS.includes(id)) return chooseEditCommand(id);
+    if (id === "palette") { refreshEditAvailability(); commandPalette = true; return; }
+    if (id === "shortcuts") { refreshEditAvailability(); shortcutsShown = true; return; }
+    if (id === "focus-files") return focusPanel("files");
+    if (id === "focus-outline") return focusPanel("outline");
+    if (id === "focus-comments") return focusPanel("collaboration");
+    if (id === "focus-preview") return focusPreview();
+    if (id === "layout-cycle") return cycleLayout();
+    if (LAYOUT_COMMANDS.includes(id)) return chose(id);
+    if (id === "preview-file") return chooseViewCommand(id);
+    return chooseFileCommand(id);
+  }
+
+  const EDIT_COMMANDS = ["undo", "redo", "cut", "copy", "paste", "select-all", "find", "replace"];
+  const LAYOUT_COMMANDS = ["linked", "layout-source", "layout-document", "layout-split", "side-left", "side-right"];
+
+  // Open the panel, then put the keyboard in it. The first of those was all a
+  // panel command used to do, and a panel that appears while the focus stays
+  // where it was is a panel somebody reached for and then has to Tab to.
+  //
+  // What is focused is whatever the panel offers first; the region itself,
+  // which carries the panel's name, catches a panel that offers nothing.
+  async function focusPanel(name) {
+    await openPanel(name);
+    await tick();
+    const slot = document.getElementById(slotId(name));
+    if (!slot) return;
+    const first = [...slot.querySelectorAll(FOCUSABLE)].find((node) => node.offsetParent !== null);
+    if (first) return first.focus();
+    slot.tabIndex = -1;
+    slot.focus();
+  }
+
+  const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  // The preview, which on a narrow screen has to be the face that is showing
+  // before it can be the thing that has the focus.
+  function focusPreview() {
+    if (compact) showMobileView("document");
+    preview?.focus();
+  }
+
   function shortcut(event) {
     // One Escape, one thing: the swatches, then the bar. Nothing here
     // touches a dialog -- those close themselves -- and nothing happens when
@@ -3305,14 +3385,14 @@
       if (bar.shown) { bar = { ...bar, shown: false }; return; }
       return;
     }
-    if (editing && (event.ctrlKey || event.metaKey) && event.altKey && event.key.toLowerCase() === "l") {
-      event.preventDefault();
-      setLinked(!linked);
-      return;
-    }
-    if (!editing || !(event.ctrlKey || event.metaKey) || event.key !== "\\") return;
+    // Everything else is the registry's. `commandFor` answers with a command
+    // only when the chord is bound, the focus is somewhere a workspace command
+    // may act, and the command has a target right now; the key is cancelled
+    // only once it has said yes, so an unclaimed chord is still the browser's.
+    const command = commandFor(event, commandContext);
+    if (!command) return;
     event.preventDefault();
-    cycleLayout();
+    void runCommand(command.id);
   }
 </script>
 
@@ -3329,11 +3409,11 @@
        Greyed out, not hidden, while there is nothing to download yet, so the
        menu says what the document will offer. -->
   {#if previewOutputKind === "pdf"}
-    <Menu.Item value="download-pdf" class="menuitem" disabled={!downloads.pdf}>Download PDF</Menu.Item>
+    <Menu.Item value="download-pdf" class="menuitem" disabled={!can["download-pdf"]}>Download PDF</Menu.Item>
   {:else}
-    <Menu.Item value="download-html" class="menuitem" disabled={!downloads.html}>Download HTML</Menu.Item>
+    <Menu.Item value="download-html" class="menuitem" disabled={!can["download-html"]}>Download HTML</Menu.Item>
   {/if}
-  <Menu.Item value="download-docx" class="menuitem" disabled={!docxDownload}>Download DOCX</Menu.Item>
+  <Menu.Item value="download-docx" class="menuitem" disabled={!can["download-docx"]}>Download DOCX</Menu.Item>
   {#if mayEdit}
     <Menu.Item value="offline" class="menuitem" disabled={offlinePrepared || preparingOffline || Boolean(persistence.localError)}>
       {offlinePrepared ? "Available offline" : preparingOffline ? "Preparing offline copy…" : "Make available offline"}
@@ -3349,9 +3429,9 @@
   {#if mayEdit}
     <hr class="hr my-1" />
     {#if sourceFormat === "latex" && compilesHere}
-      <Menu.Item value="compile" class="menuitem">Compile now</Menu.Item>
+      <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">Compile now</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
     {/if}
-    <Menu.Item value="settings" class="menuitem">Settings…</Menu.Item>
+    <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">Settings…</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
   {/if}
 {/snippet}
 
@@ -3374,7 +3454,7 @@
   {/each}
   <hr class="hr my-1" />
   <Menu.Item value="linked" class="menuitem">
-    <span class="menuitem-check">{linked ? "✓" : ""}</span>Keep in step
+    <span class="menuitem-check">{linked ? "✓" : ""}</span><span class="menuitem-label">Keep in step</span>{#if MENU_KEYS.linked}<span class="menuitem-keys">{MENU_KEYS.linked}</span>{/if}
   </Menu.Item>
 {/snippet}
 
@@ -3422,7 +3502,7 @@
 {/snippet}
 
 {#snippet viewItems()}
-  <Menu.Item value="preview-file" class="menuitem" disabled={!canPreviewFile}>Preview this file</Menu.Item>
+  <Menu.Item value="preview-file" class="menuitem" disabled={!can["preview-file"]}>Preview this file</Menu.Item>
   <hr class="hr my-1" />
   {@render previewItems()}
   {#if localExecutionRelevant}
@@ -3516,6 +3596,18 @@
     {#if mayEdit && bundleStatus}
       <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => openPanel("share")}>Unpublished changes</button>
     {/if}
+    <!-- What the keyboard does, one press away from the bar rather than a
+         page of documentation away. It is in the bar because that is where a
+         person looks for what the window can do, and it opens the same table
+         `?` opens, which is the same list the keys themselves are wired
+         from.
+         Not on a phone, which has no keyboard to explain and no room in the
+         bar to explain it in. The table is still there for a phone with a
+         keyboard attached: `?` opens it. -->
+    <div class="desktop-workspace-menu">
+      <IconButton icon="keyboard" label="Keyboard shortcuts" tone="plain"
+                  onclick={() => void runCommand("shortcuts")} />
+    </div>
     <div class="presence" role="group" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
       <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
       {#if !connected}<span class="connection-label">Offline</span>{/if}
@@ -3537,13 +3629,13 @@
     </div>
     {#if editing && mayEdit}
       <MenubarMenu id="edit" label="Edit" disabled={!editor || !!mergeTarget || !!shownFigure}
-                   onopen={() => { editAvailability = editor?.editAvailability() || {}; }}
+                   onopen={refreshEditAvailability}
                    onselect={chooseEditCommand}>
         {#each editGroups as group, index}
           {#if index}<hr class="hr my-1" />{/if}
           {#each group as [command, label]}
-            <Menu.Item value={command} class="menuitem" disabled={!editAvailability[command]}>
-              <span class="menuitem-label">{label}</span>{#if EDIT_KEYS[command]}<span class="menuitem-keys">{EDIT_KEYS[command]}</span>{/if}
+            <Menu.Item value={command} class="menuitem" disabled={!can[command]}>
+              <span class="menuitem-label">{label}</span>{#if MENU_KEYS[command]}<span class="menuitem-keys">{MENU_KEYS[command]}</span>{/if}
             </Menu.Item>
           {/each}
         {/each}
@@ -3657,7 +3749,6 @@
     <History {checkpoints} viewing={historySelectedSha} canEdit={mayEdit}
       durability={historyDurability} problem={historyProblem} onview={viewPoint}
       activity={activityRows} activityProblem={activityProblem} activityLoading={activityLoading}
-      {viewingMoment} onmoment={viewMoment}
       onname={nameCheckpoint} />
   {/snippet}
 
@@ -3917,12 +4008,20 @@
   </div>
 {/if}
 
+<!-- The keyboard, said twice: once as a table to read and once as a list to
+     search. Both are drawn from lib/commands.js and both run what the menus
+     run, so neither can drift from what the keys actually do. -->
+<KeyboardShortcuts bind:open={shortcutsShown} context={commandContext}
+                   modalEditor={keys === "vim" || keys === "emacs"} apple={APPLE} />
+<CommandPalette bind:open={commandPalette} context={commandContext} apple={APPLE}
+                onrun={(id) => void runCommand(id)} />
+
 <!-- The preferences, opened from the navbar menu rather than the column:
      the sidebar is for what its icons offer, and a page of settings reads
      better at the width of the window than in a column beside the text. -->
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 {sourceFormat} {mayEdit}
-                {keys} onkeys={setKeys}
+                {keys} onkeys={setKeys} commands={commandContext}
                 buildPreferences={buildPreferences} documentId={SLUG} userId={buildUserId} onbuildpreferences={setBuildPreferences}
                 main={previewMain} bindingId={quartoBindingId} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
                 options={quartoOptions}

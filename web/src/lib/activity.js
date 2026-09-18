@@ -3,9 +3,11 @@
 // The server answers `/activity` with one row per minute in which a write
 // landed: how many persistence cycles it held, how large the document was by
 // the end of it, and the frontier that reproduces it. `/at` turns one of those
-// frontiers back into a document. Between them a reader can reach a moment
-// nobody checkpointed, which is the point of keeping the whole operation
-// history rather than thinning it.
+// frontiers back into a document. Between them a comment made against no
+// checkpoint still has a document to be read against, which is the point of
+// keeping the whole operation history rather than thinning it. The timeline
+// no longer lists those minutes: a column of clock times could not say which
+// one was wanted.
 //
 // Everything below the two fetches is pure, because that is the part with any
 // judgement in it: what the work in a minute actually was, and which of five
@@ -14,7 +16,6 @@
 // `history-calendar.js`, because it draws versions beside these.
 
 import { SHELL_HEADERS } from "./api.js";
-import { day as isoDay } from "./dates.js";
 
 const asked = (headers) => ({ ...SHELL_HEADERS, ...headers });
 
@@ -72,11 +73,6 @@ export function level(value, most) {
   if (!(value > 0)) return 0;
   if (!(most > 0)) return 1;
   return Math.min(4, Math.max(1, Math.ceil((value / most) * 4)));
-}
-
-/// The rows a day holds, in the reader's own timezone, oldest first.
-export function momentsOf(rows, day, timeZone) {
-  return withWork(rows).filter((row) => isoDay(row.at, timeZone) === day);
 }
 
 /// The minute of the day `at` falls in, in the reader's timezone, counted

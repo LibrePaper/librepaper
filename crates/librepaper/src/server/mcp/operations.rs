@@ -1067,7 +1067,7 @@ impl Server {
 /// The byte offset of a UTF-16 offset, or `None` when it falls inside a
 /// character. A patch is stated in bytes and an anchor counts the way a
 /// browser does, so one of the two has to be converted, exactly.
-fn byte_of_utf16(text: &str, target: usize) -> Option<usize> {
+pub(super) fn byte_of_utf16(text: &str, target: usize) -> Option<usize> {
     let mut units = 0;
     for (byte, character) in text.char_indices() {
         if units == target {

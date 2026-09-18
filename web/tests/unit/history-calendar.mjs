@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import {
   dayEntries, dayVersions, deliberate, monthGrid, monthOf, monthSpan,
-  shiftDay, shiftMonth, unsavedMinutes, versionDays,
+  shiftDay, shiftMonth, versionDays,
 } from "../../src/lib/history-calendar.js";
 
 const mark = (at, extra = {}) => ({
@@ -331,48 +331,6 @@ const coarse = (points, options = {}) =>
   // them, so they keep folding.
   assert.equal(deliberate({ why: "quiet" }), false);
   assert.equal(deliberate({ why: "left" }), false);
-}
-
-// --- what was written and never saved --------------------------------------
-
-{
-  const rows = [
-    row("2026-09-14T09:05:00Z", 2, 1000, "one"),
-    row("2026-09-14T09:05:40Z", 1, 1100, "two"),
-    row("2026-09-14T09:40:00Z", 3, 1600, "three"),
-    row("2026-09-14T14:00:00Z", 1, 1650, "four"),
-    row("2026-09-15T10:00:00Z", 9, 9000, "elsewhere"),
-  ];
-  // The minute a version was taken in is that version's minute, and belongs
-  // to the list of versions rather than to this one.
-  const points = [mark("2026-09-14T09:40:30Z")];
-  const left = unsavedMinutes(points, rows, "2026-09-14", "UTC");
-  // Newest first, like the versions these hang under.
-  assert.deepEqual(left.map((one) => one.minute), [840, 545],
-    "only the minutes no version covers");
-  assert.equal(left[1].changes, 3, "a minute sums the writes in it");
-  // 1000 arriving and 1100 after it: the first row of all is the document
-  // turning up, and the second is the hundred bytes it grew by.
-  assert.equal(left[1].work, 1100, "and what the document grew by across them");
-  assert.equal(left[0].work, 50, "a later minute grows only over the one before it");
-  assert.deepEqual(left.map((one) => one.frontier), ["four", "two"],
-    "and each opens the last anchor left in it");
-  assert.ok(!left.some((one) => one.frontier === "elsewhere"), "the day holds only its own");
-  // A minute with no anchor cannot be opened, so offering it would be a row
-  // that does nothing.
-  const anchorless = unsavedMinutes([], [
-    { at: "2026-09-14T11:00:00Z", changes: 1, state_bytes: 10, frontier: "", peer: "" },
-  ], "2026-09-14", "UTC");
-  assert.deepEqual(anchorless, []);
-  // The reader's own day and clock again: two in the afternoon in UTC is
-  // eleven at night in Tokyo, still the same day and near the end of it.
-  const tokyo = unsavedMinutes([], rows, "2026-09-14", "Asia/Tokyo");
-  assert.deepEqual(tokyo.map((one) => [one.frontier, one.minute]),
-    [["four", 1380], ["three", 1120], ["two", 1085]]);
-  assert.deepEqual(
-    unsavedMinutes([], rows, "2026-09-15", "Asia/Tokyo").map((one) => one.frontier),
-    ["elsewhere"],
-  );
 }
 
 console.log("history calendar: whole weeks either side of the month, and a day coarsened by significance");

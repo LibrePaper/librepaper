@@ -44,6 +44,10 @@ pub struct ShareLinkRecord {
     pub document_id: Uuid,
     pub role: String,
     pub token_hash: Vec<u8>,
+    /// The link's own key, sealed by the server that minted it. Empty for a
+    /// link from before the column existed, and meaningless to anybody who
+    /// does not hold the deployment's session key.
+    pub sealed_token: Vec<u8>,
     pub label: String,
     pub comment_budget: Option<i64>,
     pub generation: i64,
@@ -87,6 +91,7 @@ impl PostgresCatalog {
         links: &[(
             String,
             [u8; 32],
+            Vec<u8>,
             String,
             Option<OffsetDateTime>,
             Option<i64>,
@@ -106,17 +111,25 @@ impl PostgresCatalog {
         )
         .execute(&mut *tx)
         .await?;
-        for (role, hash, label, expires, budget) in links {
+        for (role, hash, sealed, label, expires, budget) in links {
             // Scoped to this document, so a token that somehow belongs to
             // another one is not quietly moved: nothing is updated, and the
             // insert below refuses it by the unique constraint.
+            //
+            // The sealed key is the one field a save can only ever restate:
+            // the same token is the same key, and the entry being written back
+            // may have come from a server that could not read it. An empty one
+            // is therefore "unchanged", never "forget it" -- losing it would
+            // cost the owner the URL of a link that is working.
             let kept = sqlx::query!(
-                "UPDATE share_links SET role=$3,label=$4,expires_at=$5,comment_budget=$6,
+                "UPDATE share_links SET role=$3,label=$5,expires_at=$6,comment_budget=$7,
+                        sealed_token=COALESCE(NULLIF($4,''::bytea),sealed_token),
                         revoked_at=NULL
                  WHERE document_id=$1 AND token_hash=$2",
                 document_id,
                 hash.as_slice(),
                 role,
+                sealed.as_slice(),
                 label,
                 *expires,
                 *budget,
@@ -126,12 +139,13 @@ impl PostgresCatalog {
             .rows_affected();
             if kept == 0 {
                 sqlx::query!(
-                    "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
-                     VALUES($1,$2,$3,$4,$5,$6,$7)",
+                    "INSERT INTO share_links(id,document_id,role,token_hash,sealed_token,label,expires_at,comment_budget)
+                     VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
                     new_id(),
                     document_id,
                     role,
                     hash.as_slice(),
+                    sealed.as_slice(),
                     label,
                     *expires,
                     *budget,
@@ -277,7 +291,7 @@ impl PostgresCatalog {
             ShareLinkRecord,
             "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
              VALUES($1,$2,$3,$4,$5,$6,$7)
-             RETURNING id,document_id,role,token_hash,label,comment_budget,generation,
+             RETURNING id,document_id,role,token_hash,sealed_token,label,comment_budget,generation,
                        created_at,expires_at,revoked_at",
             new_id(),
             document_id,
@@ -304,7 +318,7 @@ impl PostgresCatalog {
         }
         sqlx::query_as!(
             ShareLinkRecord,
-            "SELECT id,document_id,role,token_hash,label,comment_budget,generation,
+            "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,generation,
                     created_at,expires_at,revoked_at
              FROM share_links WHERE document_id=ANY($1) AND revoked_at IS NULL
              ORDER BY document_id,created_at,id",
@@ -318,7 +332,7 @@ impl PostgresCatalog {
     pub async fn share_links(&self, document_id: Uuid) -> Result<Vec<ShareLinkRecord>> {
         sqlx::query_as!(
             ShareLinkRecord,
-            "SELECT id,document_id,role,token_hash,label,comment_budget,generation,
+            "SELECT id,document_id,role,token_hash,sealed_token,label,comment_budget,generation,
                     created_at,expires_at,revoked_at
              FROM share_links WHERE document_id=$1 AND revoked_at IS NULL ORDER BY created_at,id",
             document_id,

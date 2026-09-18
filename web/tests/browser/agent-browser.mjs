@@ -230,9 +230,20 @@ try {
   await page.evaluate("window.setProps({selection:{exact:'same',source:{path:'a.md',exact:'same',prefix:'before ',suffix:' after',position:20},revision:'captured-a'},request:{id:'new-selection',selection:{exact:'same',source:{path:'a.md',exact:'same',prefix:'before ',suffix:' after',position:20}},revision:'captured-a'}})");
   await until("replacement choice", () => page.evaluate('document.body.innerText.includes("Replace draft and context")'), 1000);
   await page.evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent==="Replace draft and context").click()');
-  await until("replacement applied", () => page.evaluate('document.querySelector("textarea").value==="" && document.querySelector(".attachment").textContent.includes("a.md")'), 1000);
-  await page.evaluate('Array.from(document.querySelectorAll(".task-chips button")).find(b=>b.textContent==="Tighten").click()');
-  await until("tighten task", () => page.evaluate('document.querySelector("textarea").value==="Tighten the selected passage."'), 1000);
+  await until("replacement applied", () => page.evaluate('document.querySelector("textarea").value==="" && document.querySelector(".context-summary").textContent.includes("a.md")'), 1000);
+  // The launcher is a catalog: search narrows it, a row opens a preparation
+  // view, and only that view writes the draft.
+  await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
+  await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='tight';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await until("search narrows", () => page.evaluate('document.querySelectorAll(".task-catalog .task-row").length===1'), 1000);
+  await page.evaluate('document.querySelector(".task-catalog .task-row").click()');
+  await until("preparation view", () => page.evaluate('!!document.querySelector(".task-prepare") && document.querySelector(".task-prepare .attachment").textContent.includes("a.md")'), 1000);
+  assert.equal(await page.evaluate('document.querySelector("textarea").value'), "", "opening a task does not write the draft");
+  assert.equal(await page.evaluate('document.querySelector(".task-scope select").value'), "selection", "scope is inferred from the attached passage");
+  await page.evaluate(`(()=>{const notes=document.querySelector('.task-prepare textarea');notes.value='Keep the citations.';notes.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await page.evaluate('Array.from(document.querySelectorAll(".task-prepare button")).find(b=>b.textContent==="Prepare message").click()');
+  await until("tighten task", () => page.evaluate('document.querySelector("textarea").value==="Tighten the selected passage.\\n\\nKeep the citations."'), 1000);
+  assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), false, "preparing a message returns to the chat");
   await page.evaluate("window.setProps({path:'b.md'})");
   await page.evaluate('document.querySelector(".chat-form").requestSubmit()');
   await until("anchored request", () => page.evaluate("window.sockets[1].sent.some(frame=>frame.task?.kind==='tighten')"), 1000);
@@ -240,8 +251,8 @@ try {
   assert.equal(anchored.context.file, "a.md");
   assert.equal(anchored.context.revision, "captured-a");
   assert.equal(anchored.context.selection.position, 20);
-  await page.evaluate('Array.from(document.querySelectorAll(".attachment button")).find(b=>b.textContent==="Remove").click()');
-  await until("removed attachment", () => page.evaluate('!document.querySelector(".attachment")'), 1000);
+  await page.evaluate('Array.from(document.querySelectorAll(".context-summary button")).find(b=>b.textContent==="Remove passage").click()');
+  await until("removed attachment", () => page.evaluate('!document.body.innerText.includes("Selected passage")'), 1000);
   await page.evaluate("window.setProps({request:{id:'diagnostic',diagnostic:{file:'error.typ',line:4,message:'Old error',source:'old source',revision:'old-revision'},revision:'old-revision'}})");
   await until("diagnostic request", () => page.evaluate('document.querySelector("textarea").value==="Fix this diagnostic."'), 1000);
   await page.evaluate('document.querySelector(".chat-form").requestSubmit()');
@@ -267,16 +278,23 @@ try {
   assert.deepEqual(await page.evaluate("window.createdAccess"), {link:{role:"reader",until:"180d",label:"Agent"}});
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), true);
-  await page.evaluate('Array.from(document.querySelectorAll(".task-chips button")).find(b=>b.textContent==="Explain").click()');
+  await page.evaluate(`(()=>{const search=document.querySelector('.task-search');search.value='';search.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await until("catalog groups", () => page.evaluate('document.querySelectorAll(".task-catalog .task-group").length>=3'), 1000);
+  await page.evaluate('Array.from(document.querySelectorAll(".task-catalog .task-row span")).find(s=>s.textContent==="Explain").closest("button").click()');
+  await page.evaluate('Array.from(document.querySelectorAll(".task-prepare button")).find(b=>b.textContent==="Prepare message").click()');
   await until("preset opens chat", () => page.evaluate('!document.querySelector("#agent-pane-chat").hidden'), 1000);
 
   await page.evaluate("window.setProps({comments:[{id:'task-comment',body:'Clarify this',replies:[]}],diagnostics:[{message:'Compile error',file:'error.typ',revision:'old-sha',source:'old source'}]})");
   await page.evaluate('document.querySelector("#agent-tab-connection").click(); document.querySelectorAll(".access-buttons button")[1].click()');
   await until("comment access", () => page.evaluate("window.copiedInstructions.includes('#k=commenter')"), 1000);
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
-  await page.evaluate('Array.from(document.querySelectorAll(".context-tasks button")).find(b=>b.textContent==="Address comment").click()');
+  await page.evaluate('Array.from(document.querySelectorAll(".context-tasks .task-row span")).find(s=>s.textContent==="Address comment").closest("button").click()');
   assert.equal(await page.evaluate("window.commentTask.id"), "task-comment");
-  await page.evaluate('Array.from(document.querySelectorAll(".context-tasks button")).find(b=>b.textContent==="Fix diagnostic").click()');
+  await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
+  // The launcher names the diagnostic; the compiler's prose stays in Diagnostics.
+  assert.match(await page.evaluate('document.querySelector(".context-tasks").textContent'), /Error · error\.typ/);
+  assert.ok(!(await page.evaluate('document.querySelector(".context-tasks").textContent')).includes("Compile error"));
+  await page.evaluate('Array.from(document.querySelectorAll(".context-tasks .task-row span")).find(s=>s.textContent==="Fix diagnostic").closest("button").click()');
   assert.equal(await page.evaluate("window.diagnosticTask.revision"), "old-sha");
   assert.equal(await page.evaluate("window.diagnosticTask.source"), "old source");
   await page.evaluate('document.querySelector("#agent-tab-chat").click()');

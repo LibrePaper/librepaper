@@ -22,10 +22,13 @@
   // clock, and it says what the whole run changed, because "3:14 to 4:02" is
   // not the question anybody arrived with.
   //
-  // The minutes somebody wrote in that nothing was saved from are still
-  // reachable, because being able to reach them is why the whole operation
-  // history is kept. They are one folded line at the end, which is the weight
-  // they deserve beside the versions.
+  // The minutes somebody wrote in that nothing was saved from are not on the
+  // list. They were, as one folded line at the end, and every one of them read
+  // "10:42 · 37": a clock time cannot say which minute is the one wanted, so
+  // reaching them meant clicking minutes until the document looked right. The
+  // operation history is still kept and still read -- the calendar marks a day
+  // written on with nothing saved, and a comment anchors to a frontier -- but
+  // it is not enumerated here.
   //
   // Presentation only: the shared source controller owns selection, and this
   // reports outwards.
@@ -33,7 +36,7 @@
   import { shortSha } from "../../lib/history.js";
   import {
     dayEntries, deliberate, monthGrid, monthOf, monthSpan, shiftDay,
-    shiftMonth, unsavedMinutes, versionDays,
+    shiftMonth, versionDays,
   } from "../../lib/history-calendar.js";
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import Icon from "../Icon.svelte";
@@ -55,8 +58,6 @@
     activity = [],
     activityProblem = "",
     activityLoading = false,
-    viewingMoment = "",
-    onmoment,
   } = $props();
 
   let timezone = $state(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
@@ -91,10 +92,6 @@
       const point = checkpoints.find((one) => one.sha === viewing);
       if (point) return dayOf(point.at, timezone);
     }
-    if (viewingMoment) {
-      const row = activity.find((one) => one.frontier === viewingMoment);
-      if (row) return dayOf(row.at, timezone);
-    }
     return "";
   });
   const day = $derived(pickedDay || viewingDay || latest);
@@ -121,13 +118,6 @@
     else next.add(entry.key);
     unrolled = next;
   }
-  const unsaved = $derived(unsavedMinutes(checkpoints, activity, day, timezone));
-  // Whether the minutes nobody saved are on the page. Not a `<details>`: a
-  // closed one keeps its contents laid out, which on a busy day is hundreds
-  // of times built and measured so that nobody can see them.
-  let unfolded = $state(false);
-  const showUnsaved = $derived(unfolded || Boolean(viewingMoment));
-
   const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
   const versions = (n) => `${n} version${n === 1 ? "" : "s"}`;
 
@@ -211,24 +201,6 @@
     return `${half && from.endsWith(half) ? from.slice(0, -half.length).trim() : from} – ${to}`;
   };
   const saves = (n) => `${n} autosave${n === 1 ? "" : "s"}`;
-  const writes = (n) => `${n} write${n === 1 ? "" : "s"}`;
-
-  // What a minute added, in the only measure the activity index has: the
-  // document's own size, differenced between minutes. Said only when it is
-  // positive -- a minute of deleting grows nothing and is not therefore a
-  // minute in which nobody worked, so silence here means "no more than
-  // before" and never "nothing happened".
-  const grew = (bytes) => {
-    if (!(bytes > 0)) return "";
-    if (bytes < 1e3) return `${bytes} bytes more`;
-    if (bytes < 1e6) return `${(bytes / 1e3).toFixed(1)} kB more`;
-    return `${(bytes / 1e6).toFixed(1)} MB more`;
-  };
-
-  // The one row that has no room to say anything says it here instead.
-  const wrote = (one) =>
-    `Show the document as it stood at ${at(one.minute)} · ` +
-    [writes(one.changes), grew(one.work)].filter(Boolean).join(", ");
   const at = (minute) =>
     new Date(Date.UTC(2000, 0, 1, Math.floor(minute / 60), minute % 60)).toLocaleTimeString([], {
       hour: "numeric", minute: "2-digit", timeZone: "UTC",
@@ -552,38 +524,17 @@
           {@render version(entry.points[0])}
         {/if}
       {/each}
-      {#if !entries.length && !unsaved.length}
-        <li><p class="panel-muted">Nothing was written on this day.</p></li>
+      {#if !entries.length}
+        <!-- A day with no versions is two different days, and saying the
+             wrong one of them is worse than saying nothing: somebody may have
+             written all afternoon and saved none of it. -->
+        <li><p class="panel-muted">
+          {byDay.get(day)?.worked
+            ? "Written on, but nothing was saved as a version."
+            : "Nothing was written on this day."}
+        </p></li>
       {/if}
     </ol>
-
-    {#if unsaved.length}
-      <!-- Everything else that happened. Folded, because there are always far
-           more of these than there are versions and none of them is what the
-           panel was opened for -- but kept, because the document can be
-           opened at any of them and nothing else offers that. -->
-      <div class="unsaved">
-        <button type="button" class="unsaved-more panel-meta" aria-expanded={showUnsaved}
-                onclick={() => (unfolded = !showUnsaved)}>
-          <span class="unsaved-caret" aria-hidden="true">{showUnsaved ? "▾" : "▸"}</span>
-          {unsaved.length} moment{unsaved.length === 1 ? "" : "s"} not saved as a version
-        </button>
-        {#if showUnsaved}
-          <ol>
-            {#each unsaved as one (one.minute)}
-              <li>
-                <button type="button" class="unsaved-row"
-                        class:unsaved-here={one.frontier === viewingMoment}
-                        aria-current={one.frontier === viewingMoment ? "true" : undefined}
-                        title={wrote(one)}
-                        onclick={() => onmoment?.(one.frontier, one)}>{at(one.minute)}<span
-                          class="unsaved-writes">{one.changes}</span></button>
-              </li>
-            {/each}
-          </ol>
-        {/if}
-      </div>
-    {/if}
   </div>
 {/snippet}
 
@@ -954,47 +905,4 @@
   /* The versions inside it, indented under the caret so that the run they
      belong to is obvious without a rule or a box to say so. */
   .run-rows { padding-left: calc(var(--spacing) * 3); }
-
-  /* Everything that was not saved. One line, closed, at the end. */
-  .unsaved { margin-top: calc(var(--spacing) * 3); }
-  .unsaved-more {
-    display: flex;
-    align-items: baseline;
-    gap: var(--spacing);
-    width: 100%;
-    padding: var(--spacing);
-    border-radius: var(--radius-container);
-    text-align: left;
-    cursor: pointer;
-  }
-  .unsaved-more:hover { color: var(--color-surface-950-50); }
-  .unsaved-caret { font-size: 0.625rem; }
-  .unsaved ol {
-    display: flex;
-    flex-wrap: wrap;
-    gap: calc(var(--spacing) * 0.5);
-    padding: var(--spacing);
-  }
-  .unsaved-row {
-    padding: 2px calc(var(--spacing) * 1.5);
-    border-radius: var(--radius-container);
-    background: var(--color-row-hover);
-    font-size: var(--panel-meta-size);
-    font-variant-numeric: tabular-nums;
-    color: var(--panel-muted);
-    cursor: pointer;
-  }
-  .unsaved-row:hover { color: var(--color-surface-950-50); }
-  /* How much was written in that minute, so that two minutes side by side are
-     told apart by something other than the clock. A count rather than a word:
-     the chips wrap, and a word each would be a paragraph of them. */
-  .unsaved-writes { opacity: 0.65; }
-  .unsaved-writes::before {
-    content: "·";
-    margin: 0 calc(var(--spacing) * 0.5);
-  }
-  .unsaved-here {
-    background: var(--color-primary-500);
-    color: var(--color-surface-50);
-  }
 </style>

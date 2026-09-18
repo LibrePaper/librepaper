@@ -23,6 +23,10 @@
     // The editor.
     keys = "default",
     onkeys,
+    // What the workspace can currently be asked to do, for the shortcut table
+    // the editor category shows. The reader assembles it; lib/commands.js
+    // decides from it what is available.
+    commands = {},
     // The LaTeX project.
     buildPreferences = {},
     documentId = "",
@@ -82,7 +86,7 @@
           {#if shown.note}<span class="settings-scope">{shown.note}</span>{/if}
         </header>
         {#if shown.id === "editor"}
-          <EditorSettings {keys} {onkeys} />
+          <EditorSettings {keys} {onkeys} {commands} />
         {:else if shown.id === "storage"}
           {#if context.signedIn}<QuotaSettings />{/if}
           {#if context.format === "latex" && mayEdit}<StorageSettings />{/if}

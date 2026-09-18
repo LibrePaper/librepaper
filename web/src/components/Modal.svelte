@@ -31,7 +31,7 @@
     children,
     confirm = null,
     cancelLabel = "Cancel",
-    onclose,
+    onclose = undefined,
     wide = false,
     full = false,
   } = $props();

@@ -20,7 +20,10 @@ const account = ({ signedIn }) => Boolean(signedIn);
 export const CATEGORIES = [
   {
     id: "editor", says: "Editor", offered: editor,
-    entries: [{ id: "editor-keys", says: "Keys", terms: "vim emacs keymap keyboard bindings modal source standard" }],
+    entries: [
+      { id: "editor-keys", says: "Keys", terms: "vim emacs keymap keyboard bindings modal source standard" },
+      { id: "editor-shortcuts", says: "Keyboard shortcuts", terms: "shortcut shortcuts keys keyboard chord binding hotkey accelerator palette command undo redo find" },
+    ],
   },
   {
     id: "storage", says: "Storage", offered: (context) => latex(context) || account(context),

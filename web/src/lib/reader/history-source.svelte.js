@@ -6,13 +6,10 @@
 // deliberately has no dependency on preview rendering or the live editor.
 import { createGeneration } from "./generation.js";
 
-/// A selection is a checkpoint's id, or a position in the operation history
-/// written `frontier:<anchor>`. Both are read into the same shape, so
-/// everything below this line, and every panel above it, treats them alike.
-import { anchorOf, isMoment } from "../moment.js";
-export { MOMENT, isMoment, anchorOf } from "../moment.js";
+/// A selection is a checkpoint's id, and nothing else: the timeline lists
+/// versions, and a minute nobody saved is not one.
 
-export function createHistorySource({ checkpoint, moment, currentTree, checkpoints = () => [], preferredPath = () => "" }) {
+export function createHistorySource({ checkpoint, currentTree, checkpoints = () => [], preferredPath = () => "" }) {
   const state = $state({ selected: "", path: "", loading: false, problem: "", result: null });
   const selections = createGeneration();
   let disposed = false;
@@ -22,23 +19,7 @@ export function createHistorySource({ checkpoint, moment, currentTree, checkpoin
     || (point.at ? new Date(point.at).toLocaleString() : "")
     || (point.sha ? point.sha.slice(0, 7) : "An earlier moment");
 
-  /// The document at a position in its own history, shaped like a checkpoint
-  /// so the comparison below cannot tell the difference. There is no archive
-  /// and no event behind it -- no label, no author, no reason -- and its
-  /// `files` map is rebuilt from what the moment holds.
-  async function readMoment(selected) {
-    const found = await moment?.(anchorOf(selected));
-    if (!found || typeof found.texts !== "object") {
-      throw new Error("The document at that moment could not be read.");
-    }
-    const files = {};
-    for (const path of Object.keys(found.texts || {})) files[path] = { kind: "text" };
-    for (const [path, sha] of Object.entries(found.assets || {})) files[path] = { kind: "asset", sha };
-    return snapshot({ main: found.main || "", texts: found.texts, files, at: found.at || "" });
-  }
-
   async function readPoint(sha) {
-    if (isMoment(sha)) return readMoment(sha);
     const listed = checkpoints().find(point => point.sha === sha);
     const point = { ...listed, ...(await checkpoint(sha)) };
     if (point.sha !== sha || !point.texts || typeof point.texts !== "object") {

@@ -7,7 +7,7 @@
 // the end of that minute, not the weight of the edits in it.
 
 import assert from "node:assert/strict";
-import { level, momentsOf, withWork } from "../../src/lib/activity.js";
+import { level, withWork } from "../../src/lib/activity.js";
 
 const row = (at, changes, state_bytes, frontier = "") => ({ at, changes, state_bytes, frontier, peer: "" });
 
@@ -36,28 +36,4 @@ assert.equal(level(100, 100), 4);
 assert.equal(level(51, 100), 3);
 assert.equal(level(5, 0), 1, "work with nothing to compare against still shows");
 
-// --- one day ----------------------------------------------------------------
-
-{
-  const rows = [
-    row("2026-09-14T09:05:00Z", 2, 1000, "one"),
-    row("2026-09-14T09:40:00Z", 3, 1600, "two"),
-    row("2026-09-14T15:00:00Z", 1, 1650, "three"),
-    row("2026-09-15T10:00:00Z", 9, 9000, "elsewhere"),
-  ];
-  const moments = momentsOf(rows, "2026-09-14", "UTC");
-  assert.deepEqual(moments.map((one) => one.frontier), ["one", "two", "three"],
-    "a day holds its own minutes, oldest first");
-  // The day boundary is the reader's, not the server's.
-  // 15:00 UTC is midnight in Tokyo, so that minute belongs to the next day
-  // there -- beside the one that is already on it.
-  const tokyo = momentsOf(rows, "2026-09-15", "Asia/Tokyo");
-  assert.deepEqual(tokyo.map((one) => one.frontier), ["three", "elsewhere"]);
-  assert.deepEqual(
-    momentsOf(rows, "2026-09-14", "Asia/Tokyo").map((one) => one.frontier),
-    ["one", "two"],
-    "and is no longer on the day the server would have put it",
-  );
-}
-
-console.log("activity: growth, five shades and the reader's own day passed");
+console.log("activity: growth and five shades passed");

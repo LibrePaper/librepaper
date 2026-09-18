@@ -20,13 +20,13 @@ each check asserts.
 ### Unit
 
 `agent-client`, `anchor`, `assistant-preview`, `assistant-review`, `assistant`,
-`citations`, `diagnostics`, `downloads`, `file-manager`,
+`citations`, `commands`, `diagnostics`, `downloads`, `file-manager`,
 `insert`, `landing`, `latex-biber`, `latex-bibliography`,
 `latex-driver`, `latex-engine`, `latex-log`, `latex-reader`, `latex-route`,
 `math`, `orphan`, `outline`, `passages`, `pdf-fit`,
 `quarto-options`, `quarto`, `quota-preferences`, `reader-annotations`,
 `reader-assistant`, `reader-preview`, `reader-races`, `reader-source-events`,
-`review-fixes`, `settings-quarto`,
+`review-fixes`, `settings-quarto`, `share-links`,
 `submissions`, `suggestions`, `timeline`, `tree-digest`, and `vocabulary`.
 
 ### Integration
@@ -44,4 +44,5 @@ each check asserts.
 `history-panel-browser`, `history-reader-browser`,
 `insert-browser`, `latex-browser`, `latex-html-browser`,
 `local-consent-browser`, `markdown-tracking-browser`, `math-browser`,
-`outline-browser`, `responsive-browser`, `typst-viewer`, and `viewer`.
+`outline-browser`, `responsive-browser`, `shortcuts-browser`, `typst-viewer`,
+and `viewer`.

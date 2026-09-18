@@ -14,11 +14,13 @@
 // the key alone for a `settings`, since telling those apart is the point of
 // the menu having both.
 //
-// The stub hands back a key on the response that mints one and on no other,
-// which is what the catalogue can actually do: it keeps a link's digest, so
-// `sharing_json` fills `key` and `url` only for a link this very request
-// minted. A stub that kept answering with a key made a settings save look
-// like it preserved the link when the real panel dropped the row.
+// The stub answers with a URL for every link whose key it holds, which is what
+// the catalogue can now do: alongside the digest that admits a caller it keeps
+// the key itself, sealed with the deployment's session key, so `sharing_json`
+// says the URL of any link the server can unseal -- not only the one this very
+// request minted. The Read link below is the exception on purpose: it stands
+// for a link from before the catalogue kept a key, which works, has a row, and
+// has no URL anybody can be given again.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -44,24 +46,27 @@ import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/in
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
 // Two links already handed out and one role never opened, which is the state
-// the panel is nearly always in.
+// the panel is nearly always in. The Read link has no key: it was minted
+// before the catalogue kept one, so the server can say everything about it
+// except the one thing the owner wants, which is its URL.
 const state = {
-  reader: { key: "readkey", label: "Reviewer", until: "2027-03-17T00:00:00Z", budget: null },
-  commenter: { key: "commentkey", label: "Reviewer", until: "2027-03-17T00:00:00Z", budget: null },
+  reader: { key: "", label: "Reviewer", until: "2027-03-17T00:00:00Z", budget: null, since: "2026-01-01T00:00:00Z" },
+  commenter: { key: "commentkey", label: "Reviewer", until: "2027-03-17T00:00:00Z", budget: null, since: "2026-01-01T00:00:00Z" },
   editor: null,
 };
+let minting = 0;
 window.calls = [];
 const expiryOf = (until) => {
   if (until === "never") return "";
   if (!until) return null; // omitted: whatever the link already said
   return new Date(Date.now() + Number(until.replace(/[a-z]/g, "")) * 86400000).toISOString();
 };
-const answer = (minted) => ({
+const answer = () => ({
   slug: "paper", url: "/docs/paper", can_share: true,
   edit_needs_signin: true, comment_needs_signin: true,
   links: Object.fromEntries(Object.entries(state).map(([role, link]) => [role, link
-    ? { key: role === minted ? link.key : "", url: role === minted ? "/docs/paper#k=" + link.key : "",
-        since: "2026-01-01T00:00:00Z", until: link.until,
+    ? { key: link.key, url: link.key ? "/docs/paper#k=" + link.key : "",
+        since: link.since, until: link.until,
         label: link.label, budget: link.budget, expired: false }
     : null])),
 });
@@ -76,6 +81,9 @@ window.fetch = async (path, options) => {
       label: body.link.label ?? was?.label ?? "",
       until: expiryOf(body.link.until) ?? was?.until ?? "",
       budget: body.link.budget ?? null,
+      // A mint is a new key at a new moment, which is what tells the link
+      // apart from the one it replaced.
+      since: new Date(Date.UTC(2026, 5, 1, 0, 0, ++minting)).toISOString(),
     };
   }
   if (body?.settings) {
@@ -85,15 +93,16 @@ window.fetch = async (path, options) => {
       until: expiryOf(body.settings.until) ?? was.until,
       budget: body.settings.budget ?? null };
   }
-  return { ok: true, json: async () => answer(body?.link ? body.link.role : null) };
+  return { ok: true, json: async () => answer() };
 };
 Object.defineProperty(navigator, "clipboard", {
   configurable: true, value: { writeText: async (value) => { window.copied = value; } },
 });
 
-createClassComponent({ component: Share, target: document.body, props: {
+const mount = () => createClassComponent({ component: Share, target: document.body, props: {
   open: true, inline: true, slug: "paper", canShare: true, bundleReady: true,
 } });
+mount();
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 40)); await tick(); };
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const text = () => document.body.innerText.replace(/\\s+/g, " ").trim();
@@ -121,12 +130,12 @@ window.sharePanelCheck = async () => {
   /* ------------------------------------- a permission is what it is, not a form */
 
   check(sections().length === 3, "read, comment and edit");
-  check(/^Read Anyone with this link can view\\. Expires Mar 1[67], 2027 The link is shown only when it is made\\. Replace it to get a new URL\\.$/.test(seen(0)),
+  check(/^Read Anyone with this link can view\\. Expires Mar 1[67], 2027 This link was made before its URL could be kept\\. Replace it to get a new URL\\.$/.test(seen(0)),
     "a link that exists is its expiry and a row of icons that spell nothing: " + seen(0));
   check(!seen(0).includes("•••"), "nothing is behind an overflow any more: " + seen(0));
-  // No copy among them: the server cannot say this link's URL again, so the
-  // row offers the three things it can still do rather than a button that
-  // would put an empty string on the clipboard.
+  // No copy among them: this one link's key predates the column that would
+  // hold it, so the row offers the three things it can still do rather than a
+  // button that would put an empty string on the clipboard.
   check([...sections()[0].querySelectorAll(".share-icon")].map((node) => node.getAttribute("aria-label")).join("|")
     === "Edit Read link settings|Replace Read link|Revoke Read link",
     "the verbs are flat, in the order configure, replace, revoke: "
@@ -143,7 +152,11 @@ window.sharePanelCheck = async () => {
   check(!document.querySelector(".share-section .preset-filled-primary-500"),
     "and nothing about an existing link is loud enough to be the panel's main action");
 
-  check(!button("Copy Read link"), "a link whose URL the server cannot repeat has nothing to copy");
+  check(!button("Copy Read link"),
+    "a link whose key the server cannot produce has nothing to copy");
+  check(Boolean(button("Copy Comment link")),
+    "a link this browser never minted is copyable all the same: the key is in "
+      + "the catalogue, sealed, and the owner is who is asking");
 
   /* ------------------------------------------------- opening access */
 
@@ -162,13 +175,34 @@ window.sharePanelCheck = async () => {
     "creation mints the link that was described, and names it nothing: " + JSON.stringify(minted));
   check(!document.querySelector(".share-form")
     && sections()[2].querySelector('[aria-label="Copy Edit link"]'),
-    "and it collapses to the state it is now in, holding the one URL it will "
-      + "ever be handed: " + seen(2));
-  // The key the panel holds is a path; what is copied is a URL.
+    "and it collapses to the state it is now in, with its URL there to copy: "
+      + seen(2));
+  // The server answers a path; what is copied is a URL.
   button("Copy Edit link").click(); await flush();
   check(window.copied === location.origin + "/docs/paper#k=" + state.editor.key,
     "copied: " + window.copied);
   return true;
+};
+
+/* ------------------------------------------- a link outlives the session */
+
+// The panel, opened again from nothing, the way it opens tomorrow. Nothing
+// about it depends on this browser having been the one that minted anything:
+// the server answers with the URL of every link it can unseal.
+window.shareReopen = async () => {
+  document.body.innerHTML = "";
+  mount();
+  await flush();
+  return seen(2);
+};
+
+// A rotation this browser did not perform: somebody else's session replaced
+// the Edit link. The panel opened again must offer the key that is live now,
+// not the one it was showing before.
+window.shareEditorKey = () => state.editor?.key || "";
+
+window.shareRotateElsewhere = () => {
+  state.editor = { ...state.editor, key: "rotated-elsewhere", since: "2027-01-01T00:00:00Z" };
 };
 
 window.shareClickLabel = (label) => { button(label).click(); };
@@ -237,9 +271,9 @@ try {
     "a change of settings does not mint a key: " + JSON.stringify(saved));
   assert.equal(saved.settings.until, "30d",
     "and carries the expiry that was chosen: " + JSON.stringify(saved));
-  // The save mints nothing, so the response carries no key. A panel that read
-  // a link's existence off its key collapsed the row here and offered to
-  // create the link that was still sitting there.
+  // The save mints nothing, so the row is the same link with a new expiry. A
+  // panel that read a link's existence off its key collapsed the row here and
+  // offered to create the link that was still sitting there.
   const after = await tab.evaluate("window.sharePanelSeen(0)");
   assert.ok(after.includes("Expires"),
     "the collapsed state then says when it now runs out: " + after);
@@ -256,7 +290,35 @@ try {
   assert.ok((await tab.evaluate("window.sharePanelSeen(1)")).includes("Create link"),
     "and answered, the permission is back to offering a link");
 
-  console.log("share panel: access as a state, a flat row of icons per link, rotation and revocation confirmed");
+  /* ------------------------------------------- a link outlives the session */
+
+  // The panel again from nothing, which is what tomorrow looks like. Every
+  // link the server holds a key for is copyable, whoever minted it and
+  // whenever; the Read link, whose key predates the column, is not.
+  const reopened = await tab.evaluate("window.shareReopen()");
+  assert.ok(reopened.includes("Copy") === false, "the row spells nothing: " + reopened);
+  assert.ok(await tab.evaluate(`Boolean(document.querySelector('[aria-label="Copy Edit link"]'))`),
+    "a link is still copyable in a later session: " + reopened);
+  assert.ok(!await tab.evaluate(`Boolean(document.querySelector('[aria-label="Copy Read link"]'))`),
+    "and one whose key was never kept is not");
+  await tab.evaluate(`window.copied = ""; document.querySelector('[aria-label="Copy Edit link"]').click()`);
+  await pause(300);
+  assert.equal(await tab.evaluate("window.copied"),
+    await tab.evaluate("location.origin + '/docs/paper#k=' + window.shareEditorKey()"),
+    "and it copies the URL it was handed, not a stale one");
+
+  // Replaced by somebody else's session. The panel opened again copies the key
+  // that is live now rather than the one it was showing a moment ago.
+  await tab.evaluate("window.shareRotateElsewhere()");
+  const rotated = await tab.evaluate("window.shareReopen()");
+  await tab.evaluate(`window.copied = ""; document.querySelector('[aria-label="Copy Edit link"]').click()`);
+  await pause(300);
+  assert.equal(await tab.evaluate("window.copied"),
+    await tab.evaluate("location.origin + '/docs/paper#k=rotated-elsewhere'"),
+    "a link replaced elsewhere is copied as it now stands: " + rotated);
+
+  console.log("share panel: access as a state, a flat row of icons per link, rotation and revocation confirmed, "
+    + "and every link the server holds a key for copyable from any session");
 } finally {
   await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
 }

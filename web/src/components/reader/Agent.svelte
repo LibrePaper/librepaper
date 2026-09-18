@@ -8,8 +8,9 @@
   import ChatComposer from "../ChatComposer.svelte";
   import { createAgentClient } from "../../lib/agent-client.js";
   import {
-    captureAttachment, capabilityAllows, suggestionContext,
+    captureAttachment, capabilityAllows, diagnosticLabel, suggestionContext,
     normalizeCapabilities, scopeLabel, visibleResults,
+    findTask, groupTasks, inferScope, searchTasks, taskPrompt, taskScopes,
   } from "../../lib/assistant.js";
 
   let {
@@ -31,6 +32,13 @@
   let diagnostic = $state(null);
   let diagnosticRevision = $state("");
   let draft = $state("");
+  // The Tasks pane is a launcher: a searchable catalog, then a preparation
+  // view for the one task the user picked. Nothing is written into the draft
+  // until that view is confirmed.
+  let taskView = $state("launcher");
+  let taskQuery = $state("");
+  let chosenTaskId = $state("");
+  let extra = $state("");
   let agentLink = $state("");
   let copyFallback = $state("");
   const roles = [
@@ -66,12 +74,16 @@
   const uncertainDelivery = $derived(Object.values(connection.tasks || {}).some((item) =>
     item?.delivery === "uncertain" && item.request === draft.trim()));
   const sendable = $derived(connection.connected && connection.runnerConnected && preparedTaskValid && !uncertainDelivery);
-  const chipScope = (kind) => ["tighten", "rewrite"].includes(kind) ? "selection"
-    : kind === "proofread" ? (scope === "document" ? "document" : "file")
-      : scope === "selection" && !attachment ? (contextPath ? "file" : "document") : scope;
-  const canPrepare = (kind) => capabilityAllows(caps, { kind, scope: chipScope(kind) }, {
+  const taskGroups = $derived(groupTasks(searchTasks(taskQuery)));
+  const chosen = $derived(findTask(chosenTaskId));
+  const scopeAvailable = (id) => id === "selection" ? Boolean(attachment) : id === "file" ? Boolean(contextPath) : true;
+  const allows = (kind, chosenScope) => capabilityAllows(caps, { kind, scope: chosenScope }, {
     attached: attachment?.anchored ? attachment : (kind === "explain" ? attachment : null), path: contextPath,
   });
+  // A row is offered when some scope the reader can actually supply works for
+  // it; which scope that is belongs to the preparation view, not the catalog.
+  const canPrepare = (entry) => taskScopes(entry).some((id) => scopeAvailable(id) && allows(entry.kind, id));
+  const preparable = $derived(Boolean(chosen) && scopeAvailable(scope) && allows(chosen.kind, scope));
   const interrupted = $derived(Object.values(connection.tasks || {}).some(task => task.status === "interrupted"));
   const status = $derived(
     !connection.connected || !connection.runnerConnected ? "Disconnected"
@@ -152,6 +164,10 @@
     if (!next) return;
     pendingRequest = null;
     tab = "chat";
+    // A contextual action prepares the same shape as a catalog task, but it
+    // is not one of them: leave the launcher on its list.
+    chosenTaskId = "";
+    taskView = "launcher";
     saveDraft("");
     task = next.task || null;
     commentContext = next.comment || null;
@@ -197,19 +213,29 @@
     else applyRequest(next);
   }
 
-  function chooseTask(kind) {
-    const nextScope = chipScope(kind);
-    if (!capabilityAllows(caps, { kind, scope: nextScope }, {
-      attached: attachment?.anchored ? attachment : (kind === "explain" ? attachment : null), path: contextPath,
-    })) return;
+  function openTask(entry) {
+    if (!entry || !canPrepare(entry)) return;
+    chosenTaskId = entry.id;
+    extra = "";
+    scope = inferScope(entry, { attached: attachment, path: contextPath });
+    taskView = "prepare";
+  }
+
+  function closeTask() {
+    taskView = "launcher";
+  }
+
+  function prepare() {
+    if (!chosen || !preparable) return;
+    task = { kind: chosen.kind, scope };
+    const prompt = taskPrompt(chosen, scope);
+    const note = extra.trim();
+    saveDraft(note ? `${prompt}\n\n${note}` : prompt);
+    if (chosen.kind !== "explain") { diagnostic = null; diagnosticRevision = ""; }
+    // Leave the catalog showing for the next request; "Change context" in the
+    // chat pane reopens this task's preparation view.
+    taskView = "launcher";
     tab = "chat";
-    const previous = task ? promptFor(task.kind, task.scope) : "";
-    scope = nextScope;
-    task = { kind, scope: nextScope };
-    if (nextScope !== "selection") { suppressedSelection = selectionKey(selection || lastSelection); attachment = null; }
-    const prompt = promptFor(kind, nextScope);
-    saveDraft(!draft.trim() || draft === previous ? prompt : `${prompt}\n\n${draft}`);
-    if (kind !== "explain") { diagnostic = null; diagnosticRevision = ""; }
   }
 
   function promptFor(kind, chosenScope) {
@@ -217,14 +243,11 @@
     return `${{ proofread: "Proofread", tighten: "Tighten", rewrite: "Rewrite", explain: "Explain", fix: "Fix", refine: "Refine" }[kind] || kind} ${target}.`;
   }
 
+  // Scope is chosen inside the preparation view, before anything is written
+  // into the draft, so changing it neither rewrites the composer nor discards
+  // the attached passage the user may switch back to.
   function chooseScope(next) {
-    const previous = task ? promptFor(task.kind, task.scope) : "";
     scope = next;
-    if (next !== "selection") { suppressedSelection = selectionKey(selection || lastSelection); attachment = null; }
-    if (task) {
-      task = { ...task, scope: next };
-      if (draft === previous) saveDraft(promptFor(task.kind, next));
-    }
   }
 
   async function send(text) {
@@ -432,58 +455,93 @@
     </div>
   {/if}
 
-  {#if task || attachment}<p class="panel-meta">{scopeLabel(scope, { path: contextPath, attached: attachment })} <button class="btn btn-sm" onclick={() => tab = "tasks"}>Change context</button></p>{/if}
+  <!-- The draft carries its own context, so the chat pane states it in one
+       line and sends the user back to the task view to change it. -->
+  {#if task || attachment}<p class="panel-meta context-summary">{scopeLabel(scope, { path: contextPath, attached: attachment })} <button class="btn btn-sm" onclick={() => { tab = "tasks"; taskView = chosen ? "prepare" : "launcher"; }}>Change context</button>{#if attachment}<button class="btn btn-sm" onclick={removeSelection}>Remove passage</button>{/if}</p>{/if}
   {#if !sendable}<p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : !connection.runnerConnected ? "You can draft now. Connect your agent to send." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>{/if}
     </div>
   <ChatComposer placeholder="Ask your agent…" canSend={!busy && sendable} draft={draft} ondraft={saveDraft} onsend={send} />
   </Tabs.Content>
   <Tabs.Content value="tasks" class="agent-tab-content">
-    <p class="panel-muted">Choose a task to prepare a message for your agent.</p>
-  <div class="agent-context">
-    <div class="task-chips" role="group" aria-label="Assistant tasks">
-      {#each [{kind:"proofread",label:"Proofread"},{kind:"tighten",label:"Tighten"},{kind:"rewrite",label:"Rewrite"},{kind:"explain",label:"Explain"}] as item}
-        <button class="chip {task?.kind === item.kind ? 'selected' : ''}" disabled={!canPrepare(item.kind)} title={!canPrepare(item.kind) ? "Check access and attach the required context" : "Prepare this request"} onclick={() => chooseTask(item.kind)}>{item.label}</button>
-      {/each}
+  {#if taskView === "prepare" && chosen}
+    <div class="agent-context task-prepare">
+      <button class="task-back" onclick={closeTask}>← All tasks</button>
+      <div>
+        <h3 class="task-title">{chosen.label}</h3>
+        <p class="panel-muted task-description">{chosen.description}</p>
+      </div>
+      <label class="label task-scope">Scope
+        <select class="select" value={scope} onchange={(event) => chooseScope(event.currentTarget.value)}>
+          {#each taskScopes(chosen) as id}
+            <option value={id} disabled={!scopeAvailable(id)}>{scopeLabel(id, { path: contextPath, attached: id === "selection" ? attachment : null })}</option>
+          {/each}
+        </select>
+      </label>
+      {#if scope === "selection" && attachment}
+        <div class="attachment">
+          <div><strong>{attachment.anchored ? "Selected passage" : "Quoted passage"} · {attachment.path || path || "document"}</strong><blockquote>{selectedText}</blockquote></div>
+          <div class="attachment-actions"><button class="btn btn-sm" onclick={removeSelection}>Remove</button><button class="btn btn-sm" disabled={!selection?.exact} onclick={replaceSelection}>Replace with current selection</button></div>
+          {#if !attachment.anchored}<p class="panel-muted" role="alert">This passage has no source anchor. Explain remains available; Tighten and Rewrite need an anchored source selection.</p>{/if}
+        </div>
+      {/if}
+      {#if diagnostic}<div class="diagnostic-context"><strong>Diagnostic · {contextPath}{diagnostic.line ? `:${diagnostic.line}` : ""}</strong><span>{diagnostic.message || "Explain this diagnostic"}</span><span>{diagnostic.source || ""}</span><button class="btn btn-sm" onclick={() => { diagnostic = null; diagnosticRevision = ""; }}>Remove diagnostic</button></div>{/if}
+      <label class="label">Additional instructions
+        <textarea class="input" rows="3" value={extra} oninput={(event) => extra = event.currentTarget.value} placeholder="Optional"></textarea>
+      </label>
+      {#if !preparable}<p class="panel-meta" role="status">This task needs the appropriate access and context. Choose another scope, or attach a passage in the document.</p>{/if}
+      <div class="prepare-actions"><button class="btn btn-sm preset-filled-primary-500" disabled={!preparable} onclick={prepare}>Prepare message</button></div>
     </div>
-    <div class="scope-row" aria-label="Request scope">
-      <span class="panel-meta">Scope:</span>
-      {#each [{id:"selection",label:"Selected passage"},{id:"file",label:contextPath ? `File · ${contextPath}` : "Current file"},{id:"document",label:"Whole document"}] as item}
-        <button class="scope-button" class:selected={scope === item.id} disabled={item.id === "selection" && !attachment || item.id === "file" && !contextPath} onclick={() => chooseScope(item.id)}>{item.label}</button>
-      {/each}
-    </div>
-    {#if attachment}
-      <div class="attachment">
-        <div><strong>{attachment.anchored ? "Selected passage" : "Quoted passage"} · {attachment.path || path || "document"}</strong><blockquote>{selectedText}</blockquote></div>
-        <div class="attachment-actions"><button class="btn btn-sm" onclick={removeSelection}>Remove</button><button class="btn btn-sm" disabled={!selection?.exact} onclick={replaceSelection}>Replace with current selection</button></div>
-        {#if !attachment.anchored}<p class="panel-muted" role="alert">This passage has no source anchor. Explain remains available; Tighten and Rewrite need an anchored source selection.</p>{/if}
-      </div>
-    {/if}
-    {#if diagnostic}<div class="diagnostic-context"><strong>Diagnostic · {contextPath}{diagnostic.line ? `:${diagnostic.line}` : ""}</strong><span>{diagnostic.message || "Explain this diagnostic"}</span><span>{diagnostic.source || ""}</span><button class="btn btn-sm" onclick={() => { diagnostic = null; diagnosticRevision = ""; }}>Remove diagnostic</button></div>{/if}
-    {#if oncommenttask && comments.some(comment => !comment.resolved)}
-      <div class="context-tasks">
-        <h3 class="panel-section-title">Comments</h3>
-        {#each comments.filter(comment => !comment.resolved) as comment (comment.id)}
-          <div>
-            <p class="panel-muted">{comment.body || comment.exact || "Suggestion"}</p>
-            <button class="btn btn-sm preset-outlined-surface-300-700" disabled={!caps.can_comment} onclick={() => oncommenttask(comment)}>{comment.motivation === "editing" ? "Refine suggestion" : "Address comment"}</button>
-          </div>
+  {:else}
+    <div class="agent-context task-launcher">
+      <p class="panel-muted">Ask your agent to…</p>
+      <input class="input task-search" type="search" placeholder="Search tasks…" aria-label="Search tasks"
+             value={taskQuery} oninput={(event) => taskQuery = event.currentTarget.value} />
+      <div class="task-list task-catalog" role="group" aria-label="Assistant tasks">
+        {#each taskGroups as group (group.category)}
+          <h3 class="task-group">{group.category}</h3>
+          {#each group.tasks as entry (entry.id)}
+            <button class="task-row" disabled={!canPrepare(entry)}
+                    title={canPrepare(entry) ? entry.description : "Check access and attach the required context"}
+                    onclick={() => openTask(entry)}>
+              <span>{entry.label}</span><span class="task-chevron" aria-hidden="true">›</span>
+            </button>
+          {/each}
         {/each}
+        {#if !taskGroups.length}<p class="panel-muted">No task matches “{taskQuery}”.</p>{/if}
       </div>
-    {/if}
-    {#if ondiagnostictask && diagnostics.length}
-      <div class="context-tasks">
-        <h3 class="panel-section-title">Diagnostics</h3>
-        {#each diagnostics as item}
-          <div>
-            <p class="panel-muted">{item.message}</p>
-            <button class="btn btn-sm preset-outlined-surface-300-700" disabled={!caps.can_comment} onclick={() => ondiagnostictask(item)}>Fix diagnostic</button>
-          </div>
-        {/each}
-      </div>
-    {/if}
-    <p class="scope-summary panel-meta">{scopeLabel(scope, { path: contextPath, attached: attachment })}</p>
-  </div>
 
+      {#if (oncommenttask && comments.some(comment => !comment.resolved)) || (ondiagnostictask && diagnostics.length)}
+        <!-- Not peers of the catalog: these are openings the document itself
+             offers, which prepare the same task + context + instructions. -->
+        <div class="context-tasks task-list">
+          <h3 class="task-group">Contextual</h3>
+          {#if oncommenttask}
+            {#each comments.filter(comment => !comment.resolved) as comment (comment.id)}
+              <div class="context-task">
+                <p class="panel-muted">{comment.body || comment.exact || "Suggestion"}</p>
+                <button class="task-row" disabled={!caps.can_comment} onclick={() => oncommenttask(comment)}>
+                  <span>{comment.motivation === "editing" ? "Refine suggestion" : "Address comment"}</span><span class="task-chevron" aria-hidden="true">›</span>
+                </button>
+              </div>
+            {/each}
+          {/if}
+          {#if ondiagnostictask}
+            <!-- A compiler's own prose belongs in Diagnostics, not here: a
+                 launcher names the task and the place it applies to, so a
+                 long or noisy message cannot crowd out the catalog. -->
+            {#each diagnostics as item}
+              <div class="context-task">
+                <p class="panel-muted">{diagnosticLabel(item, path)}</p>
+                <button class="task-row" disabled={!caps.can_comment} onclick={() => ondiagnostictask(item)}>
+                  <span>Fix diagnostic</span><span class="task-chevron" aria-hidden="true">›</span>
+                </button>
+              </div>
+            {/each}
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {/if}
   </Tabs.Content>
   </PanelTabs>
   {#if problem || connection.error}<p class="panel-muted" role="alert">{problem || connection.error}</p>{/if}
@@ -515,12 +573,30 @@
   .working-dots span:nth-child(3) { animation-delay:.4s; }
   @keyframes working-dot { 0%, 80%, 100% { opacity:.25; } 40% { opacity:1; } }
   @media (prefers-reduced-motion:reduce) { .working-dots span { animation:none; } }
-  .context-tasks { display:flex; flex-direction:column; gap:calc(var(--spacing) * 3); }
-  .context-tasks p { overflow-wrap:anywhere; margin:0 0 var(--spacing); }
-  .task-chips, .scope-row { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
-  .chip, .scope-button { border:1px solid var(--color-surface-300-700); border-radius:999px; background:transparent; padding:calc(var(--spacing) * .75) calc(var(--spacing) * 1.5); cursor:pointer; }
-  .chip.selected, .scope-button.selected { border-color:var(--color-primary-500); background:color-mix(in srgb, var(--color-primary-500) 18%, transparent); }
-  .chip:disabled, .scope-button:disabled { opacity:.5; cursor:not-allowed; }
+  /* The task catalog is a list, not a set of controls: typography, spacing
+     and a hover background carry it, so it stays legible as it grows. */
+  .task-list { display:flex; flex-direction:column; }
+  .task-group { margin:calc(var(--spacing) * 2) 0 calc(var(--spacing) * .5); font-size:.7rem; font-weight:600;
+                letter-spacing:.08em; text-transform:uppercase; color:var(--color-surface-600-400); }
+  .task-list > .task-group:first-child { margin-top:0; }
+  .task-row { display:flex; align-items:center; justify-content:space-between; gap:var(--spacing);
+              width:100%; min-height:2.25rem; padding:calc(var(--spacing) * 1) calc(var(--spacing) * 1.5);
+              border:0; border-radius:var(--radius-base, .25rem); background:transparent;
+              text-align:left; cursor:pointer; }
+  .task-row:hover:not(:disabled), .task-row:focus-visible { background:var(--color-surface-100-900); }
+  .task-row:disabled { opacity:.45; cursor:not-allowed; }
+  .task-chevron { color:var(--color-surface-600-400); }
+  .task-search { width:100%; min-width:0; }
+  .context-tasks { display:flex; flex-direction:column; }
+  .context-task { display:flex; flex-direction:column; }
+  .context-task p { overflow-wrap:anywhere; margin:calc(var(--spacing) * 1.5) 0 0; padding-inline:calc(var(--spacing) * 1.5); font-size:.8rem; }
+  .task-back { align-self:flex-start; border:0; background:transparent; padding:0; cursor:pointer; color:var(--color-surface-600-400); }
+  .task-back:hover { color:inherit; }
+  .task-title { margin:0; font-weight:600; }
+  .task-description { margin:calc(var(--spacing) * .5) 0 0; }
+  .task-scope .select, .task-prepare .input { width:100%; min-width:0; }
+  .prepare-actions { display:flex; justify-content:flex-end; }
+  .context-summary { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
   .attachment { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); border-left:3px solid var(--color-primary-500); background:var(--color-surface-100-900); }
   .attachment blockquote { max-height:7rem; overflow:auto; margin:var(--spacing) 0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
   .diagnostic-context { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); background:var(--color-surface-100-900); }

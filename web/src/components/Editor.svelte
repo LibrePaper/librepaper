@@ -845,6 +845,11 @@
         keymap.of([
           // Everyone tries Ctrl/Cmd-S in an editor.
           { key: "Mod-s", preventDefault: true, run: () => (onsave?.(), true) },
+          // Replace, which the search panel has always offered and no key
+          // reached. The editor owns it, like everything else in the panel:
+          // lib/commands.js names the binding so the menu and the help table
+          // can print it, and this is the one place it is run.
+          { key: "Mod-Alt-f", preventDefault: true, run: () => (void editCommand("replace"), true) },
           ...closeBracketsKeymap,
           ...foldKeymap,
           indentWithTab,

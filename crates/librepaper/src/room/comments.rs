@@ -1148,10 +1148,10 @@ impl Room {
         // checkpoint-then-write had: there is no window between the name and
         // the anchor, because they are taken from the same borrow.
         //
-        // `frontier:` is the same spelling the activity timeline hands out for
-        // a moment nobody checkpointed, so a revision is self-describing:
-        // anything else is a checkpoint id, and the two are told apart by
-        // reading them rather than by knowing where they came from.
+        // `frontier:` names a state nobody checkpointed, so a revision is
+        // self-describing: anything else is a checkpoint id, and the two are
+        // told apart by reading them rather than by knowing where they came
+        // from.
         let current = format!(
             "{MOMENT}{}",
             encode_update(&state.session.doc.state_frontiers().encode())

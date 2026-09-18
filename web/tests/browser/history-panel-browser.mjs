@@ -138,7 +138,6 @@ const component = createClassComponent({ component: History, target: document.bo
   checkpoints: all, activity: rows, canEdit: true, currentLabel: "",
   onview: (sha) => events.push(["view", sha]),
   onname: (sha, label) => events.push(["name", sha, label]),
-  onmoment: (frontier) => events.push(["moment", frontier]),
 } });
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 30)); await tick(); };
 const check = (condition, message) => { if (!condition) throw new Error(message); };
@@ -313,32 +312,11 @@ window.historyPanelCheck = async () => {
     'one moved file is named, without its directory');
   component.$set({ viewing: '' }); await flush();
 
-  /* -------------------------------------------- everything not saved */
-
-  // There are always far more of these than there are versions, and none of
-  // them is what the panel was opened for -- so they are one folded line, and
-  // the times inside it only when somebody asks.
-  const more = () => document.querySelector('.unsaved-more');
-  check(more() && more().getAttribute('aria-expanded') === 'false',
-    'what was never saved is folded away');
-  check(text(more()).endsWith('3 moments not saved as a version'),
-    'and counted: ' + text(more()));
-  check(!document.querySelector('.unsaved-row'),
-    'with none of the times built until it is opened');
-  more().click(); await flush();
-  const moments = [...document.querySelectorAll('.unsaved-row')];
-  // Each one says its time and how many writes landed in it, because a column
-  // of bare clock times reads as the same row over and over.
-  check(moments.map(text).join() === '10:14 AM4,9:20 AM3,9:02 AM1',
-    'opened, it is the minutes nobody saved, latest first: ' + moments.map(text).join());
-  check(moments[0].title.startsWith('Show the document as it stood at 10:14 AM · 4 writes'),
-    'and spells it out where there is room: ' + moments[0].title);
-  check(more().getAttribute('aria-expanded') === 'true');
-  moments[0].click(); await flush();
-  check(events.some((event) => event[0] === 'moment' && event[1] === rows[3].frontier),
-    'and each opens the document as it stood then');
-  more().click(); await flush();
-  check(!document.querySelector('.unsaved-row'), 'and it folds again');
+  // Nothing below the versions: the minutes nobody saved are not listed.
+  // A clock time cannot say which minute is the one wanted, and the row that
+  // used to count them said nothing a reader could act on.
+  check(!document.querySelector(".unsaved, .unsaved-more, .unsaved-row"),
+    "what was never saved is not on the timeline");
 
   /* ------------------------------------------------ over to the month */
 
@@ -514,7 +492,7 @@ try {
   await tab.navigate(`http://127.0.0.1:${port}/`);
   await until("history panel component", () => tab.evaluate("Boolean(window.historyPanelCheck)"));
   assert.equal(await tab.evaluate("window.historyPanelCheck()"), true);
-  console.log("history panel: three views, a day coarsened by significance, bookmarks, and everything unsaved folded away");
+  console.log("history panel: three views, a day coarsened by significance, and bookmarks");
 } finally {
   await tab?.close(); server?.close(); rmSync(temporary, { recursive: true, force: true });
 }

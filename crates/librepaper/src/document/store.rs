@@ -111,7 +111,12 @@ pub struct Guest {
 pub struct LinkGrant {
     pub hash: String,
     pub role: String,
-    pub key: String,
+    /// The key itself, sealed with the deployment's session key, or empty for
+    /// a link minted before the catalogue kept one. The digest above is what
+    /// admits a caller; this is only what lets the owner be told the URL
+    /// again. See `server::sharing::seal_link_key`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sealed: Vec<u8>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1047,6 +1052,7 @@ impl Store {
                 Ok((
                     link.role.clone(),
                     hash,
+                    link.sealed.clone(),
                     link.label.clone(),
                     expiry,
                     link.budget,
@@ -1153,7 +1159,7 @@ async fn entries_from_documents(
                 .map(|link| LinkGrant {
                     hash: hex::encode(link.token_hash),
                     role: link.role,
-                    key: String::new(),
+                    sealed: link.sealed_token,
                     label: link.label,
                     budget: link.comment_budget,
                     since: crate::util::format_unix(link.created_at.unix_timestamp()),

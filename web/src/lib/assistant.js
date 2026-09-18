@@ -38,10 +38,112 @@ export function captureAttachment(selection, path = "", revision = "") {
   };
 }
 
+// The wire vocabulary is fixed (see docs/protocol/chat.md), but a launcher
+// entry is a task the user recognizes: a kind plus the request it phrases.
+// Several entries may share a kind, which is what lets the catalog grow
+// without touching the protocol.
+export const TASK_CATALOG = [
+  { id: "proofread", kind: "proofread", category: "Writing", label: "Proofread",
+    description: "Correct spelling, grammar, and wording while preserving meaning.",
+    prompt: "Proofread {target}." },
+  { id: "tighten", kind: "tighten", category: "Writing", label: "Tighten",
+    description: "Cut redundancy and shorten without losing substance.",
+    scopes: ["selection"], prompt: "Tighten {target}." },
+  { id: "rewrite", kind: "rewrite", category: "Writing", label: "Rewrite",
+    description: "Rework the wording for clarity and flow.",
+    scopes: ["selection"], prompt: "Rewrite {target}." },
+  { id: "explain", kind: "explain", category: "Writing", label: "Explain",
+    description: "Say what this passage claims and how it is put together.",
+    prompt: "Explain {target}." },
+
+  { id: "review-argument", kind: "explain", category: "Review", label: "Review the argument",
+    description: "Name unsupported claims, gaps in reasoning, and weak transitions.",
+    prompt: "Review the argument in {target}. Name unsupported claims, gaps in reasoning, and weak transitions." },
+  { id: "check-consistency", kind: "explain", category: "Review", label: "Check consistency",
+    description: "Look for terminology, notation, and definitions that disagree with each other.",
+    prompt: "Check {target} for inconsistent terminology, notation, and definitions." },
+  { id: "check-citations", kind: "explain", category: "Review", label: "Check citations",
+    description: "Check that each citation resolves in the bibliography and supports its claim.",
+    prompt: "Check the citations in {target}: each one should resolve in the bibliography and support the claim it is attached to." },
+  { id: "suggest-improvements", kind: "proofread", category: "Review", label: "Suggest improvements",
+    description: "Propose concrete anchored edits rather than commentary.",
+    prompt: "Suggest concrete improvements to {target} as anchored edits." },
+
+  { id: "outline", kind: "outline", category: "Document", label: "Outline",
+    description: "List the headings and what each section does.",
+    scopes: ["file", "document"], prompt: "Outline {target}: list the headings and say what each section does." },
+  { id: "summarize", kind: "explain", category: "Document", label: "Summarize",
+    description: "Summarize the argument in a few paragraphs.",
+    scopes: ["file", "document"], prompt: "Summarize {target}." },
+];
+
+export const TASK_TARGETS = { selection: "the selected passage", file: "this file", document: "the whole document" };
+
+export function findTask(id) {
+  return TASK_CATALOG.find((entry) => entry.id === id) || null;
+}
+
+export function taskScopes(entry) {
+  const allowed = entry?.scopes || TASK_SCOPES;
+  return TASK_SCOPES.filter((scope) => allowed.includes(scope));
+}
+
+// Scope is inferred from what the reader already has in hand rather than
+// asked for before the user has said what they want.
+export function inferScope(entry, { attached = null, path = "" } = {}) {
+  const allowed = taskScopes(entry);
+  if (attached && allowed.includes("selection")) return "selection";
+  if (path && allowed.includes("file")) return "file";
+  return allowed.includes("document") ? "document" : allowed[0] || "document";
+}
+
+export function taskPrompt(entry, scope) {
+  if (!entry) return "";
+  return String(entry.prompt || `${entry.label} {target}.`)
+    .replaceAll("{target}", TASK_TARGETS[scope] || TASK_TARGETS.document);
+}
+
+// A command-palette match: every word the user typed has to appear somewhere
+// in the entry, and a hit on the label outranks a hit on the description.
+export function searchTasks(query, catalog = TASK_CATALOG) {
+  const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [...catalog];
+  const scored = [];
+  for (const entry of catalog) {
+    const label = entry.label.toLowerCase();
+    const haystack = `${label} ${entry.category} ${entry.description || ""} ${entry.kind}`.toLowerCase();
+    if (!words.every((word) => haystack.includes(word))) continue;
+    const rank = label.startsWith(words[0]) ? 0 : words.every((word) => label.includes(word)) ? 1 : 2;
+    scored.push({ entry, rank });
+  }
+  return scored.sort((a, b) => a.rank - b.rank).map((item) => item.entry);
+}
+
+export function groupTasks(entries) {
+  const groups = [];
+  for (const entry of entries) {
+    const group = groups.find((item) => item.category === entry.category);
+    if (group) group.tasks.push(entry);
+    else groups.push({ category: entry.category, tasks: [entry] });
+  }
+  return groups;
+}
+
 export function scopeLabel(scope, { path = "", attached = null } = {}) {
   if (scope === "selection") return attached?.path ? `Selected passage · ${attached.path}` : "Selected passage";
   if (scope === "file") return path ? `Current file · ${path}` : "Current file";
   return "Whole document";
+}
+
+// How a diagnostic is named in the launcher. The compiler's own message is
+// the Diagnostics panel's business: here it would be an unbounded paragraph
+// of engine prose sitting in a list of one-line tasks, so the launcher says
+// only which diagnostic this is -- its severity and where it is.
+export function diagnosticLabel(item, fallbackPath = "") {
+  const severity = item?.severity === "warning" ? "Warning" : "Error";
+  const path = text(item?.file || item?.path || fallbackPath);
+  const line = Number(item?.line) > 0 ? `:${item.line}` : "";
+  return path ? `${severity} · ${path}${line}` : severity;
 }
 
 export function normalizeCapabilities(value) {
