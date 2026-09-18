@@ -27,6 +27,28 @@ export const TABS = [
 // Every panel this browser is offered, in rail order.
 export const tabsFor = (who) => TABS.filter((tab) => !tab.when || tab.when(who));
 
+// The same rail, one level up: the places in an account rather than the panels
+// in a document. The landing page draws these through the same components, so
+// the column of icons does not move when a project is opened -- only what is
+// written in it changes.
+//
+// Two of the icons are borrowed from the list above on purpose. `history` is
+// Recent here and History there, `users` is Shared with me here and Share
+// there; in both cases the icon means the same thing one level apart, which is
+// the rule that lets the rail be read as one thing across the navigation.
+export const PROJECT_TABS = [
+  { id: "projects", says: "Projects", icon: "folder" },
+  { id: "recent", says: "Recent", icon: "history" },
+  { id: "shared", says: "Shared with me", icon: "users" },
+  { id: "favorites", says: "Favorites", icon: "star" },
+  // Last, and after a gap the stylesheet puts there: the trash is a place you
+  // go on purpose, and never the one you land on next to Favorites by being
+  // slightly off with the pointer.
+  { id: "trash", says: "Trash", icon: "trash" },
+];
+
+export const PROJECT_TAB_IDS = PROJECT_TABS.map((tab) => tab.id);
+
 // The values the stored panel preference may take, "" being the closed column.
 export const PANEL_IDS = ["", ...TABS.map((tab) => tab.id)];
 

@@ -88,8 +88,8 @@
   import { correctedLeft, placeBar as placeSelectionBar } from "../lib/annotation-bar.js";
   import { VERBS, motivationFor } from "../lib/annotating.js";
   import InsertMenu from "./InsertMenu.svelte";
-  import ReaderSidebar from "./reader/ReaderSidebar.svelte";
-  import PanelRail from "./reader/PanelRail.svelte";
+  import Sidebar from "./layout/Sidebar.svelte";
+  import PanelRail from "./layout/PanelRail.svelte";
   import Files from "./reader/Files.svelte";
   import Outline from "./reader/Outline.svelte";
   import Agent from "./reader/Agent.svelte";
@@ -485,10 +485,9 @@
   /* --------------------------------------------------------------- selection */
 
   // Making an annotation is one gesture: select the words, then choose what
-  // to do to them. `verb` is what was chosen from the bar over that
-  // selection, and it is what the draft in the column is being written under.
-  // See `lib/annotating.js`.
-  let verb = $state("comment");
+  // to do to them -- comment on them, or highlight them. See
+  // `lib/annotating.js`.
+  //
   // What the bar offers over what is selected. Nothing is offered when
   // nothing is.
   const shownVerbs = $derived(pending ? VERBS : []);
@@ -665,12 +664,10 @@
     return Math.round(height) + 9;
   }
 
-  // How wide the bar is depends on what is in it -- the swatch row doubles it
-  // -- and the width is only knowable once it is drawn, so the placing above
-  // is made good here, after it is.
+  // How wide the bar is is only knowable once it is drawn, so the placing
+  // above is made good here, after it is.
   $effect(() => {
     if (!bar.shown || !barElement) return;
-    void palette;
     const left = correctedLeft({ left: bar.left, width: barElement.offsetWidth, windowWidth: innerWidth });
     if (left !== null) bar = { ...bar, left };
   });
@@ -689,9 +686,7 @@
 
   // Opening the draft in the column, and showing the reader the column it is
   // in: a composer in a panel nobody is looking at is a dialog that failed to
-  // open. The suggest variant starts its replacement field with the source
-  // slice when the passage was placed, the rendered words otherwise
-  // (`suggestions.prefillFor`, which a check exercises directly).
+  // open.
   function openDraft() {
     if (!pending) return;
     composing = {
@@ -700,8 +695,6 @@
       // rather than the first one handed new props.
       id: crypto.randomUUID(),
       pending,
-      verb,
-      prefill: verb === "suggest" ? suggestions.prefillFor(pending) : "",
     };
     prefs.collaborationTab = "comments";
     if (panel !== "collaboration") void showPanel("collaboration");
@@ -713,7 +706,6 @@
   // that names the verb is also the one that makes it.
   function annotate(which) {
     if (!pending || !mayChat) return;
-    verb = which;
     bar = { ...bar, shown: false };
     palette = false;
     if (which === "highlight") {
@@ -728,21 +720,21 @@
   }
 
   // Picking a colour highlights with it, rather than arming a colour for a
-  // second click: the swatch row is only ever opened from Highlight, so the
-  // verb is already chosen by the time one is pressed.
+  // second click: the swatches only ever open from Highlight, so the verb is
+  // already chosen by the time one is pressed.
   function highlightWith(color) {
     highlightColor = color;
     annotate("highlight");
   }
 
-  function submitAnnotation({ motivation, body, proposed }) {
+  function submitAnnotation({ motivation, body }) {
     if (!pending || !mayChat) return false;
     if (publishedMode && (publicationUpdate || pending.publication_id !== publishedPublication?.id)) {
       say("This document has been published to since the passage was selected. Refresh, select it again, and submit; the draft is kept.", { kind: "problem", id: "reader:published-moved" });
       return false;
     }
     // The server determines the author when it acknowledges the submission.
-    annotations.comment(pending, { motivation, body, proposed, color: motivation === "highlighting" ? highlightColor : undefined }, identity || doc.commenting_as || "Anonymous");
+    annotations.comment(pending, { motivation, body, color: motivation === "highlighting" ? highlightColor : undefined }, identity || doc.commenting_as || "Anonymous");
     pending = null;
     return true;
   }
@@ -758,21 +750,14 @@
   // something, so a fresh selection made against the publication now on
   // screen replaces the one the draft was holding -- which is stale by then
   // and would only be refused.
-  function sendDraft({ body, proposed }) {
+  function sendDraft({ body }) {
     if (!composing) return false;
     const held = composing.pending;
     const moved = publishedMode && held.publication_id !== publishedPublication?.id;
     const reselected = moved && pending && pending.publication_id === publishedPublication?.id;
     pending = reselected ? { ...pending } : held;
-    const motivation = motivationFor(composing.verb);
-    const submitted = submitAnnotation({ motivation, body, proposed });
-    if (!submitted) return false;
+    if (!submitAnnotation({ motivation: motivationFor("comment"), body })) return false;
     composing = null;
-    // A suggestion is not a comment and does not appear among them: it joins
-    // the review queue. Show that queue rather than letting the words seem to
-    // vanish from the column they were written in. `focusAnnotation` sends a
-    // suggestion to the same place.
-    if (motivation === "editing") void showPanel("changes");
     return true;
   }
 
@@ -3485,17 +3470,29 @@
     {/if}
   {/snippet}
 
-  <ReaderSidebar
-    {shown} {tabs} {panel} {settled} {compact} {editing} mounted={mountedPanels}
-    layout={layout} arrangements={ARRANGEMENTS} {badges}
+  <Sidebar
+    {shown} {tabs} {panel} {settled} {compact} mounted={mountedPanels} {badges}
+    label="Document"
     panels={{ files: filesPanel, outline: outlinePanel, agent: agentPanel,
               collaboration: collaborationPanel, changes: changesPanel,
               share: sharePanel, diagnostics: diagnosticsPanel, history: historyPanel }}
     panes={panes} sidebarPane={PANES.sidebar}
-    onselectpanel={selectPanel} oncyclelayout={cycleLayout} ondrop={dropped}
+    onselectpanel={selectPanel} ondrop={dropped}
     onsize={(size) => setSize(PANES.sidebar, size)} onguide={(where) => (guide = where)}
     ongrab={(on) => { grabbing = on; guide = { ...guide, shown: on }; }}
-  />
+  >
+    {#snippet controls()}
+      <!-- Back out to the projects. The rail it returns to is this rail, in
+           the same place, which is why this is a plain link and not a
+           gesture: the page changes, the furniture does not. -->
+      <IconButton icon="home" label="All projects" href="/" />
+      {#if editing}
+        <IconButton icon={ARRANGEMENTS[layout].icon}
+          label={`Layout: ${ARRANGEMENTS[layout].says}. Switch to ${ARRANGEMENTS[ARRANGEMENTS[layout].next].says}`}
+          onclick={cycleLayout} />
+      {/if}
+    {/snippet}
+  </Sidebar>
 
   {#if editing || panel === "history"}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -3699,7 +3696,13 @@
      is selected. The verbs are here rather than in the column because the
      selection is the subject: by the time this is on the screen the reader
      has already said what they are annotating, and all that is left is which
-     annotation it is to be. -->
+     annotation it is to be.
+
+     Two icons, because two verbs with a word each read as a sentence nobody
+     finishes: the bar sits over the reader's own words and the smaller it is
+     the less of them it covers. The colour belongs to Highlight rather than
+     standing beside it -- it is not a third thing that can be done to a
+     passage, it is how the second one comes out. -->
 {#if bar.shown && mayChat}
   <div
     bind:this={barElement}
@@ -3708,32 +3711,42 @@
   >
     <div class="verbs">
       {#each shownVerbs as item (item.id)}
-        <button type="button" class="verb" class:primary={item.id === "comment"}
-                title={item.title} onclick={() => annotate(item.id)}>{item.label}</button>
         {#if item.id === "highlight"}
-          <!-- The swatches hang off Highlight rather than replacing the bar:
-               one click highlights in the colour already chosen, and this is
-               for the times that is the wrong colour. -->
-          <button type="button" class="verb swatch-toggle" aria-expanded={palette}
-                  aria-label="Choose highlight colour" title="Choose highlight colour"
-                  onclick={() => (palette = !palette)}>
-            <span class="chip" style="background:{highlightColor}"></span>▾
+          <!-- The swatches hang under Highlight rather than beside it: one
+               click highlights in the colour the strip is showing, and the
+               strip itself is for the times that is the wrong colour. It is
+               a sibling rather than a child because a button inside a button
+               is not a thing a browser will draw. -->
+          <div class="verb highlighter">
+            <button type="button" class="verb-face" title={item.title} aria-label={item.label}
+                    onclick={() => annotate(item.id)}>
+              <Icon name={item.icon} size={18} />
+            </button>
+            <button type="button" class="ink" aria-expanded={palette} aria-haspopup="true"
+                    aria-label="Choose highlight colour" title="Choose highlight colour"
+                    style="--ink: {highlightColor}"
+                    onclick={() => (palette = !palette)}></button>
+            {#if palette}
+              <div class="highlight-colors" role="group" aria-label="Highlight colour">
+                {#each HIGHLIGHT_COLORS as color}
+                  <button type="button" class:selected={highlightColor === color} class="color-swatch" style="background:{color}"
+                    aria-label="Highlight in {colorName(color)}" onclick={() => highlightWith(color)}></button>
+                {/each}
+                <label class="custom-color" title="Choose highlight colour">
+                  <span class="sr-only">Custom highlight colour</span>
+                  <input type="color" bind:value={highlightColor} onchange={() => highlightWith(highlightColor)} />
+                </label>
+              </div>
+            {/if}
+          </div>
+        {:else}
+          <button type="button" class="verb verb-face" title={item.title} aria-label={item.label}
+                  onclick={() => annotate(item.id)}>
+            <Icon name={item.icon} size={18} />
           </button>
         {/if}
       {/each}
     </div>
-    {#if palette}
-      <div class="highlight-colors" role="group" aria-label="Highlight colour">
-        {#each HIGHLIGHT_COLORS as color}
-          <button type="button" class:selected={highlightColor === color} class="color-swatch" style="background:{color}"
-            aria-label="Highlight in {colorName(color)}" onclick={() => highlightWith(color)}></button>
-        {/each}
-        <label class="custom-color" title="Choose highlight colour">
-          <span class="sr-only">Custom highlight colour</span>
-          <input type="color" bind:value={highlightColor} onchange={() => highlightWith(highlightColor)} />
-        </label>
-      </div>
-    {/if}
   </div>
 {/if}
 
@@ -3846,17 +3859,20 @@
     .desktop-workspace-menu { display: none; }
     .compact-workspace-menu { display: block; }
   }
-  /* The bar over a selection: one row of verbs, with the swatches unfolding
-     beneath it when Highlight's caret is pressed. */
-  #selectionbar { flex-direction:column; align-items:flex-start; gap:3px; }
-  .verbs { display:flex; overflow:hidden; border:1px solid var(--color-surface-300-700); border-radius:var(--radius-base); background:var(--color-surface-50-950); box-shadow:var(--shadow-lg); }
-  .verb { display:flex; align-items:center; gap:3px; padding:calc(var(--spacing) * 1) calc(var(--spacing) * 2.5); font-size:var(--panel-meta-size); line-height:1.4; white-space:nowrap; }
-  .verb + .verb { border-left:1px solid var(--color-surface-300-700); }
-  .verb:hover { background:var(--color-row-hover); }
-  .verb.primary { font-weight:600; color:var(--color-primary-700-300); }
-  .swatch-toggle { padding-inline:calc(var(--spacing) * 1.5); }
-  .swatch-toggle .chip { display:inline-block; width:.7rem; height:.7rem; border:1px solid var(--color-surface-400-600); border-radius:50%; }
-  .highlight-colors { display:flex; align-items:center; gap:3px; padding:2px; border:1px solid var(--color-surface-300-700); border-radius:var(--radius-base); background:var(--color-surface-50-950); box-shadow:var(--shadow-lg); }
+  /* The bar over a selection: one row of icons, with the swatches unfolding
+     beneath Highlight when the strip of ink under it is pressed. */
+  #selectionbar { align-items:flex-start; }
+  .verbs { display:flex; align-items:stretch; gap:2px; padding:2px; border:1px solid var(--color-surface-300-700); border-radius:var(--radius-base); background:var(--color-surface-50-950); box-shadow:var(--shadow-lg); }
+  .verb { position:relative; display:flex; }
+  .verb-face { display:flex; align-items:center; justify-content:center; width:2rem; height:2rem; border-radius:calc(var(--radius-base) - 2px); color:var(--color-surface-700-300); }
+  .verb-face:hover { background:var(--color-row-hover); color:var(--color-primary-700-300); }
+  /* Highlight's icon sits above a strip of the ink it is about to lay down:
+     the strip says which colour the click will use, and pressing the strip
+     is what offers the others. */
+  .highlighter .verb-face { padding-bottom:6px; }
+  .ink { position:absolute; right:4px; bottom:3px; left:4px; height:6px; border-radius:2px; background:var(--ink); box-shadow:inset 0 0 0 1px var(--color-surface-400-600); }
+  .ink:hover, .ink[aria-expanded="true"] { box-shadow:inset 0 0 0 1px var(--color-primary-500); }
+  .highlight-colors { position:absolute; z-index:1; top:calc(100% + 6px); left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:3px; padding:2px; border:1px solid var(--color-surface-300-700); border-radius:var(--radius-base); background:var(--color-surface-50-950); box-shadow:var(--shadow-lg); }
   .color-swatch { width:1.5rem; height:1.5rem; border:2px solid transparent; border-radius:50%; }
   .color-swatch.selected { border-color:var(--color-surface-900-100); box-shadow:0 0 0 1px var(--color-primary-500); }
   .custom-color { display:grid; place-items:center; width:1.5rem; height:1.5rem; }

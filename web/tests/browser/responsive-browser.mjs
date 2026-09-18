@@ -308,11 +308,12 @@ try {
   assert.equal(await visible('#selectionbar'), false, 'Escape puts the bar away');
 
   // Highlighting arms nothing either: select the words, choose the verb.
-  // The swatches hang off Highlight, and picking one is the highlight.
+  // The swatches hang under Highlight, on the strip of ink below its icon,
+  // and picking one is the highlight.
   await frameMessage({type:'selection',selector:{exact:'long',position:2,prefix:'A ',suffix:' document'},rect:{top:80,bottom:100,left:80,right:120}});
-  assert.equal(await b.evaluate('Array.from(document.querySelectorAll("#selectionbar .verb")).map(node=>node.textContent.trim()).join("|")'),
-    'Comment|Highlight|▾|Suggest', 'a passage can be commented on, highlighted or replaced');
-  await click('#selectionbar .swatch-toggle');
+  assert.equal(await b.evaluate(`Array.from(document.querySelectorAll("#selectionbar .verb")).map(node=>node.getAttribute("aria-label")??node.querySelector("button").getAttribute("aria-label")).join("|")`),
+    'Comment|Highlight', 'a passage can be commented on or highlighted, and nothing else');
+  await click('#selectionbar .ink');
   await b.evaluate(`(() => {
     const picker=document.querySelector('#selectionbar input[type=color]');
     picker.value='#123abc';

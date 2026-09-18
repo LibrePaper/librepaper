@@ -13,9 +13,10 @@ function check(what, condition) {
 /* ---------------------------------------------------------------- the verbs */
 
 {
-  check("a passage can be commented on, highlighted or replaced",
-    VERBS.map((verb) => verb.id).join(",") === "comment,highlight,suggest");
-  check("every verb says what it is for", VERBS.every((verb) => verb.id && verb.label && verb.title));
+  check("a passage can be commented on or highlighted, and nothing else",
+    VERBS.map((verb) => verb.id).join(",") === "comment,highlight");
+  check("every verb says what it is for and what to draw",
+    VERBS.every((verb) => verb.id && verb.label && verb.title && verb.icon));
 }
 
 /* ---------------------------------------------------------- the motivations */
@@ -23,7 +24,6 @@ function check(what, condition) {
 {
   check("a comment is stored as commenting", motivationFor("comment") === "commenting");
   check("a highlight as highlighting", motivationFor("highlight") === "highlighting");
-  check("a suggestion as editing", motivationFor("suggest") === "editing");
   check("anything else is a comment", motivationFor("whatever") === "commenting");
 }
 

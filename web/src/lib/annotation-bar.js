@@ -39,9 +39,9 @@ export function placeBar({ rect, frame, width, minTop, windowWidth, margin = MAR
 }
 
 /// The bar is placed before it is drawn, and a bar is only as wide as what is
-/// in it -- highlighting adds five swatches -- so the placing is made good
-/// once the real width is known. Answers the corrected left edge, or null
-/// when the difference is too small to be worth a redraw.
+/// in it, so the placing is made good once the real width is known. Answers
+/// the corrected left edge, or null when the difference is too small to be
+/// worth a redraw.
 ///
 /// The threshold is not a micro-optimization: this runs from an effect that
 /// reads the width it is about to change the position of, and a correction

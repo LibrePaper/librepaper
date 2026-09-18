@@ -17,7 +17,7 @@
     commentingAs = "Anonymous",
     canModerate = false,
     canComment = true,
-    // The draft being written, if any: `{ pending, verb, prefill }`. It is
+    // The draft being written, if any: `{ id, pending }`. It is
     // shown as a card in the column, in the place the saved note will take.
     composing = null,
     needsLogin = false,
@@ -106,10 +106,9 @@
   const deletable = $derived(filtered.filter((comment) => canModerate || comment.deletable));
   const clearable = $derived(deletable.filter((comment) => comment.resolved));
 
-  // Commenting, highlighting and suggesting are not offered here: they act on
-  // a passage, and the bar over the selection is where they belong. What is
-  // left are the two annotations with nothing to select, which is why they
-  // are still armed in advance. See `lib/annotating.js`.
+  // Commenting and highlighting are not offered here: they act on a passage,
+  // and the bar over the selection is where they belong. See
+  // `lib/annotating.js`.
 
   // Where the draft's card goes: before the first group whose passage is
   // later in the document than the one being written about, or at the end.
@@ -175,8 +174,6 @@
     {#key composing.id}
     <CommentComposer
       pending={composing.pending}
-      verb={composing.verb}
-      prefill={composing.prefill || ""}
       {identity}
       {commentingAs}
       {needsLogin}

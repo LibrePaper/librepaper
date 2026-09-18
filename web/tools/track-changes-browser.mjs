@@ -334,7 +334,7 @@ async function run() {
   });
   root = new Tab(socket, null);
 
-  /* --- A. suggest through the reader, accept from the card ---------------- */
+  /* --- A. a proposal, reviewed and accepted from the card ----------------- */
 
   const owner = await mintVisitor();
   const doc = await publish({ title: "A Paper", source: MARKDOWN, source_format: "markdown" }, owner);
@@ -349,39 +349,29 @@ async function run() {
   );
   check("the frame is painted", painted, painted ? "" : `console: ${editor.console.slice(-3).join(" | ")}`);
 
-  // The comments panel, then the Suggest tool.
-  await editor.eval(`const el = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.title, b.textContent.trim()].includes("Changes")); if (!el) throw new Error("no Changes tab among " + [...document.querySelectorAll("button, a")].map((b) => b.getAttribute("aria-label") || b.title || b.textContent.trim()).join(",")); el.click(); return true;`);
-  // The Changes tab's tool selector is a plain radio-style button carrying
-  // its label as text, not an aria-label (Comments.svelte, filter ===
-  // "suggestions" branch).
-  await until("the suggest tool", () => editor.eval(`return Boolean([...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Suggest a change"))`));
-  await editor.eval(`[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Suggest a change").click(); return true;`);
+  // A suggestion is the agent's to propose, not the reader's to write: there
+  // is no Suggest verb on the selection bar and no composer behind one. This
+  // makes the same proposal the way an agent does -- over the comments
+  // endpoint, as an editor -- and the rest of the run is what the reader is
+  // given to do with it.
+  const posted = await fetch(`${BASE}/api/documents/${slug}/comments`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-librepaper-client": "1", cookie: `librepaper_visitor=${owner}` },
+    body: JSON.stringify({
+      type: "comment",
+      motivation: "editing",
+      exact: "The first paragraph.",
+      prefix: "",
+      suffix: "",
+      position: 0,
+      proposed: "The opening paragraph.",
+      body: "clearer",
+    }),
+  }).then((r) => r.json());
+  check("the proposal is accepted by the room", !posted.error, JSON.stringify(posted).slice(0, 200));
 
-  await editor.evalInFrame(`
-    parent.postMessage({ librepaper: true, type: "selection",
-      selector: { exact: "The first paragraph.", prefix: "", suffix: "", position: 0 }
-    }, ${JSON.stringify(BASE)});
-    return true;
-  `, slug);
-  await until("the selection bar", () => editor.eval(`return Boolean(document.querySelector("#selectionbar"))`));
-  const barText = await editor.eval(`return document.querySelector("#selectionbar").textContent.trim()`);
-  check("the selection bar offers Suggest", barText === "Suggest", barText);
-  await editor.eval(`document.querySelector("#selectionbar").click(); return true;`);
-  await until("the suggest form", () => editor.eval(`return document.querySelectorAll("#commentForm textarea").length === 2`));
-  const prefill = await until(
-    "the proposal textarea is prefilled",
-    () => editor.eval(`return document.querySelector("#commentForm textarea").value`),
-  );
-  check("the proposal is prefilled with the passage", prefill === "The first paragraph.", prefill);
-  await editor.eval(`
-    const [proposed, note] = document.querySelectorAll("#commentForm textarea");
-    proposed.value = "The opening paragraph.";
-    proposed.dispatchEvent(new Event("input", { bubbles: true }));
-    note.value = "clearer";
-    note.dispatchEvent(new Event("input", { bubbles: true }));
-    document.querySelector("#commentForm").requestSubmit();
-    return true;
-  `);
+  // The Changes panel, where a suggestion is reviewed.
+  await editor.eval(`const el = [...document.querySelectorAll("button, a")].find((b) => [b.getAttribute("aria-label"), b.title, b.textContent.trim()].includes("Changes")); if (!el) throw new Error("no Changes tab among " + [...document.querySelectorAll("button, a")].map((b) => b.getAttribute("aria-label") || b.title || b.textContent.trim()).join(",")); el.click(); return true;`);
 
   const listed = await until("the suggestion is stored", async () => {
     const { comments } = await api(`/api/documents/${slug}/comments`);

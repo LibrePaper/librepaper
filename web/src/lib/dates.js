@@ -29,6 +29,35 @@ export function day(at, timeZone) {
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
 }
 
+/// How long ago, for something the reader did themselves.
+///
+/// A listing of your own projects written in calendar days is six copies of
+/// today's date: true, and no answer to the question being asked, which is
+/// "which of these was I just working on". So the recent past is written as
+/// elapsed time and only the distant past as a date -- the point where "how
+/// long ago" stops being answerable without counting is about a week, and
+/// after that the day is the more useful of the two.
+///
+/// The exact timestamp belongs in a `title` beside wherever this is rendered:
+/// this is the glance, not the record.
+export function since(at, now = new Date()) {
+  const when = at instanceof Date ? at : new Date(at);
+  if (Number.isNaN(when.getTime())) return "";
+  const seconds = Math.floor((now - when) / 1000);
+  // A clock that is a little behind the server's reads as the future. There
+  // is no useful way to write that, and "just now" is what it means.
+  if (seconds < 90) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24 && day(when) === day(now)) return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
+  const days = Math.round((new Date(day(now)) - new Date(day(when))) / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  return day(when);
+}
+
 /// When something was said, as short as it can be written without becoming
 /// ambiguous: the clock time for a message posted today, and the calendar day
 /// for anything older. A thread is read in one sitting, where every message

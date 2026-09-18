@@ -1,14 +1,7 @@
 // Pure helpers for suggestions (track changes), kept apart from the
-// components that use them so the card's diff, the modal's prefill rule and
-// the accept/reject state transitions are checkable without a browser.
-
-/// What the compose modal starts the proposal textarea with: the words the
-/// page showed, which is what the person selected and all this browser has.
-/// The passage those words are a rendering of is the server's to find, and it
-/// is what the proposal will be applied to.
-export function prefillFor(pending) {
-  return pending?.exact ?? "";
-}
+// components that use them so the card's diff and the accept/reject state
+// transitions are checkable without a browser. Suggestions are the agent's to
+// propose and an editor's to decide; nothing here makes one.
 
 /// Turns `history.wordDiff`'s UTF-16 edits `{at, delete, insert}` -- sorted
 /// and non-overlapping, the way `librepaper-text` produces them -- into runs a

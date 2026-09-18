@@ -105,25 +105,28 @@ const context = (values) => vm.createContext({
 }
 
 // Successful deletion updates only its own state. HTTP and network failures
-// retain their selections and favorites, while a selection made during the
-// requests survives too.
+// retain their selections, while a selection made during the requests
+// survives too.
+//
+// A star is not touched here, in either direction. It is the account's now
+// rather than this browser's, and a deleted project is recoverable for seven
+// days: unstarring on the way into the trash would mean a project came back
+// from it stripped of something nobody asked to change.
 {
   const pending = new Map();
   const problems = [];
+  const said = [];
   const ctx = context({
     pendingDeletion: ["good", "http-failure", "network-failure"],
     confirming: true,
-    favorites: new Set(["good", "http-failure", "network-failure"]),
     selected: new Set(["good", "http-failure", "network-failure"]),
-    FAVORITES: "favorites",
     SHELL_HEADERS: {},
     fetch: (url) => {
       const slug = url.split("/").at(-2);
       const wait = new Promise((resolve, reject) => pending.set(slug, { resolve, reject }));
       return wait;
     },
-    write: () => {},
-    say: (message) => problems.push(message),
+    say: (message, options) => (options?.kind === "problem" ? problems : said).push(message),
     showList: async () => {},
   });
   vm.runInContext(reallyDelete, ctx);
@@ -134,9 +137,11 @@ const context = (values) => vm.createContext({
   pending.get("http-failure").resolve({ ok: false, status: 500 });
   pending.get("network-failure").reject(new Error("offline"));
   await deleting;
-  assert.deepEqual([...ctx.favorites].sort(), ["http-failure", "network-failure"]);
   assert.deepEqual([...ctx.selected].sort(), ["http-failure", "network-failure", "selected-while-waiting"]);
   assert.match(problems[0], /2 projects could not be deleted/);
+  // And the one that worked says where it went, because "deleted" and "in the
+  // trash for a week" are different promises and only one of them is true.
+  assert.match(said[0], /1 project moved to the trash/);
 }
 
 // A project is made from its name and its format alone, and the page leaves

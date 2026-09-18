@@ -34,7 +34,14 @@ body > nav {
 
 /* ------------------------------------------------------------------ reader */
 
-main.reader {
+/* The two pages that are one place: a project, and the account it lives in.
+   Both are the bar, then a rail of the same width at the same left edge, then
+   whatever that rail is a rail of. Sharing the rule is what makes the
+   furniture hold still across the navigation between them -- the rail must
+   not move by a pixel when a project is opened, and the surest way to get
+   that is for there to be one declaration of where it is. */
+main.reader,
+main.workspace {
   /* Each pane's width is a variable so the separator beside it can move it,
      clamped so nothing can be squeezed out of existence. */
   /* Until the Reader has measured the window, in the same rem the limits in
@@ -55,6 +62,23 @@ main.reader {
      the navigation and the comment column with it. */
   overflow: hidden;
 }
+/* The landing page's rail carries places rather than panels, so the gap
+   before the last of them -- the trash -- is what says it is not one of the
+   four you move between all day. */
+main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
+
+/* Cross-document view transitions, where the browser has them. Going into a
+   project is a change of contents inside furniture that does not move, and
+   this is what lets the browser animate it that way instead of as two
+   unrelated page loads. Chrome does it today; Firefox ignores the at-rule and
+   navigates normally, which is the behaviour this page had anyway. Nothing
+   here is load-bearing: it is the difference between a page arriving and
+   having gone somewhere. */
+@view-transition { navigation: auto; }
+@media (prefers-reduced-motion: reduce) {
+  @view-transition { navigation: none; }
+}
+
 .editorpane {
   flex: 0 0 var(--librepaper-editor);
   /* min-height: 0 is what lets a grid item be shorter than its contents, which

@@ -1,6 +1,5 @@
-// Suggestions (track changes), the browser half: the card's diff runs, the
-// modal's prefill rule, and the accept/error state transitions, as pure
-// functions.
+// Suggestions (track changes), the browser half: the card's diff runs and the
+// accept/error state transitions, as pure functions.
 
 import {
   applyDecision,
@@ -8,7 +7,6 @@ import {
   beginDeciding,
   clearDeciding,
   locateInText,
-  prefillFor,
   runsFor,
 } from "../../src/lib/suggestions.js";
 
@@ -17,16 +15,6 @@ function check(what, condition) {
   if (condition) return;
   failures += 1;
   console.error(`suggestions: ${what}`);
-}
-
-/* ------------------------------------------------------------- the prefill */
-
-{
-  check(
-    "the words the page showed are what a proposal starts from",
-    prefillFor({ exact: "rendered words" }) === "rendered words",
-  );
-  check("no pending selection prefills empty", prefillFor(null) === "");
 }
 
 /* ------------------------------------------------------------- the diff runs */
