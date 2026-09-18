@@ -184,10 +184,11 @@ fn selections_taken_off_the_tutorials_find_the_source_they_came_from() {
                 "{path}: the quoted text for {:?} is not the text at its own range",
                 exact
             );
-            // What it stands for is the beginning of what was selected: the
-            // search shortens from the end when a selection runs into
-            // something the renderer invented, so a prefix is honest and
-            // anything else is a different passage.
+            // What it stands for is a run of what was selected, unbroken. The
+            // search shortens from either end when a selection runs into
+            // something the renderer invented, so it may give back the head
+            // of a selection or its tail; what it may never give back is
+            // words from somewhere else, which is what containment checks.
             // Both sides lose their markup before they are compared. A page
             // that shows a formula shows its `$` too, so a selection can
             // carry as much syntax as the source does; and a range of an HTML
@@ -195,7 +196,7 @@ fn selections_taken_off_the_tutorials_find_the_source_they_came_from() {
             let wanted = flat(&prose(&exact, path.ends_with(".html")));
             let got = flat(&prose(&found.exact, path.ends_with(".html")));
             assert!(
-                wanted.starts_with(&got) || got.starts_with(&wanted),
+                wanted.contains(&got) || got.contains(&wanted),
                 "{path}: {:?} came back as {:?}, which is not what was selected",
                 wanted,
                 got

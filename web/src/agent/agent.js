@@ -420,6 +420,54 @@ import { createMathTypesetter } from "../lib/math.js";
     return null;
   }
 
+  // Where in the published text the reader has got to, as the offset of the
+  // first words they can see.
+  //
+  // Asked for when a newer version of the document is about to replace this
+  // page. The offset itself is worth nothing afterwards -- the next rendering
+  // starts from different text -- but the words at it are how the sidebar puts
+  // the reader back where they were, so this only has to be right about which
+  // words those are.
+  //
+  // Found by asking the document what sits at a point, rather than by
+  // measuring text nodes until one is on screen: a paper has thousands of them
+  // and this is a question about exactly one. The point is a little below the
+  // top edge, because the line straddling the edge is half cut off and nobody
+  // is reading it, and it is tried across the width, because the middle of a
+  // page can be a figure, a margin, or the gap between two columns.
+  function readingPosition() {
+    if (!table?.nodes.length) return 0;
+    const y = Math.min(Math.max(1, innerHeight - 1), 80);
+    for (const fraction of [0.5, 0.25, 0.75]) {
+      const at = offsetAtPoint(Math.round(innerWidth * fraction), y);
+      if (at !== null) return at;
+    }
+    return 0;
+  }
+
+  function offsetAtPoint(x, y) {
+    let container = null;
+    let offset = 0;
+    if (document.caretPositionFromPoint) {
+      const position = document.caretPositionFromPoint(x, y);
+      if (!position) return null;
+      container = position.offsetNode;
+      offset = position.offset;
+    } else if (document.caretRangeFromPoint) {
+      const range = document.caretRangeFromPoint(x, y);
+      if (!range) return null;
+      container = range.startContainer;
+      offset = range.startOffset;
+    } else {
+      return null;
+    }
+    const point = container && textPointOf(container, offset);
+    if (!point) return null;
+    const index = table.index.get(point.node);
+    if (index === undefined) return null;
+    return table.starts[index] + point.offset;
+  }
+
   function captureSelection() {
     const selection = document.getSelection();
     if (!selection || selection.isCollapsed) {
@@ -555,6 +603,10 @@ import { createMathTypesetter } from "../lib/math.js";
       // Scrolled to a third of the way down rather than to the very top: a
       // line pinned to the edge of the frame reads as cut off.
       scrollTo({ top: scrollY + box.top - innerHeight / 3, behavior: "smooth" });
+      return;
+    }
+    if (message.type === "reading-position") {
+      post({ type: "reading-position", start: readingPosition() });
       return;
     }
     if (message.type === "synctex-locate") {

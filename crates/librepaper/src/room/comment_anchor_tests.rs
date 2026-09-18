@@ -214,6 +214,16 @@ async fn a_remark_about_the_whole_document_needs_no_passage() {
     assert_eq!(response["type"], "comment", "{response}");
     assert_eq!(response["comment"]["original_anchor"]["kind"], "document");
     assert!(response["comment"]["original_anchor"]["target"].is_null());
+    // It quotes nothing because there was nothing to quote, which is not the
+    // same as a passage being kept back: a reader's card should read it as the
+    // general remark it is.
+    let public = room.snapshot_for("", false).await;
+    let value = serde_json::to_value(&public[0]).unwrap();
+    assert_eq!(
+        value["passage_withheld"],
+        serde_json::Value::Null,
+        "a remark about the document withholds no passage: {value}",
+    );
     deployment.catalog.close().await;
 }
 
@@ -334,15 +344,14 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
 }
 
 /// Two people editing one document must see each other's comments as they are
-/// made, not on the next reload.
+/// made, not on the next reload -- and so must the reader who is waiting on an
+/// answer.
 ///
-/// A comment made in the editing project carries no bundle, so
-/// `visible_to_reader` refuses it and the reader view of it is a redaction.
-/// That view used to be the only one broadcast, computed once with
-/// `is_owner: false` and sent to every peer -- so an editor's own colleague
-/// was handed the redaction that was meant for the public annotation channel,
-/// and the comment appeared only when the socket reconnected and `hello`
-/// asked for a snapshot with the right authority.
+/// The frame is not the same for both. An editor peer is sent the project's
+/// own annotation, source anchor and all; a reader peer is sent the remark
+/// with the anchor taken out. One view used to be computed for everybody, with
+/// `is_owner: false`, so an editor's own colleague was handed the public
+/// projection and the comment appeared only when the socket reconnected.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn an_editing_comment_reaches_the_other_editor_live() {
@@ -385,11 +394,47 @@ async fn an_editing_comment_reaches_the_other_editor_live() {
         "a shared frame says nothing about whose comment it is",
     );
 
+    // The reader who is being answered gets the answer, in the view the
+    // public channel may carry: the remark, and not what it is about.
     let public = received(&mut reader_rx);
     assert_eq!(public.len(), 1);
+    assert_eq!(public[0]["type"], "comment", "{}", public[0]);
+    assert_eq!(public[0]["comment"]["id"], response["comment"]["id"]);
+    assert_eq!(public[0]["comment"]["body"], "A remark.");
+    assert!(
+        public[0]["comment"]["original_anchor"].is_null(),
+        "a reader is never sent a range in a source file: {}",
+        public[0],
+    );
+    assert!(
+        public[0]["comment"]["attachment"].is_null(),
+        "nor where that range has got to: {}",
+        public[0],
+    );
+    // This one was written in the editor, so the words it quotes are the
+    // draft's. They stay there; the card is told why it has none.
+    assert!(
+        public[0]["comment"]["presentation"]["rendered_exact"].is_null(),
+        "the draft's words do not cross: {}",
+        public[0],
+    );
+    // The editor peer keeps them: it is reading the draft they were taken
+    // from.
     assert_eq!(
-        public[0]["type"], "annotation-redacted",
-        "an editing comment stays out of the public annotation channel",
+        relayed[0]["comment"]["presentation"]["rendered_exact"],
+        "interval covers the mean",
+    );
+    assert_eq!(
+        public[0]["comment"]["passage_withheld"],
+        serde_json::json!(true),
+        "and the reader is told this is a passage rather than the document: {}",
+        public[0],
+    );
+    // The editor peer's view of the same comment is the project's own.
+    assert!(
+        !relayed[0]["comment"]["original_anchor"].is_null(),
+        "an editor peer keeps the anchor: {}",
+        relayed[0],
     );
 
     deployment.catalog.close().await;
@@ -441,10 +486,66 @@ async fn an_agents_batch_states_the_list_each_peer_may_see() {
     let readers = received(&mut reader_rx);
     assert_eq!(readers.len(), 1);
     assert_eq!(readers[0]["type"], "comments");
+    let public = readers[0]["comments"].as_array().expect("a list");
     assert_eq!(
-        readers[0]["comments"],
-        serde_json::json!([]),
-        "and a reader peer only the ones the public channel may carry",
+        public.len(),
+        1,
+        "and a reader peer the ones the public channel may carry",
+    );
+    assert!(
+        public[0]["original_anchor"].is_null(),
+        "carried without the source it is anchored in: {}",
+        readers[0],
+    );
+
+    deployment.catalog.close().await;
+}
+
+/// A suggestion is the one annotation a reader never receives.
+///
+/// It is not a remark about the document, it is an edit to it: a source anchor
+/// and the words proposed for that source. Both are the editable project, and
+/// the public annotation channel is not where the project goes.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_suggestion_stays_out_of_the_public_channel() {
+    let Some(deployment) = deployment("anchor-suggestion").await else {
+        return;
+    };
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let (editor_tx, mut editor_rx) = tokio::sync::mpsc::channel(8);
+    let (reader_tx, mut reader_rx) = tokio::sync::mpsc::channel(8);
+    room.attach(1, editor_tx, true).await;
+    room.attach(2, reader_tx, false).await;
+
+    let mut command = selection(
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+    );
+    if let Command::Comment {
+        motivation,
+        proposed,
+        ..
+    } = &mut command
+    {
+        *motivation = "editing".into();
+        *proposed = Some("*interval* contains the mean".into());
+    }
+    let response = send(&room, command, &deployment.actor).await;
+    assert_eq!(response["type"], "comment", "{response}");
+    room.broadcast_comment_event(None, &response).await;
+
+    let editors = received(&mut editor_rx);
+    assert_eq!(editors.len(), 1);
+    assert_eq!(editors[0]["type"], "comment", "{}", editors[0]);
+
+    let readers = received(&mut reader_rx);
+    assert_eq!(readers.len(), 1);
+    assert_eq!(
+        readers[0]["type"], "annotation-redacted",
+        "a proposed edit is not a remark a reader may have: {}",
+        readers[0],
     );
 
     deployment.catalog.close().await;

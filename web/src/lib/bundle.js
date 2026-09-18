@@ -139,6 +139,20 @@ export function createBundleReader({ slug, key = "", fetcher = globalThis.fetch,
       return null;
     }
   }
+  /// The published bundle as the server has it, without making it this
+  /// browser's. `refresh` is how a reader takes an update; this is how anyone
+  /// asks whether there is one, so the answer can be offered rather than
+  /// applied. A failed check is silent on purpose: nothing the reader asked
+  /// for has failed, and the next announcement or reload asks again.
+  async function peek() {
+    try {
+      const response = await fetcher(bundleUrl(slug), { headers: authHeaders(key) });
+      const value = await json(response);
+      return disposed ? null : value.bundle;
+    } catch {
+      return null;
+    }
+  }
   function announce(value) {
     const id = value?.id || value?.bundle_id;
     const currentId = current?.id;
@@ -147,5 +161,5 @@ export function createBundleReader({ slug, key = "", fetcher = globalThis.fetch,
     return true;
   }
   function dispose() { disposed = true; }
-  return { refresh, announce, dispose, current: () => current };
+  return { refresh, peek, announce, dispose, current: () => current };
 }

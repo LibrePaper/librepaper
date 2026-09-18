@@ -4,6 +4,7 @@
   // One document: the source beside it, the page itself, and everything said
   // about it.
   import { aboutWholeDocument, anchorAll, anchorOne, flatten, placeSources, shownSelector } from "../lib/anchor.js";
+  import { bookmarkFrom, mayApplyUpdate } from "../lib/reader/update-policy.js";
   import * as renderers from "../lib/renderers.js";
   import * as sync from "../lib/sync.js";
   import * as quarto from "../lib/engines/quarto.js";
@@ -200,6 +201,15 @@
   let frameReady = false;
   let docText = null; // the joined visible text, invariant across repaints
   let docView = null; // flatten(docText), so anchoring does not redo it per call
+
+  // Taking a newer published version without losing the reader's place. The
+  // bookmark is the words they were looking at, kept across the swap and
+  // looked up again in the page that replaces this one; the ask is the frame's
+  // one-shot answer about where those words are, and the guard keeps a second
+  // update from starting while the first is still in flight.
+  let returning = null;
+  let readingPositionAsk = null;
+  let takingUpdate = false;
 
   let preview = $state(null);
   // Both Quarto's own live preview and a Typst document previewed through
@@ -426,7 +436,14 @@
         const found = anchorOne(docText || "", { ...shownSelector(comment), position: null, requireUnique: true }, docView);
         comment.start = found?.start ?? null;
         comment.end = found?.end ?? null;
-        comment.earlierBundle = !found;
+        // Not placed here, and the two reasons read differently to whoever
+        // left the comment. A comment that carries a bundle was made on a
+        // rendering of this document that is not the one on screen; one that
+        // carries none was made in the editor, on a draft this reader has
+        // never been shown -- and for a reader its quotation is withheld, so
+        // there was never anything to match in the first place.
+        comment.earlierBundle = !found && !!comment.bundle_id;
+        comment.fromDraft = !found && !comment.bundle_id;
       }
     } else if (mayEdit) placeSources(session, list);
     for (const comment of list) applyAnchorFlags(comment);
@@ -440,8 +457,71 @@
     tracePassages();
   }
 
+  // Where the reader has got to, asked of the page itself.
+  //
+  // The frame answers once. It is given a moment and no more: a frame that is
+  // navigating, or one that never loaded its agent, would otherwise hold the
+  // update back indefinitely, and an update taken without a bookmark only
+  // costs the reader their place -- not the update.
+  function askReadingPosition() {
+    return new Promise((resolve) => {
+      if (!frameReady || docText === null) {
+        resolve(null);
+        return;
+      }
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        readingPositionAsk = null;
+        resolve(value);
+      };
+      readingPositionAsk = finish;
+      tell({ type: "reading-position" });
+      setTimeout(() => finish(null), 500);
+    });
+  }
+
+  // Take the newer published version, and remember the page well enough to
+  // come back to the same words. Both the automatic path and the button go
+  // through here: a refresh that drops the reader at the top of a long paper
+  // is a poor answer however it was asked for.
+  async function takeUpdate({ automatic = false } = {}) {
+    if (takingUpdate) return;
+    takingUpdate = true;
+    try {
+      const at = await askReadingPosition();
+      returning = at === null ? null : bookmarkFrom(docText || "", at);
+      await bundle.acceptUpdate();
+      // Said only when nobody asked. A page that changes under a reader who
+      // pressed nothing needs to account for itself; one that changes because
+      // they pressed Refresh does not.
+      if (automatic) {
+        say("Updated to the newest published version.", { id: "reader:bundle-updated" });
+      }
+    } finally {
+      takingUpdate = false;
+    }
+  }
+
+  // Put the reader back. The words are looked up in the new page the same way
+  // a comment's passage is, so a paragraph added above them costs nothing; a
+  // passage that has been rewritten since is simply not found, and the page
+  // opens where it opens rather than scrolling somewhere arbitrary.
+  function returnToReading() {
+    const wanted = returning;
+    returning = null;
+    if (!wanted || docText === null) return;
+    const found = anchorOne(docText, { ...wanted, position: null, requireUnique: true }, docView);
+    if (!found) return;
+    tell({ type: "locate", start: found.start, length: Math.max(1, found.end - found.start) });
+  }
+
   function fromFrame(message) {
     switch (message.type) {
+      case "reading-position":
+        readingPositionAsk?.(Number(message.start) || 0);
+        break;
       case "ready":
         docText = typeof message.text === "string" ? message.text : "";
         docView = flatten(docText);
@@ -458,6 +538,9 @@
         // Whatever was painted before is gone with the rebuilt DOM.
         frameOverlays.reset();
         reanchor();
+        // The page has just been replaced by a newer published version. Put
+        // the reader back where they were before anything else is drawn on it.
+        returnToReading();
         applySelection();
         if (first && !publishedMode) {
           void paintPreview();
@@ -667,6 +750,26 @@
     const height = declared.endsWith("px") ? Number.parseFloat(declared) : (Number.parseFloat(declared) || 3.5) * unit;
     return Math.round(height) + 9;
   }
+
+  // A newer published version, taken as soon as the reader is not in the
+  // middle of something.
+  //
+  // The offer is not a neutral thing to leave sitting there: an annotation
+  // must name the bundle it was made on, so `submitAnnotation` refuses while
+  // one is outstanding, and a reader who never presses the button eventually
+  // finds that commenting has stopped working and is told to refresh. Taking
+  // it for them is the same act a moment earlier, and this effect re-runs when
+  // the selection or the draft clears -- so an update held back during a
+  // sentence is taken as soon as that sentence is finished.
+  $effect(() => {
+    if (!publishedMode) return;
+    const may = mayApplyUpdate({
+      offered: bundleUpdate,
+      selecting: Boolean(pending),
+      composing: Boolean(composing),
+    });
+    if (may) void takeUpdate({ automatic: true });
+  });
 
   // How wide the bar is is only knowable once it is drawn, so the placing
   // above is made good here, after it is: re-centred on the point it was
@@ -2925,6 +3028,10 @@
           pendingChat?.disconnect();
           outbox.disconnected();
         }
+        // A publish that happened while this browser was not listening was
+        // announced to nobody: the offer is pushed over this very socket. So
+        // the way back up is where a reader asks whether they missed one.
+        if (up && publishedMode && !mayEdit) void bundle.checkForUpdate();
       },
       onPeers: (count) => (peers = Math.max(peers, count)),
       onState: (state_) => {
@@ -3402,7 +3509,7 @@
          says about the document. -->
     {@render previewStatusControl()}
     {#if publishedMode && bundleUpdate}
-      <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void bundle.acceptUpdate()}>
+      <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void takeUpdate()}>
         New published version available · Refresh
       </button>
     {/if}

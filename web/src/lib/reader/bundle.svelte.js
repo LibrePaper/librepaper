@@ -207,6 +207,24 @@ export function createBundle({
     reader?.announce(event);
   }
 
+  /// Whether a newer published version arrived while this browser was not
+  /// listening.
+  ///
+  /// The offer is pushed, over the room socket, so a publish that happens
+  /// while the connection is down is announced to nobody: without asking on
+  /// the way back up, a reader whose connection dropped sits on the page they
+  /// opened until they reload it.
+  ///
+  /// Asked rather than taken. `refresh` would hand `watchAsVisitor` a bundle
+  /// with no `pending_id`, which is the branch that swaps the page, and the
+  /// point of this is to make an offer -- what is done with one is the
+  /// reader's business and `mayApplyUpdate`'s.
+  async function checkForUpdate() {
+    const latest = await reader?.peek();
+    if (!latest?.id) return false;
+    return announce({ id: latest.id });
+  }
+
   /// The reader asked for the newer published version they were offered.
   /// Clearing the offer first is what makes the button stop saying there is
   /// one while its refresh is in flight.
@@ -318,7 +336,7 @@ export function createBundle({
   }
 
   return {
-    state, watchAsEditor, watchAsVisitor, dispose, begin, announce, acceptUpdate,
+    state, watchAsEditor, watchAsVisitor, dispose, begin, announce, acceptUpdate, checkForUpdate,
     refreshStatus, refreshMetadata, publish, keepCurrent, catchUp, id,
   };
 }

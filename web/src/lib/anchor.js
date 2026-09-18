@@ -173,6 +173,11 @@ export function shownSelector(comment) {
 export function aboutWholeDocument(comment) {
   const anchor = comment?.original_anchor;
   if (anchor) return anchor.kind === "document";
+  // Quoting nothing usually means there was nothing to quote. It can also mean
+  // the words were withheld: a comment written in the editor quotes the draft,
+  // which a reader has not been shown, so the server drops the quotation and
+  // says outright that a passage is what this is about.
+  if (comment?.passage_withheld) return false;
   return !comment?.presentation?.rendered_exact;
 }
 

@@ -202,6 +202,16 @@ pub struct CommentView {
     /// remains private; clients use this to decide which controls to show.
     pub mine: bool,
     pub deletable: bool,
+    /// That this is about a passage whose words are not in this view.
+    ///
+    /// A reader tells a general remark from one about a passage by whether it
+    /// quotes anything, because a reader is never sent the anchor that would
+    /// say so outright. A comment written in the editor quotes the draft, and
+    /// the draft is not a reader's to read -- so the quotation is dropped, and
+    /// without this the card would read as a remark about the whole document,
+    /// which is a different thing than the person wrote.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub passage_withheld: bool,
 }
 
 impl CommentView {
@@ -214,6 +224,13 @@ impl CommentView {
     pub fn for_viewer(comment: &Comment, author: &str, is_owner: bool) -> CommentView {
         let mine = !author.is_empty() && comment.author == author;
         let deletable = deletable(comment, author, is_owner);
+        // Asked before the anchor is dropped below, and of the anchor rather
+        // than of the quotation: a remark about the whole document quotes
+        // nothing either, and it is not a passage anybody is being kept from.
+        let about_a_passage = comment
+            .original_anchor
+            .as_ref()
+            .is_some_and(|anchor| anchor.target.source().is_some());
         let mut comment = comment.clone();
         // Source provenance and suggestion proposals are editorial material.
         // A rendered reader may discuss an annotation, but must never receive
@@ -228,19 +245,43 @@ impl CommentView {
             comment.outcome.clear();
             comment.resolved_in.clear();
         }
+        // The rendered quotation is the page rather than the project, so it
+        // crosses to a reader -- but only when the page it was taken from is
+        // one they have been shown. A comment carrying no bundle was written
+        // in the editor, against a draft that may say something no publish has
+        // ever said, and the quotation is the one field that would carry those
+        // words out. The remark crosses without them.
+        let withheld = !is_owner && about_a_passage && comment.bundle_id.is_empty();
+        if withheld {
+            comment.presentation = PresentationContext::default();
+        }
         CommentView {
             comment,
             mine,
             deletable,
+            passage_withheld: withheld,
         }
     }
 }
 
-/// Editorial annotations belong to the editable project, so only an editor
-/// may receive them. A nonempty bundle id identifies a rendered
-/// annotation, including one retained from an earlier bundle.
+/// A suggestion is an edit, so only an editor may receive one: it carries a
+/// source anchor and the words proposed for that source, which is the project
+/// rather than anything a reader was shown.
+///
+/// Every other remark is a remark, and it reaches the reader whether or not it
+/// was made on a rendering. The bundle used to be required here, and requiring
+/// it made the conversation one-sided: a reader could comment on a published
+/// document and an editor could read it, but an editor answering from the
+/// editor wrote into a channel the reader had no access to, because the editor
+/// comments on its own preview and a preview is no bundle. A reader saw
+/// silence and the editor saw a reply sent.
+///
+/// What a reader gets of one is still only the remark. `CommentView::for_viewer`
+/// drops the source anchor and the attachment from every non-owner view, so
+/// what crosses is the words somebody wrote and the words they quoted, never a
+/// range in a file.
 pub fn visible_to_reader(comment: &Comment) -> bool {
-    comment.motivation != "editing" && !comment.bundle_id.is_empty()
+    comment.motivation != "editing"
 }
 
 /// Rule H's authorization test: the document's owner may delete anything on
@@ -388,6 +429,47 @@ impl Room {
     }
 }
 
+/// The published files a passage could have come from, named by the ids the
+/// document uses now.
+///
+/// A source archive records paths. It has no Loro file id to record: the ids
+/// live in the CRDT and an archive is a copy of the bytes, so the tree read
+/// back out of one carries an empty id for every file. Anchoring to that id
+/// is anchoring to nothing: `path_for_file_id` never finds it, and the
+/// annotation is refused on the way to storage, which is what a reader saw as
+/// a comment that would not send.
+///
+/// So the bundle's files are matched to the live document by path, and the
+/// comment is anchored to the file that is at that path now. That file is
+/// what the resolver has to follow forward in any case -- the anchor says
+/// where the passage was, and where it has got to since is the CRDT's
+/// question, not the archive's.
+///
+/// A published file with no counterpart in the document as it stands is not a
+/// candidate: there is no id to anchor it to, and a range into a file the
+/// document no longer has is one nothing could ever resolve.
+fn published_files(
+    doc: &loro::LoroDoc,
+    published: &BundledSource,
+) -> Result<Vec<(String, String, String)>, String> {
+    let live: HashMap<String, String> = session::paths_of(doc)
+        .into_iter()
+        .map(|(id, path)| (path, id))
+        .collect();
+    let files: Vec<(String, String, String)> = published
+        .files
+        .iter()
+        .filter_map(|(_, path, text)| {
+            live.get(path)
+                .map(|id| (id.clone(), path.clone(), text.clone()))
+        })
+        .collect();
+    if files.is_empty() {
+        return Err("none of that published source is part of this document any more".into());
+    }
+    Ok(files)
+}
+
 /// Works out what a selection is about, in the document as it stands.
 ///
 /// This is the one place a rendered selection becomes a source range, and it
@@ -425,7 +507,7 @@ fn anchor_for(
         return Err("that selection is too long to comment on".into());
     }
     let files = match published {
-        Some(published) => published.files.clone(),
+        Some(published) => published_files(doc, published)?,
         None => source_files(doc),
     };
     let candidates: Vec<locate::Candidate<'_>> = files
@@ -881,9 +963,9 @@ impl Room {
         };
         if !is_owner && !visible_to_reader(comment) {
             // Editorial suggestions contain source anchors and proposed source
-            // text. Other empty-bundle annotations are likewise local to
-            // the editable project. Neither belongs in the public annotation
-            // channel.
+            // text, which is the project rather than the page, so they do not
+            // belong in the public annotation channel. An ordinary remark
+            // does, wherever it was written.
             return json!({"type": "annotation-redacted", "annotation_revision": comment.seq});
         }
 
@@ -1682,4 +1764,84 @@ impl Room {
     }
 
     /* ---------------------------------------------------------- the document */
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::*;
+    use crate::document::session;
+
+    /// A bundle's source as `bundled_source` reads it back: paths and bodies,
+    /// and an empty file id, because a source archive has no id to record.
+    fn bundle(path: &str, body: &str) -> BundledSource {
+        BundledSource {
+            checkpoint: "c".repeat(64),
+            files: vec![(String::new(), path.to_string(), body.to_string())],
+        }
+    }
+
+    /// A comment made on a published rendering must be anchored to the file
+    /// id the document uses, not to the empty one the archive carries.
+    /// Storing the empty id is refused on the way to postgres, which reached
+    /// the reader as "invalid annotation source range" and a comment that
+    /// would not send.
+    #[test]
+    fn a_comment_on_a_published_render_is_anchored_by_live_file_id() {
+        let doc = session::new_doc();
+        let body = "The interval covers the mean.";
+        let id = session::put_text(&doc, "paper.md", body);
+        let published = bundle("paper.md", body);
+        let quote = Quote {
+            exact: "covers the mean",
+            prefix: "The interval ",
+            suffix: "",
+        };
+        let anchor = anchor_for(
+            &Configuration::default(),
+            &doc,
+            "current",
+            Some(&published),
+            &quote,
+            false,
+        )
+        .expect("anchored");
+        let target = anchor.target.source().expect("a source target");
+        assert_eq!(target.file_id.0, id);
+        assert!(!target.file_id.0.is_empty());
+        // The anchor is against the checkpoint the rendering was built from,
+        // not the draft as it stands.
+        assert_eq!(anchor.checkpoint_id.0, "c".repeat(64));
+        // And the id is one the resolver can actually follow.
+        assert_eq!(
+            path_for_file_id(&doc, &target.file_id).as_deref(),
+            Some("paper.md")
+        );
+    }
+
+    /// A published file the document no longer has is not a candidate: there
+    /// is no live id to anchor it to.
+    #[test]
+    fn a_published_file_the_document_has_dropped_is_refused() {
+        let doc = session::new_doc();
+        session::put_text(&doc, "paper.md", "The interval covers the mean.");
+        let published = bundle("gone.md", "The interval covers the mean.");
+        let quote = Quote {
+            exact: "covers the mean",
+            prefix: "",
+            suffix: "",
+        };
+        let failure = anchor_for(
+            &Configuration::default(),
+            &doc,
+            "current",
+            Some(&published),
+            &quote,
+            false,
+        )
+        .expect_err("no live file");
+        assert!(
+            failure.contains("no longer") || failure.contains("any more"),
+            "{failure}"
+        );
+    }
 }

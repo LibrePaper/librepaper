@@ -296,28 +296,65 @@ fn score_of(flat: &Flat, at: usize, length: usize, prefix: &[char], suffix: &[ch
 ///
 /// The selection is tried whole first and then a word shorter at a time, which
 /// is what recovers a selection that ran into something the renderer invented
-/// -- a figure number, a footnote marker -- and stopped agreeing with the
-/// source partway through. A candidate too short to be sure of is only ever
-/// accepted when it occurs exactly once.
+/// -- a figure number, a footnote marker, a formatted citation -- and stopped
+/// agreeing with the source partway through. A candidate too short to be sure
+/// of is only ever accepted when it occurs exactly once.
+///
+/// Shortening happens from both ends, separately, because the renderer's
+/// inventions are not only at the end of a selection. `[@lovelace1843]` is
+/// `(Lovelace, 1843)` on the page, and a reader who selects from there to the
+/// end of the sentence has a selection whose *first* words are the ones no
+/// file contains: trimming the tail can only shorten it into more of what was
+/// never there. Trimming the head recovers the rest of the sentence, which is
+/// the part they were actually pointing at.
+///
+/// The longer of the two survivals wins. Both are the author's own words and
+/// both are anchored the same way, so the tie-break is simply which recovers
+/// more of what was selected; an exact tie keeps the head, which is where a
+/// selection usually starts on purpose.
 pub fn locate(files: &[Candidate<'_>], quote: &Quote<'_>) -> Result<SourceTextTarget, Failure> {
     let wanted = trimmed(&flatten(quote.exact, false).chars);
     if wanted.is_empty() {
         return Err(Failure::Empty);
     }
     let search = Search::over(files, quote);
-    // Whole first, then a word shorter at a time from the end, because what
-    // ran past the end of the author's words is what the renderer added after
-    // them. The first length that lands somewhere is the answer.
-    for needle in shortening_from_the_end(&wanted) {
+    let keeping_the_head = first_hit(&search, shortening_from_the_end(&wanted));
+    // The whole phrase is what the pass above began with, so this one starts a
+    // word in.
+    let keeping_the_tail = first_hit(&search, shortening_from_the_start(&wanted).skip(1));
+    let hit = match (keeping_the_head, keeping_the_tail) {
+        (Some(head), Some(tail)) => Some(if tail.length > head.length {
+            tail
+        } else {
+            head
+        }),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    };
+    let Some(hit) = hit else {
+        return Err(search.failure());
+    };
+    let (html, flat) = &search.flattened[hit.file];
+    Ok(place(&files[hit.file], flat, *html, hit.at, hit.length))
+}
+
+/// The first of these needles that lands in exactly one place.
+///
+/// They arrive longest first, so the first that lands is the most of the
+/// selection this direction of trimming can account for. The floor is a floor
+/// on trying again, not on accepting: a phrase below it is still tried once,
+/// because it may well occur only once, but nothing shorter is -- a shorter
+/// phrase can only be less certain than one that has already failed.
+fn first_hit<'a>(search: &Search<'_>, needles: impl Iterator<Item = &'a [char]>) -> Option<Hit> {
+    for needle in needles {
         if let Some(hit) = search.find(needle) {
-            let (html, flat) = &search.flattened[hit.file];
-            return Ok(place(&files[hit.file], flat, *html, hit.at, hit.length));
+            return Some(hit);
         }
         if needle.len() < ENOUGH {
             break;
         }
     }
-    Err(search.failure())
+    None
 }
 
 fn trimmed(chars: &[char]) -> Vec<char> {
@@ -342,6 +379,16 @@ fn word_starts(phrase: &[char]) -> Vec<usize> {
                 .map(|(at, _)| at + 1),
         )
         .collect()
+}
+
+/// The phrase, then the phrase without its first word, and so on: the other
+/// direction, for a selection that began in something the renderer invented.
+fn shortening_from_the_start(phrase: &[char]) -> impl Iterator<Item = &[char]> {
+    let length = phrase.len();
+    word_starts(phrase)
+        .into_iter()
+        .filter(move |at| *at < length)
+        .map(move |at| &phrase[at..])
 }
 
 /// The phrase, then the phrase without its last word, and so on. Shortening by
@@ -629,6 +676,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(found.exact, "See the figure below.");
+    }
+
+    #[test]
+    fn a_selection_starting_in_invented_text_keeps_the_words_that_are_real() {
+        // The page reads "(Lovelace, 1843). Type ..." where the source says
+        // "[@lovelace1843]. Type ...", so a selection that starts at the
+        // citation starts on words no file contains. Trimming the tail can
+        // only shorten it into more of what was never there; trimming the
+        // head is what recovers the sentence the reader was pointing at.
+        let text = "Weaving algebraic patterns [@lovelace1843]. Type `@` to cite another entry.\n";
+        let found = locate(
+            &one(text),
+            &quote(
+                "(Lovelace, 1843). Type @ to cite another entry.",
+                "Weaving algebraic patterns ",
+                "",
+            ),
+        )
+        .unwrap();
+        assert!(
+            found.exact.ends_with("Type `@` to cite another entry."),
+            "{:?}",
+            found.exact
+        );
+        // Never a range that says one thing and covers another.
+        let units: Vec<u16> = text.encode_utf16().collect();
+        assert_eq!(
+            slice16(&units, found.start_utf16 as usize, found.end_utf16 as usize),
+            found.exact
+        );
+    }
+
+    #[test]
+    fn the_longer_survival_is_the_one_kept() {
+        // Invented text in the middle: both directions land, and the tail is
+        // the larger part of what was selected, so the tail is the answer.
+        let text = "A short lead [@ref2020] and then a good deal more prose after it.\n";
+        let found = locate(
+            &one(text),
+            &quote(
+                "lead (Ref, 2020) and then a good deal more prose after it.",
+                "",
+                "",
+            ),
+        )
+        .unwrap();
+        assert!(
+            found.exact.contains("a good deal more prose after it."),
+            "{:?}",
+            found.exact
+        );
     }
 
     #[test]
