@@ -1792,7 +1792,7 @@ mod tests {
             .create_document(NewDocument {
                 slug: "paper".into(),
                 owner_id: account.id,
-                ownership_mode: "account".into(),
+                ownership_mode: "owned".into(),
                 title: "Paper".into(),
                 source_format: "markdown".into(),
                 main_path: "paper.md".into(),
@@ -1864,14 +1864,13 @@ mod tests {
             2,
             "a publication writes its rendering and its manifest, not the figures in it"
         );
-        // And it was not charged for a second time.
-        let mut written_bytes = 0_i64;
-        for item in &written {
-            written_bytes += blobs.length(&item.key).await.unwrap() as i64;
-        }
+        // And it was not charged for a second time. The quota counts
+        // `publication_files`, so what this publication added to it is its
+        // rendering alone -- not the figure, which is counted once where it
+        // lives, in `document_assets`.
         assert_eq!(
             catalog.usage_bytes(None).await.unwrap() - held_after_upload,
-            written_bytes,
+            "<h1>One</h1>".len() as i64,
             "a shared figure is counted where it lives and not again here"
         );
         // The reader still gets it: the row points at the document's own blob.
