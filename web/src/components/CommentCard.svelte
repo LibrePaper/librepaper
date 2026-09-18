@@ -1,7 +1,5 @@
 <script>
   import { tick } from "svelte";
-  import { Menu } from "@skeletonlabs/skeleton-svelte";
-  import ExplorerMenu from "./ExplorerMenu.svelte";
   import IconButton from "./IconButton.svelte";
   import Avatar from "./Avatar.svelte";
   import Row from "./layout/Row.svelte";
@@ -286,11 +284,14 @@
     </div>
   {/if}
 
-  <!-- One row of verbs for the whole thread, and it keeps out of the way:
-       the two that get used stay visible only while the card is the one being
-       read, and the one that cannot be undone waits behind the menu. A card
-       that is hovered, focused into, or selected shows them; so does every
-       card on a device with no pointer to hover with. -->
+  <!-- One row of verbs for the whole thread, and it keeps out of the way: a
+       card that is hovered, focused into, or selected shows them, and so does
+       every card on a device with no pointer to hover with.
+
+       Delete was behind a "•••" menu whose only item was Delete -- a menu
+       is for choosing, and there was nothing to choose. It is its own button
+       now, and it is still the confirmed one: what it opens is the dialog,
+       not the deletion. -->
   <div class="actions">
     {#if !isSuggestion && canComment}
       <!-- Reject is the resolve, for a suggestion -- see the diff and
@@ -306,6 +307,16 @@
         }}
       />
     {/if}
+    {#if deletable}
+      <IconButton
+        icon="trash"
+        label="Delete comment"
+        onclick={(e) => {
+          e.stopPropagation();
+          ondelete?.(comment);
+        }}
+      />
+    {/if}
     <IconButton
       icon="reply"
       label="Reply"
@@ -316,21 +327,6 @@
         void reply();
       }}
     />
-    {#if deletable}
-      <Menu onSelect={(chosen) => { if (chosen.value === "delete") ondelete?.(comment); }}>
-        <!-- The button is authored here rather than handed a `class`: a class
-             arriving as a prop carries no scope hash, so the rules below would
-             have to be global to paint at all. -->
-        <Menu.Trigger>
-          {#snippet element(attributes)}
-            <button {...attributes} type="button" class="comment-menu" aria-label="More comment options">•••</button>
-          {/snippet}
-        </Menu.Trigger>
-        <ExplorerMenu>
-          <Menu.Item value="delete" class="menuitem">Delete comment</Menu.Item>
-        </ExplorerMenu>
-      </Menu>
-    {/if}
   </div>
 
   {#if replying && canComment}
@@ -377,6 +373,4 @@
   @media (hover: none) { .actions { opacity: 1; } }
   @media (prefers-reduced-motion: reduce) { .actions { transition: none; } }
 
-  .comment-menu { padding-inline: calc(var(--spacing) * 1.5); border-radius: var(--radius-base); font-size: var(--panel-meta-size); line-height: 1; color: var(--panel-muted); }
-  .comment-menu:hover, .comment-menu[data-state="open"] { background: var(--color-row-hover); }
 </style>

@@ -35,6 +35,8 @@ let component=mount(Comments,{target:document.body,props:{comments,canModerate:f
 window.asModerator=async()=>{await unmount(component);window.deleted=[];component=mount(Comments,{target:document.body,props:{comments,canModerate:true,...handlers}});};
 window.click=label=>{const b=Array.from(document.querySelectorAll(".bulk button")).find(b=>b.textContent===label);if(!b)return false;b.click();return true;};
 window.labels=()=>Array.from(document.querySelectorAll(".bulk button")).map(b=>b.textContent);
+window.verbs=id=>Array.from(document.querySelectorAll("#comment-"+id+" .actions button"))
+  .map(b=>(b.getAttribute("aria-label")||b.textContent).trim());
 `);
 let server, page;
 try {
@@ -49,6 +51,16 @@ try {
   page = await browser("chromium", join(temporary, "profile"), 24000 + Math.floor(Math.random() * 10000));
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("panel", () => page.evaluate('document.body.innerText.includes("3 open · 6 total")'), 10000);
+
+  // One card's own verbs, in the order they are read in: settle it, remove
+  // it, answer it. Delete used to be the only item of a "•••" menu, which is
+  // a menu with nothing to choose; it is a button like the other two.
+  assert.deepEqual(await page.evaluate('window.verbs("open")'),
+    ["Resolve", "Delete comment", "Reply"]);
+  assert.equal(await page.evaluate('document.body.innerHTML.includes("\u2022\u2022\u2022")'), false,
+    "no card keeps an overflow menu");
+  // A comment this caller may not delete offers no trash at all.
+  assert.deepEqual(await page.evaluate('window.verbs("theirs")'), ["Resolve", "Reply"]);
 
   // A commenter: no "Delete all", since they cannot delete what is not theirs.
   assert.deepEqual(await page.evaluate("window.labels()"), ["Resolve all", "Clear resolved"]);
@@ -66,7 +78,7 @@ try {
     ["done", "locked", "accepted"],
     ["open", "theirs", "done", "locked", "accepted", "proposed"],
   ]);
-  console.log("comments-bulk-browser: resolve all, clear resolved and delete all respect each caller's reach");
+  console.log("comments-bulk-browser: a card's own verbs, and resolve all / clear resolved / delete all respecting each caller's reach");
 } finally {
   await page?.close();
   if (server) await new Promise((resolve) => server.close(resolve));
