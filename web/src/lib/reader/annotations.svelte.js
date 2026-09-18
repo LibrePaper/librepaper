@@ -127,6 +127,22 @@ export function createAnnotations({ slug, anchor, repaint, send, bundleId = () =
       }
       publish();
       repaint();
+    } else if (event.type === "comments") {
+      // The whole list, as an agent's batch left it. A batch adds, edits and
+      // deletes in one act, so there is no per-comment event to apply and
+      // the room states where the list ended up instead.
+      //
+      // Rows this browser has made and the room has not confirmed are not in
+      // it -- the batch was prepared without them -- so they are carried
+      // over rather than blinking out from under whoever is still typing.
+      const stated = event.comments || [];
+      outbox.reconcile(stated);
+      const claimed = new Set(stated.map((item) => item.id));
+      const unconfirmed = list().filter((item) => item.pending && !claimed.has(item.id));
+      update([...stated, ...unconfirmed]);
+      anchor(list());
+      publish();
+      repaint();
     } else if (event.type === "refine") {
       outbox.acknowledge(event);
       const item = list().find((candidate) => candidate.id === event.comment_id);

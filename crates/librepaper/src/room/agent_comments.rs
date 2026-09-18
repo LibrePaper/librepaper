@@ -179,9 +179,7 @@ impl Room {
             state.seq = seq;
             *state.comments = comments;
         }
-        let snapshot = self.snapshot_for("", false).await;
-        self.broadcast(&json!({"type":"comments","comments":snapshot,"annotation_revision":seq}))
-            .await;
+        self.broadcast_comment_snapshot(seq).await;
         Ok(batch.receipt)
     }
 }

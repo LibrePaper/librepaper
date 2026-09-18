@@ -4,6 +4,7 @@
 import { authHeaders } from "./api.js";
 import { durableProjectPersistence } from "./offline-projects.js";
 import { projectIdentity } from "./project-identity.js";
+import { presenceColour } from "./presence-colour.js";
 import { createProjectSession, randomPresenceId } from "./project-session.js";
 import { keyFor } from "./storage.js";
 
@@ -11,7 +12,6 @@ export { uniquePresences } from "./project-session.js";
 
 const TAB_PRESENCE_KEY = "librepaper-presence-tab";
 let fallbackTabPresence = "";
-const PRESENCE_COLOURS = ["#2f5bd0", "#c2410c", "#15803d", "#7c3aed", "#be123c", "#0e7490"];
 
 function browserPresenceId() {
   try {
@@ -53,7 +53,9 @@ export function join({ slug, createdAt = "", key = "", persistence, fetchReferen
   return createProjectSession({
     ...options,
     presenceId: options.presenceId || browserPresenceId,
-    presenceColor: options.presenceColor || PRESENCE_COLOURS[Math.floor(Math.random() * PRESENCE_COLOURS.length)],
+    // Who it is decides the colour, so the same person is the same colour in
+    // every tab of their own, and two people in one file are two colours.
+    presenceColour: options.presenceColour || presenceColour,
     persistence: browserStore,
     fetchReference: fetchReference || browserReferenceFetcher({ slug, key }),
   });

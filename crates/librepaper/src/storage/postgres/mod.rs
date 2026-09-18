@@ -1159,8 +1159,9 @@ mod tests {
             }],
         };
 
-        // A commit that was given files rather than a tree cannot answer, and
-        // says so rather than claiming that nothing moved.
+        // A commit given files rather than a tree has to read its parent to
+        // know what moved. This one has no parent: it is the document
+        // arriving, and what it moved is everything it brought.
         sources
             .commit_project(CommitProject {
                 document_id: document.id,
@@ -1213,8 +1214,7 @@ mod tests {
         );
         // A publish hands storage files rather than a tree, and storage names
         // the tree itself: the version is still recognisable as the document
-        // it holds. What it moved stays unanswered, and must read back as
-        // unknown rather than as "nothing".
+        // it holds.
         let published = crate::storage::source_archive::tree_of(
             &crate::storage::source_archive::SourceArchive {
                 source_format: "latex".into(),
@@ -1231,7 +1231,15 @@ mod tests {
             Some(&published.digest_bytes()[..]),
             "a version is named by what it holds, however it was written"
         );
-        assert!(first.changed_paths.is_none());
+        // And the arrival answers too. The timeline cannot say what a version
+        // holds differently unless every version in a run can, so the row at
+        // the head of a history names every path in it rather than leaving
+        // the run to be totalled from a guess.
+        assert_eq!(
+            first.changed_paths.as_deref(),
+            Some(&["paper.tex".to_string()][..]),
+            "a document arriving moved every file it brought",
+        );
 
         catalog.close().await;
     }

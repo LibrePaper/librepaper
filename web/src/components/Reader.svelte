@@ -5,6 +5,7 @@
   // about it.
   import { aboutWholeDocument, anchorAll, anchorOne, flatten, placeSources, shownSelector } from "../lib/anchor.js";
   import * as renderers from "../lib/renderers.js";
+  import * as sync from "../lib/sync.js";
   import * as quarto from "../lib/engines/quarto.js";
   import * as figures from "../lib/figures.js";
   import * as activity from "../lib/activity.js";
@@ -134,6 +135,10 @@
       // A failed render has nothing to publish; readers keep the last one
       // that worked.
       renderable: !previewProblem && !unrendered,
+      // And not being renderable yet is not the same as not rendering: the
+      // first page of a PDF document has not arrived, which is a moment
+      // rather than a verdict.
+      rendering: unrendered && !previewProblem,
     }),
     say: (message) => say(message, { kind: "problem", id: "reader:bundle-load" }),
     disposed: () => readerDisposed,
@@ -2208,8 +2213,7 @@
       // arrived before then.
       queueMicrotask(() => {
         if (readerDisposed || diagnosticsGeneration !== sourceGeneration) return;
-        renderDiagnostics = nextDiagnostics;
-        paintCombinedDiagnostics();
+        diagnosticsController.render(nextDiagnostics);
       });
     }
     // The keystroke, which is what the diagnostic wait is measured from.
@@ -3409,7 +3413,7 @@
       <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
       {#if !connected}<span class="connection-label">Offline</span>{/if}
       {#each participants.slice(0, 3) as person (person.key)}
-        <Avatar name={person.name} key={person.key} size={6} />
+        <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
       {/each}
       {#if participants.length > 3}<span class="presence-more">+{participants.length - 3}</span>{/if}
     </div>

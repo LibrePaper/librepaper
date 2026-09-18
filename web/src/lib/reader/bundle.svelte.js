@@ -163,6 +163,19 @@ export function createBundle({
     // last version that did, which is the honest outcome -- but the author is
     // told, because from here it looks like nothing is happening.
     if (!at.renderable) {
+      // Unless it is still rendering, which is a moment rather than a verdict
+      // and so goes back on the clock instead of being given up on.
+      //
+      // An edit was the only other thing that armed this timer, so a document
+      // opened and shared without being typed into had exactly one attempt:
+      // the one its quiet window bought, which for a PDF format can elapse
+      // before the engine has produced a first page. Giving up there left a
+      // commenter reading "Nothing to read yet" for as long as nobody
+      // happened to touch the source.
+      if (at.rendering) {
+        keepCurrent();
+        return;
+      }
       state.blocked = "This draft does not render, so readers still have the last version that did.";
       return;
     }

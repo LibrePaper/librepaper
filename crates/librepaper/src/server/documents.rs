@@ -206,8 +206,7 @@ impl Server {
                     .apply_from(&room, incoming, &address, &current_who, &author)
                     .await;
                 if ok {
-                    let shared = room.comment_event_for(&result, "", false).await;
-                    room.broadcast(&shared).await;
+                    room.broadcast_comment_event(None, &result).await;
                     let targeted = room.comment_event_for(&result, &author, may_edit).await;
                     return write_json(200, &targeted);
                 }

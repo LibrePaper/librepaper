@@ -1379,6 +1379,17 @@ impl Room {
         });
     }
 
+    /// The other half of that split: the peers who joined to read and
+    /// comment, not to edit. Used where a frame has two views and the editor
+    /// one has already gone out, so neither kind of peer is sent twice.
+    pub async fn broadcast_readers_except(&self, skip: Option<u64>, payload: &Value) {
+        let message = payload.to_string();
+        let mut state = self.state.lock().await;
+        send_to(&mut state, skip, Outgoing::shared_text(message), |peer| {
+            !peer.may_edit
+        });
+    }
+
     /// Counts comment actions per caller per clock hour. A live link is the
     /// caller when one was presented, so two hosts using the same machine or
     /// human link share its budget. Without a link, the caller remains the

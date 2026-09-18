@@ -673,10 +673,10 @@ for (const invalidate of [null, "navigation", "main"]) {
       text: { toString: () => "# Draft\n" },
     },
     quarto: { parseQuarto: () => ({ diagnostics: [], source: "# Draft\n" }) },
-    renderDiagnostics: [], paintCombinedDiagnostics: () => {
+    diagnosticsController: { render: () => {
       if (inEditorUpdate) throw new Error("nested CodeMirror update");
       paintedDiagnostics++;
-    },
+    } },
     diagnosticPainter: { typed: () => {} }, diagnosticContext,
     editing: true, pdfOutput: false, previewTimer: null,
     setTimeout: () => {}, clearTimeout: () => {}, paintPreview: () => {},

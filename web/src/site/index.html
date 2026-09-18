@@ -21,6 +21,17 @@
          utility on the same element: a margin shorthand on .shot ate an
          mt-14 in the markup, three times, with nothing to show for it. Set
          only the axis that is meant and leave the other to the markup. */
+      /* The wordmark is a fixed 28rem on a wide window, where the hero
+         column is 72rem and that reads as a brand heading over a product.
+         It was fixed at every width, though, and at around 900px the same
+         448px filled half the window: the page stopped looking like a
+         landing page and started looking like a poster with a screenshot
+         under it. Between those, the mark is a share of the window
+         instead, so what changes with the window is the branding rather
+         than the product. The screenshot deliberately does not scale down
+         with it -- it is the thing being sold. */
+      .wordmark { width: clamp(14rem, 34vw, 28rem); height: auto; }
+
       .formats {
         display: flex;
         flex-wrap: wrap;
@@ -152,7 +163,7 @@
            last step is the largest because it is the one that changes the
            subject, from what this is to what it looks like. -->
       <section class="mx-auto flex w-full max-w-6xl flex-col items-center px-4 pt-7 pb-10 text-center">
-        <img src="/assets/librepaper-logo.svg" alt="LibrePaper" class="w-full max-w-md" />
+        <img class="wordmark" src="/assets/librepaper-logo.svg" alt="LibrePaper" width="6221" height="908" />
         <p class="text-surface-600-400 mt-4.5 max-w-2xl text-xl">
           A free platform to read, write, and review together.
         </p>
@@ -206,8 +217,8 @@
 
       <!-- ------------------------------------------------------ the four -->
       <!-- Four boxes, two by two on a wide window and stacked on a narrow
-           one: what you write in, what a paper does with other people in it,
-           what an agent may do to it, and what it costs. Everything the page
+           one: what you write in, what it costs, what a paper does with
+           other people in it, and what an agent may do to it. Everything the page
            has to say belongs under one of the four, and a visitor decides
            from the headings which one is theirs. Each line is a fact about
            the software; a line that cannot be checked does not go here. -->
@@ -218,13 +229,24 @@
             <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
               <li><strong>Live preview</strong>: Markdown, HTML, Typst and LaTeX</li>
               <li><strong>Computational notebooks</strong>: Quarto and Calepin</li>
-              <li><strong>Authoring</strong>: mathematics, figures, multi-file projects</li>
+              <li><strong>Authoring</strong>: templates, mathematics, figures, multi-file projects</li>
               <li><strong>Bibliographies</strong>: BibTeX and Zotero</li>
               <li><strong>Track changes</strong>: accept or reject each edit</li>
             </ul>
             <!-- shot: source on the left, a compiled page with equations on the right -->
           </article>
 
+          <article class="bg-surface-50-950 border-surface-200-800 rounded-container flex h-full flex-col gap-3 border p-6">
+            <h2 class="text-2xl font-semibold">Free</h2>
+            <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
+              <li><strong>Everything is free</strong>: no gated features</li>
+              <li><strong>Open source</strong>: server, reader and renderers</li>
+              <li><strong>Public host</strong>: 100&nbsp;MB and 50 free projects at librepaper.org</li>
+              <li><strong>Self-host</strong>: one binary and a Postgres DB</li>
+              <li><strong>Export</strong>: projects and comments as ordinary files</li>
+            </ul>
+            <!-- shot: the terminal running `librepaper admin serve`, and the page it puts up -->
+          </article>
           <article class="bg-surface-50-950 border-surface-200-800 rounded-container flex h-full flex-col gap-3 border p-6">
             <h2 class="text-2xl font-semibold">Collaborate</h2>
             <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
@@ -237,7 +259,7 @@
             <!-- shot: two named carets in one paragraph, with its comment thread open -->
           </article>
 
-<article class="bg-surface-50-950 border-surface-200-800 rounded-container flex h-full flex-col gap-3 border p-6">
+          <article class="bg-surface-50-950 border-surface-200-800 rounded-container flex h-full flex-col gap-3 border p-6">
             <h2 class="text-2xl font-semibold">AI agents</h2>
             <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
               <li><strong>Bring your own agent</strong>: no new subscription</li>
@@ -249,17 +271,6 @@
             <!-- shot: an agent's anchored suggestion awaiting review -->
           </article>
 
-          <article class="bg-surface-50-950 border-surface-200-800 rounded-container flex h-full flex-col gap-3 border p-6">
-            <h2 class="text-2xl font-semibold">Free</h2>
-            <ul class="text-surface-600-400 list-disc space-y-2 pl-5">
-              <li><strong>Free</strong>: no gated features</li>
-              <li><strong>Open source</strong>: server, reader and renderers</li>
-              <li><strong>Public host</strong>: 100&nbsp;MB and 50 free projects at librepaper.org</li>
-              <li><strong>Self-host</strong>: one static binary and a Postgres DB</li>
-              <li><strong>Export</strong>: projects and comments as ordinary files</li>
-            </ul>
-            <!-- shot: the terminal running `librepaper admin serve`, and the page it puts up -->
-          </article>
         </div>
       </section>
 

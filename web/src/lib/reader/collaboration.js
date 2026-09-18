@@ -86,7 +86,10 @@ export function createReaderCollaboration({
       send,
       onPeers: (count) => onPeers(count),
       onState,
-      name: getIdentity() || nextDocument.commenting_as || "Anonymous",
+      // Empty rather than "Anonymous": the session names them that itself,
+      // and a literal here would make every unnamed reader the same person
+      // as far as the colour is concerned.
+      name: getIdentity() || nextDocument.commenting_as || "",
       slug,
       createdAt: nextDocument.created_at,
       key,

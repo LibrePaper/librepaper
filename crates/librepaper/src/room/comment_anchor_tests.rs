@@ -332,3 +332,134 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
     );
     deployment.catalog.close().await;
 }
+
+/// Two people editing one document must see each other's comments as they are
+/// made, not on the next reload.
+///
+/// A comment made in the editing project carries no bundle, so
+/// `visible_to_reader` refuses it and the reader view of it is a redaction.
+/// That view used to be the only one broadcast, computed once with
+/// `is_owner: false` and sent to every peer -- so an editor's own colleague
+/// was handed the redaction that was meant for the public annotation channel,
+/// and the comment appeared only when the socket reconnected and `hello`
+/// asked for a snapshot with the right authority.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_editing_comment_reaches_the_other_editor_live() {
+    let Some(deployment) = deployment("anchor-relay").await else {
+        return;
+    };
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let (editor_tx, mut editor_rx) = tokio::sync::mpsc::channel(8);
+    let (reader_tx, mut reader_rx) = tokio::sync::mpsc::channel(8);
+    // The socket that submitted it (1) is skipped: it gets its own frame, with
+    // its own `mine` and delete control, straight back down its connection.
+    room.attach(1, editor_tx.clone(), true).await;
+    room.attach(2, editor_tx, true).await;
+    room.attach(3, reader_tx, false).await;
+
+    let response = send(
+        &room,
+        selection(
+            "interval covers the mean",
+            "Interval estimates The ",
+            " of the posterior.",
+        ),
+        &deployment.actor,
+    )
+    .await;
+    assert_eq!(response["type"], "comment", "{response}");
+    room.broadcast_comment_event(Some(1), &response).await;
+
+    let relayed = received(&mut editor_rx);
+    assert_eq!(
+        relayed.len(),
+        1,
+        "the submitting socket is not sent it twice"
+    );
+    assert_eq!(relayed[0]["type"], "comment", "{}", relayed[0]);
+    assert_eq!(relayed[0]["comment"]["id"], response["comment"]["id"]);
+    assert_eq!(
+        relayed[0]["comment"]["mine"],
+        serde_json::json!(false),
+        "a shared frame says nothing about whose comment it is",
+    );
+
+    let public = received(&mut reader_rx);
+    assert_eq!(public.len(), 1);
+    assert_eq!(
+        public[0]["type"], "annotation-redacted",
+        "an editing comment stays out of the public annotation channel",
+    );
+
+    deployment.catalog.close().await;
+}
+
+/// An agent edits annotations in batches, so what the room states is the whole
+/// list rather than each step it took. It carries the same two views: the
+/// editing project's own annotations are the editor peers', and the public
+/// channel gets only what it may carry -- which for a batch of editing
+/// comments is an empty list, not the editors' one.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn an_agents_batch_states_the_list_each_peer_may_see() {
+    let Some(deployment) = deployment("anchor-snapshot").await else {
+        return;
+    };
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let (editor_tx, mut editor_rx) = tokio::sync::mpsc::channel(8);
+    let (reader_tx, mut reader_rx) = tokio::sync::mpsc::channel(8);
+    room.attach(1, editor_tx, true).await;
+    room.attach(2, reader_tx, false).await;
+
+    let made = send(
+        &room,
+        selection(
+            "interval covers the mean",
+            "Interval estimates The ",
+            " of the posterior.",
+        ),
+        &deployment.actor,
+    )
+    .await;
+    assert_eq!(made["type"], "comment", "{made}");
+    room.broadcast_comment_snapshot(7).await;
+
+    let editors = received(&mut editor_rx);
+    assert_eq!(editors.len(), 1);
+    assert_eq!(editors[0]["type"], "comments");
+    assert_eq!(editors[0]["annotation_revision"], 7);
+    assert_eq!(
+        editors[0]["comments"]
+            .as_array()
+            .map(|list| list.len())
+            .unwrap_or_default(),
+        1,
+        "an editor peer is stated the project's own annotations",
+    );
+
+    let readers = received(&mut reader_rx);
+    assert_eq!(readers.len(), 1);
+    assert_eq!(readers[0]["type"], "comments");
+    assert_eq!(
+        readers[0]["comments"],
+        serde_json::json!([]),
+        "and a reader peer only the ones the public channel may carry",
+    );
+
+    deployment.catalog.close().await;
+}
+
+/// Whatever is already queued for a peer, as JSON.
+fn received(rx: &mut tokio::sync::mpsc::Receiver<crate::room::outgoing::Outgoing>) -> Vec<Value> {
+    let mut out = Vec::new();
+    while let Ok(frame) = rx.try_recv() {
+        let text = match frame {
+            crate::room::outgoing::Outgoing::Text(value) => value,
+            crate::room::outgoing::Outgoing::SharedText(value) => value.to_string(),
+            crate::room::outgoing::Outgoing::Close(_) => continue,
+        };
+        out.push(serde_json::from_str(&text).expect("every frame is JSON"));
+    }
+    out
+}

@@ -317,4 +317,39 @@ function build(over = {}) {
   assert.match(bundle.state.blocked, /would not upload/);
 }
 
+// A document still waiting for its first page is not a document that will not
+// render. It goes back on the clock rather than being given up on: an edit was
+// the only other thing that armed the timer, so a document opened and shared
+// without being typed into got one attempt, and a commenter was left reading
+// "Nothing to read yet" until somebody happened to touch the source.
+{
+  let published_ = 0;
+  const { bundle, facts } = build({
+    facts: { renderable: false, rendering: true },
+    publisher: { publish: async () => { published_ += 1; return { id: "pub-2" }; } },
+  });
+  bundle.state.metadataReady = true;
+  bundle.state.bundle = null;
+
+  // The quiet window is half a minute, so what is checked is that another one
+  // was started, not that it elapsed.
+  const armed = [];
+  const real = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms) => { armed.push(ms); return { unref() {} }; };
+  try {
+    await bundle.catchUp();
+  } finally {
+    globalThis.setTimeout = real;
+  }
+  assert.equal(published_, 0, "there is no page to publish yet");
+  assert.equal(bundle.state.blocked, "", "and nothing to tell the author, because nothing is wrong");
+  assert.deepEqual(armed, [30_000], "it asks again after another quiet window");
+
+  // And when the page does arrive, the attempt it was waiting for succeeds.
+  facts.renderable = true;
+  facts.rendering = false;
+  await bundle.catchUp();
+  assert.equal(published_, 1, "the reader version arrives without anybody editing the source");
+}
+
 console.log("reader bundle: staleness is pessimistic, the reader version keeps itself current");

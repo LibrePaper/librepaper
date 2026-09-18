@@ -797,11 +797,12 @@
 
     // Who the caret belongs to. The session publishes {name, color, tab}; the
     // binding wants {name, colorClassName}, and paints through a class rather
-    // than a value. The palette in lib/collab.js is six fixed colours with a
-    // rule apiece in the stylesheet, so the class is the colour with its hash
-    // dropped. Somebody with no colour yet gets no class, and the stylesheet
-    // falls back to a theme token rather than to a colour written down here.
-    const who = session.ephemeral?.get("user");
+    // than a value. The palette in lib/presence-colour.js is six fixed colours
+    // with a rule apiece in the stylesheet, so the class is the colour with
+    // its hash dropped. Somebody with no colour yet gets no class, and the
+    // stylesheet falls back to a theme token rather than to a colour written
+    // down here.
+    const who = session.localPresence?.();
     const userName = who?.name || "Anonymous";
     const colorClassName = typeof who?.color === "string" && who.color.startsWith("#")
       ? `user-color-${who.color.slice(1).toLowerCase()}`

@@ -121,7 +121,7 @@ pub fn seed_documents() -> Vec<SeedDocument> {
                 ),
                 note(
                     "highlighting",
-                    "Publishing a finished HTML file creates an HTML document that readers can open without R, Python, or Quarto.",
+                    "Uploading a finished HTML file creates an HTML document that readers can open without R, Python, or Quarto.",
                     "",
                     "LibrePaper",
                 ),

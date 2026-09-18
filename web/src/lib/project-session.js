@@ -49,6 +49,13 @@ const UPDATE_CHUNK_BYTES = 600_000;
 // label for the local undo manager and nothing that reaches the wire.
 export const DIRECTORY_ORIGIN = "directory";
 
+// A person's presence lives under this prefix and their tab's id: the store
+// is shared and last-write-wins per key, so peers need a key each.
+export const PRESENCE_PREFIX = "user:";
+
+/// Whether `key` holds somebody's presence rather than, say, a caret.
+const isPresence = (key) => String(key).startsWith(PRESENCE_PREFIX);
+
 // Carets can change once per editor transaction. Awareness is ephemeral, so
 // sending the latest state at this rate is enough for a smooth cursor while
 // avoiding one room frame per keystroke.
@@ -103,7 +110,7 @@ export function createProjectSession({
   persistence = null,
   fetchReference,
   presenceId = randomPresenceId,
-  presenceColor = "",
+  presenceColour = () => "",
   setTimer = globalThis.setTimeout,
   clearTimer = globalThis.clearTimeout,
 }) {
@@ -126,6 +133,13 @@ export function createProjectSession({
   // file's text sits inside `files`.
   const directory = new Set([files.id, paths.id, assets.id, meta.id]);
   const store = new EphemeralStore(30000);
+  // One presence key per person, not one key everybody writes to. The store is
+  // last-write-wins per key, so while every peer announced itself under
+  // `user`, the last to speak replaced everyone before it: a file with three
+  // people in it listed none of them, and a browser could find its own
+  // presence -- name, colour and all -- overwritten by somebody else's.
+  const localTab = presenceId();
+  const localKey = `${PRESENCE_PREFIX}${localTab}`;
 
   // The text the editor and the preview are following, and who is following
   // it. Which text that is can change under them -- when the maps arrive from
@@ -231,10 +245,16 @@ export function createProjectSession({
   }
   report();
 
-  store.set("user", {
+  // `color` is the wire spelling every peer already reads. It is the person's
+  // colour rather than this session's: it comes from the name, and `rename`
+  // asks for it again if the name arrives after the join.
+  store.set(localKey, {
     name: name || "Anonymous",
-    color: presenceColor,
-    tab: presenceId(),
+    // Their name, or -- for somebody who has not said who they are -- their
+    // tab, which is theirs alone for as long as it is open. One shared
+    // "Anonymous" would paint every reader in a file the same colour.
+    color: presenceColour(name || localTab, takenColours()),
+    tab: localTab,
   });
 
   // Anything this browser changes is sent on and held until it is
@@ -270,6 +290,37 @@ export function createProjectSession({
     });
   }
 
+  /// The colours the other people in this file are already drawn in.
+  function takenColours() {
+    const taken = [];
+    for (const [key, state] of Object.entries(store.getAllStates())) {
+      if (!isPresence(key) || key === localKey || !state?.color) continue;
+      taken.push(state.color);
+    }
+    return taken;
+  }
+
+  /// Two people can still choose the same colour: they choose when they join,
+  /// and neither can see somebody who has not arrived yet. So the choice is
+  /// made again whenever presence arrives, and the one whose key sorts higher
+  /// gives way. Both sides run the same comparison, so exactly one of them
+  /// moves and it moves once -- the other stays where everybody already sees
+  /// it, and somebody who was alone in the file keeps the colour they had.
+  function settleColour() {
+    const mine = store.get(localKey);
+    if (!mine?.color) return;
+    const taken = [];
+    let giveWay = false;
+    for (const [key, state] of Object.entries(store.getAllStates())) {
+      if (!isPresence(key) || key === localKey || !state?.color) continue;
+      taken.push(state.color);
+      if (state.color === mine.color && key < localKey) giveWay = true;
+    }
+    if (!giveWay) return;
+    const next = presenceColour(mine.name || localTab, taken);
+    if (next && next !== mine.color) store.set(localKey, { ...mine, color: next });
+  }
+
   function clearPresenceTimer() {
     if (presenceTimer !== null) clearTimer(presenceTimer);
     presenceTimer = null;
@@ -303,7 +354,9 @@ export function createProjectSession({
     store.subscribe((event) => {
       // Presence changes from peers (and expiry of stale peers) are for local
       // rendering only. Relaying them would create a broadcast echo loop.
-      onPeers?.(Object.keys(store.getAllStates()).length);
+      // People, not keys: a caret and a file are keys of their own, and
+      // counting those said four people were here when two were.
+      onPeers?.(Object.keys(store.getAllStates()).filter(isPresence).length);
       if (left || event.by !== "local") return;
 
       const changed = event.added.concat(event.updated, event.removed);
@@ -327,8 +380,8 @@ export function createProjectSession({
     if (!mayEdit || left) return;
     clearPresenceTimer();
     flushPresence();
-    if (store.get("user") && announcedConnection !== presenceConnection) {
-      const bytes = store.encode("user") || new Uint8Array();
+    if (store.get(localKey) && announcedConnection !== presenceConnection) {
+      const bytes = store.encode(localKey) || new Uint8Array();
       sendPresence(bytes);
     }
   }
@@ -366,6 +419,13 @@ export function createProjectSession({
     paths,
     meta,
     ephemeral: store,
+
+    /// This browser's own presence: the name on its caret and the colour it
+    /// is drawn in. The store is shared, so a caller cannot reach for a
+    /// well-known key -- every person in the file has one of their own.
+    localPresence() {
+      return store.get(localKey) || null;
+    },
     /// The main file's text as it stands. A getter rather than a field,
     /// because which text that is is not known until the session arrives.
     get text() {
@@ -623,21 +683,19 @@ export function createProjectSession({
     /// against the text it was made in, so it already paints in the right
     /// file; this is for the list.
     inFile(id) {
-      const user = store.get("user") || {};
-      store.set("user", { ...user, file: id });
+      const user = store.get(localKey) || {};
+      store.set(localKey, { ...user, file: id });
     },
 
     /// Who is in which file: an id to the initials of the people in it.
     whereEveryoneIs() {
       const by = new Map();
-      const localUser = store.get("user");
-      const localTab = localUser?.tab || "";
       const states = store.getAllStates();
       for (const [key, state] of Object.entries(states)) {
-        // Skip if this is the local user's own state or if it's the same tab
-        if (key === "user" && state.tab === localTab) continue;
-        // Only process user states that have file information
-        if (key === "user" && state.file) {
+        // Everybody but this browser, and only those who have said which file
+        // they are in.
+        if (!isPresence(key) || key === localKey) continue;
+        if (state?.file) {
           const name = state?.name || "?";
           const initials = name
             .split(/\s+/)
@@ -652,19 +710,18 @@ export function createProjectSession({
     },
 
     participants() {
-      const localUser = store.get("user");
-      const localTab = localUser?.tab || "";
       const states = store.getAllStates();
       const result = [];
       for (const [key, state] of Object.entries(states)) {
-        if (key === "user") {
-          // Skip the local user's own presence
-          if (state.tab === localTab) continue;
-          result.push({
-            key: state.tab || key,
-            name: state.name || "Anonymous",
-          });
-        }
+        if (!isPresence(key) || key === localKey) continue;
+        result.push({
+          key: state?.tab || key,
+          name: state?.name || "Anonymous",
+          // The colour they are drawing their own caret in, so the badge in
+          // the presence strip and the caret in the text are the same person
+          // in the same colour.
+          colour: state?.color || "",
+        });
       }
       return result;
     },
@@ -719,6 +776,8 @@ export function createProjectSession({
 
     applyPresence(update) {
       store.apply(decode(update));
+      // Somebody new may have arrived wearing this browser's colour.
+      settleColour();
     },
 
     /// The server has written everything up to this number. Relaying was never
@@ -747,8 +806,12 @@ export function createProjectSession({
 
     /// Says who this is, for the label on their caret.
     rename(who) {
-      const user = store.get("user") || {};
-      store.set("user", { ...user, name: who });
+      const user = store.get(localKey) || {};
+      // The colour follows the name: a reader who signs in part way through
+      // stops being their tab's colour and becomes their own, which is the
+      // one everybody else already knows them by.
+      store.set(localKey, { ...user, name: who, color: presenceColour(who || localTab, takenColours()) });
+      settleColour();
     },
 
     /// Resolves after the persistence adapter has committed the latest local

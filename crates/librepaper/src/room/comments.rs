@@ -811,8 +811,7 @@ impl Room {
             return Err(BatchRefusal("durable catalog required".into()));
         }
         for event in events {
-            let shared = self.comment_event_for(&event, "", false).await;
-            self.broadcast(&shared).await;
+            self.broadcast_comment_event(None, &event).await;
         }
         Ok((pass, results))
     }
@@ -894,6 +893,42 @@ impl Room {
             event["comment"] = value;
         }
         event
+    }
+
+    /// Relays a comment event to everyone else in the room, in the view each
+    /// peer is entitled to.
+    ///
+    /// There are two, because the room holds two kinds of peer. An editing
+    /// suggestion is part of the project an editor peer has open, so it sees
+    /// the same thing a reload would show it; a reader peer sees only what
+    /// the public annotation channel may carry, which for that comment is a
+    /// redaction. Sending one view to both is what left two editors unable
+    /// to see each other's comments until they reloaded.
+    ///
+    /// Both views are neutral about who is asking: `mine` and the delete
+    /// control belong to the frame sent back to the caller, never to a
+    /// shared one, so `skip` is the socket that submitted it.
+    pub async fn broadcast_comment_event(&self, skip: Option<u64>, payload: &Value) {
+        let editors = self.comment_event_for(payload, "", true).await;
+        self.broadcast_editors_except(skip, &editors).await;
+        let readers = self.comment_event_for(payload, "", false).await;
+        self.broadcast_readers_except(skip, &readers).await;
+    }
+
+    /// The whole list, for a change no single event describes: an agent's
+    /// batch adds, edits and deletes in one act, so what a peer is told is
+    /// where the list ended up rather than each step it took.
+    ///
+    /// Split by authority for the same reason `broadcast_comment_event` is:
+    /// an editor peer sees the project's own annotations, a reader peer sees
+    /// only the ones the public channel may carry.
+    pub async fn broadcast_comment_snapshot(&self, revision: i64) {
+        let editors = json!({"type": "comments", "annotation_revision": revision,
+            "comments": self.snapshot_for("", true).await});
+        self.broadcast_editors_except(None, &editors).await;
+        let readers = json!({"type": "comments", "annotation_revision": revision,
+            "comments": self.snapshot_for("", false).await});
+        self.broadcast_readers_except(None, &readers).await;
     }
 
     // Wire metadata and authority remain explicit at the command boundary.

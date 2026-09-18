@@ -22,13 +22,13 @@ const THEME = new Set(["src/styles/theme.css", "src/styles/librepaper.css", "src
 // none of this stylesheet reaches it: the colours it paints highlights in
 // travel with it or they do not exist.
 //
-// The colours in collab.js are people rather than furniture. One is picked
-// when somebody joins a session and sent to everyone else, so it has to be a
-// value on the wire, and it has to stay legible against a document nobody
+// The colours in presence-colour.js are people rather than furniture. One is
+// chosen when somebody joins a session and sent to everyone else, so it has to
+// be a value on the wire, and it has to stay legible against a document nobody
 // here controls.
 // Annotation palette values likewise travel with a document, independently
 // of the application's theme; only this shared palette may define them.
-const OUTSIDE = [/^src\/agent\//, /^src\/lib\/collab\.js$/, /^src\/lib\/annotation-colors\.js$/];
+const OUTSIDE = [/^src\/agent\//, /^src\/lib\/presence-colour\.js$/, /^src\/lib\/annotation-colors\.js$/];
 
 function files(dir) {
   return readdirSync(dir).flatMap((name) => {

@@ -1027,8 +1027,7 @@ impl Server {
                     // only the submitting socket receives its own `mine` and
                     // deletion state. This keeps per-caller controls private
                     // while preserving the sender's optimistic-row echo.
-                    let shared = room.comment_event_for(&result, "", false).await;
-                    room.broadcast_except(Some(socket_id), &shared).await;
+                    room.broadcast_comment_event(Some(socket_id), &result).await;
                     let targeted = room.comment_event_for(&result, &author, may_edit).await;
                     if send_outgoing(&tx, Outgoing::Text(targeted.to_string())).await.is_err() {
                         break 'reader;

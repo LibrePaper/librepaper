@@ -21,18 +21,22 @@ export function createRenderDiagnostics({ active, local, update, deliver, painte
     deliver(combined);
   }
 
-  const painter = diagnosticsRule.painter({
-    ...painterOptions,
-    paint(list) {
-      if (!active()) return;
-      rendered = list;
-      refresh();
-    },
-  });
+  /// The render stream, replaced whole: a paint describes every diagnostic
+  /// the latest source produced, so an older one is not a fact any more.
+  function render(list) {
+    if (!active()) return;
+    rendered = list;
+    refresh();
+  }
+
+  const painter = diagnosticsRule.painter({ ...painterOptions, paint: render });
 
   return {
     painter,
     refresh,
+    // A source parse finds them without a compiler, so there is nothing to
+    // wait for and they are painted at once.
+    render,
     bibliography(result, request) {
       bibliography = (result?.diagnostics || []).map((item) =>
         diagnosticContext(item, { main: request?.main || "", texts: request?.texts || {} }, ""));

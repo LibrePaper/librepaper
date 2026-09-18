@@ -163,5 +163,52 @@ assert.equal(sent.at(-1).color, undefined, "suggestions keep their own review st
   assert.equal(paints, quiet);
 }
 
+// An agent edits annotations in batches: several added, one deleted, one
+// reworded, all in one act. There is no per-comment event for that, so the
+// room states the whole list -- and a draft this browser is still holding must
+// survive being told where everyone else ended up.
+{
+  annotations.comment({ exact: "still mine" }, { motivation: "commenting", body: "Not sent yet" }, "Local name");
+  const draft = view.comments.at(-1);
+  assert.equal(draft.pending, true);
+  // Earlier checks left drafts of their own behind; every one of them is
+  // this browser's and must come through.
+  const held = view.comments.filter((item) => item.pending).map((item) => item.id);
+  assert.ok(held.includes(draft.id));
+  const before = anchored.length;
+  const repaints = paints;
+  assert.equal(
+    annotations.receive({
+      type: "comments",
+      annotation_revision: 42,
+      comments: [
+        { id: "from-the-agent", body: "One the agent wrote", replies: [] },
+        { id: "another", body: "And another", replies: [] },
+      ],
+    }),
+    true,
+  );
+  assert.deepEqual(
+    view.comments.map((item) => item.id),
+    ["from-the-agent", "another", ...held],
+    "the room's list, with this browser's unconfirmed drafts still on the end",
+  );
+  assert.ok(anchored.length > before, "the stated list is placed in the document");
+  assert.ok(paints > repaints);
+  // And once the agent's list does name it, the draft stops being a draft
+  // rather than appearing twice.
+  annotations.receive({
+    type: "comments",
+    annotation_revision: 43,
+    comments: [{ id: draft.id, body: "Not sent yet", replies: [] }],
+  });
+  assert.deepEqual(
+    view.comments.map((item) => item.id),
+    [draft.id, ...held.filter((id) => id !== draft.id)],
+    "the one the agent now names is stated once, not twice",
+  );
+  assert.equal(view.comments[0].pending, undefined);
+}
+
 assert.ok(paints > 0);
 console.log("reader-annotations: optimistic writes, authoritative reconciliation, retries and decisions passed");

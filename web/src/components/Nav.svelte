@@ -45,16 +45,16 @@
 
   <div class="nav-actions flex shrink-0 items-center gap-2">
     {@render tools?.()}
-    <!-- The account's own picture, from GitHub or Google, in a circle, and
-         nothing else: the name waits in the menu behind it. A GitHub account
-         is its login, and the @ is what says so. A Google account is a
+    <!-- The account's initials, on the colour that name always wears, and
+         nothing else: the name itself waits in the menu behind it. A GitHub
+         account is its login, and the @ is what says so. A Google account is a
          profile name, which is not a handle and does not wear one; its email
          is its handle and is shown to nobody, here least of all. -->
     {#if me.name}
       {@const shown = me.provider === "github" ? `@${me.name}` : me.name}
       <Menu onSelect={(chosen) => { if (chosen.value === "signout") void signOut(me.site); }}>
         <Menu.Trigger class="account icon-control" aria-label={`Account menu, signed in as ${shown}`} title={shown}>
-          <Avatar name={me.name} key={me.handle || me.name} src={me.picture || ""} size={7} title="" />
+          <Avatar name={me.name} key={me.handle || me.name} size={7} title="" />
         </Menu.Trigger>
         <ExplorerMenu>
           <div class="account-who" aria-hidden="true">{shown}</div>
