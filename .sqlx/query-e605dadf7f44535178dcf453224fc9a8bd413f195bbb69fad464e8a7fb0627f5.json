@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)\n                 VALUES($1,$2,$3,$4,$5,$6,$7)",
+  "query": "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)\n                     VALUES($1,$2,$3,$4,$5,$6,$7)",
   "describe": {
     "columns": [],
     "parameters": {
@@ -16,5 +16,5 @@
     },
     "nullable": []
   },
-  "hash": "cd966b72ab0325b1e106f1a18a388ee738d7e5bbdb03e9bea05fe089c3a186c1"
+  "hash": "e605dadf7f44535178dcf453224fc9a8bd413f195bbb69fad464e8a7fb0627f5"
 }

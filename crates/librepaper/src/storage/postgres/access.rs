@@ -66,6 +66,20 @@ impl PostgresCatalog {
         found.map(|_| ()).ok_or(Error::NotFound)
     }
 
+    /// Makes this document's live links exactly `links`.
+    ///
+    /// A link *is* its token, so a link whose token is in the wanted set is
+    /// the same link and keeps its row: its id, the day it was created, and
+    /// the generation count that says how many times it has been rotated. Only
+    /// what the owner actually changed is written.
+    ///
+    /// It used to revoke every live row and write the whole set back, which
+    /// was wrong twice over. A revoked row is a tombstone that stays on
+    /// record, and `token_hash` is unique across the deployment, so writing an
+    /// unchanged link back collided with the row that had just been revoked
+    /// for it -- every save of a document that already had one link failed,
+    /// which is what sharing with a second role does. And a link that did
+    /// survive came back looking newly made.
     #[allow(clippy::type_complexity)]
     pub async fn replace_share_links(
         &self,
@@ -78,29 +92,53 @@ impl PostgresCatalog {
             Option<i64>,
         )],
     ) -> Result<()> {
+        let wanted: Vec<Vec<u8>> = links.iter().map(|(_, hash, ..)| hash.to_vec()).collect();
         let mut tx = self.pool.begin().await?;
         Self::lock_active_document(&mut tx, document_id).await?;
+        // Whatever this save is not keeping. A revoked row is kept rather than
+        // deleted so a guest admitted through it is still recognisable as
+        // having come in that way.
         sqlx::query!(
             "UPDATE share_links SET revoked_at=now(),generation=generation+1
-             WHERE document_id=$1 AND revoked_at IS NULL",
+             WHERE document_id=$1 AND revoked_at IS NULL AND NOT (token_hash=ANY($2))",
             document_id,
+            &wanted,
         )
         .execute(&mut *tx)
         .await?;
         for (role, hash, label, expires, budget) in links {
-            sqlx::query!(
-                "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
-                 VALUES($1,$2,$3,$4,$5,$6,$7)",
-                new_id(),
+            // Scoped to this document, so a token that somehow belongs to
+            // another one is not quietly moved: nothing is updated, and the
+            // insert below refuses it by the unique constraint.
+            let kept = sqlx::query!(
+                "UPDATE share_links SET role=$3,label=$4,expires_at=$5,comment_budget=$6,
+                        revoked_at=NULL
+                 WHERE document_id=$1 AND token_hash=$2",
                 document_id,
-                role,
                 hash.as_slice(),
+                role,
                 label,
                 *expires,
                 *budget,
             )
             .execute(&mut *tx)
-            .await?;
+            .await?
+            .rows_affected();
+            if kept == 0 {
+                sqlx::query!(
+                    "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
+                     VALUES($1,$2,$3,$4,$5,$6,$7)",
+                    new_id(),
+                    document_id,
+                    role,
+                    hash.as_slice(),
+                    label,
+                    *expires,
+                    *budget,
+                )
+                .execute(&mut *tx)
+                .await?;
+            }
         }
         tx.commit().await?;
         Ok(())

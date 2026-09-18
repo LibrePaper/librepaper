@@ -1615,6 +1615,142 @@ mod tests {
 
         catalog.close().await;
     }
+
+    /// Saving a document's links again must not collide with the rows it is
+    /// replacing.
+    ///
+    /// `replace_share_links` revokes the live rows rather than deleting them
+    /// -- a revoked link has to stay on record so a guest admitted through it
+    /// can be recognised and pruned -- and then writes the wanted set. Every
+    /// save therefore rewrites links that did not change, with the tokens they
+    /// already have. Minting a second role's key is exactly that: the new role
+    /// carries a fresh token and every other role carries the one it had.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_link_kept_across_a_save_does_not_collide_with_its_own_revoked_row() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        sqlx::query!(
+            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,publication_files,publications,
+             document_versions,document_assets,replies,annotations,share_links,grants,documents,
+             accounts CASCADE",
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+        let account = catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some("one".into()),
+                handle: "owner".into(),
+                display_name: "Owner".into(),
+                email: None,
+            })
+            .await
+            .unwrap();
+        let document = catalog
+            .create_document(NewDocument {
+                slug: "shared".into(),
+                owner_id: account.id,
+                ownership_mode: "owned".into(),
+                title: "A Paper".into(),
+                source_format: "latex".into(),
+                main_path: "paper.tex".into(),
+                settings: json!({"version":1}),
+            })
+            .await
+            .unwrap();
+
+        let reader = [1u8; 32];
+        let commenter = [2u8; 32];
+        let link = |role: &str, hash: [u8; 32]| (role.to_string(), hash, String::new(), None, None);
+
+        catalog
+            .replace_share_links(document.id, &[link("reader", reader)])
+            .await
+            .expect("the first save writes the reader's link");
+
+        // The owner shares with a commenter. The reader's link is untouched,
+        // so it is written again with the token it already has.
+        catalog
+            .replace_share_links(
+                document.id,
+                &[link("reader", reader), link("commenter", commenter)],
+            )
+            .await
+            .expect("keeping a link while minting another must not collide with itself");
+
+        let live = catalog.share_links(document.id).await.unwrap();
+        let mut roles: Vec<&str> = live.iter().map(|row| row.role.as_str()).collect();
+        roles.sort_unstable();
+        assert_eq!(roles, ["commenter", "reader"], "both links are live");
+        assert!(
+            live.iter()
+                .any(|row| row.role == "reader" && row.token_hash == reader.to_vec()),
+            "the kept link still answers to the token its holder has",
+        );
+
+        // And the same set saved again -- a label edit, a revocation
+        // elsewhere, any owner change at all -- is still not a collision.
+        catalog
+            .replace_share_links(
+                document.id,
+                &[link("reader", reader), link("commenter", commenter)],
+            )
+            .await
+            .expect("saving an unchanged set of links must not collide either");
+        let unchanged = catalog.share_links(document.id).await.unwrap();
+        assert_eq!(unchanged.len(), 2);
+        // The rows are the same rows: a link nobody touched was not remade,
+        // so it still says when it was shared and how often it has rotated.
+        let kept = unchanged
+            .iter()
+            .find(|row| row.token_hash == reader.to_vec())
+            .expect("the reader's link");
+        assert_eq!(kept.generation, 1, "an untouched link has not been rotated");
+
+        // Dropping a role still revokes it, and only it.
+        catalog
+            .replace_share_links(document.id, &[link("commenter", commenter)])
+            .await
+            .unwrap();
+        let after = catalog.share_links(document.id).await.unwrap();
+        assert_eq!(
+            after
+                .iter()
+                .map(|row| row.role.as_str())
+                .collect::<Vec<_>>(),
+            ["commenter"],
+            "the role that was dropped is no longer live",
+        );
+
+        // And rotating one is a new token in place of the old, which stops
+        // answering. The commenter beside it is untouched.
+        let rotated = [3u8; 32];
+        catalog
+            .replace_share_links(
+                document.id,
+                &[link("reader", rotated), link("commenter", commenter)],
+            )
+            .await
+            .unwrap();
+        let live = catalog.share_links(document.id).await.unwrap();
+        assert!(
+            live.iter().any(|row| row.token_hash == rotated.to_vec()),
+            "the rotated link answers to its new token",
+        );
+        assert!(
+            !live.iter().any(|row| row.token_hash == reader.to_vec()),
+            "and no longer to the old one",
+        );
+
+        catalog.close().await;
+    }
 }
 
 #[cfg(test)]
