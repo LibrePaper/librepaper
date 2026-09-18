@@ -23,6 +23,24 @@ test("build preferences are scoped and automatic clears tool options", () => {
   } finally { globalThis.localStorage = previous; }
 });
 
+test("a paged output lasts the visit and is not read back", () => {
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = store();
+  try {
+    const scope = { origin: "https://a.test", user: "alice", document: "paper" };
+    const chosen = update(scope, "typst", { output: "pdf" });
+    // The caller renders with what it was handed, so the choice it just made
+    // comes back.
+    assert.equal(chosen.output, "pdf");
+    // Entering the project again is entering it on HTML, whatever was chosen
+    // last time -- and the tool beside it is still remembered.
+    update(scope, "latex", { selection: "tool", backend: "browser", tool: "tex", engine: "xelatex", output: "pdf" });
+    const again = read(scope, "latex");
+    assert.equal(again.output, "html");
+    assert.equal(again.engine, "xelatex");
+  } finally { globalThis.localStorage = previous; }
+});
+
 test("tool, preset, and options stay isolated by origin and document", () => {
   const previous = globalThis.localStorage;
   globalThis.localStorage = store();

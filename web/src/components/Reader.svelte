@@ -1298,6 +1298,17 @@
   // Which text the editor is bound to. Keying the component on this binds it
   // to the current main file when another file becomes main.
   let sourceEpoch = $state(0);
+  // Whether there is a main text to edit yet. `session.text` is a getter over
+  // a handle the session rebinds when the document hydrates, which happens
+  // outside Svelte's knowledge: reading it straight in the markup is read once
+  // and never again, so a document that arrives after the editor module has
+  // loaded leaves the source pane blank until something unrelated -- opening a
+  // panel, say -- happens to re-run that branch. `sourceEpoch` is the signal
+  // that a rebind occurred, so the read is tied to it.
+  const sourceBound = $derived.by(() => {
+    void sourceEpoch;
+    return Boolean(session?.text);
+  });
   let mayEdit = $state(false);
   let sourceFormat = $state("");
   let peers = $state(1);
@@ -3575,7 +3586,7 @@
             <img src={figureUrl} alt={shownFigure.path} />
           {/if}
         </div>
-      {:else if Editor && session?.text}
+      {:else if Editor && sourceBound}
         {#key sourceEpoch}
           <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} editable={mayEdit}
                   send={collaboration?.sendLive} {review} {reviewing}

@@ -27,6 +27,14 @@ function key({ origin = globalThis.location?.origin || "", user = "anonymous", d
 /// build settings -- but it is a choice, not the starting point.
 export function defaults(format = "") { return { ...DEFAULTS, format, output: "html" }; }
 
+/// And the starting point is where every visit starts. Unlike the tool and the
+/// backend, which say how this browser can build at all and are worth keeping,
+/// the output is a choice about what to look at right now: somebody who asked
+/// for pages once to check a figure's placement does not want every later
+/// visit to open on a paged compile. So the output is not written, and not
+/// read back -- opening a project is always opening it on HTML, and PDF lasts
+/// as long as the visit that asked for it.
+
 export function read(scope, format = "") {
   const fallback = defaults(format);
   try {
@@ -37,7 +45,7 @@ export function read(scope, format = "") {
     const allowed = ["automatic", "tool"];
     if (!allowed.includes(value.selection)) return fallback;
     if (value.backend && !["auto", "browser", "local"].includes(value.backend)) return fallback;
-    const result = { ...fallback, ...value, format: format || value.format || "" };
+    const result = { ...fallback, ...value, format: format || value.format || "", output: "html" };
     // LaTeX has no local builder. A stored preference from another format, or
     // from an older build of the app, is read back as the browser engine
     // rather than as a choice the menu can no longer offer.
@@ -52,7 +60,12 @@ export function read(scope, format = "") {
 export function write(scope, next) {
   const value = { ...next };
   delete value.user;
-  try { storage()?.setItem(key(scope), JSON.stringify(value)); } catch { /* private mode/quota */ }
+  // The output is the visit's, not the browser's: what is stored leaves it
+  // out, and what is handed back keeps it, because the caller is about to
+  // render with the choice that was just made.
+  const stored = { ...value };
+  delete stored.output;
+  try { storage()?.setItem(key(scope), JSON.stringify(stored)); } catch { /* private mode/quota */ }
   return value;
 }
 

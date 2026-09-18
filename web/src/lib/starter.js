@@ -38,14 +38,6 @@ const STARTERS = {
 
 export const formatNamed = (id) => FORMATS.find((format) => format.id === id) ?? FORMATS[0];
 
-/// The one or two letters a listing marks a project's format with. A letter
-/// rather than an icon: five formats whose difference is which language the
-/// source is written in have no five distinguishable pictures between them,
-/// and "Qmd" is read correctly by anyone who would care about the difference.
-/// The full name goes in the `title` beside it.
-export const formatMark = (id) =>
-  ({ markdown: "Md", quarto: "Qmd", latex: "TeX", typst: "Typ", html: "Html" })[id] || "Doc";
-
 /// The main file a new project begins with: its path, and its text.
 export function starterDocument(title, formatId) {
   const format = formatNamed(formatId);

@@ -10,6 +10,19 @@
 // reaches it only when the server resolves it (§5.1a), and until then this is a
 // drawing over text that still says what it said.
 //
+// ## Two bases
+//
+// A reviewer reads someone else's proposal against the document: the hunks are
+// offsets into the proposal's base, which is the text on screen, and a deletion
+// covers words that are still there to strike through.
+//
+// An author writing with track changes on is reading their own branch, because
+// that is what the editor is bound to while one is open. Their insertions are
+// already in that text and their deletions are already out of it, so the same
+// hunks would strike through words that are gone and show every insertion
+// twice. `draft` carries the other basis -- `draftMarksOf` in `proposals.js` --
+// and the two are drawn side by side here.
+//
 // ## Offsets
 //
 // A hunk's `start` is into the proposal's base, and the editor is showing the
@@ -30,10 +43,12 @@ import { StateEffect, StateField } from "@codemirror/state";
 /**
  * @typedef {{index: number, start: number, deleted: number, inserted: string, file: string | null}} Hunk
  * @typedef {{id: string, author?: string, hunks: Hunk[]}} DrawableProposal
+ * @typedef {{kind: "ins" | "del", file: string | null, at: number, text?: string, length?: number, hunk: number}} DraftMark
  * @type {import("@codemirror/state").StateEffectType<{
  *   proposals?: DrawableProposal[],
  *   showing?: string,
  *   selected?: {proposal: string, hunk: number} | null,
+ *   draft?: DraftMark[],
  * }>}
  */
 export const setProposalMarks = StateEffect.define();
@@ -43,18 +58,19 @@ export const setProposalMarks = StateEffect.define();
 class RemovedText extends WidgetType {
   // What this is, readable without a DOM to render it into.
   kind = "removed";
-  constructor(text, proposal, hunk) {
+  constructor(text, proposal, hunk, className = "") {
     super();
     this.text = text;
     this.proposal = proposal;
     this.hunk = hunk;
+    this.className = className;
   }
   eq(other) {
-    return other.text === this.text && other.hunk === this.hunk;
+    return other.text === this.text && other.hunk === this.hunk && other.className === this.className;
   }
   toDOM() {
     const node = document.createElement("del");
-    node.className = "proposal-removed";
+    node.className = `proposal-removed ${this.className}`.trim();
     node.dataset.proposal = this.proposal;
     node.dataset.hunk = String(this.hunk);
     node.textContent = this.text;
@@ -78,7 +94,7 @@ function place(document_, hunk) {
 }
 
 /// Decorations for one file's hunks.
-function marksFor(state, proposals, showing, selected) {
+function marksFor(state, proposals, showing, selected, draft) {
   const marks = [];
   for (const proposal of proposals) {
     for (const hunk of proposal.hunks) {
@@ -104,6 +120,22 @@ function marksFor(state, proposals, showing, selected) {
         );
       }
     }
+  }
+  // The author's own draft, which is the text on screen rather than a claim
+  // about text elsewhere: an insertion is really there and is marked where it
+  // sits, a deletion is not and is hung at the point it was taken from.
+  for (const mark of draft) {
+    if (mark.file && showing && mark.file !== showing) continue;
+    if (mark.kind === "del") {
+      if (mark.at < 0 || mark.at > state.doc.length || !mark.text) continue;
+      marks.push(
+        Decoration.widget({ widget: new RemovedText(mark.text, "", mark.hunk, "proposal-mine"), side: -1 }).range(mark.at),
+      );
+      continue;
+    }
+    const to = mark.at + mark.length;
+    if (mark.at < 0 || to > state.doc.length || !mark.length) continue;
+    marks.push(Decoration.mark({ class: "proposal-added proposal-mine" }).range(mark.at, to));
   }
   // CodeMirror wants them in document order, and a proposal list is in the
   // order the server sent it.
@@ -147,8 +179,8 @@ export function proposalMarks() {
     update(value, transaction) {
       for (const effect of transaction.effects) {
         if (!effect.is(setProposalMarks)) continue;
-        const { proposals = [], showing = "", selected = null } = effect.value || {};
-        return marksFor(transaction.state, proposals, showing, selected);
+        const { proposals = [], showing = "", selected = null, draft = [] } = effect.value || {};
+        return marksFor(transaction.state, proposals, showing, selected, draft);
       }
       // Anything else that changed the text moved the offsets these were
       // placed at, so they are redrawn from the caller rather than mapped:

@@ -15,7 +15,7 @@ function draw(text, payload) {
   const next = start.update({ effects: setProposalMarks.of(payload) }).state;
   const found = [];
   next.field(field).between(0, next.doc.length, (from, to, value) => {
-    found.push({ from, to, tag: value.widget?.kind, text: value.widget?.text });
+    found.push({ from, to, tag: value.widget?.kind, text: value.widget?.text, cls: value.spec?.class || value.widget?.className || "" });
   });
   return found;
 }
@@ -97,6 +97,42 @@ const proposal = (hunks, id = "p1") => ({ id, author: "Ada", hunks });
   assert.equal(drawn.field(field).size, 2);
   const edited = drawn.update({ changes: { from: 0, insert: "Yesterday. " } }).state;
   assert.equal(edited.field(field).size, 0, "typing clears the marks until they are recomputed");
+}
+
+{
+  // The author's own draft, drawn in the other basis. The editor is bound to
+  // the branch while track changes is on, so an insertion is text that is
+  // really on screen -- marked, not shown a second time -- and a deletion is
+  // words that are not, hung at the point they were taken from.
+  const marks = draw("The owl sat.", {
+    showing: "f1",
+    draft: [
+      { kind: "del", file: "f1", at: 4, text: "cat ", hunk: 0 },
+      { kind: "ins", file: "f1", at: 4, length: 4, hunk: 0 },
+    ],
+  });
+  const removed = marks.find((mark) => mark.tag === "removed");
+  const added = marks.find((mark) => !mark.tag);
+  assert.equal(removed.text, "cat ", "the words taken out are readable, though they are gone from the text");
+  assert.equal(removed.from, 4, "and they hang where they were");
+  assert.equal(added.from, 4);
+  assert.equal(added.to, 8, "the insertion covers the text the author typed");
+  assert.ok(removed.cls.includes("proposal-mine") && added.cls.includes("proposal-mine"),
+    "the author's own marks are the coloured ones");
+}
+
+{
+  // A draft mark belonging to another file is left alone, the same rule the
+  // review marks follow -- and one reaching past the end of this text is not
+  // drawn rather than clamped.
+  assert.deepEqual(draw("The owl sat.", {
+    showing: "f1",
+    draft: [{ kind: "ins", file: "other", at: 4, length: 3, hunk: 0 }],
+  }), []);
+  assert.deepEqual(draw("short", {
+    showing: "f1",
+    draft: [{ kind: "ins", file: "f1", at: 2, length: 40, hunk: 0 }],
+  }), []);
 }
 
 console.log("proposal-marks: a proposal is drawn where it fits, and nowhere else");

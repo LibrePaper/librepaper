@@ -1358,6 +1358,21 @@ impl Server {
             return write_json(400, &json!({"error": "bad slug"}));
         }
         let query = request.uri().query().map(str::to_string);
+        // The name the copy is to have. The client asks for one before it
+        // calls, because a project named for what it is beats a shelf of
+        // "(copy)" rows; an empty or absent body still forks, so the old
+        // bodiless call keeps working.
+        let Ok(body) = to_bytes(request.into_body(), 1 << 16).await else {
+            return write_json(400, &json!({"error": "bad request"}));
+        };
+        let asked = serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|value| value.get("title")?.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let asked = asked.trim().to_string();
+        if asked.chars().count() > 200 {
+            return write_json(400, &json!({"error": "that name is too long"}));
+        }
         let entry = match self.checked_entry(slug).await {
             Ok(Some(entry)) => entry,
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
@@ -1388,7 +1403,11 @@ impl Server {
                 return write_json(503, &json!({"error": "could not read that project"}));
             }
         };
-        let title = format!("{} (copy)", entry.title);
+        let title = if asked.is_empty() {
+            format!("{} (copy)", entry.title)
+        } else {
+            asked
+        };
         // Always a fresh suffixed slug, never the bare title: two copies of
         // the same paper are the ordinary case here, and the second must not
         // land on the first.

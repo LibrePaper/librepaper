@@ -214,4 +214,38 @@ const OWNER = 1n;
   assert.equal(hunks[1].index, 1, "second hunk is index 1, not restarted");
 }
 
+// A hunk that bridges a short retain reports the whole new side, bridged text
+// included. The grouping is what the server does -- one decision, not two --
+// but the words shown for it have to be the words that were typed: "cat sat"
+// becoming "owl ran" must not read as "owlran" in the Changes panel or in the
+// insertion drawn over the text.
+{
+  const room = new LoroDoc();
+  room.setPeerId(OWNER);
+  const atFork = room.oplogVersion();
+  room.getText("main.md").insert(0, "The cat sat on the mat.");
+  room.commit();
+
+  const base = room.frontiers();
+  const branch = room.fork();
+  branch.setPeerId(AUTHOR);
+  const text = branch.getText("main.md");
+  text.delete(8, 3); // "sat" -> "ran"
+  text.insert(8, "ran");
+  text.delete(4, 3); // "cat" -> "owl"
+  text.insert(4, "owl");
+  branch.commit();
+
+  const proposals = createProposals({ session: { doc: room }, send: () => {}, mayEdit: true });
+  const hunks = proposals.hunksOf({
+    base,
+    tip: branch.frontiers(),
+    bytes: branch.export({ mode: "update", from: atFork }),
+  });
+
+  assert.equal(hunks.length, 1, "a one-word gap is one decision");
+  assert.equal("The cat sat on the mat.".slice(hunks[0].start, hunks[0].start + hunks[0].deleted), "cat sat");
+  assert.equal(hunks[0].inserted, "owl ran", "the retained space is part of the new side");
+}
+
 console.log("proposals: parity tests passed");

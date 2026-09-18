@@ -16,6 +16,16 @@
     bot: [["path", "M12 8V4H8"], ["rect", { width: 16, height: 12, x: 4, y: 8, rx: 2 }], ["path", "M2 14h2"], ["path", "M20 14h2"], ["path", "M15 13v2"], ["path", "M9 13v2"]],
     "chevrons-up": [["path", "m17 11-5-5-5 5"], ["path", "m17 18-5-5-5 5"]],
     copy: [["rect", { width: 14, height: 14, x: 8, y: 8, rx: 2, ry: 2 }], ["path", "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"]],
+    // Lucide git-fork, for making a project of your own from somebody else's.
+    // A copy icon said the wrong thing: the new project is a branch off this
+    // one, not a second window onto it.
+    "git-fork": [
+      ["circle", { cx: 12, cy: 18, r: 3 }],
+      ["circle", { cx: 6, cy: 6, r: 3 }],
+      ["circle", { cx: 18, cy: 6, r: 3 }],
+      ["path", "M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"],
+      ["path", "M12 12v3"],
+    ],
     "folder-input": [["path", "M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1"], ["path", "M2 13h10"], ["path", "m9 16 3-3-3-3"]],
 
     "triangle-alert": [

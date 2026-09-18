@@ -1083,6 +1083,24 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
   opacity: 0.65;
 }
 
+/* The author's own draft, while track changes is on.
+ *
+ * Coloured, where a coauthor's proposal is tinted by who they are: the
+ * presence colour answers "whose change is this", and here there is nobody to
+ * tell apart. The colour is added to the insertion and deletion marks rather
+ * than used instead of them -- it is the second cue, so that the marks still
+ * read without it. */
+.proposal-added.proposal-mine {
+  background: color-mix(in srgb, var(--color-success-500) 18%, transparent);
+  text-decoration-color: var(--color-success-600);
+}
+
+.proposal-removed.proposal-mine {
+  color: var(--color-error-500);
+  text-decoration-color: var(--color-error-500);
+  opacity: 1;
+}
+
 /* The hunk being looked at, so that a decision taken in the margin is visibly
  * about this passage and not the one below it. */
 .proposal-selected {

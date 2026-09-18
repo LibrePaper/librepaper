@@ -29,7 +29,7 @@
   import { SHELL_HEADERS, get, me as whoami, upload } from "../lib/api.js";
   import { day as isoDay, since } from "../lib/dates.js";
   import { PROJECT_TABS, PROJECT_TAB_IDS } from "../lib/panels.js";
-  import { FORMATS, formatMark, formatNamed, starterDocument } from "../lib/starter.js";
+  import { FORMATS, formatNamed, starterDocument } from "../lib/starter.js";
   import { preparedProjects } from "../lib/offline-projects.js";
 
   let me = $state({});
@@ -53,6 +53,10 @@
   let busy = $state(false);
   let confirming = $state(false);
   let confirmText = $state("");
+  // The trash confirms twice over: once to put a project there, once to empty
+  // it. The sentence differs, and so does what the button does, so the dialog
+  // carries which of the two it is asking.
+  let confirmKind = $state("trash");
   let pendingDeletion = [];
   let nameInput = $state(null);
   // The project being renamed, and the name being typed for it.
@@ -60,6 +64,13 @@
   let renameTo = $state("");
   let renameError = $state("");
   let renameInput = $state(null);
+  // The project a copy is being asked about, and the name being typed for the
+  // copy. Naming it up front rather than afterwards: a fork exists to become
+  // its own paper, and "Thesis (copy)" is a name nobody meant to keep.
+  let copying = $state(null);
+  let copyTo = $state("");
+  let copyError = $state("");
+  let copyInput = $state(null);
   // The project a copy is being made of. A fork reads and rewrites a whole
   // directory, so it is slow enough to need saying that it is happening.
   let forking = $state("");
@@ -311,12 +322,24 @@
     if (!slugs.length) return;
     const plural = slugs.length === 1 ? "" : "s";
     confirmText = `${slugs.length} project${plural} will move to the trash, where ${slugs.length === 1 ? "it stays" : "they stay"} for seven days. Until then you can put ${slugs.length === 1 ? "it" : "them"} back.`;
+    confirmKind = "trash";
     pendingDeletion = slugs;
+    confirming = true;
+  }
+
+  // The same confirmation for one row as for a selection of them: deleting is
+  // deleting, and the sentence that says where the project goes is the point
+  // of the step.
+  function askDelete(doc) {
+    confirmText = `${doc.title} will move to the trash, where it stays for seven days. Until then you can put it back.`;
+    confirmKind = "trash";
+    pendingDeletion = [doc.slug];
     confirming = true;
   }
 
   async function reallyDelete() {
     const slugs = pendingDeletion;
+    const wasSelected = new Set(slugs.filter((slug) => selected.has(slug)));
     confirming = false;
     pendingDeletion = [];
     const results = await Promise.all(
@@ -339,11 +362,14 @@
     // for retry alongside any newly selected projects.
     const stillSelected = new Set(selected);
     for (const slug of succeeded) stillSelected.delete(slug);
-    for (const slug of failed) stillSelected.add(slug);
+    // Only what the selection toolbar deleted goes back into the selection. A
+    // row that failed on its own trash icon must not switch the page into
+    // selecting mode to say so; the message says it.
+    for (const slug of failed) if (wasSelected.has(slug)) stillSelected.add(slug);
     selected = stillSelected;
     if (failed.length) {
       const plural = failed.length === 1 ? "" : "s";
-      say(`${failed.length} project${plural} could not be deleted and ${failed.length === 1 ? "is" : "are"} still here. ${failed.length === 1 ? "It stays" : "They stay"} selected, so Delete will try again.`, { kind: "problem", id: "landing:delete" });
+      say(`${failed.length} project${plural} could not be deleted and ${failed.length === 1 ? "is" : "are"} still here.`, { kind: "problem", id: "landing:delete" });
     }
     if (succeeded.length) {
       const plural = succeeded.length === 1 ? "" : "s";
@@ -370,17 +396,68 @@
     }
   }
 
-  async function purge(doc) {
-    try {
-      const response = await fetch(`/api/documents/${doc.slug}/purge`, {
-        method: "POST",
-        headers: SHELL_HEADERS,
-      });
-      if (!response.ok) throw new Error("That project could not be deleted.");
-      trashed = trashed.filter((each) => each.slug !== doc.slug);
-    } catch (error) {
-      say(error?.message || "That project could not be deleted.", { kind: "problem", id: "landing:purge" });
+  // Everything the trash does to a selection, it does to one row too: the row
+  // buttons and the toolbar call the same two functions with a list of one.
+  function askPurge(docs) {
+    const slugs = docs.map((doc) => doc.slug);
+    if (!slugs.length) return;
+    const many = slugs.length > 1;
+    confirmText = many
+      ? `${slugs.length} projects will be deleted for good. This cannot be undone.`
+      : `${docs[0].title} will be deleted for good. This cannot be undone.`;
+    confirmKind = "purge";
+    pendingDeletion = slugs;
+    confirming = true;
+  }
+
+  async function reallyPurge() {
+    const slugs = pendingDeletion;
+    confirming = false;
+    pendingDeletion = [];
+    const gone = await eachOf(slugs, "purge");
+    trashed = trashed.filter((each) => !gone.has(each.slug));
+    selected = new Set([...selected].filter((slug) => !gone.has(slug)));
+    const failed = slugs.length - gone.size;
+    if (failed) {
+      say(`${failed} project${failed === 1 ? "" : "s"} could not be deleted.`, { kind: "problem", id: "landing:purge" });
     }
+    if (gone.size) {
+      say(`${gone.size} project${gone.size === 1 ? "" : "s"} deleted for good.`, { id: "landing:purged" });
+    }
+  }
+
+  async function restoreSelected() {
+    const slugs = [...selected];
+    if (!slugs.length) return;
+    const back = await eachOf(slugs, "untrash");
+    trashed = trashed.filter((each) => !back.has(each.slug));
+    selected = new Set([...selected].filter((slug) => !back.has(slug)));
+    const failed = slugs.length - back.size;
+    if (failed) {
+      say(`${failed} project${failed === 1 ? "" : "s"} could not be restored.`, { kind: "problem", id: "landing:restore" });
+    }
+    if (back.size) {
+      say(`${back.size} project${back.size === 1 ? "" : "s"} back in your projects.`, { id: "landing:restored" });
+      await showList();
+    }
+  }
+
+  // The slugs the server accepted. One request per project, because that is
+  // the API the trash has; the caller decides what a failure reads as.
+  async function eachOf(slugs, verb) {
+    const done = new Set();
+    await Promise.all(
+      slugs.map(async (slug) => {
+        try {
+          const response = await fetch(`/api/documents/${slug}/${verb}`, {
+            method: "POST",
+            headers: SHELL_HEADERS,
+          });
+          if (response.ok) done.add(slug);
+        } catch { /* counted as a failure by its absence */ }
+      }),
+    );
+    return done;
   }
 
   /* ------------------------------------------------- renaming and copying */
@@ -428,23 +505,52 @@
   // A copy is a project of its own from the moment it exists: its own link,
   // its own comments, its own history. Nothing about it points back, because
   // what it was copied from may be somebody else's and may go away.
-  async function fork(doc) {
+  //
+  // Which is also why it is named here. The copy is about to be a paper of
+  // its own, so the dialog opens on a suggestion and selects it: type over it
+  // and the copy has a real name, press Enter and it has the numbered one.
+  function copyName(title) {
+    const taken = new Set(documents.map((doc) => doc.title));
+    for (let n = 1; ; n += 1) {
+      const suggestion = `${title} (copy ${n})`;
+      if (!taken.has(suggestion)) return suggestion;
+    }
+  }
+
+  function askFork(doc) {
     if (forking) return;
+    copying = doc;
+    copyTo = copyName(doc.title);
+    copyError = "";
+  }
+
+  async function fork(event) {
+    event.preventDefault();
+    const doc = copying;
+    const title = copyTo.trim();
+    if (!doc || forking) return;
+    if (!title) {
+      copyError = "Give the copy a name.";
+      copyInput?.focus();
+      return;
+    }
     forking = doc.slug;
     try {
       const response = await fetch(`/api/documents/${doc.slug}/fork`, {
         method: "POST",
-        headers: SHELL_HEADERS,
+        headers: { ...SHELL_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
       });
       if (!response.ok) {
-        const said = (await response.json().catch(() => ({}))).error;
-        throw new Error(said || "That project could not be copied.");
+        copyError = (await response.json().catch(() => ({}))).error || "That project could not be copied.";
+        return;
       }
       const made = await response.json();
+      copying = null;
       say(`${made.title} is in your projects.`, { id: "landing:forked" });
       await showList();
     } catch (error) {
-      say(error?.message || "That project could not be copied.", { kind: "problem", id: "landing:fork" });
+      copyError = error?.message || "That project could not be copied.";
     } finally {
       forking = "";
     }
@@ -499,6 +605,13 @@
       busy = false;
     }
   }
+
+  // The suggested name arrives selected, so the first keystroke replaces it.
+  // autofocus puts the caret in the box; this is what makes the box a
+  // suggestion rather than something to delete first.
+  $effect(() => {
+    if (copying && copyInput) copyInput.select();
+  });
 
   $effect(() => {
     void showOfflineProjects();
@@ -567,9 +680,21 @@
       {#if selected.size}
         <div class="toolbar selecting" role="group" aria-label="What to do with the selected projects">
           <span class="selection-count">{selected.size} selected</span>
-          <button type="button" class="btn btn-sm preset-tonal-error" onclick={deleteSelected}>
-            <Icon name="trash" size={16} /> Delete
-          </button>
+          {#if place === "trash"}
+            <!-- The trash has both verbs: everything selected goes back, or
+                 everything selected goes for good. -->
+            <button type="button" class="btn btn-sm preset-tonal-primary" onclick={restoreSelected}>
+              Put back
+            </button>
+            <button type="button" class="btn btn-sm preset-tonal-error"
+                    onclick={() => askPurge(shown.filter((doc) => selected.has(doc.slug)))}>
+              <Icon name="trash" size={16} /> Delete forever
+            </button>
+          {:else}
+            <button type="button" class="btn btn-sm preset-tonal-error" onclick={deleteSelected}>
+              <Icon name="trash" size={16} /> Delete
+            </button>
+          {/if}
           <IconButton icon="x" label="Clear the selection" onclick={() => (selected = new Set())} />
         </div>
       {:else if place !== "trash"}
@@ -587,10 +712,10 @@
           <thead>
             <tr>
               <th class="col-mark">
-                {#if place !== "trash"}
+                {#if selectable > 0}
                   <input
                     type="checkbox"
-                    class="checkbox"
+                    class="tickbox"
                     aria-label="Select every project shown"
                     checked={selectable > 0 && hereSelected === selectable}
                     indeterminate={hereSelected > 0 && hereSelected < selectable}
@@ -617,18 +742,15 @@
           <tbody>
             {#each shown as doc (doc.slug)}
               <tr class:picked={selected.has(doc.slug)}>
-                <!-- The format, and the checkbox in its place. One cell, so a
-                     row that can be selected is no wider than one that cannot
-                     and the title starts at the same x in both. -->
+                <!-- Just the checkbox. One narrow cell, so a row that can be
+                     selected is no wider than one that cannot and the title
+                     starts at the same x in both. -->
                 <td class="col-mark">
                   <span class="mark">
-                    <span class="format" title={formatNamed(doc.source_format).name} aria-hidden="true">
-                      {formatMark(doc.source_format)}
-                    </span>
-                    {#if place !== "trash" && mine(doc)}
+                    {#if mine(doc)}
                       <input
                         type="checkbox"
-                        class="checkbox pick"
+                        class="tickbox pick"
                         aria-label="Select {doc.title}"
                         checked={selected.has(doc.slug)}
                         onchange={(event) => tick(doc.slug, event.currentTarget.checked)}
@@ -698,18 +820,25 @@
                   {#if place === "trash"}
                     <span class="trash-actions">
                       <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => restore(doc)}>Put back</button>
-                      <IconButton icon="trash" label="Delete {doc.title} for good" onclick={() => purge(doc)} />
+                      <IconButton icon="trash" label="Delete {doc.title} for good" onclick={() => askPurge([doc])} />
                     </span>
                   {:else}
                     <!-- What can be done to a project without opening it.
                          Renaming keeps the slug, so every link already shared
                          still arrives; forking makes a project of your own,
-                         which is why it is offered on somebody else's too. -->
+                         which is why it is offered on somebody else's too. Deleting is one of
+                         these rather than something the selection toolbar
+                         alone can do: throwing one project away should not
+                         need a mode. -->
                     {#if mine(doc)}
                       <IconButton icon="pencil" label="Rename {doc.title}" onclick={() => askRename(doc)} />
                     {/if}
-                    <IconButton icon="copy" label="Make a copy of {doc.title}"
-                                disabled={forking === doc.slug} onclick={() => fork(doc)} />
+                    <IconButton icon="git-fork" label="Fork {doc.title}"
+                                disabled={forking === doc.slug} onclick={() => askFork(doc)} />
+                    {#if mine(doc)}
+                      <IconButton icon="trash" colour="text-surface-400-600 hover:text-error-500"
+                                  label="Move {doc.title} to the trash" onclick={() => askDelete(doc)} />
+                    {/if}
                     <IconButton
                       icon="star"
                       tone="plain"
@@ -815,12 +944,41 @@
   {/snippet}
 </Modal>
 
-<Modal bind:open={confirming} title="Move to the trash?" description={confirmText}>
+<!-- Naming the copy, not confirming it. The suggestion is already in the box
+     and already selected, so the whole dialog is one keystroke if the
+     numbered name will do and one sentence if it will not. -->
+<Modal open={Boolean(copying)} title="Make a copy"
+       description="The copy is a project of its own: its own link, its own history, nothing pointing back."
+       onclose={() => { copying = null; copyError = ""; }}>
+  {#snippet children()}
+    <form id="copy-project" onsubmit={fork}>
+      <label class="label">
+        <span class="label-text">Name</span>
+        <!-- svelte-ignore a11y_autofocus -- the dialog exists to ask this one thing -->
+        <input class="input" autofocus bind:this={copyInput} bind:value={copyTo} />
+      </label>
+      {#if copyError}<p class="text-error-500 text-sm">{copyError}</p>{/if}
+    </form>
+  {/snippet}
+  {#snippet footer()}
+    <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (copying = null)}>Cancel</button>
+    <button type="submit" form="copy-project" class="btn preset-filled-primary-500" disabled={Boolean(forking)}>
+      {forking ? "Copying..." : "Make a copy"}
+    </button>
+  {/snippet}
+</Modal>
+
+<Modal bind:open={confirming}
+       title={confirmKind === "purge" ? "Delete for good?" : "Move to the trash?"}
+       description={confirmText}>
   {#snippet footer()}
     <button type="button" class="btn preset-outlined-surface-300-700" onclick={() => (confirming = false)}>
       Cancel
     </button>
-    <button type="button" class="btn preset-filled-error-500" onclick={reallyDelete}>Move to trash</button>
+    <button type="button" class="btn preset-filled-error-500"
+            onclick={confirmKind === "purge" ? reallyPurge : reallyDelete}>
+      {confirmKind === "purge" ? "Delete for good" : "Move to trash"}
+    </button>
   {/snippet}
 </Modal>
 
@@ -853,21 +1011,22 @@
   .col-star { width: 1px; white-space: nowrap; text-align: right; }
   .col-owner { white-space: nowrap; }
 
-  /* The format mark and the checkbox occupy one square, and the checkbox
-     covers the mark rather than standing beside it: selecting is uncommon,
-     and a permanent column of empty boxes was the widest thing between the
-     left edge and the one thing anybody came here to read. It appears on
-     hover, on focus, and for as long as anything is selected -- hover alone
-     would put it out of reach of a keyboard and of every touch screen. */
+  /* The checkbox occupies one square. It used to share that square with a
+     two-letter format mark and fade in over it; the mark is gone -- which
+     language a project's source is written in is not what anybody comes to
+     this list to read -- so the box is simply always there. */
   .mark { position: relative; display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; }
-  .format { font-size: .625rem; font-weight: 700; letter-spacing: .02em; color: var(--color-surface-600-400); }
-  .mark .pick { position: absolute; inset: 0; margin: auto; opacity: 0; }
-  tr:hover .mark .pick,
-  .mark .pick:focus-visible,
-  .mark .pick:checked { opacity: 1; }
-  tr:hover .mark .format,
-  .mark:has(.pick:focus-visible) .format,
-  .mark:has(.pick:checked) .format { opacity: 0; }
+  .mark .pick { position: absolute; inset: 0; margin: auto; }
+
+  /* Native boxes, sized down and mostly faded. Skeleton's .checkbox drew a
+     full primary outline on every row, which made the one column nobody
+     reads the loudest thing in a list whose point is the titles. The accent is
+     ink rather than the brand green, because a browser tints the *edge* of an
+     unchecked box with it: at this size the edge is most of what the box is,
+     and a column of them read as a column of green rings. */
+  .tickbox { appearance: auto; width: .9rem; height: .9rem; accent-color: var(--color-surface-800); cursor: pointer; opacity: .45; transition: opacity 120ms ease; }
+  .tickbox:hover, .tickbox:checked, .tickbox:indeterminate, .tickbox:focus-visible { opacity: 1; }
+  .projects-table :global(tbody tr:hover .tickbox) { opacity: .8; }
 
   .title-line { display: block; font-weight: 500; color: var(--color-primary-600-400); text-decoration: none; }
   .title-line:hover { text-decoration: underline; }

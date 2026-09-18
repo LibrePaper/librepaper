@@ -167,7 +167,19 @@ pub fn hunks(
     let batch = branch
         .diff(&proposal.base, &proposal.tip)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
-    Ok(hunks_of_batch(&batch).into_iter().map(|(_, h)| h).collect())
+    // The branch as it was at the base, so a hunk that bridged a short retain
+    // can say what its new side reads as rather than dropping the bridged words
+    // (`document/hunks.rs`). These hunks are read by people -- the Changes
+    // queue, and `proposed_text` below -- which is what that costs a fork for.
+    let at_base = branch
+        .fork_at(&proposal.base)
+        .map_err(|error| ProposalError::Failed(error.to_string()))?;
+    Ok(
+        hunks_of_batch(&batch, |cid| at_base.get_text(cid.clone()).to_string())
+            .into_iter()
+            .map(|(_, h)| h)
+            .collect(),
+    )
 }
 
 /// Carries a decided proposal into the document, and returns the single update

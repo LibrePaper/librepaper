@@ -116,7 +116,27 @@ fn runs(deltas: &[TextDelta]) -> Vec<std::ops::Range<usize>> {
 }
 
 /// Split a text delta run into hunks.
+///
+/// `inserted` carries only what the deltas insert. A hunk that bridges a short
+/// retain therefore reports a new side with the bridged words missing, which is
+/// fine for reverting and wrong for showing -- use [`hunks_against`] when the
+/// text is going in front of somebody.
 pub fn hunks(deltas: &[TextDelta]) -> Vec<Hunk> {
+    hunks_against(deltas, "")
+}
+
+/// The same hunks, against the text the deltas were computed from.
+///
+/// A retain carries a length and not the words it retained, so a hunk that
+/// bridges one cannot say what its new side reads as without the old text: "cat
+/// sat" becoming "owl ran" is one decision, and reporting it as "cat sat" ->
+/// "owlran" shows a reviewer something nobody typed. With `old_text` in hand
+/// the bridged words go back where they sit.
+///
+/// `old_text` is indexed in the diff's own basis -- code points here, see the
+/// module note -- which is why it is sliced by `chars` rather than by bytes.
+/// An empty one gives exactly [`hunks`].
+pub fn hunks_against(deltas: &[TextDelta], old_text: &str) -> Vec<Hunk> {
     let mut out = Vec::new();
     let mut cursor = 0usize;
     let mut at = 0usize;
@@ -125,17 +145,25 @@ pub fn hunks(deltas: &[TextDelta]) -> Vec<Hunk> {
         cursor += old_side(&deltas[at..run.start]);
         let mut deleted = 0usize;
         let mut inserted = String::new();
+        let mut old_at = cursor;
         for delta in &deltas[run.clone()] {
             match delta {
-                TextDelta::Delete { delete } => deleted += delete,
+                TextDelta::Delete { delete } => {
+                    deleted += delete;
+                    old_at += delete;
+                }
                 TextDelta::Insert { insert, .. } => inserted.push_str(insert),
                 // Text bridged over inside a hunk is untouched on both sides, so
-                // it counts towards how far the hunk reaches. It cannot be added
-                // to `inserted`, because a retain carries a length and not the
-                // text it retained -- so `inserted` is what the hunk ADDS, and a
-                // caller wanting to show the result reads the file rather than
-                // reassembling it from here.
-                TextDelta::Retain { retain, .. } => deleted += retain,
+                // it counts towards how far the hunk reaches -- and it is part of
+                // the new side too, in the place it sits. A retain carries a
+                // length and not the text it retained, so the words come from
+                // `old_text`; without one they are left out, which is what
+                // [`hunks`] does.
+                TextDelta::Retain { retain, .. } => {
+                    inserted.push_str(&chars_at(old_text, old_at, *retain));
+                    deleted += retain;
+                    old_at += retain;
+                }
             }
         }
         out.push(Hunk {
@@ -148,6 +176,14 @@ pub fn hunks(deltas: &[TextDelta]) -> Vec<Hunk> {
         at = run.end;
     }
     out
+}
+
+/// `count` code points of `text` from code point `at`, or as much as there is.
+///
+/// Empty when the caller had no text to give, which is [`hunks`] asking for the
+/// inserts alone.
+fn chars_at(text: &str, at: usize, count: usize) -> String {
+    text.chars().skip(at).take(count).collect()
 }
 
 /// How much of the old side a stretch of deltas covers.
@@ -208,12 +244,17 @@ pub fn keep_declined(deltas: &[TextDelta], declined: impl Fn(usize) -> bool) -> 
 /// across containers in the order the batch presents them -- the same order
 /// [`keep_declined_batch`] walks, which is what makes an index mean the same
 /// thing to both.
-pub fn hunks_of_batch(batch: &DiffBatch) -> Vec<(ContainerID, Hunk)> {
+/// `old_of` gives each container's text as it was before the diff, so the
+/// hunks can say what their new side reads as. See [`hunks_against`].
+pub fn hunks_of_batch(
+    batch: &DiffBatch,
+    old_of: impl Fn(&ContainerID) -> String,
+) -> Vec<(ContainerID, Hunk)> {
     let mut out = Vec::new();
     let mut next = 0usize;
     for (cid, diff) in batch.iter() {
         let Diff::Text(deltas) = diff else { continue };
-        for mut hunk in hunks(deltas) {
+        for mut hunk in hunks_against(deltas, &old_of(cid)) {
             hunk.index = next;
             next += 1;
             out.push((cid.clone(), hunk));
@@ -508,6 +549,38 @@ mod tests {
             "eight retained characters bridge one decision"
         );
         assert_eq!(gap_of(9), 2, "nine do not");
+    }
+
+    #[test]
+    fn a_bridged_hunk_reports_the_words_it_bridged() {
+        let doc = LoroDoc::new();
+        doc.get_text("f").insert_utf16(0, "The cat sat.").unwrap();
+        doc.commit();
+        let base = doc.state_frontiers();
+        let branch = doc.fork();
+        let t = branch.get_text("f");
+        // Later edit first, so the earlier one's offsets still hold.
+        t.delete_utf16(8, 3).unwrap();
+        t.insert_utf16(8, "ran").unwrap();
+        t.delete_utf16(4, 3).unwrap();
+        t.insert_utf16(4, "owl").unwrap();
+        branch.commit();
+        let batch = branch.diff(&base, &branch.state_frontiers()).unwrap();
+        let deltas = text_deltas(&batch);
+
+        // One decision: "cat sat" became "owl ran", bridged across the space.
+        let found = hunks_against(&deltas, "The cat sat.");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].deleted, 7);
+        assert_eq!(
+            found[0].inserted, "owl ran",
+            "the bridged space is part of the new side"
+        );
+
+        // Without the text there is nothing to put back, and the bridged space
+        // is missing -- which is why nothing that shows a hunk to a person may
+        // call this one.
+        assert_eq!(hunks(&deltas)[0].inserted, "owlran");
     }
 
     #[test]

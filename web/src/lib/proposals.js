@@ -63,7 +63,14 @@ function oldSideLength(deltas) {
 }
 
 // Split text deltas into hunks, numbered in order.
-function hunkify(deltas) {
+//
+// `oldText` is the text the deltas are against. It is needed because a hunk
+// may bridge a short retain (`SAME_DECISION_WITHIN`), and a retain carries a
+// length and not the words it retained: without them, "cat sat" becoming
+// "owl ran" reads as "cat sat" -> "owlran", which is not what anybody typed.
+// The server has the same problem and leaves it to its callers
+// (`document/hunks.rs`); here the base is in hand, so it is solved once.
+function hunkify(deltas, oldText = "") {
   const hunks = [];
   let cursor = 0; // position in the old side of the diff
   let at = 0; // position in the delta array
@@ -72,16 +79,21 @@ function hunkify(deltas) {
     cursor += oldSideLength(deltas.slice(at, range.start));
     let deleted = 0;
     let inserted = "";
+    let oldAt = cursor;
     for (let i = range.start; i < range.end; i++) {
       const d = deltas[i];
       if (d.delete !== undefined) {
         deleted += d.delete;
+        oldAt += d.delete;
       } else if (d.insert !== undefined) {
         inserted += d.insert;
       } else if (d.retain !== undefined) {
-        // Text retained inside a hunk is untouched on both sides, so it counts
-        // towards how far the hunk reaches on the old side.
+        // Text retained inside a hunk is untouched on both sides: it counts
+        // towards how far the hunk reaches on the old side, and it is part of
+        // the new side too, in the place it sits.
+        inserted += oldText.slice(oldAt, oldAt + d.retain);
         deleted += d.retain;
+        oldAt += d.retain;
       }
     }
     hunks.push({
@@ -116,7 +128,10 @@ export function hunksOfProposal(doc, proposalData) {
 
   try {
     // Rebuild the branch: fork the room where the proposal forked, then
-    // replay the operations the author made on it.
+    // replay the operations the author made on it. A second fork stays at the
+    // base, because that is the text the deltas are against and `hunkify`
+    // needs it to fill in what a retain bridged over.
+    const atBase = doc.forkAt(base);
     const branch = doc.forkAt(base);
     branch.import(bytes);
 
@@ -136,17 +151,98 @@ export function hunksOfProposal(doc, proposalData) {
     let index = 0;
     for (const [cid, diffValue] of diff) {
       if (diffValue.type !== "text") continue;
-      for (const hunk of hunkify(diffValue.diff)) {
+      for (const hunk of hunkify(diffValue.diff, atBase.getContainerById(cid)?.toString?.() ?? "")) {
         hunk.index = index++;
         hunk.file = fileOf.get(String(cid)) ?? null;
         hunks.push(hunk);
       }
     }
 
+    atBase.destroy?.();
     branch.destroy?.();
     return hunks;
   } catch {
     return [];
+  }
+}
+
+/// What the branch in front of the author has changed, in the branch's own
+/// basis.
+///
+/// This is the other side of `hunksOfProposal`. That one answers "what would
+/// this proposal do to the paper", and its offsets are into the base, which is
+/// what a reviewer is looking at. An author drafting is looking at the *tip*
+/// instead -- the binding is attached to the branch (§3.3) -- so the same hunks
+/// drawn there would land in the wrong place: the words they deleted are gone
+/// from the text in front of them, and the words they typed are already in it.
+///
+/// So the deltas are walked with two cursors and reported against the new
+/// side: an insertion as a range of text that is really there, a deletion as a
+/// point with the vanished words to hang at it. Delta granularity rather than
+/// hunk granularity, because a hunk bridges short retains
+/// (`SAME_DECISION_WITHIN`) and counts them as removed -- the right grouping
+/// for one decision, and the wrong drawing for text nobody touched.
+///
+/// `[]` when the base cannot be reached, which is what nothing to draw looks
+/// like from here.
+export function draftMarksOf(doc, base, branch) {
+  if (!doc || !base || !branch) return [];
+  let old = null;
+  try {
+    old = doc.forkAt(base);
+    const diff = branch.diff(base, branch.frontiers(), false);
+
+    // Which file each delta run belongs to. A mark without one cannot be
+    // drawn: its offsets are into one text, and an editor shows one text.
+    const fileOf = new Map();
+    const files = branch.getMap("files");
+    for (const id of files.keys()) {
+      const text = files.get(id);
+      if (text?.kind?.() === "Text") fileOf.set(String(text.id), id);
+    }
+    const marks = [];
+    // Hunks are numbered across files, the way `hunksOfProposal` numbers them
+    // and `proposal-decide` names them. The author is not deciding hunks here,
+    // but a mark that knows which one it belongs to can be pointed at from the
+    // Changes panel.
+    let index = 0;
+    for (const [cid, value] of diff) {
+      if (value.type !== "text") continue;
+      const file = fileOf.get(String(cid)) ?? null;
+      // The words a deletion took out. Read from the base by container id,
+      // because a delete delta carries a length and not the text it removed,
+      // and the container is the same one either side of a fork.
+      const oldText = old.getContainerById(cid)?.toString?.() ?? "";
+      const hunkAt = new Map();
+      for (const range of hunkRanges(value.diff)) {
+        for (let i = range.start; i < range.end; i++) hunkAt.set(i, index);
+        index += 1;
+      }
+      let oldAt = 0;
+      let newAt = 0;
+      value.diff.forEach((delta, i) => {
+        const hunk = hunkAt.get(i) ?? 0;
+        if (delta.retain !== undefined) {
+          oldAt += delta.retain;
+          newAt += delta.retain;
+          return;
+        }
+        if (delta.delete !== undefined) {
+          marks.push({ kind: "del", file, at: newAt, text: oldText.slice(oldAt, oldAt + delta.delete), hunk });
+          oldAt += delta.delete;
+          return;
+        }
+        if (typeof delta.insert === "string" && delta.insert) {
+          marks.push({ kind: "ins", file, at: newAt, length: delta.insert.length, hunk });
+          newAt += delta.insert.length;
+        }
+      });
+    }
+    return marks;
+  } catch {
+    return [];
+  } finally {
+    old?.destroy?.();
   }
 }
 
@@ -234,6 +330,19 @@ export function createProposals({ session, send, mayEdit }) {
     /// draft out of what it paints.
     id() {
       return proposal?.id || "";
+    },
+
+    /// What this browser's own draft has changed, ready to draw over the
+    /// branch text the author is looking at.
+    ///
+    /// The branch is committed first for the reason `flush` commits it: the
+    /// binding writes into the branch's text and commits the room document, so
+    /// without this the frontier would name text the author cannot see yet and
+    /// the last few keystrokes would go undrawn.
+    draftMarks() {
+      if (!proposal) return [];
+      proposal.branch.commit();
+      return draftMarksOf(session.doc, proposal.base, proposal.branch);
     },
 
     /// The branch itself, or `null` when nothing is being drafted.

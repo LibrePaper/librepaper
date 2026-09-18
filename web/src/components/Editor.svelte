@@ -151,18 +151,20 @@
   /// to run again after one.
   function drawProposals() {
     if (!view) return;
-    // Not this browser's own draft. While one is open the binding is attached
-    // to the branch, so what the author typed is the text in front of them;
-    // painting their own hunks over it would strike through words that are no
-    // longer there and show every insertion a second time. It is still a row
-    // in the Changes panel, which is where an author reads back what they
-    // have proposed.
-    const mine = proposals?.drafting?.() ? proposals.id() : "";
+    // This browser's own draft is drawn from the other basis. While one is
+    // open the binding is attached to the branch, so what the author typed is
+    // the text in front of them: their hunks, which are offsets into the base,
+    // would strike through words that are no longer there and show every
+    // insertion a second time. `draftMarks` reports the same branch against
+    // the text on screen, which is what the author is actually reading.
+    const drafting = Boolean(proposals?.drafting?.());
+    const mine = drafting ? proposals.id() : "";
     view.dispatch({
       effects: setProposalMarks.of({
         proposals: mine ? (review || []).filter((one) => one.id !== mine) : review || [],
         showing,
         selected: reviewing,
+        draft: drafting ? proposals.draftMarks() : [],
       }),
     });
   }
@@ -871,7 +873,10 @@
           // offsets they were placed at have moved. Drawing them again from
           // the hunks is the only honest way back, and it has to happen after
           // the transaction rather than inside it.
-          if (update.docChanged && (review || []).length) queueMicrotask(drawProposals);
+          // While tracking is on this also redraws the author's own draft, which
+          // every keystroke changes -- the marks are recomputed from the branch
+          // rather than mapped, for the same reason.
+          if (update.docChanged && ((review || []).length || proposals?.drafting?.())) queueMicrotask(drawProposals);
           if (update.docChanged) {
             onchange?.();
             // What was typed went into the branch, not the paper. Send it.
@@ -981,6 +986,10 @@
     // The marks belong to files, so they are drawn again for the file now on
     // screen. What the compiler said has not changed; where it applies has.
     setDiagnostics(all);
+    // A state carries no decorations until something puts them there, and this
+    // is a fresh one -- including after `rebind`, where the file has not
+    // changed and so nothing upstream would ask for a redraw.
+    drawProposals();
     view.focus();
   }
 
