@@ -25,9 +25,9 @@ const body = (start, end) => {
   return reader.slice(from, to);
 };
 
-// `updatePreviewTarget` points the local app at this document through a small
-// helper now, so that helper is sliced in wherever the function is exercised.
-const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which engine draws each format");
+// `updatePreviewTarget` scopes the local app to this document through small
+// helpers now, so they are sliced in wherever that function is exercised.
+const localAppHelpers = body("  /// Which document this browser tab is about", "  // Which engine draws each format");
 
 // Initial Quarto setup must configure the companion as active for an editor.
 // If permission is assigned afterwards, editable onboarding examples remain
@@ -35,8 +35,8 @@ const pairLocalQuarto = body("  function pairLocalQuarto()", "  // Which engine 
 {
   const prepare = body("  async function prepare(document_)", "  $effect(() => {");
   assert.ok(
-    prepare.indexOf("mayEdit = Boolean(allowed)") < prepare.indexOf("pairLocalQuarto()"),
-    "prepare resolves edit permission before configuring the Quarto companion",
+    prepare.indexOf("mayEdit = Boolean(allowed)") < prepare.indexOf("scopeLocalApp()"),
+    "prepare resolves edit permission before scoping the local app, whose pairing is active only for an editor",
   );
 }
 
@@ -407,7 +407,7 @@ console.log("reader-races: all checks passed");
     renderCoordinator: { invalidate: () => {} },
     renderStatus: { resetFailure: () => {} },
     renderers: { formatOf: () => "latex", warm: () => {} },
-    pairLocalQuarto: () => {},
+    readQuartoBinding: () => {},
     configureLatex: () => configured++,
   });
   vm.runInContext(body("  function updatePreviewTarget()", "  function previewThisFile()"), ctx);
@@ -961,7 +961,7 @@ for (const latest of [
     renderingStore: {reset: () => {}}, framePreview: {clear: () => cleared++},
     dropHeldRendering: () => {}, tick: async () => {}, paintPreview: () => painted++,
   });
-  vm.runInContext(`${pairLocalQuarto}\n${body('  function updatePreviewTarget()', '  // A file added')}`, ctx);
+  vm.runInContext(`${localAppHelpers}\n${body('  function updatePreviewTarget()', '  // A file added')}`, ctx);
   vm.runInContext(body('  function treeNow()', '  // Painting the preview'), ctx);
   for (const path of ['notes.typ', 'other.typ', 'paper.qmd']) {
     const previous = ctx.previewMain;

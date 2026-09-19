@@ -707,9 +707,7 @@ mod tests {
         journal_after_response(&path, "task-1", "document_propose", &request, &response).unwrap();
         let journal = runner_journal::Journal::open(&path).unwrap();
         assert!(journal.pending_operations().is_empty());
-        assert!(
-            runner_journal::validate_suggestions(&path, "task-1", &json!(["suggestion-1"])).is_ok()
-        );
+        assert!(journal.known_result_ids("task-1").contains("suggestion-1"));
     }
 
     #[test]

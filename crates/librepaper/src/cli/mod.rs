@@ -98,6 +98,7 @@ fn parse_publishers(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+mod acp;
 mod documents;
 pub mod export;
 mod history;
@@ -114,6 +115,127 @@ mod tokens;
 
 pub use documents::*;
 pub use tokens::*;
+
+/// This executable's path, usable to spawn another copy of it.
+///
+/// `std::env::current_exe` reads `/proc/self/exe`, which on Linux keeps
+/// answering after the file behind it is replaced, with " (deleted)" appended.
+/// Installing a new build is exactly that: the Makefile writes beside the
+/// binary and renames over it, deliberately, so a running server keeps its
+/// inode. A long-lived companion therefore ends up holding a path that does
+/// not exist, and spawning it fails with a bare "No such file or directory"
+/// that names nothing.
+///
+/// The marker is stripped and the result checked, because that path is where
+/// the new build now lives: recovering onto it is both possible and correct.
+/// It is also what gets written into an agent's configuration, where a
+/// "(deleted)" path would be poison long after the cause was forgotten.
+pub(crate) fn current_executable() -> Result<PathBuf, String> {
+    resolve_executable(
+        std::env::current_exe().map_err(|error| format!("could not locate librepaper: {error}"))?,
+    )
+}
+
+/// The part of [`current_executable`] that does not read the process, so it
+/// can be exercised against the exact path Linux hands back for a binary that
+/// has been replaced underneath a running process.
+fn resolve_executable(found: PathBuf) -> Result<PathBuf, String> {
+    let path = match found
+        .to_str()
+        .and_then(|text| text.strip_suffix(" (deleted)"))
+    {
+        Some(live) => PathBuf::from(live),
+        None => found,
+    };
+    if !path.is_file() {
+        return Err(format!(
+            "the librepaper binary this app is running from is gone ({}); restart it with `librepaper local stop` then `librepaper local launch`",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
+mod executable_tests {
+    use super::*;
+
+    #[test]
+    fn a_replaced_binary_resolves_onto_the_path_that_now_holds_it() {
+        // Verified against a real process: after the file behind a running
+        // binary is renamed over, /proc/self/exe answers with this marker
+        // appended. The path still names where the new build lives, so the
+        // recovery is to use it rather than to refuse.
+        let directory = tempfile::tempdir().unwrap();
+        let live = directory.path().join("librepaper");
+        std::fs::write(&live, b"#!/bin/sh\n").unwrap();
+        let marked = PathBuf::from(format!("{} (deleted)", live.display()));
+        assert_eq!(resolve_executable(marked).unwrap(), live);
+        assert_eq!(resolve_executable(live.clone()).unwrap(), live);
+    }
+
+    #[test]
+    fn a_binary_that_is_really_gone_says_how_to_recover() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("librepaper");
+        let error = resolve_executable(missing.clone()).unwrap_err();
+        // A bare ENOENT names nothing; saying what to do is the whole point.
+        assert!(error.contains("librepaper local launch"), "{error}");
+        assert!(error.contains(&missing.display().to_string()));
+        let marked = PathBuf::from(format!("{} (deleted)", missing.display()));
+        assert!(resolve_executable(marked).is_err());
+    }
+
+    #[test]
+    fn a_directory_is_not_mistaken_for_the_binary() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(resolve_executable(directory.path().to_path_buf()).is_err());
+    }
+}
+
+/// Starting, inspecting and stopping the sidebar assistant on behalf of the
+/// loopback service. The browser asks the local app and the local app runs
+/// the runner; no model is ever asked to execute any of it. That inversion
+/// is the point of the whole connection flow.
+pub(crate) fn start_assistant(
+    link: &str,
+    conversation: &str,
+    chat_token: &str,
+    agent: &[String],
+) -> Result<(), String> {
+    let link = peer::DocumentLink::parse(link, "")?;
+    peer::validate_conversation(conversation, chat_token)?;
+    match runner_lifecycle::start_background(&link, conversation, chat_token, None, agent) {
+        Err(error) if error.contains("already connected") => {
+            // A runner outlives the page that started it, so a reloaded
+            // browser asks for one while the previous is still holding the
+            // lease. Pressing Start means "run this agent at this access
+            // level", and the honest reading of that is to replace what is
+            // there rather than refuse with a lock message the reader has no
+            // way to act on. It is the same conversation, which is private to
+            // this document and this browser, so there is nobody else's work
+            // to interrupt.
+            runner_lifecycle::stop(&link, conversation, None)?;
+            runner_lifecycle::wait_until_free(&link, conversation, None)?;
+            runner_lifecycle::start_background(&link, conversation, chat_token, None, agent)
+        }
+        other => other,
+    }
+}
+
+pub(crate) fn assistant_status(
+    link: &str,
+    conversation: &str,
+) -> Result<serde_json::Value, String> {
+    let link = peer::DocumentLink::parse(link, "")?;
+    let status = runner_lifecycle::status(&link, conversation, None)?;
+    serde_json::to_value(status).map_err(|error| error.to_string())
+}
+
+pub(crate) fn stop_assistant(link: &str, conversation: &str) -> Result<(), String> {
+    let link = peer::DocumentLink::parse(link, "")?;
+    runner_lifecycle::stop(&link, conversation, None)
+}
 
 #[derive(Parser)]
 #[command(name = "librepaper", version = crate::VERSION, about = "host HTML, markdown and typst documents that readers can annotate", long_about = None)]
@@ -718,6 +840,18 @@ pub enum LocalCommand {
     },
     /// Whether the service is running, its address, code and pairings
     Status,
+    /// Which agents on this computer can reach which documents, and revoke one
+    Connections {
+        /// Remove one connection by name. Agents configured against it stop
+        /// resolving immediately.
+        #[arg(long, value_name = "NAME")]
+        remove: Option<String>,
+    },
+    /// Teach this computer an ACP agent the sidebar can drive
+    Agent {
+        #[command(subcommand)]
+        command: LocalAgentCommand,
+    },
     /// Which native tools were found, and what is missing
     Doctor {
         /// Extra directories to search for TeX tools, colon-separated
@@ -814,6 +948,29 @@ pub enum LocalQuartoCommand {
     Unbind { binding: String },
     /// List bindings for an origin and document
     List { origin: String, project: String },
+}
+
+/// Declaring an ACP agent this machine offers. It lives here, as a local
+/// command, rather than as a loopback route: a paired page picks which agent
+/// to drive, never what command to run.
+#[derive(Subcommand, Clone, Debug)]
+pub enum LocalAgentCommand {
+    /// Declare an agent. Everything after `--` is the command that speaks the
+    /// Agent Client Protocol on stdio, for example:
+    /// `librepaper local agent add opencode --label opencode -- opencode acp`
+    Add {
+        /// Short lower-case id, shown in the sidebar's agent list.
+        id: String,
+        #[arg(long, value_name = "NAME", default_value = "")]
+        label: String,
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Which agents this computer has been taught
+    List,
+    Remove {
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]

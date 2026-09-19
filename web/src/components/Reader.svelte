@@ -240,8 +240,27 @@
   /// local network access, and opening a document is not a request for
   /// anything local. The first gesture that needs the companion --
   /// `ensureLocalApp`, a local build, the local-app settings -- probes then.
-  function pairLocalQuarto() {
+  /// Which document this browser tab is about, as far as the local app is
+  /// concerned. A pairing token is granted per (origin, project), so this is
+  /// what decides which pairing every later call reads.
+  ///
+  /// Deliberately not behind a format check. It used to live inside the
+  /// Quarto binding lookup below, which meant an HTML or LaTeX document never
+  /// scoped the client at all, and anything else that wanted the local app
+  /// for that document -- the agent panel -- asked with a null project and
+  /// was refused. Rendering locally and pairing with the local app are
+  /// different questions about the same document.
+  ///
+  /// It stays inside the rule the comment above describes, because it reaches
+  /// nothing: the client only begins probing once something explicitly asks
+  /// it to, so scoping it is bookkeeping, not a request.
+  function scopeLocalApp() {
     localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
+  }
+
+  /// The Quarto project binding this document already has, if any. This one
+  /// really is format-specific: only a locally renderable project has one.
+  function readQuartoBinding() {
     quartoBindingId = localQuarto.bindingId();
   }
   // Which engine draws each format, and what it produces, belong to the
@@ -2836,7 +2855,7 @@
     sourceFormat = format;
     configureLatex(format);
     renderers.warm(format);
-    if (["quarto", "typst", "markdown"].includes(format)) pairLocalQuarto();
+    if (["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
     if (!previous) return;
     // Invalidate both running compiles and replayed pages, even when the
     // two selected files use the same renderer or both produce PDFs.
@@ -3127,7 +3146,8 @@
     const format = document_.source_format ||
       (document_.execution_engine === "quarto" ? "quarto" : "html");
     sourceFormat = format;
-    if (["quarto", "typst", "markdown"].includes(format)) pairLocalQuarto();
+    scopeLocalApp();
+    if (["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
     // Every reader compiles from source when the browser has the engine. A
     // missing engine produces an actionable local-tool message below.
     const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];

@@ -32,17 +32,28 @@ pub struct OperationKey {
 }
 
 impl OperationKey {
+    /// The two halves fail for unrelated reasons and are reported separately.
+    /// One message for both left a caller unable to tell a missing epoch from
+    /// a malformed id, and a model given "invalid operation key" rewrites the
+    /// half that was already correct.
     pub fn validate(&self) -> Result<(), AgentError> {
-        if self.epoch.is_empty()
-            || self.epoch.len() > MAX_OPERATION_EPOCH
-            || crate::util::request_key_timestamp(&self.id).is_none()
-            || self.id.len() > MAX_OPERATION_ID
-            || !self.epoch.is_ascii()
-            || !self.id.is_ascii()
-            || self.epoch.chars().any(|c| c.is_ascii_control())
-            || self.id.chars().any(|c| c.is_ascii_control())
-        {
-            return Err(AgentError::Invalid("invalid operation key".into()));
+        let epoch_ok = !self.epoch.is_empty()
+            && self.epoch.len() <= MAX_OPERATION_EPOCH
+            && self.epoch.is_ascii()
+            && !self.epoch.chars().any(|c| c.is_ascii_control());
+        if !epoch_ok {
+            return Err(AgentError::Invalid(
+                "operation.epoch is missing or malformed: copy operation_epoch verbatim from your most recent document_read response".into(),
+            ));
+        }
+        let id_ok = crate::util::request_key_timestamp(&self.id).is_some()
+            && self.id.len() <= MAX_OPERATION_ID
+            && self.id.is_ascii()
+            && !self.id.chars().any(|c| c.is_ascii_control());
+        if !id_ok {
+            return Err(AgentError::Invalid(
+                "operation.id is malformed: use v2.<current Unix milliseconds>.<32 lowercase hexadecimal characters>, minted once per mutation and reused unchanged on retry".into(),
+            ));
         }
         Ok(())
     }
@@ -754,5 +765,37 @@ mod tests {
             id: "b:c".into(),
         };
         assert_ne!(a.request_id(), b.request_id());
+    }
+    /// Each half of an operation key fails for its own reason, and the caller
+    /// has to be told which. A single "invalid operation key" sent a model
+    /// rewriting its perfectly good id five times while the epoch was the
+    /// thing it had never obtained.
+    #[test]
+    fn a_bad_operation_key_says_which_half_is_wrong() {
+        let good_id = format!("v2.{}.{}", 1789780000000i64, "a".repeat(32));
+        let missing_epoch = OperationKey {
+            epoch: String::new(),
+            id: good_id.clone(),
+        };
+        let error = missing_epoch.validate().unwrap_err().to_string();
+        assert!(error.contains("operation.epoch"), "{error}");
+        assert!(
+            error.contains("operation_epoch"),
+            "names where to get it: {error}"
+        );
+
+        let bad_id = OperationKey {
+            epoch: "1789780000.abc.def".into(),
+            id: "not-a-key".into(),
+        };
+        let error = bad_id.validate().unwrap_err().to_string();
+        assert!(error.contains("operation.id"), "{error}");
+        assert!(error.contains("v2."), "names the shape: {error}");
+
+        let good = OperationKey {
+            epoch: "1789780000.abc.def".into(),
+            id: good_id,
+        };
+        assert!(good.validate().is_ok());
     }
 }

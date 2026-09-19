@@ -1046,6 +1046,42 @@ fn validate_output_format(value: &str, allowed: &[&str], engine: &str) -> Result
     Ok(())
 }
 
+/* ------------------------------------------------- Connecting an agent */
+
+/// Register a document as a named connection on this computer. The browser
+/// sends the protected link once, over loopback, and afterwards refers to it
+/// by name; see `super::connections` for why the indirection exists.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ConnectionRequest {
+    /// The document title, used to derive a readable connection name.
+    #[serde(default)]
+    pub title: String,
+    /// The protected document URL, key fragment included.
+    pub link: String,
+    /// `reader`, `commenter` or `editor`, for display only.
+    #[serde(default)]
+    pub access: String,
+}
+
+/// Name one conversation's assistant, for status and stop.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AssistantQuery {
+    pub connection: String,
+    pub conversation: String,
+}
+
+/// Start, inspect or stop the sidebar assistant for one conversation.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AssistantRequest {
+    pub connection: String,
+    /// The private sidebar conversation the runner attaches to.
+    pub conversation: String,
+    /// The conversation credential. It never leaves loopback and is stored
+    /// only in the private connection record.
+    pub chat_token: String,
+    /// Which detected agent to drive. It must advertise ACP support.
+    pub agent: String,
+}
 #[cfg(test)]
 mod tests {
     use super::*;

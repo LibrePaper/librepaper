@@ -1,4 +1,5 @@
 //! Local task execution. The transport stays alive independently of model turns.
+use super::acp;
 use super::peer::{chat_token, validate_conversation, AutomationPeer};
 use super::runner_context;
 use super::runner_journal::{self, Journal};
@@ -9,8 +10,6 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 const MAX_TASKS: usize = 256;
 const MAX_QUEUE: usize = 32;
@@ -19,19 +18,25 @@ pub struct Config {
     pub conversation: String,
     pub token: String,
     pub state_dir: Option<PathBuf>,
-    pub executable: String,
+    /// The agent the user chose, as a command line. Whichever agent this is,
+    /// it arrives already installed and already signed in: LibrePaper never
+    /// holds a model credential.
+    pub agent: Vec<String>,
 }
 pub fn config(
     conversation: String,
     token: Option<String>,
     state_dir: Option<PathBuf>,
-    executable: String,
+    agent: Vec<String>,
 ) -> Result<Config, String> {
+    if agent.is_empty() || agent[0].trim().is_empty() {
+        return Err("no agent command configured for the sidebar assistant".into());
+    }
     Ok(Config {
         conversation,
         token: chat_token(token)?,
         state_dir,
-        executable,
+        agent,
     })
 }
 fn event_id() -> String {
@@ -41,28 +46,46 @@ fn terminal(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled" | "interrupted")
 }
 
-/// Configure the Codex thread with the document MCP server. The adapter reads
-/// `LIBREPAPER_DOCUMENT` from its inherited environment; keeping the link out
-/// of this JSON also keeps it out of the app-server thread configuration and
-/// model context.
-fn mcp_thread_config(journal_path: &Path, epoch_path: &Path) -> Result<Value, String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let task_path = runner_journal::active_task_path(journal_path);
-    Ok(json!({
-        "mcp_servers": {
-            "librepaper": {
-                "command": executable,
-                "args": ["agent", "mcp", "-"],
-                "env": {
-                    "LIBREPAPER_RUNNER_JOURNAL": journal_path,
-                    "LIBREPAPER_RUNNER_TASK_FILE": task_path,
-                    "LIBREPAPER_RUNNER_EPOCH_FILE": epoch_path
-                },
-                "env_vars": ["LIBREPAPER_DOCUMENT", "LIBREPAPER_CONVERSATION", "LIBREPAPER_CHAT_TOKEN"],
-                "enabled": true
-            }
-        }
-    }))
+/// The bookkeeping paths the document adapter needs. Everything secret is
+/// absent by construction: the link and the channel credential live in the
+/// private connection record named by [`internal_connection`], so neither
+/// reaches the agent's process arguments or the session payload it can read.
+fn adapter_environment(journal_path: &Path, epoch_path: &Path) -> Vec<(String, String)> {
+    vec![
+        (
+            "LIBREPAPER_RUNNER_JOURNAL".into(),
+            journal_path.to_string_lossy().into_owned(),
+        ),
+        (
+            "LIBREPAPER_RUNNER_TASK_FILE".into(),
+            runner_journal::active_task_path(journal_path)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            "LIBREPAPER_RUNNER_EPOCH_FILE".into(),
+            epoch_path.to_string_lossy().into_owned(),
+        ),
+    ]
+}
+
+/// Park this runner's document link and channel credential under a private
+/// connection name, and return the name. Rewritten on every start, so a
+/// rotated link repairs itself and a stale record never outlives its runner
+/// by more than one session.
+fn internal_connection(peer: &AutomationPeer, config: &Config) -> Result<String, String> {
+    let name = format!(
+        "runner-{}",
+        crate::util::new_id()
+            .to_ascii_lowercase()
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "")
+    );
+    crate::local::connections::ConnectionStore::new(&super::state_home()).put_internal(
+        &name,
+        &peer.link().credential_url(),
+        &config.conversation,
+        &config.token,
+    )
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -173,127 +196,22 @@ impl State {
     }
 }
 
-struct Codex {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: tokio::io::Lines<BufReader<ChildStdout>>,
-    next_id: u64,
-}
-impl Drop for Codex {
-    fn drop(&mut self) {
-        let _ = self.child.start_kill();
-    }
-}
-impl Codex {
-    fn start(
-        peer: &AutomationPeer,
-        config: &Config,
-        lease: &Lease,
-        epoch_path: &Path,
-    ) -> Result<Self, String> {
-        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-        let mut paths = vec![executable
-            .parent()
-            .ok_or("executable has no directory")?
-            .to_path_buf()];
-        if let Some(path) = std::env::var_os("PATH") {
-            paths.extend(std::env::split_paths(&path));
-        }
-        let mut child = Command::new(&config.executable)
-            .arg("app-server")
-            .current_dir(&lease.location.directory)
-            .env(
-                "PATH",
-                std::env::join_paths(paths).map_err(|e| e.to_string())?,
-            )
-            .env("LIBREPAPER_DOCUMENT", peer.link().credential_url())
-            .env("LIBREPAPER_CONVERSATION", &config.conversation)
-            // The MCP subprocess needs the sidebar channel only to dispatch
-            // browser render jobs. Keep this credential in the inherited
-            // process environment; never place it in thread config or model
-            // instructions.
-            .env("LIBREPAPER_CHAT_TOKEN", &config.token)
-            .env(
-                "LIBREPAPER_RUNNER_JOURNAL",
-                lease.location.directory.join("runner.journal.json"),
-            )
-            .env(
-                "LIBREPAPER_RUNNER_TASK_FILE",
-                runner_journal::active_task_path(
-                    &lease.location.directory.join("runner.journal.json"),
-                ),
-            )
-            .env("LIBREPAPER_RUNNER_EPOCH_FILE", epoch_path)
-            .env(
-                "LIBREPAPER_ASSISTANT_STATE_DIR",
-                std::path::absolute(
-                    config
-                        .state_dir
-                        .clone()
-                        .map(Ok)
-                        .unwrap_or_else(super::runner_lifecycle::default_state_dir)?,
-                )
-                .map_err(|e| e.to_string())?,
-            )
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("could not start local Codex: {e}"))?;
-        Ok(Self {
-            stdin: child.stdin.take().ok_or("Codex stdin unavailable")?,
-            stdout: BufReader::new(child.stdout.take().ok_or("Codex stdout unavailable")?).lines(),
-            child,
-            next_id: 1,
-        })
-    }
-    async fn write(&mut self, value: Value) -> Result<(), String> {
-        let line = format!("{value}\n");
-        tokio::time::timeout(Duration::from_secs(10), async {
-            self.stdin.write_all(line.as_bytes()).await?;
-            self.stdin.flush().await
-        })
-        .await
-        .map_err(|_| "Codex input timed out".to_string())?
-        .map_err(|e| format!("Codex input failed: {e}"))
-    }
-    async fn send(&mut self, method: &str, params: Value) -> Result<u64, String> {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.write(json!({"id":id,"method":method,"params":params}))
-            .await?;
-        Ok(id)
-    }
-    async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
-        let id = self.send(method, params).await?;
-        tokio::time::timeout(Duration::from_secs(30),async {
-            while let Some(line)=self.stdout.next_line().await.map_err(|e|e.to_string())? {
-                let value:Value=serde_json::from_str(&line).map_err(|e|e.to_string())?;
-                if value["id"]==id {
-                    if let Some(error)=value.get("error") { return Err(format!("Codex {method} failed: {error}")); }
-                    return Ok(value["result"].clone());
-                }
-                if value.get("id").is_some() && value.get("method").is_some() {
-                    self.write(json!({"id":value["id"],"error":{"code":-32601,"message":"Input is unavailable during session initialization"}})).await?;
-                }
-            }
-            Err("Codex exited during initialization".into())
-        }).await.map_err(|_|format!("Codex {method} timed out"))?
-    }
-}
 struct Active {
     id: String,
-    start_rpc: u64,
-    turn_id: String,
+    /// The `session/prompt` request. Its response is the turn's completion:
+    /// ACP has no separate completion notification.
+    prompt_rpc: u64,
+    /// ACP streams the answer in chunks, so it accumulates here.
     answer: String,
     pending: HashMap<String, PendingInput>,
     cancelling: bool,
 }
+/// A permission request the agent is blocked on, waiting for the sidebar.
 struct PendingInput {
     rpc: Value,
-    kind: String,
-    questions: Vec<String>,
+    /// The option identifiers the agent offered. Answering with anything else
+    /// would be inventing a decision the agent never presented.
+    options: Vec<String>,
 }
 async fn emit(transport: &Transport, value: Value) -> Result<(), String> {
     transport
@@ -391,6 +309,29 @@ async fn reconcile_pending(
     Ok(())
 }
 
+/// Check that this link can actually use the document tools, and say what is
+/// wrong when it cannot. `ping` is the cheapest call the MCP surface answers
+/// and it goes through the same authorization as every tool.
+async fn reachable_or_refuse(peer: &AutomationPeer) -> Result<(), String> {
+    let request = json!({
+        "jsonrpc":"2.0","id":event_id(),"method":"ping","params":{
+            "_meta":{
+                "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities":{}
+            }
+        }
+    });
+    let (status, _content_type, _body) = peer.mcp_request("ping", None, &request).await?;
+    match status {
+        200 => Ok(()),
+        // The surface answers an insufficient link with 404 rather than 403,
+        // so the two are indistinguishable here and the message says both.
+        404 => Err("this document's tools are not available to that access level. Comment access is the minimum an assistant needs; a read link cannot use them at all.".into()),
+        401 | 403 => Err("the document refused this link. Choose the access again to mint a fresh one.".into()),
+        other => Err(format!("the document service answered {other} when checking access; the assistant was not started.")),
+    }
+}
+
 /// Resolve a browser selection against one bounded immutable read before the
 /// model turn. A stale selection is surfaced as a task error instead of being
 /// silently retargeted to a similar passage.
@@ -422,7 +363,11 @@ async fn prepare_task_context(peer: &AutomationPeer, task: &Task) -> Result<Opti
         .mcp_request("tools/call", Some("document_read"), &request)
         .await?;
     if status != 200 {
-        return Err("could not prepare the captured selection".into());
+        // The status is the whole diagnosis; discarding it left a message that
+        // named nothing while the real cause was a 404 from the access level.
+        return Err(format!(
+            "could not read the captured selection from the document (HTTP {status})"
+        ));
     }
     let response: Value = serde_json::from_str(&body)
         .map_err(|_| "document read returned invalid JSON".to_string())?;
@@ -513,29 +458,69 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     }
     reconcile_pending(peer, &mut journal, &mut state).await?;
     // Persist receipt-confirmed effects before starting a new model turn. A
-    // process failure while Codex starts must not lose recovered suggestions.
+    // process failure while the agent starts must not lose recovered
+    // suggestions.
     state.save(&lease.location.state)?;
-    let mut codex = Codex::start(peer, config, lease, &epoch_path)?;
-    codex.request("initialize",json!({"clientInfo":{"name":"librepaper","title":"LibrePaper","version":crate::VERSION},"capabilities":{"experimentalApi":true}})).await?;
-    codex
-        .write(json!({"method":"initialized","params":{}}))
+    let executable = super::current_executable()?;
+    let environment = adapter_environment(&journal_path, &epoch_path);
+    let connection = internal_connection(peer, config)?;
+    // Prove the document is reachable at this access level before starting an
+    // agent against it. The tools are handed to the agent as an MCP server it
+    // launches itself, so a refusal there is invisible: the assistant comes up
+    // able to chat, with no document tools and nothing to say about it. It
+    // then answers from whatever files are lying around, which is worse than
+    // not starting. A reader link is the case that made this necessary, since
+    // the document's MCP surface admits a commenter at minimum and answers a
+    // reader with a flat 404.
+    reachable_or_refuse(peer).await?;
+    // Said out loud, into the runner's own log, because every failure from
+    // here on is invisible otherwise: the assistant answers happily with no
+    // document tools and nothing anywhere says which of the agent, the
+    // adapter or the connection was at fault.
+    eprintln!("agent command: {:?}", config.agent);
+    let mut agent = acp::Agent::start(
+        &config.agent,
+        &lease.location.directory,
+        &environment,
+        &lease.location.directory.join("agent.log"),
+    )?;
+    // The handshake must happen and must succeed; nothing in the reply
+    // changes what this client does next, since it always starts a fresh
+    // session with the document tools attached.
+    agent
+        .request("initialize", acp::initialize_params())
         .await?;
-    let instructions = runner_context::instructions(&lease.location.directory)?;
-    let mut params = json!({"cwd":lease.location.directory,"developerInstructions":instructions,"approvalPolicy":"on-request","sandbox":"workspace-write","config":mcp_thread_config(&journal_path, &epoch_path)?});
-    let method = if let Some(id) = &state.thread_id {
-        params["threadId"] = json!(id);
-        "thread/resume"
-    } else {
-        "thread/start"
-    };
-    // A missing session is an actionable error, never a silent new conversation.
-    let session = codex.request(method, params).await?;
-    let thread_id = session["thread"]["id"]
+    let servers = acp::mcp_servers(&executable, &connection, &environment);
+    // Safe to log in full: it names a connection, never a link or a token.
+    // That is exactly why the indirection exists.
+    eprintln!("mcp servers: {servers}");
+    // Always a new session, never `session/load`. A resumed session keeps the
+    // MCP servers it was created with and does not take the ones handed to
+    // `session/load`, so resuming produced an assistant that could hold a
+    // conversation and had no document tools at all: it answered from files in
+    // its working directory instead. Continuity is not worth an assistant that
+    // cannot reach the document, and a restart is usually a deliberate change
+    // of agent or access, where a fresh session is what was wanted anyway.
+    //
+    // The browser keeps the transcript and the journal keeps the task history,
+    // so what is lost is the model's own memory of the conversation, not the
+    // user's.
+    let session = agent
+        .request(
+            "session/new",
+            json!({"cwd":lease.location.directory,"mcpServers":servers}),
+        )
+        .await?;
+    let session_id = session["sessionId"]
         .as_str()
-        .ok_or("Codex returned no thread ID")?
+        .ok_or("the agent returned no session ID")?
         .to_string();
-    state.thread_id = Some(thread_id.clone());
+    state.thread_id = Some(session_id.clone());
     state.save(&lease.location.state)?;
+    // ACP has no place to put developer instructions on a session, so they
+    // lead the first prompt of this process. Once per runner start, not once
+    // per task: the agent keeps the session's context between turns.
+    let mut instructions = Some(runner_context::instructions(&lease.location.directory)?);
     let mut transport = Transport::start(
         peer.chat_socket_request(&config.conversation)?,
         config.token.clone(),
@@ -575,9 +560,48 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         runner_journal::set_active_task(&journal_path, Some(&id))?;
                         journal.append(&id, "task_dispatch", "", None, Vec::new(), "working")?;
                         state.save(&lease.location.state)?;
-                        match codex.send("turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":prompt}],"outputSchema":runner_context::output_schema(),"sandboxPolicy":{"type":"workspaceWrite","writableRoots":[lease.location.directory],"networkAccess":true,"excludeTmpdirEnvVar":false,"excludeSlashTmp":false}})).await {
-                            Ok(start_rpc)=> { journal.append(&id, "turn_started", "", None, Vec::new(), "working")?; active=Some(Active{id:id.clone(),start_rpc,turn_id:String::new(),answer:String::new(),pending:HashMap::new(),cancelling:false}); }
-                            Err(error)=> { runner_journal::set_active_task(&journal_path, None)?; journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?; finish(&mut state,&id,"failed",&error);state.save(&lease.location.state)?; }
+                        let mut blocks = Vec::new();
+                        if let Some(preamble) = instructions.take() {
+                            blocks.push(json!({"type":"text","text":preamble}));
+                        }
+                        blocks.push(json!({"type":"text","text":prompt}));
+                        match agent
+                            .send(
+                                "session/prompt",
+                                json!({"sessionId":session_id,"prompt":blocks}),
+                            )
+                            .await
+                        {
+                            Ok(prompt_rpc) => {
+                                journal.append(
+                                    &id,
+                                    "turn_started",
+                                    "",
+                                    None,
+                                    Vec::new(),
+                                    "working",
+                                )?;
+                                active = Some(Active {
+                                    id: id.clone(),
+                                    prompt_rpc,
+                                    answer: String::new(),
+                                    pending: HashMap::new(),
+                                    cancelling: false,
+                                });
+                            }
+                            Err(error) => {
+                                runner_journal::set_active_task(&journal_path, None)?;
+                                journal.append(
+                                    &id,
+                                    "turn_failed",
+                                    "",
+                                    None,
+                                    Vec::new(),
+                                    "failed",
+                                )?;
+                                finish(&mut state, &id, "failed", &error);
+                                state.save(&lease.location.state)?;
+                            }
                         }
                     }
                 }
@@ -593,8 +617,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     stopping=Some(tokio::time::Instant::now());
                     for task in &mut state.tasks { if task.status=="queued" { task.status="cancelled".into();task.detail="Runner stopped".into(); } }
                     if let Some(current)=active.as_mut() {
-                        current.cancelling=true;
-                        if !current.turn_id.is_empty() { codex.send("turn/interrupt",json!({"threadId":thread_id,"turnId":current.turn_id})).await?; }
+                        if !current.cancelling { current.cancelling = true; agent.notify("session/cancel", json!({"sessionId":session_id})).await?; }
                         runner_journal::set_active_task(&journal_path, None)?;
                         journal.append(&current.id, "runner_stop", "", None, Vec::new(), "interrupted")?;
                         finish(&mut state,&current.id,"interrupted","Runner stopped before completion was confirmed; reconcile operation receipts with document_result.");
@@ -625,7 +648,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
             _=tokio::signal::ctrl_c()=> {
                 if stopping.is_none() {
                     stopping=Some(tokio::time::Instant::now());
-                    if let Some(current)=active.as_mut() { current.cancelling=true;if !current.turn_id.is_empty(){codex.send("turn/interrupt",json!({"threadId":thread_id,"turnId":current.turn_id})).await?;} }
+                    if let Some(current)=active.as_mut() { if !current.cancelling { current.cancelling=true; agent.notify("session/cancel",json!({"sessionId":session_id})).await?; } }
                 }
             }
             event=transport.incoming.recv()=> {
@@ -665,7 +688,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                             "cancel"=> {
                                 let id=value["task_id"].as_str().unwrap_or("");
                                 if let Some(current)=active.as_mut().filter(|task|task.id==id) {
-                                    if !current.cancelling { current.cancelling=true;if !current.turn_id.is_empty(){codex.send("turn/interrupt",json!({"threadId":thread_id,"turnId":current.turn_id})).await?;} }
+                                    if !current.cancelling { current.cancelling=true; agent.notify("session/cancel",json!({"sessionId":session_id})).await?; }
                                     if let Some(task)=state.task_mut(id){task.cancel_requested=true;task.detail="Cancellation requested".into();}
                                 } else if state.task(id).is_some_and(|task|task.status=="queued") { finish(&mut state,id,"cancelled","Queued task cancelled"); }
                                 state.save(&lease.location.state)?;if state.task(id).is_some(){report_task(&transport,&mut state,id,&lease.location.state).await?;}
@@ -674,9 +697,17 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 if let Some(current)=active.as_mut().filter(|task|value["task_id"]==task.id) {
                                     let request=value["request_id"].as_str().unwrap_or("");
                                     if let Some(pending)=current.pending.get(request) {
-                                        let response=&value["response"];
-                                        let valid=if pending.kind=="approval" {matches!(response["decision"].as_str(),Some("accept"|"decline"))} else { pending.questions.iter().all(|id|response["answers"][id]["answers"].as_array().is_some_and(|items|!items.is_empty()&&items.iter().all(Value::is_string))) };
-                                        if valid { codex.write(json!({"id":pending.rpc,"result":response})).await?;current.pending.remove(request);if let Some(task)=state.task_mut(&current.id){task.status="working".into();task.detail="Continuing with your response".into();task.input=Value::Null;}state.save(&lease.location.state)?;report_task(&transport,&mut state,&current.id,&lease.location.state).await?; }
+                                        // Only an option the agent itself
+                                        // offered can be sent back; anything
+                                        // else would be a decision LibrePaper
+                                        // invented on the user's behalf.
+                                        let chosen=value["response"]["option"].as_str().filter(|option|pending.options.iter().any(|known|known==option));
+                                        let outcome=match (chosen, value["response"]["cancelled"].as_bool()) {
+                                            (Some(option), _)=>Some(acp::permission_outcome(Some(option))),
+                                            (None, Some(true))=>Some(acp::permission_outcome(None)),
+                                            _=>None,
+                                        };
+                                        if let Some(outcome)=outcome { agent.write(json!({"jsonrpc":"2.0","id":pending.rpc,"result":outcome})).await?;current.pending.remove(request);if let Some(task)=state.task_mut(&current.id){task.status="working".into();task.detail="Continuing with your response".into();task.input=Value::Null;}state.save(&lease.location.state)?;report_task(&transport,&mut state,&current.id,&lease.location.state).await?; }
                                     }
                                 }
                             }
@@ -699,63 +730,86 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     }
                 }
             }
-            line=codex.stdout.next_line()=> {
-                let Some(line)=line.map_err(|e|format!("Codex output failed: {e}"))? else {return Err("Codex exited; unconfirmed work will not be replayed".into());};
-                let value:Value=serde_json::from_str(&line).map_err(|e|format!("invalid Codex event: {e}"))?;
+            line=agent.stdout.next_line()=> {
+                let Some(line)=line.map_err(|e|format!("agent output failed: {e}"))? else {return Err("the agent exited; unconfirmed work will not be replayed".into());};
+                // An agent that writes a banner or a log line to stdout is
+                // noisy, not broken, and must not take the session down.
+                let Ok(value)=serde_json::from_str::<Value>(&line) else { continue; };
                 let method=value["method"].as_str().unwrap_or("");
+                // A response with no method is the end of the turn: ACP puts
+                // the stop reason on the `session/prompt` reply rather than
+                // announcing completion separately.
                 if method.is_empty() {
-                    if let Some(current)=active.as_mut() {
-                        if value["id"]==current.start_rpc {
-                            if value.get("error").is_some() {let id=current.id.clone();finish(&mut state,&id,"failed",value["error"]["message"].as_str().unwrap_or("Codex refused this task"));state.save(&lease.location.state)?;report_task(&transport,&mut state,&id,&lease.location.state).await?;active=None;}
-                            else {current.turn_id=value["result"]["turn"]["id"].as_str().unwrap_or("").into();if current.cancelling&&!current.turn_id.is_empty(){codex.send("turn/interrupt",json!({"threadId":thread_id,"turnId":current.turn_id})).await?;}}
+                    let Some(current)=active.as_mut() else { continue; };
+                    if value["id"]!=json!(current.prompt_rpc) { continue; }
+                    let id=current.id.clone();
+                    let answer=std::mem::take(&mut current.answer);
+                    runner_journal::set_active_task(&journal_path, None)?;
+                    if let Some(error)=value.get("error") {
+                        journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?;
+                        finish(&mut state,&id,"failed",error["message"].as_str().unwrap_or("the agent refused this task"));
+                    } else {
+                        match acp::stop_reason(&value["result"]) {
+                            "end_turn"=>{
+                                // What happened is what the receipts say
+                                // happened. The answer is prose; the effects
+                                // come from the journal, so a model cannot
+                                // claim a suggestion it never created.
+                                let results=json!({"suggestions":journal.known_result_ids(&id).into_iter().collect::<Vec<_>>(),"pass":null});
+                                let answer=answer.trim().to_string();
+                                if let Some(task)=state.task_mut(&id){
+                                    task.answer=Some(if answer.is_empty() {"Finished.".into()} else if answer.len()>32*1024 {answer.chars().take(32*1024).collect()} else {answer});
+                                    task.results=results;
+                                }
+                                journal.append(&id, "turn_completed", "", None, Vec::new(), "completed")?;
+                                finish(&mut state,&id,"completed","Finished");
+                            }
+                            "cancelled"=>{ journal.append(&id, "turn_interrupted", "", None, Vec::new(), "cancelled")?; finish(&mut state,&id,"cancelled","Task cancelled"); }
+                            "refusal"=>{ journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?; finish(&mut state,&id,"failed","The agent declined this task. Inspect any document changes before retrying."); }
+                            other=>{ journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?; finish(&mut state,&id,"failed",&format!("Task ended early ({}). Inspect any document changes before retrying.", if other.is_empty() {"no reason given"} else {other})); }
                         }
                     }
+                    state.save(&lease.location.state)?;report_task(&transport,&mut state,&id,&lease.location.state).await?;active=None;
                     continue;
                 }
                 let Some(current)=active.as_mut() else {
-                    if value.get("id").is_some() {codex.write(json!({"id":value["id"],"error":{"code":-32601,"message":"No active sidebar task can answer this request"}})).await?;}
+                    if value.get("id").is_some() {agent.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32601,"message":"No active sidebar task can answer this request"}})).await?;}
                     continue;
                 };
-                if value["params"].get("threadId").is_some_and(|id|id!=&json!(thread_id)) {continue;}
-                let notified_turn = value["params"]["turnId"].as_str().or_else(||value["params"]["turn"]["id"].as_str());
-                if !current.turn_id.is_empty() && notified_turn.is_some_and(|id|id!=current.turn_id) {continue;}
-                if method=="item/completed" && value["params"]["item"]["type"]=="agentMessage" {
-                    current.answer=value["params"]["item"]["text"].as_str().unwrap_or("").into();
-                } else if method=="turn/completed" {
-                    let id=current.id.clone();
-                    runner_journal::set_active_task(&journal_path, None)?;
-                    match value["params"]["turn"]["status"].as_str() {
-                        Some("completed")=>match runner_context::result(&current.answer) {
-                            Ok((answer,results))=>{
-                                if let Err(error) = runner_journal::validate_suggestions(&journal_path, &id, &results["suggestions"]) {
-                                    journal.append(&id, "turn_completed", "", None, Vec::new(), "failed")?;
-                                    finish(&mut state,&id,"failed",&error);
-                                } else {
-                                    if let Some(task)=state.task_mut(&id){task.answer=Some(answer);task.results=results;}
-                                    journal.append(&id, "turn_completed", "", None, Vec::new(), "completed")?;
-                                    finish(&mut state,&id,"completed","Finished");
-                                }
-                            }
-                            Err(error)=>{ journal.append(&id, "turn_completed", "", None, Vec::new(), "failed")?; finish(&mut state,&id,"failed",&error); },
-                        },
-                        Some("interrupted")=>{ journal.append(&id, "turn_interrupted", "", None, Vec::new(), "cancelled")?; finish(&mut state,&id,"cancelled","Task cancelled"); },
-                        _=>{ journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?; finish(&mut state,&id,"failed",value["params"]["turn"]["error"]["message"].as_str().unwrap_or("Task failed; inspect any document changes before retrying")); },
+                if value["params"]["sessionId"].as_str().is_some_and(|id|id!=session_id) {continue;}
+                if method=="session/update" {
+                    match acp::update(&value["params"]) {
+                        acp::Update::Answer(chunk)=>{
+                            // Bounded here rather than at the end: an agent
+                            // that streams without stopping must not grow the
+                            // runner's memory.
+                            if current.answer.len()<64*1024 { current.answer.push_str(&chunk); }
+                        }
+                        acp::Update::Activity(detail)=>{
+                            if let Some(task)=state.task_mut(&current.id){if task.status=="working" && task.detail!=detail {task.detail=detail.into();emit(&transport,task.frame()).await?;}}
+                        }
+                        acp::Update::Ignored=>{}
                     }
-                    state.save(&lease.location.state)?;report_task(&transport,&mut state,&id,&lease.location.state).await?;active=None;
-                } else if value.get("id").is_some() {
-                    let kind=match method {"item/commandExecution/requestApproval"|"item/fileChange/requestApproval"=>"approval","item/tool/requestUserInput"=>"question",_=>""};
-                    if kind.is_empty() {codex.write(json!({"id":value["id"],"error":{"code":-32601,"message":"This input method is not supported by LibrePaper"}})).await?;continue;}
+                } else if method=="session/request_permission" {
+                    let (message,options)=acp::permission_question(&value["params"]);
+                    if options.is_empty() {
+                        agent.write(json!({"jsonrpc":"2.0","id":value["id"],"result":acp::permission_outcome(None)})).await?;continue;
+                    }
+                    if message.len()+serde_json::to_vec(&options).map_err(|e|e.to_string())?.len()>12*1024 {
+                        agent.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32602,"message":"Permission request exceeds the sidebar limit; split the operation."}})).await?;continue;
+                    }
                     let request_id=event_id();
-                    let questions=value["params"]["questions"].as_array().cloned().unwrap_or_default();
-                    let message=if kind=="approval" { format!("{}\n{}",value["params"]["reason"].as_str().unwrap_or("The assistant requests permission for this operation:"),value["params"]["command"].as_str().unwrap_or("File changes in the local assistant workspace")) } else { "The assistant needs your input".into() };
-                    if message.len()+serde_json::to_vec(&questions).map_err(|e|e.to_string())?.len()>12*1024 {
-                        codex.write(json!({"id":value["id"],"error":{"code":-32602,"message":"Input request exceeds the sidebar limit; ask a shorter question or split the operation."}})).await?;continue;
-                    }
-                    current.pending.insert(request_id.clone(),PendingInput{rpc:value["id"].clone(),kind:kind.into(),questions:questions.iter().filter_map(|q|q["id"].as_str().map(String::from)).collect()});
-                    if let Some(task)=state.task_mut(&current.id){task.status="needs_input".into();task.detail=message.clone();task.input=json!({"request_id":request_id,"kind":kind,"message":message,"questions":questions});}
+                    current.pending.insert(request_id.clone(),PendingInput{
+                        rpc:value["id"].clone(),
+                        options:options.iter().filter_map(|option|option["id"].as_str().map(String::from)).collect(),
+                    });
+                    if let Some(task)=state.task_mut(&current.id){task.status="needs_input".into();task.detail=message.clone();task.input=json!({"request_id":request_id,"kind":"permission","message":message,"options":options});}
                     state.save(&lease.location.state)?;report_task(&transport,&mut state,&current.id,&lease.location.state).await?;
-                } else if method=="item/started" {
-                    if let Some(task)=state.task_mut(&current.id){if task.status=="working" {task.detail=match value["params"]["item"]["type"].as_str(){Some("commandExecution")=>"Running document tools",Some("mcpToolCall")=>"Using document tools",Some("fileChange")=>"Preparing a candidate",_=>"Working on your document"}.into();emit(&transport,task.frame()).await?;}}
+                } else if value.get("id").is_some() {
+                    // Filesystem and terminal requests, which this client
+                    // declined in `initialize`. Refuse rather than leave the
+                    // agent blocked on a capability it was told we lack.
+                    agent.write(json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32601,"message":"LibrePaper exposes the document only through its MCP tools"}})).await?;
                 }
             }
         }
@@ -801,22 +855,38 @@ mod tests {
     }
 
     #[test]
-    fn thread_config_registers_the_stdio_mcp_adapter_without_credentials() {
-        let config = mcp_thread_config(
+    fn the_adapter_environment_carries_paths_and_no_credential() {
+        let environment = adapter_environment(
             Path::new("/tmp/runner.journal.json"),
             Path::new("/tmp/.runner.journal.json.epoch.test"),
+        );
+        let names: Vec<&str> = environment.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "LIBREPAPER_RUNNER_JOURNAL",
+                "LIBREPAPER_RUNNER_TASK_FILE",
+                "LIBREPAPER_RUNNER_EPOCH_FILE"
+            ]
+        );
+        assert_eq!(environment[1].1, "/tmp/runner.journal.task");
+        // The document link and the channel token reach the adapter through
+        // the private connection record, never through this environment.
+        assert!(!names.contains(&"LIBREPAPER_DOCUMENT"));
+        assert!(!names.contains(&"LIBREPAPER_CHAT_TOKEN"));
+    }
+
+    #[test]
+    fn an_agent_command_is_required_before_a_runner_can_start() {
+        assert!(config("c".into(), Some("t".into()), None, Vec::new()).is_err());
+        assert!(config("c".into(), Some("t".into()), None, vec!["  ".into()]).is_err());
+        let config = config(
+            "c".into(),
+            Some("t".into()),
+            None,
+            vec!["claude-code-acp".into()],
         )
-        .unwrap();
-        let server = &config["mcp_servers"]["librepaper"];
-        assert_eq!(server["args"], json!(["agent", "mcp", "-"]));
-        assert!(server["command"].as_str().is_some());
-        assert_eq!(
-            server["env"]["LIBREPAPER_RUNNER_JOURNAL"],
-            "/tmp/runner.journal.json"
-        );
-        assert_eq!(
-            server["env"]["LIBREPAPER_RUNNER_TASK_FILE"],
-            "/tmp/runner.journal.task"
-        );
+        .expect("an installed agent");
+        assert_eq!(config.agent, vec!["claude-code-acp".to_string()]);
     }
 }

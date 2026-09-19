@@ -35,6 +35,8 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Open { url } => open(&url).await,
         LocalCommand::Startup { command } => startup(command),
         LocalCommand::Status => status().await,
+        LocalCommand::Connections { remove } => connections(remove),
+        LocalCommand::Agent { command } => local_agent(command),
         LocalCommand::Doctor { tex_path } => doctor(tex_path).await,
         LocalCommand::Disconnect { origin, all } => disconnect(origin, all),
         LocalCommand::Rescan { tex_path } => rescan(tex_path).await,
@@ -440,11 +442,14 @@ fn startup(command: StartupCommand) {
     }
 }
 
+/// Exits non-zero when nothing is answering, so a script can branch on it:
+/// `make deploy` uses it to decide whether to start a companion or leave the
+/// one already running alone.
 async fn status() {
     let pairing = PairingStore::new(&state_home(), None);
     let Some(state) = pairing.read_service() else {
         println!("librepaper local is not running");
-        return;
+        std::process::exit(1);
     };
     let url = format!(
         "http://127.0.0.1:{}{}/health",
@@ -458,21 +463,33 @@ async fn status() {
         Ok(client) => client.get(&url).send().await,
         Err(err) => Err(err),
     };
-    match reachable {
+    let answering = match reachable {
         Ok(response) if response.status().is_success() => {
             println!("reachable at {url} (pid {})", state.pid);
+            true
         }
-        Ok(response) => println!(
-            "listening at {url} but answered unexpectedly: {}",
-            response.status()
-        ),
-        Err(_) => println!(
-            "not reachable at {url}; service.json names pid {} but nothing answered",
-            state.pid
-        ),
-    }
+        Ok(response) => {
+            println!(
+                "listening at {url} but answered unexpectedly: {}",
+                response.status()
+            );
+            false
+        }
+        Err(_) => {
+            println!(
+                "not reachable at {url}; service.json names pid {} but nothing answered",
+                state.pid
+            );
+            false
+        }
+    };
     println!("pairing code: {}", state.code);
     print_pairings(&pairing);
+    // A stale `service.json` describes a companion that is gone. Reporting
+    // that as success would have a script skip starting one.
+    if !answering {
+        std::process::exit(1);
+    }
 }
 
 fn print_pairings(pairing: &PairingStore) {
@@ -484,6 +501,79 @@ fn print_pairings(pairing: &PairingStore) {
     println!("paired origins:");
     for (origin, project) in pairings {
         println!("  {origin}  {project}");
+    }
+}
+
+/// Teach this computer an ACP agent, so the sidebar can drive an agent that
+/// is not in the built-in table. This is how opencode, Pi, or something that
+/// does not exist yet becomes a sidebar assistant without LibrePaper
+/// guessing at a package name that may never have existed.
+fn local_agent(command: crate::cli::LocalAgentCommand) {
+    use crate::cli::LocalAgentCommand;
+    let store = crate::local::agents::CustomStore::new(&state_home());
+    match command {
+        LocalAgentCommand::Add {
+            id,
+            label,
+            command: acp,
+        } => match store.add(&id, &label, &acp) {
+            Ok(()) => println!("{id} will be offered in the document sidebar"),
+            Err(error) => die(error),
+        },
+        LocalAgentCommand::List => {
+            let all = store.list();
+            if all.is_empty() {
+                println!("No agents added on this computer. Built-in agents are detected on PATH.");
+                return;
+            }
+            for (id, custom) in all {
+                println!("{id}\t{}\t{}", custom.label, custom.command.join(" "));
+            }
+        }
+        LocalAgentCommand::Remove { id } => {
+            if store.remove(&id) {
+                println!("removed {id}");
+            } else {
+                die(format!("no agent named '{id}'"));
+            }
+        }
+    }
+}
+/// What agents on this computer can reach, and how to take it back. A
+/// connection is a document credential under a readable name, so being able
+/// to list and revoke them without opening a browser matters.
+fn connections(remove: Option<String>) {
+    let store = crate::local::connections::ConnectionStore::new(&state_home());
+    if let Some(name) = remove {
+        if store.remove(&name) {
+            println!("removed {name}");
+        } else {
+            die(format!("no connection named '{name}'"));
+        }
+        return;
+    }
+    let all = store.list();
+    if all.is_empty() {
+        println!("No agent connections on this computer.");
+        return;
+    }
+    for (name, entry) in all {
+        // The link itself is deliberately absent: this is an audit listing,
+        // not a place to copy a credential out of.
+        println!(
+            "{name}\t{}\t{}\t{}",
+            if entry.title.is_empty() {
+                "(untitled)"
+            } else {
+                &entry.title
+            },
+            if entry.access.is_empty() {
+                "unknown access"
+            } else {
+                &entry.access
+            },
+            entry.origin
+        );
     }
 }
 

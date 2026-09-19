@@ -7,7 +7,8 @@
       "properties": {
         "document_id": {
           "type": "string",
-          "maxLength": 128
+          "maxLength": 128,
+          "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
         },
         "queries": {
           "type": "array",
@@ -212,7 +213,8 @@
       "properties": {
         "document_id": {
           "type": "string",
-          "maxLength": 128
+          "maxLength": 128,
+          "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
         },
         "view_id": {
           "type": "string",
@@ -223,7 +225,8 @@
           "properties": {
             "epoch": {
               "type": "string",
-              "maxLength": 128
+              "maxLength": 128,
+              "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
             },
             "id": {
               "type": "string",
@@ -324,7 +327,8 @@
       "properties": {
         "document_id": {
           "type": "string",
-          "maxLength": 128
+          "maxLength": 128,
+          "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
         },
         "view_id": {
           "type": "string",
@@ -335,7 +339,8 @@
           "properties": {
             "epoch": {
               "type": "string",
-              "maxLength": 128
+              "maxLength": 128,
+              "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
             },
             "id": {
               "type": "string",
@@ -386,7 +391,8 @@
       "properties": {
         "document_id": {
           "type": "string",
-          "maxLength": 128
+          "maxLength": 128,
+          "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
         },
         "view_id": {
           "type": "string",
@@ -397,7 +403,8 @@
           "properties": {
             "epoch": {
               "type": "string",
-              "maxLength": 128
+              "maxLength": 128,
+              "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
             },
             "id": {
               "type": "string",
@@ -420,7 +427,6 @@
             "resolve",
             "delete",
             "refine",
-
             "reject",
             "checkpoint"
           ]
@@ -473,14 +479,16 @@
       "properties": {
         "document_id": {
           "type": "string",
-          "maxLength": 128
+          "maxLength": 128,
+          "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
         },
         "operation": {
           "type": "object",
           "properties": {
             "epoch": {
               "type": "string",
-              "maxLength": 128
+              "maxLength": 128,
+              "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
             },
             "id": {
               "type": "string",
@@ -519,7 +527,8 @@
           "properties": {
             "epoch": {
               "type": "string",
-              "maxLength": 128
+              "maxLength": 128,
+              "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
             },
             "id": {
               "type": "string",

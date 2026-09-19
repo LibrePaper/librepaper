@@ -47,8 +47,7 @@ statement is not evidence of a durable effect.
 Report only receipt-confirmed effects and IDs. State partial coverage,
 conflicts, refused permissions, and unavailable compilation plainly.
 
-The sidebar assistant is started from the document sidebar by the local
-LibrePaper app, not by a skill and not by any command you run. Its writing
+The sidebar assistant is managed with the `librepaper-pair` skill. Its writing
 session receives the more focused `librepaper-write` skill automatically.
 
 ## References

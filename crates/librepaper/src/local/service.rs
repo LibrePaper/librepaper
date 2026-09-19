@@ -888,6 +888,22 @@ async fn dispatch(
         ["bindings", id] if *method == Method::DELETE => {
             handle_binding_revoke(inner, headers, origin, id).await
         }
+        // Connecting an agent. Reading what is installed is a GET; every
+        // route that acts on a document credential is a POST from a paired
+        // origin, so a drive-by page cannot wire up an agent.
+        ["agents"] if *method == Method::GET => handle_agents_list(inner, headers, origin).await,
+        ["connections"] if *method == Method::POST => {
+            handle_connection_create(inner, headers, origin, request).await
+        }
+        ["assistant"] if *method == Method::POST => {
+            handle_assistant_start(inner, headers, origin, request).await
+        }
+        ["assistant", "status"] if *method == Method::POST => {
+            handle_assistant_status(inner, headers, origin, request).await
+        }
+        ["assistant", "stop"] if *method == Method::POST => {
+            handle_assistant_stop(inner, headers, origin, request).await
+        }
         ["capabilities"] if *method == Method::GET => {
             handle_capabilities(inner, headers, origin, false).await
         }
@@ -933,6 +949,179 @@ async fn dispatch(
             handle_cancel(inner, headers, origin, id).await
         }
         _ => plain(404, "not found"),
+    }
+}
+
+/* ------------------------------------------------- Connecting an agent */
+
+/// Resolve a connection this origin owns, or the refusal to send back. Every
+/// agent route goes through it: a connection is a document credential under
+/// another name, so one site may never act on another's.
+fn owned_connection(
+    inner: &Inner,
+    origin: Option<&str>,
+    name: &str,
+) -> Result<super::connections::Connection, Box<Reply>> {
+    let store = super::connections::ConnectionStore::new(&inner.state_home);
+    let Some(connection) = store.get(name) else {
+        return Err(Box::new(write_json(
+            404,
+            &json!({"error": "no such connection on this computer"}),
+        )));
+    };
+    if connection.internal || Some(connection.origin.as_str()) != origin {
+        return Err(Box::new(write_json(
+            403,
+            &json!({"error": "that connection belongs to another site"}),
+        )));
+    }
+    Ok(connection)
+}
+
+/// The agents installed on this computer, plus the connections this origin
+/// already registered. This is what turns setup from a wall of pasted
+/// instructions into a list of choices: the browser cannot read a PATH, so
+/// only the local app can say what the user actually has.
+async fn handle_agents_list(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let store = super::connections::ConnectionStore::new(&inner.state_home);
+    let origin = origin.unwrap_or_default();
+    let connections: Vec<Value> = store
+        .list()
+        .into_iter()
+        .filter(|(_, entry)| entry.origin == origin)
+        .map(|(name, entry)| json!({"name": name, "title": entry.title, "access": entry.access}))
+        .collect();
+    write_json(
+        200,
+        &json!({"agents": super::agents::detect(&inner.state_home), "connections": connections}),
+    )
+}
+
+/// Register a document so agents on this computer can reach it by name.
+async fn handle_connection_create(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let Some(origin) = origin else {
+        return write_json(403, &json!({"error": "a paired origin is required"}));
+    };
+    let body = match read_json_body::<protocol::ConnectionRequest>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    if url::Url::parse(&body.link)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .is_none()
+    {
+        return write_json(400, &json!({"error": "a document link is required"}));
+    }
+    match super::connections::ConnectionStore::new(&inner.state_home).register(
+        &body.title,
+        &body.link,
+        origin,
+        &body.access,
+    ) {
+        Ok(name) => write_json(201, &json!({"connection": name})),
+        Err(error) => write_json(400, &json!({"error": error})),
+    }
+}
+
+/// Start the sidebar assistant, driving whichever installed agent the user
+/// picked.
+async fn handle_assistant_start(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let body = match read_json_body::<protocol::AssistantRequest>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let connection = match owned_connection(inner, origin, &body.connection) {
+        Ok(connection) => connection,
+        Err(response) => return *response,
+    };
+    // An agent that cannot be driven is reported as such rather than silently
+    // replaced by a different one. Which model runs is the user's choice, and
+    // substituting it quietly would be the opposite of bringing your own.
+    let Some(command) = super::agents::acp_command(&inner.state_home, &body.agent) else {
+        return write_json(
+            409,
+            &json!({"error": "that agent cannot be driven from the sidebar on this computer"}),
+        );
+    };
+    match crate::cli::start_assistant(
+        &connection.link,
+        &body.conversation,
+        &body.chat_token,
+        &command,
+    ) {
+        Ok(()) => write_json(200, &json!({"running": true, "agent": body.agent})),
+        Err(error) => write_json(409, &json!({"error": error})),
+    }
+}
+
+/// Whether the sidebar assistant is attached to this conversation.
+async fn handle_assistant_status(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let body = match read_json_body::<protocol::AssistantQuery>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let connection = match owned_connection(inner, origin, &body.connection) {
+        Ok(connection) => connection,
+        Err(response) => return *response,
+    };
+    match crate::cli::assistant_status(&connection.link, &body.conversation) {
+        Ok(status) => write_json(200, &json!({"running": true, "status": status})),
+        // Not running is the ordinary case before the first start, so it is an
+        // answer rather than an error the sidebar has to interpret.
+        Err(error) => write_json(200, &json!({"running": false, "detail": error})),
+    }
+}
+
+/// Detach the sidebar assistant. Completed document changes are not undone by
+/// stopping; only the attachment ends.
+async fn handle_assistant_stop(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    if let Err(response) = authenticate(inner, headers, origin) {
+        return response;
+    }
+    let body = match read_json_body::<protocol::AssistantQuery>(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let connection = match owned_connection(inner, origin, &body.connection) {
+        Ok(connection) => connection,
+        Err(response) => return *response,
+    };
+    match crate::cli::stop_assistant(&connection.link, &body.conversation) {
+        Ok(()) => write_json(200, &json!({"stopped": true})),
+        Err(error) => write_json(409, &json!({"error": error})),
     }
 }
 
@@ -1528,13 +1717,21 @@ async fn handle_disconnect(inner: &Inner, headers: &HeaderMap, origin: Option<&s
     };
     let origin = pairing::normalize_origin(origin.unwrap_or_default());
     inner.pairing.revoke_one(&origin, &project);
+    // Disconnecting the site also drops the document links it handed this
+    // computer. Otherwise revoking a pairing would leave agents configured
+    // against credentials the user believes they have taken back.
+    let connections =
+        super::connections::ConnectionStore::new(&inner.state_home).remove_origin(&origin);
     inner
         .previews
         .lock()
         .await
         .stop_scope(&origin, &project)
         .await;
-    write_json(200, &json!({"ok": true}))
+    write_json(
+        200,
+        &json!({"ok": true, "connections_removed": connections}),
+    )
 }
 
 /* -------------------------------------------------------- capabilities */
@@ -2548,7 +2745,13 @@ async fn read_json_body<T: for<'de> serde::Deserialize<'de>>(
             ))
         }
     };
-    serde_json::from_slice(&bytes).map_err(|_| write_json(400, &json!({"error": "bad JSON body"})))
+    // The parse error names the field that was wrong, which a bare "bad JSON
+    // body" does not. This service is loopback-only and answers the same user
+    // who sent the request, so there is nothing to withhold from them, and
+    // the alternative is guessing at which of a request's fields the browser
+    // got wrong.
+    serde_json::from_slice(&bytes)
+        .map_err(|error| write_json(400, &json!({"error": format!("bad JSON body: {error}")})))
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {

@@ -293,7 +293,17 @@ impl AutomationPeer {
             .header("x-librepaper-client", "1")
             .send()
             .await
-            .map_err(|err| format!("request failed: {err}"))?;
+            // An agent that cannot reach the document must say so and stop.
+            // The bare transport error reads like a retryable hiccup, and the
+            // observed failure is an agent quietly answering from a local file
+            // instead, which is a false report even when the text matches.
+            .map_err(|err| {
+                format!(
+                    "the LibrePaper document at {} could not be reached ({err}). \
+                     Report this and stop: no file on disk is this document.",
+                    link.server()
+                )
+            })?;
         let status = response.status().as_u16();
         let raw = response
             .bytes()
@@ -467,30 +477,40 @@ impl AutomationPeer {
             .header("Mcp-Name", tool_name.unwrap_or(method_name))
             .header("Accept", "application/json, text/event-stream")
             .json(body);
-        // The background runner gives the app-server a protected copy of the
+        // The runner's execution lease, when this process has one. Resolved
+        // before the headers below because the marker that claims runner
+        // provenance may only be sent together with the epoch that proves it:
+        // the server refuses the pair "runner conversation, no lease", and the
+        // adapter used to send exactly that. Its first request runs while the
+        // ACP session is being created, which is before the runner's transport
+        // exists to mint an epoch, so every `server/discover` was refused and
+        // the agent registered a document server with no tools.
+        let epoch = captured_epoch.map(str::to_owned).or_else(|| {
+            std::env::var_os("LIBREPAPER_RUNNER_EPOCH_FILE").and_then(|path| {
+                super::runner_journal::execution_epoch(std::path::Path::new(&path))
+            })
+        });
+        // The background runner gives the adapter a protected copy of the
         // sidebar channel credentials. They are transport headers only: the
         // MCP tool arguments and model context never contain either secret.
-        if let Ok(conversation) = std::env::var("LIBREPAPER_CONVERSATION") {
-            if !conversation.is_empty() {
-                request = request.header("x-librepaper-conversation", conversation.clone());
-                // This separate marker distinguishes a sidebar runner's
-                // protected provenance from an external browser render
-                // request that merely routes through the same conversation.
-                if std::env::var_os("LIBREPAPER_RUNNER_EPOCH_FILE").is_some() {
-                    request = request.header("x-librepaper-runner-conversation", conversation);
-                }
-            }
+        let conversation = std::env::var("LIBREPAPER_CONVERSATION").unwrap_or_default();
+        // The runner marker distinguishes a sidebar runner's protected
+        // provenance from an external browser render request that merely
+        // routes through the same conversation. Without a lease to back it the
+        // request is an ordinary one, which the document still serves.
+        let (conversation, runner, _) =
+            provenance_headers(Some(conversation.as_str()), epoch.as_deref());
+        if let Some(conversation) = conversation {
+            request = request.header("x-librepaper-conversation", conversation);
+        }
+        if let Some(runner) = runner {
+            request = request.header("x-librepaper-runner-conversation", runner);
         }
         if let Ok(chat_token) = std::env::var("LIBREPAPER_CHAT_TOKEN") {
             if !chat_token.is_empty() {
                 request = request.header("x-librepaper-chat-token", chat_token);
             }
         }
-        let epoch = captured_epoch.map(str::to_owned).or_else(|| {
-            std::env::var_os("LIBREPAPER_RUNNER_EPOCH_FILE").and_then(|path| {
-                super::runner_journal::execution_epoch(std::path::Path::new(&path))
-            })
-        });
         if let Some(epoch) = epoch {
             request = request.header("x-librepaper-execution-epoch", epoch);
         }
@@ -559,7 +579,8 @@ pub fn source_sha(source: &str) -> String {
 /// CLI suitable for an agent process without a shell parser.
 #[derive(Subcommand, Clone, Debug)]
 pub enum AgentCommand {
-    /// Keep a local Codex app-server session connected to a private sidebar conversation.
+    /// Drive a local ACP agent against a private sidebar conversation. The
+    /// local app starts this; it is not a command anyone pastes into a chat.
     Connect {
         link: String,
         /// Private conversation identifier from the LibrePaper sidebar.
@@ -578,23 +599,44 @@ pub enum AgentCommand {
             value_name = "DIRECTORY"
         )]
         state_dir: Option<std::path::PathBuf>,
-        /// The Codex executable the runner drives.
+        /// The agent the runner drives, as a command line speaking the Agent
+        /// Client Protocol on stdio. Repeat the flag for each argument. Any
+        /// ACP agent works; LibrePaper never holds a model credential.
+        /// `allow_hyphen_values` because an adapter's arguments are flags of
+        /// its own: `gemini --experimental-acp`, `npx -y pi-acp`. Without it
+        /// clap claims the adapter's flag as one of ours and exits 2, which
+        /// is every agent except a bare installed binary.
         #[arg(
-            long,
-            env = "LIBREPAPER_CODEX",
-            default_value = "codex",
-            value_name = "EXECUTABLE"
+            long = "agent",
+            env = "LIBREPAPER_AGENT",
+            value_delimiter = ' ',
+            allow_hyphen_values = true,
+            required = true,
+            value_name = "COMMAND"
         )]
-        codex: String,
+        agent: Vec<String>,
         /// Start a detached runner and wait until it is ready.
         #[arg(long)]
         background: bool,
     },
     /// Serve the document MCP tools over stdio for an MCP host.
     ///
-    /// The document link is read from LIBREPAPER_DOCUMENT when it is `-`,
-    /// which lets a host keep the credential in its protected environment.
-    Mcp { link: String },
+    /// `--connection NAME` is how an agent's configuration file names a
+    /// document without holding its key: this computer resolves the name
+    /// through `local::connections`. A literal link is still accepted for a
+    /// one-off, and `-` reads it from LIBREPAPER_DOCUMENT, which lets a host
+    /// keep the credential in its protected environment.
+    Mcp {
+        #[arg(
+            required_unless_present = "connection",
+            conflicts_with = "connection",
+            default_value = ""
+        )]
+        link: String,
+        /// A connection registered by the browser on this computer.
+        #[arg(long, value_name = "NAME")]
+        connection: Option<String>,
+    },
     /// Show the local runner state for a conversation.
     Status {
         link: String,
@@ -638,6 +680,25 @@ pub enum AgentCommand {
     },
 }
 
+/// Which provenance headers a document request carries.
+///
+/// The rule this exists to hold: the marker claiming a runner's protected
+/// provenance may only be sent together with the lease that proves it. The
+/// server refuses "runner conversation, no lease", and the adapter used to
+/// send exactly that on its first request, because that request runs while
+/// the ACP session is still being created and the runner's transport has not
+/// yet minted an epoch. Every `server/discover` was refused and the agent
+/// ended up with a document server that had no tools.
+pub(crate) fn provenance_headers<'a>(
+    conversation: Option<&'a str>,
+    epoch: Option<&'a str>,
+) -> (Option<&'a str>, Option<&'a str>, Option<&'a str>) {
+    let conversation = conversation.filter(|value| !value.is_empty());
+    let epoch = epoch.filter(|value| !value.is_empty());
+    let runner = conversation.filter(|_| epoch.is_some());
+    (conversation, runner, epoch)
+}
+
 pub(crate) fn validate_conversation(conversation: &str, token: &str) -> Result<(), String> {
     if conversation.is_empty()
         || conversation.len() > 128
@@ -666,9 +727,31 @@ pub async fn run_cli(
     server: Option<String>,
     token: Option<String>,
 ) -> Result<(), String> {
+    // A named connection resolves before anything else, because it is the
+    // only form that carries no credential for the caller to have leaked.
+    if let AgentCommand::Mcp {
+        connection: Some(name),
+        ..
+    } = &command
+    {
+        let resolved =
+            crate::local::connections::ConnectionStore::new(&super::state_home()).resolve(name)?;
+        // The sidebar channel is the adapter's only route for browser render
+        // jobs. Restoring it from the private record, rather than accepting
+        // it on a command line, is the whole point of naming a connection.
+        if let (Some(conversation), Some(chat_token)) =
+            (&resolved.conversation, &resolved.chat_token)
+        {
+            std::env::set_var("LIBREPAPER_CONVERSATION", conversation);
+            std::env::set_var("LIBREPAPER_CHAT_TOKEN", chat_token);
+        }
+        let link = DocumentLink::parse(&resolved.link, server.as_deref().unwrap_or(""))?;
+        let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
+        return super::mcp::stdio(&peer).await;
+    }
     let link_text = match &command {
         AgentCommand::Connect { link, .. }
-        | AgentCommand::Mcp { link }
+        | AgentCommand::Mcp { link, .. }
         | AgentCommand::Status { link, .. }
         | AgentCommand::Stop { link, .. }
         | AgentCommand::Preview { link, .. } => link,
@@ -711,19 +794,19 @@ pub async fn run_cli(
             conversation,
             chat_token,
             state_dir,
-            codex,
+            agent,
             background,
             ..
         } => {
             let config =
-                runner::config(conversation.clone(), chat_token, state_dir.clone(), codex)?;
+                runner::config(conversation.clone(), chat_token, state_dir.clone(), agent)?;
             if background {
                 super::runner_lifecycle::start_background(
                     peer.link(),
                     &conversation,
                     &config.token,
                     config.state_dir.as_deref(),
-                    &config.executable,
+                    &config.agent,
                 )?;
                 println!("{}", json!({"started":true,"conversation":conversation}));
             } else {
@@ -803,5 +886,25 @@ mod tests {
         let debug = format!("{peer:?}");
         assert!(debug.contains("[redacted]"));
         assert!(!debug.contains("bearer-that-must-not-leak"));
+    }
+    #[test]
+    fn runner_provenance_is_only_claimed_with_a_lease_to_prove_it() {
+        // The whole session runs before the transport mints an epoch, so this
+        // is the ordinary case at startup, not an edge one. Claiming the
+        // marker here is what the document refuses.
+        let (conversation, runner, epoch) = provenance_headers(Some("conv"), None);
+        assert_eq!(conversation, Some("conv"));
+        assert_eq!(runner, None, "no lease, so no claim of runner provenance");
+        assert_eq!(epoch, None);
+
+        let (conversation, runner, epoch) = provenance_headers(Some("conv"), Some("lease"));
+        assert_eq!(conversation, Some("conv"));
+        assert_eq!(runner, Some("conv"));
+        assert_eq!(epoch, Some("lease"));
+
+        // An empty value is no value, in either position.
+        assert_eq!(provenance_headers(Some(""), Some("lease")).1, None);
+        assert_eq!(provenance_headers(Some("conv"), Some("")).1, None);
+        assert_eq!(provenance_headers(None, None), (None, None, None));
     }
 }

@@ -263,7 +263,7 @@ impl Server {
         match method {
             "server/discover" => rpc_result(
                 &id,
-                json!({"supportedVersions":[PROTOCOL],"capabilities":{"tools":{}},"instructions":"Read bounded source, then reuse view and range handles. Suggestions are inert. Reuse operation keys on retries; apply only when authorized.","ttlMs":300000,"cacheScope":"private"}),
+                json!({"supportedVersions":[PROTOCOL],"capabilities":{"tools":{}},"instructions":"Read bounded source, then reuse view and range handles. Every mutation needs an operation: copy operation_epoch verbatim from your most recent document_read response and pair it with an id you mint once per mutation. An epoch cannot be invented or carried over, and authorization_epoch is a different value that will be refused; read again when yours expires. Suggestions are inert. Reuse operation keys on retries; apply only when authorized. These tools are the only way to reach this document: if one fails or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.","ttlMs":300000,"cacheScope":"private"}),
             ),
             "ping" => rpc_result(&id, json!({})),
             "tools/list" => rpc_result(
@@ -297,12 +297,19 @@ impl Server {
                         .with_data(json!({"retry_after_ms":250}))),
                     );
                 };
+                // A wrong argument, not a permission problem. Reported as
+                // `permission_changed` it read to callers as lost access and
+                // sent them hunting through share links, while the actual
+                // cause was a model passing the file name it had been shown.
+                // The message names the value it should have used.
                 if args.get("document_id").is_some_and(|v| v != slug) {
                     return tool_result(
                         &id,
                         Err(Failure::new(
-                            "permission_changed",
-                            "document identifier does not match this endpoint",
+                            "invalid_params",
+                            format!(
+                                "document_id must be {slug} or omitted; this endpoint serves one document and a file name is not its identifier"
+                            ),
                         )),
                     );
                 }

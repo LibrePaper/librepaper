@@ -212,12 +212,45 @@ impl Drop for Lease {
     }
 }
 
+/// The last thing the runner said before giving up, bounded so a runaway log
+/// cannot be pasted into a sidebar. Blank lines and clap's usage block are
+/// skipped: the first line of an argument error is the part that names the
+/// problem.
+fn last_log_line(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let line = text.lines().map(str::trim).rfind(|line| {
+        !line.is_empty() && !line.starts_with("Usage:") && !line.starts_with("tip:")
+    })?;
+    Some(line.chars().take(400).collect())
+}
+
+/// Wait for a stopping runner to release its conversation. `stop` only writes
+/// the request; the runner observes it, finishes what it is doing and exits,
+/// so a replacement started immediately would collide with it.
+pub(crate) fn wait_until_free(
+    link: &DocumentLink,
+    conversation: &str,
+    state_dir: Option<&Path>,
+) -> Result<(), String> {
+    let location = location(link, conversation, state_dir)?;
+    for _ in 0..100 {
+        if lock_is_free(&location.lock) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(
+        "the assistant already running for this conversation did not stop; try again in a moment"
+            .into(),
+    )
+}
+
 pub(crate) fn start_background(
     link: &DocumentLink,
     conversation: &str,
     token: &str,
     state_dir: Option<&Path>,
-    codex: &str,
+    agent: &[String],
 ) -> Result<(), String> {
     let location = location(link, conversation, state_dir)?;
     private_directory(&location.directory)?;
@@ -228,13 +261,14 @@ pub(crate) fn start_background(
         .ok()
         .and_then(|raw| serde_json::from_str::<Status>(&raw).ok())
         .map(|status| status.nonce);
-    let executable = std::env::current_exe()
-        .map_err(|err| format!("could not locate librepaper executable: {err}"))?;
+    let executable = super::current_executable()?;
     let mut command = Command::new(executable);
     // Keep the document key out of the child process command line. `-` is an
     // internal argv sentinel resolved from this short lived environment.
     command.args(["agent", "connect", "-", conversation]);
-    command.args(["--codex", codex]);
+    for part in agent {
+        command.args(["--agent", part]);
+    }
     if let Some(path) = state_dir {
         command.args([
             "--state-directory",
@@ -245,10 +279,18 @@ pub(crate) fn start_background(
     command
         .env("LIBREPAPER_DOCUMENT", link.credential_url())
         .env("LIBREPAPER_CHAT_TOKEN", token);
+    // The child's stderr is the only account of why it refused to start, and
+    // discarding it left "background runner exited with exit status: 2" as
+    // the whole diagnosis. It goes to a file in the runner's own private
+    // directory: a pipe nobody reads would block a long-lived child, and this
+    // doubles as a log for a failure noticed later.
+    let log_path = location.directory.join("runner.log");
+    let log =
+        File::create(&log_path).map_err(|err| format!("could not open the runner log: {err}"))?;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::from(log));
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -269,9 +311,15 @@ pub(crate) fn start_background(
                 .filter(|status| {
                     status.pid == child_pid && old_nonce.as_deref() != Some(status.nonce.as_str())
                 });
-            let detail = status
-                .and_then(|status| status.detail)
-                .unwrap_or_else(|| format!("background runner exited with {result}"));
+            // A child that died before writing a status has said whatever it
+            // had to say on stderr. Prefer that over the exit code, which on
+            // its own names nothing.
+            let detail = status.and_then(|status| status.detail).unwrap_or_else(|| {
+                match last_log_line(&log_path) {
+                    Some(line) => format!("the assistant could not start: {line}"),
+                    None => format!("background runner exited with {result}"),
+                }
+            });
             return Err(detail);
         }
         if let Ok(raw) = fs::read_to_string(&location.status) {
@@ -391,5 +439,64 @@ mod tests {
         fs2::FileExt::unlock(&file).expect("release");
         assert!(lock_is_free(&path));
         assert!(path.exists());
+    }
+    /// Every adapter this machine might offer must survive the argv
+    /// `start_background` builds for it. The adapters carry flags of their
+    /// own (`gemini --experimental-acp`, `npx -y pi-acp`), and clap claimed
+    /// them as LibrePaper's until `--agent` was told to allow hyphens, which
+    /// made "Start assistant" fail with a bare `exit status: 2` for every
+    /// agent except a bare installed binary.
+    #[test]
+    fn every_known_adapter_command_parses_as_connect_arguments() {
+        use clap::Parser;
+        let commands: Vec<Vec<&str>> = vec![
+            vec!["claude-code-acp"],
+            vec!["codex-acp"],
+            vec!["gemini", "--experimental-acp"],
+            vec!["opencode", "acp"],
+            vec!["pi-acp"],
+            vec!["npx", "-y", "@zed-industries/claude-code-acp"],
+            vec!["npx", "-y", "pi-acp"],
+        ];
+        for command in commands {
+            let mut argv = vec!["librepaper", "agent", "connect", "-", "conversation"];
+            for part in &command {
+                argv.push("--agent");
+                argv.push(part);
+            }
+            argv.extend(["--chat-token", "token"]);
+            let parsed = crate::cli::Cli::try_parse_from(&argv);
+            assert!(
+                parsed.is_ok(),
+                "{command:?} did not parse: {}",
+                parsed.err().map(|e| e.to_string()).unwrap_or_default()
+            );
+        }
+    }
+
+    #[test]
+    fn a_runner_that_died_is_explained_by_its_last_words() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runner.log");
+        // Clap's shape: the first line names the problem, the rest is usage.
+        std::fs::write(
+            &path,
+            "error: unexpected argument '--experimental-acp' found\n\n\
+             tip: to pass it as a value, use '-- --experimental-acp'\n\
+             Usage: librepaper agent connect --agent <COMMAND>\n",
+        )
+        .unwrap();
+        assert_eq!(
+            last_log_line(&path).as_deref(),
+            Some("error: unexpected argument '--experimental-acp' found"),
+        );
+
+        std::fs::write(&path, "\n\n").unwrap();
+        assert_eq!(last_log_line(&path), None, "nothing said is not a message");
+        assert_eq!(last_log_line(&directory.path().join("absent.log")), None);
+
+        // A runaway log cannot be pasted whole into a sidebar.
+        std::fs::write(&path, "x".repeat(4096)).unwrap();
+        assert_eq!(last_log_line(&path).unwrap().len(), 400);
     }
 }

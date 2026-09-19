@@ -5,8 +5,10 @@
 //! surface and its authorization (package R1a); `discovery`, `native` and
 //! discovery and the native runners find and run the tools; `cli` is the command line.
 
+pub mod agents;
 pub mod builders;
 pub mod cli;
+pub mod connections;
 pub mod discovery;
 pub mod embedded;
 pub mod engine_adapter;

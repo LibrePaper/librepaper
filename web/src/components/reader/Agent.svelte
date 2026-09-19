@@ -7,6 +7,7 @@
   import ChatTranscript from "../ChatTranscript.svelte";
   import ChatComposer from "../ChatComposer.svelte";
   import { createAgentClient } from "../../lib/agent-client.js";
+  import * as local from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import {
     captureAttachment, capabilityAllows, diagnosticLabel, suggestionContext,
@@ -41,12 +42,40 @@
   let chosenTaskId = $state("");
   let extra = $state("");
   let agentLink = $state("");
-  let copyFallback = $state("");
+  // What this computer has, as the local app reports it. The browser cannot
+  // read a PATH, so until the app is paired there is nothing to offer and the
+  // panel says so rather than guessing.
+  let installed = $state([]);
+  let connectionName = $state("");
+  let chosenAgent = $state("");
+  let assistant = $state({ running: false, agent: "", access: "" });
+  let pairingCode = $state("");
+  let pairProblem = $state("");
+  let appAddressDraft = $state(local.address());
+  // The local app's state drives the whole connection panel, so this view
+  // holds its own subscription and asks once itself. Subscribing alone only
+  // schedules the periodic reconnect, so a panel that waited for someone
+  // else's probe would sit on "install the app" for up to fifteen seconds
+  // with the app already running.
+  $effect(() => companion.watch());
+  // Which document the local app is asked about is page-level state the
+  // Reader sets when it loads one; this panel does not reach for it. The
+  // probe does belong here: the panel is only mounted once the reader opens
+  // it, so asking then is a response to their gesture rather than something
+  // opening a document does on its own.
+  onMount(() => { void local.probe().catch(() => {}); });
+  const paired = $derived(companion.status?.state === "connected");
+  const reachable = $derived(["reachable", "unauthorized", "connected", "incompatible"].includes(companion.status?.state));
+  const chosenInstalled = $derived(installed.find((entry) => entry.id === chosenAgent) || null);
   // The four access levels, as a choice rather than four commands: each row
   // carries its own explanation, so the panel never defines them twice.
+  // No read-only level. The document's MCP surface admits a commenter at
+  // minimum and answers a reader link with a flat 404 (server/mcp.rs), so an
+  // assistant on a read link starts, receives no tools at all and cannot say
+  // why. Offering a level the product cannot serve is worse than not offering
+  // it: Comment is the narrowest that works, and it still writes nothing the
+  // reader has not accepted.
   const roles = [
-    { id: "reader", label: "Read", help: "Read the document",
-      detail: "The agent reads the document source and its build output. It cannot write anything back." },
     { id: "commenter", label: "Comment", help: "Read, comment, and suggest changes",
       detail: "The agent can leave comments and attach suggestions for you to accept or reject." },
     { id: "tracked", role: "commenter", label: "Track changes", help: "Changes require your approval",
@@ -59,13 +88,13 @@
   // already holds, so the other rows are visible but not selectable.
   const roleOffered = (entry) => canShare || currentRole === (entry.role || entry.id);
   let access = $state("");
-  let copied = $state(false);
   const chosenAccess = $derived(roles.find((entry) => entry.id === access) || null);
-  // The browser can see that the companion is answering on loopback; it can
-  // never prove it is absent (companion/client.js, "What detection means"),
-  // so silence reads as "install it if you have not", not as "missing".
-  const companionRunning = $derived(["reachable", "unauthorized", "connected", "incompatible"].includes(companion.status?.state));
-  $effect(() => companion.watch());
+  // Running "here" means running as what is currently selected. A different
+  // agent, or a different access level, is a different assistant: the one
+  // running still holds the link it was started with, so the panel must offer
+  // to restart rather than claim the selection is already in force.
+  const runningHere = $derived(assistant.running && assistant.agent === chosenAgent && assistant.access === access);
+  const runningLabel = $derived(installed.find((entry) => entry.id === assistant.agent)?.label || "assistant");
   let tab = $state("connection");
   const TABS = [
     { id: "connection", label: "Connection" },
@@ -74,8 +103,6 @@
   ];
   let pendingRequest = $state(null);
   let commentContext = $state(null);
-  let inputDraft = $state("");
-  let inputDrafts = $state({});
   let lastRequestId = "";
   let lastSelection = $state(null);
   let suppressedSelection = $state("");
@@ -91,7 +118,8 @@
   }));
   const uncertainDelivery = $derived(Object.values(connection.tasks || {}).some((item) =>
     item?.delivery === "uncertain" && item.request === draft.trim()));
-  const sendable = $derived(connection.connected && connection.runnerConnected && preparedTaskValid && !uncertainDelivery);
+  const runnerReady = $derived(connection.connected && connection.runnerConnected);
+  const sendable = $derived(runnerReady && preparedTaskValid && !uncertainDelivery);
   const taskGroups = $derived(groupTasks(searchTasks(taskQuery)));
   const chosen = $derived(findTask(chosenTaskId));
   const scopeAvailable = (id) => id === "selection" ? Boolean(attachment) : id === "file" ? Boolean(contextPath) : true;
@@ -110,10 +138,6 @@
   );
   const inputTask = $derived(Object.values(connection.tasks || {}).find((item) => item?.status === "needs_input" && item.input) || null);
 
-  function shell(value) {
-    return `'${String(value).replaceAll("'", "'\\''")}'`;
-  }
-
   function validDocumentLink() {
     try {
       const chosen = new URL(agentLink || link, location.href);
@@ -129,22 +153,108 @@
     return value?.exact ? JSON.stringify([value.exact, source.path, source.prefix, source.suffix, source.position]) : "";
   }
 
-  function instructions(mode) {
-    if (!connection.id || !connection.token || !validDocumentLink()) return "";
-    const documentLink = agentLink || link;
-    return [
-      "First, before running anything: if you do not already have the librepaper-pair skill, ask the user to install the LibrePaper skills with `npx skills add LibrePaper/librepaper`, then follow that skill. It covers prerequisites, installing or upgrading the binary, connecting, and stopping, and it carries the tool permissions those steps need. If you already have it, skip this and follow it directly.",
-      "Without that skill, your harness may refuse the connect command below because running a detached process is not permitted by default. That is a standing permission granted once, not a LibrePaper failure. Report it plainly, offer the install above or an explicit settings rule for `librepaper agent`, and do not work around the refusal.",
-      "Reuse recent LibrePaper CLI/version checks from this session when the installation has not changed; connecting another document does not require checking for a newer release. Otherwise check: librepaper --version && librepaper agent connect --help.",
-      "The LibrePaper runner supplies its bundled document and writing instructions to the agent. Reuse those instructions for the installed version and refresh the runner after an upgrade or command/version mismatch. No separate skill installation is needed for those.",
-      "Run each command below as written. Each is self-contained and can run in a separate shell.",
-      `LIBREPAPER_CHAT_TOKEN=${shell(connection.token)} librepaper agent connect ${shell(documentLink)} ${shell(connection.id)} --background`,
-      mode === "tracked"
-        ? "Use track changes for every edit: create anchored LibrePaper suggestions for the user to accept or reject. Never write directly to document source or accept your own suggestions. This commenter link deliberately prevents direct source edits. Keep the runner attached and report suggestion identifiers in context.results."
-        : mode === "editor"
-          ? "Edit the document source directly when asked to make changes. Use the document and writing skills to verify edits. Keep this runner attached and report results in context.results."
-          : "Keep this runner attached to the document. Use the document and writing skills for anchored suggestions and report result identifiers in context.results.",
-    ].join("\n");
+  /// Mint the access link for `mode`, confirm it really grants that access,
+  /// and hand it to the local app once. Everything after this refers to the
+  /// document by the name the app gives back, so no key reaches a config
+  /// file, a command line or a chat transcript.
+  async function registerConnection(mode) {
+    const role = mode === "tracked" ? "commenter" : mode;
+    if (canShare) {
+      const endpoint = `/api/documents/${encodeURIComponent(slug)}/share`;
+      let sharing = await getPrivate(endpoint);
+      let access = sharing.links?.[role];
+      if (!access?.key || access.expired) {
+        sharing = await post(endpoint, { link: { role, until: "180d", label: "Agent" } });
+        access = sharing.links?.[role];
+      }
+      if (!access?.url) throw new Error("Could not create an agent access link.");
+      agentLink = new URL(access.url, location.origin).href;
+    }
+    if (!validDocumentLink()) throw new Error("The access link must point to this document.");
+    await checkCapabilities(agentLink);
+    if (currentRole !== role) throw new Error("This access level is unavailable. Ask the document owner for an access link.");
+    const answer = await local.registerConnection({
+      title: document.title || slug, link: agentLink || link, access: mode,
+    });
+    if (!answer?.connection) throw new Error(answer?.error || "The local app could not register this document.");
+    connectionName = answer.connection;
+    return connectionName;
+  }
+
+  async function refreshAgents() {
+    if (!paired) { installed = []; return; }
+    const answer = await local.agents();
+    installed = Array.isArray(answer?.agents) ? answer.agents : [];
+    if (!chosenAgent) chosenAgent = installed.find((entry) => entry.assistant)?.id || installed[0]?.id || "";
+  }
+  $effect(() => { if (paired) void act(refreshAgents); });
+
+  async function pair() {
+    pairProblem = "";
+    busy = true;
+    try {
+      await local.connect(pairingCode.trim());
+      pairingCode = "";
+      await refreshAgents();
+    } catch (error) {
+      // Said here rather than through `act`, whose message lands at the foot
+      // of the panel where the person pairing will not see it.
+      const detail = error?.message || String(error);
+      pairProblem = /unauthor|403|invalid|code/i.test(detail)
+        ? `${detail} The app prints its code when it starts; a second copy of the app has a different one.`
+        : detail;
+    } finally {
+      busy = false;
+    }
+  }
+
+  /// Point this browser at a local app that is not on the default port, and
+  /// look again immediately so the panel answers rather than waiting for the
+  /// next scheduled probe.
+  async function useAppAddress() {
+    pairProblem = "";
+    await act(async () => {
+      local.setAddress(appAddressDraft.trim());
+      appAddressDraft = local.address();
+      const status = await local.probe({ force: true });
+      if (status?.state === "unreachable" || status?.state === "denied") {
+        throw new Error(`No local app answers at ${local.address()}`);
+      }
+      if (status?.state === "connected") await refreshAgents();
+    });
+  }
+
+  /// Start the assistant: mint the access link, hand it to the local app as a
+  /// named connection, and have the app drive the chosen agent against it.
+  /// This is the only way an agent is connected, so it is the only button.
+  async function startAssistant(mode) {
+    await act(async () => {
+      // One assistant per conversation. Starting a second against the same
+      // one would leave the first holding the link it was started with, so a
+      // change of agent or access replaces it rather than racing it.
+      if (assistant.running && connectionName) {
+        await local.stopAssistant({ connection: connectionName, conversation: connection.id })
+          .catch(() => {});
+        assistant = { running: false, agent: "", access: "" };
+      }
+      const name = connectionName || await registerConnection(mode);
+      const answer = await local.startAssistant({
+        connection: name, conversation: connection.id,
+        chatToken: connection.token, agent: chosenAgent,
+      });
+      if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
+      assistant = { running: true, agent: chosenAgent, access: mode };
+      // The work happens in the chat, so go there rather than leaving the
+      // reader on a settings pane that has nothing more to say.
+      tab = "chat";
+    });
+  }
+
+  async function stopAssistant() {
+    await act(async () => {
+      await local.stopAssistant({ connection: connectionName, conversation: connection.id });
+      assistant = { running: false, agent: "", access: "" };
+    });
   }
 
   async function act(operation) {
@@ -245,17 +355,26 @@
     taskView = "launcher";
   }
 
-  function prepare() {
-    if (!chosen || !preparable) return;
-    task = { kind: chosen.kind, scope };
-    const prompt = taskPrompt(chosen, scope);
+  /// Picking a task is the decision; writing a draft the reader then has to
+  /// send again was a second confirmation of the same thing. This sends it and
+  /// moves to the chat, where the answer will arrive.
+  async function sendTask() {
+    // Deliberately not gated on `sendable`: that judges the task currently in
+    // context, which is the previous one. What matters is whether the task
+    // being sent is allowed, which is `preparable`, and whether the assistant
+    // is there. `send` makes the final check once this task is in context.
+    if (!chosen || !preparable || !runnerReady) return;
+    const entry = chosen;
+    task = { kind: entry.kind, scope };
     const note = extra.trim();
-    saveDraft(note ? `${prompt}\n\n${note}` : prompt);
-    if (chosen.kind !== "explain") { diagnostic = null; diagnosticRevision = ""; }
+    const prompt = taskPrompt(entry, scope);
+    if (entry.kind !== "explain") { diagnostic = null; diagnosticRevision = ""; }
     // Leave the catalog showing for the next request; "Change context" in the
-    // chat pane reopens this task's preparation view.
+    // chat pane reopens this task's view.
     taskView = "launcher";
     tab = "chat";
+    saveDraft("");
+    await send(note ? `${prompt}\n\n${note}` : prompt);
   }
 
   function promptFor(kind, chosenScope) {
@@ -287,36 +406,16 @@
     return sent;
   }
 
-  function chooseAccess(id) {
-    access = id;
-    copied = false;
-    copyFallback = "";
+  function chooseAgent(id) {
+    chosenAgent = id;
   }
 
-  async function copyInstructions(mode) {
-    const role = mode === "tracked" ? "commenter" : mode;
-    await act(async () => {
-      copyFallback = "";
-      copied = false;
-      if (canShare) {
-        const endpoint = `/api/documents/${encodeURIComponent(slug)}/share`;
-        let sharing = await getPrivate(endpoint);
-        let access = sharing.links?.[role];
-        if (!access?.key || access.expired) {
-          sharing = await post(endpoint, { link: { role, until: "180d", label: "Agent" } });
-          access = sharing.links?.[role];
-        }
-        if (!access?.url) throw new Error("Could not create an agent access link.");
-        agentLink = new URL(access.url, location.origin).href;
-      }
-      if (!validDocumentLink()) throw new Error("The access link must point to this document.");
-      await checkCapabilities(agentLink);
-      if (currentRole !== role) throw new Error("This access level is unavailable. Ask the document owner for an access link.");
-      try {
-        await navigator.clipboard.writeText(instructions(mode));
-        copied = true;
-      } catch { copyFallback = instructions(mode); }
-    });
+  function chooseAccess(id) {
+    access = id;
+    // A connection carries one access level. Reusing the previous one here
+    // would silently hand out the old link after the user picked a narrower
+    // level, which is the one mistake this panel must never make.
+    connectionName = "";
   }
 
   async function reconnect() { await act(() => client.reconnect()); }
@@ -327,18 +426,14 @@
       if (!await client.retry(id)) throw new Error("The original request is no longer available to retry.");
     });
   }
-  async function answerInput(decision) {
+  /// Answer a permission request with one of the options the agent offered,
+  /// or `null` to cancel it. The runner rejects anything else, so the two
+  /// sides cannot drift into answering a different question.
+  async function answerInput(option) {
     const item = inputTask;
     if (!item?.input?.request_id) return;
-    const input = item.input;
-    const response = input.kind === "approval"
-      ? { decision }
-      : { answers: Object.fromEntries((input.questions || []).map((question) => {
-        const id = question.id || "answer";
-        return [id, { answers: [String(inputDrafts[id] || inputDraft).trim()] }];
-      })) };
-    await act(() => client.respond(item.id, input.request_id, response));
-    if (input.kind !== "approval") { inputDraft = ""; inputDrafts = {}; }
+    const response = option ? { option } : { cancelled: true };
+    await act(() => client.respond(item.id, item.input.request_id, response));
   }
 
   function chooseResult(results) {
@@ -436,46 +531,134 @@
   <div class="agent-setup">
     <div class="setup-intro">
       <h3 class="setup-title">Connect a coding agent</h3>
-      <p class="panel-muted">Use Codex, Claude, Pi, or another local coding agent with this document.</p>
+      <p class="panel-muted">Work on this document with a coding agent already installed on your computer. It uses its own model and its own sign-in.</p>
     </div>
 
-    <div class="companion-note" data-state={companionRunning ? "ready" : "unknown"}>
-      {#if companionRunning}
-        <strong>LibrePaper Companion connected</strong>
-        <span class="panel-meta">Your local agent can reach this document.</span>
-      {:else}
-        <strong>Requires LibrePaper on this computer</strong>
-        <span class="panel-meta">The companion app and its <code>librepaper</code> command connect a local agent to this document.</span>
-        <a href="https://github.com/LibrePaper/librepaper#install" target="_blank" rel="noreferrer">Install LibrePaper Companion →</a>
-      {/if}
-    </div>
+    <!-- Where the app is listening. The default port can be taken, and the
+         app is then started on another one with `local start --port`; without
+         this the panel would insist the app is missing while it is running a
+         port away, and the setting that fixes it lives in another screen. -->
+    {#snippet appAddress()}
+      <details class="setup-address">
+        <summary class="panel-meta">Started the app on another port?</summary>
+        <label class="label"><span class="sr-only">Local app address</span>
+          <input class="input" type="text" aria-label="Local app address" value={appAddressDraft}
+                 oninput={(event) => appAddressDraft = event.currentTarget.value} /></label>
+        <button class="btn btn-sm preset-outlined-surface-300-700" disabled={busy}
+                onclick={() => void useAppAddress()}>Look there instead</button>
+      </details>
+    {/snippet}
 
-    <h4 class="setup-subtitle">Choose access</h4>
-    <!-- Pressed buttons rather than radios: each row stays in the tab order
-         and needs no roving-tabindex arrow handling to be usable. -->
-    <div class="access-choices" role="group" aria-label="Choose access">
-      {#each roles as entry}
-        <button type="button" class="access-choice" data-access={entry.id}
-                aria-pressed={access === entry.id} data-warn={entry.warn ? "true" : undefined}
-                disabled={busy || starting || !connection.id || !roleOffered(entry)}
-                onclick={() => chooseAccess(entry.id)}>
-          <span class="access-label">{entry.label}</span>
-          <span class="access-help panel-meta">{entry.help}</span>
-        </button>
-      {/each}
-    </div>
+    <!-- Everything below hangs off the local app being paired. That is the
+         one manual step, it is done once per computer rather than once per
+         document, and it is the same pairing the local compiler uses, so a
+         reader who already paired for Quarto or native TeX skips it. -->
+    {#if !paired}
+      <div class="setup-requirement">
+        {#if reachable}
+          <strong>Connect the LibrePaper app on this computer</strong>
+          <span class="panel-meta">The app shows a six digit code when it starts. Enter it once; this browser stays paired afterwards.</span>
+          <div class="setup-actions">
+            <label class="label"><span class="sr-only">Pairing code</span>
+              <input class="input setup-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"
+                     placeholder="000000" value={pairingCode}
+                     oninput={(event) => pairingCode = event.currentTarget.value} /></label>
+            <button class="btn btn-sm preset-filled-primary-500" disabled={busy || pairingCode.trim().length < 6}
+                    onclick={() => void pair()}>Pair</button>
+          </div>
+          <!-- A refused code must say so here, beside the button that was
+               pressed. The panel's shared error line sits below three tabs of
+               content, which in a narrow column is off screen: an invisible
+               error reads as a dead button. -->
+          {#if pairProblem}<span class="panel-meta" role="alert">{pairProblem}</span>{/if}
+          {@render appAddress()}
+        {:else}
+          <strong>Install the LibrePaper app on this computer</strong>
+          <code class="setup-command">curl -fsSL https://librepaper.org/install.sh | sh</code>
+          <span class="panel-meta">Run that once, in a terminal. It prints a pairing code when it finishes, and this panel then lists the coding agents you already have installed.</span>
+          <a href="https://github.com/LibrePaper/librepaper#install" target="_blank" rel="noreferrer">Other ways to install →</a>
+          {@render appAddress()}
+        {/if}
+      </div>
+    {:else}
+      <div class="setup-requirement" data-state="ready">
+        <strong>Connected to this computer</strong>
+        {#if installed.length}
+          <!-- Two settings, each a list of mutually exclusive values with one
+               in force: a select says which is chosen by showing it, where a
+               row of buttons has to signal it and can fail to. -->
+          <label class="label setup-field">
+            <span class="setup-label">Agent</span>
+            <select class="select" aria-label="Agent" disabled={busy} value={chosenAgent}
+                    onchange={(event) => chooseAgent(event.currentTarget.value)}>
+              {#each installed as entry (entry.id)}
+                <option value={entry.id}>{entry.label}</option>
+              {/each}
+            </select>
+          </label>
+          {#if chosenInstalled}
+            <span class="panel-meta" data-agent-note={chosenInstalled.id}>
+              {chosenInstalled.assistant ? "Brings its own model and sign-in; can also run in the sidebar." : "Brings its own model and sign-in. Document tools only."}
+              {chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}
+            </span>
+          {/if}
+        {:else}
+          <span class="panel-meta">No supported coding agent was found on this computer. Install one, or connect your own with the configuration snippet below.</span>
+        {/if}
+      </div>
+    {/if}
+
+    <label class="label setup-field">
+      <span class="setup-label">Access</span>
+      <select class="select" aria-label="Access" value={access}
+              disabled={busy || starting || !connection.id}
+              onchange={(event) => chooseAccess(event.currentTarget.value)}>
+        <option value="" disabled>Choose what the agent may do</option>
+        {#each roles as entry}
+          <option value={entry.id} disabled={!roleOffered(entry)}>{entry.label}: {entry.help}</option>
+        {/each}
+      </select>
+    </label>
 
     {#if chosenAccess}
       <div class="access-detail" data-access={chosenAccess.id}>
         <p class="panel-muted">{chosenAccess.detail}</p>
-        <button class="btn btn-sm preset-filled-primary-500" disabled={busy || starting || !connection.id}
-                onclick={() => void copyInstructions(chosenAccess.id)}>
-          {copied ? "Copied" : "Copy connection instructions"}
-        </button>
-        <p class="panel-meta">Paste the instructions into a new message in your local coding agent.</p>
+        <!-- One destination. An agent is used here, in the document, where
+             the chat and the task launcher are; there is no second place to
+             send it to and so no second button to explain. -->
+        <div class="setup-actions">
+          <button class="btn btn-sm preset-filled-primary-500"
+                  disabled={busy || starting || !connection.id || !paired || !chosenInstalled?.assistant || runningHere}
+                  onclick={() => void startAssistant(chosenAccess.id)}>
+            {runningHere ? "Running"
+              : assistant.running ? "Restart with this choice"
+              : "Start assistant"}
+          </button>
+          {#if assistant.running}
+            <!-- Named, because the assistant may be running on an agent other
+                 than the one currently selected, and "Stop" with no subject
+                 would be a guess about which. -->
+            <button class="btn btn-sm" disabled={busy} onclick={() => void stopAssistant()}>
+              Stop {runningLabel}
+            </button>
+          {/if}
+        </div>
+        <!-- What pressing it does, and what it costs. The fetch warning lives
+             here rather than in the label so it survives the label changing
+             to "Restart with this choice", which is exactly when a reader is
+             switching to an agent whose adapter is not yet on the machine. -->
+        <span class="panel-meta">
+          {runningHere
+            ? "Ask for changes in the Chat tab, or pick one from Tasks."
+            : `LibrePaper runs ${chosenInstalled?.label || "the agent"} against this document. You work with it in the Chat and Tasks tabs.`}
+          {#if !runningHere && chosenInstalled?.assistant_fetches}Starting it downloads its adapter the first time.{/if}
+          <!-- A runner outlives the page that started it, so after a reload
+               one can be attached that this panel never started. Saying so
+               beats offering Start as though nothing were running. -->
+          {#if !assistant.running && connection.runnerConnected}An assistant is already attached to this conversation; starting one replaces it.{/if}
+        </span>
       </div>
     {/if}
-    {#if copyFallback}<textarea class="input setup-prompt" readonly rows="6" aria-label="Setup prompt to copy" value={copyFallback} onclick={(event) => event.currentTarget.select()}></textarea>{/if}
   </div>
   {#if !connection.id}<button class="btn preset-filled-primary-500" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Retry connection"}</button>{/if}
   {#if connection.id && !connection.connected}
@@ -504,17 +687,18 @@
 
   {#if inputTask}
     <div class="input-request" role="group" aria-label="Assistant input request">
-      <strong>{inputTask.input.kind === "approval" ? "The assistant requests approval" : "The assistant needs an answer"}</strong>
+      <strong>The assistant requests permission</strong>
       {#if inputTask.input.message}<p>{inputTask.input.message}</p>{/if}
-      {#if inputTask.input.kind === "approval"}
-        <div class="setup-actions"><button class="btn btn-sm preset-filled-primary-500" disabled={busy} onclick={() => void answerInput("accept")}>Approve</button><button class="btn btn-sm" disabled={busy} onclick={() => void answerInput("decline")}>Deny</button></div>
-      {:else}
-        {#each inputTask.input.questions || [] as question, index (question.id || `question-${index}`)}
-          {@const questionId = question.id || "answer"}
-          <label class="label">{question.question}<textarea class="input" value={inputDrafts[questionId] || ""} oninput={(event) => inputDrafts[questionId] = event.currentTarget.value} rows="3" placeholder={question.header || "Answer"}></textarea></label>
+      <!-- The agent names its own options, so the sidebar renders exactly
+           those. Inventing an "Approve" it never offered would be answering
+           a question the agent did not ask. -->
+      <div class="setup-actions">
+        {#each inputTask.input.options || [] as option, index (option.id || `option-${index}`)}
+          <button class="btn btn-sm {index === 0 ? "preset-filled-primary-500" : ""}" disabled={busy}
+                  onclick={() => void answerInput(option.id)}>{option.label}</button>
         {/each}
-        <button class="btn btn-sm preset-filled-primary-500" disabled={busy || !(inputTask.input.questions || []).length || !(inputTask.input.questions || []).every((question, index) => (inputDrafts[question.id || "answer"] || inputDraft).trim())} onclick={() => void answerInput()}>Send answer</button>
-      {/if}
+        <button class="btn btn-sm" disabled={busy} onclick={() => void answerInput(null)}>Cancel</button>
+      </div>
     </div>
   {/if}
 
@@ -551,8 +735,9 @@
       <label class="label">Additional instructions
         <textarea class="input" rows="3" value={extra} oninput={(event) => extra = event.currentTarget.value} placeholder="Optional"></textarea>
       </label>
-      {#if !preparable}<p class="panel-meta" role="status">This task needs the appropriate access and context. Choose another scope, or attach a passage in the document.</p>{/if}
-      <div class="prepare-actions"><button class="btn btn-sm preset-filled-primary-500" disabled={!preparable} onclick={prepare}>Prepare message</button></div>
+      {#if !preparable}<p class="panel-meta" role="status">This task needs the appropriate access and context. Choose another scope, or attach a passage in the document.</p>
+      {:else if !runnerReady}<p class="panel-meta" role="status">Start the assistant in the Connection tab before sending a task.</p>{/if}
+      <div class="prepare-actions"><button class="btn btn-sm preset-filled-primary-500" disabled={busy || !preparable || !runnerReady} onclick={() => void sendTask()}>Send to agent</button></div>
     </div>
   {:else}
     <div class="agent-context task-launcher">
@@ -629,33 +814,32 @@
   .agent-setup h3, .agent-setup h4 { margin:0; }
   .setup-intro { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
   .setup-title { font-weight:600; }
-  .setup-subtitle { font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
-                    color:var(--color-surface-600-400); margin-bottom:calc(var(--spacing) * -1); }
-  .companion-note { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);
-                    padding:calc(var(--spacing) * 2); background:var(--color-surface-100-900);
-                    border-left:3px solid var(--color-surface-300-700); }
-  .companion-note[data-state="ready"] { border-left-color:var(--color-success-500); }
-  .companion-note a { font-size:var(--panel-meta-size); }
-  /* The access levels are one decision, not four commands: a vertical list of
-     rows, each explaining itself, reads in a narrow panel where a grid of
-     equal-looking buttons does not. */
-  .access-choices { display:flex; flex-direction:column; gap:var(--spacing); }
-  .access-choice { display:flex; flex-direction:column; gap:calc(var(--spacing) * .25);
-                   width:100%; min-width:0; padding:calc(var(--spacing) * 1.5) calc(var(--spacing) * 2);
-                   border:1px solid var(--color-surface-300-700); border-radius:var(--radius-base, .25rem);
-                   background:transparent; text-align:left; cursor:pointer; }
-  .access-choice:hover:not(:disabled) { background:var(--color-surface-100-900); }
-  .access-choice[aria-pressed="true"] { border-color:var(--color-primary-500); background:var(--color-surface-100-900); }
-  /* Direct editing is the one level with no accept or reject step, so it is
-     marked apart from the other three rather than left to read like them. */
-  .access-choice[data-warn="true"] { border-left:3px solid var(--color-warning-500); }
-  .access-choice[data-warn="true"][aria-pressed="true"] { border-color:var(--color-warning-500); }
-  .access-choice:disabled { opacity:.45; cursor:not-allowed; }
-  .access-label { font-weight:600; }
-  .access-help, .access-choice .access-help { white-space:normal; }
+  .setup-requirement { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);
+                       padding:calc(var(--spacing) * 2); background:var(--color-surface-100-900);
+                       border-left:3px solid var(--color-primary-500); }
+  .setup-requirement a { font-size:var(--panel-meta-size); }
+  /* The install line is long and unbreakable at word boundaries, and the
+     panel is a narrow column, so it must be told it may wrap mid-token and
+     may not grow past the column. `align-self:flex-start` alone lets it size
+     to its content and overflow. */
+  .setup-command { align-self:stretch; max-width:100%; padding:calc(var(--spacing) * .5) var(--spacing);
+                   background:var(--color-surface-200-800); border-radius:var(--radius-base);
+                   user-select:all; overflow-wrap:anywhere; word-break:break-word; }
+  .setup-code { max-width:8rem; font-variant-numeric:tabular-nums; letter-spacing:.2em; }
+  /* Folded away by default: the port is right for almost everyone, and an
+     address field offered up front reads as a decision to make. */
+  .setup-address { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
+  .setup-address summary { cursor:pointer; }
+  .setup-address button { align-self:flex-start; }
+  /* Agent and access are two settings, each with one value in force, so each
+     is a select. A row of buttons had to signal the chosen one and the signal
+     was easy to miss; a select shows its value as its content. */
+  .setup-field { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); min-width:0; }
+  .setup-field .select { width:100%; min-width:0; }
+  .setup-label { font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+                 color:var(--color-surface-600-400); }
   .access-detail { display:flex; flex-direction:column; align-items:flex-start; gap:var(--spacing); }
   .access-detail p { margin:0; }
-  .setup-prompt { width:100%; min-width:0; }
   .setup-actions, .agent-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
   .agent-actions { justify-content:space-between; }
   .working-dots span { animation:working-dot 1.2s infinite; }

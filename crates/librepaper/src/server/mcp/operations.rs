@@ -863,7 +863,10 @@ impl Server {
                         .collect::<String>();
                     let suffix = source[patch.end..].chars().take(64).collect::<String>();
                     Comment {
-                        id: format!("{}-{index}", &pass[..32]),
+                        // Stable per suggestion within the pass, so a retry
+                        // lands on the same annotation, and a UUID because
+                        // the catalog stores nothing else.
+                        id: super::comments::comment_uuid(&format!("{}-{index}", &pass[..32])),
                         motivation: "editing".into(),
                         original_anchor: Some(OriginalAnchor {
                             checkpoint_id: CheckpointId(view.snapshot.source_revision.clone()),

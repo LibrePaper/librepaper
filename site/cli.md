@@ -219,9 +219,26 @@ librepaper local start            # run in a terminal; prints a fallback pairing
 librepaper local stop             # stop the background companion
 librepaper local startup enable   # optional: start when you log in
 librepaper local startup disable
-librepaper local status
+librepaper local status           # exits non-zero when nothing is answering
 librepaper local doctor           # which tools it found, and whether it can confine them
 librepaper local disconnect --all
+```
+
+`start --code` fixes the pairing code instead of rotating it per run, which is
+what `make deploy` uses so that connecting an agent in development does not
+mean reading a fresh code off a terminal after every restart.
+
+```sh
+librepaper local start --code 123456
+```
+
+Which agents this computer offers the document sidebar, and what they can
+reach:
+
+```sh
+librepaper local agent list       # add <id> -- <command> teaches it another
+librepaper local connections      # which documents agents here can reach
+librepaper local connections --remove NAME
 ```
 
 `local start` takes `--code` to fix the pairing code instead of a fresh random

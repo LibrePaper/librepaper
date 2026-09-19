@@ -284,7 +284,7 @@ pub fn normalize_origin(raw: &str) -> String {
     }
 }
 
-fn write_private_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+pub(crate) fn write_private_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -307,7 +307,7 @@ fn write_private_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<(
     Ok(())
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
+pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }

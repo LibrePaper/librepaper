@@ -537,6 +537,13 @@ export async function retry() {
 // -------------------------------------------------------------- connect/disconnect
 
 export async function connect(code) {
+  // A pairing is granted per (origin, project), so pairing before `configure`
+  // named the document would ask for a pairing belonging to nothing. The
+  // local app rejects it as a malformed body, which reads as a mystery three
+  // layers away from the cause; say it here instead.
+  if (typeof current.project !== "string" || !current.project) {
+    throw named("InvalidRequest", "The page has not said which document this pairing is for.");
+  }
   const addr = address();
   const healthResponse = await healthFetch(addr);
   if (healthResponse.ok) {
@@ -1343,5 +1350,67 @@ export async function syncWorkspace({ tree } = {}) {
   const pairing = requirePairing();
   const form = await buildWorkspaceForm(tree);
   const response = await send("PUT", "workspace", { token: pairing.token, formBody: form });
+  return response.json();
+}
+
+/* --------------------------------------------------- Connecting an agent */
+
+/** Which coding agents this computer has, and which documents are already
+ * connected. The browser cannot read a PATH, so this is the only way the
+ * sidebar can offer a real choice instead of setup instructions. */
+export async function agents() {
+  const pairing = requirePairing();
+  const response = await send("GET", "agents", { token: pairing.token });
+  return response.json();
+}
+
+/** Register a document under a readable name on this computer. The protected
+ * link crosses loopback once, here, and afterwards every agent refers to the
+ * document by name: no config file, command line or transcript holds the key.
+ */
+export async function registerConnection({ title = "", link = "", access = "" } = {}) {
+  const pairing = requirePairing();
+  const response = await send("POST", "connections", {
+    token: pairing.token,
+    jsonBody: { title: String(title || ""), link: String(link || ""), access: String(access || "") },
+  });
+  return response.json();
+}
+
+/** Start the sidebar assistant, driving the chosen installed agent. */
+export async function startAssistant({ connection, conversation, chatToken, agent } = {}) {
+  const pairing = requirePairing();
+  const response = await send("POST", "assistant", {
+    token: pairing.token,
+    jsonBody: {
+      connection: String(connection || ""),
+      conversation: String(conversation || ""),
+      chat_token: String(chatToken || ""),
+      agent: String(agent || ""),
+    },
+  });
+  return response.json();
+}
+
+/** Whether the sidebar assistant is attached to this conversation. Not
+ * running is an answer, not an error: it is the ordinary state before the
+ * first start. */
+export async function assistantStatus({ connection, conversation } = {}) {
+  const pairing = requirePairing();
+  const response = await send("POST", "assistant/status", {
+    token: pairing.token,
+    jsonBody: { connection: String(connection || ""), conversation: String(conversation || "") },
+  });
+  return response.json();
+}
+
+/** Detach the sidebar assistant. Document changes already made are not
+ * undone by stopping; only the attachment ends. */
+export async function stopAssistant({ connection, conversation } = {}) {
+  const pairing = requirePairing();
+  const response = await send("POST", "assistant/stop", {
+    token: pairing.token,
+    jsonBody: { connection: String(connection || ""), conversation: String(conversation || "") },
+  });
   return response.json();
 }

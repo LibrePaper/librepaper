@@ -42,6 +42,46 @@ pub(crate) struct Event {
     pub result_ids: Vec<String>,
     #[serde(default)]
     pub status: String,
+    /// Why the document service refused, when it did. The journal used to
+    /// record that a call did not settle and nothing about the reason, so a
+    /// failing assistant could only be diagnosed by reproducing its calls by
+    /// hand. Bounded, and it carries the service's own message, which names
+    /// the argument or the permission at fault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// The service's account of a refusal, bounded for the journal. `None` when
+/// the response carries no error, so a successful call stores nothing.
+pub(crate) fn failure_detail(response: &Value) -> Option<String> {
+    let result = response.get("result");
+    let error = response
+        .get("error")
+        .or_else(|| result.and_then(|r| r.get("error")))
+        // How the document service actually reports a refused tool call: a
+        // successful JSON-RPC response carrying `isError` and the reason in
+        // structured content. Missing this shape meant the journal recorded
+        // nothing at all for the failures that matter most.
+        .or_else(|| {
+            result
+                .and_then(|r| r.get("structuredContent"))
+                .and_then(|content| content.get("error"))
+        })?;
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("refused without a message");
+    // The transport layer numbers its codes; the document service names them
+    // ("permission_changed", "invalid_params"). Either is worth keeping.
+    let detail = match (
+        error.get("code").and_then(Value::as_i64),
+        error.get("code").and_then(Value::as_str),
+    ) {
+        (Some(code), _) => format!("{code}: {message}"),
+        (None, Some(code)) => format!("{code}: {message}"),
+        _ => message.to_string(),
+    };
+    Some(detail.chars().take(400).collect())
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -304,6 +344,22 @@ impl Journal {
         result_ids: Vec<String>,
         status: &str,
     ) -> Result<u64, String> {
+        self.append_detailed(task_id, kind, tool, operation, result_ids, status, None)
+    }
+
+    /// `append` plus the service's account of a refusal. Separate so the
+    /// dozen callers that record ordinary progress stay unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn append_detailed(
+        &mut self,
+        task_id: &str,
+        kind: &str,
+        tool: &str,
+        operation: Option<OperationIdentity>,
+        result_ids: Vec<String>,
+        status: &str,
+        detail: Option<String>,
+    ) -> Result<u64, String> {
         if task_id.len() > 128 || kind.len() > 64 || tool.len() > 128 || status.len() > 64 {
             return Err("runner journal event field exceeds its limit".into());
         }
@@ -329,6 +385,7 @@ impl Journal {
                     .map(|operation| receipt_id(&tool, operation)),
                 result_ids: result_ids.clone(),
                 status: status.clone(),
+                detail: detail.clone(),
             });
             while disk.events.len() > MAX_EVENTS {
                 let unresolved = unresolved_keys(&disk.events);
@@ -529,7 +586,15 @@ pub(crate) fn record_tool_result(
     } else {
         "outcome_unknown"
     };
-    journal.append(task_id, "tool_result", tool, identity, ids.clone(), status)?;
+    journal.append_detailed(
+        task_id,
+        "tool_result",
+        tool,
+        identity,
+        ids.clone(),
+        status,
+        failure_detail(response),
+    )?;
     if tool == "document_result" && response_settled(response) {
         if let Some(target) = target {
             for (original_task, original_tool, pending) in journal.pending_operations() {
@@ -547,27 +612,6 @@ pub(crate) fn record_tool_result(
         }
     }
     Ok(result_id)
-}
-
-/// Validate the model's final suggestion list against receipts observed by
-/// the runner. Explanations may return an empty list; invented IDs cannot.
-pub(crate) fn validate_suggestions(
-    path: &Path,
-    task_id: &str,
-    suggestions: &Value,
-) -> Result<(), String> {
-    let Some(ids) = suggestions.as_array() else {
-        return Err("agent result contains no suggestion list".into());
-    };
-    let journal = Journal::open(path)?;
-    let known = journal.known_result_ids(task_id);
-    if ids
-        .iter()
-        .any(|id| id.as_str().is_none_or(|id| !known.contains(id)))
-    {
-        return Err("agent result contains a suggestion that has no confirmed receipt".into());
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -592,6 +636,7 @@ mod tests {
                     receipt_id: None,
                     result_ids: Vec::new(),
                     status: "working".into(),
+                    detail: None,
                 })
                 .collect(),
         };
@@ -619,8 +664,11 @@ mod tests {
         let response = json!({"result":{"structuredContent":{"status":"committed","effects":[{"kind":"suggestion","id":"s1"}]}}});
         record_tool_call(&path, "task", "document_propose", &request).unwrap();
         record_tool_result(&path, "task", "document_propose", &request, &response).unwrap();
-        assert!(validate_suggestions(&path, "task", &json!(["s1"])).is_ok());
-        assert!(validate_suggestions(&path, "task", &json!(["model-invented"])).is_err());
+        let known = Journal::open(&path).unwrap().known_result_ids("task");
+        assert!(known.contains("s1"));
+        // Only receipted effects are ever reported, so there is no shape in
+        // which a model-invented identifier can reach the sidebar.
+        assert!(!known.contains("model-invented"));
     }
 
     #[test]
@@ -679,7 +727,10 @@ mod tests {
             {"status":"cancelled"}
         ]}});
         record_tool_result(&path, "task", "document_propose", &call, &response).unwrap();
-        assert!(validate_suggestions(&path, "task", &json!(["kept"])).is_ok());
+        assert!(Journal::open(&path)
+            .unwrap()
+            .known_result_ids("task")
+            .contains("kept"));
         assert!(Journal::open(&path)
             .unwrap()
             .pending_operations()
@@ -700,7 +751,10 @@ mod tests {
             {"kind":"suggestion","id":"foreign"}
         ]}});
         record_tool_result(&path, "other", "document_result", &lookup, &response).unwrap();
-        assert!(validate_suggestions(&path, "other", &json!(["foreign"])).is_err());
+        assert!(!Journal::open(&path)
+            .unwrap()
+            .known_result_ids("other")
+            .contains("foreign"));
         assert_eq!(Journal::open(&path).unwrap().pending_operations().len(), 1);
     }
 
@@ -716,5 +770,43 @@ mod tests {
         set_execution_epoch(&first, None).unwrap();
         assert_eq!(execution_epoch(&second).as_deref(), Some("second"));
         assert!(execution_epoch(&first).is_none());
+    }
+    #[test]
+    fn a_refusal_keeps_the_service_reason_it_used_to_discard() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.json");
+        let request = json!({"params":{"arguments":{"operation":{"epoch":"e","id":"i"}}}});
+        record_tool_call(&path, "task", "document_comment", &request).unwrap();
+        // Exactly the shape the document service answers with; the journal
+        // recorded only "outcome_unknown" before, which named nothing.
+        let refusal = json!({"error":{"code":-32602,"message":"missing action"}});
+        record_tool_result(&path, "task", "document_comment", &request, &refusal).unwrap();
+        let journal = Journal::open(&path).unwrap();
+        let last = journal.events().last().expect("a result event");
+        assert_eq!(last.status, "outcome_unknown");
+        assert_eq!(last.detail.as_deref(), Some("-32602: missing action"));
+
+        // A successful call stores no reason, because there is none.
+        let ok = json!({"result":{"structuredContent":{"status":"committed","effects":[]}}});
+        record_tool_result(&path, "task", "document_comment", &request, &ok).unwrap();
+        assert!(Journal::open(&path)
+            .unwrap()
+            .events()
+            .last()
+            .unwrap()
+            .detail
+            .is_none());
+        assert_eq!(failure_detail(&ok), None);
+        // The shape the document service actually uses for a refused call:
+        // a successful response carrying the reason in structured content.
+        let refused_tool = json!({"result":{"isError":true,"structuredContent":{"error":
+            {"code":"invalid_params","message":"document_id must be starter-1 or omitted"}}}});
+        assert_eq!(
+            failure_detail(&refused_tool).as_deref(),
+            Some("invalid_params: document_id must be starter-1 or omitted"),
+        );
+        // Bounded, so a runaway message cannot fill the journal.
+        let long = json!({"error":{"message":"x".repeat(5000)}});
+        assert_eq!(failure_detail(&long).unwrap().len(), 400);
     }
 }

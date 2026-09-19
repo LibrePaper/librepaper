@@ -69,6 +69,24 @@ fn validate_existing_action(
     }
 }
 
+/// The id a newly created annotation gets, for a comment and for a suggestion
+/// alike.
+///
+/// Two requirements meet here. `room::catalog::catalog_comment_row` rejects
+/// anything that is not a UUID, so the old `comment-<hex>` and
+/// `<pass>-<index>` forms could never be stored: every annotation an agent
+/// created was refused with "annotation id must be a UUID". And a retry of the
+/// same operation must produce the same annotation rather than a second one,
+/// so the UUID is derived from a stable seed instead of generated fresh.
+pub(super) fn comment_uuid(request_id: &str) -> String {
+    let digest = Sha256::digest(request_id.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_random_bytes(bytes)
+        .into_uuid()
+        .to_string()
+}
+
 impl Server {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn mcp_comment(
@@ -235,10 +253,7 @@ impl Server {
                     ),
                     target: CommentTarget::Document,
                 });
-                let id = format!(
-                    "comment-{}",
-                    &hex::encode(Sha256::digest(request_id.as_bytes()))[..32]
-                );
+                let id = comment_uuid(&request_id);
                 upserts.push(Comment {
                     id: id.clone(),
                     motivation: "comment".into(),
@@ -433,5 +448,33 @@ mod tests {
         let error = validate_existing_action("delete", "", None, "", None, "", false)
             .expect_err("missing id must not panic");
         assert_eq!(error.code, "invalid_params");
+    }
+    /// The catalog stores a comment only if its id parses as a UUID, and the
+    /// old `comment-<hex>` form never could: every comment an agent created
+    /// was refused with "annotation id must be a UUID", which reached the
+    /// model as a vague permission failure.
+    #[test]
+    fn a_created_comment_gets_an_id_the_catalog_will_accept() {
+        let id = comment_uuid("operation-request-1");
+        assert!(
+            uuid::Uuid::parse_str(&id).is_ok(),
+            "the catalog rejects anything that is not a UUID, got {id}"
+        );
+        // A retry of the same operation must land on the same comment rather
+        // than creating a second one.
+        assert_eq!(id, comment_uuid("operation-request-1"));
+        assert_ne!(id, comment_uuid("operation-request-2"));
+
+        // The suggestion path in `operations.rs` mints its annotation ids
+        // through the same helper, seeded per suggestion within a pass. It
+        // had its own non-UUID form and its own silent rejection.
+        let first = comment_uuid("0123456789abcdef0123456789abcdef-0");
+        let second = comment_uuid("0123456789abcdef0123456789abcdef-1");
+        assert!(uuid::Uuid::parse_str(&first).is_ok());
+        assert!(uuid::Uuid::parse_str(&second).is_ok());
+        assert_ne!(
+            first, second,
+            "each suggestion in a pass is its own annotation"
+        );
     }
 }
