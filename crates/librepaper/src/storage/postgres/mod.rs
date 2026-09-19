@@ -61,6 +61,16 @@ impl Default for StoragePolicy {
     }
 }
 
+impl StoragePolicy {
+    fn compaction_count_threshold(self) -> i64 {
+        self.max_uncompacted_updates.clamp(1, 100)
+    }
+
+    fn compaction_byte_threshold(self) -> i64 {
+        (self.max_uncompacted_bytes.min(128 * 1024 * 1024) / 2).clamp(1, 16 * 1024 * 1024)
+    }
+}
+
 impl PostgresOptions {
     pub fn new(url: impl Into<String>) -> Self {
         Self {
@@ -574,7 +584,7 @@ mod tests {
         // write through this path, so the precondition is set up plainly.
         assert_eq!(
             catalog
-                .append_update(first.id, b"first", b"")
+                .append_update(first.id, b"first", b"", 5)
                 .await
                 .unwrap(),
             1
@@ -588,7 +598,7 @@ mod tests {
             },
         };
         assert!(matches!(
-            limited.append_update(first.id, b"over-cap", b"").await,
+            limited.append_update(first.id, b"over-cap", b"", 8).await,
             Err(Error::Conflict(message)) if message.contains("requires compaction")
         ));
         let durable = sqlx::query!(
@@ -614,7 +624,7 @@ mod tests {
             },
         };
         assert!(matches!(
-            byte_limited.append_update(first.id, b"over-byte-cap", b"").await,
+            byte_limited.append_update(first.id, b"over-byte-cap", b"", 13).await,
             Err(Error::Conflict(message)) if message.contains("requires compaction")
         ));
 
@@ -849,7 +859,7 @@ mod tests {
 
         let collaboration = CollaborationStorage::new(Arc::new(catalog.clone()), blobs.clone());
         let sequence = collaboration
-            .append(first.id, b"update-one", b"at-one")
+            .append(first.id, b"update-one", b"at-one", 10)
             .await
             .unwrap();
         assert_eq!(sequence, 2);
@@ -858,7 +868,7 @@ mod tests {
         assert_eq!(before.updates[1].update_bytes, b"update-one");
         let (base, second_sequence) = tokio::join!(
             collaboration.compact(first.id, sequence, 0, b"base-state"),
-            collaboration.append(first.id, b"update-two", b"at-two")
+            collaboration.append(first.id, b"update-two", b"at-two", 20)
         );
         assert!(base.unwrap().is_some());
         assert_eq!(second_sequence.unwrap(), 3);
@@ -1528,7 +1538,7 @@ mod tests {
         let last_anchor = b"frontier-3".to_vec();
         for (body, frontier) in writes {
             catalog
-                .append_update(document.id, body, frontier)
+                .append_update(document.id, body, frontier, body.len() as i64)
                 .await
                 .unwrap();
         }

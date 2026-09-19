@@ -212,8 +212,13 @@ impl PostgresCatalog {
         resolved_by: String,
         document_id: Uuid,
         update_bytes: &[u8],
+        frontier: &[u8],
+        state_bytes: i64,
     ) -> Result<i64> {
-        if update_bytes.is_empty() || update_bytes.len() > 4 * 1024 * 1024 {
+        if update_bytes.is_empty()
+            || update_bytes.len() > crate::config::DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES
+            || state_bytes < 0
+        {
             return Err(Error::Invalid("CRDT update size is outside limits".into()));
         }
         let mut tx = self.pool.begin().await?;
@@ -230,13 +235,23 @@ impl PostgresCatalog {
                  uncompacted_update_count=uncompacted_update_count+1,
                  uncompacted_update_bytes=uncompacted_update_bytes+octet_length($2::bytea),
                  updated_at=now()
-               WHERE id=$1 AND status='active' RETURNING id,update_sequence
+               WHERE id=$1 AND status='active' RETURNING id,update_sequence,
+                 uncompacted_update_count,uncompacted_update_bytes
              ), inserted AS (
-               INSERT INTO document_updates(document_id,update_sequence,update_bytes)
-               SELECT id,update_sequence,$2 FROM advanced RETURNING update_sequence
+               INSERT INTO document_updates(document_id,update_sequence,update_bytes,frontier,state_bytes)
+               SELECT id,update_sequence,$2,$5,$6 FROM advanced RETURNING update_sequence
              ), resolved AS (
                UPDATE document_proposals SET status='resolved',resolved_by=$3,resolved_at=now()
                WHERE id=$4 RETURNING id
+             ), scheduled AS (
+               INSERT INTO jobs(id,kind,document_id,scope_key,dedupe_key,payload,priority,max_attempts,run_after,status)
+               SELECT $7,'source_compaction',id,'document:' || id::text,
+                 'through:' || update_sequence::text,
+                 jsonb_build_object('through_update_sequence',update_sequence),0,5,now(),'queued'
+               FROM advanced
+               WHERE (uncompacted_update_count >= $8 OR uncompacted_update_bytes >= $9)
+                 AND NOT EXISTS (SELECT 1 FROM jobs WHERE kind='source_compaction'
+                   AND document_id=$1 AND status IN ('queued','running'))
              )
              SELECT update_sequence FROM inserted"#,
         )
@@ -244,6 +259,11 @@ impl PostgresCatalog {
         .bind(update_bytes)
         .bind(resolved_by)
         .bind(id)
+        .bind(frontier)
+        .bind(state_bytes)
+        .bind(super::new_id())
+        .bind(self.policy.compaction_count_threshold())
+        .bind(self.policy.compaction_byte_threshold())
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(Error::NotFound)?;
@@ -386,7 +406,7 @@ mod tests {
         );
 
         let sequence = catalog
-            .resolve_with_update(id, "Bob".into(), document.id, b"an update")
+            .resolve_with_update(id, "Bob".into(), document.id, b"an update", b"frontier", 9)
             .await
             .unwrap();
         assert!(sequence >= 1, "resolving appends to the update log");

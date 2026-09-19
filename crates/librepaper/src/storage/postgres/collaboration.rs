@@ -29,10 +29,7 @@ pub struct CollaborationBase {
 
 /// When a document was worked on, one bucket of time at a time.
 ///
-/// `changes` counts persistence cycles in the bucket: the room writes the
-/// document's whole encoded history every couple of seconds while somebody is
-/// typing, so this is "how much of this minute was spent editing", not how
-/// many keystrokes landed.
+/// `changes` counts persistence cycles in the bucket, not keystrokes.
 ///
 /// `state_bytes` is the largest of those encoded histories, which measures the
 /// document rather than the edit. The work done in a bucket is the difference
@@ -60,6 +57,13 @@ pub struct CollaborationState {
 }
 
 impl PostgresCatalog {
+    pub async fn compacted_after(&self, document_id: Uuid, after: i64) -> Result<bool> {
+        Ok(sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM document_bases WHERE document_id=$1 AND through_update_sequence>$2)",
+            document_id, after
+        ).fetch_one(&self.pool).await?.unwrap_or(false))
+    }
+
     pub(super) async fn lock_collaboration_capacity(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -101,8 +105,12 @@ impl PostgresCatalog {
         document_id: Uuid,
         bytes: &[u8],
         frontier: &[u8],
+        state_bytes: i64,
     ) -> Result<i64> {
-        if bytes.is_empty() || bytes.len() > 4 * 1024 * 1024 {
+        if bytes.is_empty()
+            || bytes.len() > crate::config::DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES
+            || state_bytes < 0
+        {
             return Err(Error::Invalid("CRDT update size is outside limits".into()));
         }
         let mut tx = self.pool.begin().await?;
@@ -114,15 +122,29 @@ impl PostgresCatalog {
                  uncompacted_update_count=uncompacted_update_count+1,
                  uncompacted_update_bytes=uncompacted_update_bytes+octet_length($2::bytea),
                  updated_at=now()
-               WHERE id=$1 AND status='active' RETURNING id,update_sequence
+               WHERE id=$1 AND status='active' RETURNING id,update_sequence,
+                 uncompacted_update_count,uncompacted_update_bytes
              ), inserted AS (
-               INSERT INTO document_updates(document_id,update_sequence,update_bytes,frontier)
-               SELECT id,update_sequence,$2,$3 FROM advanced RETURNING update_sequence
+               INSERT INTO document_updates(document_id,update_sequence,update_bytes,frontier,state_bytes)
+               SELECT id,update_sequence,$2,$3,$4 FROM advanced RETURNING update_sequence
+             ), scheduled AS (
+               INSERT INTO jobs(id,kind,document_id,scope_key,dedupe_key,payload,priority,max_attempts,run_after,status)
+               SELECT $5,'source_compaction',id,'document:' || id::text,
+                 'through:' || update_sequence::text,
+                 jsonb_build_object('through_update_sequence', update_sequence),0,5,now(),'queued'
+               FROM advanced
+               WHERE (uncompacted_update_count >= $6 OR uncompacted_update_bytes >= $7)
+                 AND NOT EXISTS (SELECT 1 FROM jobs WHERE kind='source_compaction'
+                   AND document_id=$1 AND status IN ('queued','running'))
              )
              SELECT update_sequence AS "update_sequence!" FROM inserted"#,
             document_id,
             bytes,
             frontier,
+            state_bytes,
+            new_id(),
+            self.policy.compaction_count_threshold(),
+            self.policy.compaction_byte_threshold(),
         )
         .fetch_optional(&mut *tx)
         .await?
@@ -223,7 +245,7 @@ impl PostgresCatalog {
                  FROM document_activity WHERE document_id=$1
                  UNION ALL
                  SELECT date_trunc('minute',created_at) AS bucket,'' AS peer,
-                        1::bigint AS changes,octet_length(update_bytes)::bigint AS state_bytes,
+                        1::bigint AS changes,COALESCE(state_bytes,octet_length(update_bytes)::bigint) AS state_bytes,
                         frontier,update_sequence AS ordinal
                  FROM document_updates WHERE document_id=$1
                ) counted
@@ -239,6 +261,9 @@ impl PostgresCatalog {
 
     pub async fn collaboration_state(&self, document_id: Uuid) -> Result<CollaborationState> {
         let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(&mut *tx)
+            .await?;
         let document = sqlx::query!(
             "SELECT update_sequence,project_generation,uncompacted_update_bytes
              FROM documents WHERE id=$1",
@@ -363,7 +388,7 @@ impl PostgresCatalog {
                    SELECT document_id,update_sequence,frontier,
                           date_trunc('minute',created_at) AS bucket,
                           count(*) OVER (PARTITION BY date_trunc('minute',created_at))::int AS changes,
-                          max(octet_length(update_bytes))
+                          max(COALESCE(state_bytes,octet_length(update_bytes)::bigint))
                             OVER (PARTITION BY date_trunc('minute',created_at))::bigint AS state_bytes
                    FROM document_updates WHERE document_id=$1 AND update_sequence <= $2
                  ) measured

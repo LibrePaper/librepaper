@@ -652,15 +652,32 @@ impl super::Room {
             reviewer,
         )?;
 
-        catalog
-            .resolve_with_update(uuid, by.to_string(), document, &update)
+        let frontier = candidate.state_frontiers().encode();
+        let state_bytes = session::encode_state(&candidate).len() as i64;
+        let previous_sequence = self.state.lock().await.session.durable_sequence;
+
+        let durable_sequence = catalog
+            .resolve_with_update(
+                uuid,
+                by.to_string(),
+                document,
+                &update,
+                &frontier,
+                state_bytes,
+            )
             .await
             .map_err(|error| ProposalError::Failed(error.to_string()))?;
 
         // Durable, so the room may have it.
         {
-            let state = self.state.lock().await;
+            let mut state = self.state.lock().await;
             session::apply_update(&state.session.doc, &update).map_err(ProposalError::Failed)?;
+            let metadata = LoroDoc::decode_import_blob_meta(&update, true)
+                .map_err(|error| ProposalError::Failed(error.to_string()))?;
+            state.session.durable_vector.merge(&metadata.partial_end_vv);
+            if durable_sequence == previous_sequence + 1 {
+                state.session.durable_sequence = durable_sequence;
+            }
         }
         Ok(Some(update))
     }

@@ -100,6 +100,14 @@ impl Worker {
             .job
             .document_id
             .ok_or("compaction job has no document")?;
+        if self
+            .catalog
+            .compacted_after(id, payload.through_update_sequence - 1)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(());
+        }
         let storage = CollaborationStorage::new(self.catalog.clone(), self.blobs.clone());
         let recovered = storage.recover(id).await.map_err(|e| e.to_string())?;
         if recovered.update_sequence < payload.through_update_sequence {

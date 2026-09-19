@@ -76,9 +76,10 @@ impl CollaborationStorage {
         document_id: Uuid,
         update: &[u8],
         frontier: &[u8],
+        state_bytes: i64,
     ) -> Result<i64, Error> {
         self.catalog
-            .append_update(document_id, update, frontier)
+            .append_update(document_id, update, frontier, state_bytes)
             .await
             .map_err(Error::from)
     }

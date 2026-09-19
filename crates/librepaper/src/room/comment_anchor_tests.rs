@@ -273,21 +273,32 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
     let id = response["comment"]["id"].as_str().unwrap().to_string();
     let anchor_before = response["comment"]["original_anchor"].clone();
     let started_at = anchor_before["target"]["start_utf16"].as_u64().unwrap();
+    let (editor_tx, _editor_rx) = tokio::sync::mpsc::channel(8);
+    room.attach(999, editor_tx, true).await;
 
     // Somebody writes a paragraph above it. Nothing about the comment has
     // changed; everything about where it sits has.
-    {
+    let update = {
         let state = room.state.lock().await;
+        let edited = state.session.doc.fork();
+        let vector = session::encode_vector(&edited);
         session::put_text(
-            &state.session.doc,
+            &edited,
             "paper.md",
             &format!(
                 "# Interval estimates\n\nA new opening paragraph.\n{}",
                 &PAPER[21..]
             ),
         );
-    }
-    room.reattach_comments().await;
+        session::encode_diff(&edited, &vector).unwrap()
+    };
+    assert!(matches!(
+        room.receive_update(999, &update, 1, "Owner").await,
+        Applied::Relay
+    ));
+    assert!(room.state.lock().await.pending_attachments.contains(&id));
+    room.persist().await.unwrap();
+    assert!(room.state.lock().await.pending_attachments.is_empty());
 
     let comment = room.agent_comment(&id).await.expect("comment");
     assert_eq!(
@@ -302,6 +313,23 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
         u64::from(start) > started_at,
         "the passage moved down the file: {start} is not after {started_at}",
     );
+    let document = deployment
+        .catalog
+        .document_by_slug(&deployment.slug)
+        .await
+        .unwrap()
+        .unwrap();
+    let stored = deployment
+        .catalog
+        .annotations(document.id, None, None, 10)
+        .await
+        .unwrap();
+    let persisted = crate::storage::postgres::attachment_from_record(&stored[0])
+        .unwrap()
+        .unwrap()
+        .resolved_range_utf16
+        .unwrap();
+    assert_eq!(persisted.0, start);
     deployment.catalog.close().await;
 }
 

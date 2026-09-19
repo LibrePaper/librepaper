@@ -92,6 +92,164 @@ async fn versions(catalog: &PostgresCatalog, document: uuid::Uuid) -> Vec<String
     rows.iter().map(|row| row.reason.clone()).collect()
 }
 
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn incremental_saves_recover_history_and_skip_unchanged_checkpoints() {
+    let deployment = deployment("incremental-paper").await.unwrap();
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let large = (0..300)
+        .map(|n| format!("Line {n}: text for the recovery test.\n"))
+        .collect::<String>();
+    {
+        let mut state = room.state.lock().await;
+        session::put_text(&state.session.doc, "paper.tex", &large);
+        state.session.generation += 1;
+        state.session.mark_dirty(now_unix());
+    }
+    room.persist().await.unwrap();
+    {
+        let mut state = room.state.lock().await;
+        session::put_text(
+            &state.session.doc,
+            "references.bib",
+            "@book{new,title={New}}\n",
+        );
+        state.session.generation += 1;
+        state.session.mark_dirty(now_unix());
+    }
+    room.persist().await.unwrap();
+    let updates = deployment
+        .catalog
+        .updates_after(deployment.document, 0, 100)
+        .await
+        .unwrap();
+    assert_eq!(updates.len(), 2);
+    assert!(updates[1].update_bytes.len() * 10 < updates[0].update_bytes.len());
+    let recovered = session::new_doc();
+    for update in &updates {
+        session::apply_update(&recovered, &update.update_bytes).unwrap();
+    }
+    assert_eq!(
+        session::texts_of(&recovered),
+        session::texts_of(&room.state.lock().await.session.doc)
+    );
+    room.checkpoint("label", "Owner").await.unwrap();
+    room.checkpoint("label", "Owner").await.unwrap();
+    assert_eq!(
+        deployment
+            .catalog
+            .updates_after(deployment.document, 0, 100)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    let buckets = deployment
+        .catalog
+        .document_activity(deployment.document, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        buckets.iter().map(|b| b.state_bytes).max().unwrap(),
+        session::encode_state(&recovered).len() as i64
+    );
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn compacted_remote_edits_do_not_mark_local_edits_durable() {
+    let deployment = deployment("compacted-paper").await.unwrap();
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    room.checkpoint("label", "Owner").await.unwrap();
+    let remote = session::new_doc();
+    session::apply_update(
+        &remote,
+        &session::encode_state(&room.state.lock().await.session.doc),
+    )
+    .unwrap();
+    let before = session::encode_vector(&remote);
+    session::put_text(&remote, "remote.tex", "remote work");
+    let update = session::encode_diff(&remote, &before).unwrap();
+    let storage = crate::storage::collaboration::CollaborationStorage::new(
+        deployment.catalog.clone(),
+        room.blobs.clone(),
+    );
+    let through = storage
+        .append(
+            deployment.document,
+            &update,
+            &remote.state_frontiers().encode(),
+            session::encode_state(&remote).len() as i64,
+        )
+        .await
+        .unwrap();
+    storage
+        .compact(
+            deployment.document,
+            through,
+            0,
+            &session::encode_state(&remote),
+        )
+        .await
+        .unwrap();
+    {
+        let mut state = room.state.lock().await;
+        session::put_text(&state.session.doc, "local.tex", "unsaved local work");
+        state.session.generation += 1;
+        state.session.mark_dirty(now_unix());
+    }
+    room.persist().await.unwrap();
+    let recovered = storage.recover(deployment.document).await.unwrap();
+    let doc = session::new_doc();
+    session::apply_update(&doc, &recovered.base.unwrap()).unwrap();
+    assert_eq!(recovered.updates.len(), 1);
+    session::apply_update(&doc, &recovered.updates[0].update_bytes).unwrap();
+    let texts = session::texts_of(&doc);
+    assert_eq!(texts["remote.tex"], "remote work");
+    assert_eq!(texts["local.tex"], "unsaved local work");
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn autosave_waits_thirty_seconds_but_continuous_typing_cannot_defer_it() {
+    let deployment = deployment("cadence-paper").await.unwrap();
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    {
+        let mut state = room.state.lock().await;
+        session::put_text(&state.session.doc, "paper.tex", "updated");
+        state.session.generation += 1;
+        state.session.mark_dirty(now_unix() - 20);
+        state.session.updated_at = now_unix() - 20;
+        state.session.last_persist_at = now_unix() - 20;
+    }
+    room.tick().await;
+    assert!(deployment
+        .catalog
+        .updates_after(deployment.document, 0, 100)
+        .await
+        .unwrap()
+        .is_empty());
+    {
+        let mut state = room.state.lock().await;
+        state.session.dirty_since = now_unix() - 31;
+        state.session.updated_at = now_unix();
+        state.session.last_persist_at = now_unix() - 31;
+    }
+    room.tick().await;
+    assert_eq!(
+        deployment
+            .catalog
+            .updates_after(deployment.document, 0, 100)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    deployment.catalog.close().await;
+}
+
 /// A reader opens the tutorial, reads it, and closes the tab. The sweeper
 /// runs while the room is resident. Nothing was written, so the history
 /// must be exactly what it was: no version, and no archive behind it.

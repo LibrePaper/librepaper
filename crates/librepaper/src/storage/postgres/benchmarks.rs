@@ -97,7 +97,7 @@ async fn catalog_v3_release_benchmark() {
                     async move {
                         let started = Instant::now();
                         storage
-                            .append(document.id, b"benchmark-update", b"")
+                            .append(document.id, b"benchmark-update", b"", 16)
                             .await
                             .expect("append");
                         micros(started)

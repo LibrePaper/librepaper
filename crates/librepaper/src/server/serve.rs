@@ -520,12 +520,12 @@ pub async fn serve(options: ServeOptions) {
         tokio::spawn(worker.run());
         let maintenance_catalog = catalog;
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
             ticker.tick().await;
             loop {
                 ticker.tick().await;
                 let now = time::OffsetDateTime::now_utc();
-                let generation = now.unix_timestamp() / 30;
+                let generation = now.unix_timestamp() / 3600;
                 let job = crate::storage::postgres::NewJob {
                     kind: "maintenance".into(),
                     document_id: None,

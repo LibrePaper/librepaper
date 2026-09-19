@@ -67,6 +67,8 @@ pub use error::{FenceReason, FigureLimit, WriteError};
 use resident::Measured;
 use text::*;
 
+const AUTOSAVE_SECONDS: i64 = 30;
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -220,6 +222,9 @@ pub struct Session {
     pub doc: LoroDoc,
     /// Highest PostgreSQL collaboration sequence merged into this room.
     pub durable_sequence: i64,
+    /// Only operations known to have reached storage. Local edits must never
+    /// advance this vector until their append commits.
+    durable_vector: loro::VersionVector,
     /// Whether the document has changed since `sessions/<slug>` was written.
     pub dirty: bool,
     /// Start of the current dirty interval. It is deliberately not refreshed
@@ -258,6 +263,17 @@ pub struct Session {
 }
 
 impl Session {
+    fn merge_durable(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let metadata = LoroDoc::decode_import_blob_meta(bytes, true).map_err(|e| e.to_string())?;
+        let before = self.doc.oplog_vv();
+        session::apply_update(&self.doc, bytes).map_err(|e| e.to_string())?;
+        self.durable_vector.merge(&metadata.partial_end_vv);
+        if self.doc.oplog_vv() != before {
+            self.generation += 1;
+        }
+        Ok(())
+    }
+
     fn mark_dirty(&mut self, at: i64) {
         if !self.dirty {
             self.dirty_since = at;
@@ -298,6 +314,7 @@ pub struct RoomState {
     /// reading them is unchanged, and any mutable borrow drops the cached
     /// measurement. See `resident::Measured`.
     pub comments: Measured<Vec<Comment>>,
+    pending_attachments: std::collections::HashSet<String>,
     pub sockets: HashMap<u64, Peer>,
     /// "address:hour" to count.
     pub rate: HashMap<String, i64>,
@@ -678,11 +695,13 @@ impl RoomSet {
             state: Mutex::new(RoomState {
                 seq: 0,
                 comments: Measured::new(Vec::new()),
+                pending_attachments: Default::default(),
                 sockets: HashMap::new(),
                 rate: HashMap::new(),
                 session: Session {
                     doc: session::new_doc(),
                     durable_sequence: 0,
+                    durable_vector: Default::default(),
                     dirty: false,
                     dirty_since: 0,
                     last_persist_at: 0,
@@ -1099,6 +1118,7 @@ impl Room {
             applied |= session::apply_update(&candidate, &update.update_bytes).is_ok();
         }
         if applied {
+            state.session.durable_vector = candidate.oplog_vv();
             state.session.doc = candidate;
             state.session.generation = recovered.update_sequence as u64;
             state.session.durable_sequence = recovered.update_sequence;
@@ -1139,7 +1159,7 @@ impl Room {
             hydrate_project(&state.session.doc, &project.archive, false);
             state.session.dirty = false;
         }
-        state.session.last_persist_at = now_unix().saturating_sub(15);
+        state.session.last_persist_at = now_unix();
         drop(state);
         self.load_asset_sizes().await;
     }
@@ -1607,6 +1627,9 @@ impl Room {
         // it. Worked out here, once, against the document this update just
         // produced -- not by each reader against whatever it can see.
         let moved = comments::reattach(&mut state);
+        state
+            .pending_attachments
+            .extend(moved.iter().map(|(id, _)| id.clone()));
         if !moved.is_empty() {
             // One message for the whole pass, not one per comment: a character
             // typed above a comment moves every comment below it, and a
@@ -1626,21 +1649,6 @@ impl Room {
                 peer.may_edit
             });
         }
-        drop(state);
-        if !moved.is_empty() {
-            if let Some(catalog) = self.catalog.as_ref().get() {
-                let rows: Vec<_> = moved
-                    .into_iter()
-                    .filter_map(|(id, attachment)| {
-                        Some((uuid::Uuid::parse_str(&id).ok()?, attachment))
-                    })
-                    .collect();
-                // A cache nobody could write is a cache that gets worked out
-                // again next time. The edit itself is already applied and is
-                // not put at risk for it.
-                let _ = catalog.record_attachments(&rows).await;
-            }
-        }
         Applied::Relay
     }
 
@@ -1648,10 +1656,40 @@ impl Room {
     /// tells the sockets their updates are durable. Relaying an update is not
     /// an acknowledgment: nothing here says "saved" until storage has said so.
     pub async fn persist(&self) -> Result<bool, WriteError> {
-        if self.write_session(true, true).await?.is_none() {
-            return Ok(false);
+        let saved = self.write_session(true, true).await?.is_some();
+        self.flush_attachments().await;
+        Ok(saved)
+    }
+
+    async fn flush_attachments(&self) {
+        let _comments = self.comment_write.lock().await;
+        let (pending, rows) = {
+            let mut state = self.state.lock().await;
+            let pending = std::mem::take(&mut state.pending_attachments);
+            let rows: Vec<_> = state
+                .comments
+                .iter()
+                .filter(|comment| pending.contains(&comment.id))
+                .filter_map(|comment| {
+                    Some((
+                        uuid::Uuid::parse_str(&comment.id).ok()?,
+                        comment.attachment.clone()?,
+                    ))
+                })
+                .collect();
+            (pending, rows)
+        };
+        let Some(catalog) = self.catalog.get() else {
+            self.state.lock().await.pending_attachments.extend(pending);
+            return;
+        };
+        if let Err(error) = catalog.record_attachments(&rows).await {
+            self.state.lock().await.pending_attachments.extend(pending);
+            eprintln!(
+                "warning: could not persist comment positions for {}: {error}",
+                self.slug
+            );
         }
-        Ok(true)
     }
 
     /// Snapshot under the write gate: checkpoints and timer saves cannot write
@@ -1689,56 +1727,60 @@ impl Room {
             .ok_or_else(|| WriteError::Storage("PostgreSQL catalog required".into()))?;
         let document_id = uuid::Uuid::parse_str(&self.storage_id)
             .map_err(|_| WriteError::Storage("room has an invalid document id".into()))?;
-        let (body, frontier, generation, durable) = {
+        let (body, size, vector, frontier, generation, durable) = {
             let mut state = self.state.lock().await;
-            let body = session::encode_state(&state.session.doc);
+            let size = session::encode_state(&state.session.doc).len();
+            let vector = state.session.doc.oplog_vv();
+            let body = if vector == state.session.durable_vector {
+                None
+            } else {
+                Some(
+                    session::encode_diff(
+                        &state.session.doc,
+                        &state.session.durable_vector.encode(),
+                    )
+                    .map_err(WriteError::Storage)?,
+                )
+            };
             // Read under the same lock as the body: a frontier taken after it
             // would name a version the persisted bytes do not contain.
             let frontier = state.session.doc.state_frontiers().encode();
             let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-            if body.len() > ceiling {
+            if size > ceiling {
                 self.fence(FenceReason::Oversized);
                 return Err(WriteError::Size(crate::config::SizeRefusal::Encoded {
-                    bytes: body.len(),
+                    bytes: size,
                     ceiling,
                 }));
             }
             let generation = state.session.generation;
-            state.session.note_encoded_len(generation, body.len());
+            state.session.note_encoded_len(generation, size);
             let durable: Vec<(u64, i64)> = state
                 .sockets
                 .iter()
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
-            (body, frontier, generation, durable)
+            (body, size as i64, vector, frontier, generation, durable)
         };
-        let size = body.len() as i64;
         let collaboration = crate::storage::collaboration::CollaborationStorage::new(
             catalog.clone(),
             self.blobs.clone(),
         );
-        let durable_sequence = collaboration
-            .append(document_id, &body, &frontier)
-            .await
-            .map_err(|error| WriteError::Storage(error.to_string()))?;
-        if durable_sequence % 100 == 0 {
-            catalog
-                .enqueue_job(crate::storage::postgres::NewJob {
-                    kind: "source_compaction".into(),
-                    document_id: Some(document_id),
-                    account_id: None,
-                    scope_key: format!("document:{document_id}"),
-                    dedupe_key: Some(format!("through:{durable_sequence}")),
-                    payload: serde_json::json!({"through_update_sequence":durable_sequence}),
-                    priority: 0,
-                    max_attempts: 5,
-                    run_after: time::OffsetDateTime::now_utc(),
-                })
+        let previous_sequence = self.state.lock().await.session.durable_sequence;
+        let durable_sequence = match body {
+            Some(body) => collaboration
+                .append(document_id, &body, &frontier, size)
                 .await
-                .map_err(|e| WriteError::Storage(e.to_string()))?;
-        }
+                .map_err(|error| WriteError::Storage(error.to_string()))?,
+            None => self.state.lock().await.session.durable_sequence,
+        };
         let mut state = self.state.lock().await;
-        state.session.durable_sequence = state.session.durable_sequence.max(durable_sequence);
+        state.session.durable_vector = vector;
+        // Another writer may have appended between our read and commit. Do
+        // not skip its row when this room next merges durable operations.
+        if durable_sequence == previous_sequence + 1 {
+            state.session.durable_sequence = durable_sequence;
+        }
         if state.session.generation == generation {
             // The durable update sequence and logical edit generation are independent:
             // persisting a document must not make an older checkpoint cover it.
@@ -1778,14 +1820,41 @@ impl Room {
                 .updates_after(document_id, after, 256)
                 .await
                 .map_err(|e| e.to_string())?;
+            let gap = updates
+                .first()
+                .is_some_and(|update| update.update_sequence > after + 1);
+            if gap
+                || (updates.is_empty()
+                    && catalog
+                        .compacted_after(document_id, after)
+                        .await
+                        .map_err(|e| e.to_string())?)
+            {
+                let storage = crate::storage::collaboration::CollaborationStorage::new(
+                    catalog.clone(),
+                    self.blobs.clone(),
+                );
+                let recovered = storage
+                    .recover(document_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut state = self.state.lock().await;
+                if let Some(base) = recovered.base {
+                    state.session.merge_durable(&base)?;
+                }
+                for update in recovered.updates {
+                    state.session.merge_durable(&update.update_bytes)?;
+                }
+                state.session.durable_sequence = recovered.update_sequence;
+                continue;
+            }
             if updates.is_empty() {
                 return Ok(());
             }
             let full = updates.len() == 256;
             let mut state = self.state.lock().await;
             for update in updates {
-                session::apply_update(&state.session.doc, &update.update_bytes)
-                    .map_err(|e| e.to_string())?;
+                state.session.merge_durable(&update.update_bytes)?;
                 state.session.durable_sequence =
                     state.session.durable_sequence.max(update.update_sequence);
             }
@@ -1818,15 +1887,15 @@ impl Room {
             )
         };
         let floor_elapsed = if last_persist_at > 0 {
-            now >= last_persist_at.saturating_add(15)
+            now >= last_persist_at.saturating_add(AUTOSAVE_SECONDS)
         } else {
-            dirty_for >= 15
+            dirty_for >= AUTOSAVE_SECONDS
         };
         let quiet = quiet_for >= limits.write_after_seconds.max(0);
         // Quiet periods may request an early save only after collaboration storage's
         // flush floor. Continuous typing still reaches the dirty-age deadline;
         // it must not reset that deadline or force a write on every brief pause.
-        let flush_due = floor_elapsed && (quiet || dirty_for >= 15);
+        let flush_due = floor_elapsed && (quiet || dirty_for >= AUTOSAVE_SECONDS);
         if dirty && flush_due {
             if let Err(err) = self.persist().await {
                 eprintln!(
@@ -1835,6 +1904,9 @@ impl Room {
                 );
                 return false;
             }
+        }
+        if flush_due && !dirty {
+            self.flush_attachments().await;
         }
         sockets == 0 && !dirty
     }
