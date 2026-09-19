@@ -214,16 +214,6 @@ async fn a_remark_about_the_whole_document_needs_no_passage() {
     assert_eq!(response["type"], "comment", "{response}");
     assert_eq!(response["comment"]["original_anchor"]["kind"], "document");
     assert!(response["comment"]["original_anchor"]["target"].is_null());
-    // It quotes nothing because there was nothing to quote, which is not the
-    // same as a passage being kept back: a reader's card should read it as the
-    // general remark it is.
-    let public = room.snapshot_for("", false).await;
-    let value = serde_json::to_value(&public[0]).unwrap();
-    assert_eq!(
-        value["passage_withheld"],
-        serde_json::Value::Null,
-        "a remark about the document withholds no passage: {value}",
-    );
     deployment.catalog.close().await;
 }
 
@@ -451,12 +441,6 @@ async fn an_editing_comment_reaches_the_other_editor_live() {
     assert_eq!(
         relayed[0]["comment"]["presentation"]["rendered_exact"],
         "interval covers the mean",
-    );
-    assert_eq!(
-        public[0]["comment"]["passage_withheld"],
-        serde_json::json!(true),
-        "and the reader is told this is a passage rather than the document: {}",
-        public[0],
     );
     // The editor peer's view of the same comment is the project's own.
     assert!(

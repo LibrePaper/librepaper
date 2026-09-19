@@ -188,16 +188,6 @@ impl BindingStore {
         Ok(binding)
     }
 
-    pub fn revoke(&self, id: &str) -> bool {
-        let mut file = self.load();
-        let old = file.bindings.len();
-        file.bindings.retain(|binding| binding.id != id);
-        if old == file.bindings.len() {
-            return false;
-        }
-        self.save(&file).is_ok()
-    }
-
     pub fn revoke_scoped(&self, id: &str, origin: &str, project: &str) -> bool {
         let origin = super::pairing::normalize_origin(origin);
         let mut file = self.load();

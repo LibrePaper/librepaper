@@ -73,6 +73,21 @@ assert.equal(await fetchNeeds(needs, fetched, options), false, "nothing new arri
 assert.equal(fetches.length, before, "and nothing is fetched again, not even the index for a family the library lacks");
 console.log("needs: fetching packages and fonts into the map passed");
 
+{
+  const previousFetch = globalThis.fetch;
+  let failures = 0;
+  globalThis.fetch = async () => { failures += 1; return body(new Uint8Array(), false); };
+  try {
+    const missing = { fonts: ["missing"] };
+    const missingOptions = { fontsIndex: "https://missing.example/fonts.json" };
+    await fetchNeeds(missing, new Map(), missingOptions);
+    await fetchNeeds(missing, new Map(), missingOptions);
+    assert.equal(failures, 1, "a failed font index is held through the retry backoff");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+}
+
 // A mocked module: `needs` says the package is missing until the map holds
 // it, and the loop compiles, fetches, and compiles again.
 function fakeModule(script) {

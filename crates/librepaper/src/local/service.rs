@@ -996,7 +996,7 @@ async fn handle_agents_list(inner: &Inner, headers: &HeaderMap, origin: Option<&
         .collect();
     write_json(
         200,
-        &json!({"agents": super::agents::detect(&inner.state_home), "connections": connections}),
+        &json!({"agents": super::acp_agents::detect(&inner.state_home), "connections": connections}),
     )
 }
 

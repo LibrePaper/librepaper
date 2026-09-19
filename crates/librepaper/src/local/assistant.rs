@@ -30,7 +30,7 @@ pub(super) async fn handle_assistant_start(
     // An agent that cannot be driven is reported as such rather than silently
     // replaced by a different one. Which model runs is the user's choice, and
     // substituting it quietly would be the opposite of bringing your own.
-    let Some(command) = super::agents::acp_command(&inner.state_home, &body.agent) else {
+    let Some(command) = super::acp_agents::acp_command(&inner.state_home, &body.agent) else {
         return write_json(
             409,
             &json!({"error": "that agent cannot be driven from the sidebar on this computer"}),

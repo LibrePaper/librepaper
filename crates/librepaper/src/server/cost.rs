@@ -621,23 +621,7 @@ pub(super) async fn middleware(
             .exact()
             .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(ceiling);
-        // A gzip bundle object can be tiny on the wire yet expand to a
-        // 16 MiB HTML document or a 64 MiB asset. `stage_object` retains both
-        // the encoded request body and its decoded buffer, so reserve that
-        // bounded decoded peak before accepting the body.
-        let compressed_bundle_object = matches!(method, Method::PUT)
-            && path.starts_with("/api/documents/")
-            && path.contains("/bundle/objects/")
-            && request
-                .headers()
-                .get(header::CONTENT_ENCODING)
-                .and_then(|value| value.to_str().ok())
-                == Some("gzip");
-        let reservation = if compressed_bundle_object {
-            length.saturating_add(crate::server::bundle::MAX_ASSET_BYTES)
-        } else {
-            length.saturating_mul(4)
-        };
+        let reservation = length.saturating_mul(4);
         match u32::try_from(reservation).ok().and_then(|n| {
             server
                 .cost
@@ -731,29 +715,23 @@ pub(super) async fn middleware(
             None,
         );
     }
-    let bundle_object_upload = matches!(method, Method::PUT)
-        && path.starts_with("/api/documents/")
-        && path.contains("/bundle/objects/");
-    let permit = if matches!(class, 1..=3)
-        || bundle_object_upload
-        || path.starts_with("/wasm/")
-        || path.starts_with("/assets/")
-    {
-        match server.cost.transfers.clone().try_acquire_owned() {
-            Ok(permit) => Some(permit),
-            Err(_) => {
-                return metered(
-                    server.cost.clone(),
-                    refusal("transfer_concurrency", "deployment"),
-                    class,
-                    true,
-                    None,
-                )
+    let permit =
+        if matches!(class, 1..=3) || path.starts_with("/wasm/") || path.starts_with("/assets/") {
+            match server.cost.transfers.clone().try_acquire_owned() {
+                Ok(permit) => Some(permit),
+                Err(_) => {
+                    return metered(
+                        server.cost.clone(),
+                        refusal("transfer_concurrency", "deployment"),
+                        class,
+                        true,
+                        None,
+                    )
+                }
             }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
     request.extensions_mut().insert(RequestContext {
         arrival,
         peer,

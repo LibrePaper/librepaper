@@ -110,6 +110,8 @@
   let verifiedCapabilities = $state(null);
   const previewResponses = new Map();
   const previewInFlight = new Set();
+  const previewArrivals = new Set();
+  let previewConversation = "";
   const selectedText = $derived(attachment?.selection?.exact || "");
   const caps = $derived(normalizeCapabilities(verifiedCapabilities));
   const contextPath = $derived(diagnostic?.file || diagnostic?.path || path);
@@ -453,9 +455,19 @@
   $effect(() => requestArrived(request));
   $effect(() => {
     const preview = connection.previewRequest;
+    if (connection.id !== previewConversation) {
+      previewConversation = connection.id || "";
+      previewResponses.clear();
+      previewInFlight.clear();
+      previewArrivals.clear();
+    }
     if (!preview?.id || !onpreview || !client) return;
+    const arrival = `${connection.id || ""}:${preview._arrival || preview.id}`;
+    if (previewArrivals.has(arrival)) return;
+    previewArrivals.add(arrival);
     const cached = previewResponses.get(preview.id);
-    const sendResult = (result) => client.previewResult({
+    const conversation = connection.id;
+    const sendResult = (result) => client.current.id === conversation && client.previewResult({
       ...result,
       id: `${preview.id}-result`, request_id: preview.id,
       task_id: preview.task_id,
@@ -811,7 +823,7 @@
   .agent-panel :global(.agent-tab-content .chat-form) { flex-shrink:0; }
   .agent-setup, .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
   .agent-setup p { margin:0; }
-  .agent-setup h3, .agent-setup h4 { margin:0; }
+  .agent-setup h3 { margin:0; }
   .setup-intro { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
   .setup-title { font-weight:600; }
   .setup-requirement { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);

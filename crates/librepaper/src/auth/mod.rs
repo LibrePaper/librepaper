@@ -207,16 +207,15 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// Parse the deployment's publishing policy.  Anonymous publishing was a
-    /// legacy policy spelling and is rejected at configuration boundaries;
-    /// commenting continues to use `parse` because public comments remain a
-    /// supported read-side operation.
+    /// Parse the deployment's publishing policy. Publishing always needs a
+    /// signed-in account, so the anonymous spellings `parse` accepts for
+    /// commenters are refused here.
     pub fn parse_publishers(value: &str) -> Result<Policy, String> {
         if value.trim().eq_ignore_ascii_case("anyone")
             || value.trim().eq_ignore_ascii_case("public")
         {
             return Err(
-                "--publishers anyone was removed; use --publishers any for any authenticated account"
+                "--publishers must name signed-in accounts: 'any' for any authenticated account, or a list"
                     .into(),
             );
         }

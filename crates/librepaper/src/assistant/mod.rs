@@ -5,7 +5,6 @@ pub(crate) mod context;
 pub(crate) mod guidance;
 pub(crate) mod journal;
 pub(crate) mod lifecycle;
-pub(crate) mod preview;
 pub(crate) mod protocol;
 pub(crate) mod runtime;
 pub(crate) mod task;

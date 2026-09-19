@@ -36,6 +36,24 @@ quartoPdf.dispose();
 
 const readerSource = await readFile(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
 const previewSource = await readFile(new URL("../../src/lib/reader/preview-render.js", import.meta.url), "utf8");
+const viteSource = await readFile(new URL("../../vite.config.js", import.meta.url), "utf8");
+const offlineSource = await readFile(new URL("../../src/lib/offline-projects.js", import.meta.url), "utf8");
+const editorSource = await readFile(new URL("../../src/components/Editor.svelte", import.meta.url), "utf8");
+// Reader links receive renderer capability before their early prepare return,
+// and bind LaTeX to a stable owner across source refreshes.
+assert.match(readerSource, /renderers\.offerLatex\([\s\S]*?if \(!mayEdit\) \{/);
+assert.match(readerSource, /configureLatex\(sourceFormat, readerProjectOwner\)/);
+// The source identity stamped on a finished page is the one captured when
+// that render began, never a refreshed project's live identity.
+assert.match(previewSource, /const capturedProjectDigest = start\.projectDigest \|\| ""/);
+assert.match(previewSource, /onRendered\(identity, capturedProjectDigest\)/);
+assert.match(readerSource, /const renderedProjectCurrent = \$derived/);
+assert.match(readerSource, /shownVerbs = \$derived\(pending && renderedProjectCurrent/);
+assert.match(readerSource, /current page is still rendering/);
+assert.match(viteSource, /let watchingBuild = false;[\s\S]*?configResolved\(config\) \{ watchingBuild = Boolean\(config\.build\.watch\); \}[\s\S]*?if \(watchingBuild\)/);
+assert.match(offlineSource, /request\.onblocked = \(\) => \{[\s\S]*?blocked = true;[\s\S]*?reject\(/);
+assert.match(offlineSource, /pendingFlush\.catch\(\(\) => \{\}\)\.finally/);
+assert.match(editorSource, /states = new WeakMap\(\);\s*undoManagers\.clear\(\)/);
 assert.match(readerSource, /\["markdown", "quarto"\]\.includes\(displayedFormat\) && buildPreferences\.output === "pdf"[\s\S]*?\? "pdf"/);
 assert.match(readerSource, /const frameLoaded = \(\) => \{[\s\S]*?framePreview\.markReady\(\)[\s\S]*?replayPreview\(\)/);
 assert.match(readerSource, /<Preview[\s\S]*?onload=\{frameLoaded\}/);
@@ -99,8 +117,7 @@ assert.doesNotMatch(viewerSource, /parent\.postMessage\([\s\S]*?"\*"\)/);
 const agentSource = await readFile(new URL("../../src/agent/agent.js", import.meta.url), "utf8");
 assert.match(agentSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*?height: auto;/);
 
-// An empty main file is not a document to compile. pdfTeX answers an empty
-// `.tex` with "! Emergency stop." and "==> Fatal error occurred, no output PDF
-// file produced!", which is what a reader was shown while a project's state
-// was still arriving.
-assert.match(previewSource, /if \(!String\(source\.texts\?\.\[source\.main\] \?\? ""\)\.trim\(\)\) return;/);
+// A known empty main file is distinct from the pre-hydration placeholder: it
+// clears the old payload/export and paints an explicit empty state.
+assert.match(previewSource, /if \(!String\(source\.texts\?\.\[source\.main\] \?\? ""\)\.trim\(\)\) \{/);
+assert.match(previewSource, /framePreview\.clear\?\.\(\);[\s\S]*?onEmpty\(\);/);

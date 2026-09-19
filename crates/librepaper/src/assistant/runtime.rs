@@ -7,7 +7,7 @@ use super::task::{terminal, AdmissionResult, State, Task};
 use super::transport::{Event, Transport};
 use crate::automation::peer::{chat_token, validate_conversation, AutomationPeer};
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -385,9 +385,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
         config.token.clone(),
         binding_nonce,
     );
-    let preview_dir = lease.location.directory.join("preview");
-    std::fs::create_dir_all(&preview_dir).map_err(|e| e.to_string())?;
-    let mut previews = HashMap::<String, (PathBuf, Value)>::new();
     let mut active: Option<Active> = None;
     let mut connected = false;
     let mut relay_connected = false;
@@ -521,24 +518,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                 }
                 let (status,id)=if let Some(current)=&active { (state.task(&current.id).map(|task|task.status.as_str()).unwrap_or("working"),Some(current.id.as_str())) } else if relay_connected { ("ready",None) } else { ("connecting",None) };
                 lease.write_status(status,id,None)?;
-                previews.retain(|_,(path,_)| path.exists());
-                if connected {
-                    for entry in std::fs::read_dir(&preview_dir).map_err(|e|e.to_string())? {
-                        let path=entry.map_err(|e|e.to_string())?.path();
-                        let name=path.file_name().and_then(|name|name.to_str()).unwrap_or("");
-                        if !name.ends_with(".request.json") || previews.values().any(|(pending,_)|pending==&path) { continue; }
-                        if !path.metadata().is_ok_and(|metadata|metadata.is_file()&&metadata.len()<=64*1024) {continue;}
-                        let Ok(raw)=std::fs::read(&path) else {continue;};
-                        let Ok(request)=serde_json::from_slice::<Value>(&raw) else {continue;};
-                        let Some(id)=request["id"].as_str() else {continue;};
-                        if id.is_empty() || id.len()>128 || !id.bytes().all(|c|c.is_ascii_alphanumeric()||matches!(c,b'-'|b'_')) || name!=format!("{id}.request.json") {continue;}
-                        let id=id.to_string();
-                        if !active.as_ref().is_some_and(|task|request["task_id"]==task.id) { continue; }
-                        if previews.len()>=8 { break; }
-                        emit(&transport,request.clone()).await?;
-                        previews.insert(id,(path,request));
-                    }
-                }
             }
             _=tokio::signal::ctrl_c()=> {
                 if stopping.is_none() {
@@ -553,7 +532,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         if browser {
                             runner_journal::set_execution_epoch(&epoch_path, execution_epoch.as_deref())?;
                             reconcile(&transport,&mut state).await?;
-                            for (_,request) in previews.values() { emit(&transport,request.clone()).await?; }
                         } else {
                             runner_journal::set_execution_epoch(&epoch_path, None)?;
                         }
@@ -626,20 +604,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                         }
                                     }
                                 }
-                            }
-                            "preview_result"=> {
-                                let request_id=value["request_id"].as_str().unwrap_or("");
-                                if let Some((path,request))=previews.get(request_id) {
-                                    if value["task_id"]==request["task_id"] && value["revision"]==request["revision"] && value["base_revision"]==request["base_revision"] {
-                                        let result_path=path.with_file_name(format!("{request_id}.result.json"));
-                                        let tmp=result_path.with_extension("tmp");std::fs::write(&tmp,value.to_string()).map_err(|e|e.to_string())?;std::fs::rename(tmp,result_path).map_err(|e|e.to_string())?;
-                                        let _ = std::fs::remove_file(path);
-                                        previews.remove(request_id);
-                                    }
-                                }
-                            }
-                            "error"=> {
-                                if let Some(id)=value["id"].as_str() {if let Some((path,request))=previews.remove(id){let result=json!({"request_id":id,"task_id":request["task_id"],"revision":request["revision"],"base_revision":request["base_revision"],"ok":false,"diagnostics":[{"severity":"error","message":value["message"]}]});std::fs::write(path.with_file_name(format!("{id}.result.json")),result.to_string()).map_err(|e|e.to_string())?;let _=std::fs::remove_file(path);}}
                             }
                             _=>{}
                         }

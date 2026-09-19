@@ -26,6 +26,12 @@ const SAME_DECISION_WITHIN = 8;
 // This mirrors hunks.rs:runs() exactly.
 function hunkRanges(deltas) {
   const ranges = [];
+  const changesAfter = new Array(deltas.length).fill(false);
+  let laterChange = false;
+  for (let at = deltas.length - 1; at >= 0; at--) {
+    changesAfter[at] = laterChange;
+    if (deltas[at].retain === undefined) laterChange = true;
+  }
   let i = 0;
   while (i < deltas.length) {
     // Skip leading retains; they don't start a run.
@@ -40,7 +46,7 @@ function hunkRanges(deltas) {
         // Look ahead to decide if this retain bridges changes together.
         // A retain at the very end of the deltas is trailing context and does
         // not bridge, so check whether anything after it is non-retain.
-        const hasMoreChanges = deltas.slice(i + 1).some((d) => d.retain === undefined);
+        const hasMoreChanges = changesAfter[i];
         const bridges = delta.retain <= SAME_DECISION_WITHIN && hasMoreChanges;
         if (!bridges) {
           break;
@@ -101,6 +107,9 @@ function hunkify(deltas, oldText = "") {
       start: cursor,
       deleted,
       inserted,
+      before: oldText.slice(cursor, cursor + deleted),
+      prefix: oldText.slice(Math.max(0, cursor - 24), cursor),
+      suffix: oldText.slice(cursor + deleted, cursor + deleted + 24),
       // Filled in by the caller, which is the only place that knows which
       // container this delta run came from.
       file: /** @type {string | null} */ (null),

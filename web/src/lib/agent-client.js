@@ -89,6 +89,8 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   let reconnectTimer;
   let reconnectAttempt = 0;
   let manuallyClosed = false;
+  let generation = 0;
+  let previewArrival = 0;
   const sessionStorageKey = storageKey(origin, slug);
   const persisted = readSession(storage, sessionStorageKey);
   const requests = new Set();
@@ -109,6 +111,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   };
   id = view.id;
   token = view.token;
+  let saveQueued = false;
 
   function save() {
     if (!id || !token) return;
@@ -117,10 +120,17 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       tasks: Object.fromEntries(Object.entries(view.tasks).slice(-MAX_TASKS)),
       deliveries: [...deliveries.values()].slice(-MAX_TASKS) });
   }
+  function saveSoon() {
+    if (saveQueued) return;
+    saveQueued = true;
+    queueMicrotask(() => { saveQueued = false; save(); });
+  }
   function publish(patch) {
     if (disposed) return;
     view = { ...view, ...patch };
-    save();
+    // Socket presence/status is transient. Only transcript/task/session
+    // changes rewrite the bounded durable record, coalesced per microtask.
+    if (["id", "token", "messages", "tasks"].some((key) => Object.prototype.hasOwnProperty.call(patch, key))) saveSoon();
     onChange(view);
   }
   function rejectSends(message) {
@@ -398,7 +408,10 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       }
       return;
     }
-    if (frame.type === "preview_request") { publish({ previewRequest: frame }); return; }
+    if (frame.type === "preview_request") {
+      publish({ previewRequest: { ...frame, _arrival: ++previewArrival } });
+      return;
+    }
     if (frame.type === "preview_result") { updateTask(frame.task_id, { preview: frame }); publish({ previewResult: frame }); return; }
     if (frame.type === "ack" && sends.has(frame.id)) {
       const pending = sends.get(frame.id); clearTimeout(pending.timeout); pending.resolve(frame); sends.delete(frame.id);
@@ -439,12 +452,18 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   }
   function connect() {
     if (!id || !token || disposed || !WebSocketImpl) return;
-    if (socket && socket.readyState === WebSocketImpl.OPEN) return;
+    if (socket && (socket.readyState === WebSocketImpl.OPEN || socket.readyState === WebSocketImpl.CONNECTING)) return;
+    const owner = generation;
     const current = new WebSocketImpl(socketUrl(origin, slug, id, documentKey(link)));
     let joined = false;
     socket = current;
-    current.onopen = () => { reconnectAttempt = 0; current.send(JSON.stringify({ type: "join", token, role: "user" })); };
+    current.onopen = () => {
+      if (disposed || generation !== owner || socket !== current) return;
+      reconnectAttempt = 0;
+      current.send(JSON.stringify({ type: "join", token, role: "user" }));
+    };
     current.onmessage = (event) => {
+      if (disposed || generation !== owner || socket !== current) return;
       let frame; try { frame = JSON.parse(event.data); } catch { return; }
       if (frame.type === "ready" || frame.type === "presence") joined = true;
       if (frame.type === "error" && frame.status === 409 && !joined) {
@@ -457,26 +476,37 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       frameReceived(frame, current);
     };
     current.onclose = () => {
-      if (socket !== current) return;
+      if (disposed || generation !== owner || socket !== current) return;
+      socket = undefined;
       rejectSends("The assistant connection closed before the message was accepted.");
       if (manuallyClosed) return;
       markDeliveriesUncertain("The connection closed before the runner confirmed the task.");
       publish({ connected: false, runnerConnected: false, status: "reconnecting" }); scheduleReconnect();
     };
-    current.onerror = () => current.close();
+    current.onerror = () => {
+      if (disposed || generation !== owner || socket !== current) return;
+      current.close();
+    };
   }
   async function create() {
     // Closing a replaced socket is intentional; prevent its close callback
     // from scheduling a reconnect for the old channel.
     manuallyClosed = true;
     clearTimeout(reconnectTimer); reconnectTimer = undefined;
-    if (socket) socket.close();
+    generation++;
+    const previous = socket;
+    socket = undefined;
+    if (previous) {
+      previous.onopen = previous.onmessage = previous.onerror = previous.onclose = null;
+      previous.close();
+    }
     deliveries.clear();
     manuallyClosed = false;
     const result = await request("POST", "/chat", {}, false);
     if (!result.id || !result.token) throw new Error("The server returned an invalid assistant channel.");
     id = result.id; token = result.token;
-    publish({ id, token, messages: [], tasks: {}, connected: false, runnerConnected: false, status: "connecting", error: "" });
+    previewArrival = 0;
+    publish({ id, token, messages: [], tasks: {}, previewRequest: null, connected: false, runnerConnected: false, status: "connecting", error: "" });
     connect();
     return result;
   }
@@ -539,12 +569,18 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     }
   }
   async function end() {
-    manuallyClosed = true; clearTimeout(reconnectTimer); reconnectTimer = undefined;
+    manuallyClosed = true; generation++; clearTimeout(reconnectTimer); reconnectTimer = undefined;
     const oldId = id;
-    if (socket) socket.close(); socket = undefined; rejectSends("The assistant channel was closed.");
+    if (socket) {
+      const previous = socket; socket = undefined;
+      previous.onopen = previous.onmessage = previous.onerror = previous.onclose = null;
+      previous.close();
+    }
+    rejectSends("The assistant channel was closed.");
     if (oldId && token) { try { await request("DELETE", `/chat/${encodeURIComponent(oldId)}`); } catch (error) { if (error.status !== 404) throw error; } }
     deliveries.clear(); removeSession(storage, sessionStorageKey); id = ""; token = "";
-    publish({ id: "", token: "", messages: [], tasks: {}, connected: false, runnerConnected: false, status: "idle", error: "" });
+    previewArrival = 0;
+    publish({ id: "", token: "", messages: [], tasks: {}, previewRequest: null, connected: false, runnerConnected: false, status: "idle", error: "" });
   }
   return {
     get current() { return view; }, setLink(next) { link = next || ""; },
@@ -553,6 +589,16 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     capabilities: async (nextLink = link) => request("GET", "/assistant/capabilities", undefined, false, nextLink),
     fetchCandidate,
     reconnect() { manuallyClosed = false; reconnectAttempt = 0; connect(); return Promise.resolve(view); },
-    dispose() { disposed = true; manuallyClosed = true; clearTimeout(reconnectTimer); if (socket) socket.close(); rejectSends("The assistant panel was closed."); for (const controller of requests) controller.abort(); },
+    dispose() {
+      if (saveQueued) { saveQueued = false; save(); }
+      disposed = true; manuallyClosed = true; generation++; clearTimeout(reconnectTimer);
+      if (socket) {
+        const previous = socket; socket = undefined;
+        previous.onopen = previous.onmessage = previous.onerror = previous.onclose = null;
+        previous.close();
+      }
+      rejectSends("The assistant panel was closed.");
+      for (const controller of requests) controller.abort();
+    },
   };
 }

@@ -13,11 +13,10 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 
 use crate::cli::state_home;
-use crate::cli::{LocalArgs, LocalCommand, LocalPresetCommand, LocalQuartoCommand, StartupCommand};
+use crate::cli::{LocalArgs, LocalCommand, LocalPresetCommand, StartupCommand};
 use crate::local::pairing::{generate_code, PairingStore, ServiceState};
 use crate::local::presets::{Operation, OptionType, Preset, PresetStore, WorkspaceMode};
 use crate::local::protocol::{self, DEFAULT_PORT};
-use crate::local::quarto::BindingStore;
 use crate::local::service::{LocalService, NativeRunner, Runner};
 use crate::util::die;
 
@@ -27,11 +26,10 @@ pub async fn run(args: LocalArgs) {
             port,
             code,
             tex_path,
-        } => start(port, true, code, tex_path).await,
+        } => start(port, code, tex_path).await,
         LocalCommand::Launch { port } => launch(port).await,
         LocalCommand::Manage => open("librepaper://manage").await,
         LocalCommand::Stop => stop().await,
-        LocalCommand::Restart { port } => restart(port).await,
         LocalCommand::Open { url } => open(&url).await,
         LocalCommand::Startup { command } => startup(command),
         LocalCommand::Status => status().await,
@@ -39,23 +37,7 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Agent { command } => local_agent(command),
         LocalCommand::Doctor { tex_path } => doctor(tex_path).await,
         LocalCommand::Disconnect { origin, all } => disconnect(origin, all),
-        LocalCommand::Rescan { tex_path } => rescan(tex_path).await,
         LocalCommand::Preset { command } => run_preset(command),
-        LocalCommand::Quarto {
-            command:
-                LocalQuartoCommand::Bind {
-                    origin,
-                    project,
-                    root,
-                    main,
-                },
-        } => bind_quarto(&origin, &project, &root, &main),
-        LocalCommand::Quarto {
-            command: LocalQuartoCommand::Unbind { binding },
-        } => unbind_quarto(&binding),
-        LocalCommand::Quarto {
-            command: LocalQuartoCommand::List { origin, project },
-        } => list_quarto_bindings(&origin, &project),
     }
 }
 
@@ -202,43 +184,6 @@ fn options_from_schema(values: &[String]) -> BTreeMap<String, OptionType> {
         .collect()
 }
 
-/// Grant the local app permission to execute one Quarto project. The caller
-/// should print only the opaque binding id; `ProjectBinding::root` is local
-/// state and must never be sent to a browser.
-pub fn bind_quarto(origin: &str, project: &str, root: &str, main: &str) {
-    let store = BindingStore::new(&state_home());
-    match store.grant(origin, project, std::path::Path::new(root), main) {
-        Ok(binding) => println!("quarto binding: {}", binding.id),
-        Err(error) => die(error),
-    }
-}
-
-pub fn unbind_quarto(binding: &str) {
-    let store = BindingStore::new(&state_home());
-    if store.revoke(binding) {
-        println!("revoked quarto binding {binding}");
-    } else {
-        die("quarto binding not found");
-    }
-}
-
-pub fn list_quarto_bindings(origin: &str, project: &str) {
-    let store = BindingStore::new(&state_home());
-    let bindings = store.list_scoped(origin, project);
-    if bindings.is_empty() {
-        println!("no quarto bindings");
-        return;
-    }
-    for binding in bindings {
-        println!(
-            "{}\t{}\t{}",
-            binding.id,
-            binding.entrypoint,
-            binding.root.display()
-        );
-    }
-}
-
 /// The cache-home base directory a job workspace lives under:
 /// `<cache_home>/librepaper/local/jobs/<id>/`, never under a project directory
 /// and never under the state home the tokens live in. Read here, not in
@@ -258,17 +203,7 @@ fn cache_home() -> PathBuf {
     }
 }
 
-async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<PathBuf>) {
-    if !foreground {
-        if let Err(error) =
-            crate::local::lifecycle::spawn_background(port, code.as_deref(), &tex_path).await
-        {
-            die(error);
-        }
-        println!("librepaper local companion started in the background");
-        return;
-    }
-
+async fn start(port: u16, code: Option<String>, tex_path: Vec<PathBuf>) {
     let state_home = state_home();
     let pairing = PairingStore::new(&state_home, code.clone());
     let port = if port == 0 { DEFAULT_PORT } else { port };
@@ -317,8 +252,9 @@ async fn start(port: u16, foreground: bool, code: Option<String>, tex_path: Vec<
 
     // Every document renders in a workspace of its own under the cache,
     // written from the files the browser sends with each job: nothing has
-    // to be bound by hand. A `quarto bind` grant still wins for a project
-    // that keeps data the document does not share.
+    // to be bound by hand. A project folder chosen in the browser's local
+    // app settings still wins for a project that keeps data the document
+    // does not share.
     let workspaces = cache_home()
         .join("librepaper")
         .join("local")
@@ -401,20 +337,6 @@ async fn launch(port: u16) {
         Ok(state) => println!("librepaper local companion ready on port {}", state.port),
         Err(error) => die(error),
     }
-}
-
-async fn restart(port: u16) {
-    let home = state_home();
-    let previous = PairingStore::new(&home, None).read_service();
-    let port = if port == 0 {
-        previous.map_or(DEFAULT_PORT, |state| state.port)
-    } else {
-        port
-    };
-    if let Err(error) = crate::local::lifecycle::stop(&home).await {
-        die(error);
-    }
-    launch(port).await;
 }
 
 async fn open(url: &str) {
@@ -510,7 +432,7 @@ fn print_pairings(pairing: &PairingStore) {
 /// guessing at a package name that may never have existed.
 fn local_agent(command: crate::cli::LocalAgentCommand) {
     use crate::cli::LocalAgentCommand;
-    let store = crate::local::agents::CustomStore::new(&state_home());
+    let store = crate::local::acp_agents::CustomStore::new(&state_home());
     match command {
         LocalAgentCommand::Add {
             id,
@@ -643,35 +565,5 @@ fn disconnect(origin: Option<String>, all: bool) {
         println!("nothing to revoke");
     } else {
         println!("revoked {removed} pairing(s)");
-    }
-}
-
-async fn rescan(tex_path: Vec<PathBuf>) {
-    // This refreshes the on-disk cache `discovery.rs` keeps under
-    // `<state_home>/librepaper/local/tools.json`, which a running service
-    // picks up on its own next capability check since it consults the same
-    // cache file. A future version could additionally ping a running
-    // service's `capabilities/rescan` route so the change is visible sooner
-    // than that service's next request, but the cache file is the shared
-    // source of truth either way.
-    let capabilities = crate::local::discovery::discover(true, &tex_path).await;
-    let found = [
-        ("calepin", capabilities.calepin.available),
-        ("quarto", capabilities.quarto.tool.available),
-    ]
-    .into_iter()
-    .chain(
-        capabilities
-            .builders
-            .iter()
-            .map(|builder| (builder.id.as_str(), builder.available)),
-    )
-    .filter(|(_, available)| *available)
-    .map(|(name, _)| name)
-    .collect::<Vec<_>>();
-    if found.is_empty() {
-        println!("rescanned: no native tools found");
-    } else {
-        println!("rescanned: found {}", found.join(", "));
     }
 }

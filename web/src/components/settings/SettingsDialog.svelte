@@ -33,7 +33,6 @@
     userId = "anonymous",
     onbuildpreferences,
     // The Quarto project and the local app it renders on.
-    bindingId = "",
     main = "",
     onbindingid,
     options,
@@ -95,7 +94,7 @@
         {:else if shown.id === "rendering"}
           <RenderingSettings {options} {onapplyoptions} />
         {:else if shown.id === "local"}
-          <LocalAppSettings {main} {sourceFormat} {bindingId} {onbindingid} />
+          <LocalAppSettings {main} {sourceFormat} {onbindingid} />
         {:else if shown.id === "account"}
           <AccountSettings {account} />
         {/if}

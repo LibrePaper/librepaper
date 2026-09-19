@@ -25,7 +25,7 @@ const DIST = resolve(import.meta.dirname, "..", "dist");
 const ROOTS = ["assets", "fonts"];
 // Compressing a file that is already compressed -- a woff2, a png -- spends
 // build time to make it marginally larger. These are the ones that shrink.
-const WANTED = /\.(js|mjs|css|svg|json|map|txt|ico)$/;
+const WANTED = /\.(js|mjs|css|svg|json|map|txt|ico|wasm)$/;
 // Below about a kilobyte the header costs more than the saving, and the
 // server would rather serve the original than look for a copy that is no
 // smaller.

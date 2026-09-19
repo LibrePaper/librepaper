@@ -203,11 +203,6 @@
   {:else}
     <div class="flex flex-col gap-2">
       <Row gap={1} wrap>
-        {#if comment.earlierBundle}
-          <span class="badge preset-tonal-warning">Earlier published version</span>
-        {:else if comment.fromDraft}
-          <span class="badge preset-tonal-warning">Written on the draft</span>
-        {/if}
         {#if comment.orphaned}
           <span class="badge preset-tonal-warning">
             {comment.attachment?.diagnostic === "removed_file" ? "Source file removed"

@@ -10,93 +10,11 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
 use crate::config::{parse_budget_transfer, Configuration};
-use crate::http::{detail_of, get_as, get_json, get_with_token, post_json, text, Credentials};
+use crate::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use crate::storage::StorageFlags;
 use crate::util::{die, new_id};
 
-/// Removed deployment settings must fail loudly even when they arrive through
-/// the process environment. Clap can reject removed arguments, but it cannot
-/// distinguish an explicitly set legacy environment variable from an absent
-/// one, so this check runs before parsing any command.
-fn reject_removed_settings() {
-    let removed = [
-        (
-            "LIBREPAPER_MAX_ASSETS",
-            "use --document-assets-limit / LIBREPAPER_BUDGET_DOCUMENT_ASSETS instead",
-        ),
-        (
-            "LIBREPAPER_LATEX",
-            "use --latex-mirror / LIBREPAPER_LATEX_MIRROR instead",
-        ),
-        (
-            "LIBREPAPER_FONTS",
-            "use --typst-fonts / LIBREPAPER_TYPST_FONTS instead",
-        ),
-        (
-            "LIBREPAPER_BIBER_VM",
-            "use Biber WASM from the configured LaTeX mirror instead",
-        ),
-        // Versions are no longer scheduled or pruned, so there is no interval
-        // to tune and no cap to set. Neither has a replacement: the thing
-        // they configured is gone rather than renamed, so the message says
-        // what happens now instead of naming a flag that does the same job.
-        (
-            "LIBREPAPER_HISTORY",
-            "there is no cap: every version is kept until the document is deleted",
-        ),
-        (
-            "LIBREPAPER_CHECKPOINT",
-            "there is no interval: a version is written when somebody asks for one, never on a timer",
-        ),
-    ];
-    for (name, replacement) in removed {
-        if std::env::var_os(name).is_some() {
-            die(format!("{name} was removed; {replacement}"));
-        }
-    }
-    for argument in std::env::args_os().skip(1) {
-        let Some(argument) = argument.to_str() else {
-            continue;
-        };
-        let (name, replacement) = if argument == "--latex" || argument.starts_with("--latex=") {
-            ("--latex", "use --latex-mirror instead")
-        } else if argument == "--fonts" || argument.starts_with("--fonts=") {
-            ("--fonts", "use --typst-fonts instead")
-        } else if argument == "--max-assets" || argument.starts_with("--max-assets=") {
-            ("--max-assets", "use --document-assets-limit instead")
-        } else if argument == "--biber-vm" || argument.starts_with("--biber-vm=") {
-            (
-                "--biber-vm",
-                "use Biber WASM from the configured LaTeX mirror instead",
-            )
-        } else if argument == "--history-limit" || argument.starts_with("--history-limit=") {
-            (
-                "--history-limit",
-                "there is no cap: every version is kept until the document is deleted",
-            )
-        } else if argument == "--history-checkpoint-minutes"
-            || argument.starts_with("--history-checkpoint-minutes=")
-        {
-            (
-                "--history-checkpoint-minutes",
-                "there is no interval: a version is written when somebody asks for one, never on a timer",
-            )
-        } else {
-            continue;
-        };
-        die(format!("{name} was removed; {replacement}"));
-    }
-}
-
-fn parse_publishers(value: &str) -> Result<String, String> {
-    if value.trim().eq_ignore_ascii_case("anyone") {
-        return Err(
-            "--publishers anyone was removed; use --publishers any for any authenticated account"
-                .into(),
-        );
-    }
-    Ok(value.to_string())
-}
+mod agent;
 
 mod documents;
 pub mod export;
@@ -151,7 +69,7 @@ pub(crate) struct ServiceFlags {
     #[arg(long, env = "LIBREPAPER_GOOGLE_CLIENT_ID", value_name = "ID")]
     google_client_id: Option<String>,
     /// Who may publish: a GitHub login, a comma-separated list, or 'any'
-    #[arg(long, env = "LIBREPAPER_PUBLISHERS", value_name = "WHO", value_parser = parse_publishers)]
+    #[arg(long, env = "LIBREPAPER_PUBLISHERS", value_name = "WHO")]
     publishers: Option<String>,
     /// Who may comment: 'anyone' (default), 'any' signed-in account, or a list of accounts
     #[arg(long, env = "LIBREPAPER_COMMENTERS", value_name = "WHO")]
@@ -534,23 +452,21 @@ pub(crate) enum Command {
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        /// Export comments (the default when no mode is supplied)
-        #[arg(long, conflicts_with = "project")]
-        comments: bool,
-        /// Export all project source files and owned binary assets
-        #[arg(long, conflicts_with = "comments")]
+        /// Export every project source file and owned binary asset instead
+        /// of the comments
+        #[arg(long)]
         project: bool,
     },
-    /// The local compilation service: run native TeX on this machine for
-    /// the browser editor when its own compiler cannot
+    /// The local app: run native tools on this machine for the jobs the
+    /// browser editor cannot do itself
     Local {
         #[command(subcommand)]
         command: LocalCommand,
     },
-    /// Run the MCP adapter or manage the local assistant runner.
+    /// Serve the document MCP tools to an agent on this computer
     Agent {
         #[command(subcommand)]
-        command: crate::automation::peer::AgentCommand,
+        command: agent::AgentCommand,
     },
 }
 
@@ -583,16 +499,7 @@ pub(crate) enum AdminCommand {
         #[command(flatten)]
         storage: StorageFlags,
     },
-    /// Print the operator status surface from the local server.
-    Status {
-        #[command(flatten)]
-        storage: StorageFlags,
-        #[arg(long, value_name = "URL")]
-        endpoint: Option<String>,
-        #[arg(long, default_value_t = 8080, value_name = "PORT")]
-        port: u16,
-    },
-    /// Replace local or remote data with the example documents
+    /// Replace the contents of a data directory with the example documents
     Seed {
         #[command(flatten)]
         storage: StorageFlags,
@@ -653,11 +560,6 @@ pub enum LocalCommand {
         #[command(subcommand)]
         command: LocalPresetCommand,
     },
-    /// Manage local Quarto execution permissions.
-    Quarto {
-        #[command(subcommand)]
-        command: LocalQuartoCommand,
-    },
     /// Start the loopback service and print its pairing code
     Start {
         /// Port to listen on (default 8763)
@@ -695,12 +597,10 @@ pub enum LocalCommand {
     Manage,
     /// Ask a running companion to stop cleanly.
     Stop,
-    /// Restart the background companion.
-    Restart {
-        #[arg(long, default_value_t = 0, hide_default_value = true)]
-        port: u16,
-    },
     /// Launch the companion and open a validated local connection link.
+    /// The operating system runs this for `librepaper://` links; it is not
+    /// listed because nobody types it.
+    #[command(hide = true)]
     Open { url: String },
     /// Enable or disable starting the companion when you log in.
     Startup {
@@ -739,17 +639,6 @@ pub enum LocalCommand {
         origin: Option<String>,
         #[arg(long)]
         all: bool,
-    },
-    /// Refresh the discovered tools
-    Rescan {
-        /// Extra directories to search for TeX tools, colon-separated
-        #[arg(
-            long,
-            value_name = "DIRS",
-            env = "LIBREPAPER_TEX_PATH",
-            value_delimiter = ':'
-        )]
-        tex_path: Vec<PathBuf>,
     },
 }
 
@@ -802,23 +691,6 @@ pub enum LocalPresetCommand {
     },
 }
 
-#[derive(Subcommand, Clone, Debug)]
-pub enum LocalQuartoCommand {
-    /// Grant this machine permission to render a linked Quarto project
-    Bind {
-        origin: String,
-        project: String,
-        #[arg(long, default_value = ".", value_name = "DIRECTORY")]
-        root: String,
-        #[arg(long, default_value = "main.qmd", value_name = "FILE")]
-        main: String,
-    },
-    /// Revoke a local Quarto execution binding
-    Unbind { binding: String },
-    /// List bindings for an origin and document
-    List { origin: String, project: String },
-}
-
 /// Declaring an ACP agent this machine offers. It lives here, as a local
 /// command, rather than as a loopback route: a paired page picks which agent
 /// to drive, never what command to run.
@@ -856,14 +728,13 @@ pub struct LocalArgs {
 
 #[tokio::main]
 pub async fn main() {
-    reject_removed_settings();
     let cli = Cli::parse();
     let server = cli.server;
     let token = cli.token;
     match cli.command {
         Command::Login => login(server).await,
         Command::Logout => logout(),
-        Command::Admin { command } => run_admin(command, server, token).await,
+        Command::Admin { command } => run_admin(command).await,
         Command::List => list_documents(server, token).await,
         Command::Export {
             id,
@@ -871,7 +742,6 @@ pub async fn main() {
             since,
             output,
             key,
-            comments: _,
             project,
         } => {
             if project {
@@ -902,14 +772,14 @@ pub async fn main() {
         }
         Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
         Command::Agent { command } => {
-            if let Err(err) = crate::automation::peer::run_cli(command, server, token).await {
+            if let Err(err) = agent::run(command, server, token).await {
                 die(err);
             }
         }
     }
 }
 
-async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<String>) {
+async fn run_admin(command: AdminCommand) {
     match command {
         AdminCommand::Serve {
             bind,
@@ -940,43 +810,6 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
             })
             .await
         }
-        AdminCommand::Status {
-            endpoint,
-            port,
-            storage: _,
-        } => {
-            let endpoint = endpoint
-                .or(server)
-                .unwrap_or_else(|| format!("http://127.0.0.1:{port}"));
-            let url = format!("{}/api/status", endpoint.trim_end_matches('/'));
-            let parsed = url::Url::parse(&url)
-                .unwrap_or_else(|error| die(format!("invalid status URL: {error}")));
-            let loopback = match parsed.host() {
-                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-                Some(url::Host::Domain("localhost")) => true,
-                _ => false,
-            };
-            if !loopback {
-                die("operator status requires a loopback endpoint");
-            }
-            let (status, payload) = match get_json(&url, Duration::from_secs(10)).await {
-                Ok(response) => response,
-                Err(error) => die(format!("could not query operator status: {error}")),
-            };
-            if status != 200 {
-                die(format!(
-                    "operator status returned {status}: {}",
-                    detail_of(&payload)
-                ));
-            }
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&payload).unwrap_or_else(|error| die(format!(
-                    "could not format operator status: {error}"
-                )))
-            );
-        }
         AdminCommand::Seed {
             storage,
             owner,
@@ -984,33 +817,14 @@ async fn run_admin(command: AdminCommand, server: Option<String>, token: Option<
             simulate_activity,
         } => {
             let documents = crate::seed::examples::seed_documents();
-            match server {
-                Some(server) if !server.is_empty() => {
-                    crate::seed::seed_remote(server, token.as_deref(), &documents).await
-                }
-                _ => match backup {
-                    Some(backup) => {
-                        crate::seed::seed_with_backup(
-                            storage.options(),
-                            &owner.unwrap_or_default(),
-                            &documents,
-                            Some(std::path::Path::new(&backup)),
-                            simulate_activity,
-                        )
-                        .await
-                    }
-                    None => {
-                        crate::seed::seed_with_backup(
-                            storage.options(),
-                            &owner.unwrap_or_default(),
-                            &documents,
-                            None,
-                            simulate_activity,
-                        )
-                        .await
-                    }
-                },
-            }
+            crate::seed::seed_with_backup(
+                storage.options(),
+                &owner.unwrap_or_default(),
+                &documents,
+                backup.as_deref().map(std::path::Path::new),
+                simulate_activity,
+            )
+            .await
         }
         AdminCommand::Backup {
             command:
@@ -1060,21 +874,9 @@ mod socket_policy_tests {
     use super::*;
 
     #[test]
-    fn simplified_command_surface_and_export_modes_parse() {
-        for removed in ["publish", "sync", "open", "skills", "quarto"] {
-            assert!(
-                Cli::try_parse_from(["librepaper", removed]).is_err(),
-                "{removed} remains available"
-            );
-        }
-        let comments = Cli::try_parse_from([
-            "librepaper",
-            "export",
-            "paper",
-            "--comments",
-            "--format",
-            "markdown",
-        ]);
+    fn export_modes_parse() {
+        let comments =
+            Cli::try_parse_from(["librepaper", "export", "paper", "--format", "markdown"]);
         assert!(comments.is_ok());
         let project = Cli::try_parse_from([
             "librepaper",
@@ -1085,10 +887,6 @@ mod socket_policy_tests {
             "copy",
         ]);
         assert!(project.is_ok());
-        assert!(
-            Cli::try_parse_from(["librepaper", "export", "paper", "--comments", "--project"])
-                .is_err()
-        );
     }
 
     #[test]

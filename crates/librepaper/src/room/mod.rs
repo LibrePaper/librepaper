@@ -225,6 +225,9 @@ pub struct Session {
     /// Only operations known to have reached storage. Local edits must never
     /// advance this vector until their append commits.
     durable_vector: loro::VersionVector,
+    /// Conservative encoded-history bytes already represented durably. Each
+    /// new delta advances it without exporting the complete CRDT.
+    durable_state_bytes: i64,
     /// Whether the document has changed since `sessions/<slug>` was written.
     pub dirty: bool,
     /// Start of the current dirty interval. It is deliberately not refreshed
@@ -702,6 +705,7 @@ impl RoomSet {
                     doc: session::new_doc(),
                     durable_sequence: 0,
                     durable_vector: Default::default(),
+                    durable_state_bytes: 0,
                     dirty: false,
                     dirty_since: 0,
                     last_persist_at: 0,
@@ -965,13 +969,6 @@ impl Room {
         Ok(value)
     }
 
-    /// Immutable storage identity shared by catalog and rendered-bundle
-    /// operations. The slug is only a public handle and is not sufficient
-    /// for bundle object serialization.
-    pub(crate) fn storage_id(&self) -> &str {
-        &self.storage_id
-    }
-
     /// Whether this room's live text has reached durable storage. `dirty` is
     /// cleared only after the session snapshot has been accepted by storage,
     /// so this never reports an update sequence as proof of a write.
@@ -1120,6 +1117,11 @@ impl Room {
         if applied {
             state.session.durable_vector = candidate.oplog_vv();
             state.session.doc = candidate;
+            // Establish the baseline once when a room is recovered. Delta
+            // persists advance this estimate without re-exporting the full
+            // CRDT under the state lock every sweep.
+            state.session.durable_state_bytes =
+                session::encode_state(&state.session.doc).len() as i64;
             state.session.generation = recovered.update_sequence as u64;
             state.session.durable_sequence = recovered.update_sequence;
             state.session.dirty = false;
@@ -1329,6 +1331,43 @@ impl Room {
         (source, format, tree, texts, comments)
     }
 
+    /// A coherent, allowlisted projection of the current render inputs.
+    /// Unlike an editor snapshot this contains no CRDT state, comments, or
+    /// historical identity and taking it has no persistence side effect.
+    pub async fn current_project(
+        &self,
+        fallback_format: &str,
+    ) -> (
+        String,
+        crate::document::history::Tree,
+        std::collections::BTreeMap<String, String>,
+        String,
+    ) {
+        let state = self.state.lock().await;
+        let format = if state.session.format.is_empty() {
+            if fallback_format.is_empty() {
+                "html"
+            } else {
+                fallback_format
+            }
+        } else {
+            state.session.format.as_str()
+        }
+        .to_string();
+        let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
+        let texts = session::texts_of(&state.session.doc);
+        let identity = crate::document::store::digest_of(&format!("{}:{}", format, tree.digest()));
+        (format, tree, texts, identity)
+    }
+
+    /// Whether an immutable asset digest is referenced by the current tree.
+    pub async fn references_asset(&self, digest: &str) -> bool {
+        let state = self.state.lock().await;
+        session::assets_of(&state.session.doc)
+            .values()
+            .any(|sha| sha == digest)
+    }
+
     /// (total, open)
     pub async fn counts(&self) -> (usize, usize) {
         let state = self.state.lock().await;
@@ -1412,6 +1451,14 @@ impl Room {
         send_to(&mut state, skip, Outgoing::shared_text(message), |peer| {
             peer.may_edit
         });
+        if payload.get("type").and_then(Value::as_str) == Some("doc-update") {
+            let changed =
+                json!({"type": "project-changed", "version": 1, "protocol": "librepaper.room.v1"})
+                    .to_string();
+            send_to(&mut state, None, Outgoing::shared_text(changed), |peer| {
+                !peer.may_edit
+            });
+        }
     }
 
     /// The other half of that split: the peers who joined to read and
@@ -1729,7 +1776,6 @@ impl Room {
             .map_err(|_| WriteError::Storage("room has an invalid document id".into()))?;
         let (body, size, vector, frontier, generation, durable) = {
             let mut state = self.state.lock().await;
-            let size = session::encode_state(&state.session.doc).len();
             let vector = state.session.doc.oplog_vv();
             let body = if vector == state.session.durable_vector {
                 None
@@ -1742,25 +1788,29 @@ impl Room {
                     .map_err(WriteError::Storage)?,
                 )
             };
+            let size = state
+                .session
+                .durable_state_bytes
+                .saturating_add(body.as_ref().map_or(0, |bytes| bytes.len() as i64));
             // Read under the same lock as the body: a frontier taken after it
             // would name a version the persisted bytes do not contain.
             let frontier = state.session.doc.state_frontiers().encode();
             let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-            if size > ceiling {
+            if size > ceiling as i64 {
                 self.fence(FenceReason::Oversized);
                 return Err(WriteError::Size(crate::config::SizeRefusal::Encoded {
-                    bytes: size,
+                    bytes: size as usize,
                     ceiling,
                 }));
             }
             let generation = state.session.generation;
-            state.session.note_encoded_len(generation, size);
+            state.session.note_encoded_len(generation, size as usize);
             let durable: Vec<(u64, i64)> = state
                 .sockets
                 .iter()
                 .map(|(id, peer)| (*id, peer.sent))
                 .collect();
-            (body, size as i64, vector, frontier, generation, durable)
+            (body, size, vector, frontier, generation, durable)
         };
         let collaboration = crate::storage::collaboration::CollaborationStorage::new(
             catalog.clone(),
@@ -1775,7 +1825,10 @@ impl Room {
             None => self.state.lock().await.session.durable_sequence,
         };
         let mut state = self.state.lock().await;
-        state.session.durable_vector = vector;
+        // A concurrent recovery merge may have advanced durable knowledge
+        // while this append was in flight. Never forget those operations.
+        state.session.durable_vector.merge(&vector);
+        state.session.durable_state_bytes = state.session.durable_state_bytes.max(size);
         // Another writer may have appended between our read and commit. Do
         // not skip its row when this room next merges durable operations.
         if durable_sequence == previous_sequence + 1 {
@@ -1845,6 +1898,11 @@ impl Room {
                 for update in recovered.updates {
                     state.session.merge_durable(&update.update_bytes)?;
                 }
+                // A compacted base has no update row carrying its logical
+                // size. This recovery path is exceptional, so measure it
+                // once rather than charging every ordinary delta persist.
+                state.session.durable_state_bytes =
+                    session::encode_state(&state.session.doc).len() as i64;
                 state.session.durable_sequence = recovered.update_sequence;
                 continue;
             }
@@ -1852,12 +1910,25 @@ impl Room {
                 return Ok(());
             }
             let full = updates.len() == 256;
+            let last_sequence = updates
+                .last()
+                .map(|update| update.update_sequence)
+                .unwrap_or(after);
+            let remote_state_bytes = catalog
+                .update_state_bytes(document_id, last_sequence)
+                .await
+                .map_err(|e| e.to_string())?;
             let mut state = self.state.lock().await;
+            let mut conservative_size = state.session.durable_state_bytes;
             for update in updates {
+                conservative_size =
+                    conservative_size.saturating_add(update.update_bytes.len() as i64);
                 state.session.merge_durable(&update.update_bytes)?;
                 state.session.durable_sequence =
                     state.session.durable_sequence.max(update.update_sequence);
             }
+            state.session.durable_state_bytes =
+                conservative_size.max(remote_state_bytes.unwrap_or_default());
             if !full {
                 return Ok(());
             }
@@ -1905,7 +1976,8 @@ impl Room {
                 return false;
             }
         }
-        if flush_due && !dirty {
+        let attachments_pending = !self.state.lock().await.pending_attachments.is_empty();
+        if flush_due && !dirty && attachments_pending {
             self.flush_attachments().await;
         }
         sockets == 0 && !dirty

@@ -57,16 +57,25 @@ async function gunzip(response) {
 /// The families this deployment has been asked for and does not serve, so
 /// the index is not read again for them on every keystroke.
 const lacking = new Set();
-let index = null;
+const indexes = new Map();
+const INDEX_RETRY_MS = 30_000;
 
 function fontIndex(url) {
   if (!url) return Promise.resolve(null);
-  if (!index) {
-    index = fetch(url)
-      .then((response) => (response.ok ? response.json() : null))
-      .catch(() => null);
-  }
-  return index;
+  const held = indexes.get(url);
+  if (held && (held.retryAt === 0 || held.retryAt > Date.now())) return held.promise;
+  const pending = fetch(url)
+    .then((response) => {
+      if (!response.ok) throw new Error(`font index request failed (${response.status})`);
+      return response.json();
+    })
+    .catch(() => {
+      const failed = indexes.get(url);
+      if (failed?.promise === pending) failed.retryAt = Date.now() + INDEX_RETRY_MS;
+      return null;
+    });
+  indexes.set(url, { promise: pending, retryAt: 0 });
+  return pending;
 }
 
 /// Fetches what `needs` lists and the map does not have, into `fetched`.
@@ -81,17 +90,18 @@ export async function fetchNeeds(needs, fetched, { fontsIndex } = {}) {
     for (const [name, body] of untar(await gunzip(response))) {
       fetched.set(`${pkg.dir}/${name}`, body);
     }
-    arrived = fetched.has(`${pkg.dir}/typst.toml`);
+    arrived ||= fetched.has(`${pkg.dir}/typst.toml`);
   }
   const families = (needs.fonts || []).filter((family) => !lacking.has(family));
   if (families.length) {
     const known = await fontIndex(fontsIndex);
     for (const family of families) {
       const files = known?.families?.[family];
-      if (!Array.isArray(files) || !files.length) {
+      if (known && (!Array.isArray(files) || !files.length)) {
         lacking.add(family);
         continue;
       }
+      if (!known) continue;
       for (const file of files) {
         const path = `@fonts/${family}/${file.split("/").pop()}`;
         if (fetched.has(path)) continue;

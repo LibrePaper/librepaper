@@ -7,7 +7,7 @@
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
-  let { sourceFormat = "", main = "", bindingId = "", onbindingid } = $props();
+  let { sourceFormat = "", main = "", onbindingid } = $props();
   const quarto = $derived(sourceFormat === "quarto");
   const projectBinding = $derived(["quarto", "typst", "markdown"].includes(sourceFormat));
 
@@ -157,13 +157,6 @@
     <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} />
     <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!connected || choosingFolder || !entrypoint.trim()} onclick={() => chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose project folder…"}</button>
   </SettingRow>
-  <details class="setting-advanced">
-    <summary>Advanced: use an existing binding</summary>
-    <SettingRow title="Binding ID" description="For projects already configured with the companion CLI.">
-      <input class="input input-sm setting-input" type="text" aria-label="Local project binding ID" placeholder="binding ID" value={bindingId}
-             onchange={(event) => onbindingid?.(event.currentTarget.value.trim())} />
-    </SettingRow>
-  </details>
 {/if}
 
 <details><summary>Details and troubleshooting</summary>

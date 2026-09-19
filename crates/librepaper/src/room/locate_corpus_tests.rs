@@ -43,6 +43,22 @@ struct Document {
     files: Vec<(&'static str, String)>,
 }
 
+/// What the reader would anchor against: the document with its markup,
+/// scripts and styles removed. An approximation of what a browser shows,
+/// which is enough to locate a phrase and take its surroundings. All
+/// whitespace collapses, newlines included: a browser renders a line break
+/// inside a paragraph as a single space.
+fn visible_text(document: &str) -> String {
+    let script_or_style =
+        regex::Regex::new(r"(?is)<(script|style)\b[^>]*>.*?</(script|style)>").expect("pattern");
+    let tag = regex::Regex::new(r"(?s)<[^>]*>").expect("pattern");
+    let space = regex::Regex::new(r"\s+").expect("pattern");
+    let text = script_or_style.replace_all(document, " ");
+    let text = tag.replace_all(&text, "");
+    let text = html_escape::decode_html_entities(&text);
+    space.replace_all(&text, " ").to_string()
+}
+
 fn read(path: &str) -> String {
     std::fs::read_to_string(format!("../../{path}")).expect("a tutorial file")
 }
@@ -53,9 +69,7 @@ fn corpus() -> Vec<Document> {
     vec![
         Document {
             path: "librepaper.md",
-            rendered: crate::seed::visible_text(
-                &crate::document::render::render_markdown_document(&markdown, ""),
-            ),
+            rendered: visible_text(&wasm_markdown::markdown::render(&markdown, "")),
             files: vec![
                 ("librepaper.md", markdown),
                 (
@@ -68,7 +82,7 @@ fn corpus() -> Vec<Document> {
         // tags leave behind.
         Document {
             path: "librepaper.html",
-            rendered: crate::seed::visible_text(&html),
+            rendered: visible_text(&html),
             files: vec![
                 ("librepaper.html", html),
                 (

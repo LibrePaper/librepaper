@@ -7,15 +7,12 @@
 
 use std::time::Duration;
 
-use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use crate::http::{detail_of, KEY_HEADER};
-
-use crate::assistant::runtime as runner;
 
 /// Extract a share key from either a literal key or a pasted document URL.
 pub fn link_key(flag: &str) -> String {
@@ -255,9 +252,6 @@ pub struct Snapshot {
     pub source: String,
     #[serde(default)]
     pub source_sha: String,
-    /// Canonical source tree metadata used to derive isolated preview revisions.
-    #[serde(default)]
-    pub tree: Value,
     #[serde(default)]
     pub comments: Vec<Value>,
     #[serde(default)]
@@ -599,112 +593,6 @@ pub fn source_sha(source: &str) -> String {
     hex::encode(digest.finalize())
 }
 
-/// Provider-neutral automation commands. Every command accepts the pasted
-/// document link as its first argument and prints one JSON object, making the
-/// CLI suitable for an agent process without a shell parser.
-#[derive(Subcommand, Clone, Debug)]
-pub enum AgentCommand {
-    /// Drive a local ACP agent against a private sidebar conversation. The
-    /// local app starts this; it is not a command anyone pastes into a chat.
-    Connect {
-        link: String,
-        /// Private conversation identifier from the LibrePaper sidebar.
-        conversation: String,
-        /// Conversation credential
-        #[arg(
-            long = "chat-token",
-            env = "LIBREPAPER_CHAT_TOKEN",
-            hide_env_values = true
-        )]
-        chat_token: Option<String>,
-        /// Directory for the local thread id and completed task ids.
-        #[arg(
-            long = "state-directory",
-            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
-            value_name = "DIRECTORY"
-        )]
-        state_dir: Option<std::path::PathBuf>,
-        /// The agent the runner drives, as a command line speaking the Agent
-        /// Client Protocol on stdio. Repeat the flag for each argument. Any
-        /// ACP agent works; LibrePaper never holds a model credential.
-        /// `allow_hyphen_values` because an adapter's arguments are flags of
-        /// its own: `gemini --experimental-acp`, `npx -y pi-acp`. Without it
-        /// clap claims the adapter's flag as one of ours and exits 2, which
-        /// is every agent except a bare installed binary.
-        #[arg(
-            long = "agent",
-            env = "LIBREPAPER_AGENT",
-            value_delimiter = ' ',
-            allow_hyphen_values = true,
-            required = true,
-            value_name = "COMMAND"
-        )]
-        agent: Vec<String>,
-        /// Start a detached runner and wait until it is ready.
-        #[arg(long)]
-        background: bool,
-    },
-    /// Serve the document MCP tools over stdio for an MCP host.
-    ///
-    /// `--connection NAME` is how an agent's configuration file names a
-    /// document without holding its key: this computer resolves the name
-    /// through `local::connections`. A literal link is still accepted for a
-    /// one-off, and `-` reads it from LIBREPAPER_DOCUMENT, which lets a host
-    /// keep the credential in its protected environment.
-    Mcp {
-        #[arg(
-            required_unless_present = "connection",
-            conflicts_with = "connection",
-            default_value = ""
-        )]
-        link: String,
-        /// A connection registered by the browser on this computer.
-        #[arg(long, value_name = "NAME")]
-        connection: Option<String>,
-    },
-    /// Show the local runner state for a conversation.
-    Status {
-        link: String,
-        conversation: String,
-        #[arg(
-            long = "state-directory",
-            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
-            value_name = "DIRECTORY"
-        )]
-        state_dir: Option<std::path::PathBuf>,
-    },
-    /// Ask the local runner to stop through its nonce-bound control file.
-    Stop {
-        link: String,
-        conversation: String,
-        #[arg(
-            long = "state-directory",
-            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
-            value_name = "DIRECTORY"
-        )]
-        state_dir: Option<std::path::PathBuf>,
-    },
-    /// Ask the connected runner to have the browser render a candidate tree.
-    Preview {
-        link: String,
-        conversation: String,
-        #[arg(long)]
-        revision: String,
-        #[arg(long, value_name = "FILE")]
-        files: std::path::PathBuf,
-        #[arg(long, value_name = "ID")]
-        task_id: String,
-        /// The runner's state directory; the runner hands it to the tools it
-        /// spawns through the environment.
-        #[arg(
-            long = "state-directory",
-            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
-            value_name = "DIRECTORY"
-        )]
-        state_dir: Option<std::path::PathBuf>,
-    },
-}
-
 /// Which provenance headers a document request carries.
 ///
 /// The rule this exists to hold: the marker claiming a runner's protected
@@ -745,140 +633,6 @@ pub(crate) fn chat_token(token: Option<String>) -> Result<String, String> {
     token
         .filter(|token| !token.is_empty())
         .ok_or_else(|| "provide --chat-token or LIBREPAPER_CHAT_TOKEN for this conversation".into())
-}
-
-pub async fn run_cli(
-    command: AgentCommand,
-    server: Option<String>,
-    token: Option<String>,
-) -> Result<(), String> {
-    // A named connection resolves before anything else, because it is the
-    // only form that carries no credential for the caller to have leaked.
-    if let AgentCommand::Mcp {
-        connection: Some(name),
-        ..
-    } = &command
-    {
-        let resolved =
-            crate::local::connections::ConnectionStore::new(&crate::local::paths::state_home()?)
-                .resolve(name)?;
-        // The sidebar channel is the adapter's only route for browser render
-        // jobs. Restoring it from the private record, rather than accepting
-        // it on a command line, is the whole point of naming a connection.
-        if let (Some(conversation), Some(chat_token)) =
-            (&resolved.conversation, &resolved.chat_token)
-        {
-            std::env::set_var("LIBREPAPER_CONVERSATION", conversation);
-            std::env::set_var("LIBREPAPER_CHAT_TOKEN", chat_token);
-        }
-        let link = DocumentLink::parse(&resolved.link, server.as_deref().unwrap_or(""))?;
-        let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
-        return crate::automation::mcp::stdio(&peer).await;
-    }
-    let link_text = match &command {
-        AgentCommand::Connect { link, .. }
-        | AgentCommand::Mcp { link, .. }
-        | AgentCommand::Status { link, .. }
-        | AgentCommand::Stop { link, .. }
-        | AgentCommand::Preview { link, .. } => link,
-    };
-    let link_text = if link_text == "-" {
-        std::env::var("LIBREPAPER_DOCUMENT")
-            .map_err(|_| "LIBREPAPER_DOCUMENT is required for the background runner".to_string())?
-    } else {
-        link_text.to_owned()
-    };
-    let link = DocumentLink::parse(&link_text, server.as_deref().unwrap_or(""))?;
-    match &command {
-        AgentCommand::Status {
-            conversation,
-            state_dir,
-            ..
-        } => {
-            let status =
-                crate::assistant::lifecycle::status(&link, conversation, state_dir.as_deref())
-                    .map_err(|error| error.to_string())?;
-            println!(
-                "{}",
-                serde_json::to_string(&status).map_err(|err| err.to_string())?
-            );
-            return Ok(());
-        }
-        AgentCommand::Stop {
-            conversation,
-            state_dir,
-            ..
-        } => {
-            crate::assistant::lifecycle::stop(&link, conversation, state_dir.as_deref())
-                .map_err(|error| error.to_string())?;
-            println!("{}", json!({"stopped":true,"conversation":conversation}));
-            return Ok(());
-        }
-        _ => {}
-    }
-    let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
-    match command {
-        AgentCommand::Connect {
-            conversation,
-            chat_token,
-            state_dir,
-            agent,
-            background,
-            ..
-        } => {
-            let config =
-                runner::config(conversation.clone(), chat_token, state_dir.clone(), agent)?;
-            // The background runner needed these only to construct `peer` and
-            // `config`. Its ACP child must not inherit document credentials.
-            std::env::remove_var("LIBREPAPER_DOCUMENT");
-            std::env::remove_var("LIBREPAPER_CHAT_TOKEN");
-            if background {
-                crate::assistant::lifecycle::start_background(
-                    peer.link(),
-                    &conversation,
-                    &config.token,
-                    config.state_dir.as_deref(),
-                    &config.agent,
-                )?;
-                println!("{}", json!({"started":true,"conversation":conversation}));
-            } else {
-                runner::run(&peer, config).await?;
-            }
-        }
-        AgentCommand::Mcp { .. } => {
-            crate::automation::mcp::stdio(&peer).await?;
-        }
-        AgentCommand::Status { .. } | AgentCommand::Stop { .. } => {
-            unreachable!("local lifecycle handled before opening document")
-        }
-        AgentCommand::Preview {
-            conversation,
-            revision,
-            files,
-            task_id,
-            state_dir,
-            ..
-        } => {
-            let raw = std::fs::read_to_string(&files)
-                .map_err(|err| format!("could not read {}: {err}", files.display()))?;
-            let files: Value = serde_json::from_str(&raw)
-                .map_err(|err| format!("invalid preview files JSON: {err}"))?;
-            let result = crate::assistant::preview::preview(
-                &peer,
-                &conversation,
-                state_dir.as_deref(),
-                &revision,
-                &task_id,
-                files,
-            )
-            .await?;
-            println!(
-                "{}",
-                serde_json::to_string(&result).map_err(|err| err.to_string())?
-            );
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

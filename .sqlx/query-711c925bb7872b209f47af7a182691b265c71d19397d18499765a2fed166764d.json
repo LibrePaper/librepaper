@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT ON (bucket,peer)\n                      bucket AS \"bucket!\",peer AS \"peer!\",\n                      (sum(changes) OVER (PARTITION BY bucket,peer))::bigint AS \"changes!\",\n                      (max(state_bytes) OVER (PARTITION BY bucket,peer))::bigint AS \"state_bytes!\",\n                      frontier AS \"frontier!\"\n               FROM (\n                 SELECT bucket,peer,changes::bigint AS changes,state_bytes,frontier,\n                        0::bigint AS ordinal\n                 FROM document_activity WHERE document_id=$1\n                 UNION ALL\n                 SELECT date_trunc('minute',created_at) AS bucket,'' AS peer,\n                        1::bigint AS changes,COALESCE(state_bytes,octet_length(update_bytes)::bigint) AS state_bytes,\n                        frontier,update_sequence AS ordinal\n                 FROM document_updates WHERE document_id=$1\n               ) counted\n               WHERE $2::timestamptz IS NULL OR bucket >= $2\n               ORDER BY bucket,peer,ordinal DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bucket!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "peer!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "changes!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "state_bytes!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "frontier!",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "711c925bb7872b209f47af7a182691b265c71d19397d18499765a2fed166764d"
+}

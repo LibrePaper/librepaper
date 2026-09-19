@@ -802,6 +802,21 @@ console.log("latex controller: queue, bibliography reuse, routing and lifecycle 
   latex._testing.reset();
 }
 
+// A helper failure after TeX has produced a PDF is diagnostic degradation,
+// not a reason to replace the usable document with a failure page.
+{
+  latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });
+  latex.configure({ project: nextProject(), settings: { engine: "pdflatex", release: "r1" } });
+  const scripted = [{ status: 0, pdf: PDF, synctex: null, log: "", outputs: { "main.idx": enc.encode("index") } }];
+  FakeWorker.nextTexReplies = scripted;
+  if (worker()) worker().texReplies = scripted;
+  const result = await latex.compile(tree("main.tex", "\\printindex"));
+  assert.equal(result.ok, true, JSON.stringify(result.failure));
+  assert.deepEqual([...result.pdf], [...PDF]);
+  assert.equal(result.attempts.some((attempt) => attempt.stage === "makeindex" && !attempt.ok), true);
+  latex._testing.reset();
+}
+
 // Shell-escape is named as the reason, with the packages that need it.
 {
   latex._testing.inject({ worker: FakeWorker, fetch: fakeFetch });

@@ -337,17 +337,12 @@ export function createProjectSession({
     if (!pendingPresence.size || left) return;
     const keys = [...pendingPresence];
     pendingPresence.clear();
-    // Encode only changed keys, not the full state. A burst may have advanced
-    // the presence state several times, and peers only need the latest state
-    // for each key. Encoding per key avoids sending redundant full-state updates.
-    let bytes = new Uint8Array();
+    // EphemeralStore encodings are complete messages, not byte streams that
+    // may be concatenated. Send one latest message per changed key.
     for (const key of keys) {
       const keyBytes = store.encode(key);
-      if (keyBytes) {
-        bytes = new Uint8Array([...bytes, ...keyBytes]);
-      }
+      if (keyBytes) sendPresence(keyBytes);
     }
-    sendPresence(bytes);
   }
 
   if (mayEdit) {
@@ -525,6 +520,7 @@ export function createProjectSession({
       path = checkPlacement(rules, { ...file, path }, this.list(), this.folders());
       if (file.kind === "text") return this.addText(path, this.textOf(file.id).toString());
       assets.set(path, file.sha);
+      doc.commit({ origin: DIRECTORY_ORIGIN });
       return path;
     },
 
@@ -628,16 +624,19 @@ export function createProjectSession({
 
     removeAsset(path) {
       assets.delete(path);
+      doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
     putAsset(path, sha) {
       assets.set(path, sha);
+      doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
     /// Names the main file: the one a renderer is run on, and the one the
     /// document's format is read from.
     setMain(id) {
       meta.set("main", id);
+      doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
     /// Called whenever the directory changes -- a file added, renamed,
@@ -745,6 +744,11 @@ export function createProjectSession({
     /// The server's answer to `doc-open`: the document, or -- when it is too
     /// large for a text frame -- somewhere to fetch it from.
     async start(state) {
+      // Disk recovery must win the race with the room handshake. Otherwise a
+      // delayed import lands after catch-up and is never offered to the
+      // server (hydration is intentionally not a local Loro update).
+      await persister?.hydration;
+      if (left) return;
       if (state.ref) {
         // Same origin, signed, and short-lived. Whatever arrives during the
         // fetch is caught up by the state sent below, which is why the fetch

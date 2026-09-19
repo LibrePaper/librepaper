@@ -15,6 +15,6 @@ assert.match(component, /Nothing is uploaded, saved, or shareable/);
 // asserted, and it went stale the moment the repeated call to action was
 // trimmed -- what matters is that the way in is there, not how many times.
 assert.match(landing, /https:\/\/app\.librepaper\.org\/try/);
-assert.match(bar, /https:\/\/app\.librepaper\.org\/try/);
+assert.match(bar, /href=\{`\$\{app\}\/try`\}/);
 
 console.log("playground: temporary local-only contract and landing links passed");

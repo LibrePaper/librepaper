@@ -1,4 +1,5 @@
 import { projectIdentity, projectIdentityKey } from "./project-identity.js";
+import { VersionVector } from "loro-crdt";
 
 // Named for the substrate, not only the schema: the v1 database holds Yjs
 // updates, and a Loro document cannot import those -- it rejects them as
@@ -9,6 +10,8 @@ const DATABASE = "librepaper-offline-v2";
 const VERSION = 1;
 const PROJECTS = "projects";
 const STATES = "states";
+const COMPACT_AFTER_UPDATES = 64;
+const COMPACT_AFTER_BYTES = 4 * 1024 * 1024;
 
 function requestResult(request) {
   return new Promise((resolve, reject) => {
@@ -29,13 +32,24 @@ function openOfflineDatabase(indexedDB_ = globalThis.indexedDB) {
   if (!indexedDB_) return Promise.reject(new Error("This browser does not provide offline storage."));
   return new Promise((resolve, reject) => {
     const request = indexedDB_.open(DATABASE, VERSION);
+    let blocked = false;
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains(PROJECTS)) database.createObjectStore(PROJECTS, { keyPath: "key" });
       if (!database.objectStoreNames.contains(STATES)) database.createObjectStore(STATES);
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      if (blocked) {
+        request.result.close();
+        return;
+      }
+      resolve(request.result);
+    };
     request.onerror = () => reject(request.error || new Error("could not open offline storage"));
+    request.onblocked = () => {
+      blocked = true;
+      reject(new Error("offline storage is blocked by another tab"));
+    };
   });
 }
 
@@ -107,8 +121,11 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       let dirty = false;
       let writing = false;
       let stored = false;
+      let record = null;
+      let persistedVector = null;
       let pendingFlush = Promise.resolve();
       let unsubscribe;
+      let hydrating = true;
 
       async function putState() {
         if (closed || writing || !dirty) return pendingFlush;
@@ -118,10 +135,27 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         pendingFlush = (async () => {
           try {
             database ||= await openOfflineDatabase(indexedDB_);
-            const update = doc.export({ mode: "update" });
+            const version = doc.oplogVersion().encode();
+            const update = doc.export({
+              mode: "update",
+              ...(persistedVector ? { from: VersionVector.decode(persistedVector) } : {}),
+            });
+            const previous = record?.version === 2 ? record : { version: 2, snapshot: null, updates: [], bytes: 0 };
+            let next = {
+              ...previous,
+              updates: [...previous.updates, update],
+              bytes: Number(previous.bytes || 0) + update.byteLength,
+              vector: version,
+            };
+            if (!next.snapshot || next.updates.length >= COMPACT_AFTER_UPDATES || next.bytes >= COMPACT_AFTER_BYTES) {
+              const snapshot = doc.export({ mode: "update" });
+              next = { version: 2, snapshot, updates: [], bytes: snapshot.byteLength, vector: version };
+            }
             const transaction = database.transaction(STATES, "readwrite");
-            transaction.objectStore(STATES).put(update, key);
+            transaction.objectStore(STATES).put(next, key);
             await transactionDone(transaction);
+            record = next;
+            persistedVector = version;
             stored = true;
             writing = false;
             if (dirty) return putState();
@@ -136,10 +170,13 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         return pendingFlush;
       }
 
-      // Only local edits need persisting, and `subscribeLocalUpdates` reports
-      // only those -- so hydrating the document below cannot re-trigger a write
-      // of what we just read.
+      // The offline copy is a recovery point, not merely an outbox. Persist
+      // imports from the room as well as local edits so an explicitly flushed
+      // document is exactly the document that will open offline. The saved
+      // state itself is imported before this subscription is installed, which
+      // is the sole update that must not dirty the record again.
       function changed() {
+        if (closed || hydrating) return;
         dirty = true;
         void putState();
       }
@@ -148,13 +185,33 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         try {
           database = await openOfflineDatabase(indexedDB_);
           const saved = await requestResult(database.transaction(STATES, "readonly").objectStore(STATES).get(key));
+          if (closed) return;
           if (saved) {
             stored = true;
-            doc.import(new Uint8Array(saved));
+            if (saved.version === 2) {
+              record = saved;
+              if (saved.snapshot) doc.import(new Uint8Array(saved.snapshot));
+              for (const update of saved.updates || []) doc.import(new Uint8Array(update));
+              persistedVector = saved.vector ? new Uint8Array(saved.vector) : doc.oplogVersion().encode();
+            } else {
+              // v1 records were a single full-history update. Read them once;
+              // the next transaction rewrites them in the incremental form.
+              doc.import(new Uint8Array(saved));
+              persistedVector = doc.oplogVersion().encode();
+              record = { version: 2, snapshot: new Uint8Array(saved), updates: [], bytes: saved.byteLength, vector: persistedVector };
+            }
           }
-          unsubscribe = doc.subscribeLocalUpdates(changed);
+          hydrating = false;
+          unsubscribe = doc.subscribe(changed);
+          if (closed) {
+            unsubscribe();
+            unsubscribe = undefined;
+            return;
+          }
           events.hydrated();
         } catch (error) {
+          hydrating = false;
+          if (closed) return;
           events.failed(error);
         }
       })();
@@ -163,14 +220,16 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
         hydration,
         async flush() {
           await hydration;
-          if (!stored) dirty = true;
+          const current = doc.oplogVersion().encode();
+          if (!stored || !persistedVector || current.byteLength !== persistedVector.byteLength
+              || current.some((byte, index) => byte !== persistedVector[index])) dirty = true;
           if (dirty) await putState();
           await pendingFlush;
         },
         close() {
           closed = true;
           unsubscribe?.();
-          database?.close();
+          void pendingFlush.catch(() => {}).finally(() => database?.close());
         },
       };
     },

@@ -109,7 +109,7 @@ impl Server {
                 let Ok(body) = to_bytes(request.into_body(), 1 << 20).await else {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
-                let Ok(incoming) = serde_json::from_slice::<RoomMessage>(&body) else {
+                let Ok(mut incoming) = serde_json::from_slice::<RoomMessage>(&body) else {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
                 if incoming.motivation == "editing" && !who.at_least(Role::Editor) {
@@ -147,55 +147,38 @@ impl Server {
                 if !current_who.at_least(Role::Commenter) {
                     return write_json(403, &json!({"error": "commenter access is required"}));
                 }
-                // Readers and commenters only annotate the current rendered
-                // bundle. An empty ID is never a fallback to source or
-                // an unchecked annotation write. Editors still use empty IDs
-                // for source-side comments and suggestions.
+                // Readers and commenters annotate the exact current projection
+                // which produced their rendered page.
                 if incoming.kind == "comment"
                     && !current_who.at_least(Role::Editor)
                     && incoming.bundle_id.is_empty()
                 {
                     return write_json(
                         409,
-                        &json!({"error": "bundle is required; refresh before annotating"}),
+                        &json!({"error": "current project identity is required; refresh before annotating"}),
                     );
                 }
                 let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
-                // A rendered annotation is checked and committed under the
-                // same per-storage gate as bundle activation. Do not
-                // take this for source suggestions: they remain editor work
-                // against the editable revision and have no bundle.
-                let _rendered_bundle_guard =
-                    if incoming.kind == "comment" && !incoming.bundle_id.is_empty() {
-                        Some(
-                            crate::server::bundle::bundle_lock(&current_entry.storage_id)
-                                .lock_owned()
-                                .await,
-                        )
-                    } else {
-                        None
-                    };
-                if let Some(bundle_id) = (incoming.kind == "comment"
+                // Hold the same gate from identity validation through anchor
+                // capture. An edit cannot land between the two observations.
+                let _bundle_guard = room.bundle_write.lock().await;
+                if let Some(project_digest) = (incoming.kind == "comment"
                     && !incoming.bundle_id.is_empty())
                 .then_some(incoming.bundle_id.as_str())
                 {
-                    let current = crate::server::bundle::BundleStore::for_store(self.store.clone())
-                        .current(&current_entry.storage_id)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|bundle| bundle.bundle_id);
-                    if current.as_deref() != Some(bundle_id) {
+                    let (_, _, _, current) =
+                        room.current_project(&current_entry.source_format).await;
+                    if current != project_digest {
                         return write_json(
                             409,
-                            &json!({"error": "bundle changed; refresh before annotating"}),
+                            &json!({"error": "source changed; refresh before annotating", "stale_source": true}),
                         );
                     }
+                    // The digest is validation evidence, not durable bundle
+                    // provenance. The accepted anchor is captured from the
+                    // current CRDT state below and persisted in that form.
+                    incoming.bundle_id.clear();
                 }
-                // Keep source/session bundle work ordered after the
-                // rendered-bundle gate; activation never takes this
-                // room-local lock, so this order cannot invert.
-                let _bundle_guard = room.bundle_write.lock().await;
                 if incoming.kind == "accept" || incoming.kind == "reject" {
                     return write_json(
                         410,
@@ -638,7 +621,7 @@ impl Server {
         // Comments survive the edit; they re-anchor in the reader. Everyone
         // with the document open is told, over the same socket their comments
         // arrive on.
-        room.broadcast(&json!({"type": "published", "sha": entry.sha, "title": entry.title}))
+        room.broadcast(&json!({"type": "project-changed", "title": entry.title}))
             .await;
         Ok(entry)
     }
@@ -1169,6 +1152,82 @@ impl Server {
                 "format": format, "source": source,
             }),
         )
+    }
+
+    /// The current renderer inputs for every authorized role. This projection
+    /// is deliberately constructed from an allowlist instead of serializing
+    /// the collaboration document and removing privileged fields afterwards.
+    pub(super) async fn handle_project(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        slug: &str,
+        query: Option<&str>,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
+        };
+        let who = self.viewer(&entry, headers, arrival, query).await;
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(error) => {
+                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+            }
+        };
+        let (format, tree, texts, identity) = room.current_project(&entry.source_format).await;
+        if room.agent_recovery_pending() {
+            return write_json(
+                503,
+                &json!({"error": "room state is awaiting recovery", "retryable": true}),
+            );
+        }
+        let text_bytes = texts
+            .values()
+            .fold(0usize, |total, body| total.saturating_add(body.len()));
+        if text_bytes > self.config.max_document {
+            return write_json(413, &json!({"error": "that project is too large to read"}));
+        }
+        let etag = format!("\"{identity}\"");
+        if header_of(headers, "if-none-match").is_some_and(|value| {
+            value
+                .split(',')
+                .any(|tag| tag.trim() == etag || tag.trim() == "*")
+        }) {
+            let mut response = Response::new(Body::empty());
+            *response.status_mut() = StatusCode::NOT_MODIFIED;
+            set(&mut response, "etag", &etag);
+            set(&mut response, "cache-control", "private, no-cache");
+            privacy_headers(&mut response);
+            return response;
+        }
+        let mut response = write_json(
+            200,
+            &json!({
+                "schema": 1,
+                "project_digest": identity,
+                "slug": entry.slug,
+                "title": entry.title,
+                "format": format,
+                "main": tree.main,
+                "tree": tree,
+                "texts": texts,
+            }),
+        );
+        set(&mut response, "etag", &etag);
+        set(&mut response, "cache-control", "private, no-cache");
+        privacy_headers(&mut response);
+        response
     }
 
     pub(super) async fn handle_snapshot(

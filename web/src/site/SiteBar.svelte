@@ -19,6 +19,7 @@
   </a>
   <div class="flex items-center gap-4">
     <a class="text-surface-600-400 hover:text-primary-500 text-sm" href="/start.html">Docs</a>
+    <a class="text-surface-600-400 hover:text-primary-500 text-sm" href={`${app}/try`}>Try</a>
     <a
       class="text-surface-600-400 hover:text-primary-500 flex items-center"
       href="https://github.com/LibrePaper/librepaper"

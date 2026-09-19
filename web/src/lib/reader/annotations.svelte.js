@@ -24,6 +24,18 @@ export function createAnnotations({ slug, anchor, repaint, send, bundleId = () =
   /// always been: the items are reactive on their own, and this is the line
   /// that says so out loud at the sites that mutate one in place.
   const publish = () => update(list());
+  const stable = (next) => {
+    const existing = new Map(list().map((item) => [String(item.id), item]));
+    return (next || []).map((item) => {
+      const held = existing.get(String(item.id));
+      if (held) {
+        Object.assign(held, item);
+        if (!Object.prototype.hasOwnProperty.call(item, "pending")) delete held.pending;
+        return held;
+      }
+      return { ...item, _uiKey: item._uiKey || item.temp_id || item.id };
+    });
+  };
 
   function submit(message) {
     outbox.keep(message);
@@ -47,7 +59,7 @@ export function createAnnotations({ slug, anchor, repaint, send, bundleId = () =
     // page had. The server will send back the same thing beside the anchor it
     // works out, so the card and the highlight do not move when it does.
     const optimistic = {
-      id: temp_id, temp_id, seq: Number.MAX_SAFE_INTEGER,
+      id: temp_id, temp_id, _uiKey: temp_id, seq: Number.MAX_SAFE_INTEGER,
       ...selection, motivation, body, ...editingFields, ...colorFields, creator,
       presentation: {
         rendered_exact: selection.exact || "",
@@ -81,7 +93,7 @@ export function createAnnotations({ slug, anchor, repaint, send, bundleId = () =
       if (local) Object.assign(local, event.comment, { temp_id: undefined, pending: false, deletable: true });
       else if (!list().some((item) => item.id === event.comment.id)) {
         anchor([event.comment]);
-        update([...list(), event.comment]);
+        update([...list(), { ...event.comment, _uiKey: event.comment.id }]);
       }
       publish();
       repaint();
@@ -139,7 +151,7 @@ export function createAnnotations({ slug, anchor, repaint, send, bundleId = () =
       outbox.reconcile(stated);
       const claimed = new Set(stated.map((item) => item.id));
       const unconfirmed = list().filter((item) => item.pending && !claimed.has(item.id));
-      update([...stated, ...unconfirmed]);
+      update([...stable(stated), ...unconfirmed]);
       anchor(list());
       publish();
       repaint();
@@ -160,7 +172,7 @@ export function createAnnotations({ slug, anchor, repaint, send, bundleId = () =
   return {
     state, publish,
     /// The authoritative list, as the room states it on joining.
-    replace(next) { update(next); },
+    replace(next) { update(stable(next)); },
     outbox, submit, comment, reply, receive, removePending,
     discard(id) { outbox.discard(id); removePending(id); },
     resolve(item) {

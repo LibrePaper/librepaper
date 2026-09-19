@@ -142,7 +142,7 @@ impl Transport {
                                     if input.send(Event::Frame(value)).await.is_err() { return; }
                                 }
                                 _ => {
-                                    let incoming = matches!(value["type"].as_str(),Some("cancel"|"input"|"preview_result"|"error")) || (value["type"]=="message" && value["message"]["role"]=="user");
+                                    let incoming = matches!(value["type"].as_str(),Some("cancel"|"input")) || (value["type"]=="message" && value["message"]["role"]=="user");
                                     if joined && incoming && input.send(Event::Frame(value)).await.is_err() { return; }
                                 }
                             }

@@ -320,15 +320,7 @@ function call(target, cmd, payload, { timeoutMs = 0 } = {}) {
 
 async function ensureWorker(releaseEntry, manifestFormat) {
   if (worker && configuredRelease === releaseEntry.id) return worker;
-  if (worker) {
-    try {
-      worker.terminate();
-    } catch {
-      /* already gone */
-    }
-    worker = null;
-    configuredRelease = null;
-  }
+  if (worker) retireWorker();
   // The literal `new Worker(new URL(..., import.meta.url), { type: "module" })`
   // is what Vite recognises and bundles as a worker of its own; behind a
   // variable it would only copy the file verbatim, and the worker's bare
@@ -616,6 +608,7 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
     }
     passes += 1;
 
+    const beforeGenerated = pickGenerated(outputs);
     let reply;
     try {
       reply = await call(target, "tex", { engine, main: tree.main }, { timeoutMs: Math.max(1000, deadlineAt - nowImpl()) });
@@ -659,13 +652,25 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
     const inspected = bibliography.inspect({ stem, outputs, log: finalLog, tree });
 
+    let indexChanged = false;
     if (inspected.makeindex) {
       try {
         const idx = await call(target, "makeindex", { stem });
-        if (idx.ind) outputs[`${stem}.ind`] = toBytes(idx.ind);
-      } catch {
-        // A missing/failed index is visible in the PDF and the log; it does
-        // not abort a compile that otherwise produced a usable document.
+        const ind = toBytes(idx.ind);
+        if (!(idx.status === 0 || idx.status === 1) || !ind) {
+          throw new Error(idx.ilg || "MakeIndex did not produce an index.");
+        }
+        const previous = toBytes(outputs[`${stem}.ind`]);
+        indexChanged = !previous || previous.length !== ind.length || previous.some((byte, i) => byte !== ind[i]);
+        outputs[`${stem}.ind`] = ind;
+        await call(target, "write", { path: `${stem}.ind`, bytes: ind.buffer || ind });
+        checkpoint();
+      } catch (error) {
+        checkpoint();
+        attempts.push({ stage: "makeindex", backend: "browser", ok: false, log: String(error?.message || error), reason: "index" });
+        // TeX has already produced a usable PDF. Keep it visible and retain
+        // the failed helper attempt as diagnostic provenance; a broken index
+        // must not replace the whole document with a failure page.
       }
     }
 
@@ -750,7 +755,17 @@ async function runCompile({ tree, jobGeneration: generationAtStart, token, start
 
     lastStaged = { project: currentProject, inputs, bibIdentity: bibliographyProvenance ? job.snapshot : lastStaged?.bibIdentity, generated: pickGenerated(outputs) };
 
-    const needsRerun = (bibliographyChanged || inspected.biber || inspected.bibtex || inspected.bibtex8 || logMod.rerun(finalLog)) && passes < MAX_PASSES;
+    const afterGenerated = pickGenerated(outputs);
+    const generatedChanged = Object.keys({ ...beforeGenerated, ...afterGenerated }).some((path) => {
+      const before = toBytes(beforeGenerated[path]);
+      const after = toBytes(afterGenerated[path]);
+      return !before || !after || before.length !== after.length || before.some((byte, index) => byte !== after[index]);
+    });
+    // Undefined-reference warnings alone are not progress. A typo should
+    // retain its diagnostic without spending every pass budget forever.
+    const explicitlyRequestsRerun = /Label\(s\) may have changed|Rerun to get cross-references right/i.test(finalLog);
+    const needsRerun = (indexChanged || bibliographyChanged || explicitlyRequestsRerun
+      || (logMod.rerun(finalLog) && generatedChanged)) && passes < MAX_PASSES;
     if (!needsRerun) break;
   }
 

@@ -1,69 +1,8 @@
-//! What a document carries beside its text: the figures an editor uploads,
-//! editable input assets and the bundle display capability
-//! that lets the documents origin serve an explicitly published bundle.
+//! What a document carries beside its text: editable input assets.
 
 use super::*;
 
-/// A display capability is long enough for lazy bundle assets. It is
-/// never the authorization boundary: every response rechecks live access.
-pub(super) const FRAME_TOKEN_SECONDS: i64 = 24 * 60 * 60;
-
-/// What a display capability signs.
-pub(super) fn frame_claim(slug: &str, bundle_id: &str, scope: &str, until: i64) -> String {
-    format!("frame:{slug}:{bundle_id}:{scope}:{until}")
-}
-
-/// A display capability deliberately contains no cookie, bearer token, or
-/// link secret.  Link scopes carry the already stored digest; account scopes
-/// carry an account id and a one-way fingerprint of its session generation.
-/// The receiving origin rechecks both against the catalogue on every fetch.
-pub(super) fn display_scope(entry: &crate::document::store::IndexEntry, who: &Viewer) -> String {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    if entry.example || entry.unowned {
-        return "public".to_string();
-    }
-    if !who.link.is_empty() {
-        return format!("link:{}", who.link);
-    }
-    if who.id.is_signed_in() {
-        return format!(
-            "account:{}:{}",
-            URL_SAFE_NO_PAD.encode(who.id.id.as_bytes()),
-            hex::encode(sha2::Sha256::digest(who.id.session_generation.as_bytes())),
-        );
-    }
-    String::new()
-}
-
 impl Server {
-    /// Build the isolated document-origin URL for one current bundle.
-    /// The query contains only a short-lived, bundle-scoped capability;
-    /// it never carries a session cookie or source credential.
-    pub(super) fn bundle_frame_url(
-        &self,
-        entry: &crate::document::store::IndexEntry,
-        who: &Viewer,
-        arrival: &Arrival,
-        bundle_id: &str,
-    ) -> String {
-        let scope = display_scope(entry, who);
-        let until = crate::util::now_unix() + FRAME_TOKEN_SECONDS;
-        let token = crate::auth::sign(
-            &self.key,
-            "figure-frame-v1",
-            &frame_claim(entry.slug.as_str(), bundle_id, &scope, until),
-        );
-        format!(
-            "{}/published/{}/index.html?bundle_id={}&scope={}&until={}&token={}",
-            arrival.docs_origin(),
-            entry.slug,
-            url::form_urlencoded::byte_serialize(bundle_id.as_bytes()).collect::<String>(),
-            url::form_urlencoded::byte_serialize(scope.as_bytes()).collect::<String>(),
-            until,
-            url::form_urlencoded::byte_serialize(token.as_bytes()).collect::<String>(),
-        )
-    }
-
     /// Stores a figure and answers with its digest and size. The bytes are the
     /// server's to keep; the name is the client's to give, which it does by
     /// setting `assets[path]` in the shared document once this has answered.
@@ -191,10 +130,17 @@ impl Server {
             Ok(result) => result,
             Err(response) => return response,
         };
-        // The catalogue repeats the live editor check inside the lease
-        // transaction.  Route-level Viewer state is only an early rejection;
-        // it is never permission to construct a mutable storage key.
-        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
+        if !self.may_read(&entry, &who) {
+            return plain(404, "not found");
+        }
+        // Assets retained for history are not part of the reader contract.
+        // Resolve the resident room and prove the digest is in its current
+        // tree before looking up the document-scoped physical object.
+        let room = match self.rooms.try_get(slug).await {
+            Ok(room) => room,
+            Err(_) => return plain(503, "room state temporarily unavailable"),
+        };
+        if room.agent_recovery_pending() || !room.references_asset(sha).await {
             return plain(404, "not found");
         }
         let catalog = self.store.catalog.clone();

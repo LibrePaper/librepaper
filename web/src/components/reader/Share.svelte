@@ -5,7 +5,7 @@
   import Icon from "../Icon.svelte";
   import { getPrivate, post } from "../../lib/api.js";
 
-  let { open = $bindable(false), slug, onclose, inline = false, canShare = false, bundleReady = false, bundleFailed = false, bundleBlocked = "", onrefreshbundle = () => {} } = $props();
+  let { open = $bindable(false), slug, onclose, inline = false, canShare = false } = $props();
   let sharing = $state(null);
   let busy = $state(false);
   let loading = $state(false);
@@ -26,12 +26,10 @@
   // Both invalidate a URL somebody may already be holding, which is not a
   // thing to do on the way past a menu item.
   let confirming = $state(null);
-  let bundleError = $state("");
-  let bundleBusy = $state(false);
 
   const ROLES = [
-    { id: "reader", label: "Read", says: "Anyone with this link can view." },
-    { id: "commenter", label: "Comment", says: "Anyone with this link can view and comment." },
+    { id: "reader", label: "Read", says: "Anyone with this link can read the current source and see ongoing changes." },
+    { id: "commenter", label: "Comment", says: "Anyone with this link can read the current source, see ongoing changes, and comment." },
     { id: "editor", label: "Edit", says: "Signed-in users with this link can edit." },
   ];
   const EXPIRIES = [["7d", "7 days"], ["30d", "30 days"], ["180d", "6 months"], ["never", "Never"]];
@@ -51,17 +49,6 @@
   // and its budget only where one was chosen.
   const metaOf = (link) => [link.until ? `Expires ${dateOf(link.until)}` : "No expiry", link.budget == null ? "" : `${link.budget} comments/hour`].filter(Boolean).join(" · ");
 
-  // One line under the heading for the rendering readers are served. There is
-  // no publishing to do and nothing to approve: the shared view follows the
-  // draft on its own, so the only states worth a line are the ones somebody
-  // might act on -- it cannot be checked, or it is refused. A shared view that
-  // is fine says nothing: it needs nothing from anybody.
-  const renderStatus = $derived(
-    !bundleReady ? (bundleFailed ? "Could not check the shared view." : "Checking the shared view…")
-    : bundleBlocked ? bundleBlocked
-    : ""
-  );
-
   async function load(documentSlug) {
     const request = ++generation;
     loading = true;
@@ -77,17 +64,6 @@
     } finally {
       if (request === generation) loading = false;
     }
-  }
-
-  async function refreshBundle() {
-    if (bundleBusy) return;
-    bundleBusy = true;
-    bundleError = "";
-    try {
-      await onrefreshbundle();
-    } catch (failure) {
-      bundleError = failure.message || "Could not check the shared view.";
-    } finally { bundleBusy = false; }
   }
 
   $effect(() => {
@@ -202,9 +178,6 @@
 
 {#snippet content()}
   <div class="share-panel">
-    {#if renderStatus}<p class="share-status panel-meta" role="status">{renderStatus}</p>{/if}
-    {#if bundleFailed}<button type="button" class="share-action" disabled={bundleBusy} onclick={refreshBundle}>{bundleBusy ? "Checking…" : "Try again"}</button>{/if}
-    {#if bundleError}<p class="text-error-600-400" role="alert">{bundleError}</p>{/if}
     {#if loading}
       <p class="panel-muted" role="status">Loading sharing settings…</p>
     {:else if sharing && canShare}
@@ -279,7 +252,6 @@
 
 <style>
   .share-sidebar :global(select) { max-width: 100%; }
-  .share-status { margin-bottom: calc(var(--spacing) * 3); }
   /* Whitespace and a hairline between permissions, not three cards: a card
      apiece in a column this narrow reads as three panels. */
   .share-section { padding-block: calc(var(--spacing) * 2.5); }

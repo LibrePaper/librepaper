@@ -188,18 +188,33 @@
 
   // Ask each project what is in it, once. A failure is silent and leaves that
   // project findable by its title alone, which is all it was before.
+  const pathRequests = new Map();
+  const PATH_CONCURRENCY = 6;
+
+  function requestPaths(doc) {
+    if (pathRequests.has(doc.slug)) return pathRequests.get(doc.slug);
+    const pending = get("/api/documents/" + doc.slug)
+      .then((full) => Array.isArray(full.files) ? full.files : [])
+      .catch(() => [])
+      .then((files) => {
+        // Merge into the current map, not the snapshot from when this batch
+        // began; slower searches must not erase newer completions.
+        paths = new Map(paths).set(doc.slug, files);
+        return files;
+      })
+      .finally(() => pathRequests.delete(doc.slug));
+    pathRequests.set(doc.slug, pending);
+    return pending;
+  }
+
   async function learnPaths() {
     const wanted = documents.filter((doc) => !paths.has(doc.slug) && !doc.offline_prepared);
     if (!wanted.length) return;
-    const listed = new Map(paths);
-    await Promise.all(
-      wanted.map((doc) =>
-        get("/api/documents/" + doc.slug)
-          .then((full) => listed.set(doc.slug, Array.isArray(full.files) ? full.files : []))
-          .catch(() => listed.set(doc.slug, [])),
-      ),
-    );
-    paths = listed;
+    let next = 0;
+    const worker = async () => {
+      while (next < wanted.length) await requestPaths(wanted[next++]);
+    };
+    await Promise.all(Array.from({ length: Math.min(PATH_CONCURRENCY, wanted.length) }, worker));
   }
 
   // A document shared with you by name is in your list, and is not yours to

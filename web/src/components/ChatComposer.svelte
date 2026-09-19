@@ -98,7 +98,7 @@
   .chat-form { display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); }
   .composer-input { position: relative; }
   .composer-input textarea { display: block; width: 100%; min-height: 80px; max-height: 60dvh; resize: none; padding-right: 36px; }
-  .resize-handle { position: absolute; top: 1px; right: 1px; width: 24px; height: 24px; display: grid; place-items: center; cursor: ns-resize; touch-action: none; color: var(--color-surface-500-500); border-radius: 3px; }
+  .resize-handle { position: absolute; top: 1px; right: 1px; width: 24px; height: 24px; display: grid; place-items: center; cursor: ns-resize; touch-action: none; color: var(--color-surface-600-400); border-radius: 3px; }
   .resize-handle:focus-visible { outline: 2px solid var(--color-primary-500); }
   .resize-handle svg { fill: none; stroke: currentColor; stroke-width: 1; }
 </style>

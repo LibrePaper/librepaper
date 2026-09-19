@@ -31,8 +31,6 @@
     "check:agent-browser": "node tests/browser/agent-browser.mjs",
     "check:responsive-browser": "node tests/browser/responsive-browser.mjs",
     "check:accessibility": "node tests/browser/accessibility-browser.mjs",
-    "check:bundle-browser": "node tests/browser/bundle-browser.mjs && node tests/browser/bundle-editor-browser.mjs",
-    "check:bundle-builder-browser": "node tests/browser/bundle-builder-browser.mjs",
     "check:assistant-browser": "node tests/browser/agent-browser.mjs && node tests/browser/assistant-review-browser.mjs",
     "check:insert": "node tests/unit/insert.mjs && node tests/integration/insert-markdown-render.mjs && node tests/browser/insert-browser.mjs",
     "check:insert-renderers": "node tests/integration/insert-latex-render.mjs && node tests/integration/insert-typst-render.mjs && node tests/integration/insert-quarto-render.mjs"
@@ -55,7 +53,6 @@
     "@codemirror/search": "^6.5.11",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.39.1",
-    "@formatjs/intl-segmenter": "12.2.7",
     "@replit/codemirror-emacs": "6.1.0",
     "@replit/codemirror-vim": "^6.4.0",
     "@skeletonlabs/skeleton": "5",

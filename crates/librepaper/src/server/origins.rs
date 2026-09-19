@@ -175,7 +175,7 @@ impl Origins {
     /// deployment does not answer on that name.
     ///
     /// Loopback is always accepted, whatever the configuration says. The
-    /// operator's own `admin status`, a container health check and the test
+    /// operator's own status check, a container health check and the test
     /// suite all reach the server that way, and a loopback authority cannot be
     /// used to blur the two origins: a browser sends the authority it was
     /// pointed at, and a document reached over loopback is still served only

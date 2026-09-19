@@ -202,16 +202,6 @@ pub struct CommentView {
     /// remains private; clients use this to decide which controls to show.
     pub mine: bool,
     pub deletable: bool,
-    /// That this is about a passage whose words are not in this view.
-    ///
-    /// A reader tells a general remark from one about a passage by whether it
-    /// quotes anything, because a reader is never sent the anchor that would
-    /// say so outright. A comment written in the editor quotes the draft, and
-    /// the draft is not a reader's to read -- so the quotation is dropped, and
-    /// without this the card would read as a remark about the whole document,
-    /// which is a different thing than the person wrote.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub passage_withheld: bool,
 }
 
 impl CommentView {
@@ -224,13 +214,6 @@ impl CommentView {
     pub fn for_viewer(comment: &Comment, author: &str, is_owner: bool) -> CommentView {
         let mine = !author.is_empty() && comment.author == author;
         let deletable = deletable(comment, author, is_owner);
-        // Asked before the anchor is dropped below, and of the anchor rather
-        // than of the quotation: a remark about the whole document quotes
-        // nothing either, and it is not a passage anybody is being kept from.
-        let about_a_passage = comment
-            .original_anchor
-            .as_ref()
-            .is_some_and(|anchor| anchor.target.source().is_some());
         let mut comment = comment.clone();
         // Source provenance and suggestion proposals are editorial material.
         // A rendered reader may discuss an annotation, but must never receive
@@ -245,21 +228,12 @@ impl CommentView {
             comment.outcome.clear();
             comment.resolved_in.clear();
         }
-        // The rendered quotation is the page rather than the project, so it
-        // crosses to a reader -- but only when the page it was taken from is
-        // one they have been shown. A comment carrying no bundle was written
-        // in the editor, against a draft that may say something no publish has
-        // ever said, and the quotation is the one field that would carry those
-        // words out. The remark crosses without them.
-        let withheld = !is_owner && about_a_passage && comment.bundle_id.is_empty();
-        if withheld {
-            comment.presentation = PresentationContext::default();
-        }
+        // The validated presentation quote is safe to show to readers who can
+        // already fetch the complete current source projection.
         CommentView {
             comment,
             mine,
             deletable,
-            passage_withheld: withheld,
         }
     }
 }
@@ -268,13 +242,7 @@ impl CommentView {
 /// source anchor and the words proposed for that source, which is the project
 /// rather than anything a reader was shown.
 ///
-/// Every other remark is a remark, and it reaches the reader whether or not it
-/// was made on a rendering. The bundle used to be required here, and requiring
-/// it made the conversation one-sided: a reader could comment on a published
-/// document and an editor could read it, but an editor answering from the
-/// editor wrote into a channel the reader had no access to, because the editor
-/// comments on its own preview and a preview is no bundle. A reader saw
-/// silence and the editor saw a reply sent.
+/// Every other remark is a remark and reaches the reader.
 ///
 /// What a reader gets of one is still only the remark. `CommentView::for_viewer`
 /// drops the source anchor and the attachment from every non-owner view, so
@@ -379,97 +347,6 @@ fn validate_original_anchor(
     Ok(anchor)
 }
 
-/// The source a comment was made against, when that is not the source as it
-/// stands.
-///
-/// A reader annotating a published rendering is reading a page built from one
-/// particular checkpoint, and the words in front of them are that
-/// checkpoint's words -- not the draft an editor has been rewriting since. So
-/// the comment is anchored there, in the state it was actually made in, and
-/// where that passage has got to since is the resolver's question like any
-/// other. Anchoring it to the current draft instead would either fail to find
-/// the passage or, worse, find a different one.
-pub(super) struct BundledSource {
-    checkpoint: String,
-    files: Vec<(String, String, String)>,
-}
-
-impl Room {
-    /// The checkpoint a bundle was built from, and its files.
-    ///
-    /// `None` when there is no such bundle, it kept no source version,
-    /// or its source archive cannot be read. A rendered selection cannot be
-    /// anchored to the current draft in any of those cases.
-    async fn bundled_source(&self, bundle_id: &str) -> Option<BundledSource> {
-        let id = uuid::Uuid::parse_str(bundle_id).ok()?;
-        let catalog = self.catalog.as_ref().get()?;
-        let bundle = catalog.bundle(id).await.ok()??;
-        let document_id = uuid::Uuid::parse_str(&self.storage_id).ok()?;
-        if bundle.document_id != document_id {
-            return None;
-        }
-        let version = catalog
-            .version(document_id, bundle.source_version_id?)
-            .await
-            .ok()??;
-        let point = super::checkpoint::checkpoint_from_version(&version);
-        let checkpoint = point.sha.clone();
-        let (tree, bodies) = self.checkpoint_texts(&point).await.ok()?;
-        let files = tree
-            .files
-            .iter()
-            .filter(|(_, file)| file.kind == "text")
-            .filter_map(|(path, file)| {
-                bodies
-                    .get(&file.sha)
-                    .map(|body| (file.id.clone(), path.clone(), body.clone()))
-            })
-            .collect();
-        Some(BundledSource { checkpoint, files })
-    }
-}
-
-/// The published files a passage could have come from, named by the ids the
-/// document uses now.
-///
-/// A source archive records paths. It has no Loro file id to record: the ids
-/// live in the CRDT and an archive is a copy of the bytes, so the tree read
-/// back out of one carries an empty id for every file. Anchoring to that id
-/// is anchoring to nothing: `path_for_file_id` never finds it, and the
-/// annotation is refused on the way to storage, which is what a reader saw as
-/// a comment that would not send.
-///
-/// So the bundle's files are matched to the live document by path, and the
-/// comment is anchored to the file that is at that path now. That file is
-/// what the resolver has to follow forward in any case -- the anchor says
-/// where the passage was, and where it has got to since is the CRDT's
-/// question, not the archive's.
-///
-/// A published file with no counterpart in the document as it stands is not a
-/// candidate: there is no id to anchor it to, and a range into a file the
-/// document no longer has is one nothing could ever resolve.
-fn published_files(
-    doc: &loro::LoroDoc,
-    published: &BundledSource,
-) -> Result<Vec<(String, String, String)>, String> {
-    let live: HashMap<String, String> = session::paths_of(doc)
-        .into_iter()
-        .map(|(id, path)| (path, id))
-        .collect();
-    let files: Vec<(String, String, String)> = published
-        .files
-        .iter()
-        .filter_map(|(_, path, text)| {
-            live.get(path)
-                .map(|id| (id.clone(), path.clone(), text.clone()))
-        })
-        .collect();
-    if files.is_empty() {
-        return Err("none of that published source is part of this document any more".into());
-    }
-    Ok(files)
-}
-
 /// Works out what a selection is about, in the document as it stands.
 ///
 /// This is the one place a rendered selection becomes a source range, and it
@@ -486,15 +363,13 @@ fn anchor_for(
     config: &Configuration,
     doc: &loro::LoroDoc,
     current: &str,
-    published: Option<&BundledSource>,
     quote: &Quote<'_>,
     whole_document: bool,
 ) -> Result<OriginalAnchor, String> {
-    let checkpoint = published.map(|p| p.checkpoint.as_str()).unwrap_or(current);
-    if checkpoint.is_empty() {
+    if current.is_empty() {
         return Err("this document has no checkpoint to comment against".into());
     }
-    let checkpoint_id = CheckpointId(checkpoint.to_string());
+    let checkpoint_id = CheckpointId(current.to_string());
     // A remark about the document as a whole, which is the one kind of
     // comment that cannot be orphaned because it is not about a passage.
     if whole_document || quote.exact.trim().is_empty() {
@@ -506,10 +381,7 @@ fn anchor_for(
     if quote.exact.chars().count() > config.caps.exact {
         return Err("that selection is too long to comment on".into());
     }
-    let files = match published {
-        Some(published) => published_files(doc, published)?,
-        None => source_files(doc),
-    };
+    let files = source_files(doc);
     let candidates: Vec<locate::Candidate<'_>> = files
         .iter()
         .map(|(id, path, text)| locate::Candidate {
@@ -1047,26 +919,6 @@ impl Room {
                 false,
             );
         }
-        // A comment on a published rendering is anchored in the checkpoint
-        // that rendering was built from, so that checkpoint's source is read
-        // here -- before the room state is taken, because it reads storage and
-        // because the comment gate above already keeps other writers out.
-        let published = match &command {
-            Command::Comment { bundle_id, .. } if !bundle_id.is_empty() => {
-                self.bundled_source(bundle_id).await
-            }
-            _ => None,
-        };
-        if matches!(&command, Command::Comment { bundle_id, .. }
-            if !bundle_id.is_empty())
-            && published.is_none()
-        {
-            return (
-                json!({"type": "error", "message": "published source is unavailable; refresh before annotating",
-                    "temp_id": temp_id, "request_id": request_id}),
-                false,
-            );
-        }
         let mut state = self.state.lock().await;
         let config = self.config.clone();
 
@@ -1487,7 +1339,7 @@ impl Room {
             }
             Command::Comment {
                 motivation: raw_motivation,
-                bundle_id,
+                bundle_id: _,
                 body: raw_body,
                 creator: raw_creator,
                 exact: raw_exact,
@@ -1543,19 +1395,12 @@ impl Room {
                 };
                 // The passage, found in the document's own source. A client
                 // sends words; where those words are is the server's answer,
-                // because the server is what holds the checkpoint -- and, for
-                // a reader of a published render, what holds the source at all.
-                let original_anchor = match anchor_for(
-                    &config,
-                    &state.session.doc,
-                    &current,
-                    published.as_ref(),
-                    &quote,
-                    document,
-                ) {
-                    Ok(anchor) => anchor,
-                    Err(reason) => return fail(&reason),
-                };
+                // because the server is what holds the checkpoint.
+                let original_anchor =
+                    match anchor_for(&config, &state.session.doc, &current, &quote, document) {
+                        Ok(anchor) => anchor,
+                        Err(reason) => return fail(&reason),
+                    };
                 // A suggestion is its proposal; without one it is an
                 // annotation with nothing to act on. `proposed` on any other
                 // motivation is not something a client meant to send, so it
@@ -1593,33 +1438,14 @@ impl Room {
                     }
                     None => None,
                 };
-                // The cursors that will follow this passage from here on.
-                // Taken now, against the checkpoint the range was found in,
-                // because that is the only moment they are certainly right.
-                // Where that passage is, now. For a comment made against the
-                // current draft that is where it was just found, and cursors
-                // can be taken there to follow it from here on. For one made
-                // against a published checkpoint the offsets belong to that
-                // checkpoint, so there is nothing to take a cursor at yet and
-                // the resolver answers by the words instead.
-                let attachment = source.as_ref().map(|target| {
-                    if original_anchor.checkpoint_id.0 == current {
-                        DerivedAttachment {
-                            checkpoint_id: CheckpointId(current.clone()),
-                            status: AnchorStatus::Exact,
-                            live_source_range: resolve::capture(&state.session.doc, target),
-                            resolved_range_utf16: Some((target.start_utf16, target.end_utf16)),
-                            diagnostic: None,
-                        }
-                    } else {
-                        resolve::resolve(
-                            &state.session.doc,
-                            &resolve::Sources::of(&state.session.doc),
-                            &current,
-                            &original_anchor,
-                            None,
-                        )
-                    }
+                // The cursors that will follow this passage from here on,
+                // captured at the same current checkpoint where it was found.
+                let attachment = source.as_ref().map(|target| DerivedAttachment {
+                    checkpoint_id: CheckpointId(current.clone()),
+                    status: AnchorStatus::Exact,
+                    live_source_range: resolve::capture(&state.session.doc, target),
+                    resolved_range_utf16: Some((target.start_utf16, target.end_utf16)),
+                    diagnostic: None,
                 });
                 let mut added = Comment {
                     id: requested_id.unwrap_or_else(new_id),
@@ -1629,7 +1455,7 @@ impl Room {
                     presentation: seen,
                     motivation,
                     color,
-                    bundle_id,
+                    bundle_id: String::new(),
 
                     proposal: String::new(),
                     proposed: proposed.clone(),
@@ -1764,84 +1590,4 @@ impl Room {
     }
 
     /* ---------------------------------------------------------- the document */
-}
-
-#[cfg(test)]
-mod anchor_tests {
-    use super::*;
-    use crate::document::session;
-
-    /// A bundle's source as `bundled_source` reads it back: paths and bodies,
-    /// and an empty file id, because a source archive has no id to record.
-    fn bundle(path: &str, body: &str) -> BundledSource {
-        BundledSource {
-            checkpoint: "c".repeat(64),
-            files: vec![(String::new(), path.to_string(), body.to_string())],
-        }
-    }
-
-    /// A comment made on a published rendering must be anchored to the file
-    /// id the document uses, not to the empty one the archive carries.
-    /// Storing the empty id is refused on the way to postgres, which reached
-    /// the reader as "invalid annotation source range" and a comment that
-    /// would not send.
-    #[test]
-    fn a_comment_on_a_published_render_is_anchored_by_live_file_id() {
-        let doc = session::new_doc();
-        let body = "The interval covers the mean.";
-        let id = session::put_text(&doc, "paper.md", body);
-        let published = bundle("paper.md", body);
-        let quote = Quote {
-            exact: "covers the mean",
-            prefix: "The interval ",
-            suffix: "",
-        };
-        let anchor = anchor_for(
-            &Configuration::default(),
-            &doc,
-            "current",
-            Some(&published),
-            &quote,
-            false,
-        )
-        .expect("anchored");
-        let target = anchor.target.source().expect("a source target");
-        assert_eq!(target.file_id.0, id);
-        assert!(!target.file_id.0.is_empty());
-        // The anchor is against the checkpoint the rendering was built from,
-        // not the draft as it stands.
-        assert_eq!(anchor.checkpoint_id.0, "c".repeat(64));
-        // And the id is one the resolver can actually follow.
-        assert_eq!(
-            path_for_file_id(&doc, &target.file_id).as_deref(),
-            Some("paper.md")
-        );
-    }
-
-    /// A published file the document no longer has is not a candidate: there
-    /// is no live id to anchor it to.
-    #[test]
-    fn a_published_file_the_document_has_dropped_is_refused() {
-        let doc = session::new_doc();
-        session::put_text(&doc, "paper.md", "The interval covers the mean.");
-        let published = bundle("gone.md", "The interval covers the mean.");
-        let quote = Quote {
-            exact: "covers the mean",
-            prefix: "",
-            suffix: "",
-        };
-        let failure = anchor_for(
-            &Configuration::default(),
-            &doc,
-            "current",
-            Some(&published),
-            &quote,
-            false,
-        )
-        .expect_err("no live file");
-        assert!(
-            failure.contains("no longer") || failure.contains("any more"),
-            "{failure}"
-        );
-    }
 }

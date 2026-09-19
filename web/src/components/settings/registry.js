@@ -56,7 +56,7 @@ export const CATEGORIES = [
       { id: "local-status", says: "Connection", terms: "connect disconnect retry status" },
       { id: "local-pairing", says: "Pairing code", terms: "pair code allow site" },
       { id: "local-address", says: "Address", terms: "port url localhost host" },
-      { id: "local-binding", says: "Binding ID", terms: "quarto hosted", offered: quarto },
+      { id: "local-binding", says: "Project folder", terms: "quarto typst folder binding hosted", offered: quarto },
       { id: "local-tools", says: "Available tools", terms: "versions latex quarto biber" },
       { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
     ],

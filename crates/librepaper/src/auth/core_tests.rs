@@ -112,10 +112,10 @@ fn policy_public_description_hides_entries_and_anygithub_stays_restricted() {
 }
 
 #[test]
-fn publishing_policy_rejects_legacy_anonymous_spellings() {
+fn publishing_policy_refuses_anonymous_spellings() {
     for value in ["anyone", " public "] {
         let error = Policy::parse_publishers(value).expect_err("anonymous publishing survived");
-        assert!(error.contains("--publishers any"));
+        assert!(error.contains("signed-in accounts"));
     }
     let any = Policy::parse_publishers("any").expect("authenticated publishing rejected");
     assert!(any.any);

@@ -90,6 +90,9 @@ function place(document_, hunk) {
   const from = hunk.start;
   const to = from + hunk.deleted;
   if (from < 0 || to > document_.length) return null;
+  if (hunk.before !== undefined && document_.sliceString(from, to) !== hunk.before) return null;
+  if (hunk.prefix && document_.sliceString(Math.max(0, from - hunk.prefix.length), from) !== hunk.prefix) return null;
+  if (hunk.suffix && document_.sliceString(to, to + hunk.suffix.length) !== hunk.suffix) return null;
   return { from, to };
 }
 

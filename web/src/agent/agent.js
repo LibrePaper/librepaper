@@ -20,7 +20,9 @@ import { createMathTypesetter } from "../lib/math.js";
   // all of it. There is exactly one reader entitled to hear from this agent,
   // it is named when the script is injected, and without that name the agent
   // says nothing rather than saying it to everybody.
-  const READER = new URL(document.currentScript.src).searchParams.get("reader");
+  const readerParameter = new URL(document.currentScript.src).searchParams.get("reader");
+  let READER = "";
+  try { READER = readerParameter ? new URL(readerParameter).origin : ""; } catch { READER = ""; }
   let table = null; // {nodes, starts, index, joined}
 
   // The observer that republishes on the document's own edits (armed in
@@ -530,7 +532,7 @@ import { createMathTypesetter } from "../lib/math.js";
 
 
   addEventListener("message", (event) => {
-    if (event.source !== parent) return;
+    if (!READER || event.source !== parent || event.origin !== READER) return;
     const message = event.data;
     if (!message || message.librepaper !== true) return;
     // The frame can finish loading and publish before Svelte has bound the

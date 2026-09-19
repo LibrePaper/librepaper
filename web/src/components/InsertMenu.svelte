@@ -235,7 +235,7 @@
   /* Aligned with the item names, not with the panel edge. */
   .insert-group { padding: .45rem .65rem .2rem calc(var(--spacing) * 7); color: var(--color-surface-600-400); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
   .menu-separator { height: 1px; margin: .2rem .4rem; background: var(--color-divider); }
-  .insert-reason { flex: 0 0 auto; margin-left: auto; max-width: 9rem; overflow: hidden; color: var(--color-surface-500-500); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
+  .insert-reason { flex: 0 0 auto; margin-left: auto; max-width: 9rem; overflow: hidden; color: var(--color-surface-600-400); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
   .insert-results { max-height: 16rem; overflow-y: auto; border: 1px solid var(--color-divider); border-radius: var(--radius-base); }
   .insert-result { display: flex; gap: .6rem; padding: .55rem .7rem; cursor: pointer; }
   .insert-result:hover { background: var(--color-surface-100-900); }

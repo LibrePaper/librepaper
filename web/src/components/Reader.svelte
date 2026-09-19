@@ -3,8 +3,7 @@
   import { decodeProposal, hunksOfProposal, markContention, previewTexts } from "../lib/proposals.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
-  import { aboutWholeDocument, anchorAll, anchorOne, flatten, placeSources, shownSelector } from "../lib/anchor.js";
-  import { bookmarkFrom, mayApplyUpdate } from "../lib/reader/update-policy.js";
+  import { aboutWholeDocument, anchorAll, flatten, placeSources, shownSelector } from "../lib/anchor.js";
   import * as renderers from "../lib/renderers.js";
   import * as sync from "../lib/sync.js";
   import * as quarto from "../lib/engines/quarto.js";
@@ -37,8 +36,6 @@
   import { createPreferences } from "../lib/reader/preferences.svelte.js";
   import { prepareOfflineProject, preparedProject } from "../lib/offline-projects.js";
   import { cacheCurrentShell } from "../lib/offline-shell.js";
-  import { createBundle } from "../lib/reader/bundle.svelte.js";
-  import { buildDisplayBundle } from "../lib/bundle-builder.js";
   import { needsSourceRefresh } from "../lib/reader/source-events.js";
   import {
     SHELL_HEADERS,
@@ -120,40 +117,18 @@
   let readerDisposed = false;
   let docsOrigin = $state(null);
   let frameSrc = $state(null);
-  let publishedMode = $state(false);
+  // Non-editors render this allowlisted current-state projection. It has the
+  // same shape as the editor adapter but contains no CRDT or history payload.
+  let currentProject = $state(null);
+  const readerProjectOwner = {};
+  let projectEtag = "";
+  let projectFetch = null;
+  let projectRefreshPending = false;
+  let projectRefreshTimer = null;
+  let renderedProjectDigest = $state("");
+  const previewCacheKey = () => `${SLUG}:${doc?.created_at || "unknown"}`;
   let offlinePrepared = $state(false);
   let preparingOffline = $state(false);
-  // The published version, whether the source has moved past it, and what
-  // publishing a new one involves. An existing bundle makes the
-  // expected-bundle pointer part of a publish request, so the Share
-  // panel stays available while that pointer arrives but its publish control
-  // waits for it.
-  const bundle = createBundle({
-    slug: SLUG,
-    key: KEY,
-    liveTree: () => liveTreeNow(),
-    committedTree: () => session?.tree?.() || liveTreeNow(),
-    heading: (tree) => headingOf(tree),
-    gather: (digests) => figures.gather(SLUG, digests, authHeaders(KEY), { strict: true }),
-    facts: () => ({
-      canEdit: mayEdit, hasSession: Boolean(session), source: sourceGeneration,
-      // A failed render has nothing to publish; readers keep the last one
-      // that worked.
-      renderable: !previewProblem && !unrendered,
-      // And not being renderable yet is not the same as not rendering: the
-      // first page of a PDF document has not arrived, which is a moment
-      // rather than a verdict.
-      rendering: unrendered && !previewProblem,
-    }),
-    say: (message) => say(message, { kind: "problem", id: "reader:bundle-load" }),
-    disposed: () => readerDisposed,
-  });
-  const publishedBundle = $derived(bundle.state.bundle);
-  const bundleUpdate = $derived(bundle.state.update);
-  const bundleStatus = $derived(bundle.state.stale);
-  const bundleMetadataReady = $derived(bundle.state.metadataReady);
-  const bundleMetadataFailed = $derived(bundle.state.metadataFailed);
-  const bundleBlocked = $derived(bundle.state.blocked);
   let me = $state({});
   // The displayed name, since this is what goes on a comment and what the
   // reader is shown commenting as. A Google account's handle is its email and
@@ -186,6 +161,35 @@
   // like live revision decisions. Keeping a waiter here lets the Changes pane
   // advance only after the server confirms the apply-on-accept operation.
   const suggestionDecisions = new Map();
+  const DECISION_TIMEOUT_MS = 15000;
+
+  function rejectDecision(request_id, error) {
+    const pendingDecision = suggestionDecisions.get(request_id);
+    if (!pendingDecision) return;
+    suggestionDecisions.delete(request_id);
+    clearTimeout(pendingDecision.timeout);
+    pendingDecision.rollback?.();
+    pendingDecision.reject(error instanceof Error ? error : new Error(String(error || "Review decision failed.")));
+  }
+
+  function requestDecision(message, { commentId = "", rollback = null } = {}) {
+    const request_id = newRequestKey();
+    const promise = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => rejectDecision(request_id, new Error("The review decision was not acknowledged.")), DECISION_TIMEOUT_MS);
+      suggestionDecisions.set(request_id, { commentId, resolve, reject, rollback, timeout });
+    });
+    let sent;
+    try { sent = collaboration?.send({ ...message, request_id }); }
+    catch (error) { rejectDecision(request_id, error); return promise; }
+    if (sent === undefined || sent === false) {
+      rejectDecision(request_id, new Error("Review transport is unavailable."));
+    } else if (sent?.then) {
+      sent.then((result) => {
+        if (result?.ok === false) rejectDecision(request_id, result.error || new Error("Review decision failed."));
+      }, (error) => rejectDecision(request_id, error));
+    }
+    return promise;
+  }
   // Everything said about the document is the annotations' to own. Anchoring
   // and repainting stay here: both depend on the frame, which that module
   // cannot see.
@@ -194,7 +198,7 @@
     anchor: anchorComments,
     repaint: applyHighlights,
     send: (message) => collaboration?.send(message),
-    bundleId: () => bundle.id(),
+    bundleId: () => renderedProjectDigest,
   });
   const comments = $derived(annotations.state.comments);
   const unconfirmed = $derived(annotations.state.unconfirmed);
@@ -211,9 +215,6 @@
   // looked up again in the page that replaces this one; the ask is the frame's
   // one-shot answer about where those words are, and the guard keeps a second
   // update from starting while the first is still in flight.
-  let returning = null;
-  let readingPositionAsk = null;
-  let takingUpdate = false;
 
   let preview = $state(null);
   // Both Quarto's own live preview and a Typst document previewed through
@@ -453,22 +454,7 @@
   // into a path.
   function anchorComments(list) {
     anchorAll(docText || "", list, docText === null ? null : docView);
-    if (publishedMode) {
-      for (const comment of list) {
-        if (comment.bundle_id === publishedBundle?.id) continue;
-        const found = anchorOne(docText || "", { ...shownSelector(comment), position: null, requireUnique: true }, docView);
-        comment.start = found?.start ?? null;
-        comment.end = found?.end ?? null;
-        // Not placed here, and the two reasons read differently to whoever
-        // left the comment. A comment that carries a bundle was made on a
-        // rendering of this document that is not the one on screen; one that
-        // carries none was made in the editor, on a draft this reader has
-        // never been shown -- and for a reader its quotation is withheld, so
-        // there was never anything to match in the first place.
-        comment.earlierBundle = !found && !!comment.bundle_id;
-        comment.fromDraft = !found && !comment.bundle_id;
-      }
-    } else if (mayEdit) placeSources(session, list);
+    if (mayEdit) placeSources(session, list);
     for (const comment of list) applyAnchorFlags(comment);
   }
 
@@ -480,71 +466,8 @@
     tracePassages();
   }
 
-  // Where the reader has got to, asked of the page itself.
-  //
-  // The frame answers once. It is given a moment and no more: a frame that is
-  // navigating, or one that never loaded its agent, would otherwise hold the
-  // update back indefinitely, and an update taken without a bookmark only
-  // costs the reader their place -- not the update.
-  function askReadingPosition() {
-    return new Promise((resolve) => {
-      if (!frameReady || docText === null) {
-        resolve(null);
-        return;
-      }
-      let settled = false;
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
-        readingPositionAsk = null;
-        resolve(value);
-      };
-      readingPositionAsk = finish;
-      tell({ type: "reading-position" });
-      setTimeout(() => finish(null), 500);
-    });
-  }
-
-  // Take the newer published version, and remember the page well enough to
-  // come back to the same words. Both the automatic path and the button go
-  // through here: a refresh that drops the reader at the top of a long paper
-  // is a poor answer however it was asked for.
-  async function takeUpdate({ automatic = false } = {}) {
-    if (takingUpdate) return;
-    takingUpdate = true;
-    try {
-      const at = await askReadingPosition();
-      returning = at === null ? null : bookmarkFrom(docText || "", at);
-      await bundle.acceptUpdate();
-      // Said only when nobody asked. A page that changes under a reader who
-      // pressed nothing needs to account for itself; one that changes because
-      // they pressed Refresh does not.
-      if (automatic) {
-        say("Updated to the newest published version.", { id: "reader:bundle-updated" });
-      }
-    } finally {
-      takingUpdate = false;
-    }
-  }
-
-  // Put the reader back. The words are looked up in the new page the same way
-  // a comment's passage is, so a paragraph added above them costs nothing; a
-  // passage that has been rewritten since is simply not found, and the page
-  // opens where it opens rather than scrolling somewhere arbitrary.
-  function returnToReading() {
-    const wanted = returning;
-    returning = null;
-    if (!wanted || docText === null) return;
-    const found = anchorOne(docText, { ...wanted, position: null, requireUnique: true }, docView);
-    if (!found) return;
-    tell({ type: "locate", start: found.start, length: Math.max(1, found.end - found.start) });
-  }
-
   function fromFrame(message) {
     switch (message.type) {
-      case "reading-position":
-        readingPositionAsk?.(Number(message.start) || 0);
-        break;
       case "ready":
         docText = typeof message.text === "string" ? message.text : "";
         docView = flatten(docText);
@@ -557,15 +480,12 @@
         // loop.
         const first = framePreview.markReady();
         frameReady = true;
-        if (first && !publishedMode) replayPreview();
+        if (first) replayPreview();
         // Whatever was painted before is gone with the rebuilt DOM.
         frameOverlays.reset();
         reanchor();
-        // The page has just been replaced by a newer published version. Put
-        // the reader back where they were before anything else is drawn on it.
-        returnToReading();
         applySelection();
-        if (first && !publishedMode) {
+        if (first) {
           void paintPreview();
         }
         break;
@@ -600,7 +520,10 @@
   //
   // What the bar offers over what is selected. Nothing is offered when
   // nothing is.
-  const shownVerbs = $derived(pending ? VERBS : []);
+  const renderedProjectCurrent = $derived(
+    mayEdit || Boolean(renderedProjectDigest && renderedProjectDigest === currentProject?.project_digest),
+  );
+  const shownVerbs = $derived(pending && renderedProjectCurrent ? VERBS : []);
   let highlightColor = $state(HIGHLIGHT_COLORS[0]);
   let palette = $state(false);
   let pending = $state(null);
@@ -625,7 +548,7 @@
       suffix: String(selector.suffix || ""),
       position: Number.isInteger(selector.position) && selector.position >= 0 ? selector.position : null,
     };
-    pending.bundle_id = publishedMode ? publishedBundle?.id || "" : "";
+    pending.bundle_id = mayEdit ? "" : renderedProjectDigest;
     placeBar(rect);
   }
 
@@ -774,26 +697,6 @@
     return Math.round(height) + 9;
   }
 
-  // A newer published version, taken as soon as the reader is not in the
-  // middle of something.
-  //
-  // The offer is not a neutral thing to leave sitting there: an annotation
-  // must name the bundle it was made on, so `submitAnnotation` refuses while
-  // one is outstanding, and a reader who never presses the button eventually
-  // finds that commenting has stopped working and is told to refresh. Taking
-  // it for them is the same act a moment earlier, and this effect re-runs when
-  // the selection or the draft clears -- so an update held back during a
-  // sentence is taken as soon as that sentence is finished.
-  $effect(() => {
-    if (!publishedMode) return;
-    const may = mayApplyUpdate({
-      offered: bundleUpdate,
-      selecting: Boolean(pending),
-      composing: Boolean(composing),
-    });
-    if (may) void takeUpdate({ automatic: true });
-  });
-
   // How wide the bar is is only knowable once it is drawn, so the placing
   // above is made good here, after it is: re-centred on the point it was
   // centred on, now that the width it was centred with is the real one.
@@ -842,6 +745,10 @@
   // that names the verb is also the one that makes it.
   function annotate(which) {
     if (!pending || !mayChat) return;
+    if (!renderedProjectCurrent) {
+      say("The source changed and the current page is still rendering. Your selection is kept; retry after the page updates.", { kind: "problem", id: "reader:source-rendering" });
+      return;
+    }
     bar = { ...bar, shown: false };
     palette = false;
     if (which === "highlight") {
@@ -865,8 +772,8 @@
 
   function submitAnnotation({ motivation, body }) {
     if (!pending || !mayChat) return false;
-    if (publishedMode && (bundleUpdate || pending.bundle_id !== publishedBundle?.id)) {
-      say("This document has been published to since the passage was selected. Refresh, select it again, and submit; the draft is kept.", { kind: "problem", id: "reader:published-moved" });
+    if (!mayEdit && pending.bundle_id !== currentProject?.project_digest) {
+      say("The source changed since this passage was selected. Wait for the current page to finish rendering, then select the passage again; the draft is kept.", { kind: "problem", id: "reader:source-moved" });
       return false;
     }
     // The server determines the author when it acknowledges the submission.
@@ -889,8 +796,8 @@
   function sendDraft({ body }) {
     if (!composing) return false;
     const held = composing.pending;
-    const moved = publishedMode && held.bundle_id !== publishedBundle?.id;
-    const reselected = moved && pending && pending.bundle_id === publishedBundle?.id;
+    const moved = !mayEdit && held.bundle_id !== currentProject?.project_digest;
+    const reselected = moved && pending && pending.bundle_id === renderedProjectDigest;
     pending = reselected ? { ...pending } : held;
     if (!submitAnnotation({ motivation: motivationFor("comment"), body })) return false;
     composing = null;
@@ -910,53 +817,21 @@
   function decideSuggestion(comment, action) {
     suggestions.beginDeciding(comment, action);
     annotations.publish();
-    const request_id = newRequestKey();
-    const promise = new Promise((resolve, reject) => suggestionDecisions.set(request_id, { commentId: comment.id, resolve, reject }));
-    let sent;
     // A suggestion is a proposal with a remark attached (§1.2), so deciding one
     // is deciding its hunk. A suggestion is one hunk by construction, which is
     // why the index is zero, and the tip it was reviewed against travels with
     // the decision so that a suggestion the author has refined since is refused
     // rather than agreed to in a form nobody read.
-    try {
-      sent = collaboration?.send({
+    return requestDecision({
         type: "proposal-decide",
         proposal_id: comment.proposal,
         hunk: 0,
         accepted: action === "accept",
         tip: proposalTip(comment.proposal),
-        request_id,
-      });
-    }
-    catch (error) {
-      suggestionDecisions.delete(request_id);
+      }, { commentId: comment.id, rollback: () => {
       suggestions.clearDeciding(comment);
       annotations.publish();
-      return Promise.reject(error);
-    }
-    if (sent === undefined || sent === false) {
-      suggestionDecisions.delete(request_id);
-      suggestions.clearDeciding(comment);
-      annotations.publish();
-      return Promise.reject(new Error("Review transport is unavailable."));
-    }
-    if (sent?.then) sent.then((result) => {
-      if (result?.ok !== false) return;
-      const pendingDecision = suggestionDecisions.get(request_id);
-      if (!pendingDecision) return;
-      suggestionDecisions.delete(request_id);
-      suggestions.clearDeciding(comment);
-      annotations.publish();
-      pendingDecision.reject(result.error instanceof Error ? result.error : new Error(result.error || "Suggestion decision failed."));
-    }).catch((error) => {
-      const pendingDecision = suggestionDecisions.get(request_id);
-      if (!pendingDecision) return;
-      suggestionDecisions.delete(request_id);
-      suggestions.clearDeciding(comment);
-      annotations.publish();
-      pendingDecision.reject(error);
-    });
-    return promise;
+      } });
   }
 
   async function rejectConfirmed(comment) {
@@ -1085,7 +960,11 @@
       for (const hunk of hunks) {
         const text = hunk.file ? session.textOf?.(hunk.file) : null;
         const body = text ? text.toString() : null;
-        const fits = body !== null && hunk.start >= 0 && hunk.start + hunk.deleted <= body.length;
+        const end = hunk.start + hunk.deleted;
+        const fits = body !== null && hunk.start >= 0 && end <= body.length
+          && (hunk.before === undefined || body.slice(hunk.start, end) === hunk.before)
+          && (!hunk.prefix || body.slice(Math.max(0, hunk.start - hunk.prefix.length), hunk.start) === hunk.prefix)
+          && (!hunk.suffix || body.slice(end, end + hunk.suffix.length) === hunk.suffix);
         rows.push({
           // The proposal and the index within it are the decision; the joined
           // id is only so the list has something to key rows on.
@@ -1096,7 +975,7 @@
           file_id: hunk.file || "",
           path: (hunk.file && session.paths?.get(hunk.file)) || "",
           position: hunk.start,
-          before: fits ? body.slice(hunk.start, hunk.start + hunk.deleted) : "",
+          before: hunk.before || "",
           after: hunk.inserted,
           stale: fits ? "" : "The text this was written against has changed.",
         });
@@ -1133,7 +1012,7 @@
     const touched = new Set(
       reviewRows.filter((row) => chosen.includes(row.proposal) && row.file_id).map((row) => row.file_id),
     );
-    const id = (showing && touched.has(showing) && showing) || [...touched][0] || showing;
+    const id = (openFile && touched.has(openFile) && openFile) || [...touched][0] || "";
     if (!id) return;
     const path = session.paths?.get(id) || "";
     const live = session.textOf?.(id);
@@ -1211,31 +1090,19 @@
   function decideProposal(row, action) {
     const tip = proposalTip(row.proposal);
     if (!tip) return Promise.reject(new Error("That proposal is no longer open."));
-    const request_id = newRequestKey();
-    const promise = new Promise((resolve, reject) => suggestionDecisions.set(request_id, { commentId: "", resolve, reject }));
-    let sent;
-    try {
-      sent = collaboration?.send({
+    return requestDecision({
         type: "proposal-decide",
         proposal_id: row.proposal,
         hunk: row.hunk,
         accepted: action === "accept",
         tip,
-        request_id,
       });
-    } catch (error) {
-      suggestionDecisions.delete(request_id);
-      return Promise.reject(error);
-    }
-    if (sent === undefined || sent === false) {
-      suggestionDecisions.delete(request_id);
-      return Promise.reject(new Error("Review transport is unavailable."));
-    }
-    return promise;
   }
 
   function receive(event) {
-    if (event.type?.startsWith("proposal-") || (event.type === "error" && event.stale)) {
+    const proposalWaiter = event.request_id && suggestionDecisions.get(event.request_id);
+    if (event.type?.startsWith("proposal-")
+        || (event.type === "error" && event.stale && (event.proposal_id || (proposalWaiter && !proposalWaiter.commentId)))) {
       if (event.type === "proposal-list") {
         openProposals.clear();
         for (const open of event.proposals || []) {
@@ -1268,6 +1135,7 @@
       const waiting = event.request_id && suggestionDecisions.get(event.request_id);
       if (waiting) {
         suggestionDecisions.delete(event.request_id);
+        clearTimeout(waiting.timeout);
         if (event.type === "proposal-decided") waiting.resolve(event);
         else waiting.reject(new Error(event.message || "that decision was refused"));
       }
@@ -1279,10 +1147,12 @@
     if (pendingSuggestion && (event.type === "accept" || event.type === "reject")) {
       if (String(event.comment_id) === String(pendingSuggestion.commentId)) {
         suggestionDecisions.delete(event.request_id);
+        clearTimeout(pendingSuggestion.timeout);
         pendingSuggestion.resolve(event);
       }
     } else if (pendingSuggestion && event.type === "error") {
       suggestionDecisions.delete(event.request_id);
+      clearTimeout(pendingSuggestion.timeout);
       pendingSuggestion.reject(new Error(event.message || event.error || "Suggestion decision failed."));
     }
     if (annotations.receive(event)) return;
@@ -1362,10 +1232,6 @@
       session
         ?.start(event)
         .then(() => {
-          // Binding the initial tree does not produce an observed source
-          // edit. Bundle metadata must therefore begin only after this
-          // state has been applied, rather than waiting for a later edit.
-          if (mayEdit && bundle.begin()) void refreshBundleMetadata();
           return paintPreview();
         })
         .catch((error) => say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" }));
@@ -1402,10 +1268,11 @@
       return;
     }
 
-    if (event.type === "bundle-updated") {
-      bundle.announce({ bundle_id: event.bundle_id });
+    if (event.type === "project-changed") {
+      scheduleCurrentProjectRefresh();
       return;
     }
+
 
     if (event.type === "attachment") {
       // The server has resolved where a comment's passage is now, after
@@ -1752,7 +1619,19 @@
   // its list remains live while the document pane is showing a checkpoint, so
   // downloads must use the same source as that list.
   function liveTreeNow() {
-    if (!session) return { main: "", texts: {}, digests: {} };
+    if (!session) {
+      if (!currentProject) return { main: "", texts: {}, digests: {} };
+      const digests = {};
+      for (const [path, file] of Object.entries(currentProject.tree?.files || {})) {
+        if (file?.kind === "asset" && file.sha) digests[path] = file.sha;
+      }
+      return {
+        main: currentProject.main || currentProject.tree?.main || "",
+        texts: { ...(currentProject.texts || {}) },
+        digests,
+        settings: currentProject.tree?.settings || null,
+      };
+    }
     const tree = session.tree();
     if (!tree.main) return tree;
     // CodeMirror owns the active Loro binding and exposes the text it is
@@ -1933,7 +1812,7 @@
   );
   const typstHtmlPreview = $derived(displayedFormat === "typst" && typstOutput === "html");
   const latexHtmlPreview = $derived(displayedFormat === "latex" && latexOutput === "html");
-  const paintsTheFrame = $derived(!publishedMode);
+  const paintsTheFrame = $derived(true);
 
   /* -------------------------------------------------------------- LaTeX */
 
@@ -1941,7 +1820,7 @@
   // viewer on the documents origin rather than the empty shell. Everything
   // else about the frame is the same: same origin, same CSP, same channel.
   const pdfOutput = $derived(previewOutputKind === "pdf");
-  const framePath = $derived(publishedMode ? "" : (previewOutputKind === "pdf" ? "pdf" : "raw"));
+  const framePath = $derived(previewOutputKind === "pdf" ? "pdf" : "raw");
 
   // How long the last compile took, and whether one is running now. Paged
   // formats expose the same short-lived loading state; the elapsed time is
@@ -1984,7 +1863,7 @@
   const setBuildPreferences = (next) => buildSettings.choose(next, sourceFormat);
   const stopLatex = () => buildSettings.stopLatex();
 
-  const configureLatex = (format) => buildSettings.configureLatex(format, session, buildUserId);
+  const configureLatex = (format, owner = session) => buildSettings.configureLatex(format, owner, buildUserId);
 
   // The most recent LaTeX compile result -- success or failure -- kept whole
   // for Diagnostics' "Compiled with" block and "Earlier attempts" list
@@ -2143,7 +2022,7 @@
   /// Puts the last page this browser drew for this document into the frame,
   /// if the frame has nothing newer in it yet.
   async function restoreLastPreview() {
-    const remembered = await lastPreview(SLUG);
+    const remembered = await lastPreview(previewCacheKey());
     // A compile can beat this; IndexedDB is fast but it is not free. The
     // cached page is only ever a stand-in for an empty pane.
     if (!remembered || readerDisposed || everPainted || !paintsTheFrame) return;
@@ -2161,7 +2040,7 @@
   const frameLoaded = () => {
     const first = framePreview.markReady();
     frameReady = true;
-    if (first && !publishedMode) replayPreview();
+    if (first) replayPreview();
   };
 
   // The kind of frame follows the tree being displayed, including a
@@ -2229,7 +2108,10 @@
     slug: SLUG,
     coordinator: renderCoordinator,
     status: renderStatus,
-    framePreview: { publish: (payload) => framePreview.publish(payload) },
+    framePreview: {
+      publish: (payload) => framePreview.publish(payload),
+      clear: () => framePreview.clear(),
+    },
     diagnostics: diagnosticPainter,
     renderers,
     snapshotDigest,
@@ -2240,7 +2122,16 @@
       // whatever the frame was standing in with is no longer what it holds.
       paintedFromCache = false;
       cacheMatchedSource = false;
-      rememberPreview(SLUG, page, identity);
+      rememberPreview(previewCacheKey(), page, identity);
+    },
+    onRendered: (_identity, projectDigest) => {
+      if (!mayEdit) renderedProjectDigest = projectDigest || "";
+    },
+    onEmpty: () => {
+      deliveredKind = "";
+      everPainted = false;
+      everPaintedShown = false;
+      activeSynctex = null;
     },
     facts: () => ({
       disposed: readerDisposed,
@@ -2254,6 +2145,7 @@
       typstOutput,
       buildPreferences,
       localExecution,
+      projectDigest: mayEdit ? "" : currentProject?.project_digest || "",
       // A local tool's own preview owns the pane while it is running or
       // starting. Answered here because only this page knows which of the two
       // local previews a given format would be using.
@@ -2287,12 +2179,6 @@
   // pause, so remote changes and preview-only views do not render every word.
   const PASSIVE_PREVIEW_DEBOUNCE = 1000;
 
-  // A bundle records both the complete source tree and the HTML renderer
-  // identity. `document.sha` is only the main source file's digest, so it
-  // cannot answer whether a multi-file project is still the one published.
-  const refreshBundleStatus = (against) => bundle.refreshStatus(against);
-  const refreshBundleMetadata = () => bundle.refreshMetadata();
-
   function sourceChanged() {
     if (readerDisposed) return;
     sourceGeneration += 1;
@@ -2302,14 +2188,6 @@
     // that into a card marked stale rather than a card that still offers to
     // replace words nobody is looking at any more.
     refreshReview();
-    if (mayEdit && publishedBundle?.source_sha256) {
-      void refreshBundleStatus();
-    }
-    // Readers hold a link, not the source, so the only rendering they can be
-    // shown is one this browser builds for them. Every edit puts that
-    // rebuild back on the clock rather than leaving it for somebody to
-    // remember to press.
-    if (mayEdit) bundle.keepCurrent();
     outlineRevision += 1;
     if (typeof quartoLiveActive !== "undefined" && quartoLiveActive && typeof quartoPreview !== "undefined" && (quartoPreview || quartoPreviewStarting)) {
       clearTimeout(quartoLiveSyncTimer);
@@ -2518,7 +2396,10 @@
 
   // Kept current for the background work that consults it.
   $effect(() => {
-    const track = () => (hidden = document.visibilityState === "hidden");
+    const track = () => {
+      hidden = document.visibilityState === "hidden";
+      if (!hidden && projectRefreshPending && !mayEdit) scheduleCurrentProjectRefresh();
+    };
     document.addEventListener("visibilitychange", track);
     return () => document.removeEventListener("visibilitychange", track);
   });
@@ -3042,13 +2923,14 @@
       onConnected: (up) => {
         connected = up;
         if (!up) {
+          for (const request_id of [...suggestionDecisions.keys()]) rejectDecision(request_id, new Error("The review connection closed before the decision was acknowledged."));
           pendingChat?.disconnect();
           outbox.disconnected();
         }
         // A publish that happened while this browser was not listening was
         // announced to nobody: the offer is pushed over this very socket. So
         // the way back up is where a reader asks whether they missed one.
-        if (up && publishedMode && !mayEdit) void bundle.checkForUpdate();
+        if (up && !mayEdit) void refreshCurrentProject();
       },
       onPeers: (count) => (peers = Math.max(peers, count)),
       onState: (state_) => {
@@ -3069,12 +2951,7 @@
           if (!readerDisposed && active === session) void paintPreview();
         });
       },
-      onSource: (active) => {
-        // The first source of a session is what says the document exists to
-        // be compared against a bundle; later ones are edits.
-        if (mayEdit && bundle.begin()) void refreshBundleMetadata();
-        sourceChanged();
-      },
+      onSource: () => sourceChanged(),
       onSwap: () => (sourceEpoch += 1),
       onFiles: filesChanged,
       onAwareness: refreshPeers,
@@ -3084,6 +2961,50 @@
       },
     });
     session = collaboration.start(document_);
+  }
+
+  async function refreshCurrentProject() {
+    if (readerDisposed || mayEdit) return;
+    if (projectFetch) {
+      projectRefreshPending = true;
+      return projectFetch;
+    }
+    const headers = authHeaders(KEY);
+    if (projectEtag) headers["If-None-Match"] = projectEtag;
+    projectFetch = (async () => {
+      const response = await fetch(`/api/documents/${encodeURIComponent(SLUG)}/project`, { headers });
+      if (response.status === 304) return;
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The current project could not be loaded.");
+      const next = await response.json();
+      if (readerDisposed || mayEdit) return;
+      projectEtag = response.headers.get("etag") || `"${next.project_digest}"`;
+      currentProject = next;
+      sourceFormat = next.format || sourceFormat;
+      configureLatex(sourceFormat, readerProjectOwner);
+      sourceGeneration += 1;
+      outlineRevision += 1;
+      settled = true;
+      renderers.warm(sourceFormat);
+      void paintPreview();
+    })().catch((error) => {
+      if (!readerDisposed) say(error.message || "The current project could not be loaded.", { kind: "problem", id: "reader:project-load" });
+    }).finally(() => {
+      projectFetch = null;
+      if (projectRefreshPending) {
+        scheduleCurrentProjectRefresh();
+      }
+    });
+    return projectFetch;
+  }
+
+  function scheduleCurrentProjectRefresh() {
+    projectRefreshPending = true;
+    if (hidden || projectRefreshTimer !== null) return;
+    projectRefreshTimer = setTimeout(() => {
+      projectRefreshTimer = null;
+      projectRefreshPending = false;
+      void refreshCurrentProject();
+    }, 1000);
   }
 
   // What this browser may do with the document, and whether it can render it
@@ -3097,6 +3018,8 @@
     // Quarto documents; configuring before this assignment leaves the
     // companion inactive and the pane stuck on its Markdown fallback.
     mayEdit = Boolean(allowed);
+    const offeredRenderers = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
+    renderers.offerLatex(offeredRenderers.includes("latex"));
     // The workspace guards its own writes, so it is told once, here, where
     // the permission is settled.
     ws.canEdit = mayEdit;
@@ -3107,38 +3030,11 @@
         .then((record) => { offlinePrepared = Boolean(record); })
         .catch(() => {});
     }
-    if (mayEdit) bundle.watchAsEditor();
-    // Reader and commenter links receive the current immutable display bundle.
-    // They never join the source room, ask for a snapshot, or start a local
-    // renderer. The bundle URL is an authenticated server response and
-    // remains useful even when there is no bundle yet.
+    // Reader and commenter links receive an allowlisted projection of the
+    // current project. They share the renderer but never join CRDT sync.
     if (!mayEdit) {
-      publishedMode = true;
       await startCollaboration(document_, { sourceSync: false });
-      const visitor = bundle.watchAsVisitor({
-        // Where the published bundle is served from. Checked against the
-        // origin this document names: a URL from anywhere else is refused
-        // rather than loaded into the frame.
-        onBundle: (value) => {
-          if (!value?.html_url) return;
-          const source = value.html_url;
-          if (typeof source !== "string" || !/^https?:\/\//.test(source)) return;
-          const resolved = new URL(source);
-          if (document_.docs_origin && resolved.origin !== document_.docs_origin) {
-            say("The published version is hosted somewhere this deployment does not allow, so it was not shown.", { kind: "problem", id: "reader:bundle-origin" });
-            return;
-          }
-          frameSrc = resolved.href;
-          docsOrigin = resolved.origin;
-          everPainted = true;
-          everPaintedShown = true;
-        },
-      });
-      await visitor.refresh();
-      // No bundle is an explicit state, never a reason to fall back to
-      // source rendering. Keep the document pane available for the notice.
-      sourceFormat = "html";
-      settled = true;
+      await refreshCurrentProject();
       return;
     }
     // Rendering follows the durable source format. Generated-result identity
@@ -3150,8 +3046,6 @@
     if (["quarto", "typst", "markdown"].includes(format)) readQuartoBinding();
     // Every reader compiles from source when the browser has the engine. A
     // missing engine produces an actionable local-tool message below.
-    const list = Array.isArray(document_.renderers) ? document_.renderers : ["markdown"];
-    renderers.offerLatex(list.includes("latex"));
     if (!renderers.outputKind(format)) {
       say(`A ${format} document is read where its renderer is built, and this browser has none for it.`, { kind: "problem", id: "reader:no-renderer" });
       settled = true;
@@ -3240,14 +3134,15 @@
       // A page compiled in the last few seconds is still waiting out its
       // settling pause. Leaving is the moment it is worth most: it is the
       // page this document will open with next time.
-      void flushPreview(SLUG);
+      void flushPreview(previewCacheKey());
       stopQuartoStatus();
       renderCoordinator.invalidate();
       navigationGeneration += 1;
       renderers.cancelPreview();
-      bundle.dispose();
       clearTimeout(reviewTimer);
       clearTimeout(previewTimer);
+      clearTimeout(projectRefreshTimer);
+      projectRefreshTimer = null;
       previewTimer = null;
       boot.dispose();
       passages.clearPassageCache();
@@ -3608,14 +3503,6 @@
          rather than the frame's, so it belongs with the rest of what this bar
          says about the document. -->
     {@render previewStatusControl()}
-    {#if publishedMode && bundleUpdate}
-      <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => void takeUpdate()}>
-        New published version available · Refresh
-      </button>
-    {/if}
-    {#if mayEdit && bundleStatus}
-      <button type="button" class="btn btn-sm preset-tonal-warning" onclick={() => openPanel("share")}>Unpublished changes</button>
-    {/if}
     <!-- What the keyboard does, one press away from the bar rather than a
          page of documentation away. It is in the bar because that is where a
          person looks for what the window can do, and it opens the same table
@@ -3749,9 +3636,6 @@
   {#snippet sharePanel()}
     <Share open={panel === "share" && shown.comments} inline slug={SLUG}
       canShare={doc.role === "owner"}
-      bundleReady={bundleMetadataReady} bundleFailed={bundleMetadataFailed}
-      bundleBlocked={bundleBlocked}
-      onrefreshbundle={refreshBundleMetadata}
       onclose={() => showPanel("")} />
   {/snippet}
 
@@ -3939,13 +3823,6 @@
         }} />
     {/if}
   {/snippet}
-  {#if publishedMode && !publishedBundle?.id}
-    <section class="latexpane"><div class="notyet" role="status">
-      <h2 class="h4">Nothing to read yet</h2>
-      <p class="text-surface-700-300 text-sm">This document has not been rendered for readers yet. It appears here as
-        soon as somebody with access opens it and it renders.</p>
-    </div></section>
-  {/if}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
            away={!shown.document || unrendered || failedBeforeRender} />
@@ -4043,7 +3920,7 @@
                 {sourceFormat} {mayEdit}
                 {keys} onkeys={setKeys} commands={commandContext}
                 buildPreferences={buildPreferences} documentId={SLUG} userId={buildUserId} onbuildpreferences={setBuildPreferences}
-                main={previewMain} bindingId={quartoBindingId} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
+                main={previewMain} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
                 options={quartoOptions}
                 onapplyoptions={applyRenderOptions}
                 account={me} />

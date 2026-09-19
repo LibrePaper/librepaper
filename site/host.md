@@ -43,7 +43,7 @@ holds real work; `librepaper admin backup create` writes a verified recovery poi
 all of it, and `librepaper admin backup restore` restores one into a fresh
 directory.
 See the [operator cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/cost-policy.md) for the complete defaults,
-advanced YAML schema, `admin status` command, capacity accounting, and backup
+advanced YAML schema, the loopback `/api/status` endpoint, capacity accounting, and backup
 reservations.
 
 The storage flags bound what a deployment will store:

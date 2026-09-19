@@ -40,7 +40,8 @@ connections for administration and backup. Upload, render, agent, room, socket,
 and outbound-memory limits are also bounded by the server configuration shown
 by `librepaper admin serve --help`.
 
-Use `librepaper admin status` over loopback for operational state. PostgreSQL
+Fetch `/api/status` over loopback for operational state, for example
+`curl http://127.0.0.1:8080/api/status`. PostgreSQL
 database size and object-bucket byte/request metrics should come from their
 respective providers and alerts. Do not use object listings to reconstruct
 permissions or current heads; those live in PostgreSQL.

@@ -34,6 +34,8 @@ export function createPreviewRenderer({
   /// Keeps the page that was just drawn, so the next visit to this document
   /// has something to show while its engine loads and its source compiles.
   rememberPreview = (_page, _identity) => {},
+  onRendered = (_identity) => {},
+  onEmpty = () => {},
   /// Everything about the page that a render has to re-read after an await.
   /// One call rather than one getter per fact, because they are read
   /// together and a render compares a whole moment against another whole
@@ -84,6 +86,7 @@ export function createPreviewRenderer({
     const source = tree();
     const capturedNavigation = start.navigation;
     const capturedSource = start.source;
+    const capturedProjectDigest = start.projectDigest || "";
     let identity = "";
     const format = renderers.formatOf(source.main);
     debug("preview: tree", source.main, format, Object.keys(source.texts || {}).length);
@@ -91,13 +94,19 @@ export function createPreviewRenderer({
     // Rendering that placeholder used to call the renderer registry with an
     // empty format and permanently consume the initial paint.
     if (!source.main || !format) return;
-    // A main file with nothing in it is not a document either. It is a project
-    // whose state has not finished arriving, or one nobody has typed into yet,
-    // and compiling it is how a person gets told "! Emergency stop." by pdfTeX
-    // over an empty file -- which reads as a broken compiler rather than as a
-    // page nobody has written. The pane keeps whatever it already shows, the
-    // way it does for a placeholder with no main path at all.
-    if (!String(source.texts?.[source.main] ?? "").trim()) return;
+    // A known main path distinguishes an intentionally empty document from
+    // the pre-hydration placeholder above. Never leave the previous document
+    // or its downloadable artifact on screen after select-all/delete.
+    if (!String(source.texts?.[source.main] ?? "").trim()) {
+      coordinator.commit(ticket);
+      status.clearDocx();
+      framePreview.clear?.();
+      onRendered("", capturedProjectDigest);
+      onEmpty();
+      send({ type: "preview", html: "<!doctype html><meta charset=utf-8><title>Empty document</title><main style='font:16px system-ui;padding:2rem'>This document is empty.</main>" });
+      diagnostics.rendered({ page: "", diagnostics: [] });
+      return;
+    }
     // The paged formats produce a flow page unless this browser has asked for
     // pages. Whether the source pane is open does not come into it: HTML is
     // the default output, and a reader is shown what an author is shown.
@@ -221,6 +230,7 @@ export function createPreviewRenderer({
         const page = { kind: "pdf", sha: identity, bytes: new Uint8Array(buffer.slice(0)) };
         framePreview.publish(page);
         rememberPreview(page, identity);
+        onRendered(identity, capturedProjectDigest);
         if (capturedSource === facts().source) {
           diagnostics.rendered({ page: "", diagnostics: contextual });
         }
@@ -249,6 +259,7 @@ export function createPreviewRenderer({
         // keystroke.
         framePreview.publish({ kind: "html", html });
         rememberPreview({ kind: "html", html }, identity);
+        onRendered(identity, capturedProjectDigest);
         if (capturedSource === facts().source) {
           diagnostics.rendered({ page: html, diagnostics: contextual });
         }

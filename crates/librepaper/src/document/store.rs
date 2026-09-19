@@ -152,9 +152,8 @@ pub struct Ceiling {
     /// Whether this caller may comment here at all.
     pub comment: bool,
     /// Whether this caller may publish here, and so be named an editor. A
-    /// link names nobody, so it is asked with an empty handle, and that is
-    /// true only under `--publishers anyone`: a link cannot edit anywhere
-    /// this deployment would otherwise ask for a sign-in first.
+    /// link names nobody, so it is asked with an empty handle, and publishing
+    /// always asks for a sign-in first, so a link never edits.
     pub edit: bool,
 }
 

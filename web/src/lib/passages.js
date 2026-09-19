@@ -131,6 +131,7 @@ export function tracedBy(comment, paths) {
   const target = anchor.target;
   return {
     checkpoint: anchor.checkpoint_id || "",
+    created: comment.created || "",
     file_id: target.file_id,
     path: paths?.get?.(target.file_id) || "",
     selector: { exact: target.exact, prefix: target.prefix || "", suffix: target.suffix || "" },
@@ -146,37 +147,57 @@ export function tracedBy(comment, paths) {
 /// manifest entry, or null when there is nothing to say: no history to look
 /// in, or a passage that turns out still to be there.
 export async function wentAt(slug, traced, checkpoints, headers = {}, atSource = sourceTextAt) {
-  if (!checkpoints?.length || !traced) return null;
+  if (!checkpoints?.length || !traced?.checkpoint) return null;
   // A comment from before checkpoints were recorded on one, or one whose
   // checkpoint has since been shed, is read as made on the oldest moment the
   // manifest still has. That is the earliest thing that could be true of it.
   const own = checkpoints.findIndex((point) => point.sha === traced.checkpoint);
-  let low = own >= 0 ? own : 0;
-  let high = checkpoints.length - 1;
-  if (low >= high) return null;
 
   // Every checkpoint supplies the name this same file had at that moment.
   const selector = traced.selector;
   const read = (sha) => atSource(slug, sha, { file_id: traced.file_id }, headers);
 
-  // The passage has to have been there to have gone. A comment whose own
-  // checkpoint does not hold it is one whose quotation this cannot reason
-  // about, and saying nothing is better than naming a moment at random.
-  const ownText = await read(checkpoints[low].sha);
+  // A live comment names an operation-log frontier rather than a checkpoint.
+  // Read that exact source first; falling back to the oldest checkpoint loses
+  // passages introduced later in the document's life.
+  const ownText = await read(traced.checkpoint);
   if (typeof ownText !== "string" || !holds(ownText, selector)) return null;
-  const newestText = await read(checkpoints[high].sha);
-  if (typeof newestText !== "string" || holds(newestText, selector)) return null;
 
-  // Invariant: it is in `low` and not in `high`. Each step halves the gap, so
-  // the answer costs about five checkpoint reads on a history of thirty.
+  if (own >= 0) {
+    let low = own;
+    let high = checkpoints.length - 1;
+    if (low >= high) return null;
+    const newestText = await read(checkpoints[high].sha);
+    if (typeof newestText !== "string" || holds(newestText, selector)) return null;
+    while (high - low > 1) {
+      const middle = (low + high) >> 1;
+      const middleText = await read(checkpoints[middle].sha);
+      if (typeof middleText !== "string") return null;
+      if (holds(middleText, selector)) low = middle;
+      else high = middle;
+    }
+    return checkpoints[high];
+  }
+
+  // A live frontier is not itself in the checkpoint manifest. Its comment
+  // timestamp gives the lower bound: older removals and reintroductions are
+  // unrelated to a passage known to exist when this comment was written.
+  const created = Date.parse(traced.created);
+  if (!Number.isFinite(created)) return null;
+  const after = checkpoints.filter((point) => (Date.parse(point.at) || 0) >= created);
+  if (!after.length) return null;
+  let low = -1; // the frontier itself, already proved to contain the passage
+  let high = after.length - 1;
+  const newestText = await read(after[high].sha);
+  if (typeof newestText !== "string" || holds(newestText, selector)) return null;
   while (high - low > 1) {
     const middle = (low + high) >> 1;
-    const middleText = await read(checkpoints[middle].sha);
+    const middleText = await read(after[middle].sha);
     if (typeof middleText !== "string") return null;
     if (holds(middleText, selector)) low = middle;
     else high = middle;
   }
-  return checkpoints[high];
+  return after[high];
 }
 
 /// Finds what replaced a comment's quotation between two versions. The

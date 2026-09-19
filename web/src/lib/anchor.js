@@ -195,7 +195,6 @@ export function aboutWholeDocument(comment) {
   // the words were withheld: a comment written in the editor quotes the draft,
   // which a reader has not been shown, so the server drops the quotation and
   // says outright that a passage is what this is about.
-  if (comment?.passage_withheld) return false;
   return !comment?.presentation?.rendered_exact;
 }
 

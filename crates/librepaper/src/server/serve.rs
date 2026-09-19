@@ -430,7 +430,7 @@ pub async fn serve(options: ServeOptions) {
             config.max_document, config.max_assets, config.storage.documents_per_owner
         );
         println!(
-            "    transfer: {} per rolling 24 hours; run `librepaper admin status` for details",
+            "    transfer: {} per rolling 24 hours; GET /api/status over loopback for details",
             config
                 .cost
                 .transfer_bytes

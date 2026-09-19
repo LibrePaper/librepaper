@@ -17,6 +17,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents/{slug}/mcp", any(mcp))
         .route("/api/documents/{slug}/delete", post(delete_document))
         .route("/api/documents/{slug}/state", get(document_state))
+        .route("/api/documents/{slug}/project", get(document_project))
         .route("/api/documents/{slug}/history", get(history))
         .route("/api/documents/{slug}/activity", get(activity))
         .route("/api/documents/{slug}/at", get(document_at))
@@ -41,16 +42,6 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route(
             "/api/documents/{slug}/assistant/capabilities",
             get(assistant_capabilities),
-        )
-        .route("/api/documents/{slug}/bundle", any(bundle_meta))
-        .route("/api/documents/{slug}/bundle/prepare", any(bundle_prepare))
-        .route(
-            "/api/documents/{slug}/bundle/objects/{hash}",
-            any(bundle_object),
-        )
-        .route(
-            "/api/documents/{slug}/bundle/activate",
-            any(bundle_activate),
         )
         .route("/api/documents/{slug}/assets", any(document_assets))
         .route("/api/documents/{slug}/assets/{sha}", get(document_asset))
@@ -151,6 +142,22 @@ async fn document_state(
 ) -> Reply {
     server
         .handle_state(
+            request.headers(),
+            &ctx.arrival,
+            &slug,
+            request.uri().query(),
+        )
+        .await
+}
+
+async fn document_project(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_project(
             request.headers(),
             &ctx.arrival,
             &slug,
@@ -361,50 +368,6 @@ async fn assistant_capabilities(
         .await
 }
 
-async fn bundle_meta(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    Path(slug): Path<String>,
-    request: Request<Body>,
-) -> Reply {
-    server
-        .handle_bundle(request, &ctx.arrival, &slug, "meta")
-        .await
-}
-
-async fn bundle_prepare(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    Path(slug): Path<String>,
-    request: Request<Body>,
-) -> Reply {
-    server
-        .handle_bundle(request, &ctx.arrival, &slug, "prepare")
-        .await
-}
-
-async fn bundle_object(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    Path((slug, hash)): Path<(String, String)>,
-    request: Request<Body>,
-) -> Reply {
-    server
-        .handle_bundle(request, &ctx.arrival, &slug, &format!("objects/{hash}"))
-        .await
-}
-
-async fn bundle_activate(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    Path(slug): Path<String>,
-    request: Request<Body>,
-) -> Reply {
-    server
-        .handle_bundle(request, &ctx.arrival, &slug, "activate")
-        .await
-}
-
 async fn document_assets(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
@@ -569,20 +532,6 @@ pub(super) async fn dispatch(
     // and nothing else: no shell, no API, no session. That is the whole point
     // of the separate hostname.
     if arrival.is_docs_host() {
-        // Keep the document path stable across bundles. Relative
-        // `assets/<hash>` references then have stable cache keys too; the
-        // signed query chooses which current bundle index is displayed.
-        if let ["published", slug, tail @ ..] = &parts[..] {
-            return server
-                .serve_published(
-                    &arrival,
-                    request.headers(),
-                    request.uri().query(),
-                    slug,
-                    tail,
-                )
-                .await;
-        }
         // Editors paint local previews into this source-free isolated shell.
         if let ["raw", slug] | ["raw", slug, ""] = parts[..] {
             return server
@@ -1056,280 +1005,6 @@ pub(super) fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 impl Server {
-    /// Serve one explicitly published object on the isolated document origin.
-    /// The token is scoped to the bundle and the live link digest that
-    /// authorized it; every fetch rechecks that digest against the current
-    /// document entry, so revocation prevents new HTML and asset responses.
-    pub(super) async fn serve_published(
-        &self,
-        arrival: &Arrival,
-        headers: &HeaderMap,
-        query: Option<&str>,
-        slug: &str,
-        tail: &[&str],
-    ) -> Reply {
-        if !self.valid_slug(slug) || tail.len() > 16 {
-            return plain(404, "not found");
-        }
-        let Some(entry) = self.checked_entry(slug).await.ok().flatten() else {
-            return plain(404, "not found");
-        };
-        let mut fields: HashMap<String, String> = query
-            .map(|raw| {
-                url::form_urlencoded::parse(raw.as_bytes())
-                    .into_owned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        // Relative authored assets do not inherit the frame URL query. Keep
-        // the display capability in a document- and bundle-scoped,
-        // HttpOnly cookie so they present the same non-secret capability. It
-        // is still checked against current access state for every response.
-        if !fields.contains_key("token") {
-            if let Some(raw) = headers
-                .get(header::COOKIE)
-                .and_then(|value| value.to_str().ok())
-            {
-                for item in raw.split(';') {
-                    let Some((name, value)) = item.trim().split_once('=') else {
-                        continue;
-                    };
-                    if name == "librepaper_display" {
-                        let mut values = value.split('~');
-                        if let Some(token) = values.next() {
-                            fields.insert("token".into(), token.into());
-                        }
-                        if let Some(scope) = values.next() {
-                            fields.insert("scope".into(), scope.into());
-                        }
-                        if let Some(until) = values.next() {
-                            fields.insert("until".into(), until.into());
-                        }
-                        if let Some(bundle_id) = values.next() {
-                            fields.insert("bundle_id".into(), bundle_id.into());
-                        }
-                    }
-                }
-            }
-        }
-        let until = fields
-            .get("until")
-            .and_then(|value| value.parse::<i64>().ok());
-        let scope = fields.get("scope").cloned().unwrap_or_default();
-        let token = fields.get("token").cloned().unwrap_or_default();
-        let bundle_id = fields.get("bundle_id").map(String::as_str).unwrap_or("");
-        let Some(until) = until else {
-            return plain(404, "not found");
-        };
-        let authorized = self.bundle_display_authorized(&entry, &scope).await;
-        if until < crate::util::now_unix()
-            || !authorized
-            || !crate::auth::verifies(
-                &self.key,
-                "figure-frame-v1",
-                &crate::server::figures::frame_claim(slug, bundle_id, &scope, until),
-                &token,
-            )
-        {
-            return plain(404, "not found");
-        }
-        let encoded_path = tail.join("/");
-        let Ok(path) = percent_encoding::percent_decode_str(&encoded_path).decode_utf8() else {
-            return plain(404, "not found");
-        };
-        let store = crate::server::bundle::BundleStore::for_store(self.store.clone());
-        let Some(current) = store.current(&entry.storage_id).await.ok().flatten() else {
-            return plain(404, "not found");
-        };
-        let is_html = path == "index.html";
-        // An old open page may still fetch unchanged lazy assets. Its live
-        // display authority remains valid, but only the current manifest can
-        // authorize bytes; removed assets and old HTML are never recovered.
-        if is_html && current.bundle_id != bundle_id {
-            return plain(404, "not found");
-        }
-        // Asset object names are content hashes. Once the current manifest has
-        // authorized one, an exact conditional match can return before reading
-        // its bytes from the object store. The authority and pointer checks
-        // above (and the second pointer check below) still make this a private
-        // revalidation rather than a capability-free cache hit.
-        if !is_html {
-            let Some(asset) = current.assets.iter().find(|asset| asset.path == path) else {
-                return plain(404, "not found");
-            };
-            let etag = format!("\"{}\"", asset.object.sha256);
-            if headers
-                .get(header::IF_NONE_MATCH)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value == etag)
-            {
-                // An activation may have replaced the manifest after the
-                // membership lookup. Do not authorize a response from a
-                // pointer that has ceased to be current.
-                if !matches!(store.current(&entry.storage_id).await, Ok(Some(manifest)) if manifest.bundle_id == current.bundle_id)
-                {
-                    return plain(404, "not found");
-                }
-                let mut response = Response::new(Body::empty());
-                *response.status_mut() = StatusCode::NOT_MODIFIED;
-                set(&mut response, "etag", &etag);
-                set(
-                    &mut response,
-                    "cache-control",
-                    "private, max-age=0, must-revalidate",
-                );
-                set(&mut response, "referrer-policy", "no-referrer");
-                privacy_headers(&mut response);
-                return response;
-            }
-        }
-        let Ok((object, mut body)) = store.deliver(&entry.storage_id, &path).await else {
-            return plain(404, "not found");
-        };
-        // `deliver` reads the manifest itself. Recheck the bundle pointer
-        // after its object read so an activation racing this request cannot
-        // make an old manifest authorize a new object (or vice versa).
-        if !matches!(store.current(&entry.storage_id).await, Ok(Some(manifest)) if manifest.bundle_id == current.bundle_id)
-        {
-            return plain(404, "not found");
-        }
-        if is_html {
-            body = with_agent(&body, &arrival.reader_origin());
-        }
-        let gzip = is_html
-            && header_of(headers, "accept-encoding").is_some_and(|value| {
-                value.split(',').any(|encoding| {
-                    let mut parts = encoding.trim().split(';');
-                    parts.next() == Some("gzip")
-                        && parts.all(|parameter| {
-                            parameter
-                                .trim()
-                                .strip_prefix("q=")
-                                .is_none_or(|q| q.parse::<f32>().is_ok_and(|q| q > 0.0))
-                        })
-                })
-            });
-        if gzip {
-            let mut encoded = Vec::new();
-            let mut encoder =
-                flate2::write::GzEncoder::new(&mut encoded, flate2::Compression::fast());
-            if std::io::Write::write_all(&mut encoder, &body).is_err() || encoder.finish().is_err()
-            {
-                return plain(503, "could not encode published document");
-            }
-            body = encoded;
-        }
-        let etag = format!("\"{}\"", hex::encode(Sha256::digest(&body)));
-        // A hash identifies bytes, never permission. Browser cache entries
-        // may be revalidated across bundles, but must not become a
-        // shared-cache authorization bypass when a document is restricted.
-        let cache_control = "private, max-age=0, must-revalidate";
-        if headers
-            .get(header::IF_NONE_MATCH)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value == etag)
-        {
-            let mut response = Response::new(Body::empty());
-            *response.status_mut() = StatusCode::NOT_MODIFIED;
-            set(&mut response, "etag", &etag);
-            set(&mut response, "cache-control", cache_control);
-            set(&mut response, "referrer-policy", "no-referrer");
-            set(&mut response, "x-content-type-options", "nosniff");
-            if is_html {
-                set(&mut response, "vary", "Accept-Encoding");
-            }
-            privacy_headers(&mut response);
-            return response;
-        }
-        let mut response = Response::new(Body::from(body));
-        set(&mut response, "content-type", &object.mime);
-        set(&mut response, "etag", &etag);
-        set(&mut response, "cache-control", cache_control);
-        set(&mut response, "referrer-policy", "no-referrer");
-        set(&mut response, "x-content-type-options", "nosniff");
-        if gzip {
-            set(&mut response, "content-encoding", "gzip");
-        }
-        if is_html {
-            set(&mut response, "vary", "Accept-Encoding");
-        }
-        if is_html {
-            set(
-                &mut response,
-                "content-security-policy",
-                &document_policy(&arrival.reader_origin()),
-            );
-        }
-        privacy_headers(&mut response);
-        if is_html {
-            set(
-                &mut response,
-                "set-cookie",
-                &format!(
-                    "librepaper_display={token}~{scope}~{until}~{bundle_id}; Path=/published/{slug}; HttpOnly; SameSite=None; Secure"
-                ),
-            );
-        }
-        response
-    }
-
-    /// Resolve the authority embedded in a signed display capability against
-    /// the live document. The capability is transport-only: it never replaces
-    /// a link revocation, named-editor removal, account erasure, or session
-    /// generation change.
-    async fn bundle_display_authorized(&self, entry: &IndexEntry, scope: &str) -> bool {
-        if scope == "public" {
-            return entry.example || entry.unowned;
-        }
-        if let Some(link) = scope.strip_prefix("link:") {
-            return !link.is_empty() && entry.link_role(link, crate::util::now_unix()).is_some();
-        }
-        let Some(account) = scope.strip_prefix("account:") else {
-            return false;
-        };
-        let Some((encoded_id, generation)) = account.rsplit_once(':') else {
-            return false;
-        };
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        let Ok(id) = URL_SAFE_NO_PAD
-            .decode(encoded_id)
-            .ok()
-            .and_then(|id| String::from_utf8(id).ok())
-            .ok_or(())
-        else {
-            return false;
-        };
-        let catalog = &self.store.catalog;
-        let slug = entry.slug.clone();
-        let id_for_catalog = id.clone();
-        let generation = generation.to_string();
-        let Ok(account_id) = uuid::Uuid::parse_str(&id_for_catalog) else {
-            return false;
-        };
-        let Ok(generation) = generation.parse::<i64>() else {
-            return false;
-        };
-        sqlx::query_scalar!(
-            r#"SELECT EXISTS(
-                 SELECT 1 FROM documents d JOIN accounts a ON a.id=$2
-                 LEFT JOIN grants g ON g.document_id=d.id AND g.account_id=a.id
-                   AND (g.source_link_hash IS NULL OR EXISTS (
-                     SELECT 1 FROM share_links l WHERE l.document_id=d.id
-                       AND l.token_hash=g.source_link_hash AND l.revoked_at IS NULL
-                       AND (l.expires_at IS NULL OR l.expires_at>now())))
-                 WHERE d.slug=$1 AND d.status='active' AND a.status='active'
-                   AND a.session_generation=$3
-                   AND (d.owner_id=a.id OR g.account_id IS NOT NULL)
-               ) AS "exists!""#,
-            slug,
-            account_id,
-            generation,
-        )
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap_or(false)
-    }
-
     /// Which formats this deployment can render again in a reader, and so
     /// offer an editor for. The compiled-in ones come from the build; `latex`
     /// is the one that depends on the deployment rather than on the binary,
@@ -1468,7 +1143,7 @@ impl Server {
     }
 }
 
-/// The policy every published document renders under. One policy, the same for
+/// The policy every rendered document uses. One policy, the same for
 /// every document and every reader, because a policy a reader can switch is a
 /// policy nobody can reason about and a response nobody can cache.
 ///
@@ -1477,7 +1152,7 @@ impl Server {
 ///
 /// `'unsafe-inline'` and `'unsafe-eval'` stay, and they cost nothing here. They
 /// are dangerous on a page that mixes trusted markup with untrusted input,
-/// because they let injected script run with the page's authority. A published
+/// because they let injected script run with the page's authority. A rendered
 /// document has no such mixture. It is untrusted in its entirety and sealed in
 /// its own origin, so its inline script *is* the document; refusing it would
 /// break most Quarto and pandoc output to protect nothing.
@@ -1493,6 +1168,7 @@ impl Server {
 /// when. That is a known and accepted leak, written down in `docs/privacy.md`
 /// rather than engineered away, and it is why an author who needs a reader to
 /// stay anonymous cannot get that from this policy.
+#[cfg(test)]
 fn document_policy(reader_origin: &str) -> String {
     format!(
         "default-src 'self' data: blob: https:; \

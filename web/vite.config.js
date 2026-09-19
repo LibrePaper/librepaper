@@ -21,6 +21,22 @@ const clearOwnOutput = {
   buildStart() {
     const out = resolve(import.meta.dirname, "dist");
     rmSync(resolve(out, "assets"), { recursive: true, force: true });
+    for (const page of ["index", "reader", "404", "signin", "device", "try", "viewer"]) {
+      rmSync(resolve(out, `${page}.html`), { force: true });
+    }
+  },
+};
+
+// Vite's watch rebuild runs neither of the post-build package scripts. The
+// output cleaner owns assets/, so restore the vendored KaTeX payload after
+// every watched write rather than leaving the next refresh with 404s.
+let watchingBuild = false;
+const vendorWatchAssets = {
+  name: "librepaper-vendor-watch-assets",
+  apply: "build",
+  configResolved(config) { watchingBuild = Boolean(config.build.watch); },
+  async writeBundle() {
+    if (watchingBuild) await import(`./tools/vendor-katex.mjs?watch=${Date.now()}`);
   },
 };
 
@@ -32,7 +48,7 @@ export default defineConfig({
   // out loud, because the plugin otherwise looks for one in the Vite root --
   // `pages/`, not `web/` -- and announces on every build that it did not find
   // it, which reads like something is missing.
-  plugins: [clearOwnOutput, tailwindcss(), svelte({ configFile: false })],
+  plugins: [clearOwnOutput, vendorWatchAssets, tailwindcss(), svelte({ configFile: false })],
   // The pages are served from the site root by the Go-free Rust server, which
   // knows nothing about this build beyond where the files are.
   base: "/",

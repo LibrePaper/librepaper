@@ -16,7 +16,7 @@ const start = reader.indexOf("  function showSelection(");
 const end = reader.indexOf("  function placeBar(", start);
 assert.ok(start > 0 && end > start);
 const ctx = vm.createContext({
-  mayEdit: true, publishedMode: false, publishedBundle: null,
+  mayEdit: true, renderedProjectDigest: "",
   pending: null, docText: "same phrase",
   bar: { shown: true },
   placeBar: () => {},
@@ -44,10 +44,11 @@ assert.equal(ctx.pending, null);
 vm.runInContext("showSelection(null, {})", ctx);
 assert.equal(ctx.pending, null);
 
-// A reader annotating a published rendering says which one they were reading.
-ctx.publishedMode = true;
-ctx.publishedBundle = { id: "bundle-1" };
+// A reader annotating the current projection says which project digest was
+// actually rendered, so a later source change cannot retarget the passage.
+ctx.mayEdit = false;
+ctx.renderedProjectDigest = "project-1";
 vm.runInContext("showSelection({exact:'same phrase',prefix:'',suffix:'',position:0}, {})", ctx);
-assert.equal(ctx.pending.bundle_id, "bundle-1");
+assert.equal(ctx.pending.bundle_id, "project-1");
 
 console.log("reader-assistant: a selection is what the page showed, and carries no source identity");

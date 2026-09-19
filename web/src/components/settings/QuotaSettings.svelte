@@ -56,7 +56,7 @@
 {#if snapshot}
   <SettingRow id="storage-retention" stacked title="Versions"
               description="Nothing is deleted on a schedule.">
-    <p>A version is written when you name one, publish, restore an earlier
+    <p>A version is written when you name one or restore an earlier
       version, or leave a comment — never on a timer.</p>
     <p>Every version is kept until you delete the document.</p>
     <p>Editing between versions is not lost: the full editing history is kept

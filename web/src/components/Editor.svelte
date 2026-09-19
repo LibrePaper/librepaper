@@ -201,7 +201,7 @@
   function rebind() {
     if (!view || !showing) return;
     const id = showing;
-    states.delete(id);
+    if (activeDocument) stateMap(activeDocument).delete(id);
     showing = "";
     show(id);
   }
@@ -420,7 +420,16 @@
   // history and the scroll position where they were -- which is the whole
   // difference between a directory of files and one text somebody keeps
   // scrolling through.
-  const states = new Map();
+  // A CodeMirror state owns a Loro binding and undo field. File ids are only
+  // unique inside a document, and proposal branches deliberately reuse them,
+  // so cache states under their owning LoroDoc as well as the file id.
+  let states = new WeakMap();
+  let activeDocument = null;
+  const stateMap = (document_) => {
+    let map = states.get(document_);
+    if (!map) { map = new Map(); states.set(document_, map); }
+    return map;
+  };
   // Which file the view is currently showing, so a swap can put the state it
   // is leaving back in the map before taking the next one.
   let showing = "";
@@ -959,9 +968,11 @@
   /// files does not flash.
   function show(id) {
     if (!view || !id || id === showing) return;
-    if (showing) states.set(showing, view.state);
-    if (!states.has(id)) states.set(id, stateFor(id));
-    const state = states.get(id);
+    if (showing && activeDocument) stateMap(activeDocument).set(showing, view.state);
+    const document_ = boundDoc();
+    const documentStates = stateMap(document_);
+    if (!documentStates.has(id)) documentStates.set(id, stateFor(id));
+    const state = documentStates.get(id);
     const text = getTextFromDoc(id);
     // While a file is inactive its LoroText can still receive remote edits, but
     // its CodeMirror binding is not mounted to dispatch those edits. Reconcile
@@ -977,12 +988,13 @@
         oldEnd--;
         nextEnd--;
       }
-      states.set(id, state.update({
+      documentStates.set(id, state.update({
         changes: { from, to: oldEnd, insert: next.slice(from, nextEnd) },
         annotations: Transaction.addToHistory.of(false),
       }).state);
     }
-    view.setState(states.get(id));
+    view.setState(documentStates.get(id));
+    activeDocument = document_;
     syncKeys(view);
     showing = id;
     // A file this browser has open is where its caret is, which is what the
@@ -1014,8 +1026,10 @@
       const initial = untrack(() => {
         const first = file || session.mainId?.() || "";
         showing = first;
-        if (first && !states.has(first)) states.set(first, stateFor(first));
-        return { first, state: states.get(first) || stateFor(first) };
+        const documentStates = stateMap(boundDoc());
+        if (first && !documentStates.has(first)) documentStates.set(first, stateFor(first));
+        activeDocument = boundDoc();
+        return { first, state: documentStates.get(first) || stateFor(first) };
       });
       view = new EditorView({
         state: initial.state,
@@ -1049,9 +1063,13 @@
         if (view) viewCallbacks.delete(view);
         view?.destroy();
         insertTargets.clear();
+        // Cached states embed their UndoManager. Reset both caches together;
+        // retaining one while clearing the other makes menu availability and
+        // the state bound to the view disagree after a lifecycle rebind.
+        states = new WeakMap();
         undoManagers.clear();
         view = null;
-        states.clear();
+        activeDocument = null;
         showing = "";
       };
     });

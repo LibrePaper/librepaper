@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO document_activity(document_id,bucket,peer,changes,state_bytes,frontier)\n                 SELECT DISTINCT ON (bucket) document_id,bucket,'',changes,state_bytes,frontier\n                 FROM (\n                   SELECT document_id,update_sequence,frontier,\n                          date_trunc('minute',created_at) AS bucket,\n                          count(*) OVER (PARTITION BY date_trunc('minute',created_at))::int AS changes,\n                          max(COALESCE(state_bytes,octet_length(update_bytes)::bigint))\n                            OVER (PARTITION BY date_trunc('minute',created_at))::bigint AS state_bytes\n                   FROM document_updates WHERE document_id=$1 AND update_sequence <= $2\n                 ) measured\n                 ORDER BY bucket,update_sequence DESC\n                 ON CONFLICT (document_id,bucket,peer) DO UPDATE SET\n                   changes=document_activity.changes+excluded.changes,\n                   state_bytes=GREATEST(document_activity.state_bytes,excluded.state_bytes),\n                   frontier=excluded.frontier",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bd23f66348d3da120dd37b19fa0df37d82a3071b60772cb11677b97c6f5bd458"
+}

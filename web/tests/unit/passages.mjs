@@ -20,6 +20,7 @@ function check(what, condition) {
 
 /// A comment with one stable source-file identity.
 const comment = (checkpoint) => ({
+  created: "2026-09-05T09:10:30Z",
   original_anchor: {
     kind: "source_text",
     checkpoint_id: checkpoint,
@@ -188,6 +189,24 @@ function sourceHistory(n, until) {
     await wentAt("slug", inSource(checkpoints[0].sha), checkpoints, {}, atSource) === null);
   check("an empty history has no loss point",
     await wentAt("slug", inSource(""), [], {}, atSource) === null);
+  let emptyReads = 0;
+  check("an empty checkpoint never becomes a history request",
+    await wentAt("slug", inSource(""), checkpoints, {}, async () => { emptyReads += 1; }) === null
+      && emptyReads === 0);
+}
+
+{
+  const { checkpoints } = sourceHistory(12, 11);
+  const texts = new Map(checkpoints.map((point, index) => [
+    point.sha,
+    index < 4 || (index >= 7 && index < 10)
+      ? "before the passage of interest after" : "before after",
+  ]));
+  const frontier = inSource("frontier:comment");
+  frontier.created = "2026-09-05T09:07:30Z";
+  const found = await wentAt("slug", frontier, checkpoints, {}, async (_slug, sha) =>
+    sha === "frontier:comment" ? "before the passage of interest after" : texts.get(sha));
+  check("a frontier ignores removals that happened before the comment", found?.sha === checkpoints[10].sha);
 }
 
 check("a selected part of a rewritten word has no identifiable replacement",

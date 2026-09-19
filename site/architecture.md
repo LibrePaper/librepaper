@@ -337,7 +337,7 @@ reshaping rather than translation: `exact`, `prefix` and `suffix` are a
 `created` mean what the specification says. `resolved` is an extension, which the
 model permits.
 
-`librepaper export DOCUMENT --comments` writes them out in Markdown or JSON.
+`librepaper export DOCUMENT` writes them out in Markdown or JSON.
 
 ## Track changes
 

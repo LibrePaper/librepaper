@@ -176,6 +176,21 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
+    pub async fn update_state_bytes(
+        &self,
+        document_id: Uuid,
+        sequence: i64,
+    ) -> Result<Option<i64>> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT state_bytes FROM document_updates WHERE document_id=$1 AND update_sequence=$2",
+        )
+        .bind(document_id)
+        .bind(sequence)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
     /// Record activity directly, for a writer that has the marks in hand
     /// rather than rows to aggregate -- today, the seeded examples, which are
     /// written as a history rather than persisted as one.

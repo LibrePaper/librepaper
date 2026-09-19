@@ -44,9 +44,6 @@ use crate::server::origins::{
 use crate::server::shell::{renderers, ShellFile};
 use crate::util::clean;
 
-mod assistant;
-pub mod bundle;
-mod bundle_http;
 mod chat;
 pub mod cost;
 mod documents;
@@ -67,6 +64,7 @@ pub mod shell;
 mod signin;
 mod socket;
 pub mod socket_budget;
+mod suggestions;
 
 pub use reply::*;
 pub use routes::*;

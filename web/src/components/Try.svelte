@@ -93,7 +93,7 @@ Markdown remains plain text while the rendered paper can contain structure, link
 
 <nav class="border-surface-200-800 flex items-center justify-between gap-4 border-b px-4 py-3">
   <a class="flex items-center gap-2" href="https://librepaper.org" aria-label="LibrePaper home"><Logo /></a>
-  <a class="btn btn-sm preset-filled-primary-500" href="/auth/login?next=%2F">Sign in to publish</a>
+  <a class="btn btn-sm preset-filled-primary-500" href="/auth/login?next=%2F">Sign in to create a project</a>
 </nav>
 
 <main class="playground">

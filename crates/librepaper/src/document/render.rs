@@ -211,10 +211,6 @@ fn balanced(rest: &str) -> Option<(String, usize)> {
     None
 }
 
-pub fn render_markdown_document(source: &str, title: &str) -> String {
-    markdown::render(source, title)
-}
-
 /// Compiles a typst source to the page a document is stored as. The file's
 /// own directory is the root: a document may import what sits beside it and
 /// nothing above it, which a reader that refuses to leave the root is what

@@ -85,7 +85,7 @@ export function parseFrontMatter(source) {
     const line = lines[i];
     if (!line.trim() || /^\s*#/.test(line)) continue;
     const list = /^(\s*)-\s*(.*)$/.exec(line);
-    if (list && arrayKey && list[1].length > 0) {
+    if (list && arrayKey) {
       if (!Array.isArray(value[arrayKey])) value[arrayKey] = [];
       const item = list[2].trim();
       const at = item.indexOf(":");

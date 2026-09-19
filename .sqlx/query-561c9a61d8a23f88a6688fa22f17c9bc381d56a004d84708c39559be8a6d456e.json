@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH advanced AS (\n               UPDATE documents SET update_sequence=update_sequence+1,\n                 uncompacted_update_count=uncompacted_update_count+1,\n                 uncompacted_update_bytes=uncompacted_update_bytes+octet_length($2::bytea),\n                 updated_at=now()\n               WHERE id=$1 AND status='active' RETURNING id,update_sequence,\n                 uncompacted_update_count,uncompacted_update_bytes\n             ), inserted AS (\n               INSERT INTO document_updates(document_id,update_sequence,update_bytes,frontier,state_bytes)\n               SELECT id,update_sequence,$2,$3,$4 FROM advanced RETURNING update_sequence\n             ), scheduled AS (\n               INSERT INTO jobs(id,kind,document_id,scope_key,dedupe_key,payload,priority,max_attempts,run_after,status)\n               SELECT $5,'source_compaction',id,'document:' || id::text,\n                 'through:' || update_sequence::text,\n                 jsonb_build_object('through_update_sequence', update_sequence),0,5,now(),'queued'\n               FROM advanced\n               WHERE (uncompacted_update_count >= $6 OR uncompacted_update_bytes >= $7)\n                 AND NOT EXISTS (SELECT 1 FROM jobs WHERE kind='source_compaction'\n                   AND document_id=$1 AND status IN ('queued','running'))\n             )\n             SELECT update_sequence AS \"update_sequence!\" FROM inserted",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "update_sequence!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "561c9a61d8a23f88a6688fa22f17c9bc381d56a004d84708c39559be8a6d456e"
+}

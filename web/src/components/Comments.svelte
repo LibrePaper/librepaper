@@ -203,7 +203,7 @@
           {/if}
         </div>
       {/if}
-      {#each group.comments as comment (comment)}
+      {#each group.comments as comment (comment._uiKey ?? comment.id ?? comment.temp_id)}
       <CommentCard
         {canComment}
         {comment}

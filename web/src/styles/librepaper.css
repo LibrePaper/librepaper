@@ -854,7 +854,7 @@ main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
 .menuitem-keys {
   flex: 0 0 auto;
   margin-left: auto;
-  color: var(--color-surface-500-500);
+  color: var(--color-surface-600-400);
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;

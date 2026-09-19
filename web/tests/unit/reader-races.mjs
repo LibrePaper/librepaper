@@ -621,7 +621,7 @@ for (const invalidate of [null, "navigation", "main"]) {
   assert.equal(ctx.sourceGeneration, 1);
   assert.equal(ctx.historyLiveVersion, 1);
   assert.equal(reviewed, 1, "an edit under a proposal recomputes its hunks");
-  assert.equal(rescheduled, 1, "and puts the readers' copy of it back on the clock");
+  assert.equal(rescheduled, 0, "an edit never schedules a stored reader rendition");
 }
 
 // Further keystrokes must not postpone an editor's already scheduled preview.

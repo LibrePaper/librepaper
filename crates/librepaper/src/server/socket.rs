@@ -261,6 +261,7 @@ impl Server {
                         query,
                         link_expires,
                         socket_permit,
+                        entry.source_format,
                     )
                     .await;
             })
@@ -281,6 +282,7 @@ impl Server {
         query: Option<String>,
         link_expires: Option<i64>,
         _socket_permit: crate::server::socket_budget::SocketPermit,
+        source_format: String,
     ) {
         let socket_id = _socket_permit.id();
         let (mut sink, mut stream) = socket.split();
@@ -969,53 +971,31 @@ impl Server {
                         continue 'reader;
                     }
 
-                    // A commenter can only create annotations against a
-                    // rendered bundle. Do not let an omitted ID evade
-                    // the stale-bundle check; editors retain empty IDs
-                    // for source-side comments and suggestions.
+                    // A commenter can only create annotations against the
+                    // exact current projection that produced their page.
                     if incoming.kind == "comment" && !may_edit && incoming.bundle_id.is_empty() {
                         let _ = send_outgoing(&tx, Outgoing::Text(
-                            json!({"type":"error","message":"bundle is required; refresh before annotating","temp_id":incoming.temp_id,"request_id":incoming.request_id}).to_string(),
+                            json!({"type":"error","message":"current project identity is required; refresh before annotating","temp_id":incoming.temp_id,"request_id":incoming.request_id}).to_string(),
                         )).await;
                         continue 'reader;
                     }
 
-                    // Rendered annotations share BundleStore's global
-                    // per-storage gate with activation. Take it before the
-                    // room-local source gate, recheck while held, then commit
-                    // the comment. Source suggestions deliberately skip this
-                    // path because they are tied to editable revisions.
-                    let _rendered_bundle_guard = if incoming.kind == "comment"
-                        && !incoming.bundle_id.is_empty()
-                    {
-                        Some(
-                            crate::server::bundle::bundle_lock(room.storage_id())
-                                .lock_owned()
-                                .await,
-                        )
-                    } else {
-                        None
-                    };
-                    if let Some(bundle_id) = (incoming.kind == "comment"
+                    // Keep validation and anchor capture in one source-write
+                    // critical section.
+                    let _bundle_guard = room.bundle_write.lock().await;
+                    if let Some(project_digest) = (incoming.kind == "comment"
                         && !incoming.bundle_id.is_empty())
-                        .then_some(incoming.bundle_id.as_str())
+                    .then_some(incoming.bundle_id.as_str())
                     {
-                        let current = crate::server::bundle::BundleStore::for_store(
-                            self.store.clone(),
-                        )
-                        .current(room.storage_id())
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|bundle| bundle.bundle_id);
-                        if current.as_deref() != Some(bundle_id) {
+                        let (_, _, _, current) = room.current_project(&source_format).await;
+                        if current != project_digest {
                             let _ = send_outgoing(&tx, Outgoing::Text(
-                                json!({"type":"error","message":"bundle changed; refresh before annotating","request_id":incoming.request_id,"temp_id":incoming.temp_id}).to_string(),
+                                json!({"type":"error","message":"source changed; refresh before annotating","stale_source":true,"request_id":incoming.request_id,"temp_id":incoming.temp_id}).to_string(),
                             )).await;
                             continue 'reader;
                         }
+                        incoming.bundle_id.clear();
                     }
-                    let _bundle_guard = room.bundle_write.lock().await;
                     let (result, ok) = self.apply_from(&room, incoming, &address, &who, &author).await;
                     if !ok {
                         if send_outgoing(&tx, Outgoing::Text(result.to_string())).await.is_err() {
