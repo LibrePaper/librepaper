@@ -402,6 +402,34 @@ impl Journal {
         Ok(seq)
     }
 
+    /// Re-read the file. The MCP adapter is a separate process writing the
+    /// same journal, so an in-memory copy goes stale the moment a tool call is
+    /// dispatched. Anything that reports what a task achieved must refresh
+    /// first or it reports the state from before the work.
+    pub(crate) fn refresh(&mut self) -> Result<(), String> {
+        self.disk = read(&self.path)?;
+        Ok(())
+    }
+
+    /// The document tools this task called that the service refused, newest
+    /// last. An agent that is blocked will often answer as though it had
+    /// succeeded, so the task's own outcome is taken from the receipts rather
+    /// than from what the model said about them.
+    pub(crate) fn refused_tools(&self, task_id: &str) -> Vec<(String, String)> {
+        self.disk
+            .events
+            .iter()
+            .filter(|event| event.task_id == task_id && event.kind == "tool_result")
+            .filter_map(|event| {
+                event
+                    .detail
+                    .as_ref()
+                    .map(|detail| (event.tool.clone(), detail.clone()))
+            })
+            .collect()
+    }
+
+    /// Callers must `refresh` first: see the note there.
     pub(crate) fn known_result_ids(&self, task_id: &str) -> BTreeSet<String> {
         self.disk
             .events

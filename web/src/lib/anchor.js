@@ -152,11 +152,29 @@ export function shownSelector(comment) {
   const position = Number.isInteger(seen.rendered_position_utf16)
     ? seen.rendered_position_utf16
     : null;
+  if (exact) {
+    return {
+      exact,
+      prefix: String(seen.rendered_prefix || ""),
+      suffix: String(seen.rendered_suffix || ""),
+      position,
+    };
+  }
+  // A comment written by an agent has no rendered quotation: only a browser
+  // holds the rendered page, and the agent quoted the source. Its passage is
+  // usually on the page all the same, because for prose the source and the
+  // page read alike, so the source quotation is tried against the page rather
+  // than badging a visible passage "in the source, not on the page".
+  //
+  // This is a display fallback and nothing more. Identity is still the range
+  // the server resolves; a miss here just leaves the comment unplaced, which
+  // is where it already was.
+  const source = comment?.original_anchor?.target;
   return {
-    exact,
-    prefix: String(seen.rendered_prefix || ""),
-    suffix: String(seen.rendered_suffix || ""),
-    position,
+    exact: String(source?.exact || ""),
+    prefix: String(source?.prefix || ""),
+    suffix: String(source?.suffix || ""),
+    position: null,
   };
 }
 

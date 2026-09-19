@@ -80,6 +80,27 @@ const source = (path, exact, extra = {}) => ({ path, exact, prefix: "", suffix: 
   const bare = shownSelector({});
   check("a comment with no presentation at all selects nothing",
     bare.exact === "" && bare.position === null);
+
+  // An agent quotes the source, not the page: only a browser holds the
+  // rendered page. Its passage is usually on the page all the same, so the
+  // source quotation is the display fallback rather than badging a visible
+  // passage as missing from the page.
+  const fromAgent = shownSelector({
+    original_anchor: { kind: "source_text", target: { exact: "keeps prose", prefix: "Markdown ", suffix: " close" } },
+  });
+  check("an agent comment falls back to the source quotation",
+    fromAgent.exact === "keeps prose" && fromAgent.prefix === "Markdown ");
+  check("the fallback claims no recorded page position",
+    fromAgent.position === null);
+
+  // The page always wins where it was recorded: the fallback is only for a
+  // comment that never had one.
+  const both = shownSelector({
+    presentation: { rendered_exact: "on the page" },
+    original_anchor: { kind: "source_text", target: { exact: "in the source" } },
+  });
+  check("a recorded page quotation is preferred over the source",
+    both.exact === "on the page");
 }
 
 {

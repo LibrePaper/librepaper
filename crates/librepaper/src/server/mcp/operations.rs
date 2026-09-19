@@ -826,7 +826,15 @@ impl Server {
                 );
             }
         }
-        let mut result = json!({"operation":key,"status":"committed","candidate_id":candidate_id,"source_revision":candidate.source_revision,"base_revision":candidate.base_revision,"validation":{"source":"passed","compile":"not_requested"},"effects":[],"replay":false});
+        // `status: committed` means the candidate was stored, not that anyone
+        // can see it. This branch is `publish: "private"`, where nothing is
+        // visible and nothing has changed; the default, `publish:
+        // "suggestions"`, overwrites both fields below. Callers read
+        // "committed" as "done" and report an edit that never happened, so
+        // the result says outright what has not happened yet.
+        let mut result = json!({"operation":key,"status":"committed","candidate_id":candidate_id,"source_revision":candidate.source_revision,"base_revision":candidate.base_revision,"validation":{"source":"passed","compile":"not_requested"},"effects":[],"replay":false,
+            "published":false,
+            "next":"This candidate is private: nobody can see it and the document is unchanged. Propose again with publish: \"suggestions\" to offer it for review, or, only if the user authorized direct edits, apply it with document_apply quoting this candidate_id. Report neither until one of them returns."});
         if let Some(render) = render {
             result["validation"]["compile"] = json!("passed");
             result["render"] = json!(render);
@@ -895,6 +903,13 @@ impl Server {
                 .iter()
                 .map(|c| json!({"kind":"suggestion","id":c.id}))
                 .collect::<Vec<_>>());
+            // These suggestions are real and visible, so the warning above no
+            // longer applies. They are still proposals: the document's own
+            // text is unchanged until a person accepts them.
+            result["published"] = json!(true);
+            result["next"] = json!(
+                "These suggestions are visible for review. The document's text is unchanged until someone accepts them; do not report the words as corrected."
+            );
             let room = self
                 .rooms
                 .try_get(slug)

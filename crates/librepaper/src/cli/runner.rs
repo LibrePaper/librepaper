@@ -755,14 +755,30 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 // happened. The answer is prose; the effects
                                 // come from the journal, so a model cannot
                                 // claim a suggestion it never created.
+                                // The adapter is another process writing this
+                                // same journal, so the in-memory copy is from
+                                // before the work. Reading it unrefreshed
+                                // reported an empty suggestion list for a task
+                                // that had just created one, which also hid
+                                // the transcript's review control.
+                                journal.refresh()?;
                                 let results=json!({"suggestions":journal.known_result_ids(&id).into_iter().collect::<Vec<_>>(),"pass":null});
                                 let answer=answer.trim().to_string();
                                 if let Some(task)=state.task_mut(&id){
                                     task.answer=Some(if answer.is_empty() {"Finished.".into()} else if answer.len()>32*1024 {answer.chars().take(32*1024).collect()} else {answer});
                                     task.results=results;
                                 }
-                                journal.append(&id, "turn_completed", "", None, Vec::new(), "completed")?;
-                                finish(&mut state,&id,"completed","Finished");
+                                // "The model stopped" is not "the work was
+                                // done". A refused mutation is the task's
+                                // outcome whatever the answer claims, and an
+                                // agent that was blocked reliably answers as
+                                // though it had succeeded.
+                                let refused=journal.refused_tools(&id);
+                                journal.append(&id, "turn_completed", "", None, Vec::new(), if refused.is_empty() {"completed"} else {"refused"})?;
+                                match refused.last() {
+                                    None=>finish(&mut state,&id,"completed","Finished"),
+                                    Some((tool,detail))=>finish(&mut state,&id,"failed",&format!("The document refused {tool}: {detail}. Nothing the answer claims about changing the document can be relied on.")),
+                                }
                             }
                             "cancelled"=>{ journal.append(&id, "turn_interrupted", "", None, Vec::new(), "cancelled")?; finish(&mut state,&id,"cancelled","Task cancelled"); }
                             "refusal"=>{ journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?; finish(&mut state,&id,"failed","The agent declined this task. Inspect any document changes before retrying."); }
