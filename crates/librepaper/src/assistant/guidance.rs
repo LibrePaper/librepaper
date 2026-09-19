@@ -1,8 +1,7 @@
-//! Offline access to the instructions shipped with this executable.
-
-use std::path::{Component, Path};
+//! Bundled assistant guidance, independent of CLI presentation.
 
 use include_dir::{include_dir, Dir};
+use std::path::{Component, Path};
 
 static BUNDLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../skills");
 

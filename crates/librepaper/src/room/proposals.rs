@@ -373,7 +373,26 @@ impl super::Room {
         exact: &str,
         proposed: &str,
     ) -> Result<String, ProposalError> {
-        let (catalog, document) = self.catalog_and_document()?;
+        let (id, proposal) = self
+            .prepare_suggestion(author, path, at, exact, proposed)
+            .await?;
+        let (catalog, _) = self.catalog_and_document()?;
+        catalog
+            .open_proposal(proposal)
+            .await
+            .map_err(|error| ProposalError::Failed(error.to_string()))?;
+        Ok(id)
+    }
+
+    pub(crate) async fn prepare_suggestion(
+        &self,
+        author: &str,
+        path: &str,
+        at: usize,
+        exact: &str,
+        proposed: &str,
+    ) -> Result<(String, crate::storage::postgres::NewProposal), ProposalError> {
+        let (_, document) = self.catalog_and_document()?;
         let (branch, base, tip, peer, bytes) = {
             let state = self.state.lock().await;
             let (branch, base, tip, peer) =
@@ -387,8 +406,9 @@ impl super::Room {
         };
         let _ = branch;
         let id = crate::storage::postgres::new_id();
-        catalog
-            .open_proposal(crate::storage::postgres::NewProposal {
+        Ok((
+            id.to_string(),
+            crate::storage::postgres::NewProposal {
                 document_id: document,
                 id,
                 author: author.to_string(),
@@ -396,10 +416,8 @@ impl super::Room {
                 base_frontiers: base.encode(),
                 tip_frontiers: tip.encode(),
                 branch_bytes: bytes,
-            })
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?;
-        Ok(id.to_string())
+            },
+        ))
     }
 
     /// Writes a branch down as a proposal, and returns its id.
@@ -496,6 +514,18 @@ impl super::Room {
         // branch has grown beyond what a suggestion is, and joining them would
         // read as a single replacement that nobody proposed.
         Ok(found.first().map(|hunk| hunk.inserted.clone()))
+    }
+
+    pub(crate) async fn hydrate_proposed_comments(
+        &self,
+        comments: &mut [crate::room::Comment],
+    ) -> Result<(), ProposalError> {
+        for comment in comments {
+            if !comment.proposal.is_empty() {
+                comment.proposed = self.proposed_text(&comment.proposal).await?;
+            }
+        }
+        Ok(())
     }
 
     /// The proposals a joining client needs to know about.

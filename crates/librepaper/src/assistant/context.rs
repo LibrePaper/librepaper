@@ -34,7 +34,7 @@ pub(super) fn instructions(directory: &Path) -> Result<String, String> {
          Sidebar MCP rule: the MCP tools above are the only document interface for this session. \
          Ignore any CLI examples in bundled skill text; never execute shell commands for document reads, \
          proposals, comments, applications, or result lookup.",
-        super::skills::read("librepaper-write", Path::new("SKILL.md"))?
+        super::guidance::read("librepaper-write", Path::new("SKILL.md"))?
     );
     let preferences = directory.join("preferences.md");
     match std::fs::read_to_string(&preferences) {

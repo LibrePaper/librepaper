@@ -480,6 +480,17 @@ CREATE TABLE document_proposals (
 -- what the room broadcasts after every decision.
 CREATE INDEX document_proposals_open ON document_proposals(document_id, status);
 
+-- A suggestion annotation is the human-facing discussion attached to one
+-- proposal branch. Keep the relation explicit so catalog reloads cannot turn
+-- a reviewable suggestion into an ordinary comment.
+ALTER TABLE annotations
+    ADD COLUMN proposal_id uuid UNIQUE REFERENCES document_proposals(id) ON DELETE CASCADE;
+ALTER TABLE annotations
+    ADD CONSTRAINT annotations_suggestion_proposal CHECK (
+        (kind = 'suggestion' AND proposal_id IS NOT NULL)
+        OR (kind <> 'suggestion' AND proposal_id IS NULL)
+    );
+
 -- One row per decision, because a reviewer decides hunks and not proposals.
 --
 -- A hunk is named by its index in the diff of a named tip against a named base

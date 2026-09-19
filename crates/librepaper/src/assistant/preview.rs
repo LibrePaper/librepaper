@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::peer::AutomationPeer;
-use super::runner_lifecycle;
+use super::lifecycle;
+use crate::automation::peer::AutomationPeer;
 
 const MAX_FILES: usize = 200;
 const MAX_CONTEXT_BYTES: usize = 16 * 1024;
@@ -56,7 +56,7 @@ fn valid_path(path: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-fn tree_from_snapshot(snapshot: &super::peer::Snapshot) -> Result<Tree, String> {
+fn tree_from_snapshot(snapshot: &crate::automation::peer::Snapshot) -> Result<Tree, String> {
     if snapshot.tree.is_null() || !snapshot.tree.is_object() {
         return Err("the server snapshot has no canonical source tree".into());
     }
@@ -90,7 +90,7 @@ fn candidate_tree(mut tree: Tree, files: &Value) -> Result<Tree, String> {
         if entry.kind != "text" {
             return Err(format!("preview file {path:?} is not a text file"));
         }
-        entry.sha = super::peer::source_sha(source);
+        entry.sha = crate::automation::peer::source_sha(source);
         entry.size = source.len() as i64;
     }
     Ok(tree)
@@ -107,11 +107,9 @@ fn preview_dir(
     conversation: &str,
     state_dir: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    Ok(
-        runner_lifecycle::location(peer.link(), conversation, state_dir)?
-            .directory
-            .join("preview"),
-    )
+    Ok(lifecycle::location(peer.link(), conversation, state_dir)?
+        .directory
+        .join("preview"))
 }
 
 /// Submit an isolated candidate and wait for browser diagnostics.

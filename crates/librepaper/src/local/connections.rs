@@ -14,11 +14,15 @@
 //! than hunting through the config of every tool that was ever connected.
 
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use super::pairing::{read_json, write_private_json};
+#[cfg(test)]
+use super::pairing::read_json;
+use super::pairing::write_private_json;
 use crate::auth::now_unix;
 
 /// How long a connection survives without being resolved. A connection is
@@ -125,18 +129,50 @@ impl ConnectionStore {
         self.dir.join("connections.json")
     }
 
+    fn lock_path(&self) -> PathBuf {
+        self.dir.join("connections.lock")
+    }
+
     fn load(&self) -> BTreeMap<String, Connection> {
-        let mut all: BTreeMap<String, Connection> = read_json(&self.path()).unwrap_or_default();
+        self.load_checked().unwrap_or_default()
+    }
+
+    fn load_checked(&self) -> Result<BTreeMap<String, Connection>, String> {
+        let mut all: BTreeMap<String, Connection> = match std::fs::read(self.path()) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| format!("invalid connection store: {error}"))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) => return Err(format!("could not read connection store: {error}")),
+        };
         let now = now_unix();
         all.retain(|_, entry| {
             let last = entry.used.max(entry.created);
             now.saturating_sub(last) < IDLE_TTL_SECONDS
         });
-        all
+        Ok(all)
     }
 
     fn save(&self, all: &BTreeMap<String, Connection>) -> std::io::Result<()> {
         write_private_json(&self.path(), all)
+    }
+
+    fn update<T>(
+        &self,
+        change: impl FnOnce(&mut BTreeMap<String, Connection>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.lock_path())
+            .map_err(|error| error.to_string())?;
+        lock.lock_exclusive().map_err(|error| error.to_string())?;
+        let mut all = self.load_checked()?;
+        let result = change(&mut all)?;
+        self.save(&all).map_err(|error| error.to_string())?;
+        Ok(result)
     }
 
     /// Store a connection under `name`, replacing any connection of the same
@@ -145,13 +181,13 @@ impl ConnectionStore {
         if !valid_name(name) {
             return Err("invalid connection name".into());
         }
-        let mut all = self.load();
-        if all.len() >= 200 && !all.contains_key(name) {
-            return Err("too many connections on this computer".into());
-        }
-        all.insert(name.to_string(), connection);
-        self.save(&all).map_err(|err| err.to_string())?;
-        Ok(name.to_string())
+        self.update(|all| {
+            if all.len() >= 200 && !all.contains_key(name) {
+                return Err("too many connections on this computer".into());
+            }
+            all.insert(name.to_string(), connection);
+            Ok(name.to_string())
+        })
     }
 
     /// Register a document under a name derived from `title`, reusing the
@@ -164,38 +200,39 @@ impl ConnectionStore {
         origin: &str,
         access: &str,
     ) -> Result<String, String> {
-        let all = self.load();
-        if let Some((name, _)) = all
-            .iter()
-            .find(|(_, entry)| entry.link == link && entry.origin == origin)
-        {
-            let name = name.clone();
-            let now = now_unix();
-            let mut all = all;
-            if let Some(entry) = all.get_mut(&name) {
+        self.update(|all| {
+            if let Some(name) = all
+                .iter()
+                .find(|(_, entry)| entry.link == link && entry.origin == origin)
+                .map(|(name, _)| name.clone())
+            {
+                let entry = all.get_mut(&name).ok_or("connection disappeared")?;
                 entry.access = access.to_string();
                 entry.title = title.to_string();
-                entry.used = now;
+                entry.used = now_unix();
+                return Ok(name);
             }
-            self.save(&all).map_err(|err| err.to_string())?;
-            return Ok(name);
-        }
-        let name = derive_name(title, &|candidate| all.contains_key(candidate));
-        let now = now_unix();
-        self.put(
-            &name,
-            Connection {
-                link: link.to_string(),
-                origin: origin.to_string(),
-                access: access.to_string(),
-                title: title.to_string(),
-                created: now,
-                used: now,
-                conversation: None,
-                chat_token: None,
-                internal: false,
-            },
-        )
+            if all.len() >= 200 {
+                return Err("too many connections on this computer".into());
+            }
+            let name = derive_name(title, &|candidate| all.contains_key(candidate));
+            let now = now_unix();
+            all.insert(
+                name.clone(),
+                Connection {
+                    link: link.to_string(),
+                    origin: origin.to_string(),
+                    access: access.to_string(),
+                    title: title.to_string(),
+                    created: now,
+                    used: now,
+                    conversation: None,
+                    chat_token: None,
+                    internal: false,
+                },
+            );
+            Ok(name)
+        })
     }
 
     /// Park the sidebar assistant's own credentials under a private name, so
@@ -231,16 +268,15 @@ impl ConnectionStore {
         if !valid_name(name) {
             return Err("invalid connection name".into());
         }
-        let mut all = self.load();
-        let Some(entry) = all.get_mut(name) else {
-            return Err(format!(
-                "no connection named '{name}' on this computer; reconnect the document in your browser"
-            ));
-        };
-        entry.used = now_unix();
-        let found = entry.clone();
-        let _ = self.save(&all);
-        Ok(found)
+        self.update(|all| {
+            let Some(entry) = all.get_mut(name) else {
+                return Err(format!(
+                    "no connection named '{name}' on this computer; reconnect the document in your browser"
+                ));
+            };
+            entry.used = now_unix();
+            Ok(entry.clone())
+        })
     }
 
     pub fn get(&self, name: &str) -> Option<Connection> {
@@ -261,26 +297,20 @@ impl ConnectionStore {
     }
 
     pub fn remove(&self, name: &str) -> bool {
-        let mut all = self.load();
-        let removed = all.remove(name).is_some();
-        if removed {
-            let _ = self.save(&all);
-        }
-        removed
+        self.update(|all| Ok(all.remove(name).is_some()))
+            .unwrap_or(false)
     }
 
     /// Drop every connection registered by `origin`. Called when a pairing is
     /// revoked, so revoking the browser's access also revokes what it handed
     /// to the agents on this machine.
     pub fn remove_origin(&self, origin: &str) -> usize {
-        let mut all = self.load();
-        let before = all.len();
-        all.retain(|_, entry| entry.origin != origin);
-        let removed = before - all.len();
-        if removed > 0 {
-            let _ = self.save(&all);
-        }
-        removed
+        self.update(|all| {
+            let before = all.len();
+            all.retain(|_, entry| entry.origin != origin);
+            Ok(before - all.len())
+        })
+        .unwrap_or(0)
     }
 }
 

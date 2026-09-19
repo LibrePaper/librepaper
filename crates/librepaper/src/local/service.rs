@@ -46,7 +46,7 @@ use crate::local::protocol::{
 const PREVIEW_LOG_TAIL_BYTES: usize = 4 * 1024;
 use crate::local::quarto::{sync_hosted_workspace, BindingStore, HOSTED_BINDING};
 
-type Reply = Response<Body>;
+pub(super) type Reply = Response<Body>;
 
 /// At most this many jobs sit in the queue behind the one running. A fifth
 /// arrival while four already wait is refused outright rather than silently
@@ -318,8 +318,8 @@ struct PendingPair {
     token: Option<(String, i64)>,
 }
 
-struct Inner {
-    state_home: PathBuf,
+pub(super) struct Inner {
+    pub(super) state_home: PathBuf,
     management_nonce: String,
     folder_dialog: Mutex<()>,
     instance: String,
@@ -896,13 +896,13 @@ async fn dispatch(
             handle_connection_create(inner, headers, origin, request).await
         }
         ["assistant"] if *method == Method::POST => {
-            handle_assistant_start(inner, headers, origin, request).await
+            super::assistant::handle_assistant_start(inner, headers, origin, request).await
         }
         ["assistant", "status"] if *method == Method::POST => {
-            handle_assistant_status(inner, headers, origin, request).await
+            super::assistant::handle_assistant_status(inner, headers, origin, request).await
         }
         ["assistant", "stop"] if *method == Method::POST => {
-            handle_assistant_stop(inner, headers, origin, request).await
+            super::assistant::handle_assistant_stop(inner, headers, origin, request).await
         }
         ["capabilities"] if *method == Method::GET => {
             handle_capabilities(inner, headers, origin, false).await
@@ -957,7 +957,7 @@ async fn dispatch(
 /// Resolve a connection this origin owns, or the refusal to send back. Every
 /// agent route goes through it: a connection is a document credential under
 /// another name, so one site may never act on another's.
-fn owned_connection(
+pub(super) fn owned_connection(
     inner: &Inner,
     origin: Option<&str>,
     name: &str,
@@ -1034,97 +1034,6 @@ async fn handle_connection_create(
         Err(error) => write_json(400, &json!({"error": error})),
     }
 }
-
-/// Start the sidebar assistant, driving whichever installed agent the user
-/// picked.
-async fn handle_assistant_start(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let body = match read_json_body::<protocol::AssistantRequest>(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let connection = match owned_connection(inner, origin, &body.connection) {
-        Ok(connection) => connection,
-        Err(response) => return *response,
-    };
-    // An agent that cannot be driven is reported as such rather than silently
-    // replaced by a different one. Which model runs is the user's choice, and
-    // substituting it quietly would be the opposite of bringing your own.
-    let Some(command) = super::agents::acp_command(&inner.state_home, &body.agent) else {
-        return write_json(
-            409,
-            &json!({"error": "that agent cannot be driven from the sidebar on this computer"}),
-        );
-    };
-    match crate::cli::start_assistant(
-        &connection.link,
-        &body.conversation,
-        &body.chat_token,
-        &command,
-    ) {
-        Ok(()) => write_json(200, &json!({"running": true, "agent": body.agent})),
-        Err(error) => write_json(409, &json!({"error": error})),
-    }
-}
-
-/// Whether the sidebar assistant is attached to this conversation.
-async fn handle_assistant_status(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let body = match read_json_body::<protocol::AssistantQuery>(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let connection = match owned_connection(inner, origin, &body.connection) {
-        Ok(connection) => connection,
-        Err(response) => return *response,
-    };
-    match crate::cli::assistant_status(&connection.link, &body.conversation) {
-        Ok(status) => write_json(200, &json!({"running": true, "status": status})),
-        // Not running is the ordinary case before the first start, so it is an
-        // answer rather than an error the sidebar has to interpret.
-        Err(error) => write_json(200, &json!({"running": false, "detail": error})),
-    }
-}
-
-/// Detach the sidebar assistant. Completed document changes are not undone by
-/// stopping; only the attachment ends.
-async fn handle_assistant_stop(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let body = match read_json_body::<protocol::AssistantQuery>(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    let connection = match owned_connection(inner, origin, &body.connection) {
-        Ok(connection) => connection,
-        Err(response) => return *response,
-    };
-    match crate::cli::stop_assistant(&connection.link, &body.conversation) {
-        Ok(()) => write_json(200, &json!({"stopped": true})),
-        Err(error) => write_json(409, &json!({"error": error})),
-    }
-}
-
 /* -------------------------------------------------------------- Zotero */
 
 async fn handle_zotero_search(
@@ -1155,7 +1064,6 @@ async fn handle_zotero_search(
         Err(error) => write_json(503, &json!({ "error": error.to_string() })),
     }
 }
-
 async fn handle_zotero_item(
     inner: &Inner,
     headers: &HeaderMap,
@@ -2688,7 +2596,11 @@ async fn handle_job_delete(
 /// for, checked against the `Origin` header the same token was issued to.
 /// The one gate every route but `health`/`connect` shares.
 #[allow(clippy::result_large_err)] // as `server.rs`'s `read_upload`: the error is a response
-fn authenticate(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Result<String, Reply> {
+pub(super) fn authenticate(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+) -> Result<String, Reply> {
     let Some(origin) = origin else {
         return Err(write_json(403, &json!({"error": "missing Origin header"})));
     };
@@ -2726,7 +2638,7 @@ fn host_allowed(headers: &HeaderMap, port: u16) -> bool {
 }
 
 #[allow(clippy::result_large_err)] // as `server.rs`'s `read_upload`: the error is a response
-async fn read_json_body<T: for<'de> serde::Deserialize<'de>>(
+pub(super) async fn read_json_body<T: for<'de> serde::Deserialize<'de>>(
     request: Request<Body>,
 ) -> Result<T, Reply> {
     let content_type = header_str(request.headers(), "content-type").unwrap_or_default();

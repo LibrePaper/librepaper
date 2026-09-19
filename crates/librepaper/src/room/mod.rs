@@ -986,6 +986,21 @@ impl Room {
             self.fence(FenceReason::UnreadableState);
         }
         self.load_session().await;
+        let mut comments = {
+            let mut state = self.state.lock().await;
+            std::mem::take(&mut *state.comments)
+        };
+        if let Err(error) = self.hydrate_proposed_comments(&mut comments).await {
+            eprintln!(
+                "warning: could not restore suggestion proposals for {}: {error}",
+                self.slug
+            );
+            self.fence(FenceReason::UnreadableState);
+        }
+        {
+            let mut state = self.state.lock().await;
+            *state.comments = comments;
+        }
         // Comments come back from the catalogue with whatever attachment was
         // last written down, and the document has just been rebuilt from its
         // own history: resolve once here so the first reader is told where

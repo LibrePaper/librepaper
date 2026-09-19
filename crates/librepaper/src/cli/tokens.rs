@@ -12,16 +12,7 @@ use super::*;
 /// handing it a base directory directly rather than mutating `$HOME` or
 /// `$XDG_STATE_HOME` for the whole process.
 pub(crate) fn state_home() -> PathBuf {
-    match std::env::var("XDG_STATE_HOME") {
-        Ok(base) if !base.is_empty() => PathBuf::from(base),
-        _ => {
-            let home = std::env::var("HOME")
-                .ok()
-                .filter(|h| !h.is_empty())
-                .unwrap_or_else(|| die("no home directory to store the token in"));
-            Path::new(&home).join(".local").join("state")
-        }
-    }
+    crate::local::paths::state_home().unwrap_or_else(|error| die(&error))
 }
 
 /// Where every librepaper file lives under the state directory.
@@ -91,7 +82,7 @@ pub(super) fn save_tokens(
 
 /// The token cached for one server's origin, or "" if there is none.
 pub(crate) fn stored_token_at(base: &Path, server: &str) -> String {
-    let origin = origin_of(server);
+    let origin = crate::local::credentials::origin(server);
     load_tokens(base)
         .get(&origin)
         .map(|token| token.trim().to_string())
@@ -102,7 +93,7 @@ pub(crate) fn stored_token_at(base: &Path, server: &str) -> String {
 /// Caches `token` under `server`'s origin.
 pub(crate) fn store_token_at(base: &Path, server: &str, token: &str) -> Result<(), String> {
     let _lock = lock_tokens(base)?;
-    let origin = origin_of(server);
+    let origin = crate::local::credentials::origin(server);
     let mut tokens = read_tokens(base)?;
     tokens.insert(origin, token.to_string());
     save_tokens(base, &tokens)
@@ -121,33 +112,6 @@ pub(crate) fn store_token_at(base: &Path, server: &str, token: &str) -> Result<(
 /// each its own way.
 pub fn stored_token_for(server: &str, token: Option<&str>) -> String {
     stored_token_with(&state_home(), server, token)
-}
-
-/// Pasted automation links cannot select the destination of an ambient
-/// bearer. An explicit token is used only for the server it was explicitly
-/// configured for; other deployments may still use their own origin-scoped
-/// cached sign-in.
-pub(crate) fn stored_agent_token_for(
-    server: &str,
-    configured_server: Option<&str>,
-    token: Option<&str>,
-) -> String {
-    stored_agent_token_with(
-        &state_home(),
-        server,
-        configured_server.unwrap_or(""),
-        token,
-    )
-}
-
-fn stored_agent_token_with(
-    base: &Path,
-    server: &str,
-    configured: &str,
-    token: Option<&str>,
-) -> String {
-    let matches = !configured.is_empty() && origin_of(server) == origin_of(configured);
-    stored_token_with(base, server, if matches { token } else { None })
 }
 
 /// The pure core of `stored_token_for`: everything above it does is read the
@@ -359,34 +323,6 @@ pub async fn poll_for_token(server: &str, code: &DeviceCode) -> Result<String, S
 #[cfg(test)]
 mod cache_tests {
     use super::*;
-
-    #[test]
-    fn automation_environment_token_requires_configured_origin() {
-        let base = tempfile::tempdir().unwrap();
-        store_token_at(base.path(), "https://other.test", "other-cache").unwrap();
-        assert_eq!(
-            stored_agent_token_with(
-                base.path(),
-                "https://home.test:443",
-                "https://home.test/",
-                Some("explicit")
-            ),
-            "explicit"
-        );
-        assert_eq!(
-            stored_agent_token_with(
-                base.path(),
-                "https://other.test",
-                "https://home.test",
-                Some("explicit")
-            ),
-            "other-cache"
-        );
-        assert_eq!(
-            stored_agent_token_with(base.path(), "https://unknown.test", "", Some("explicit")),
-            ""
-        );
-    }
 
     #[test]
     fn corrupt_cache_is_preserved_when_login_writes() {

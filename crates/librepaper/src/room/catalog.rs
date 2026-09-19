@@ -184,6 +184,30 @@ pub(super) async fn insert_comment_request(
     ))
 }
 
+pub(super) async fn insert_suggestion_request(
+    catalog: &Arc<PostgresCatalog>,
+    row: AnnotationRow,
+    proposal: crate::storage::postgres::NewProposal,
+    actor: crate::document::store::MutationActor,
+) -> Result<(), String> {
+    let document = catalog
+        .document_by_slug(&row.slug)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or("document missing")?;
+    let id = Uuid::parse_str(&row.comment.id).map_err(|_| "invalid annotation id")?;
+    catalog
+        .put_suggestion_authorized(
+            id,
+            annotation_input(document.id, &row.comment).map_err(|error| error.to_string())?,
+            proposal,
+            &mutation_authorization(&actor).map_err(|error| error.to_string())?,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub(super) async fn update_comment_row(
     catalog: &Arc<PostgresCatalog>,
     row: AnnotationRow,
@@ -328,6 +352,7 @@ pub(super) fn annotation_input(
         },
         bundle_id: Uuid::parse_str(&comment.bundle_id).ok(),
         color: comment.color.clone(),
+        proposal_id: Uuid::parse_str(&comment.proposal).ok(),
         original_anchor,
         presentation: comment.presentation.clone(),
         attachment: comment.attachment.clone(),
@@ -355,9 +380,9 @@ pub(crate) fn room_comment_from_catalog_row(
         presentation: presentation_from_record(&row),
         color: row.color.clone(),
         bundle_id: row.bundle_id.map(|id| id.to_string()).unwrap_or_default(),
-        proposal: String::new(),
-        // Projections. A row does not carry them; whoever serves this comment
-        // fills them in from the proposal named above.
+        proposal: row.proposal_id.map(|id| id.to_string()).unwrap_or_default(),
+        // Projections are rebuilt from the proposal branch after the room's
+        // document session has loaded.
         proposed: None,
         outcome: String::new(),
         pass: String::new(),

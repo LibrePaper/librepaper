@@ -47,7 +47,6 @@ pub(super) fn failure(error: agent::AgentError) -> Failure {
     let code = match error {
         agent::AgentError::Invalid(_) => "invalid_params",
         agent::AgentError::Conflict(_) => "conflict",
-        agent::AgentError::NotFound => "not_found",
         agent::AgentError::Storage(_) => "outcome_unknown",
     };
     Failure::new(code, error.to_string())
@@ -78,12 +77,11 @@ pub(super) fn tree_of_view(view: &View) -> Result<SourceTree, Failure> {
     Ok(SourceTree::with_canonical(canonical, files))
 }
 
-pub(super) fn candidate_texts(
-    view: &View,
-    candidate: &Candidate,
-) -> Result<std::collections::BTreeMap<String, String>, Failure> {
-    let mut texts = view.snapshot.texts.clone();
-    let mut patches = candidate.patches.iter().collect::<Vec<_>>();
+fn apply_candidate_patches<'a>(
+    texts: &mut std::collections::BTreeMap<String, String>,
+    patches: impl Iterator<Item = &'a Patch>,
+) -> Result<(), Failure> {
+    let mut patches = patches.collect::<Vec<_>>();
     patches.sort_by(|a, b| {
         a.path
             .cmp(&b.path)
@@ -99,7 +97,37 @@ pub(super) fn candidate_texts(
         }
         text.replace_range(patch.start..patch.end, &patch.replacement);
     }
+    Ok(())
+}
+
+pub(super) fn candidate_texts(
+    view: &View,
+    candidate: &Candidate,
+) -> Result<std::collections::BTreeMap<String, String>, Failure> {
+    let mut texts = view.snapshot.texts.clone();
+    apply_candidate_patches(&mut texts, candidate.patches.iter())?;
     Ok(texts)
+}
+
+pub(super) fn candidate_source(
+    view: &View,
+    candidate: &Candidate,
+    path: &str,
+) -> Result<String, Failure> {
+    let text = view
+        .snapshot
+        .texts
+        .get(path)
+        .cloned()
+        .ok_or_else(|| Failure::new("not_found", "candidate file missing"))?;
+    let mut texts = std::collections::BTreeMap::from([(path.to_string(), text)]);
+    apply_candidate_patches(
+        &mut texts,
+        candidate.patches.iter().filter(|patch| patch.path == path),
+    )?;
+    texts
+        .remove(path)
+        .ok_or_else(|| Failure::new("not_found", "candidate file missing"))
 }
 
 impl Server {
@@ -124,6 +152,7 @@ impl Server {
                     digest: digest.to_owned(),
                 },
                 expiry,
+                false,
             )
             .await
         {
@@ -212,13 +241,13 @@ impl Server {
             Err(error) => return Err(error),
         };
         let _ = (slug, who, id);
-        if admitted && digest.is_none() {
-            Ok(Some(
-                json!({"operation":key,"status":"admitted","reconciliation":"retry the original tool call with unchanged arguments; no committed outcome is retained yet"}),
-            ))
-        } else {
-            Ok(None)
+        if admitted {
+            return Err(Failure::new(
+                "outcome_unknown",
+                "this operation was admitted previously, but no committed result is retained; inspect the document before submitting a new operation",
+            ));
         }
+        Ok(None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -412,7 +441,12 @@ impl Server {
                     .await
                     .map_err(|e| Failure::new("unavailable", e.to_string()))?;
                 let receipt = room
-                    .apply_agent_request(request, authority)
+                    .apply_agent_request(request, authority, || async {
+                        self.mcp_recheck(slug, headers, arrival, actor)
+                            .await
+                            .map(|_| ())
+                            .map_err(|error| agent::AgentError::Conflict(error.message))
+                    })
                     .await
                     .map_err(failure)?;
                 Ok(json!(receipt))
@@ -420,7 +454,7 @@ impl Server {
             "document_comment" => {
                 if args["action"] == "accept" {
                     return self
-                        .mcp_accept(slug, actor, &current, headers, args, &key, &digest)
+                        .mcp_accept(slug, actor, &current, headers, arrival, args, &key, &digest)
                         .await;
                 }
                 if args["action"] == "checkpoint" {
@@ -452,6 +486,7 @@ impl Server {
         actor: &str,
         who: &Viewer,
         headers: &HeaderMap,
+        arrival: &Arrival,
         args: &Value,
         key: &OperationKey,
         digest: &str,
@@ -563,10 +598,15 @@ impl Server {
             operation_scope: actor.to_string(),
             execution_epoch: runner_execution_epoch(headers),
         };
-        room.apply_agent_request(request, authority)
-            .await
-            .map(|receipt| json!(receipt))
-            .map_err(failure)
+        room.apply_agent_request(request, authority, || async {
+            self.mcp_recheck(slug, headers, arrival, actor)
+                .await
+                .map(|_| ())
+                .map_err(|error| agent::AgentError::Conflict(error.message))
+        })
+        .await
+        .map(|receipt| json!(receipt))
+        .map_err(failure)
     }
 
     async fn mcp_checkpoint(
@@ -775,6 +815,7 @@ impl Server {
             "candidate",
             &candidate,
             candidate.expires_at,
+            true,
         )
         .await?;
         self.mcp_finish_proposal(
@@ -840,6 +881,12 @@ impl Server {
             result["render"] = json!(render);
         }
         if candidate.publish == "suggestions" {
+            if candidate.patches.len() != 1 {
+                return Err(Failure::new(
+                    "invalid_params",
+                    "publishing multiple suggestions is independent, not atomic; use batch: independent",
+                ));
+            }
             if !who.at_least(Role::Commenter) {
                 return Err(Failure::new(
                     "permission_changed",
@@ -855,50 +902,64 @@ impl Server {
                 pseudonym_for(&author, slug)
             };
             let pass = key.scoped_request_id(actor);
-            let rows = candidate
-                .patches
-                .iter()
-                .enumerate()
-                .map(|(index, patch)| {
-                    let source = &view.snapshot.texts[&patch.path];
-                    let prefix = source[..patch.start]
-                        .chars()
-                        .rev()
-                        .take(64)
-                        .collect::<String>()
-                        .chars()
-                        .rev()
-                        .collect::<String>();
-                    let suffix = source[patch.end..].chars().take(64).collect::<String>();
-                    Comment {
-                        // Stable per suggestion within the pass, so a retry
-                        // lands on the same annotation, and a UUID because
-                        // the catalog stores nothing else.
-                        id: super::comments::comment_uuid(&format!("{}-{index}", &pass[..32])),
-                        motivation: "editing".into(),
-                        original_anchor: Some(OriginalAnchor {
-                            checkpoint_id: CheckpointId(view.snapshot.source_revision.clone()),
-                            target: CommentTarget::SourceText(SourceTextTarget {
-                                file_id: FileId(patch.file_id.clone()),
-                                start_utf16: source[..patch.start].encode_utf16().count() as u32,
-                                end_utf16: source[..patch.end].encode_utf16().count() as u32,
-                                start_side: AnchorSide::Left,
-                                end_side: AnchorSide::Right,
-                                exact: patch.exact.clone(),
-                                prefix,
-                                suffix,
-                            }),
+            let room = self
+                .rooms
+                .try_get(slug)
+                .await
+                .map_err(|e| Failure::new("unavailable", e.to_string()))?;
+            let mut rows = Vec::with_capacity(candidate.patches.len());
+            let mut proposals = std::collections::HashMap::new();
+            for (index, patch) in candidate.patches.iter().enumerate() {
+                let source = &view.snapshot.texts[&patch.path];
+                let prefix = source[..patch.start]
+                    .chars()
+                    .rev()
+                    .take(64)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                let suffix = source[patch.end..].chars().take(64).collect::<String>();
+                let (proposal, prepared) = room
+                    .prepare_suggestion(
+                        &author,
+                        &patch.path,
+                        patch.start,
+                        &patch.exact,
+                        &patch.replacement,
+                    )
+                    .await
+                    .map_err(|error| Failure::new("conflict", error.to_string()))?;
+                let id = super::comments::comment_uuid(&format!("{}-{index}", &pass[..32]));
+                proposals.insert(id.clone(), prepared);
+                rows.push(Comment {
+                    // Stable per suggestion within the pass, so a retry lands
+                    // on the same annotation. The replacement itself lives in
+                    // the ordinary persisted proposal branch.
+                    id,
+                    motivation: "editing".into(),
+                    proposal,
+                    original_anchor: Some(OriginalAnchor {
+                        checkpoint_id: CheckpointId(view.snapshot.source_revision.clone()),
+                        target: CommentTarget::SourceText(SourceTextTarget {
+                            file_id: FileId(patch.file_id.clone()),
+                            start_utf16: source[..patch.start].encode_utf16().count() as u32,
+                            end_utf16: source[..patch.end].encode_utf16().count() as u32,
+                            start_side: AnchorSide::Left,
+                            end_side: AnchorSide::Right,
+                            exact: patch.exact.clone(),
+                            prefix,
+                            suffix,
                         }),
-                        proposed: Some(patch.replacement.clone()),
-                        body: candidate.notes.get(index).cloned().unwrap_or_default(),
-                        creator: creator.clone(),
-                        created: crate::util::timestamp(),
-                        author: author.clone(),
-                        pass: pass.clone(),
-                        ..Comment::default()
-                    }
-                })
-                .collect::<Vec<_>>();
+                    }),
+                    body: candidate.notes.get(index).cloned().unwrap_or_default(),
+                    creator: creator.clone(),
+                    created: crate::util::timestamp(),
+                    author: author.clone(),
+                    pass: pass.clone(),
+                    ..Comment::default()
+                });
+            }
             result["effects"] = json!(rows
                 .iter()
                 .map(|c| json!({"kind":"suggestion","id":c.id}))
@@ -910,11 +971,6 @@ impl Server {
             result["next"] = json!(
                 "These suggestions are visible for review. The document's text is unchanged until someone accepts them; do not report the words as corrected."
             );
-            let room = self
-                .rooms
-                .try_get(slug)
-                .await
-                .map_err(|e| Failure::new("unavailable", e.to_string()))?;
             let address = client_address(peer, headers, &self.config.cost.trusted_proxies);
             return room
                 .apply_agent_annotations(
@@ -926,6 +982,7 @@ impl Server {
                         expected: Vec::new(),
                         deletes: Vec::new(),
                         replies: Vec::new(),
+                        proposals,
                         receipt: result,
                     },
                     BatchCaller {
@@ -936,11 +993,15 @@ impl Server {
                         creator: &creator,
                     },
                     crate::room::agent_comments::AgentAnnotationAuthority {
-                        account_id: who.id.id.clone(),
-                        generation: who.id.session_generation.clone(),
                         link_hash: who.link.clone(),
                         policy_comment: true,
                         require_editor: false,
+                    },
+                    || async {
+                        self.mcp_recheck(slug, headers, arrival, actor)
+                            .await
+                            .map(|_| ())
+                            .map_err(|error| error.message)
                     },
                 )
                 .await
@@ -985,40 +1046,14 @@ impl Server {
                 if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, &key).await? {
                     return Ok(cancellation);
                 }
-                let result = self
-                    .mcp_receipt(slug, actor, &who, &key, None)
+                self.mcp_receipt(slug, actor, &who, &key, None)
                     .await?
                     .ok_or_else(|| {
                         Failure::new(
                             "outcome_unknown",
                             "no retained operation receipt; absence does not prove nonexecution",
                         )
-                    })?;
-                if result["status"] == "prepared" {
-                    let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
-                    let room = self
-                        .rooms
-                        .try_get(slug)
-                        .await
-                        .map_err(|e| Failure::new("unavailable", e.to_string()))?;
-                    let authority = AgentAuthority {
-                        automation: true,
-                        account_id: who.id.id.clone(),
-                        owner_key: who.key.clone(),
-                        generation: who.id.session_generation.clone(),
-                        link_hash: who.link.clone(),
-                        policy_editor: self.publishers.allows(&who.id.handle),
-                        unowned_publisher: false,
-                        operation_scope: actor.to_string(),
-                        execution_epoch: runner_execution_epoch(headers),
-                    };
-                    return room
-                        .recover_agent_operation(key, authority)
-                        .await
-                        .map(|receipt| json!(receipt))
-                        .map_err(failure);
-                }
-                Ok(result)
+                    })
             }
             "candidate" | "render" => {
                 let candidate: Candidate = self
@@ -1036,18 +1071,6 @@ impl Server {
                         .await?
                     {
                         return Ok(cancellation);
-                    }
-                    if let Some(receipt) = self
-                        .mcp_receipt(
-                            slug,
-                            actor,
-                            &who,
-                            &candidate.operation,
-                            Some(&candidate.digest),
-                        )
-                        .await?
-                    {
-                        return Ok(receipt);
                     }
                     let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
                     let view = self

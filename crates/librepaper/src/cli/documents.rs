@@ -284,24 +284,7 @@ async fn resolve_identifier_with(
 /// in its fragment is an empty key, which is what a plain document URL
 /// carries.
 pub fn link_key(flag: &str) -> String {
-    let flag = flag.trim();
-    let Some((_, fragment)) = flag.split_once('#') else {
-        return if flag.contains("://") {
-            String::new()
-        } else {
-            flag.to_string()
-        };
-    };
-    fragment
-        .split('&')
-        .find_map(|part| part.strip_prefix("k="))
-        .map(|key| {
-            url::form_urlencoded::parse(format!("k={key}").as_bytes())
-                .next()
-                .map(|(_, value)| value.to_string())
-                .unwrap_or_default()
-        })
-        .unwrap_or_default()
+    crate::automation::peer::link_key(flag)
 }
 
 #[cfg(test)]

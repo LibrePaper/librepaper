@@ -40,6 +40,13 @@ receive `presence` whenever either socket connects or disconnects:
 { "type": "presence", "browser": true, "agent": false }
 ```
 
+The runner also sends a private 48-character `binding_nonce` in its join. The
+first runner join binds that nonce to the channel; reconnects must present the
+same value. A different or missing runner binding is refused, so loss of the
+local task ledger cannot make an existing channel look like an empty new one.
+Deleting or expiring the channel clears the binding and requires a new browser
+conversation.
+
 An agent's `ready` also includes an opaque `execution_epoch`. The server keeps
 its document/conversation lease in the catalog, renews it every ten seconds,
 and expires it after sixty seconds without renewal. Replacement and disconnect
@@ -61,7 +68,11 @@ Every event has an `id` (at most 128 bytes). The server relays accepted events
 to both peers and returns `{ "type": "ack", "id": ID }` to the sender. A retry
 with the same ID and identical content is acknowledged without another
 delivery during the current connection. Detaching either peer clears relay
-deduplication; the runner uses its persisted task IDs to prevent reexecution.
+deduplication. The runner retains up to 4,096 compact admissions for the
+lifetime of the conversation, independently of its 256 full task snapshots,
+so eviction and reconnect cannot turn a retry into new execution. A legacy or
+missing admission ledger makes that conversation recovery-only; new work
+requires a new channel.
 An acknowledgment confirms relay delivery, while a task event confirms local admission. Reusing an ID for different content returns `409`. Events are
 bounded by the 64 KiB WebSocket frame limit; text is at most 32 KiB and context
 is at most 16 KiB. A channel accepts at most 600 new events per rolling minute;
@@ -97,8 +108,12 @@ reports task lifecycle separately:
 ```
 
 Valid statuses are `queued`, `working`, `needs_input`, `completed`, `failed`,
-and `cancelled`. `text` and optional `context` explain a status or carry
-structured results such as suggestion IDs.
+`cancelled`, and `interrupted`. `text` and optional `context` explain a status
+or carry structured results. Completed results include an `effects` object:
+`confirmed` contains receipt-backed effects, `refused` contains tool refusals,
+and `unresolved` contains operations whose outcome needs receipt
+reconciliation. A refusal by itself does not change a normally ended turn into
+a failed task.
 
 The browser requests cancellation with:
 
@@ -110,19 +125,23 @@ The runner reports `cancelled` when the model confirms interruption. If the
 model finishes before interruption takes effect, it reports the actual completed
 result. Cancellation does not undo edits already accepted by the user.
 
-A `needs_input` task carries `context.input` with `request_id`, `kind`
-(`approval` or `question`), `message`, and `questions`. The browser responds:
+A `needs_input` task carries `context.input` with `request_id`, `kind` set to
+`permission`, a `message`, and permission `options` normalized for the browser
+as `{ "id": "...", "label": "..." }`. The browser responds with one offered
+option ID or cancels the request:
 
 ```json
 {
   "type": "input", "id": "input-1", "task_id": "request-1",
-  "request_id": "permission-1", "response": { "decision": "accept" }
+  "request_id": "permission-1", "response": { "option": "allow_once" }
 }
 ```
 
-Approval decisions are `accept` or `decline`. Question responses use
-`{"answers":{"question-id":{"answers":["chosen answer"]}}}`. The runner
-matches the request to a pending model RPC before forwarding the response.
+Cancellation uses `"response":{"cancelled":true}`. The runner accepts only
+an option offered for the front pending request and binds the response to both
+task and request IDs. It queues at most eight overlapping permissions in
+arrival order. Each permission and each model turn has a 30-minute deadline;
+time spent waiting on an answered permission does not consume the turn limit.
 Completed assistant messages carry `context.task_id`; clients upsert by that
 identity so reconciliation does not duplicate answers.
 

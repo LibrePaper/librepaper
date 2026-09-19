@@ -263,7 +263,7 @@ impl Server {
         match method {
             "server/discover" => rpc_result(
                 &id,
-                json!({"supportedVersions":[PROTOCOL],"capabilities":{"tools":{}},"instructions":"Read bounded source, then reuse view and range handles. Every mutation needs an operation: copy operation_epoch verbatim from your most recent document_read response and pair it with an id you mint once per mutation. An epoch cannot be invented or carried over, and authorization_epoch is a different value that will be refused; read again when yours expires. Suggestions are inert. Reuse operation keys on retries; apply only when authorized. These tools are the only way to reach this document: if one fails or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.","ttlMs":300000,"cacheScope":"private"}),
+                json!({"supportedVersions":[PROTOCOL],"capabilities":{"tools":{}},"instructions":"Read bounded source, then reuse view and range handles. Every mutation needs an operation: copy operation_epoch verbatim from your most recent document_read response and pair it with an id you mint once per mutation. An epoch cannot be invented or carried over, and authorization_epoch is a different value that will be refused; read again when yours expires. Suggestions are inert. An admitted operation key is single-use: if its outcome is unknown, inspect the document and do not evade the guard with a new id. Apply only when authorized. These tools are the only way to reach this document: if one fails or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.","ttlMs":300000,"cacheScope":"private"}),
             ),
             "ping" => rpc_result(&id, json!({})),
             "tools/list" => rpc_result(
@@ -348,6 +348,7 @@ impl Server {
         kind: &str,
         object: &T,
         expiry: i64,
+        allow_existing: bool,
     ) -> Result<(), Failure> {
         if id.is_empty() || id.len() > 256 || kind.is_empty() || kind.len() > 128 {
             return Err(Failure::new(
@@ -399,8 +400,13 @@ impl Server {
                     .get(&key)
                     .await
                     .map_err(|e| Failure::new("unavailable", e.to_string()))?;
-                if old == bytes {
+                if old == bytes && allow_existing {
                     Ok(())
+                } else if old == bytes {
+                    Err(Failure::new(
+                        "outcome_unknown",
+                        "this operation was admitted previously; inspect the document before submitting a new operation",
+                    ))
                 } else {
                     Err(Failure::new(
                         "operation_key_reused",
@@ -555,7 +561,14 @@ impl Server {
                 .map_err(crate::server::mcp::operations::failure)?;
             let bytes = serde_json::to_vec(&snapshot)
                 .map_err(|e| Failure::new("internal", e.to_string()))?;
-            let id = format!("view_{}", hex::encode(Sha256::digest(&bytes)));
+            // Keep identical captures reusable within a lease window while
+            // ensuring an expired immutable object never blocks renewal.
+            let lease_window = now_unix().div_euclid(3600);
+            let id = format!(
+                "view_{}_{}",
+                hex::encode(Sha256::digest(&bytes)),
+                lease_window
+            );
             match self.mcp_load::<View>(slug, actor, who, &id, "view").await {
                 Ok(view) => (id, view),
                 Err(error) if error.code == "view_expired" => {
@@ -568,7 +581,7 @@ impl Server {
                         operation_epoch: epoch,
                     };
                     match self
-                        .mcp_store(slug, actor, who, &id, "view", &view, expiry)
+                        .mcp_store(slug, actor, who, &id, "view", &view, expiry, true)
                         .await
                     {
                         Ok(()) => (id, view),

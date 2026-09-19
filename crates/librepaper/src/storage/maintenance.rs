@@ -150,9 +150,18 @@ impl Maintenance {
             return Err("orphan cleanup bounds are invalid".into());
         }
         let mut removed = 0;
-        for (name, prefix) in [
-            ("document_objects", "documents/"),
-            ("temporary_objects", "temporary/"),
+        for (name, prefix, retention) in [
+            ("document_objects", "documents/", grace),
+            // Agent views, candidates, admissions and render receipts are
+            // unusable after at most one hour. Keep one further hour for
+            // in-flight requests and clock skew, without retaining full source
+            // snapshots for the general seven-day orphan window.
+            (
+                "temporary_agent_objects",
+                "temporary/agent/",
+                Duration::hours(2),
+            ),
+            ("temporary_objects", "temporary/", grace),
         ] {
             let cursor: Option<String> =
                 sqlx::query_scalar!("SELECT cursor FROM maintenance_cursors WHERE name=$1", name,)
@@ -172,7 +181,7 @@ impl Maintenance {
                 HashSet::new()
             };
             let cutoff = std::time::SystemTime::now()
-                .checked_sub(grace.unsigned_abs())
+                .checked_sub(retention.unsigned_abs())
                 .ok_or("orphan cleanup grace is outside the system clock range")?;
             let doomed: Vec<String> = page
                 .iter()

@@ -285,26 +285,8 @@ pub fn normalize_origin(raw: &str) -> String {
 }
 
 pub(crate) fn write_private_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let body = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    use std::io::Write;
-    file.write_all(body.as_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    let body = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
+    crate::private_files::publish(path, &body, "local private JSON").map_err(std::io::Error::other)
 }
 
 pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {

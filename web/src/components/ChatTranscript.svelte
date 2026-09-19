@@ -56,6 +56,8 @@
 <div class="chat-transcript-wrap">
   <div class="chat-transcript" bind:this={transcript} onscroll={scrolled} role="log" aria-label={label} aria-live="polite" aria-relevant="additions text">
     {#each rows as { message, key, starts, name } (`${message.role || "chat"}:${message.id}`)}
+      {@const refused = message.context?.results?.effects?.refused || []}
+      {@const unresolved = message.context?.results?.effects?.unresolved || []}
       <article class="chat-message" class:starts class:from-user={message.role === "user"} class:from-agent={message.role === "agent"} data-id={message.id}>
         <span class="chat-gutter">
           {#if starts}<Avatar {name} {key} icon={message.role === "agent" ? "bot" : ""} />{/if}
@@ -63,6 +65,12 @@
         <div class="chat-bubble">
           {#if starts}<strong class="chat-author">{name}</strong>{/if}
           <p>{message.text}</p>
+          {#if refused.length || unresolved.length}
+            <p class="effect-warning" role="alert">
+              {#if refused.length}{refused.length} document operation{refused.length === 1 ? " was" : "s were"} refused.{/if}
+              {#if unresolved.length} {unresolved.length} document operation{unresolved.length === 1 ? " has" : "s have"} an unconfirmed outcome.{/if}
+            </p>
+          {/if}
           {#if message.context?.results && (message.context.results.suggestions?.length || message.context.results.pass)}
             <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => onresult?.(message.context.results)}>Review changes</button>
           {/if}
@@ -86,6 +94,7 @@
   .chat-message.from-user .chat-bubble { border-color: color-mix(in srgb, var(--color-primary-500) 35%, var(--color-surface-300-700)); background: color-mix(in srgb, var(--color-primary-500) 10%, var(--color-surface-100-900)); }
   .chat-author { display: block; margin-bottom: calc(var(--spacing) * 0.5); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); color: var(--panel-muted); }
   .chat-bubble p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+  .chat-bubble .effect-warning { margin-top: var(--spacing); color: var(--color-warning-700-300); font-weight: 600; }
   .chat-bubble .btn { margin-top: var(--spacing); }
   .new-messages { position: absolute; right: var(--spacing); bottom: var(--spacing); }
 </style>

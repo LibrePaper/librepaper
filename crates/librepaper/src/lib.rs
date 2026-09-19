@@ -20,12 +20,15 @@
 // test target; integration binaries do not consume them in that target.
 
 mod agent_query;
+mod assistant;
 mod auth;
+mod automation;
 mod cli;
 pub mod config;
 mod document;
 mod http;
 mod local;
+mod private_files;
 pub mod quarto;
 pub mod results;
 mod room;
@@ -36,7 +39,7 @@ mod util;
 
 pub use cli::main;
 // The headless automation peer, for the integration tests in `tests/`.
-pub use cli::peer;
+pub use automation::peer;
 // What the fuzz targets read: the shared document and the path rules, and the
 // anchoring path -- `locate` turns a reader's selection into a range in a
 // source file the author uploaded, so both of its inputs come from outside,

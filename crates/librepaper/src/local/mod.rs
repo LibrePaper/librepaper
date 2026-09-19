@@ -6,9 +6,11 @@
 //! discovery and the native runners find and run the tools; `cli` is the command line.
 
 pub mod agents;
+pub(crate) mod assistant;
 pub mod builders;
 pub mod cli;
 pub mod connections;
+pub(crate) mod credentials;
 pub mod discovery;
 pub mod embedded;
 pub mod engine_adapter;
@@ -17,6 +19,7 @@ pub mod lifecycle;
 mod management;
 pub mod native;
 pub mod pairing;
+pub(crate) mod paths;
 pub mod presets;
 pub mod protocol;
 pub mod quarto;

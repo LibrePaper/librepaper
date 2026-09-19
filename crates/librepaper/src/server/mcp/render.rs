@@ -435,10 +435,6 @@ impl Server {
         if let Err(reply) = recheck_issuer(self, slug, &candidate).await {
             return *reply;
         }
-        let texts = match candidate_texts(&view, &candidate) {
-            Ok(texts) => texts,
-            Err(_) => return plain(404, "candidate not found"),
-        };
         if source {
             let Some(path) = path else {
                 return plain(400, "source path is required");
@@ -446,10 +442,11 @@ impl Server {
             if !valid_path(&path) {
                 return plain(400, "invalid source path");
             }
-            let Some(text) = texts.get(&path) else {
-                return plain(404, "source not found");
+            let text = match super::operations::candidate_source(&view, &candidate, &path) {
+                Ok(text) => text,
+                Err(_) => return plain(404, "source not found"),
             };
-            let mut response = Response::new(Body::from(text.clone()));
+            let mut response = Response::new(Body::from(text));
             set(&mut response, "content-type", "text/plain; charset=utf-8");
             set(&mut response, "cache-control", "no-store");
             return response;
@@ -457,6 +454,10 @@ impl Server {
         if path.is_some() {
             return plain(400, "source path is only valid on the source endpoint");
         }
+        let texts = match candidate_texts(&view, &candidate) {
+            Ok(texts) => texts,
+            Err(_) => return plain(404, "candidate not found"),
+        };
         match manifest(&view, candidate_id, &candidate, &texts) {
             Ok(value) => response_json(value),
             Err(reply) => *reply,
@@ -492,6 +493,7 @@ impl Server {
             "render",
             &receipt,
             candidate.expires_at,
+            true,
         )
         .await
     }

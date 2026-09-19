@@ -13,10 +13,30 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use crate::cli::{link_key, stored_agent_token_for};
 use crate::http::{detail_of, KEY_HEADER};
 
-use super::runner;
+use crate::assistant::runtime as runner;
+
+/// Extract a share key from either a literal key or a pasted document URL.
+pub fn link_key(flag: &str) -> String {
+    let flag = flag.trim();
+    let Some((_, fragment)) = flag.split_once('#') else {
+        return if flag.contains("://") {
+            String::new()
+        } else {
+            flag.to_string()
+        };
+    };
+    fragment
+        .split('&')
+        .find_map(|part| part.strip_prefix("k="))
+        .and_then(|key| {
+            url::form_urlencoded::parse(format!("k={key}").as_bytes())
+                .next()
+                .map(|(_, value)| value.into_owned())
+        })
+        .unwrap_or_default()
+}
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -168,7 +188,7 @@ impl DocumentLink {
     /// Return the credential-bearing document URL for the local assistant
     /// process. This value is passed only through its environment, never
     /// included in chat output or runner state.
-    pub(super) fn credential_url(&self) -> String {
+    pub(crate) fn credential_url(&self) -> String {
         let Ok(mut url) = url::Url::parse(&self.server) else {
             return self.server.clone();
         };
@@ -279,7 +299,12 @@ impl AutomationPeer {
         configured_server: Option<&str>,
         token: Option<&str>,
     ) -> Result<Self, String> {
-        let token = stored_agent_token_for(link.server(), configured_server, token);
+        let token = crate::local::credentials::agent_token(
+            &crate::local::paths::state_home()?,
+            link.server(),
+            configured_server,
+            token,
+        );
         let client = new_client()?;
         let mut request = client.get(format!("{}/api/documents/{}", link.server(), link.slug()));
         if !token.is_empty() {
@@ -432,7 +457,7 @@ impl AutomationPeer {
     /// share key and any ambient agent token stay in HTTP headers. The adapter
     /// uses a separate method because MCP's protocol metadata is carried in
     /// headers by the document endpoint rather than in model-visible input.
-    pub(super) async fn mcp_request(
+    pub(crate) async fn mcp_request(
         &self,
         method_name: &str,
         tool_name: Option<&str>,
@@ -487,7 +512,7 @@ impl AutomationPeer {
         // the agent registered a document server with no tools.
         let epoch = captured_epoch.map(str::to_owned).or_else(|| {
             std::env::var_os("LIBREPAPER_RUNNER_EPOCH_FILE").and_then(|path| {
-                super::runner_journal::execution_epoch(std::path::Path::new(&path))
+                crate::assistant::journal::execution_epoch(std::path::Path::new(&path))
             })
         });
         // The background runner gives the adapter a protected copy of the
@@ -735,7 +760,8 @@ pub async fn run_cli(
     } = &command
     {
         let resolved =
-            crate::local::connections::ConnectionStore::new(&super::state_home()).resolve(name)?;
+            crate::local::connections::ConnectionStore::new(&crate::local::paths::state_home()?)
+                .resolve(name)?;
         // The sidebar channel is the adapter's only route for browser render
         // jobs. Restoring it from the private record, rather than accepting
         // it on a command line, is the whole point of naming a connection.
@@ -747,7 +773,7 @@ pub async fn run_cli(
         }
         let link = DocumentLink::parse(&resolved.link, server.as_deref().unwrap_or(""))?;
         let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
-        return super::mcp::stdio(&peer).await;
+        return crate::automation::mcp::stdio(&peer).await;
     }
     let link_text = match &command {
         AgentCommand::Connect { link, .. }
@@ -770,7 +796,8 @@ pub async fn run_cli(
             ..
         } => {
             let status =
-                super::runner_lifecycle::status(&link, conversation, state_dir.as_deref())?;
+                crate::assistant::lifecycle::status(&link, conversation, state_dir.as_deref())
+                    .map_err(|error| error.to_string())?;
             println!(
                 "{}",
                 serde_json::to_string(&status).map_err(|err| err.to_string())?
@@ -782,7 +809,8 @@ pub async fn run_cli(
             state_dir,
             ..
         } => {
-            super::runner_lifecycle::stop(&link, conversation, state_dir.as_deref())?;
+            crate::assistant::lifecycle::stop(&link, conversation, state_dir.as_deref())
+                .map_err(|error| error.to_string())?;
             println!("{}", json!({"stopped":true,"conversation":conversation}));
             return Ok(());
         }
@@ -800,8 +828,12 @@ pub async fn run_cli(
         } => {
             let config =
                 runner::config(conversation.clone(), chat_token, state_dir.clone(), agent)?;
+            // The background runner needed these only to construct `peer` and
+            // `config`. Its ACP child must not inherit document credentials.
+            std::env::remove_var("LIBREPAPER_DOCUMENT");
+            std::env::remove_var("LIBREPAPER_CHAT_TOKEN");
             if background {
-                super::runner_lifecycle::start_background(
+                crate::assistant::lifecycle::start_background(
                     peer.link(),
                     &conversation,
                     &config.token,
@@ -814,7 +846,7 @@ pub async fn run_cli(
             }
         }
         AgentCommand::Mcp { .. } => {
-            super::mcp::stdio(&peer).await?;
+            crate::automation::mcp::stdio(&peer).await?;
         }
         AgentCommand::Status { .. } | AgentCommand::Stop { .. } => {
             unreachable!("local lifecycle handled before opening document")
@@ -831,7 +863,7 @@ pub async fn run_cli(
                 .map_err(|err| format!("could not read {}: {err}", files.display()))?;
             let files: Value = serde_json::from_str(&raw)
                 .map_err(|err| format!("invalid preview files JSON: {err}"))?;
-            let result = super::runner_preview::preview(
+            let result = crate::assistant::preview::preview(
                 &peer,
                 &conversation,
                 state_dir.as_deref(),

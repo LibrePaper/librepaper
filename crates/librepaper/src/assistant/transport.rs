@@ -46,7 +46,7 @@ async fn send(socket: &mut Socket, value: &Value) -> bool {
     )
 }
 impl Transport {
-    pub fn start(request: Request<()>, token: String) -> Self {
+    pub fn start(request: Request<()>, token: String, binding_nonce: String) -> Self {
         let (outgoing, mut output) = mpsc::channel::<Value>(128);
         let (input, incoming) = mpsc::channel::<Event>(128);
         let task = tokio::spawn(async move {
@@ -76,7 +76,7 @@ impl Transport {
                 };
                 if !send(
                     &mut socket,
-                    &json!({"type":"join","token":token,"role":"agent"}),
+                    &json!({"type":"join","token":token,"role":"agent","binding_nonce":binding_nonce}),
                 )
                 .await
                 {

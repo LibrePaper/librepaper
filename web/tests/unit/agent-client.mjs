@@ -141,12 +141,12 @@ try {
   assert.equal(retries.length, 2, "retry sends the same event id for server deduplication");
   assert.equal(retries[0].task_id, undefined, "the message ID is the canonical task ID");
 
-  socket.emit({ type: "task", id: "event-input", task_id: sent.id, status: "needs_input", context: { input: { request_id: "approval-1", kind: "approval", message: "Run the command?" } } });
+  socket.emit({ type: "task", id: "event-input", task_id: sent.id, status: "needs_input", context: { input: { request_id: "approval-1", kind: "permission", message: "Run the command?", options: [{ id: "allow-once", label: "Allow once" }] } } });
   assert.equal(client.current.tasks[sent.id].status, "needs_input");
   assert.equal(client.current.tasks[sent.id].input.request_id, "approval-1");
-  const responded = client.respond(sent.id, "approval-1", { decision: "accept" });
+  const responded = client.respond(sent.id, "approval-1", { option: "allow-once" });
   const input = socket.sent.at(-1);
-  assert.deepEqual(input, { type: "input", id: input.id, task_id: sent.id, request_id: "approval-1", response: { decision: "accept" } });
+  assert.deepEqual(input, { type: "input", id: input.id, task_id: sent.id, request_id: "approval-1", response: { option: "allow-once" } });
   socket.emit({ type: "ack", id: input.id });
   await responded;
 

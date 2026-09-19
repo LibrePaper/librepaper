@@ -7,6 +7,7 @@
 //! bug the schema can catch, so the two are kept apart here too -- the insert
 //! writes the anchor, and nothing else ever does.
 
+use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -35,6 +36,7 @@ pub struct NewAnnotation {
     pub author_label: String,
     pub bundle_id: Option<Uuid>,
     pub color: Option<String>,
+    pub proposal_id: Option<Uuid>,
     /// Written once to `annotations`; an update that changes it is refused.
     pub original_anchor: OriginalAnchor,
     /// Written beside it, and just as immutable: what the page said.
@@ -45,7 +47,7 @@ pub struct NewAnnotation {
 
 /// One annotation as it is stored: the immutable columns, the presentation
 /// beside them, and whatever the live-state row had when it was last written.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, FromRow)]
 pub struct AnnotationRecord {
     pub id: Uuid,
     pub document_id: Uuid,
@@ -56,6 +58,7 @@ pub struct AnnotationRecord {
     pub author_label: String,
     pub bundle_id: Option<Uuid>,
     pub color: Option<String>,
+    pub proposal_id: Option<Uuid>,
     pub checkpoint_id: String,
     pub target_kind: String,
     pub file_id: Option<String>,
@@ -102,6 +105,69 @@ pub struct ReplyRecord {
     pub body: String,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+}
+
+async fn put_annotation(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+    input: &NewAnnotation,
+) -> Result<AnnotationRecord> {
+    let anchor = Stored::of(&input.original_anchor)?;
+    let inserted = sqlx::query(
+        "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,
+                                 bundle_id,color,proposal_id,checkpoint_id,target_kind,file_id,
+                                 start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,
+                                 rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+         ON CONFLICT(id) DO NOTHING",
+    )
+    .bind(id)
+    .bind(input.document_id)
+    .bind(&input.kind)
+    .bind(&input.body)
+    .bind(input.author_account_id)
+    .bind(&input.author_key)
+    .bind(&input.author_label)
+    .bind(input.bundle_id)
+    .bind(&input.color)
+    .bind(input.proposal_id)
+    .bind(&input.original_anchor.checkpoint_id.0)
+    .bind(anchor.kind)
+    .bind(anchor.file_id)
+    .bind(anchor.start_utf16)
+    .bind(anchor.end_utf16)
+    .bind(anchor.start_side)
+    .bind(anchor.end_side)
+    .bind(anchor.exact)
+    .bind(anchor.prefix)
+    .bind(anchor.suffix)
+    .bind(&input.presentation.rendered_exact)
+    .bind(&input.presentation.rendered_prefix)
+    .bind(&input.presentation.rendered_suffix)
+    .bind(input.presentation.rendered_position_utf16.map(|at| at as i32))
+    .execute(&mut **tx)
+    .await?
+    .rows_affected()
+        == 1;
+    if inserted {
+        write_attachment(tx, id, input.attachment.as_ref()).await?;
+    } else {
+        let existing = annotation_by_id(tx, id).await?.ok_or(Error::NotFound)?;
+        if existing.document_id != input.document_id
+            || existing.kind != input.kind
+            || existing.body != input.body
+            || existing.author_account_id != input.author_account_id
+            || existing.author_key != input.author_key
+            || existing.author_label != input.author_label
+            || existing.proposal_id != input.proposal_id
+            || !same_anchor(&existing, &input.original_anchor)?
+        {
+            return Err(Error::Conflict(
+                "annotation id was reused with different content".into(),
+            ));
+        }
+    }
+    annotation_by_id(tx, id).await?.ok_or(Error::NotFound)
 }
 
 impl PostgresCatalog {
@@ -176,6 +242,18 @@ impl PostgresCatalog {
         Ok(())
     }
 
+    pub(crate) async fn authorize_document_mutation(
+        &self,
+        document_id: Uuid,
+        actor: &MutationAuthorization,
+        require_editor: bool,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        Self::authorize_annotation_mutation(&mut tx, document_id, actor, require_editor).await?;
+        tx.rollback().await?;
+        Ok(())
+    }
+
     pub async fn put_annotation_authorized(
         &self,
         id: Uuid,
@@ -184,70 +262,64 @@ impl PostgresCatalog {
         require_editor: bool,
     ) -> Result<AnnotationRecord> {
         validate(&input)?;
-        let anchor = Stored::of(&input.original_anchor)?;
         let mut tx = self.pool.begin().await?;
         Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, require_editor)
             .await?;
-        let inserted = sqlx::query!(
-            "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,
-                                     bundle_id,color,checkpoint_id,target_kind,file_id,
-                                     start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,
-                                     rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+        let row = put_annotation(&mut tx, id, &input).await?;
+        tx.commit().await?;
+        Ok(row)
+    }
+
+    pub async fn put_suggestion_authorized(
+        &self,
+        id: Uuid,
+        input: NewAnnotation,
+        proposal: super::NewProposal,
+        actor: &MutationAuthorization,
+    ) -> Result<AnnotationRecord> {
+        validate(&input)?;
+        if input.kind != "suggestion"
+            || input.proposal_id != Some(proposal.id)
+            || input.document_id != proposal.document_id
+        {
+            return Err(Error::Invalid(
+                "suggestion annotation and proposal do not match".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, false).await?;
+        let inserted = sqlx::query(
+            "INSERT INTO document_proposals(id,document_id,author,author_peer,base_frontiers,
+                                             tip_frontiers,branch_bytes,status)
+             VALUES($1,$2,$3,$4,$5,$6,$7,'pending')
              ON CONFLICT(id) DO NOTHING",
-            id,
-            input.document_id,
-            input.kind,
-            input.body,
-            input.author_account_id,
-            input.author_key,
-            input.author_label,
-            input.bundle_id,
-            input.color,
-            input.original_anchor.checkpoint_id.0,
-            anchor.kind,
-            anchor.file_id,
-            anchor.start_utf16,
-            anchor.end_utf16,
-            anchor.start_side,
-            anchor.end_side,
-            anchor.exact,
-            anchor.prefix,
-            anchor.suffix,
-            input.presentation.rendered_exact,
-            input.presentation.rendered_prefix,
-            input.presentation.rendered_suffix,
-            input.presentation.rendered_position_utf16.map(|at| at as i32),
         )
+        .bind(proposal.id)
+        .bind(proposal.document_id)
+        .bind(proposal.author)
+        .bind(proposal.author_peer)
+        .bind(proposal.base_frontiers)
+        .bind(proposal.tip_frontiers)
+        .bind(proposal.branch_bytes)
         .execute(&mut *tx)
         .await?
         .rows_affected()
             == 1;
-        if inserted {
-            write_attachment(&mut tx, id, input.attachment.as_ref()).await?;
-        } else {
-            // The same submission arriving twice is the same annotation, and
-            // must be the same annotation: a retry that would change what a
-            // comment is about is a different comment wearing its id.
-            let existing = annotation_by_id(&mut tx, id)
-                .await?
-                .ok_or(Error::NotFound)?;
-            if existing.document_id != input.document_id
-                || existing.kind != input.kind
-                || existing.body != input.body
-                || existing.author_account_id != input.author_account_id
-                || existing.author_key != input.author_key
-                || existing.author_label != input.author_label
-                || !same_anchor(&existing, &input.original_anchor)?
-            {
+        if !inserted {
+            let same_document: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM document_proposals WHERE id=$1 AND document_id=$2)",
+            )
+            .bind(proposal.id)
+            .bind(proposal.document_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !same_document {
                 return Err(Error::Conflict(
-                    "annotation id was reused with different content".into(),
+                    "proposal id belongs to another document".into(),
                 ));
             }
         }
-        let row = annotation_by_id(&mut tx, id)
-            .await?
-            .ok_or(Error::NotFound)?;
+        let row = put_annotation(&mut tx, id, &input).await?;
         tx.commit().await?;
         Ok(row)
     }
@@ -280,21 +352,22 @@ impl PostgresCatalog {
         let deciding_suggestion = input.kind == "suggestion" && resolved;
         Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, deciding_suggestion)
             .await?;
-        sqlx::query!(
+        sqlx::query(
             "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6,
-                                    color=$7,
-                                    resolved_at=CASE WHEN $8 THEN COALESCE(resolved_at,now()) ELSE NULL END,
+                                    color=$7,proposal_id=$8,
+                                    resolved_at=CASE WHEN $9 THEN COALESCE(resolved_at,now()) ELSE NULL END,
                                     updated_at=now()
              WHERE id=$1",
-            id,
-            input.kind,
-            input.body,
-            input.author_account_id,
-            input.author_key,
-            input.author_label,
-            input.color,
-            resolved,
         )
+        .bind(id)
+        .bind(&input.kind)
+        .bind(&input.body)
+        .bind(input.author_account_id)
+        .bind(&input.author_key)
+        .bind(&input.author_label)
+        .bind(&input.color)
+        .bind(input.proposal_id)
+        .bind(resolved)
         .execute(&mut *tx)
         .await?;
         write_attachment(&mut tx, id, input.attachment.as_ref()).await?;
@@ -498,61 +571,59 @@ impl PostgresCatalog {
         let after_id = after.map(|v| v.1);
         match bundle_id {
             Some(bundle_id) => {
-                sqlx::query_as!(
-                    AnnotationRecord,
+                sqlx::query_as::<_, AnnotationRecord>(
                     r#"SELECT a.id,a.document_id,a.kind,a.body,a.author_account_id,a.author_key,a.author_label,
-                              a.bundle_id,a.color,a.checkpoint_id,a.target_kind,a.file_id,
+                              a.bundle_id,a.color,a.proposal_id,a.checkpoint_id,a.target_kind,a.file_id,
                               a.start_utf16,a.end_utf16,a.start_side,a.end_side,a.exact,a.prefix,a.suffix,
                               a.rendered_exact,a.rendered_prefix,a.rendered_suffix,a.rendered_position_utf16,
                               a.resolved_at,
-                              l.checkpoint_id AS "attachment_checkpoint_id?",
-                              l.status AS "attachment_status?",
-                              l.start_cursor AS "start_cursor?",l.end_cursor AS "end_cursor?",
-                              l.cursor_format AS "cursor_format?",
-                              l.resolved_start_utf16 AS "resolved_start_utf16?",
-                              l.resolved_end_utf16 AS "resolved_end_utf16?",
-                              l.diagnostic AS "diagnostic?",
+                              l.checkpoint_id AS attachment_checkpoint_id,
+                              l.status AS attachment_status,
+                              l.start_cursor AS start_cursor,l.end_cursor AS end_cursor,
+                              l.cursor_format AS cursor_format,
+                              l.resolved_start_utf16 AS resolved_start_utf16,
+                              l.resolved_end_utf16 AS resolved_end_utf16,
+                              l.diagnostic AS diagnostic,
                               a.created_at
                        FROM annotations a LEFT JOIN annotation_live_state l ON l.annotation_id=a.id
                        WHERE a.document_id=$1 AND a.bundle_id=$2
                          AND (a.created_at,a.id) > (COALESCE($3::timestamptz,'-infinity'),
                                                     COALESCE($4::uuid,'00000000-0000-0000-0000-000000000000'))
                        ORDER BY a.created_at,a.id LIMIT $5"#,
-                    document_id,
-                    bundle_id,
-                    after_time,
-                    after_id,
-                    limit,
                 )
+                .bind(document_id)
+                .bind(bundle_id)
+                .bind(after_time)
+                .bind(after_id)
+                .bind(limit)
                 .fetch_all(&self.pool)
                 .await
             }
             None => {
-                sqlx::query_as!(
-                    AnnotationRecord,
+                sqlx::query_as::<_, AnnotationRecord>(
                     r#"SELECT a.id,a.document_id,a.kind,a.body,a.author_account_id,a.author_key,a.author_label,
-                              a.bundle_id,a.color,a.checkpoint_id,a.target_kind,a.file_id,
+                              a.bundle_id,a.color,a.proposal_id,a.checkpoint_id,a.target_kind,a.file_id,
                               a.start_utf16,a.end_utf16,a.start_side,a.end_side,a.exact,a.prefix,a.suffix,
                               a.rendered_exact,a.rendered_prefix,a.rendered_suffix,a.rendered_position_utf16,
                               a.resolved_at,
-                              l.checkpoint_id AS "attachment_checkpoint_id?",
-                              l.status AS "attachment_status?",
-                              l.start_cursor AS "start_cursor?",l.end_cursor AS "end_cursor?",
-                              l.cursor_format AS "cursor_format?",
-                              l.resolved_start_utf16 AS "resolved_start_utf16?",
-                              l.resolved_end_utf16 AS "resolved_end_utf16?",
-                              l.diagnostic AS "diagnostic?",
+                              l.checkpoint_id AS attachment_checkpoint_id,
+                              l.status AS attachment_status,
+                              l.start_cursor AS start_cursor,l.end_cursor AS end_cursor,
+                              l.cursor_format AS cursor_format,
+                              l.resolved_start_utf16 AS resolved_start_utf16,
+                              l.resolved_end_utf16 AS resolved_end_utf16,
+                              l.diagnostic AS diagnostic,
                               a.created_at
                        FROM annotations a LEFT JOIN annotation_live_state l ON l.annotation_id=a.id
                        WHERE a.document_id=$1
                          AND (a.created_at,a.id) > (COALESCE($2::timestamptz,'-infinity'),
                                                     COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'))
                        ORDER BY a.created_at,a.id LIMIT $4"#,
-                    document_id,
-                    after_time,
-                    after_id,
-                    limit,
                 )
+                .bind(document_id)
+                .bind(after_time)
+                .bind(after_id)
+                .bind(limit)
                 .fetch_all(&self.pool)
                 .await
             }
@@ -584,25 +655,24 @@ async fn annotation_by_id(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,
 ) -> Result<Option<AnnotationRecord>> {
-    Ok(sqlx::query_as!(
-        AnnotationRecord,
+    Ok(sqlx::query_as::<_, AnnotationRecord>(
         r#"SELECT a.id,a.document_id,a.kind,a.body,a.author_account_id,a.author_key,a.author_label,
-                  a.bundle_id,a.color,a.checkpoint_id,a.target_kind,a.file_id,
+                  a.bundle_id,a.color,a.proposal_id,a.checkpoint_id,a.target_kind,a.file_id,
                   a.start_utf16,a.end_utf16,a.start_side,a.end_side,a.exact,a.prefix,a.suffix,
                   a.rendered_exact,a.rendered_prefix,a.rendered_suffix,a.rendered_position_utf16,
                   a.resolved_at,
-                  l.checkpoint_id AS "attachment_checkpoint_id?",
-                  l.status AS "attachment_status?",
-                  l.start_cursor AS "start_cursor?",l.end_cursor AS "end_cursor?",
-                  l.cursor_format AS "cursor_format?",
-                  l.resolved_start_utf16 AS "resolved_start_utf16?",
-                  l.resolved_end_utf16 AS "resolved_end_utf16?",
-                  l.diagnostic AS "diagnostic?",
+                  l.checkpoint_id AS attachment_checkpoint_id,
+                  l.status AS attachment_status,
+                  l.start_cursor AS start_cursor,l.end_cursor AS end_cursor,
+                  l.cursor_format AS cursor_format,
+                  l.resolved_start_utf16 AS resolved_start_utf16,
+                  l.resolved_end_utf16 AS resolved_end_utf16,
+                  l.diagnostic AS diagnostic,
                   a.created_at
            FROM annotations a LEFT JOIN annotation_live_state l ON l.annotation_id=a.id
            WHERE a.id=$1"#,
-        id
     )
+    .bind(id)
     .fetch_optional(&mut **tx)
     .await?)
 }
@@ -799,6 +869,11 @@ fn validate(input: &NewAnnotation) -> Result<()> {
     {
         return Err(Error::Invalid("invalid annotation".into()));
     }
+    if (input.kind == "suggestion") != input.proposal_id.is_some() {
+        return Err(Error::Invalid(
+            "suggestion annotations require exactly one proposal".into(),
+        ));
+    }
     if input.original_anchor.checkpoint_id.0.is_empty() {
         return Err(Error::Invalid(
             "an annotation needs the checkpoint it was made against".into(),
@@ -827,6 +902,7 @@ mod tests {
             author_label: "A".into(),
             bundle_id: None,
             color: None,
+            proposal_id: None,
             checkpoint_id: "checkpoint".into(),
             target_kind: "source_text".into(),
             file_id: Some("file-key".into()),

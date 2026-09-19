@@ -273,10 +273,7 @@ impl Server {
                         "reply requires comment_id and body",
                     ));
                 }
-                let id = format!(
-                    "reply-{}",
-                    &hex::encode(Sha256::digest(request_id.as_bytes()))[..32]
-                );
+                let id = comment_uuid(&format!("reply\0{request_id}"));
                 replies.push((
                     comment_id.to_string(),
                     Reply {
@@ -355,11 +352,10 @@ impl Server {
             expected: expected.into_iter().collect(),
             deletes,
             replies,
+            proposals: std::collections::HashMap::new(),
             receipt: result,
         };
         let authority = AgentAnnotationAuthority {
-            account_id: who.id.id.clone(),
-            generation: who.id.session_generation.clone(),
             link_hash: who.link.clone(),
             policy_comment: who.at_least(Role::Commenter),
             require_editor: action == "reject",
@@ -374,6 +370,12 @@ impl Server {
                 creator: &creator,
             },
             authority,
+            || async {
+                self.mcp_recheck(slug, headers, arrival, actor)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.message)
+            },
         )
         .await
         .map_err(|error| Failure::new("conflict", error))
@@ -476,5 +478,9 @@ mod tests {
             first, second,
             "each suggestion in a pass is its own annotation"
         );
+
+        let reply = comment_uuid("reply\0operation-request-1");
+        assert!(uuid::Uuid::parse_str(&reply).is_ok());
+        assert_ne!(reply, id, "comments and replies use separate domains");
     }
 }

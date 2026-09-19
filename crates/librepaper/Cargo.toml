@@ -55,6 +55,10 @@ clap = { version = "4", features = ["derive", "env"] }
 async-trait = "0.1"
 url = "2"
 percent-encoding = "2"
+# Official protocol implementations. LibrePaper owns policy around them, not
+# JSON-RPC framing, protocol negotiation, or request correlation.
+agent-client-protocol = "2.2.0"
+rmcp = { version = "3.4.0", default-features = false, features = ["server", "transport-io"] }
 # What a browser shows of a document, for anchoring seeded annotations.
 html-escape = "0.2"
 # The collaboration substrate (SPEC-loro.md). This version and `loro-crdt` in

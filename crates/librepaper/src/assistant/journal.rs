@@ -553,10 +553,6 @@ pub(crate) fn response_settled(response: &Value) -> bool {
     )
 }
 
-pub(crate) fn confirmed_result_ids(tool: &str, response: &Value) -> Vec<String> {
-    result_ids(tool, response)
-}
-
 /// Record a tool request before it is sent to the document service. The
 /// returned identity is suitable for pairing with [`record_tool_result`].
 pub(crate) fn record_tool_call(

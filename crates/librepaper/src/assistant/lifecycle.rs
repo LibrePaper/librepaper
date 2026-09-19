@@ -5,7 +5,7 @@
 //! nonce-bound request which the runner observes; it never sends a signal to a
 //! PID that may have been reused by another process.
 
-use super::peer::{AutomationPeer, DocumentLink};
+use crate::automation::peer::{AutomationPeer, DocumentLink};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -19,6 +19,29 @@ const LOCK: &str = "runner.lock";
 const STATUS: &str = "runner.status.json";
 const CONTROL: &str = "runner.control.json";
 const STATE: &str = "runner.json";
+const BINDING: &str = "runner.binding";
+
+#[derive(Debug)]
+pub(crate) enum Error {
+    NotRunning,
+    InvalidConfiguration(String),
+    Startup(String),
+    StopTimeout,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRunning => formatter.write_str("runner is not running"),
+            Self::InvalidConfiguration(detail) | Self::Startup(detail) => {
+                formatter.write_str(detail)
+            }
+            Self::StopTimeout => {
+                formatter.write_str("stop requested; runner did not exit within five seconds")
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct Location {
@@ -27,6 +50,7 @@ pub(crate) struct Location {
     pub status: PathBuf,
     pub control: PathBuf,
     pub state: PathBuf,
+    pub binding: PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -39,6 +63,10 @@ pub(crate) struct Status {
     pub task_id: Option<String>,
     #[serde(default)]
     pub detail: Option<String>,
+    /// Hash of the private document identity and agent command. It supports
+    /// idempotent start without exposing either value through status APIs.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub config_hash: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -51,6 +79,7 @@ pub(crate) struct Lease {
     pub location: Location,
     pub nonce: String,
     lock: File,
+    config_hash: String,
 }
 
 fn unix_now() -> u64 {
@@ -102,6 +131,7 @@ pub(crate) fn location(
         status: directory.join(STATUS),
         control: directory.join(CONTROL),
         state: directory.join(STATE),
+        binding: directory.join(BINDING),
         directory,
     })
 }
@@ -119,17 +149,7 @@ fn private_directory(path: &Path) -> Result<(), String> {
 }
 
 fn private_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let temporary = path.with_extension("tmp");
-    fs::write(&temporary, bytes)
-        .map_err(|err| format!("could not write runner control state: {err}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
-            .map_err(|err| format!("could not protect runner state: {err}"))?;
-    }
-    fs::rename(&temporary, path)
-        .map_err(|err| format!("could not publish runner control state: {err}"))
+    crate::private_files::publish(path, bytes, "runner control state")
 }
 
 fn nonce() -> String {
@@ -148,6 +168,7 @@ impl Lease {
         peer: &AutomationPeer,
         conversation: &str,
         state_dir: Option<&Path>,
+        config_hash: String,
     ) -> Result<Self, String> {
         let location = location(peer.link(), conversation, state_dir)?;
         private_directory(&location.directory)?;
@@ -168,6 +189,7 @@ impl Lease {
             location,
             nonce: nonce(),
             lock,
+            config_hash,
         };
         lease.write_status("starting", None, None)?;
         Ok(lease)
@@ -186,11 +208,28 @@ impl Lease {
             updated_at: unix_now(),
             task_id: task_id.map(str::to_owned),
             detail: detail.map(str::to_owned),
+            config_hash: self.config_hash.clone(),
         };
         private_write(
             &self.location.status,
             &serde_json::to_vec(&value).map_err(|err| err.to_string())?,
         )
+    }
+
+    /// Stable, private identity bound to the lifetime of the server-side
+    /// conversation. Losing this file deliberately prevents a fresh local
+    /// state directory from claiming an existing conversation.
+    pub(crate) fn binding_nonce(&self) -> Result<String, String> {
+        match fs::read_to_string(&self.location.binding) {
+            Ok(value) if valid_binding(value.trim()) => Ok(value.trim().to_owned()),
+            Ok(_) => Err("runner binding is corrupt; create a new conversation".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let value = nonce();
+                private_write(&self.location.binding, value.as_bytes())?;
+                Ok(value)
+            }
+            Err(error) => Err(format!("could not read runner binding: {error}")),
+        }
     }
 
     pub(crate) fn stop_requested(&self) -> bool {
@@ -200,6 +239,10 @@ impl Lease {
         serde_json::from_str::<Control>(&raw)
             .is_ok_and(|control| control.nonce == self.nonce && control.command == "stop")
     }
+}
+
+fn valid_binding(value: &str) -> bool {
+    value.len() == 48 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 impl Drop for Lease {
@@ -261,7 +304,7 @@ pub(crate) fn start_background(
         .ok()
         .and_then(|raw| serde_json::from_str::<Status>(&raw).ok())
         .map(|status| status.nonce);
-    let executable = super::current_executable()?;
+    let executable = crate::local::paths::current_executable()?;
     let mut command = Command::new(executable);
     // Keep the document key out of the child process command line. `-` is an
     // internal argv sentinel resolved from this short lived environment.
@@ -356,16 +399,58 @@ pub(crate) fn start_background(
     Err("background runner did not become ready within 75 seconds".into())
 }
 
+pub(crate) fn configuration_hash(link: &DocumentLink, agent: &[String]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(link.credential_url().as_bytes());
+    for part in agent {
+        digest.update([0]);
+        digest.update(part.as_bytes());
+    }
+    hex::encode(digest.finalize())
+}
+
+/// Idempotently ensure this configuration is running, replacing a different
+/// live configuration only through the normal bounded stop path.
+fn start_or_replace_inner(
+    link: &DocumentLink,
+    conversation: &str,
+    token: &str,
+    state_dir: Option<&Path>,
+    agent: &[String],
+) -> Result<(), String> {
+    let wanted = configuration_hash(link, agent);
+    let location = location(link, conversation, state_dir)?;
+    if !lock_is_free(&location.lock) {
+        if fs::read_to_string(&location.status)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Status>(&raw).ok())
+            .is_some_and(|status| status.config_hash == wanted)
+        {
+            return Ok(());
+        }
+        stop_at(&location).map_err(|error| error.to_string())?;
+        wait_until_free(link, conversation, state_dir)?;
+    }
+    start_background(link, conversation, token, state_dir, agent)
+}
+
+pub(crate) fn start_or_replace(
+    link: &DocumentLink,
+    conversation: &str,
+    token: &str,
+    state_dir: Option<&Path>,
+    agent: &[String],
+) -> Result<(), Error> {
+    start_or_replace_inner(link, conversation, token, state_dir, agent).map_err(Error::Startup)
+}
+
 pub(crate) fn status(
     link: &DocumentLink,
     conversation: &str,
     state_dir: Option<&Path>,
-) -> Result<Status, String> {
-    let location = location(link, conversation, state_dir)?;
-    let raw = fs::read_to_string(&location.status)
-        .map_err(|err| format!("runner is not running: {err}"))?;
-    let status: Status =
-        serde_json::from_str(&raw).map_err(|err| format!("invalid runner status: {err}"))?;
+) -> Result<Status, Error> {
+    let location = location(link, conversation, state_dir).map_err(Error::InvalidConfiguration)?;
+    let status = read_status(&location)?;
     if lock_is_free(&location.lock) && !matches!(status.state.as_str(), "failed" | "stopped") {
         return Ok(Status {
             state: "stopped".into(),
@@ -378,18 +463,26 @@ pub(crate) fn status(
     Ok(status)
 }
 
-pub(crate) fn stop(
-    link: &DocumentLink,
-    conversation: &str,
-    state_dir: Option<&Path>,
-) -> Result<(), String> {
-    let location = location(link, conversation, state_dir)?;
-    let raw = fs::read_to_string(&location.status)
-        .map_err(|err| format!("runner is not running: {err}"))?;
-    let current: Status =
-        serde_json::from_str(&raw).map_err(|err| format!("invalid runner status: {err}"))?;
+fn read_status(location: &Location) -> Result<Status, Error> {
+    let raw = match fs::read_to_string(&location.status) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::NotRunning)
+        }
+        Err(error) => {
+            return Err(Error::Startup(format!(
+                "could not read runner status: {error}"
+            )))
+        }
+    };
+    serde_json::from_str(&raw)
+        .map_err(|error| Error::Startup(format!("invalid runner status: {error}")))
+}
+
+fn stop_at(location: &Location) -> Result<(), Error> {
+    let current = read_status(location)?;
     if lock_is_free(&location.lock) {
-        return Err("runner is not running".into());
+        return Err(Error::NotRunning);
     }
     private_write(
         &location.control,
@@ -397,15 +490,25 @@ pub(crate) fn stop(
             nonce: current.nonce,
             command: "stop".into(),
         })
-        .map_err(|err| err.to_string())?,
-    )?;
+        .map_err(|error| Error::Startup(error.to_string()))?,
+    )
+    .map_err(Error::Startup)?;
     for _ in 0..100 {
         if lock_is_free(&location.lock) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Err("stop requested; runner did not exit within five seconds".into())
+    Err(Error::StopTimeout)
+}
+
+pub(crate) fn stop(
+    link: &DocumentLink,
+    conversation: &str,
+    state_dir: Option<&Path>,
+) -> Result<(), Error> {
+    let location = location(link, conversation, state_dir).map_err(Error::InvalidConfiguration)?;
+    stop_at(&location)
 }
 
 #[cfg(test)]
@@ -440,40 +543,6 @@ mod tests {
         assert!(lock_is_free(&path));
         assert!(path.exists());
     }
-    /// Every adapter this machine might offer must survive the argv
-    /// `start_background` builds for it. The adapters carry flags of their
-    /// own (`gemini --experimental-acp`, `npx -y pi-acp`), and clap claimed
-    /// them as LibrePaper's until `--agent` was told to allow hyphens, which
-    /// made "Start assistant" fail with a bare `exit status: 2` for every
-    /// agent except a bare installed binary.
-    #[test]
-    fn every_known_adapter_command_parses_as_connect_arguments() {
-        use clap::Parser;
-        let commands: Vec<Vec<&str>> = vec![
-            vec!["claude-code-acp"],
-            vec!["codex-acp"],
-            vec!["gemini", "--experimental-acp"],
-            vec!["opencode", "acp"],
-            vec!["pi-acp"],
-            vec!["npx", "-y", "@zed-industries/claude-code-acp"],
-            vec!["npx", "-y", "pi-acp"],
-        ];
-        for command in commands {
-            let mut argv = vec!["librepaper", "agent", "connect", "-", "conversation"];
-            for part in &command {
-                argv.push("--agent");
-                argv.push(part);
-            }
-            argv.extend(["--chat-token", "token"]);
-            let parsed = crate::cli::Cli::try_parse_from(&argv);
-            assert!(
-                parsed.is_ok(),
-                "{command:?} did not parse: {}",
-                parsed.err().map(|e| e.to_string()).unwrap_or_default()
-            );
-        }
-    }
-
     #[test]
     fn a_runner_that_died_is_explained_by_its_last_words() {
         let directory = tempfile::tempdir().unwrap();

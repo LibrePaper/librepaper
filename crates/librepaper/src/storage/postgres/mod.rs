@@ -480,6 +480,7 @@ mod tests {
             },
             bundle_id: None,
             color: None,
+            proposal_id: None,
             presentation: Default::default(),
             attachment: None,
         };
@@ -532,6 +533,7 @@ mod tests {
                     },
                     bundle_id: None,
                     color: None,
+                    proposal_id: None,
                     presentation: Default::default(),
                     attachment: None,
                 },

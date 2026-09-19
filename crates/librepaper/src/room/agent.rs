@@ -445,7 +445,6 @@ fn reject_overlaps(ranges: &mut [(&str, usize, usize)]) -> Result<(), AgentError
 pub enum AgentError {
     Invalid(String),
     Conflict(String),
-    NotFound,
     Storage(String),
 }
 
@@ -454,7 +453,6 @@ impl std::fmt::Display for AgentError {
         match self {
             Self::Invalid(message) => write!(f, "invalid agent operation: {message}"),
             Self::Conflict(message) => write!(f, "agent operation conflict: {message}"),
-            Self::NotFound => f.write_str("agent operation was not found"),
             Self::Storage(message) => write!(f, "agent operation storage failure: {message}"),
         }
     }
@@ -521,11 +519,16 @@ fn source_size_after(tree: &SourceTree, request: &PatchRequest) -> Result<usize,
 }
 
 impl Room {
-    pub async fn apply_agent_request(
+    pub async fn apply_agent_request<F, Fut>(
         &self,
         request: PatchRequest,
         authority: AgentAuthority,
-    ) -> Result<AgentReceipt, AgentError> {
+        recheck: F,
+    ) -> Result<AgentReceipt, AgentError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<(), AgentError>>,
+    {
         request.operation.validate()?;
         if !authority.policy_editor
             && authority.account_id.is_empty()
@@ -539,6 +542,40 @@ impl Room {
         if !self.hold().await {
             return Err(AgentError::Storage(self.fenced().to_string()));
         }
+        recheck().await?;
+        let actor = crate::document::store::MutationActor {
+            account_id: if authority.automation {
+                String::new()
+            } else {
+                authority.account_id.clone()
+            },
+            owner_key: if authority.automation {
+                String::new()
+            } else {
+                authority.owner_key.clone()
+            },
+            session_generation: if authority.automation {
+                String::new()
+            } else {
+                authority.generation.clone()
+            },
+            link_hash: authority.link_hash.clone(),
+            policy_editor: !authority.automation && authority.policy_editor,
+            unowned_publisher: !authority.automation && authority.unowned_publisher,
+        };
+        let catalog = self
+            .catalog
+            .as_ref()
+            .get()
+            .ok_or_else(|| AgentError::Storage("durable catalog required".into()))?;
+        let document_id = uuid::Uuid::parse_str(&self.storage_id)
+            .map_err(|_| AgentError::Storage("room has no storage identity".into()))?;
+        let authorization = super::catalog::mutation_authorization(&actor)
+            .map_err(|error| AgentError::Conflict(error.to_string()))?;
+        catalog
+            .authorize_document_mutation(document_id, &authorization, true)
+            .await
+            .map_err(|error| AgentError::Conflict(error.to_string()))?;
         let tree = room_tree_locked(self).await;
         let applied = apply_patches(&tree, &request)?;
         if source_size_after(&tree, &request)? > self.config.max_document {
@@ -581,14 +618,6 @@ impl Room {
         let update = {
             let state = self.state.lock().await;
             session::encode_diff(&state.session.doc, &before_vector).map_err(AgentError::Storage)?
-        };
-        let actor = crate::document::store::MutationActor {
-            account_id: authority.account_id.clone(),
-            owner_key: authority.owner_key.clone(),
-            session_generation: authority.generation.clone(),
-            link_hash: authority.link_hash.clone(),
-            policy_editor: authority.policy_editor,
-            unowned_publisher: authority.unowned_publisher,
         };
         self.write_session_inner(false, true)
             .await
@@ -635,14 +664,6 @@ impl Room {
             replay: false,
             accepted_comment_id,
         })
-    }
-
-    pub async fn recover_agent_operation(
-        &self,
-        _key: OperationKey,
-        _authority: AgentAuthority,
-    ) -> Result<AgentReceipt, AgentError> {
-        Err(AgentError::NotFound)
     }
 }
 

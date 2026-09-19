@@ -2,8 +2,6 @@ use super::*;
 
 #[derive(Clone, Debug)]
 pub(crate) struct AgentAnnotationAuthority {
-    pub account_id: String,
-    pub generation: String,
     pub link_hash: String,
     pub policy_comment: bool,
     pub require_editor: bool,
@@ -17,6 +15,7 @@ pub(crate) struct AnnotationBatch {
     pub expected: Vec<(String, String)>,
     pub deletes: Vec<String>,
     pub replies: Vec<(String, Reply)>,
+    pub proposals: std::collections::HashMap<String, crate::storage::postgres::NewProposal>,
     pub receipt: Value,
 }
 
@@ -65,17 +64,23 @@ impl Room {
         self.agent_comment(id).await.as_ref().map(comment_version)
     }
 
-    pub(crate) async fn apply_agent_annotations(
+    pub(crate) async fn apply_agent_annotations<F, Fut>(
         &self,
-        batch: AnnotationBatch,
+        mut batch: AnnotationBatch,
         caller: BatchCaller<'_>,
         authority: AgentAnnotationAuthority,
-    ) -> Result<Value, String> {
+        recheck: F,
+    ) -> Result<Value, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
         let _restore = self.restore_write.lock().await;
         let _comment = self.comment_write.lock().await;
         if !self.hold().await {
             return Err("room lease unavailable".into());
         }
+        recheck().await?;
         if !authority.policy_comment {
             return Err("comment access changed".into());
         }
@@ -85,11 +90,11 @@ impl Room {
             .get()
             .ok_or("durable catalog required")?;
         let actor = crate::document::store::MutationActor {
-            account_id: authority.account_id,
+            account_id: String::new(),
             owner_key: caller.author.into(),
-            session_generation: authority.generation,
+            session_generation: String::new(),
             link_hash: authority.link_hash,
-            policy_editor: authority.require_editor,
+            policy_editor: false,
             unowned_publisher: false,
         };
         {
@@ -138,6 +143,8 @@ impl Room {
             let row = catalog_comment_row(&self.slug, comment)?;
             if self.agent_comment(&comment.id).await.is_some() {
                 update_comment_row(catalog, row, actor.clone()).await?;
+            } else if let Some(proposal) = batch.proposals.remove(&comment.id) {
+                insert_suggestion_request(catalog, row, proposal, actor.clone()).await?;
             } else {
                 insert_comment_request(
                     catalog,
@@ -173,7 +180,10 @@ impl Room {
             .await
             .map_err(|e| e.to_string())?;
         }
-        let (seq, comments) = load_catalog_comments(catalog, &self.slug).await?;
+        let (seq, mut comments) = load_catalog_comments(catalog, &self.slug).await?;
+        self.hydrate_proposed_comments(&mut comments)
+            .await
+            .map_err(|error| error.to_string())?;
         {
             let mut state = self.state.lock().await;
             state.seq = seq;
