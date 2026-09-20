@@ -488,10 +488,16 @@ impl Rooms {
         let mut buffered = 0usize;
         let mut warm = 0usize;
         let mut log_bytes = 0u64;
+        // Live subscribers, which is what a slow-subscriber close actually
+        // changes: the socket count keeps a dropped subscriber until its
+        // writer has finished tearing the transport down, so it cannot say
+        // whether the sequencer has stopped relaying to somebody.
+        let mut subscribers = 0usize;
         for sequencer in self.registry.all().await {
             let state = sequencer.log_state().await;
             documents += 1;
             buffered += state.buffered;
+            subscribers += state.subscribers;
             log_bytes = log_bytes.saturating_add(state.log_bytes);
             if state.warm {
                 warm += 1;
@@ -500,6 +506,7 @@ impl Rooms {
         serde_json::json!({
             "documents": documents,
             "buffered_batches": buffered,
+            "subscribers": subscribers,
             "warm_caches": warm,
             "log_bytes": log_bytes,
             "memory_used": self.registry.budget().used(),

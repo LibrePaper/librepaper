@@ -624,6 +624,21 @@ impl Configuration {
         Ok(())
     }
 
+    /// Overrides how many frames one socket's outbound queue may hold before
+    /// the subscriber is closed and asked to reconnect. The byte budget is
+    /// this limit times 64 KiB. Advanced configuration only; tests lower it
+    /// to reach overflow once a stalled socket stops draining the queue.
+    pub fn set_peer_queue(&mut self, frames: Option<usize>) -> Result<(), String> {
+        let Some(frames) = frames else {
+            return Ok(());
+        };
+        if frames == 0 {
+            return Err("session.peer_queue must be at least one frame".into());
+        }
+        self.session.peer_queue = frames;
+        Ok(())
+    }
+
     /// Overrides the per-publisher counts: how many documents one publisher may
     /// hold, and how many uploads they may make in an hour. `None` leaves a
     /// default alone.

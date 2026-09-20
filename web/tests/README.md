@@ -22,7 +22,7 @@ each check asserts.
 `activity`, `agent-client`, `anchor`, `annotating`, `annotation-bar`,
 `assistant`, `assistant-preview`, `assistant-review`, `build-catalog`,
 `build-preferences`, `citations`, `collab-awareness`, `commands`,
-`companion-status`, `diagnostics`, `downloads`, `file-manager`,
+`companion-status`, `deployment-helper`, `diagnostics`, `downloads`, `file-manager`,
 `frame-overlays`, `generation`, `history-calendar`, `insert`, `landing`,
 `latex-biber`, `latex-bibliography`, `latex-driver`, `latex-engine`,
 `latex-log`, `latex-reader`, `loro-codemirror`, `math`, `offline-projects`,
@@ -44,7 +44,24 @@ and `zip`.
 `insert-latex-render`, `insert-markdown-render`, `insert-quarto-render`,
 `insert-typst-render`, `latex-controller`, `latex-html`, `latex-local`,
 `latex-resources`, `local-companion`, `local-preview`, `needs`,
-`quarto-local`, `renderer-wasm`, `renderer-worker`, `sync`, and `typst-pdf`.
+`quarto-local`, `renderer-wasm`, `renderer-worker`,
+`slow-subscriber-recovery`, `sync`, and `typst-pdf`.
+
+`slow-subscriber-recovery` also requires Chromium on PATH, installed web
+dependencies, a built `target/debug/librepaper` (or `LIBREPAPER_TEST_BINARY`),
+and `LIBREPAPER_TEST_POSTGRES_URL` pointing to an administrative PostgreSQL
+database. It creates and drops its own database; the role needs permission to
+do both. Run it with `cd web && bun run check:recovery`.
+
+If `psql` runs in a container, set `LIBREPAPER_TEST_PSQL` to a command such as
+`docker exec -i librepaper-postgres psql` and `LIBREPAPER_TEST_PSQL_URL` to the
+administrative database URL as seen inside that container. Missing optional
+binary/database configuration skips the check; configured setup failures fail.
+The test checks a healthy reader before stalling transport, automatic
+reconnection through the production collaboration controller, unsent edits
+restored from IndexedDB before reconnection, and a fresh browser after a server
+restart. The fixture exercises document-frame dispatch without rendering the
+full Reader UI.
 
 ### Browser
 

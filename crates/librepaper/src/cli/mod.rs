@@ -223,6 +223,9 @@ impl ServiceFlags {
             if let Some(proxies) = file.trusted_proxies {
                 config.cost.trusted_proxies = proxies;
             }
+            if let Err(error) = config.set_peer_queue(file.session_peer_queue) {
+                die(format!("invalid advanced session policy: {error}"));
+            }
         }
         if let Err(err) = config.set_budget_document_assets(self.budget_document_assets) {
             die(err);
@@ -254,6 +257,9 @@ impl ServiceFlags {
 struct AdvancedConfigFile {
     /// The explicit peer trust boundary.
     trusted_proxies: Option<Vec<String>>,
+    /// How many frames one socket's outbound queue may hold before the
+    /// subscriber is closed. The byte budget is this limit times 64 KiB.
+    session_peer_queue: Option<usize>,
     #[serde(default)]
     backup: crate::config::BackupPolicyOverrides,
 }
