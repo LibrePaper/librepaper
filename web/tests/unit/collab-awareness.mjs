@@ -45,7 +45,7 @@ let left = false;
 try {
   // Joining announces the current local state once. A burst of 100 cursor
   // changes then produces one frame, carrying the final cursor.
-  await session.start({ protocol: "librepaper.room.v2", vector: emptyVector, updates: [] });
+  await session.start({ protocol: "librepaper.room.v3", vector: emptyVector, updates: [] });
   sent.length = 0;
   for (let head = 0; head < 100; head++) {
     session.ephemeral.set("cursor", { head });
@@ -77,10 +77,10 @@ try {
   session.disconnected();
   assert.equal(timers.size, 0, "disconnect clears the pending throttle timer");
   const beforeReconnect = presenceFrames(sent).length;
-  await session.start({ protocol: "librepaper.room.v2", vector: emptyVector, updates: [] });
+  await session.start({ protocol: "librepaper.room.v3", vector: emptyVector, updates: [] });
   assert.equal(presenceFrames(sent).length, beforeReconnect + 1, "reconnect reannounces local presence");
   const beforeRepeatedStart = presenceFrames(sent).length;
-  await session.start({ protocol: "librepaper.room.v2", vector: emptyVector, updates: [] });
+  await session.start({ protocol: "librepaper.room.v3", vector: emptyVector, updates: [] });
   assert.equal(presenceFrames(sent).length, beforeRepeatedStart, "repeated sync start does not duplicate presence");
 
   // A local departure bypasses the delay and leaves no timer behind. The

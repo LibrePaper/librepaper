@@ -13,11 +13,10 @@
 // sends none; the server drops anything a reader sends, and so does this,
 // which is a courtesy rather than the enforcement.
 //
-// **Relaying is not durability.** An update is relayed the moment it lands and
-// acknowledged only once the server has written it. Every update this browser
-// makes is held until its `doc-ack` arrives, so `pending` is the honest answer
-// to "is my work safe", and the toolbar says that rather than saying "saved"
-// because a socket happens to be open.
+// **Relaying is not durability.** An update is relayed the moment it lands.
+// Nonempty batches are acknowledged after writing. `doc-ack` is transport
+// bookkeeping; `pending` is based on the server's durable version vector, so
+// the toolbar does not say "saved" merely because a socket happens to be open.
 //
 // **Nothing is lost to a disconnection.** A persistence adapter can retain the
 // CRDT across client restarts; on reconnect the whole local state is sent and
@@ -203,9 +202,17 @@ export function createProjectSession({
   });
   rebind();
 
-  // Updates this browser has made and the server has not yet said are durable,
-  // by the number they were sent under.
+  // Transport sends this browser has made and the server has not yet retired
+  // with a doc-ack, by the number they were sent under.
   const unacknowledged = new Map();
+  // The newest local state this browser needs the server to durably cover.
+  // Remote imports never move this target. Keep an owned copy of each vector:
+  // Loro's WASM wrappers are mutable resources, and a later import must not
+  // change a saved target under our feet.
+  let saveTarget = null;
+  let durableCoverage = null;
+  let hydrationCaptured = !mayEdit;
+  const remoteDuringHydration = [];
   let seq = 0;
   // Whether this browser has been given the server's copy since the socket
   // last came up. Until it has, what is here may be behind.
@@ -244,14 +251,78 @@ export function createProjectSession({
   let localPending = 0;
   let localError = "";
 
+  function copyVector(vector) {
+    return vector ? VersionVector.decode(vector.encode()) : new VersionVector(undefined);
+  }
+
+  // Version vectors from the server normally compare as prefixes. The
+  // element-wise maximum also handles an old join frame racing a newer
+  // doc-durable frame (and the undefined comparison for concurrent vectors)
+  // without ever moving the known durable coverage backwards.
+  function mergeVectors(first, second) {
+    if (!first) return copyVector(second);
+    if (!second) return copyVector(first);
+    const merged = new Map(first.toJSON());
+    for (const [peer, counter] of second.toJSON()) {
+      if (Number(counter) > Number(merged.get(peer) || 0)) merged.set(peer, counter);
+    }
+    return VersionVector.parseJSON(merged);
+  }
+
+  function rememberLocalTarget(vector = doc.oplogVersion()) {
+    if (!mayEdit) return;
+    saveTarget = mergeVectors(saveTarget, vector);
+  }
+
+  function captureHydratedTarget() {
+    if (hydrationCaptured || !mayEdit) return;
+    // This is the last point before server join frames are imported. Include
+    // any local edits made while hydration was in flight without replacing an
+    // already captured target from an edit made during that wait.
+    rememberLocalTarget();
+    hydrationCaptured = true;
+  }
+
+  function flushRemoteDuringHydration() {
+    // A live update can arrive while the persistence adapter is still
+    // restoring its local copy. Apply those only after the conservative local
+    // target has been captured, so a peer's update cannot become this target.
+    for (const update of remoteDuringHydration.splice(0)) doc.import(decode(update));
+  }
+
+  function coveredByDurable() {
+    if (!saveTarget || saveTarget.length() === 0) return true;
+    if (!durableCoverage) return false;
+    const relation = durableCoverage.compare(saveTarget);
+    return relation === 0 || relation === 1;
+  }
+
+  function mergeDurableCoverage(encoded) {
+    if (!encoded) return;
+    const next = VersionVector.decode(decode(encoded));
+    durableCoverage = mergeVectors(durableCoverage, next);
+  }
+
   // A read-only client keeps nothing: it has no local changes to lose. An
   // editor can still work when storage is unavailable, but `local` remains
   // false so its UI does not call those changes safe on this device.
   let persister = null;
-  const report = () => onState?.({ pending: unacknowledged.size, local, localPending, localError, joined });
+  const report = () => onState?.({
+    // Keep this numeric for the existing toolbar truthiness checks. It is a
+    // save signal, not a count of transport batches.
+    pending: Number(mayEdit && !coveredByDurable()),
+    local,
+    localPending,
+    localError,
+    joined,
+  });
   try {
     persister = persistence?.open?.(doc, {
-      hydrated() { local = true; report(); },
+      hydrated() {
+        local = true;
+        captureHydratedTarget();
+        report();
+      },
       writing(count = 1) {
         localPending = Math.max(0, Number(count) || 0);
         if (localPending) localError = "";
@@ -275,6 +346,9 @@ export function createProjectSession({
   } catch (error) {
     localError = error?.message || String(error || "local persistence failed");
   }
+  // Sessions without an asynchronous persistence adapter are hydrated at
+  // construction. Mark that baseline before a socket can import remote data.
+  if (!persister?.hydration) captureHydratedTarget();
   report();
 
   // `color` is the wire spelling every peer already reads. It is the person's
@@ -317,6 +391,10 @@ export function createProjectSession({
     doc.subscribeLocalUpdates((update) => {
       const mine = ++seq;
       unacknowledged.set(mine, update);
+      // Capture the full vector, including dependencies visible at this edit.
+      // Later remote imports do not call this subscription and therefore do
+      // not move the save target.
+      rememberLocalTarget();
       report();
       sendUpdate(update, mine);
     });
@@ -431,11 +509,11 @@ export function createProjectSession({
     // everything": the server reads them the same way
     // (`sequencer::decode_vector`), and the two sides have to agree or a
     // document nobody has typed into yet cannot be joined at all.
-    const from = vector ? VersionVector.decode(decode(vector)) : new VersionVector();
+    const from = vector ? VersionVector.decode(decode(vector)) : new VersionVector(undefined);
     const whole = doc.export({ mode: "update", from });
     const mine = ++seq;
-    // One entry stands for every update it contains: the acknowledgment of
-    // this send is the acknowledgment of all of them.
+    // Replace transmission bookkeeping with this export. The save target
+    // survives independently, including work the head already covers.
     unacknowledged.clear();
     unacknowledged.set(mine, whole);
     report();
@@ -446,8 +524,11 @@ export function createProjectSession({
   /// applied (§6.2 step 6): the browser is caught up with the server, so it
   /// announces itself and, if it may edit, sends back whatever it has that
   /// the server's vector does not cover yet.
-  function finishJoin(vector) {
+  function finishJoin(vector, durableVector) {
     joined = true;
+    // `vector` is the head used for catch-up. Durable coverage is a separate
+    // signal and may arrive out of order with this join's asynchronous work.
+    mergeDurableCoverage(durableVector);
     announcePresence();
     if (mayEdit) catchUp(vector);
     else report();
@@ -809,7 +890,7 @@ export function createProjectSession({
         // `version`/`schema_version` field to keep in step with it. A server
         // that cannot speak this protocol answers with upgrade-required
         // before this socket can send an update (§6.1).
-        protocol: "librepaper.room.v2",
+        protocol: "librepaper.room.v3",
       };
     },
 
@@ -825,7 +906,8 @@ export function createProjectSession({
         // server (hydration is intentionally not a local Loro update).
         await persister?.hydration;
         if (left) return;
-        if (state.protocol !== "librepaper.room.v2") {
+        captureHydratedTarget();
+        if (state.protocol !== "librepaper.room.v3") {
           throw new Error("This document requires a newer LibrePaper version.");
         }
         if (state.ref) {
@@ -860,7 +942,8 @@ export function createProjectSession({
         // Two Loro updates concatenated are not one Loro update, so each row
         // is imported as its own entry in the batch rather than joined first.
         if (state.updates?.length) doc.importBatch(state.updates.map(decode));
-        finishJoin(state.vector);
+        flushRemoteDuringHydration();
+        finishJoin(state.vector, state.durableVector);
       });
     },
 
@@ -877,8 +960,13 @@ export function createProjectSession({
       return sequenceJoin(async () => {
         await persister?.hydration;
         if (left) return;
+        captureHydratedTarget();
+        if (frame.protocol !== "librepaper.room.v3") {
+          throw new Error("This document requires a newer LibrePaper version.");
+        }
         if (frame.updates?.length) doc.importBatch(frame.updates.map(decode));
-        finishJoin(frame.vector);
+        flushRemoteDuringHydration();
+        finishJoin(frame.vector, frame.durableVector);
       });
     },
 
@@ -893,6 +981,10 @@ export function createProjectSession({
     },
 
     apply(update) {
+      if (!hydrationCaptured) {
+        remoteDuringHydration.push(update);
+        return;
+      }
       doc.import(decode(update));
     },
 
@@ -902,14 +994,22 @@ export function createProjectSession({
       settleColour();
     },
 
-    /// The server has written everything up to this number. Relaying was
-    /// never this; storage is. §6.3: nothing is persisted per batch and
-    /// there is no replay cursor, so there is nothing else to reconcile here
-    /// -- clearing the in-memory map is the whole of it.
+    /// Retires transport bookkeeping through this client sequence number.
+    /// This does not change save pending: durability is reported separately
+    /// by `doc-durable`.
     acknowledge(upTo) {
       for (const mine of [...unacknowledged.keys()]) {
         if (mine <= upTo) unacknowledged.delete(mine);
       }
+      report();
+    },
+
+    /// The server's durable log coverage. This is intentionally separate from
+    /// `acknowledge`: an empty catch-up can be acknowledged while earlier work
+    /// is still buffered in the server.
+    durable(vector) {
+      if (left || !vector) return;
+      mergeDurableCoverage(vector);
       report();
     },
 

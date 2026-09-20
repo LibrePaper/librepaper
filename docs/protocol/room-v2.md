@@ -9,7 +9,7 @@ but the live link remains the complete document authority. Signed-in comments
 retain the account's normal attribution; an anonymous link-only peer receives
 a stable link pseudonym.
 
-This is `librepaper.room.v2`, the protocol in `SPEC-server-is-a-log.md`. The
+This is `librepaper.room.v3`, the protocol in `SPEC-server-is-a-log.md`. The
 server stores and forwards source bytes and reads only their headers to do
 so; it interprets their contents only on demand, through a bounded, evictable
 cache. See that document for the reasoning behind each rule below.
@@ -159,7 +159,7 @@ The result is the created or changed event:
       "type": "comment",
       "request_id": "request-123",
       "version": 1,
-      "protocol": "librepaper.room.v2",
+      "protocol": "librepaper.room.v3",
       "comment": {}
     }
 
@@ -207,7 +207,7 @@ An editor receives either a durable label:
       "request_id": "label-123",
       "durable": true,
       "version": 1,
-      "protocol": "librepaper.room.v2"
+      "protocol": "librepaper.room.v3"
     }
 
 or a durable no-op with noop: true when the live tree already has that
@@ -231,24 +231,25 @@ Automation peers connect to /ws/{slug} with the same key header and automation
 marker. The document messages carry the synchronization transport described
 in `SPEC-server-is-a-log.md` §6.
 
-- `doc-open {protocol: "librepaper.room.v2", vector}` sends a base64-encoded
+- `doc-open {protocol: "librepaper.room.v3", vector}` sends a base64-encoded
   Loro version vector. The protocol string is required and checked before any
   update is accepted; there is no `after` field, and there is no `doc-sync`
   message -- `doc-open` is the only way to join. A client that cannot present
-  `librepaper.room.v2` receives upgrade-required before it can send an
+  `librepaper.room.v3` receives upgrade-required before it can send an
   update, and its local state is left untouched.
 
   The server answers with one of, depending on how much of the client's
   vector the log already covers (`SPEC-server-is-a-log.md` §6.2):
 
-  - `doc-state {vector, updates}` when the base and every row are covered:
-    `updates` is the buffer's batches and `vector` is the head vector.
-  - `doc-rows {vector, updates}` when the base is covered but some rows are
-    not: `updates` is those rows' batches followed by the buffer's.
-  - `doc-state {vector, base, updates}` when the base itself is not covered,
-    or `doc-state {vector, ref, digest, updates}` above the inline size
-    limit, where `ref` is a same-origin URL fetched with the document
-    credentials and `digest` is checked against what arrives.
+  - `doc-state {vector, durableVector, updates}` when the base and every row
+    are covered: `updates` is the buffer's batches and `vector` is the head.
+  - `doc-rows {vector, durableVector, updates}` when the base is covered but
+    some rows are not: `updates` is those rows' batches followed by the buffer's.
+  - `doc-state {vector, durableVector, base}` when the base itself is not
+    covered, or `doc-state {vector, durableVector, ref, digest}` above the
+    inline size limit, followed by `doc-rows` for the rows and buffer. `ref`
+    is a same-origin URL fetched with the document credentials and `digest`
+    is checked against what arrives.
 
   `updates` is an ARRAY of base64 Loro blobs, applied with `importBatch`,
   and this is not a stylistic choice. Two Loro updates concatenated are not
@@ -265,9 +266,11 @@ in `SPEC-server-is-a-log.md` §6.
   holds, over-sending rows the client partly had is harmless. The client
   imports everything it receives, then exports `Updates { from: vector }`
   using the vector from the reply and sends that as one `doc-update` batch.
-  This is today's catch-up; its acknowledgement empties the client's
-  unacknowledged map, which together with having joined means the session is
-  synced. An empty map alone means nothing until both are true.
+  Catch-up uses the head `vector`, including buffered operations, so a
+  reconnect does not upload work the server already holds. `durableVector`
+  separately describes only the committed log. Both are base64 Loro version
+  vectors; neither an empty catch-up nor its acknowledgement proves earlier
+  buffered work has committed.
 
 - `doc-update {seq, update}` sends a base64-encoded Loro `update` and an
   increasing `seq` scoped to the socket. An update too large for one frame is
@@ -285,13 +288,26 @@ in `SPEC-server-is-a-log.md` §6.
   is causally complete relative to what came before it, a gap is refused at
   the door rather than accepted and repaired later.
 
-- `doc-ack {upTo}` acknowledges a flush: `upTo` is the highest `client_seq`,
-  among the peer's own batches, in the row that was just made durable.
-  `coverage` no longer exists; the client cannot ask what the server holds
-  beyond what `doc-ack` and `doc-gap` already tell it. Acknowledgements
-  always cover a contiguous prefix of a peer's session, because a batch is
-  either refused before it is appended (a gap) or accepted, never both for
-  the same batch.
+- `doc-ack {upTo}` retires transmission bookkeeping: after a flush, `upTo`
+  is the highest `client_seq` among the peer's own batches in the row that
+  was just made durable.
+  An empty batch is acknowledged immediately without writing a row. Clients
+  must not interpret that acknowledgement, or an empty pending-send map, as
+  proof that their earlier work is durable after reconnecting.
+
+- `doc-durable {vector}` broadcasts the committed log's base64 Loro version
+  vector to every editor after a successful flush or semantic command commit.
+  It reaches reconnected editors regardless of which socket submitted their
+  work. Readers and commenters do not receive this frame.
+
+  The browser captures a `saveTarget` vector after each local edit, including
+  its causal dependencies. Remote imports do not advance this target. On
+  initial hydration the target includes the restored local document; ordinary
+  socket reconnects retain the existing target. Work is remotely saved when
+  durable coverage includes this target. Thus another editor's later typing
+  does not delay confirmation of this editor's completed work. Merge coverage
+  monotonically: a newer `doc-durable` may arrive before an older join reply
+  finishes importing. Local persistence remains a separate save dimension.
 
 - `doc-gap {vector}` is sent to an editor whose `doc-update` started before
   the vector the server's log currently covers. See above.
@@ -316,7 +332,7 @@ message, document, file, and update-rate ceilings. A peer must reconnect after
 transport closure and resynchronize with `doc-open` and a state vector. It
 must retry annotations and labels with the same request and temporary
 identifiers; it must not assume that receiving a relay means an update is
-durable -- only `doc-ack` means that.
+durable. Use the explicit durable vector to confirm coverage of local work.
 
 ### Join algorithm
 
@@ -337,8 +353,8 @@ registered as a subscriber:
 5. Otherwise reply `doc-state` with the base by reference, followed by
    `doc-rows` for all rows plus the buffer.
 6. The client imports everything, then exports and sends `Updates { from:
-   vector }` from the reply, and that batch's acknowledgement is what empties
-   the unacknowledged map.
+   vector }` from the reply. Confirm saving separately using `durableVector`
+   and subsequent `doc-durable` notifications against the local save target.
 
 ### Crash contract
 
@@ -369,12 +385,10 @@ server's buffer.
 
 ## Compatibility
 
-Unknown response fields must be ignored. Clients must require
-protocol == librepaper.room.v2 (or the snapshot protocol) only when they need
-the v2 guarantees, and otherwise retain the pre-v2 browser behavior. The
-server accepts messages without request_id so existing browser bundles can
-continue to connect during a rolling deployment. There is no compatibility
-path for `doc-sync` or for a `doc-open` that omits `protocol`: those receive
-upgrade-required, because `doc-gap` and the vector-only acknowledgement model
-depend on the server and client agreeing on causal-gap handling from the
-first frame.
+Unknown response fields must be ignored. Source synchronization requires
+`librepaper.room.v3`; older clients receive upgrade-required and retain their
+local document. The version changes because a v2 client can interpret an
+empty catch-up acknowledgement as proof of saving buffered work. The snapshot
+protocol remains `librepaper.snapshot.v1`. There is no compatibility path for
+`doc-sync` or a `doc-open` without the required protocol. Messages without
+`request_id` remain accepted when the caller does not need correlation.

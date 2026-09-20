@@ -83,7 +83,7 @@ frames.length = 0;
 // NOTE: There's a bug in the ported source - the vector parameter expects frontiers encoded as bytes,
 // but the current implementation doesn't properly serialize the version vector.
 // For now, we test without a vector to verify basic functionality.
-await session.start({ protocol: "librepaper.room.v2", vector: "", updates: [] });
+await session.start({ protocol: "librepaper.room.v3", vector: "", durableVector: "", updates: [] });
 const catchup = frames.find((message) => message.type === "doc-update" || message.type === "doc-update-start");
 assert.ok(catchup, "should have some update on rejoin");
 // NOTE: onFiles subscription is broken in the ported source because LoroText.subscribe() doesn't exist

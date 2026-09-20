@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine as _;
 use futures_util::future::BoxFuture;
 use loro::{ExportMode, LoroDoc, VersionVector};
 use tokio::sync::Notify;
@@ -866,6 +867,19 @@ fn drained_acks(rx: &mut Receiver) -> Vec<i64> {
     acks
 }
 
+fn drained_frames(rx: &mut Receiver) -> Vec<serde_json::Value> {
+    let mut frames = Vec::new();
+    while let Ok(queued) = rx.try_recv() {
+        let text = match queued.into_parts().0 {
+            Outgoing::Text(text) => text,
+            Outgoing::SharedText(text) => text.to_string(),
+            Outgoing::Close(_) => continue,
+        };
+        frames.push(serde_json::from_str(&text).expect("a JSON frame"));
+    }
+    frames
+}
+
 /// §5.1, the acknowledgement-safety invariant: a `doc-ack` must never name a
 /// `client_seq` whose bytes are not in a committed row. The browser clears
 /// its unacknowledged map up to `upTo` and reads that as "my work is safe",
@@ -1115,6 +1129,166 @@ async fn a_flush_whose_response_was_lost_acknowledges_only_the_row_it_proves_is_
         drained_acks(&mut rx).is_empty(),
         "work that is in no row of this log was acknowledged as durable"
     );
+}
+
+#[tokio::test]
+async fn a_join_reports_head_and_durable_vectors_separately_while_a_flush_is_pending() {
+    let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
+    let (tx, _rx) = Sender::channel(64, 1 << 20, None, None);
+    sequencer
+        .join(1, Role::Editor, "account:writer", tx, None)
+        .await
+        .expect("join succeeds");
+
+    let mut outbox = Outbox::new();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 1, outbox.edit())
+            .await,
+        Ingested::Accepted
+    ));
+    let joined = sequencer
+        .join(2, Role::Editor, "account:reconnected", subscriber(), None)
+        .await
+        .expect("reconnect join succeeds");
+
+    assert_eq!(joined.vector, outbox.doc.oplog_vv().encode());
+    assert_eq!(
+        joined.durable_vector,
+        VersionVector::default().encode(),
+        "the join head includes the buffered update while durableVector stays at the log row"
+    );
+}
+
+#[tokio::test]
+async fn a_successful_flush_notifies_every_editor_but_not_readers_of_the_committed_vector() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    let sequencer = bare_sequencer(catalog.clone());
+    let (writer_tx, mut writer_rx) = Sender::channel(64, 1 << 20, None, None);
+    let (peer_tx, mut peer_rx) = Sender::channel(64, 1 << 20, None, None);
+    let (reader_tx, mut reader_rx) = Sender::channel(64, 1 << 20, None, None);
+    sequencer
+        .join(1, Role::Editor, "account:writer", writer_tx, None)
+        .await
+        .expect("writer join succeeds");
+    sequencer
+        .join(2, Role::Editor, "account:peer", peer_tx, None)
+        .await
+        .expect("peer join succeeds");
+    sequencer
+        .join(3, Role::Reader, "account:reader", reader_tx, None)
+        .await
+        .expect("reader join succeeds");
+    let mut outbox = Outbox::new();
+    let batch = outbox.edit();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 1, batch)
+            .await,
+        Ingested::Accepted
+    ));
+    // The author reconnects after its original socket and peer key disappear.
+    // Durable coverage is document-wide, while the old doc-ack remains tied
+    // to the old transmission identity.
+    assert!(!sequencer.unsubscribe(1).await);
+    let (reconnected_tx, mut reconnected_rx) = Sender::channel(64, 1 << 20, None, None);
+    sequencer
+        .join(
+            4,
+            Role::Editor,
+            "account:reconnected-peer-key",
+            reconnected_tx,
+            None,
+        )
+        .await
+        .expect("reconnected editor join succeeds");
+    // Ingest relays to the other editor and announces a source change to the
+    // reader. The durable frame is emitted only after the row commits.
+    let _ = drained_frames(&mut peer_rx);
+    let _ = drained_frames(&mut reconnected_rx);
+    let _ = drained_frames(&mut reader_rx);
+    assert!(drained_frames(&mut writer_rx).is_empty());
+
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .expect("flush succeeds")
+        .expect("the buffered batch is written");
+
+    let writer_frames = drained_frames(&mut writer_rx);
+    let peer_frames = drained_frames(&mut peer_rx);
+    let reconnected_frames = drained_frames(&mut reconnected_rx);
+    let reader_frames = drained_frames(&mut reader_rx);
+    let reconnected_durable = reconnected_frames
+        .iter()
+        .find(|frame| frame["type"] == "doc-durable")
+        .expect("the reconnected author receives the durable notification");
+    let peer_durable = peer_frames
+        .iter()
+        .find(|frame| frame["type"] == "doc-durable")
+        .expect("every editor receives the durable notification");
+    assert_eq!(reconnected_durable["vector"], peer_durable["vector"]);
+    assert_eq!(
+        reconnected_durable["vector"],
+        serde_json::Value::String(
+            base64::engine::general_purpose::STANDARD.encode(outbox.doc.oplog_vv().encode())
+        )
+    );
+    assert!(
+        reader_frames
+            .iter()
+            .all(|frame| frame["type"] != "doc-durable"),
+        "durable log vectors are editor state, not reader notifications"
+    );
+    assert!(
+        writer_frames.iter().all(|frame| frame["type"] != "doc-durable"),
+        "the old author socket is gone before the commit"
+    );
+    assert!(
+        reconnected_frames
+            .iter()
+            .all(|frame| frame["type"] != "doc-ack"),
+        "the reconnected peer key does not receive the old author's transmission acknowledgement"
+    );
+    assert!(
+        peer_frames.iter().all(|frame| frame["type"] != "doc-ack"),
+        "an unrelated editor does not receive the author's transmission acknowledgement"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_flush_does_not_advance_or_broadcast_durable_coverage() {
+    let catalog = Arc::new(FakeCatalog {
+        fail_next_flush: std::sync::atomic::AtomicBool::new(true),
+        ..FakeCatalog::empty()
+    });
+    let sequencer = bare_sequencer(catalog);
+    let (tx, mut rx) = Sender::channel(64, 1 << 20, None, None);
+    sequencer
+        .join(1, Role::Editor, "account:writer", tx, None)
+        .await
+        .expect("join succeeds");
+    let mut outbox = Outbox::new();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:writer", "account:writer", 1, outbox.edit())
+            .await,
+        Ingested::Accepted
+    ));
+    assert!(drained_frames(&mut rx).is_empty());
+
+    assert!(sequencer.flush(FlushReason::Barrier).await.is_err());
+    assert!(
+        drained_frames(&mut rx)
+            .iter()
+            .all(|frame| frame["type"] != "doc-durable"),
+        "a failed write cannot claim a durable vector"
+    );
+    let joined = sequencer
+        .join(2, Role::Editor, "account:reconnected", subscriber(), None)
+        .await
+        .expect("join succeeds after the failed flush");
+    assert_eq!(joined.durable_vector, VersionVector::default().encode());
 }
 
 // -- join (§6.2, §14.2) ----------------------------------------------------

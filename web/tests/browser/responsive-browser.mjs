@@ -35,7 +35,7 @@ export function openRoom(slug, {onMessage, onConnected}) {
   return {
     send(message) {
       window.roomSent.push(message);
-      if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", protocol:"librepaper.room.v2", vector, updates:[update]}));
+      if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", protocol:"librepaper.room.v3", vector, durableVector: vector, updates:[update]}));
       return {ok:true};
     },
     sendLive(message) { window.roomSent.push(message); return {ok:true}; },

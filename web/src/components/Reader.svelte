@@ -1302,9 +1302,13 @@
       return;
     }
     if (event.type === "doc-ack") {
-      // The server has written this far. Relaying was never durability; this
-      // is, and it is what the badge is allowed to speak from.
+      // Retire transmission bookkeeping. An empty catch-up can be acknowledged
+      // while earlier work is still buffered, so this does not prove saving.
       session?.acknowledge(event.upTo || 0);
+      return;
+    }
+    if (event.type === "doc-durable") {
+      session?.durable(event.vector);
       return;
     }
     if (event.type === "doc-peers") {
@@ -3244,9 +3248,8 @@
     };
   });
 
-  // Ctrl-S is what a hand does after typing a paragraph, and there is nothing
-  // for it to do: the document is already durable. What it must not do is
-  // claim more than it knows.
+  // Ctrl-S reports the durability the server has confirmed for local work.
+  // Typing is saved automatically, but a buffered edit is not durable yet.
   //
   // "Saved" is the word to be careful with. This browser's own storage is not
   // a save: it is evictable, it is one device, and it holds nothing the
@@ -3267,7 +3270,7 @@
       );
       return;
     }
-    if (persistence.pending) return;
+    if (!persistence.joined || persistence.pending) return;
     say("Saved on the server.", { id: "reader:persistence" });
   }
 

@@ -32,7 +32,7 @@ test("everybody in a file sees everybody else", async () => {
   // this used to return nobody, from all three.
   const peers = room([["Ada", "tab-a"], ["Grace", "tab-b"], ["Alan", "tab-c"]], presenceColour);
   try {
-    for (const peer of peers) await peer.session.start({ protocol: "librepaper.room.v2", vector: "", updates: [] });
+    for (const peer of peers) await peer.session.start({ protocol: "librepaper.room.v3", vector: "", durableVector: "", updates: [] });
     await settle();
     for (const peer of peers) {
       const seen = peer.session.participants();
@@ -59,7 +59,7 @@ test("two people who choose the same colour do not stay that way", async () => {
     for (const peer of peers) {
       assert.equal(peer.session.localPresence().color, PRESENCE_COLOURS[0], "same colour to start");
     }
-    for (const peer of peers) await peer.session.start({ protocol: "librepaper.room.v2", vector: "", updates: [] });
+    for (const peer of peers) await peer.session.start({ protocol: "librepaper.room.v3", vector: "", durableVector: "", updates: [] });
     await settle();
     const mine = peers.map((peer) => peer.session.localPresence().color);
     assert.equal(new Set(mine).size, peers.length, "three people, three colours");
@@ -77,7 +77,7 @@ test("two people who choose the same colour do not stay that way", async () => {
 test("signing in part way through recolours by the name, not the tab", async () => {
   const peers = room([["", "tab-a"], ["Grace", "tab-b"]], presenceColour);
   try {
-    for (const peer of peers) await peer.session.start({ protocol: "librepaper.room.v2", vector: "", updates: [] });
+    for (const peer of peers) await peer.session.start({ protocol: "librepaper.room.v3", vector: "", durableVector: "", updates: [] });
     await settle();
     const before = peers[0].session.localPresence().color;
     assert.equal(before, presenceColour("tab-a"), "a reader with no name wears their tab's colour");

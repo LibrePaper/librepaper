@@ -816,13 +816,17 @@ console.log("reader-races: continuous preview, render coalescing and navigation 
 {
   const said = [];
   const ctx = context({
-    connected: true, persistence: { pending: 1, local: true },
+    connected: true, persistence: { pending: 1, local: true, joined: true },
     say: (value) => { said.push(value); },
   });
   vm.runInContext(body("  function reportPersistence()", "  // There is no save, so a close"), ctx);
   vm.runInContext("reportPersistence()", ctx);
-  assert.deepEqual(said, [], "unacknowledged writes are not reported as anything");
+  assert.deepEqual(said, [], "work without durable coverage is not reported as saved");
   ctx.persistence.pending = 0;
+  ctx.persistence.joined = false;
+  vm.runInContext("reportPersistence()", ctx);
+  assert.deepEqual(said, [], "a connected socket is not a completed join");
+  ctx.persistence.joined = true;
   vm.runInContext("reportPersistence()", ctx);
   assert.deepEqual(said, ["Saved on the server."]);
   ctx.connected = false;

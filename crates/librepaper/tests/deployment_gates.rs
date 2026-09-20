@@ -764,7 +764,7 @@ mod revocation {
     /// The one protocol string this server speaks (§6.1); not re-exported
     /// from `server::socket`, which keeps its own copy `pub(super)`, so this
     /// is the wire's own literal rather than a borrowed constant.
-    const PROTOCOL: &str = "librepaper.room.v2";
+    const PROTOCOL: &str = "librepaper.room.v3";
 
     /// An `Authorization: Bearer` header carrying a device token for the
     /// owner account -- the credential a signed-in browser's fetch and
@@ -1043,7 +1043,24 @@ mod revocation {
             ))
             .await
             .expect("send the owner's doc-open");
-        wait_for_type(&mut owner_ws, "doc-state", Duration::from_secs(5)).await;
+        let initial = wait_for_type(&mut owner_ws, "doc-state", Duration::from_secs(5)).await;
+        assert!(initial["durableVector"].is_string());
+        // A returning client that already covers the whole head receives the
+        // buffer-only doc-state branch. It still needs durable coverage even
+        // when no later flush will occur to announce it.
+        owner_ws
+            .send(WsMessage::Text(
+                json!({"type": "doc-open", "vector": initial["vector"], "protocol": PROTOCOL})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .expect("rejoin from the complete head vector");
+        let covered = wait_for_type(&mut owner_ws, "doc-state", Duration::from_secs(5)).await;
+        assert!(covered.get("base").is_none() && covered.get("ref").is_none());
+        assert_eq!(covered["updates"], json!([]));
+        assert_eq!(covered["durableVector"], initial["durableVector"]);
+        assert_eq!(covered["durableVector"], covered["vector"]);
 
         // -- the second editor: signed in (see `bearer_token`'s doc comment
         //    on why that is required), but with no grant of their own,

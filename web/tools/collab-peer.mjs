@@ -42,10 +42,13 @@ function connect() {
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "doc-state") session?.start(message).catch(() => {});
+    else if (message.type === "doc-rows") session?.rows(message).catch(() => {});
     else if (message.type === "doc-update") session?.apply(message.update);
+    else if (message.type === "doc-gap") session?.gap(message.vector);
+    else if (message.type === "doc-durable") session?.durable(message.vector);
     else if (message.type === "doc-ack") {
-      acknowledged = Math.max(acknowledged, message.seq || 0);
-      session?.acknowledge(message.seq || 0);
+      acknowledged = Math.max(acknowledged, message.upTo || 0);
+      session?.acknowledge(message.upTo || 0);
     } else if (message.type === "doc-peers") peers = message.count || 1;
   };
   socket.onclose = () => session?.disconnected();

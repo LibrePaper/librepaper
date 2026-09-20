@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { createProjectSession } from "../../src/lib/project-session.js";
 import { assertSameProject, projectIdentity, sameProject } from "../../src/lib/project-identity.js";
 
+const encode = (bytes) => btoa(String.fromCharCode(...bytes));
+
 const states = [];
 let persistenceEvents;
 let closed = false;
@@ -30,9 +32,11 @@ try {
   session.addText("paper.md", "offline");
   assert.equal(states.at(-1).pending, 1);
   assert.equal(sent.at(-1).type, "doc-update");
-  // §6.3: acknowledgement clears the in-memory map; there is no coverage
-  // argument to carry any more, since nothing is persisted per batch.
+  // §6.3: acknowledgement is transport bookkeeping. It cannot claim that
+  // the server's buffered work is durable.
   session.acknowledge(sent.at(-1).seq);
+  assert.equal(states.at(-1).pending, 1);
+  session.durable(encode(session.doc.oplogVersion().encode()));
   assert.equal(states.at(-1).pending, 0);
 
   persistenceEvents.failed(new Error("quota full"));
@@ -116,15 +120,9 @@ assert.throws(() => assertSameProject(first, recreated), { code: "project-identi
   }
 }
 
-// `librepaper.room.v2`: join and gap handling (§6.2, §5 step 4, §14.2). A
+// `librepaper.room.v3`: join and gap handling (§6.2, §5 step 4, §14.2). A
 // base64 helper matching the wire encoding `project-session.js` uses
 // internally, since that function is not exported.
-const encode = (bytes) => {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-};
-
 // A protocol string other than the one this client speaks is refused before
 // any update is accepted (§6.1): there is no compatibility path to fall
 // back to.
@@ -132,7 +130,11 @@ const encode = (bytes) => {
   const refused = createProjectSession({ send: () => {}, onState: () => {} });
   try {
     await assert.rejects(
-      () => refused.start({ protocol: "librepaper.room.v1", vector: "", updates: [] }),
+      () => refused.start({ protocol: "librepaper.room.v2", vector: "", updates: [] }),
+      /requires a newer LibrePaper version/,
+    );
+    await assert.rejects(
+      () => refused.rows({ protocol: "librepaper.room.v2", vector: "", updates: [] }),
       /requires a newer LibrePaper version/,
     );
   } finally {
@@ -177,9 +179,9 @@ function sourceLog() {
   const sentA = [];
   const joiner = createProjectSession({ send: (message) => sentA.push(message), onState: () => {}, presenceId: () => "join-empty" });
   try {
-    await joiner.start({ protocol: "librepaper.room.v2", vector: encode(head.encode()), base: encode(base), updates: [] });
+    await joiner.start({ protocol: "librepaper.room.v3", vector: encode(head.encode()), base: encode(base), updates: [] });
     assert.equal(joiner.joined, true, "doc-state is a valid join reply on its own, so this browser is announced already");
-    await joiner.rows({ vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
+    await joiner.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
     assert.equal(joiner.text_(), text, "importing the base and then both rows reproduces the source's text");
     assert.equal(joiner.joined, true);
     assert.equal(sentA.filter((message) => message.type === "doc-update").length, 2,
@@ -200,7 +202,7 @@ function sourceLog() {
   try {
     joiner.doc.import(base);
     assert.equal(joiner.joined, false);
-    await joiner.rows({ vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
+    await joiner.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
     assert.equal(joiner.text_(), text, "the rows close the gap between the local base and the head");
     assert.equal(joiner.joined, true);
   } finally {
@@ -219,7 +221,7 @@ function sourceLog() {
   try {
     joiner.doc.import(base);
     joiner.doc.import(row1);
-    await joiner.rows({ vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
+    await joiner.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
     assert.equal(joiner.text_(), text, "re-importing the row already held costs nothing and the missing one lands");
     assert.equal(joiner.joined, true);
   } finally {
@@ -285,10 +287,16 @@ function sourceLog() {
     // only the two rows are missing.
     joiner.doc.import(base);
 
-    const rowsPromise = joiner.rows({ vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
+    const rowsPromise = joiner.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
     assert.equal(hydrationRan, false, "hydration has not resolved yet");
     assert.equal(sentF.filter((message) => message.type === "doc-update").length, 0,
       "no catch-up is sent while hydration is still in flight");
+
+    // A local edit can happen while the join is waiting for IndexedDB. It is
+    // sent immediately and must still be part of the later catch-up target.
+    joiner.addText("during.md", "DURING");
+    assert.equal(sentF.filter((message) => message.type === "doc-update").length, 1,
+      "an edit during hydration is retained and sent");
 
     hydrationGate.resolve();
     await rowsPromise;
@@ -296,7 +304,7 @@ function sourceLog() {
     assert.equal(hydrationRan, true, "rows waited for hydration before finishing the join");
     assert.equal(joiner.joined, true);
     const sent = sentF.filter((message) => message.type === "doc-update");
-    assert.equal(sent.length, 1, "rows sends exactly one catch-up, once hydration and the rows import have both landed");
+    assert.equal(sent.length, 2, "the edit during hydration and the later catch-up are both sent");
 
     // Replay what the server would have received against a copy of its own
     // log: the offline edit must be in there, not just the two rows.
@@ -304,9 +312,11 @@ function sourceLog() {
     verify.doc.import(base);
     verify.doc.import(row1);
     verify.doc.import(row2);
-    verify.doc.import(decode(sent[0].update));
+    for (const frame of sent) verify.doc.import(decode(frame.update));
     assert.ok(verify.textOf(verify.mainId()).toString().includes("OFFLINE"),
       "the catch-up export carries the offline edit hydration imported, not a snapshot taken before it landed");
+    assert.ok(verify.list().some((file) => file.path === "during.md"),
+      "the edit made while hydration was in flight reaches the catch-up");
     verify.leave();
   } finally {
     joiner.leave();
@@ -346,13 +356,13 @@ function sourceLog() {
     })();
 
     const startPromise = joiner.start({
-      protocol: "librepaper.room.v2",
+      protocol: "librepaper.room.v3",
       vector: encode(head.encode()),
       ref: "https://example.test/base",
       digest,
       updates: [],
     });
-    const rowsPromise = joiner.rows({ vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
+    const rowsPromise = joiner.rows({ protocol: "librepaper.room.v3", vector: encode(head.encode()), updates: [encode(row1), encode(row2)] });
 
     // Checked before anything has had a chance to run past its first await:
     // unfixed code ran `rows` fully synchronously (no `joinGate` to queue
@@ -407,10 +417,8 @@ function sourceLog() {
 }
 
 // Acknowledgement clears a contiguous prefix of the unacknowledged map and
-// nothing more (§6.3): three local edits queue three sends, and acking the
-// second by its transport sequence clears the first two and leaves the
-// third pending, exactly as `doc-ack` naming a peer's highest `client_seq`
-// in a flushed row is documented to mean (§5.1).
+// nothing more (§6.3). It does not affect save pending, which follows durable
+// coverage rather than the number of transport batches.
 {
   const statesE = [];
   const sentE = [];
@@ -419,7 +427,7 @@ function sourceLog() {
     editor.addText("one.md", "1");
     editor.addText("two.md", "2");
     editor.addText("three.md", "3");
-    assert.equal(statesE.at(-1).pending, 3);
+    assert.equal(statesE.at(-1).pending, 1, "pending is save coverage, not a batch count");
     const [first, second, third] = sentE.filter((message) => message.type === "doc-update").map((message) => message.seq);
 
     editor.acknowledge(second);
@@ -429,8 +437,134 @@ function sourceLog() {
     assert.equal(statesE.at(-1).pending, 1, "acking the same boundary again changes nothing");
 
     editor.acknowledge(third);
-    assert.equal(statesE.at(-1).pending, 0, "acking the last send clears what remains");
+    assert.equal(statesE.at(-1).pending, 1, "acking the last send still does not prove durability");
+    editor.durable(encode(editor.doc.oplogVersion().encode()));
+    assert.equal(statesE.at(-1).pending, 0, "durable coverage clears the save pending state");
     void first;
+  } finally {
+    editor.leave();
+  }
+}
+
+// A reconnect can catch up from the server head while the server still has a
+// buffered row. The empty catch-up acknowledgement retires transport state,
+// but only a later durable vector may clear save pending.
+{
+  const states = [];
+  const sent = [];
+  const editor = createProjectSession({ send: (message) => sent.push(message), onState: (state) => states.push(state), presenceId: () => "durable-reconnect" });
+  try {
+    editor.addText("buffered.md", "buffered");
+    const head = encode(editor.doc.oplogVersion().encode());
+    assert.equal(states.at(-1).pending, 1);
+
+    editor.disconnected();
+    await editor.start({ protocol: "librepaper.room.v3", vector: head, durableVector: "", updates: [] });
+    const catchup = sent.filter((message) => message.type === "doc-update").at(-1);
+    editor.acknowledge(catchup.seq);
+    assert.equal(states.at(-1).pending, 1, "an empty catch-up ack does not claim buffered work is durable");
+
+    editor.durable(head);
+    assert.equal(states.at(-1).pending, 0, "durable coverage clears the pending save");
+  } finally {
+    editor.leave();
+  }
+}
+
+// A peer's later typing is not this browser's save target. Coverage of the
+// earlier local vector is sufficient even while that later work is buffered.
+{
+  const states = [];
+  const editor = createProjectSession({ send: () => {}, onState: (state) => states.push(state), presenceId: () => "target-editor" });
+  const peer = createProjectSession({ send: () => {}, onState: () => {}, presenceId: () => "target-peer" });
+  try {
+    editor.addText("mine.md", "mine");
+    const localTarget = encode(editor.doc.oplogVersion().encode());
+    peer.addText("theirs.md", "theirs");
+    editor.apply(encode(peer.doc.export({ mode: "update" })));
+    const liveVector = encode(editor.doc.oplogVersion().encode());
+    assert.notEqual(liveVector, localTarget, "the peer edit advanced the live document vector");
+
+    editor.durable(localTarget);
+    assert.equal(states.at(-1).pending, 0, "the local target remains coverable after a peer types later");
+  } finally {
+    editor.leave();
+    peer.leave();
+  }
+}
+
+// A reload whose local document is restored during hydration is conservatively
+// pending until the server explicitly reports coverage for that restored
+// vector. A normal join head or catch-up acknowledgement is not enough.
+{
+  const local = createProjectSession({ send: () => {}, onState: () => {}, presenceId: () => "hydrated-source" });
+  const restoredId = local.addText("restored.md", "restored");
+  const saved = local.doc.export({ mode: "update" });
+  const savedVector = encode(local.doc.oplogVersion().encode());
+  local.leave();
+  const remote = createProjectSession({ send: () => {}, onState: () => {}, presenceId: () => "hydrated-peer" });
+  const remoteId = remote.addText("peer.md", "peer");
+  const remoteUpdate = encode(remote.doc.export({ mode: "update" }));
+
+  const states = [];
+  const reloaded = createProjectSession({
+    send: () => {},
+    onState: (state) => states.push(state),
+    presenceId: () => "hydrated-reload",
+    persistence: {
+      open(doc, events) {
+        return {
+          hydration: Promise.resolve().then(() => {
+            doc.import(saved);
+            events.hydrated();
+          }),
+          close() {},
+        };
+      },
+    },
+  });
+  try {
+    // This arrives before local hydration finishes. It must wait until the
+    // join's own state is imported, and it must not become the local target.
+    reloaded.apply(remoteUpdate);
+    await reloaded.start({ protocol: "librepaper.room.v3", vector: "", updates: [] });
+    assert.equal(reloaded.textOf(restoredId).toString(), "restored");
+    assert.equal(reloaded.textOf(remoteId).toString(), "peer", "the early relay is imported after hydration");
+    assert.equal(states.at(-1).pending, 1, "restored local work waits for durable coverage");
+    reloaded.acknowledge(999);
+    assert.equal(states.at(-1).pending, 1);
+    reloaded.durable(savedVector);
+    assert.equal(states.at(-1).pending, 0);
+  } finally {
+    reloaded.leave();
+    remote.leave();
+  }
+}
+
+// Coverage delivered while a join is importing must not be regressed by the
+// older durableVector carried on that join's frame.
+{
+  const states = [];
+  const hydrationGate = {};
+  hydrationGate.promise = new Promise((resolve) => { hydrationGate.resolve = resolve; });
+  const editor = createProjectSession({
+    send: () => {},
+    onState: (state) => states.push(state),
+    presenceId: () => "coverage-race",
+    persistence: { open() { return { hydration: hydrationGate.promise, close() {} }; } },
+  });
+  try {
+    editor.addText("old.md", "old");
+    const older = encode(editor.doc.oplogVersion().encode());
+    editor.addText("race.md", "race");
+    const newer = encode(editor.doc.oplogVersion().encode());
+    const joining = editor.start({ protocol: "librepaper.room.v3", vector: newer, durableVector: older, updates: [] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    editor.durable(newer);
+    assert.equal(states.at(-1).pending, 0);
+    hydrationGate.resolve();
+    await joining;
+    assert.equal(states.at(-1).pending, 0, "an old join durableVector cannot regress newer coverage");
   } finally {
     editor.leave();
   }

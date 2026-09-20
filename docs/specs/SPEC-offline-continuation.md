@@ -47,8 +47,9 @@ package; it lives in `web/src/lib/offline-projects.js`, keyed by the immutable
 document identity in `web/src/lib/project-identity.js` rather than by slug, so
 a recreated slug does not collide with an earlier project's cache.
 `web/src/lib/project-session.js` owns one client's document: it holds the
-Loro document, tracks which of this browser's updates the server has not yet
-acknowledged (`doc-ack`), and is what a "pending" or "synced" indicator reads.
+Loro document, tracks durable server coverage of this browser's save target,
+and is what a "pending" or "synced" indicator reads. `doc-ack` retires
+transmission bookkeeping; it does not determine save status.
 `web/src/lib/reader/collaboration.js` owns the room lifetime for a reader and
 checks metadata on reconnection. Assets are referenced by digest, with their
 bytes held outside the CRDT.
@@ -173,12 +174,14 @@ The UI derives concise messages from them:
 | Remote update refused | Local changes not synced; retain work and explain recovery |
 
 A connected socket, successful send, empty in-memory queue after restart, or
-initial IndexedDB hydration is insufficient evidence of durability. The room
-protocol acknowledges a batch with `doc-ack {upTo}` once it is in PostgreSQL
-(SPEC-server-is-a-log.md §5.1, §6.1); there is no per-keystroke receipt beyond
-that. Define the persisted acknowledgement bookkeeping during implementation
-against `doc-ack`; extend the protocol only if it cannot support the required
-claim. Conservative status is preferable to false success.
+initial IndexedDB hydration is insufficient evidence of remote durability.
+The room protocol supplies `durableVector` on joins and broadcasts
+`doc-durable {vector}` after commits. Remote confirmation requires that
+coverage include the vector captured after the latest local edit. Later
+remote imports do not advance this save target. On reload, initialize the
+target conservatively from the hydrated document; on socket reconnect, retain
+it. An empty catch-up can receive `doc-ack {upTo}` immediately while earlier
+work remains buffered, so acknowledgements alone cannot establish saving.
 
 Before reconciliation that may remove locally edited content, preserve a
 recoverable local version. CRDT state alone must not be assumed to provide a

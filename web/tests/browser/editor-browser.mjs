@@ -246,7 +246,8 @@ window.collabCacheCheck = async () => {
     // Sec 6.1: doc-state now names the protocol on the frame itself (no
     // version/schema_version field) and carries updates, an array of
     // Loro exports each importable on its own.
-    return { protocol: "librepaper.room.v2", updates: [btoa(String.fromCharCode(...new Uint8Array(update)))] };
+    const vector = value.doc.oplogVersion().encode();
+    return { protocol: "librepaper.room.v3", durableVector: btoa(String.fromCharCode(...new Uint8Array(vector))), updates: [btoa(String.fromCharCode(...new Uint8Array(update)))] };
   };
   const cached = async (createdAt, documentId) => {
     let ready;

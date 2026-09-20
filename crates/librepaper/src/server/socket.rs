@@ -16,7 +16,7 @@ const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The only protocol this binary speaks. There is no v1 fallback (§6.1): a
 /// client that cannot present this string in `doc-open` is closed with
 /// `upgrade_required` before it can send an update.
-const PROTOCOL: &str = "librepaper.room.v2";
+const PROTOCOL: &str = "librepaper.room.v3";
 
 /// How many consecutive `Retryable`/`Refused` answers an editor's ingest may
 /// collect before the socket is closed. A single refusal is an ordinary
@@ -651,7 +651,7 @@ impl Server {
                                     let _ = send_outgoing(
                                         &tx,
                                         Outgoing::Close(
-                                            "upgrade_required: this server only speaks librepaper.room.v2"
+                                            "upgrade_required: this server only speaks librepaper.room.v3"
                                                 .into(),
                                         ),
                                     )
@@ -681,6 +681,7 @@ impl Server {
                                 };
                                 editor_joined = true;
                                 let encoded_vector = encode_update(&joined.vector);
+                                let encoded_durable_vector = encode_update(&joined.durable_vector);
                                 let mut frames: Vec<Value> = Vec::new();
                                 if let Some(base) = joined.base {
                                     // §6.2 step 5: the client does not cover
@@ -702,6 +703,7 @@ impl Server {
                                             "type": "doc-state",
                                             "protocol": PROTOCOL,
                                             "vector": encoded_vector,
+                                            "durableVector": encoded_durable_vector,
                                             "ref": reference,
                                             "digest": digest,
                                         })
@@ -710,6 +712,7 @@ impl Server {
                                             "type": "doc-state",
                                             "protocol": PROTOCOL,
                                             "vector": encoded_vector,
+                                            "durableVector": encoded_durable_vector,
                                             "base": encode_update(&base),
                                             "digest": digest,
                                         })
@@ -719,6 +722,7 @@ impl Server {
                                         "type": "doc-rows",
                                         "protocol": PROTOCOL,
                                         "vector": encoded_vector,
+                                        "durableVector": encoded_durable_vector,
                                         "updates": joined.batches.iter().map(|batch| encode_update(batch)).collect::<Vec<_>>(),
                                     }));
                                 } else if joined.from_rows {
@@ -728,6 +732,7 @@ impl Server {
                                         "type": "doc-rows",
                                         "protocol": PROTOCOL,
                                         "vector": encoded_vector,
+                                        "durableVector": encoded_durable_vector,
                                         "updates": joined.batches.iter().map(|batch| encode_update(batch)).collect::<Vec<_>>(),
                                     }));
                                 } else {
@@ -737,6 +742,7 @@ impl Server {
                                         "type": "doc-state",
                                         "protocol": PROTOCOL,
                                         "vector": encoded_vector,
+                                        "durableVector": encoded_durable_vector,
                                         "updates": joined.batches.iter().map(|batch| encode_update(batch)).collect::<Vec<_>>(),
                                     }));
                                 }

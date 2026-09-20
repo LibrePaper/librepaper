@@ -49,12 +49,19 @@ const session = join({
   createdAt: "2026-01-01T00:00:00Z",
   mayEdit: true,
   send: () => ({ ok: true }),
+  onState: (state) => { window.latestState = state; },
 });
 window.session = session;
+window.state = () => window.latestState;
+window.acknowledgeAll = () => session.acknowledge(Number.MAX_SAFE_INTEGER);
+window.markDurable = () => {
+  const bytes = session.doc.oplogVersion().encode();
+  session.durable(btoa(String.fromCharCode(...bytes)));
+};
 // A real server always names its protocol on this frame (§6.1); this stands
 // in for "nothing else arrived" rather than for a server that predates the
 // handshake, which no longer exists to simulate.
-window.ready = session.start({ protocol: "librepaper.room.v2" }).then(() => true);
+window.ready = session.start({ protocol: "librepaper.room.v3", vector: "", durableVector: "", updates: [] }).then(() => true);
 window.mainText = () => {
   const files = session.doc.getMap("files");
   const id = session.doc.getMap("meta").get("main");
@@ -115,6 +122,11 @@ try {
   await until("second load", () => tab.evaluate("window.ready"), 30000);
   const after = await tab.evaluate("window.mainText()");
   check(after === TYPED, `the words survived the reload (got ${JSON.stringify(after)})`);
+  check((await tab.evaluate("window.state()?.pending")) > 0, "restored work remains pending until the server's durable vector covers it");
+  await tab.evaluate("window.acknowledgeAll()");
+  check((await tab.evaluate("window.state()?.pending")) > 0, "a catch-up acknowledgement does not prove the restored work is durable");
+  await tab.evaluate("window.markDurable()");
+  check((await tab.evaluate("window.state()?.pending")) === 0, "the durable vector clears the restored pending work");
 } finally {
   await tab?.close?.();
   server.close();

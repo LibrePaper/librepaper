@@ -49,7 +49,7 @@ export function openRoom(_slug, {onMessage, onConnected}) {
   let updateSub2 = server.subscribeLocalUpdates(update => onMessage({type:'doc-update', update:encode(update)}));
   queueMicrotask(() => onConnected(true));
   return { send(message) {
-    if (message.type === 'doc-open') setTimeout(() => onMessage({type:'doc-state',protocol:'librepaper.room.v2',vector:encode(server.oplogVersion().encode()),updates:[encode(server.export({ mode: "update" }))]}), location.search.includes('slowjoin') ? 350 : 0);
+    if (message.type === 'doc-open') setTimeout(() => onMessage({type:'doc-state',protocol:'librepaper.room.v3',vector:encode(server.oplogVersion().encode()),durableVector:encode(server.oplogVersion().encode()),updates:[encode(server.export({ mode: "update" }))]}), location.search.includes('slowjoin') ? 350 : 0);
     if (message.type === 'doc-update') server.import(decode(message.update));
     return {ok:true};
   }, sendLive() { return {ok:true}; }, close() { updateSub2?.(); } };

@@ -471,7 +471,7 @@ pub(super) fn socket_refusal(error: &crate::room::WriteError, request_id: &str) 
         "message": error.client_message(),
         "request_id": request_id,
         "version": 1,
-        "protocol": "librepaper.room.v2",
+        "protocol": "librepaper.room.v3",
     });
     if error.is_temporary() {
         payload["retryable"] = json!(true);

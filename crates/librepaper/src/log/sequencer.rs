@@ -169,6 +169,9 @@ pub enum Ingested {
 pub struct Joined {
     /// The head vector: what the reply plus the buffer leaves the client at.
     pub vector: Vec<u8>,
+    /// The durable log vector: what has actually reached storage. This can
+    /// lag `vector` while the reply includes the in-memory buffer.
+    pub durable_vector: Vec<u8>,
     /// The compaction base, when the client does not cover it. Sent by
     /// reference above the inline limit, which is the caller's decision.
     pub base: Option<Vec<u8>>,
@@ -1022,10 +1025,10 @@ impl Sequencer {
         // which is the same size as a minute of somebody typing (§5.2).
         //
         // It is acknowledged rather than dropped silently. The client is
-        // holding it in its unacknowledged map and reads that map as "is my
-        // work safe"; a batch with nothing in it is trivially safe, so
-        // saying so at once is both true and what keeps the indicator
-        // honest. Nothing is relayed, because there is nothing to relay.
+        // holding it in its unacknowledged map, where this acknowledgement
+        // retires transmission bookkeeping; it does not claim that the
+        // document's durable vector advanced. Nothing is relayed, because
+        // there is nothing to relay.
         if header.change_num == 0 {
             acknowledge_peer(&mut inner, peer_key, client_seq);
             return Ingested::Accepted;
@@ -1233,6 +1236,7 @@ impl Sequencer {
         inner.retire(take, written, vector, encoded.len());
         let compaction_due = inner.compaction_due(self.catalog.compaction_thresholds());
         acknowledge(&mut inner, &batches);
+        notify_durable(&mut inner);
         // A digest the coalescing window suppressed goes out on the flush,
         // which is the floor §4.5 promises a reader.
         if inner.source_changed_owed {
@@ -1396,6 +1400,7 @@ impl Sequencer {
             },
         );
         let vector = inner.head_vector.encode();
+        let durable_vector = inner.log_vector.encode();
         // A document with no base is covered by definition: there is nothing
         // under the rows. A base whose vector is empty is a different thing
         // and must NOT read as covered -- every vector covers the empty one,
@@ -1446,6 +1451,7 @@ impl Sequencer {
         };
         Ok(Joined {
             vector,
+            durable_vector,
             base,
             batches,
             from_rows: base_covered && first_uncovered.is_some(),
@@ -1688,6 +1694,9 @@ impl Sequencer {
             self.note_source_changed(&mut inner);
         }
         acknowledge(&mut inner, &batches);
+        if !batches.is_empty() {
+            notify_durable(&mut inner);
+        }
         let compaction_due = inner.compaction_due(self.catalog.compaction_thresholds());
         drop(inner);
 
@@ -2326,6 +2335,35 @@ fn acknowledge(inner: &mut Inner, batches: &[Batch]) {
         if subscriber
             .tx
             .try_send_durable(Outgoing::Text(payload))
+            .is_err()
+        {
+            closed.push(*id);
+        }
+    }
+    drop_slow(inner, closed);
+}
+
+/// Announces the vector through the row that has just committed. This is
+/// separate from `doc-ack`: acknowledgements retire a sender's transmission
+/// bookkeeping, while this frame confirms that the document's durable log
+/// reached this vector. It goes to every editor, including the
+/// editor whose batches were in the row; readers receive source projections
+/// rather than source-log state.
+fn notify_durable(inner: &mut Inner) {
+    use base64::Engine as _;
+    let payload = json!({
+        "type": "doc-durable",
+        "vector": base64::engine::general_purpose::STANDARD.encode(inner.log_vector.encode()),
+    })
+    .to_string();
+    let mut closed = Vec::new();
+    for (id, subscriber) in inner.subscribers.iter() {
+        if subscriber.role != Role::Editor {
+            continue;
+        }
+        if subscriber
+            .tx
+            .try_send_durable(Outgoing::shared_text(payload.clone()))
             .is_err()
         {
             closed.push(*id);

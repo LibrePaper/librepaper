@@ -32,7 +32,7 @@ const vector = encode(server.oplogVersion().encode());
 export function openRoom(slug, {onMessage, onConnected}) {
   queueMicrotask(() => onConnected(true));
   return {
-    send(message) { if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", protocol:"librepaper.room.v2", vector, updates:[update]})); return {ok:true}; },
+    send(message) { if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", protocol:"librepaper.room.v3", vector, durableVector: vector, updates:[update]})); return {ok:true}; },
     sendLive() { return {ok:true}; },
     close() {}
   };

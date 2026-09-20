@@ -59,6 +59,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine as _;
 use loro::{Frontiers, LoroDoc, VersionVector};
 use uuid::Uuid;
 
@@ -402,6 +403,23 @@ async fn housekeeping_re_asks_for_a_compaction_whose_ask_was_lost() {
 
 fn subscriber() -> crate::room::Sender {
     crate::room::Sender::channel(64, 1 << 20, None, None).0
+}
+
+fn editor_subscription() -> (crate::room::Sender, crate::room::outgoing::Receiver) {
+    crate::room::Sender::channel(64, 1 << 20, None, None)
+}
+
+fn queued_frames(rx: &mut crate::room::outgoing::Receiver) -> Vec<serde_json::Value> {
+    let mut frames = Vec::new();
+    while let Ok(queued) = rx.try_recv() {
+        let text = match queued.into_parts().0 {
+            crate::room::Outgoing::Text(text) => text,
+            crate::room::Outgoing::SharedText(text) => text.to_string(),
+            crate::room::Outgoing::Close(_) => continue,
+        };
+        frames.push(serde_json::from_str(&text).expect("a JSON frame"));
+    }
+    frames
 }
 
 /// A `Joined` reply, reconstructed the way a fresh client would: the base
@@ -1346,6 +1364,7 @@ async fn opening_more_documents_than_the_budget_holds_evicts_a_subscribed_entry_
 /// text without changing it.
 struct EvidenceProbe {
     edit: Option<String>,
+    fail: bool,
 }
 
 impl Command for EvidenceProbe {
@@ -1376,7 +1395,14 @@ impl Command for EvidenceProbe {
         evidence: &'a Evidence,
     ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
         let evidence = evidence.clone();
-        Box::pin(async move { Ok(evidence) })
+        let fail = self.fail;
+        Box::pin(async move {
+            if fail {
+                Err(CommandError::Conflict("the probe rolls back".into()))
+            } else {
+                Ok(evidence)
+            }
+        })
     }
 }
 
@@ -1424,6 +1450,10 @@ async fn source_producing_evidence_matches_the_row_it_names() {
         .get("recovery-14-2-evidence")
         .await
         .expect("the room for the document just created");
+    let (editor_tx, mut editor_rx) = editor_subscription();
+    room.join(1, true, "semantic-editor", editor_tx, None)
+        .await
+        .expect("the semantic command subscriber joins");
     let config = Configuration::default();
 
     let sequence_before = deployment
@@ -1436,11 +1466,23 @@ async fn source_producing_evidence_matches_the_row_it_names() {
     let edited_source = format!("{PAPER}{added}");
     let mut probe = EvidenceProbe {
         edit: Some(edited_source.clone()),
+        fail: false,
     };
     let evidence = room
         .command(&deployment.authority(), &mut probe)
         .await
         .expect("a well-formed source-producing command");
+    let durable = queued_frames(&mut editor_rx)
+        .into_iter()
+        .find(|frame| frame["type"] == "doc-durable")
+        .expect("a committed source-producing command announces its durable vector");
+    assert_eq!(
+        durable["vector"],
+        serde_json::Value::String(
+            base64::engine::general_purpose::STANDARD.encode(&evidence.vector)
+        ),
+        "the notification names the vector committed by the command's row"
+    );
 
     // -- (1) source_sequence names the row this command's own flush wrote --
     let sequence_after = deployment
@@ -1527,6 +1569,39 @@ async fn source_producing_evidence_matches_the_row_it_names() {
          edit, not after it"
     );
 
+    // The source row is inserted before `transact`, so this probe exercises
+    // the transaction rollback path after a prepared source exists. The row
+    // and its durable notification must both disappear with the rollback.
+    let sequence_before_rollback = deployment
+        .catalog
+        .log_sequence(deployment.document_id)
+        .await
+        .unwrap();
+    let mut rollback = EvidenceProbe {
+        edit: Some(format!("{edited_source}\nThis edit is rolled back.\n")),
+        fail: true,
+    };
+    let rollback_result = room.command(&deployment.authority(), &mut rollback).await;
+    assert!(
+        matches!(&rollback_result, Err(CommandError::Conflict(message)) if message.contains("rolls back")),
+        "the probe must fail inside transact so the source row is rolled back: {rollback_result:?}"
+    );
+    assert_eq!(
+        deployment
+            .catalog
+            .log_sequence(deployment.document_id)
+            .await
+            .unwrap(),
+        sequence_before_rollback,
+        "a rolled-back source-producing command leaves no log row"
+    );
+    assert!(
+        queued_frames(&mut editor_rx)
+            .iter()
+            .all(|frame| frame["type"] != "doc-durable"),
+        "a rolled-back source-producing command emits no durable notification"
+    );
+
     deployment.catalog.close().await;
 }
 
@@ -1558,7 +1633,10 @@ async fn a_command_that_produces_no_source_names_the_last_row_and_records_no_aft
         "the document's own creation already wrote a row for this command to name"
     );
 
-    let mut probe = EvidenceProbe { edit: None };
+    let mut probe = EvidenceProbe {
+        edit: None,
+        fail: false,
+    };
     let evidence = room
         .command(&deployment.authority(), &mut probe)
         .await
