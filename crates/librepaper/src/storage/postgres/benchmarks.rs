@@ -1276,6 +1276,613 @@ async fn compaction_cost_release_benchmark() {
     println!("{output}");
 }
 
+/// One seeded document for `concurrent_compaction_release_benchmark`: a
+/// 1 MiB upload plus `edits` accumulated edits, flushed the same way
+/// `compaction_cost_release_benchmark`'s seeding loop does. Returns the
+/// sequencer and the seed length, or -- if the opening upload itself was
+/// refused, the same boundary the benchmark beside this one records rather
+/// than panics on -- the refusal as JSON.
+async fn seed_concurrent_document(
+    catalog: &Arc<PostgresCatalog>,
+    registry: &Arc<Registry>,
+    authority: &Authority,
+    slug: String,
+    seed_kib: usize,
+    edits: usize,
+    edits_per_row: usize,
+) -> Result<(uuid::Uuid, Arc<crate::log::Sequencer>, usize), Value> {
+    let owner = authority
+        .account_id
+        .expect("the benchmark owner is a registered account");
+    let document_id = document(catalog, owner, slug.clone()).await;
+    let sequencer = registry
+        .get(document_id, &slug)
+        .await
+        .expect("admit the document");
+
+    let doc = session::new_doc();
+    doc.set_peer_id(1).expect("peer id");
+    let line: String = (0..1024)
+        .map(|index| format!("line {index} of {slug}: the quick brown fox\n"))
+        .collect();
+    let seed_bytes = seed_kib * 1024;
+    let body = line.repeat(seed_bytes / line.len().max(1) + 1);
+    let body = &body[..body
+        .char_indices()
+        .map(|(at, _)| at)
+        .find(|at| *at >= seed_bytes)
+        .unwrap_or(body.len())];
+    session::put_text(&doc, "paper.md", body);
+    doc.commit();
+    let seed_len = body.encode_utf16().count();
+    let opening = session::encode_state(&doc);
+    let admitted = sequencer
+        .ingest(
+            0,
+            &authority.principal_key,
+            &authority.principal_key,
+            0,
+            opening.clone(),
+        )
+        .await;
+    if !matches!(admitted, crate::log::Ingested::Accepted) {
+        return Err(json!({
+            "slug": slug,
+            "seed_kib": seed_kib,
+            "seed_bytes_actual": seed_len,
+            "opening_update_bytes": opening.len(),
+            "seed_refused": format!("{admitted:?}"),
+            "max_update_bytes": crate::log::sequencer::MAX_UPDATE_BYTES,
+        }));
+    }
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .expect("seed row");
+
+    let mut vector = session::encode_vector(&doc);
+    let mut len = seed_len;
+    for edit in 0..edits {
+        let chunk = format!(" e{edit}");
+        assert!(
+            session::apply_edits_at(
+                &doc,
+                "paper.md",
+                &[wasm_helpers::text::Edit {
+                    at: len,
+                    delete: 0,
+                    insert: chunk.clone(),
+                }],
+            ),
+            "seeding edit {edit} for {slug} was rejected"
+        );
+        len += chunk.encode_utf16().count();
+        doc.commit();
+        let update = session::encode_diff(&doc, &vector).expect("seeding diff");
+        vector = session::encode_vector(&doc);
+        assert!(
+            matches!(
+                sequencer
+                    .ingest(
+                        0,
+                        &authority.principal_key,
+                        &authority.principal_key,
+                        edit as i64 + 1,
+                        update
+                    )
+                    .await,
+                crate::log::Ingested::Accepted
+            ),
+            "seeding edit {edit} for {slug} was not accepted"
+        );
+        if (edit + 1) % edits_per_row == 0 {
+            sequencer
+                .flush(FlushReason::MaxAge)
+                .await
+                .expect("seeding row");
+        }
+    }
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .expect("last seeding row");
+    Ok((document_id, sequencer, seed_len))
+}
+
+/// Runs the same call sequence `worker::compact` uses -- and
+/// `compaction_cost_release_benchmark` measures alone -- against one already
+/// seeded document, meant to be awaited concurrently with others. A cold
+/// build that fails is `Err` with the reason rather than a panic, the same
+/// rule the sibling benchmark follows, so one document in a bad shape does
+/// not take the rest of the cohort down with it.
+async fn compact_seeded_document(
+    document_id: uuid::Uuid,
+    sequencer: Arc<crate::log::Sequencer>,
+    catalog: Arc<PostgresCatalog>,
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
+    snapshot_attempts_max: usize,
+    keystroke: Duration,
+) -> Result<Value, Value> {
+    // Step 1.
+    let at = Instant::now();
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .expect("the barrier flush");
+    let flush_us = micros(at);
+
+    // Steps 2 and 3, measured apart exactly as the sibling benchmark does.
+    sequencer.drop_cache().await;
+    let at = Instant::now();
+    let rebuilt = sequencer.with_head(|_| ()).await;
+    let reconstruction_us = micros(at);
+    if let Err(error) = rebuilt {
+        return Err(json!({
+            "reconstruction_us": reconstruction_us,
+            "reconstruction_failed": error.to_string(),
+            "build_deadline_seconds": crate::log::sequencer::BUILD_DEADLINE.as_secs(),
+        }));
+    }
+
+    let mut attempts = 0_usize;
+    let (export_us, snapshot) = loop {
+        attempts += 1;
+        sequencer
+            .flush(FlushReason::Barrier)
+            .await
+            .expect("a flush before the snapshot");
+        let at = Instant::now();
+        let taken = sequencer
+            .snapshot_at_log_vector()
+            .await
+            .expect("a snapshot attempt");
+        if let Some(taken) = taken {
+            break (micros(at), taken);
+        }
+        if attempts >= snapshot_attempts_max {
+            return Err(json!({
+                "flush_us": flush_us,
+                "reconstruction_us": reconstruction_us,
+                "snapshot_attempts": attempts,
+                "snapshot_never_reached_log_vector": true,
+            }));
+        }
+        tokio::time::sleep(keystroke / 4).await;
+    };
+    let (through, snapshot, log_vector, changes) = snapshot;
+
+    // Step 4.
+    let at = Instant::now();
+    crate::storage::worker::prove_coverage(&snapshot, &log_vector, changes)
+        .expect("the snapshot covers the log");
+    let verification_us = micros(at);
+
+    // Step 5a, in the same two halves the sibling benchmark uses.
+    let at = Instant::now();
+    let compressed = zstd::stream::encode_all(std::io::Cursor::new(&snapshot[..]), 3)
+        .expect("compress the snapshot");
+    let compression_us = micros(at);
+    let storage = crate::storage::collaboration::CollaborationStorage::new(catalog.clone(), blobs);
+    let at = Instant::now();
+    let written = storage
+        .write_base(document_id, &snapshot)
+        .await
+        .expect("write the base");
+    let write_base_us = micros(at);
+    let base_bytes = written.bytes;
+
+    // Step 5b.
+    let at = Instant::now();
+    let mut gate = sequencer.compaction_gate().await;
+    let activated = catalog
+        .activate_log_base(
+            document_id,
+            through,
+            &log_vector,
+            written,
+            crate::storage::collaboration::superseded_base_deadline(),
+        )
+        .await
+        .expect("activate the base");
+    let base = activated.expect("a base was activated");
+    let head = catalog.log_head(document_id).await.expect("the head");
+    gate.note_compacted(
+        through,
+        &base.vector,
+        base.snapshot_bytes.max(0) as u64,
+        head.uncompacted_bytes.max(0) as u64,
+        head.uncompacted_count.max(0),
+    );
+    drop(gate);
+    let activation_us = micros(at);
+
+    Ok(json!({
+        "changes": changes,
+        "snapshot_bytes": snapshot.len(),
+        "base_bytes": base_bytes,
+        "compressed_bytes": compressed.len(),
+        "snapshot_attempts": attempts,
+        "stages_us": {
+            "flush": flush_us,
+            "reconstruction": reconstruction_us,
+            "export": export_us,
+            "verification": verification_us,
+            "compression": compression_us,
+            "upload": write_base_us.saturating_sub(compression_us),
+            "write_base_total": write_base_us,
+            "activation": activation_us,
+        },
+    }))
+}
+
+/// SPEC-server-is-a-log Priority 3: what compaction costs when several
+/// documents compact at once, not one on an otherwise idle process.
+///
+/// `compaction_cost_release_benchmark` deliberately runs one document alone
+/// so a stage's cost can be attributed to it; that is the right way to
+/// attribute a stage and the wrong way to size a deployment, which is why
+/// its numbers say nothing about what happens when a busy server has to
+/// compact several documents at the same moment. §9.3's admission semaphore
+/// (`log::admission`) bounds concurrent heavy work -- a build or an export --
+/// to `min(cores, 4)`; this fires N compactions at once, N taken from
+/// `LIBREPAPER_CONCURRENT_COMPACTION_N` (default "2,4,8"), so an N above the
+/// bound shows queueing rather than contention, and the run records how many
+/// cores it saw so a reader can tell the two apart.
+///
+/// Each of the N documents is a 1 MiB seed plus 2000 accumulated edits, the
+/// same shape `compaction_cost_release_benchmark`'s "typed" row uses. The
+/// call sequence for each is the one `worker::compact` uses and the sibling
+/// benchmark measures alone: flush, `snapshot_at_log_vector`,
+/// `worker::prove_coverage`, `write_base`, then `activate_log_base` +
+/// `log_head` + `compaction_gate`. A cold build that fails, or a seed
+/// refused at ingest, is recorded with its reason and stepped over rather
+/// than panicked on.
+///
+/// Four things are reported per N: per-stage latency distributions across
+/// the N compactions (not just a mean -- the whole point of the semaphore is
+/// that some of the N wait for others), the wall time for the whole cohort
+/// against N times the single-document cost, the peak process RSS across the
+/// concurrent window (sampled every 5 ms, against a baseline taken just
+/// before), and ingest latency for an editor typing into an UNRELATED
+/// document throughout, split into a baseline window before the cohort
+/// starts and the window while it runs -- this last one is the number that
+/// says whether a busy compacting server still feels responsive to someone
+/// who is not being compacted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 32)]
+#[ignore = "release acceptance benchmark; destroys every row in its configured database"]
+async fn concurrent_compaction_release_benchmark() {
+    const EDITS_PER_ROW: usize = 250;
+    const SEED_KIB: usize = 1024;
+    const COHORT_EDITS: usize = 2000;
+    const BASELINE: Duration = Duration::from_secs(3);
+    const KEYSTROKE: Duration = Duration::from_millis(120);
+    const RSS_SAMPLE: Duration = Duration::from_millis(5);
+    const SNAPSHOT_ATTEMPTS: usize = 80;
+
+    let Ok(url) = std::env::var("LIBREPAPER_BENCHMARK_POSTGRES_URL") else {
+        return;
+    };
+    let cohort_sizes: Vec<usize> = std::env::var("LIBREPAPER_CONCURRENT_COMPACTION_N")
+        .unwrap_or_else(|_| "2,4,8".into())
+        .split(',')
+        .filter_map(|value| value.trim().parse().ok())
+        .collect();
+    assert!(!cohort_sizes.is_empty(), "no cohort sizes to measure");
+
+    let mut options = PostgresOptions::new(url);
+    options.max_connections = 64;
+    options.policy = StoragePolicy {
+        owner_bytes: i64::MAX / 4,
+        deployment_bytes: i64::MAX / 4,
+        asset_uploads_per_hour: 100_000,
+        versions_per_hour: 100_000,
+        max_uncompacted_updates: 1_000_000,
+        max_uncompacted_bytes: i64::MAX / 4,
+    };
+    let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
+    catalog.migrate().await.expect("migrate");
+    sqlx::query("TRUNCATE accounts CASCADE")
+        .execute(catalog.pool())
+        .await
+        .expect("empty disposable benchmark database");
+    let owner = catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some("benchmark".into()),
+            provider_subject: Some("owner".into()),
+            handle: "benchmark".into(),
+            display_name: "Benchmark".into(),
+            email: None,
+        })
+        .await
+        .expect("owner");
+    let authority = Authority {
+        principal_key: owner.id.to_string(),
+        account_id: Some(owner.id),
+        link_hash: None,
+    };
+    let _writer = catalog.claim_writer().await.expect("writer lease");
+
+    let scratch = tempfile::tempdir().expect("scratch blob directory");
+    let blob_root = std::env::var("LIBREPAPER_BENCHMARK_BLOB_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| scratch.path().to_path_buf());
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+        Arc::new(crate::storage::blob::FsStore::new(blob_root.clone(), false));
+    let config = Arc::new(crate::config::Configuration {
+        log_quota_bytes: usize::MAX / 4,
+        memory_budget_bytes: u64::MAX / 4,
+        session: crate::config::SessionLimit {
+            updates_per_minute: 10_000_000,
+            ..crate::config::Configuration::default().session
+        },
+        ..crate::config::Configuration::default()
+    });
+    let registry = Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        "benchmark".to_string(),
+    );
+
+    let cores_available = std::thread::available_parallelism()
+        .map_or(1, |cores| cores.get());
+    let admission_bound = crate::log::admission::concurrency();
+
+    let mut cohorts = Vec::new();
+    for n in cohort_sizes.iter().copied() {
+        // The N documents to compact together, seeded ahead of the timed
+        // window so seeding cost never leaks into the numbers below.
+        let mut seeded = Vec::new();
+        let mut seed_refusals = Vec::new();
+        for index in 0..n {
+            let slug = format!("concurrent-{n}-{index}");
+            match seed_concurrent_document(
+                &catalog,
+                &registry,
+                &authority,
+                slug,
+                SEED_KIB,
+                COHORT_EDITS,
+                EDITS_PER_ROW,
+            )
+            .await
+            {
+                Ok(document) => seeded.push(document),
+                Err(refusal) => seed_refusals.push(refusal),
+            }
+        }
+
+        // The unrelated document: a fresh 1 MiB seed, never touched by
+        // compaction, that one editor types into for the whole window. This
+        // is what answers whether the server stays responsive to someone who
+        // is not being compacted while it is busy compacting everyone else.
+        let unrelated_slug = format!("concurrent-{n}-unrelated");
+        let (_unrelated_id, unrelated_sequencer, unrelated_seed_len) =
+            seed_concurrent_document(&catalog, &registry, &authority, unrelated_slug, SEED_KIB, 0, EDITS_PER_ROW)
+                .await
+                .expect("the unrelated document's opening upload");
+        let unrelated_opening = unrelated_sequencer
+            .with_head(session::encode_state)
+            .await
+            .expect("the unrelated document's opening state");
+
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let editor = tokio::spawn({
+            let sequencer = unrelated_sequencer.clone();
+            let principal = authority.principal_key.clone();
+            let stop = stop.clone();
+            async move {
+                let doc = session::new_doc();
+                doc.set_peer_id(9).expect("peer id");
+                doc.import(&unrelated_opening)
+                    .expect("the unrelated document's opening state");
+                let mut vector = session::encode_vector(&doc);
+                let mut len = unrelated_seed_len;
+                let mut sent = 0_i64;
+                let mut samples: Vec<(Instant, u64)> = Vec::new();
+                let mut terminal: Option<String> = None;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let chunk = format!(" u{sent}");
+                    if !session::apply_edits_at(
+                        &doc,
+                        "paper.md",
+                        &[wasm_helpers::text::Edit {
+                            at: len,
+                            delete: 0,
+                            insert: chunk.clone(),
+                        }],
+                    ) {
+                        terminal = Some(format!("apply_edits_at rejected an append at {len}"));
+                        break;
+                    }
+                    len += chunk.encode_utf16().count();
+                    doc.commit();
+                    let Ok(update) = session::encode_diff(&doc, &vector) else {
+                        terminal = Some("encode_diff failed".into());
+                        break;
+                    };
+                    if update.is_empty() {
+                        tokio::time::sleep(KEYSTROKE).await;
+                        continue;
+                    }
+                    sent += 1;
+                    let at = Instant::now();
+                    let outcome = sequencer
+                        .ingest(9, &principal, &principal, sent, update)
+                        .await;
+                    samples.push((at, micros(at)));
+                    match outcome {
+                        crate::log::Ingested::Accepted => vector = session::encode_vector(&doc),
+                        crate::log::Ingested::Retryable(_) => {}
+                        other => {
+                            terminal = Some(format!("{other:?}"));
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(KEYSTROKE).await;
+                }
+                (samples, terminal)
+            }
+        });
+
+        tokio::time::sleep(BASELINE).await;
+
+        let peak = Arc::new(std::sync::atomic::AtomicU64::new(
+            resident_bytes().unwrap_or(0),
+        ));
+        let sampler = tokio::spawn({
+            let peak = peak.clone();
+            async move {
+                let mut ticker = tokio::time::interval(RSS_SAMPLE);
+                loop {
+                    ticker.tick().await;
+                    if let Some(rss) = resident_bytes() {
+                        peak.fetch_max(rss, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+        let rss_before = resident_bytes();
+        let cohort_started = Instant::now();
+
+        let results = join_all(seeded.iter().cloned().map(
+            |(document_id, sequencer, _seed_len)| {
+                let catalog = catalog.clone();
+                let blobs = blobs.clone();
+                async move {
+                    compact_seeded_document(
+                        document_id,
+                        sequencer,
+                        catalog,
+                        blobs,
+                        SNAPSHOT_ATTEMPTS,
+                        KEYSTROKE,
+                    )
+                    .await
+                }
+            },
+        ))
+        .await;
+        let wall_us = micros(cohort_started);
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        sampler.abort();
+        let (samples, editor_terminal) = editor.await.expect("the unrelated editor");
+        let rss_after = resident_bytes();
+        let rss_peak = peak.load(std::sync::atomic::Ordering::Relaxed);
+        let (baseline, during): (Vec<_>, Vec<_>) = samples
+            .into_iter()
+            .partition(|(at, _)| *at < cohort_started);
+        let baseline: Vec<u64> = baseline.into_iter().map(|(_, took)| took).collect();
+        let during: Vec<u64> = during.into_iter().map(|(_, took)| took).collect();
+        // A cohort with no baseline samples measured nothing: the editor is
+        // the whole point of this run, not decoration on it.
+        assert!(
+            !baseline.is_empty(),
+            "n={n}: the unrelated editor produced no baseline samples in {BASELINE:?} \
+             (terminal reason: {editor_terminal:?})",
+        );
+
+        let mut activated = 0_usize;
+        let mut failed: Vec<Value> = Vec::new();
+        let mut stage_samples: std::collections::BTreeMap<&'static str, Vec<u64>> =
+            std::collections::BTreeMap::new();
+        for stage in [
+            "flush",
+            "reconstruction",
+            "export",
+            "verification",
+            "compression",
+            "upload",
+            "write_base_total",
+            "activation",
+        ] {
+            stage_samples.insert(stage, Vec::new());
+        }
+        for result in &results {
+            match result {
+                Ok(value) => {
+                    activated += 1;
+                    let stages = &value["stages_us"];
+                    for (stage, samples) in stage_samples.iter_mut() {
+                        if let Some(us) = stages[*stage].as_u64() {
+                            samples.push(us);
+                        }
+                    }
+                }
+                Err(reason) => failed.push(reason.clone()),
+            }
+        }
+        // This is the harness's own promise, restated for a cohort rather
+        // than a single document: every N must reach activation or be
+        // recorded with the reason it did not. Silence here would be a
+        // report full of plausible numbers describing a run that never
+        // happened.
+        assert_eq!(
+            activated + failed.len() + seed_refusals.len(),
+            n,
+            "n={n}: {} activated, {} failed, {} seed refusals do not add up to n; \
+             some document was neither compacted nor accounted for",
+            activated,
+            failed.len(),
+            seed_refusals.len(),
+        );
+
+        cohorts.push(json!({
+            "n": n,
+            "documents_seeded": seeded.len(),
+            "seed_refusals": seed_refusals,
+            "activated": activated,
+            "failed": failed,
+            "wall_us": wall_us,
+            "stages_us": stage_samples.iter().map(|(stage, samples)| {
+                (stage.to_string(), percentiles(samples.clone()))
+            }).collect::<serde_json::Map<_, _>>(),
+            "memory": {
+                "rss_before_bytes": rss_before,
+                "rss_peak_bytes": rss_peak,
+                "rss_after_bytes": rss_after,
+                "peak_over_before_bytes": rss_before.map(|before| rss_peak.saturating_sub(before)),
+                "sample_interval_ms": RSS_SAMPLE.as_millis() as u64,
+            },
+            "unrelated_editor": {
+                "terminal_reason": editor_terminal,
+                "baseline_latency": percentiles(baseline),
+                "during_latency": percentiles(during),
+            },
+        }));
+
+        // Retired before the next cohort so one N's resident documents do
+        // not sit in the budget while the next N is measured.
+        for (_, sequencer, _) in &seeded {
+            sequencer.drop_cache().await;
+        }
+        unrelated_sequencer.drop_cache().await;
+    }
+
+    let report = json!({
+        "profile": "release",
+        "measurement": "concurrent_compaction",
+        "postgres_version": sqlx::query_scalar::<_, String>("SHOW server_version")
+            .fetch_one(catalog.pool()).await.expect("version"),
+        "blob_store": format!("filesystem:{}", blob_root.display()),
+        "cores_available": cores_available,
+        "admission_bound": admission_bound,
+        "note": "admission_bound is min(cores_available, 4) per log::admission; \
+                 an n above it should show queueing rather than contention",
+        "cohort_sizes": cohort_sizes,
+        "seed_kib": SEED_KIB,
+        "cohort_edits": COHORT_EDITS,
+        "cohorts": cohorts,
+    });
+    let output = serde_json::to_string_pretty(&report).expect("report JSON");
+    if let Ok(path) = std::env::var("LIBREPAPER_CONCURRENT_COMPACTION_BENCHMARK_OUTPUT") {
+        std::fs::write(path, &output).expect("write benchmark report");
+    }
+    println!("{output}");
+}
+
 /// Where the 3.7 s in `compaction_cost_release_benchmark` actually goes.
 ///
 /// That benchmark says reconstruction of a 1 MiB document costs seconds and

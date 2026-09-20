@@ -53,6 +53,44 @@ use tokio::sync::Notify;
 /// `measured_expansion_factor`, which averages the two shapes.
 pub const DEFAULT_EXPANSION: u64 = 6;
 
+/// What a cold build costs in memory while it is running, as a multiple of
+/// log bytes, reserved for the duration of the import and then released.
+///
+/// `DEFAULT_EXPANSION` is what a decoded document costs once it sits in the
+/// cache. It is not what producing that document costs while the import is
+/// in flight: `Sequencer::build` (sequencer.rs) imports row by row into a
+/// fresh `LoroDoc`, and that process peaks before it settles there.
+///
+/// Measured 2026-09-20, release build, as peak RSS during a cold build
+/// minus RSS before it began. That is the WHOLE cost of the build,
+/// residency included, not the part standing above residency: the process
+/// does not offer a way to separate the two, because the document being
+/// built is what most of the peak is. Reserving this ON TOP OF the resident
+/// estimate therefore over-reserves, by roughly the resident figure itself.
+/// That is the direction to be wrong in, and it is only true while the
+/// build runs.
+///
+/// | log size | measured peak, above pre-build RSS |
+/// |---|---|
+/// | 1 MiB | 3.2 MB |
+/// | 2 MiB | 16 MB |
+/// | 3.5 MiB | 27 MB |
+///
+/// The 1 MiB figure is the noisy one (small absolute numbers move a lot
+/// relatively); the two larger ones agree at roughly 7 to 8 times log
+/// bytes. Eight is kept, for the same reason `DEFAULT_EXPANSION` rounds up
+/// rather than down: reserving too much only makes a build wait or answer
+/// `busy`, reserving too little runs the process out of memory during
+/// exactly the operation that cannot be interrupted (§9.3).
+///
+/// `Sequencer::build` reserves this on top of the resident estimate for the
+/// duration of the import only, as a second reservation released the
+/// moment the entry is cached -- the resident estimate is what the cache
+/// keeps paying for afterwards, and the two must not be summed into one
+/// long-lived reservation or every cached document would overpay for a cost
+/// it no longer carries.
+pub const BUILD_TRANSIENT_EXPANSION: u64 = 8;
+
 /// What one document is expected to cost resident, from what its log weighs.
 pub fn estimate(encoded_bytes: u64, expansion: u64) -> u64 {
     // A floor, because a document of three keystrokes still costs a Loro

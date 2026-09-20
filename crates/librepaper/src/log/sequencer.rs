@@ -45,6 +45,26 @@ use crate::storage::postgres::{self, Authority, FlushRow, PostgresCatalog};
 
 /// One update as it arrives. 4 MiB is a large paste of a whole file, and
 /// several times any keystroke.
+///
+/// This is one of three size bounds that have to agree, because each is
+/// stated in a different currency and nothing forces a change to one to be
+/// reflected in the others (SPEC-server-is-a-log Priority 3, "make the
+/// three size limits agree"):
+///
+/// - `MAX_UPDATE_BYTES` here bounds one update on the wire.
+/// - `budget::DEFAULT_EXPANSION` bounds what a decoded document costs
+///   RESIDENT once cached, as a multiple of its log bytes.
+///   `budget::BUILD_TRANSIENT_EXPANSION` bounds the extra a cold build
+///   costs while it is PRODUCING that resident document -- a different
+///   number because a build's peak and a cache's steady state are
+///   different things, not two measurements of one thing.
+/// - `storage::collaboration::MAX_EXPANDED_BASE_BYTES` (128 MiB) bounds the
+///   compacted base a log is allowed to grow to, which is what sets the
+///   worst case for both of the above: a full base at that ceiling, times
+///   `DEFAULT_EXPANSION` plus `BUILD_TRANSIENT_EXPANSION`, is the largest
+///   single reservation the budget will ever be asked to grant, and
+///   `admission::concurrency()` (`min(cores, 4)`) is what bounds how many
+///   of those can be asked for at once.
 pub const MAX_UPDATE_BYTES: usize = 4 * 1024 * 1024;
 
 /// A buffer non-empty for this long flushes even while somebody is still
@@ -1803,6 +1823,22 @@ impl Sequencer {
         let reservation = self
             .budget
             .reserve(estimate, RESERVE_PATIENCE)
+            .await
+            .map_err(|Busy| SequencerError::Busy)?;
+        // A cold build costs more than the resident figure while it is
+        // actually running (`BUILD_TRANSIENT_EXPANSION` in budget.rs
+        // documents the measurement). This second reservation covers that
+        // peak; it is a local and is never moved into `Cache`, so it drops
+        // -- and gives its bytes back -- the moment `build` returns, which
+        // is before the caller puts the entry in `inner.cache`. What
+        // outlives `build` is the resident-only reservation above.
+        let transient_estimate = super::budget::estimate(
+            inner.log_bytes(),
+            super::budget::BUILD_TRANSIENT_EXPANSION,
+        );
+        let _transient_reservation = self
+            .budget
+            .reserve(transient_estimate, RESERVE_PATIENCE)
             .await
             .map_err(|Busy| SequencerError::Busy)?;
         let base = if inner.has_base {

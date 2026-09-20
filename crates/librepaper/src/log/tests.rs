@@ -1762,3 +1762,87 @@ async fn a_reader_on_a_cold_document_is_told_the_source_changed_without_a_digest
         "notifying a reader must not warm the document"
     );
 }
+
+// -- SPEC-server-is-a-log Priority 3: the build-peak reservation ---------
+
+/// A sequencer admitted with no rows and no base actually to import (so
+/// `build` finishes at once), but told -- through `from_parts`' `base_bytes`
+/// -- that its log weighs `log_bytes`, so the two reservations `build` takes
+/// are sized as they would be for a real log of that weight.
+fn sequencer_with_logged_weight(log_bytes: u64, budget: Arc<Budget>) -> Sequencer {
+    Sequencer::from_parts(
+        Uuid::new_v4(),
+        "test-doc".to_string(),
+        Arc::new(FakeCatalog::empty()),
+        blobs(),
+        Arc::new(Configuration::default()),
+        budget,
+        "deployment.peer.test".to_string(),
+        1,
+        VersionVector::default(),
+        log_bytes,
+        0,
+        0,
+        VersionVector::default(),
+        // `has_base: false` keeps `build` from calling `read_base`, which
+        // this fake has nothing configured for; `log_bytes` above is what
+        // the estimate is computed from regardless of whether there is
+        // really a base to read.
+        false,
+        Arc::new(std::sync::OnceLock::new()),
+    )
+}
+
+/// Without the build-peak reservation, a budget with room for the resident
+/// estimate and a little to spare was enough to build. With it, `build`
+/// also needs `BUILD_TRANSIENT_EXPANSION` more for the duration of the
+/// import, and a budget that has not got that much free answers `busy`
+/// instead of building -- which is the point: the transient cost of
+/// producing the document is now accounted for, not just the cost of
+/// holding it afterward.
+#[tokio::test]
+async fn a_build_needs_more_than_the_resident_estimate_while_it_runs() {
+    let log_bytes = 1_000_000u64;
+    let resident = crate::log::budget::estimate(log_bytes, DEFAULT_EXPANSION);
+    // Room for the resident reservation plus a small margin, but nowhere
+    // near enough for the additional transient reservation a build now
+    // takes on top of it.
+    let budget = Budget::new(resident + 8, DEFAULT_EXPANSION);
+    let sequencer = sequencer_with_logged_weight(log_bytes, budget);
+
+    let error = sequencer
+        .projection()
+        .await
+        .expect_err("the budget has room for the resident estimate but not the build's peak");
+    assert!(
+        matches!(error, SequencerError::Busy),
+        "expected Busy, got {error:?}"
+    );
+}
+
+/// With enough room for the whole peak, the build succeeds, and once it has
+/// finished the transient reservation is gone: what the budget holds
+/// afterward is exactly the resident estimate, not the peak the build ran
+/// at while it was producing it.
+#[tokio::test]
+async fn the_transient_reservation_is_released_once_the_entry_is_cached() {
+    let log_bytes = 1_000_000u64;
+    let resident = crate::log::budget::estimate(log_bytes, DEFAULT_EXPANSION);
+    let transient = crate::log::budget::estimate(
+        log_bytes,
+        crate::log::budget::BUILD_TRANSIENT_EXPANSION,
+    );
+    let budget = Budget::new(resident + transient, DEFAULT_EXPANSION);
+    let sequencer = sequencer_with_logged_weight(log_bytes, budget.clone());
+
+    sequencer
+        .projection()
+        .await
+        .expect("room for the full build peak");
+
+    assert_eq!(
+        budget.used(),
+        resident,
+        "only the resident reservation should still be held once the cache exists"
+    );
+}
