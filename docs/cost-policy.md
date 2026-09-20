@@ -14,17 +14,32 @@ The initial application limits are:
 | Retained assets per document | 32 MiB |
 | Retained storage per owner | 100 MiB |
 | Deployment storage threshold | 5 GiB |
-| Retained versions per document | 1,000 |
+| One document's log (compaction base plus rows since) | 64 MiB |
+| Process-wide memory budget for decoded documents | 512 MiB |
 | Asset uploads per owner per hour | 30 |
-| Version creations per owner per hour | 30 |
+| Label creations per owner per hour | 300 |
+| Label creations per deployment per hour | 10,000 |
 | PostgreSQL connections per process | 20 |
-| Jobs claimed per worker pass | 8 |
+| One update | 4 MiB |
 
-Retained storage includes source-version archives, all completed document
-assets, and bundle files. Dereferencing an asset does not restore quota;
-the asset remains until its document is deleted. Reusing identical bytes in
-later versions reuses the existing document asset and does not issue another
-sequential object-store PUT.
+Retained storage includes labels' source archives and all completed document
+assets. An archive is produced on request, not written for every label, so it
+is not counted until something has actually asked for one. Dereferencing an
+asset does not restore quota; the asset remains until its document is
+deleted. Reusing identical bytes later reuses the existing document asset and
+does not issue another sequential object-store PUT.
+
+There is no jobs-claimed-per-pass figure any more. Compaction, archiving and
+deletion run on an in-process bounded queue, not a polled table, so nothing
+is claimed in a pass; see [SPEC-server-is-a-log.md](../SPEC-server-is-a-log.md)
+§8.6. The two numbers that actually bound server-side cost per document are
+the log quota above, which is what limits how long a cache rebuild can
+occupy a thread, and the memory budget, which is shared by every resident
+document's cache entries, in-flight builds and projection buffers on the
+process. A document that exceeds either becomes unreadable until an editor
+exports, trims and re-imports it, or an operator raises the limit; ingest and
+typing continue while it is unreadable. See
+[self-managed hosting](hosting.md#resource-limits).
 
 LibrePaper checks coarse owner and deployment thresholds before blob writes and
 again in the PostgreSQL transaction that commits metadata. Concurrent writers

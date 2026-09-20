@@ -1,18 +1,23 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+//! Proposals: a branch, and the server-owned record of what was decided
+//! about it.
+//!
+//! Every write here takes a transaction the caller owns rather than opening
+//! one. A proposal is a semantic command (SPEC-server-is-a-log §7) -- what it
+//! means depends on the source it forked from and on the source accepting it
+//! produces -- so it is assembled by the sequencer, and its rows go in the
+//! same transaction as the log row that made the state it was decided
+//! against durable. A method here that opened its own transaction could not
+//! be part of that.
+//!
+//! Retries are handled by the two mechanisms of §7.2, not by a receipt
+//! table: a create carries a client-generated UUID as primary key and is
+//! inserted with `ON CONFLICT DO NOTHING`, and a transition is conditional on
+//! the row's `version` and returns the current row on a mismatch.
+
 use sqlx::{FromRow, Row};
 use uuid::Uuid;
 
-use super::{Authority, Error, PostgresCatalog, Result, SemanticReceipt};
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct ProposalMutationResult {
-    pub proposal_id: Uuid,
-    #[serde(default, skip_serializing)]
-    pub replayed: bool,
-    pub commit_sequence: String,
-    pub source_revision: String,
-}
+use super::{Error, PostgresCatalog, Result};
 
 /// A proposal as it is opened. These arrive together and describe one thing,
 /// so they travel as one rather than as a row of positional arguments where
@@ -34,13 +39,16 @@ pub struct StoredProposal {
     pub author: String,
     /// The peer that wrote the branch. Loro's PeerID is u64; Postgres has no
     /// unsigned so the bit pattern is stored as bigint and interpreted where
-    /// needed without conversion. This is what lets the room tell a proposal's
-    /// operations from everyone else's without decoding the blob.
+    /// needed without conversion. This is what lets the sequencer tell a
+    /// proposal's operations from everyone else's without decoding the blob.
     pub author_peer: i64,
     pub base_frontiers: Vec<u8>,
     pub tip_frontiers: Vec<u8>,
     pub branch_bytes: Vec<u8>,
     pub status: String,
+    /// Bumped by every transition. A decision made against a version
+    /// somebody else has already moved is refused rather than applied.
+    pub version: i64,
 }
 
 /// A hunk decision: one row per (proposal_id, hunk_index).
@@ -52,18 +60,18 @@ pub struct StoredDecision {
     pub note: Option<String>,
 }
 
+const SELECT: &str = "SELECT id,author,author_peer,base_frontiers,tip_frontiers,branch_bytes,\
+     status,version FROM document_proposals";
+
 impl PostgresCatalog {
-    /// Opens a proposal on a document.
-    ///
-    /// The proposal records the author, peer id, and the frontier where the
-    /// branch forked (base), and starts with an empty branch. The branch is
-    /// added as updates arrive and it is reviewed.
+    /// Opens a proposal. The id is the client's, so a retry after a lost
+    /// response finds the row it already made rather than opening a second
+    /// one (§7.2).
     pub async fn open_proposal(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         new: NewProposal,
-        authority: &Authority,
-        receipt: &SemanticReceipt,
-    ) -> Result<ProposalMutationResult> {
+    ) -> Result<StoredProposal> {
         let NewProposal {
             document_id,
             id,
@@ -73,33 +81,9 @@ impl PostgresCatalog {
             tip_frontiers,
             branch_bytes,
         } = new;
-        let mut tx = self.begin_document_commit(document_id, authority).await?;
-        let digest = receipt.digest()?;
-        if let Some(row) = sqlx::query(
-            "SELECT command_digest,result FROM document_command_receipts \
-             WHERE document_id=$1 AND principal_key=$2 AND request_id=$3",
-        )
-        .bind(document_id)
-        .bind(&authority.principal_key)
-        .bind(receipt.request_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        {
-            let stored: Vec<u8> = row.get(0);
-            if stored != digest {
-                return Err(Error::Conflict(
-                    "request id was already used for different content".into(),
-                ));
-            }
-            let value: Value = row.get(1);
-            let mut result: ProposalMutationResult =
-                serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
-            result.replayed = true;
-            return Ok(result);
-        }
-        let inserted = sqlx::query(
+        sqlx::query(
             "INSERT INTO document_proposals(id,document_id,author,author_peer,base_frontiers,
-                                             tip_frontiers,branch_bytes,status)
+                                            tip_frontiers,branch_bytes,status)
              VALUES($1,$2,$3,$4,$5,$6,$7,'pending')
              ON CONFLICT(id) DO NOTHING",
         )
@@ -110,157 +94,218 @@ impl PostgresCatalog {
         .bind(base_frontiers)
         .bind(tip_frontiers)
         .bind(branch_bytes)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-        if inserted.rows_affected() == 0 {
-            return Err(Error::Conflict("proposal already exists".into()));
-        }
-        let row = sqlx::query(
-            "UPDATE documents SET commit_sequence=commit_sequence+1,updated_at=now() WHERE id=$1 \
-             RETURNING commit_sequence,source_revision",
-        )
-        .bind(document_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let result = ProposalMutationResult {
-            proposal_id: id,
-            replayed: false,
-            commit_sequence: row.get::<i64, _>(0).to_string(),
-            source_revision: row.get::<i64, _>(1).to_string(),
-        };
-        sqlx::query(
-            "INSERT INTO document_command_receipts(document_id,principal_key,request_id,command_digest,status, \
-             commit_sequence,source_revision,result) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
-        )
-        .bind(document_id)
-        .bind(&authority.principal_key)
-        .bind(receipt.request_id)
-        .bind(digest.as_slice())
-        .bind(&receipt.status)
-        .bind(result.commit_sequence.parse::<i64>().unwrap_or_default())
-        .bind(result.source_revision.parse::<i64>().unwrap_or_default())
-        .bind(serde_json::to_value(&result).map_err(|error| Error::Invalid(error.to_string()))?)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(result)
+        sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1 AND document_id=$2"))
+            .bind(id)
+            .bind(document_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(Error::NotFound)
     }
 
-    /// Updates a proposal's branch to a new tip.
-    ///
-    /// Called when the author types again and the proposal's frontier moves.
-    /// This bumps updated_at, which signals to reviewing clients that the
-    /// proposal has changed.
+    /// Moves a proposal's branch to a new tip, conditional on the version the
+    /// caller read. The author typing again is what calls this.
     pub async fn update_proposal_branch(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         id: Uuid,
+        expected_version: i64,
         tip_frontiers: Vec<u8>,
         branch_bytes: Vec<u8>,
-        authority: &Authority,
-        receipt: &SemanticReceipt,
-    ) -> Result<ProposalMutationResult> {
-        let mut tx = self.begin_document_commit(document_id, authority).await?;
-        let digest = receipt.digest()?;
-        if let Some(row) = sqlx::query(
-            "SELECT command_digest,result FROM document_command_receipts \
-             WHERE document_id=$1 AND principal_key=$2 AND request_id=$3",
-        )
-        .bind(document_id)
-        .bind(&authority.principal_key)
-        .bind(receipt.request_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        {
-            let stored: Vec<u8> = row.get(0);
-            if stored != digest {
-                return Err(Error::Conflict(
-                    "request id was already used for different content".into(),
-                ));
-            }
-            let mut result: ProposalMutationResult = serde_json::from_value(row.get(1))
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            result.replayed = true;
-            return Ok(result);
-        }
-        let updated = sqlx::query(
-            "UPDATE document_proposals SET tip_frontiers=$2,branch_bytes=$3,updated_at=now()
-             WHERE id=$1 AND document_id=$4 AND status='pending'",
+    ) -> Result<StoredProposal> {
+        sqlx::query(
+            "UPDATE document_proposals
+             SET tip_frontiers=$3,branch_bytes=$4,version=version+1,updated_at=now()
+             WHERE id=$1 AND document_id=$2 AND status='pending' AND version=$5",
         )
         .bind(id)
+        .bind(document_id)
         .bind(tip_frontiers)
         .bind(branch_bytes)
-        .bind(document_id)
-        .execute(&mut *tx)
+        .bind(expected_version)
+        .execute(&mut **tx)
         .await?;
-        if updated.rows_affected() != 1 {
-            return Err(Error::Conflict(
-                "proposal is not pending on this document".into(),
-            ));
-        }
-        let row = sqlx::query(
-            "UPDATE documents SET commit_sequence=commit_sequence+1,updated_at=now() WHERE id=$1 \
-             RETURNING commit_sequence,source_revision",
-        )
-        .bind(document_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let result = ProposalMutationResult {
-            proposal_id: id,
-            replayed: false,
-            commit_sequence: row.get::<i64, _>(0).to_string(),
-            source_revision: row.get::<i64, _>(1).to_string(),
-        };
-        sqlx::query(
-            "INSERT INTO document_command_receipts(document_id,principal_key,request_id,command_digest,status, \
-             commit_sequence,source_revision,result) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
-        )
-        .bind(document_id)
-        .bind(&authority.principal_key)
-        .bind(receipt.request_id)
-        .bind(digest.as_slice())
-        .bind(&receipt.status)
-        .bind(result.commit_sequence.parse::<i64>().unwrap_or_default())
-        .bind(result.source_revision.parse::<i64>().unwrap_or_default())
-        .bind(serde_json::to_value(&result).map_err(|error| Error::Invalid(error.to_string()))?)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(result)
+        // Whether or not the update applied, the caller is handed the row as
+        // it now stands and compares it with what it asked for (§7.2).
+        sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1 AND document_id=$2"))
+            .bind(id)
+            .bind(document_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(Error::NotFound)
     }
 
-    /// Returns the open proposals for a document.
+    /// Records one hunk decision and says whether it was the last.
     ///
-    /// "Open" means status='pending': the proposal has not been decided yet or
-    /// has not become unreachable by a reset.
-    pub async fn open_proposals(&self, document_id: Uuid) -> Result<Vec<StoredProposal>> {
-        sqlx::query_as::<_, StoredProposal>(
-            "SELECT id,author,author_peer,base_frontiers,tip_frontiers,branch_bytes,status
-             FROM document_proposals WHERE document_id=$1 AND status='pending'
-             ORDER BY created_at",
+    /// The tip it was decided against is recorded beside it, because a hunk
+    /// index means nothing except against one diff. A decision whose tip is
+    /// no longer the proposal's tip is refused here rather than applied to
+    /// text that has since changed underneath the reviewer.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn decide_proposal_hunk(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        proposal_id: Uuid,
+        hunk_index: i32,
+        accepted: bool,
+        decided_by: &str,
+        decided_against: &[u8],
+        note: Option<&str>,
+        total_hunks: i64,
+    ) -> Result<bool> {
+        if total_hunks <= 0 || hunk_index < 0 || i64::from(hunk_index) >= total_hunks {
+            return Err(Error::Invalid(
+                "proposal hunk is outside the reviewed diff".into(),
+            ));
+        }
+        let proposal = sqlx::query(
+            "SELECT document_id,tip_frontiers,status FROM document_proposals WHERE id=$1 FOR UPDATE",
         )
+        .bind(proposal_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        let proposal_document: Uuid = proposal.get(0);
+        let tip: Vec<u8> = proposal.get(1);
+        let status: String = proposal.get(2);
+        if proposal_document != document_id {
+            return Err(Error::Conflict("proposal is no longer open".into()));
+        }
+        if status != "pending" {
+            // §7.2: a transition is conditional on the row's state and
+            // "returns the current row on mismatch", not an error, so the
+            // caller can compare what it asked for against what happened.
+            // The decision that resolved a proposal is exactly the request
+            // a lost-response retry resends, so if this hunk was already
+            // decided exactly this way and that decision is what resolved
+            // the proposal, this is that retry: answer with the same
+            // "complete" it already reported instead of refusing a decision
+            // on a proposal that resolved because of this very decision.
+            // Anything else that no longer finds "pending" here -- a
+            // different verdict, an undecided hunk, or a proposal superseded
+            // by a restore -- is a real conflict.
+            let matches = status == "resolved"
+                && sqlx::query(
+                    "SELECT accepted,decided_against,decided_by FROM document_proposal_hunks \
+                     WHERE proposal_id=$1 AND hunk_index=$2",
+                )
+                .bind(proposal_id)
+                .bind(hunk_index)
+                .fetch_optional(&mut **tx)
+                .await?
+                .is_some_and(|row| {
+                    let row_accepted: bool = row.get(0);
+                    let row_against: Vec<u8> = row.get(1);
+                    let row_decided_by: String = row.get(2);
+                    row_accepted == accepted
+                        && row_against == decided_against
+                        && row_decided_by == decided_by
+                });
+            if matches {
+                return Ok(true);
+            }
+            return Err(Error::Conflict("proposal is no longer open".into()));
+        }
+        if tip != decided_against {
+            return Err(Error::Conflict("proposal tip changed".into()));
+        }
+        sqlx::query(
+            "INSERT INTO document_proposal_hunks(proposal_id,hunk_index,accepted,decided_by,
+                                                 decided_against,note)
+             VALUES($1,$2,$3,$4,$5,$6)
+             ON CONFLICT(proposal_id,hunk_index) DO UPDATE SET accepted=excluded.accepted,
+               decided_by=excluded.decided_by,decided_against=excluded.decided_against,
+               note=excluded.note,decided_at=now()",
+        )
+        .bind(proposal_id)
+        .bind(hunk_index)
+        .bind(accepted)
+        .bind(decided_by)
+        .bind(decided_against)
+        .bind(note)
+        .execute(&mut **tx)
+        .await?;
+        let decided: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM document_proposal_hunks WHERE proposal_id=$1")
+                .bind(proposal_id)
+                .fetch_one(&mut **tx)
+                .await?;
+        if decided > total_hunks {
+            return Err(Error::Conflict(
+                "proposal decision set is inconsistent".into(),
+            ));
+        }
+        Ok(decided == total_hunks)
+    }
+
+    /// Closes a proposal, in the same transaction as the source its accepted
+    /// hunks produced.
+    pub async fn resolve_proposal(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        proposal_id: Uuid,
+        resolved_by: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE document_proposals SET status='resolved',resolved_by=$2,resolved_at=now(),
+                    version=version+1,updated_at=now()
+             WHERE id=$1 AND status='pending'",
+        )
+        .bind(proposal_id)
+        .bind(resolved_by)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    /// Every still-open branch on this document is unreachable: a restore or
+    /// a whole-project replacement moved the text out from under all of them.
+    pub async fn supersede_proposals(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+    ) -> Result<u64> {
+        let changed = sqlx::query(
+            "WITH changed AS (
+               UPDATE document_proposals SET status='superseded',resolved_at=now(),
+                      version=version+1,updated_at=now()
+               WHERE document_id=$1 AND status='pending' RETURNING id
+             )
+             UPDATE annotations SET resolved_at=COALESCE(resolved_at,now()),updated_at=now()
+             WHERE proposal_id IN (SELECT id FROM changed)",
+        )
+        .bind(document_id)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        Ok(changed)
+    }
+
+    /// The open proposals for a document, which is what a joining client asks
+    /// for and what the sequencer broadcasts after every decision.
+    pub async fn open_proposals(&self, document_id: Uuid) -> Result<Vec<StoredProposal>> {
+        sqlx::query_as::<_, StoredProposal>(&format!(
+            "{SELECT} WHERE document_id=$1 AND status='pending' ORDER BY created_at"
+        ))
         .bind(document_id)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
     }
 
-    /// Returns a single proposal by id.
     pub async fn proposal(&self, id: Uuid) -> Result<Option<StoredProposal>> {
-        sqlx::query_as::<_, StoredProposal>(
-            "SELECT id,author,author_peer,base_frontiers,tip_frontiers,branch_bytes,status
-             FROM document_proposals WHERE id=$1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Error::from)
+        sqlx::query_as::<_, StoredProposal>(&format!("{SELECT} WHERE id=$1"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Error::from)
     }
 
-    /// Returns all decisions for a proposal.
-    ///
-    /// Decisions stream as the reviewer works through the hunks. This method
-    /// returns what has been decided so far, ordered by hunk index.
+    /// What has been decided so far, ordered by hunk index. Decisions stream
+    /// as the reviewer works through them.
     pub async fn decisions(&self, proposal_id: Uuid) -> Result<Vec<StoredDecision>> {
         sqlx::query_as::<_, StoredDecision>(
             "SELECT hunk_index,accepted,decided_by,note

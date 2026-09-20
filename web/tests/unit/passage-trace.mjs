@@ -13,24 +13,25 @@ const { createPassageTrace } = await loadRunes(
 );
 
 // A lost comment as the server records it: what it is about, in the file it
-// was about, at the checkpoint it was made on.
-const orphan = (id, checkpoint = "r1") => ({
+// was about, at the frontier it was made on (§8.2 dropped `checkpoint_id`).
+const orphan = (id, frontier = "r1") => ({
   id,
   orphaned: true,
   original_anchor: {
     kind: "source_text",
-    checkpoint_id: checkpoint,
+    source_sequence: 1,
+    frontier,
     target: { file_id: id, exact: id, prefix: "", suffix: "" },
   },
 });
 const tree = { texts: { "main.md": "current source" } };
 
-function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}) {
+function build({ current, passages = {}, loadLabels = async () => [] } = {}) {
   const calls = [];
   const trace = createPassageTrace({
     slug: "doc",
     now: () => current(),
-    loadCheckpoints,
+    loadLabels,
     passages: {
       tracedBy: realPassages.tracedBy,
       wentAt: async (_slug, traced) => { calls.push(`went:${traced.selector.exact}`); return { sha: "sha-1" }; },
@@ -46,7 +47,7 @@ function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}
 {
   let state = { source: 1, visible: "visible" };
   const { trace, calls } = build({ current: () => state });
-  await trace.trace({ comments: [orphan("a"), orphan("b")], tree, checkpoints: [{ sha: "sha-1" }] });
+  await trace.trace({ comments: [orphan("a"), orphan("b")], tree, labels: [{ sha: "sha-1" }] });
   assert.deepEqual(calls, ["went:a", "went:b"]);
   assert.deepEqual(Object.keys(trace.state.went), ["a", "b"]);
   assert.deepEqual(trace.state.replacements, { a: "what stands there now", b: "what stands there now" });
@@ -60,10 +61,10 @@ function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}
   await trace.trace({
     comments: [
       { id: "fine", orphaned: false },
-      { id: "whole", orphaned: true, original_anchor: { kind: "document", checkpoint_id: "r1" } },
+      { id: "whole", orphaned: true, original_anchor: { kind: "document", source_sequence: 1, frontier: "r1" } },
     ],
     tree,
-    checkpoints: [{ sha: "sha-1" }],
+    labels: [{ sha: "sha-1" }],
   });
   assert.deepEqual(calls, []);
 }
@@ -74,11 +75,11 @@ function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}
   let state = { source: 1, visible: "visible" };
   const { trace, calls } = build({ current: () => state });
   const comments = [orphan("a")];
-  await trace.trace({ comments, tree, checkpoints: [{ sha: "sha-1" }] });
-  await trace.trace({ comments, tree, checkpoints: [{ sha: "sha-1" }] });
+  await trace.trace({ comments, tree, labels: [{ sha: "sha-1" }] });
+  await trace.trace({ comments, tree, labels: [{ sha: "sha-1" }] });
   assert.deepEqual(calls, ["went:a"], "an identical walk is not repeated");
   state = { source: 2, visible: "visible" };
-  await trace.trace({ comments, tree, checkpoints: [{ sha: "sha-1" }] });
+  await trace.trace({ comments, tree, labels: [{ sha: "sha-1" }] });
   assert.deepEqual(calls, ["went:a", "went:a"], "a changed source is walked again");
 }
 
@@ -92,7 +93,7 @@ function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}
       wentAt: async () => { state = { source: 2, visible: "visible" }; return { sha: "sha-1" }; },
     },
   });
-  await trace.trace({ comments: [orphan("a")], tree, checkpoints: [{ sha: "sha-1" }] });
+  await trace.trace({ comments: [orphan("a")], tree, labels: [{ sha: "sha-1" }] });
   assert.deepEqual(trace.state.went, {}, "a walk overtaken by an edit writes nothing");
 }
 
@@ -111,8 +112,8 @@ function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}
       },
     },
   });
-  const slow = trace.trace({ comments: [orphan("a")], tree, checkpoints: [{ sha: "sha-1" }] });
-  await trace.trace({ comments: [orphan("b")], tree, checkpoints: [{ sha: "sha-1" }] });
+  const slow = trace.trace({ comments: [orphan("a")], tree, labels: [{ sha: "sha-1" }] });
+  await trace.trace({ comments: [orphan("b")], tree, labels: [{ sha: "sha-1" }] });
   release();
   await slow;
   assert.deepEqual(Object.keys(trace.state.went), ["b"], "the newer walk's answers stand");
@@ -124,14 +125,14 @@ function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}
   let loads = 0;
   const { trace } = build({
     current: () => state,
-    loadCheckpoints: async () => { loads++; return [{ sha: "sha-1" }]; },
+    loadLabels: async () => { loads++; return [{ sha: "sha-1" }]; },
   });
-  await trace.trace({ comments: [], tree, checkpoints: [] });
+  await trace.trace({ comments: [], tree, labels: [] });
   assert.equal(loads, 0, "nothing lost, nothing to read the manifest for");
-  await trace.trace({ comments: [orphan("a")], tree, checkpoints: [] });
+  await trace.trace({ comments: [orphan("a")], tree, labels: [] });
   assert.equal(loads, 1);
   state = { source: 2, visible: "visible" };
-  await trace.trace({ comments: [orphan("a")], tree, checkpoints: [{ sha: "sha-1" }] });
+  await trace.trace({ comments: [orphan("a")], tree, labels: [{ sha: "sha-1" }] });
   assert.equal(loads, 1, "a manifest already in hand is used");
 }
 
@@ -143,12 +144,12 @@ function build({ current, passages = {}, loadCheckpoints = async () => [] } = {}
   const { trace } = build({
     current: () => state,
     passages: {
-      wentAt: async () => { attempts++; throw new Error("that checkpoint is gone"); },
+      wentAt: async () => { attempts++; throw new Error("that label is gone"); },
     },
   });
   const comments = [orphan("a")];
-  await trace.trace({ comments, tree, checkpoints: [{ sha: "sha-1" }] });
-  await trace.trace({ comments, tree, checkpoints: [{ sha: "sha-1" }] });
+  await trace.trace({ comments, tree, labels: [{ sha: "sha-1" }] });
+  await trace.trace({ comments, tree, labels: [{ sha: "sha-1" }] });
   assert.equal(attempts, 2, "a failed walk is tried again rather than remembered");
   assert.deepEqual(trace.state.went, {});
 }

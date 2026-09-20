@@ -1,6 +1,6 @@
 // A proposed edit is a branch: a forked LoroDoc that collects ordinary edits,
 // reviewed as the diff between where it forked and where it has reached. This
-// replaces the deleted track-changes.js, and is NOT a port of it — read SPEC
+// replaces the deleted track-changes.js, and is NOT a port of it -- read SPEC
 // §1.2 for why that mechanism is gone.
 //
 // The browser holds one branch per author per session (§10). Typing into it

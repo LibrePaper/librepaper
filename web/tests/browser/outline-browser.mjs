@@ -94,10 +94,12 @@ export function openRoom(slug, {onMessage, onConnected}) {
     send(message) {
       window.roomSent.push(message);
       if (message.type === "doc-open") {
-        queueMicrotask(() => onMessage({type: "doc-state", update: encode(room.doc.export({ mode: "update" })), count: 2}));
+        queueMicrotask(() => onMessage({type: "doc-state", protocol: "librepaper.room.v2",
+          vector: encode(room.doc.oplogVersion().encode()), updates: [encode(room.doc.export({ mode: "update" }))]}));
       } else if (message.type === "doc-update") {
         room.doc.import(bytes(decode(message.update)));
-        queueMicrotask(() => onMessage({type: "doc-ack", seq: message.seq}));
+        // Sec 6.1: doc-ack carries upTo, not seq; coverage is gone.
+        queueMicrotask(() => onMessage({type: "doc-ack", upTo: message.seq}));
       }
       return {ok: true};
     },

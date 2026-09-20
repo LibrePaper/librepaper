@@ -25,9 +25,20 @@ impl Server {
         // Tear down the document's live chat channels only after deletion is
         // admitted; a refused delete must leave those conversations running.
         self.chat.purge(slug).await;
-        self.rooms
-            .purge_with_identity(slug, storage_id.as_deref())
-            .await;
+        // The room, if one is open, is dropped; the sequencer underneath it
+        // retires on the registry's own schedule after flushing (§4.3). What
+        // marks the document for deletion is `documents.status = 'deleting'`
+        // (already written by `begin_delete`), which is what the background
+        // worker's startup scan and wake both look for (§8.6) -- there is no
+        // job row to enqueue here.
+        self.rooms.close(slug).await;
+        if let Some(storage_id) = storage_id
+            .as_deref()
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        {
+            self.background
+                .ask(crate::storage::worker::Task::Delete(storage_id));
+        }
         self.store.remove(slug).await
     }
 
@@ -74,7 +85,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let room = match self.rooms.try_get(slug).await {
+        let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => {
                 return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
@@ -140,10 +151,10 @@ impl Server {
                 {
                     return write_json(403, &json!({"error": "comment access changed"}));
                 }
-                // A read link can open the rendered bundle but never
-                // mutate its annotation channel. Refuse at the HTTP boundary
-                // so a role failure is not misreported as a room validation
-                // error after work has already begun.
+                // A read link can read the projection but never mutate its
+                // annotation channel. Refuse at the HTTP boundary so a role
+                // failure is not misreported as a room validation error
+                // after work has already begun.
                 if !current_who.at_least(Role::Commenter) {
                     return write_json(403, &json!({"error": "commenter access is required"}));
                 }
@@ -151,7 +162,7 @@ impl Server {
                 // which produced their rendered page.
                 if incoming.kind() == "comment"
                     && !current_who.at_least(Role::Editor)
-                    && incoming.bundle_id().is_empty()
+                    && incoming.render_digest().is_empty()
                 {
                     return write_json(
                         409,
@@ -242,55 +253,55 @@ impl Server {
             policy_editor: true,
             unowned_publisher: false,
         };
-        // Publishing over a document is an edit into its live Room.  The Room
-        // holds the restore/bundle/version gates while merging the
-        // directory, so concurrent CRDT edits are preserved and the resulting
-        // version sees the same source generation it admitted.
-        if mine {
-            let room = match self.rooms.try_get(&key).await {
-                Ok(room) => room,
-                Err(error) => {
-                    return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-                }
-            };
-            let entry = match self
-                .edit_into_session(&room, &parsed, &who, &existing.clone().unwrap())
-                .await
-            {
-                Ok(entry) => entry,
-                Err(response) => return response,
-            };
-            // Share-link credentials are stored only as digests, so a
-            // revision cannot reproduce an existing URL. It also must not
-            // silently rotate the link merely to manufacture one.
-            return write_json(
-                201,
-                &json!({
-                    "slug": entry.slug, "title": entry.title, "sha": entry.sha,
-                    "created_at": entry.created_at, "updated_at": entry.updated_at,
-                    "url": format!("/docs/{}", entry.slug),
-                    "share_url": Value::Null,
-                }),
-            );
-        }
 
-        // What a directory publish named, or -- for one file, which is a
-        // directory of one file -- the name its format implies, which is
-        // what the migration gives a document published before there were
-        // directories.
-        let main = if parsed.main.is_empty() {
-            crate::room::main_path_for("", &parsed.source_format)
+        // What the main file is called, and the rest of the directory to
+        // publish alongside it. A directory upload names both; a one-file
+        // upload over a document that already has one keeps its existing
+        // path (unless the format changed) and carries the rest of the
+        // directory forward unchanged, because that upload never claimed to
+        // be the whole document -- only `put_directory_as_actor`'s
+        // whole-project replacement (§7) does, and it always takes the
+        // complete file set.
+        let (main, mut files) = if !parsed.main.is_empty() {
+            (parsed.main.clone(), parsed.files.clone())
+        } else if let Some(existing) = existing.as_ref().filter(|_| mine) {
+            let main = if !parsed.source_format.is_empty()
+                && crate::room::format_from_path(&existing.main) != parsed.source_format
+            {
+                crate::room::main_path_for("", &parsed.source_format)
+            } else {
+                existing.main.clone()
+            };
+            (main, Vec::new())
         } else {
-            parsed.main.clone()
+            (
+                crate::room::main_path_for("", &parsed.source_format),
+                Vec::new(),
+            )
         };
+        if parsed.main.is_empty() && mine {
+            match self.store.project_files(&key).await {
+                Ok(Some(carried)) => {
+                    for (path, bytes) in carried {
+                        if path != main {
+                            files.push((path, bytes));
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("warning: could not read {key} before republishing it: {error}");
+                }
+            }
+        }
+        let parsed = Upload { files, ..parsed };
+
         // Every file is checked against the size and encoding rules before
         // anything is written: a document is a directory, and it is either
         // published whole or refused whole, never left half-written because
         // the eleventh file was the one that broke a rule the first ten
         // happened to keep.
-        if let Err(response) =
-            self.preflight_directory(&parsed, &main, &crate::document::history::Tree::default())
-        {
+        if let Err(response) = self.preflight_directory(&parsed, &main) {
             return response;
         }
         let entry = match self
@@ -319,11 +330,38 @@ impl Server {
                 return write_json(500, &json!({"error": "could not store the document"}))
             }
         };
-        let share_url = match self.mint_read_link(&key, &who).await {
-            Ok(url) => Value::String(url),
-            Err(error) => {
-                eprintln!("warning: could not mint the read link of {key}: {error:?}");
-                Value::Null
+        // A title given on a republish renames the document; an empty one
+        // leaves it as it is. A brand-new document already has the title it
+        // was created with.
+        if mine && !parsed.title.is_empty() && parsed.title != entry.title {
+            if let Err(error) = self.store.rename(&key, &parsed.title).await {
+                return write_json(409, &json!({"error": error}));
+            }
+        }
+        let entry = if mine {
+            match self.store.get_result(&key).await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => entry,
+                Err(error) => {
+                    return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+                }
+            }
+        } else {
+            entry
+        };
+        // Share-link credentials are stored only as digests, so a revision
+        // cannot reproduce an existing URL, and republishing must not
+        // silently rotate the link merely to manufacture one -- only a
+        // brand-new document is offered one here.
+        let share_url = if mine {
+            Value::Null
+        } else {
+            match self.mint_read_link(&key, &who).await {
+                Ok(url) => Value::String(url),
+                Err(error) => {
+                    eprintln!("warning: could not mint the read link of {key}: {error:?}");
+                    Value::Null
+                }
             }
         };
         write_json(
@@ -338,260 +376,6 @@ impl Server {
                 "share_url": share_url,
             }),
         )
-    }
-
-    #[allow(clippy::result_large_err)] // as read_upload: the error is a response
-    /// A publish onto a document that already exists: the whole upload is
-    /// reconciled into the live session as one operation, everyone with the
-    /// document open sees it arrive, and a checkpoint marks the moment.
-    ///
-    /// An upload is the whole directory, not just its main file: a chapter it
-    /// changes is diffed in by path, a file it adds appears, a file it does
-    /// not mention any more is gone, and the main path follows what the
-    /// upload named -- the same reconciliation `Room::restore` does when a
-    /// checkpoint is brought back, because a republish and a restore are the
-    /// same operation with a different source for the tree. A file both this
-    /// upload and a concurrent editor leave untouched is carried over
-    /// unchanged; one this upload changes is diffed by prefix and suffix
-    /// exactly as a single-file publish always has been, so a concurrent
-    /// editor of it keeps their words and sees the rest change under them.
-    pub(super) async fn edit_into_session(
-        &self,
-        room: &Room,
-        parsed: &Upload,
-        who: &Caller,
-        existing: &IndexEntry,
-    ) -> Result<IndexEntry, Reply> {
-        let (current, _) = room.current_tree_and_bodies().await;
-        let main_path = if !parsed.main.is_empty() {
-            parsed.main.clone()
-        } else if !parsed.source_format.is_empty()
-            && crate::room::format_from_path(&current.main) != parsed.source_format
-        {
-            // A one-file replacement that changes format also changes the
-            // implied main file.  Keeping `main.md` while installing an HTML
-            // source makes checkpoint's path-derived format immediately turn
-            // the replacement back into markdown.
-            crate::room::main_path_for("", &parsed.source_format)
-        } else {
-            current.main.clone()
-        };
-        // Validated whole, against what the document already holds, before
-        // any of it touches storage or the session: a bad file in a republish
-        // must leave the live document exactly as it was, not half-applied.
-        self.preflight_directory(parsed, &main_path, &current)?;
-
-        // A title given on the command line renames the document; an empty one
-        // leaves it as it is.
-        let title = if parsed.title.is_empty() {
-            existing.title.clone()
-        } else {
-            parsed.title.clone()
-        };
-        self.store
-            .check_project_title(&existing.slug, &title)
-            .await
-            .map_err(|error| write_json(409, &json!({"error": error})))?;
-
-        // Replacements are source uploads even though the live Room owns the
-        // merge. Charge the durable document owner, rather than the editor's
-        // account or link, so collaborators share one bounded bucket.
-
-        let mut wanted: std::collections::HashSet<String> =
-            parsed.files.iter().map(|(path, _)| path.clone()).collect();
-        wanted.insert(main_path.clone());
-
-        // Every new asset is stored under its digest before it is named in
-        // the tree, outside any lock this call holds: a failure here is a
-        // storage fault the preflight above could not have caught, and it
-        // leaves an unreferenced blob rather than a half-written document,
-        // because nothing has named it yet.
-        let mut new_assets: HashMap<String, crate::document::history::TreeEntry> = HashMap::new();
-        for (path, raw) in &parsed.files {
-            if let Ok(crate::document::paths::Kind::Asset) =
-                crate::document::paths::check(&self.config.paths(), path)
-            {
-                let (sha, size) = match room
-                    .put_asset_authorized(
-                        raw.clone(),
-                        (self.config.max_asset, self.config.max_assets),
-                        &crate::document::store::MutationActor {
-                            account_id: who.id.clone(),
-                            owner_key: who.key.clone(),
-                            session_generation: who.session_generation.clone(),
-                            link_hash: String::new(),
-                            policy_editor: true,
-                            unowned_publisher: false,
-                        },
-                    )
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(why) => {
-                        eprintln!(
-                            "warning: could not store {path} of {}: {why}",
-                            existing.slug
-                        );
-                        return Err(write_json(
-                            500,
-                            &json!({"error": "could not store the document"}),
-                        ));
-                    }
-                };
-                new_assets.insert(
-                    path.clone(),
-                    crate::document::history::TreeEntry {
-                        kind: "asset".to_string(),
-                        id: String::new(),
-                        sha,
-                        size,
-                    },
-                );
-            }
-        }
-
-        // Applied as one operation under one lock: the tree and its bodies
-        // are read fresh here, right before `restore` is given them, rather
-        // than from the snapshot above -- so a concurrent edit to a file this
-        // upload does not touch, landed in the time it took to validate and
-        // store the assets above, is carried forward as it now stands rather
-        // than overwritten with a stale copy of it.
-        let document_authority = crate::storage::postgres::Authority {
-            principal_key: who.id.clone(),
-            account_id: uuid::Uuid::parse_str(&who.id).ok(),
-            link_hash: None,
-        };
-        let ((), update) = room
-            .commit_edit_with_identity(
-                &document_authority,
-                crate::room::Attribution::account(&who.id, &who.key),
-                true,
-                (!parsed.source_format.is_empty()).then_some(parsed.source_format.as_str()),
-                |candidate, mut tree, mut bodies| {
-                    let final_main_path = if !parsed.main.is_empty() {
-                        parsed.main.clone()
-                    } else if !parsed.source_format.is_empty()
-                        && crate::room::format_from_path(&tree.main) != parsed.source_format
-                    {
-                        crate::room::main_path_for("", &parsed.source_format)
-                    } else {
-                        tree.main.clone()
-                    };
-                    let main_id = tree
-                        .files
-                        .get(&final_main_path)
-                        .map(|entry| entry.id.clone())
-                        .unwrap_or_default();
-                    let main_sha = crate::document::store::digest_of(&parsed.source);
-                    tree.files.insert(
-                        final_main_path.clone(),
-                        crate::document::history::TreeEntry {
-                            kind: "text".to_string(),
-                            id: main_id,
-                            sha: main_sha.clone(),
-                            size: parsed.source.len() as i64,
-                        },
-                    );
-                    bodies.insert(main_sha, parsed.source.clone());
-                    for (path, raw) in &parsed.files {
-                        match crate::document::paths::check(&self.config.paths(), path) {
-                            Ok(crate::document::paths::Kind::Text) => {
-                                // `preflight_directory` already required this to decode.
-                                let body = std::str::from_utf8(raw).map_err(|_| {
-                                    crate::room::WriteError::Invalid(format!(
-                                        "{path} is not valid UTF-8"
-                                    ))
-                                })?;
-                                let sha = crate::document::store::digest_of(body);
-                                let id = tree
-                                    .files
-                                    .get(path)
-                                    .map(|entry| entry.id.clone())
-                                    .unwrap_or_default();
-                                tree.files.insert(
-                                    path.clone(),
-                                    crate::document::history::TreeEntry {
-                                        kind: "text".to_string(),
-                                        id,
-                                        sha: sha.clone(),
-                                        size: body.len() as i64,
-                                    },
-                                );
-                                bodies.insert(sha, body.to_string());
-                            }
-                            Ok(crate::document::paths::Kind::Asset) => {
-                                if let Some(entry) = new_assets.get(path) {
-                                    tree.files.insert(path.clone(), entry.clone());
-                                }
-                            }
-                            Err(why) => return Err(crate::room::WriteError::Invalid(why)),
-                        }
-                    }
-                    // Anything this upload does not name and the document did not
-                    // already have under one of these paths is gone: an upload is the
-                    // whole directory, so a chapter left out of it is a chapter
-                    // removed. ...but only when a directory was uploaded. A one-file
-                    // source upload -- the JSON body a browser upload sends,
-                    // which names no main -- is a new version of the main file, not a
-                    // claim that the document has no other files, and it has never
-                    // emptied a directory it was published over.
-                    if !parsed.main.is_empty() {
-                        tree.files.retain(|path, _| wanted.contains(path));
-                    }
-                    tree.main = final_main_path;
-
-                    crate::document::session::restore(candidate, &tree, &bodies);
-                    Ok::<_, crate::room::WriteError>(())
-                },
-            )
-            .await
-            .map_err(|error| {
-                write_json(error.status(), &json!({"error": error.client_message()}))
-            })?;
-        let sha = match room
-            .checkpoint(
-                "cli",
-                crate::room::Attribution::account(&who.id, &who.key),
-                &document_authority,
-            )
-            .await
-        {
-            Ok(Some(sha)) => sha,
-            // Deferred: the text is in the session and durable at the next
-            // write, and the checkpoint follows when the window passes.
-            Ok(None) => existing.sha.clone(),
-            Err(error) => {
-                eprintln!(
-                    "warning: source for {} committed but its archive checkpoint is pending: {error}",
-                    existing.slug
-                );
-                existing.sha.clone()
-            }
-        };
-        room.broadcast_editors_except(
-            None,
-            &json!({"type": "doc-update", "update": encode_update(&update)}),
-        )
-        .await;
-        self.store
-            .rename(&existing.slug, &title)
-            .await
-            .map_err(|error| write_json(409, &json!({"error": error})))?;
-        let mut entry = self
-            .store
-            .get_result(&existing.slug)
-            .await
-            .map_err(|error| {
-                write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-            })?
-            .unwrap_or_else(|| existing.clone());
-        entry.sha = sha;
-        // Comments survive the edit; they re-anchor in the reader. Everyone
-        // with the document open is told, over the same socket their comments
-        // arrive on.
-        room.broadcast(&json!({"type": "project-changed", "title": entry.title}))
-            .await;
-        Ok(entry)
     }
 
     /// Parses a publish request's body, in either format it may arrive as, and
@@ -912,7 +696,6 @@ impl Server {
         &self,
         parsed: &Upload,
         main_path: &str,
-        current: &crate::document::history::Tree,
     ) -> Result<(), Reply> {
         for (path, bytes) in &parsed.files {
             match crate::document::paths::check(&self.config.paths(), path) {
@@ -938,22 +721,12 @@ impl Server {
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             }
         }
-        // Build the resulting tree's retained payload.  A directory upload
-        // replaces the directory, so absent old files are deleted and must
-        // not be counted; paths that survive but are not part of this upload
-        // (or are replaced by it) retain their old/new entry respectively.
-        let directory = !parsed.main.is_empty();
+        // `parsed.files` is always the complete file set this document will
+        // have -- `handle_upload` already carried forward whatever an
+        // untouched file needed to survive a one-file republish -- so the
+        // size and count ceilings below are simply totals over it and the
+        // main file, with nothing implicit left to merge in.
         let mut resulting: HashMap<String, (String, String, i64)> = HashMap::new();
-        for (path, entry) in &current.files {
-            if directory && !parsed.files.iter().any(|(sent, _)| sent == path) && path != main_path
-            {
-                continue;
-            }
-            resulting.insert(
-                path.clone(),
-                (entry.kind.clone(), entry.sha.clone(), entry.size),
-            );
-        }
         resulting.insert(
             main_path.to_string(),
             (
@@ -1022,9 +795,10 @@ impl Server {
         };
         // The opaque reference identifies immutable bytes; it does not say
         // who is holding it. Who may read is asked again, from the request itself,
-        // which is the same rule the socket answers `y-open` under.
-        // Full document state is a source synchronization transport. Readers and
-        // commenters receive the rendered bundle and annotation channel.
+        // which is the same rule the socket answers `doc-open` under.
+        // Full document state is a source synchronization transport. Readers
+        // and commenters get the projection through `handle_project` instead
+        // (§2.2): there is no separate rendered bundle any more.
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return plain(404, "not found");
         }
@@ -1082,27 +856,20 @@ impl Server {
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
-        // Source is editable project material. Readers receive the current
-        // bundle through the bundle route and never this endpoint.
-        let room = match self.rooms.try_get(slug).await {
+        // Source is editable project material. Readers and commenters get
+        // the same head through `handle_project`'s projection (§2.2); this
+        // endpoint is for the editor's own working copy.
+        let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
         };
-        let source = room.source().await;
-        if room.agent_recovery_pending() {
-            return plain(503, "room state is awaiting recovery");
-        }
-        let format = {
-            let held = room.format().await;
-            if held.is_empty() {
-                if entry.source_format.is_empty() {
-                    "html".to_string()
-                } else {
-                    entry.source_format.clone()
-                }
-            } else {
-                held
-            }
+        let source = match room.source().await {
+            Ok(source) => source,
+            Err(error) => return sequencer_reply(&error),
+        };
+        let format = match room.format(&entry.source_format).await {
+            Ok(format) => format,
+            Err(error) => return sequencer_reply(&error),
         };
         write_json(
             200,
@@ -1138,25 +905,31 @@ impl Server {
         if !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
-        let room = match self.rooms.try_get(slug).await {
+        let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => {
                 return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
             }
         };
-        let (format, tree, texts, identity) = room.current_project(&entry.source_format).await;
-        if room.agent_recovery_pending() {
-            return write_json(
-                503,
-                &json!({"error": "room state is awaiting recovery", "retryable": true}),
-            );
-        }
-        let text_bytes = texts
+        let projected = match room.projection().await {
+            Ok(projected) => projected,
+            Err(error) => return sequencer_reply(&error),
+        };
+        let format = match room.format(&entry.source_format).await {
+            Ok(format) => format,
+            Err(error) => return sequencer_reply(&error),
+        };
+        let text_bytes = projected
+            .texts
             .values()
             .fold(0usize, |total, body| total.saturating_add(body.len()));
         if text_bytes > self.config.max_document {
             return write_json(413, &json!({"error": "that project is too large to read"}));
         }
+        // The etag -- and what `source-changed {digest}` on the socket
+        // names (§4.5) -- is the projection digest, not a row number: two
+        // heads with the same files answer the same identity (§2.2).
+        let identity = projected.projection.digest();
         let etag = format!("\"{identity}\"");
         if header_of(headers, "if-none-match").is_some_and(|value| {
             value
@@ -1178,9 +951,9 @@ impl Server {
                 "slug": entry.slug,
                 "title": entry.title,
                 "format": format,
-                "main": tree.main,
-                "tree": tree,
-                "texts": texts,
+                "main": projected.projection.main,
+                "tree": projected.projection,
+                "texts": projected.texts,
             }),
         );
         set(&mut response, "etag", &etag);
@@ -1213,26 +986,25 @@ impl Server {
         }
         let author = self.comment_author(headers, arrival, &who.id);
         let may_edit = who.at_least(Role::Editor);
-        let room = match self.rooms.try_get(slug).await {
+        let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => return plain(503, &error.to_string()),
         };
-        let (source, held_format, tree, texts, comments) =
-            room.snapshot_bundle(&author, may_edit).await;
-        if room.agent_recovery_pending() {
-            return plain(503, "room state is awaiting recovery");
-        }
-        let format = if held_format.is_empty() {
-            if entry.source_format.is_empty() {
-                "html".to_string()
-            } else {
-                entry.source_format.clone()
-            }
-        } else {
-            held_format
+        let projected = match room.projection().await {
+            Ok(projected) => projected,
+            Err(error) => return sequencer_reply(&error),
         };
-        let files = tree.files.clone();
-        let tree_sha = tree.digest();
+        let format = match room.format(&entry.source_format).await {
+            Ok(format) => format,
+            Err(error) => return sequencer_reply(&error),
+        };
+        let source = projected
+            .texts
+            .get(&projected.projection.main)
+            .cloned()
+            .unwrap_or_default();
+        let comments = room.snapshot_for(&author, may_edit).await;
+        let tree_sha = projected.projection.digest();
         write_json(
             200,
             &json!({
@@ -1241,13 +1013,13 @@ impl Server {
                 "slug": entry.slug,
                 "title": entry.title,
                 "format": format,
-                "main": tree.main,
-                "tree": tree,
-                "files": files,
-                "texts": texts,
+                "main": projected.projection.main,
+                "tree": projected.projection,
+                "files": projected.projection.files,
+                "texts": projected.texts,
                 "source": source,
-                // Canonical live tree identity for assistant anchors. This
-                // remains useful before a quiet checkpoint is written.
+                // The projection digest, for an assistant anchor to hold
+                // onto until a label names this state durably.
                 "sha": tree_sha,
                 "source_sha": crate::document::store::digest_of(&source),
                 "comments": comments,

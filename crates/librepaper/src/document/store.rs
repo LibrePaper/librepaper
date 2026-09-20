@@ -1,13 +1,30 @@
 //! Catalogue-backed document metadata, source reads, and mutations.
+//!
+//! Under SPEC-server-is-a-log the log is the document (§1): there is no
+//! archive here any more, so "creating" a document, forking it into a new
+//! slug and publishing a whole directory over an existing "open" one are one
+//! act -- write a file set into the document at head -- expressed as the
+//! `ReplaceProject` semantic command (§7). What differs between the three is
+//! only what the document held before the command ran: nothing, for a fresh
+//! slug; another document's files, for a fork, which reads them with
+//! `project_files` first; or whatever an "open" document already had, which
+//! the command's own preconditionless removal-and-insert makes a true
+//! replacement rather than a merge.
 
 use std::sync::Arc;
 
+use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::config::Configuration;
+use crate::document::paths::{check, Kind};
+use crate::log::{Command, CommandError, Evidence, Head, PreparedSource, Registry};
 use crate::storage::blob::BlobStore;
-use crate::storage::postgres::{Error as CatalogError, PostgresCatalog as Catalog};
+use crate::storage::postgres::{
+    Authority, Error as CatalogError, NewLabel, PostgresCatalog as Catalog,
+};
 use crate::util::parse_timestamp;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -360,6 +377,11 @@ pub struct Store {
     pub config: Arc<Configuration>,
     /// The authoritative catalogue.
     pub catalog: Arc<Catalog>,
+    /// Where a document's log lives while it is open. A whole-directory
+    /// write is a semantic command, and a semantic command runs through a
+    /// document's sequencer (§7), so producing one needs this even outside a
+    /// live room.
+    pub registry: Arc<Registry>,
 }
 
 /// A document as it is created. There is one version of it from here on, and
@@ -445,19 +467,175 @@ fn source_put_error(error: CatalogError) -> PutError {
     }
 }
 
+/// What a failed `ReplaceProject` becomes for a caller that only knows about
+/// an HTTP upload. A conflict here means the sequencer's own precondition,
+/// evaluated at head, found the buffer or the flush had moved under it --
+/// which for a plain overwrite is exactly what "reload it and try again"
+/// means, so the two conflict variants collapse into the one message the
+/// old archive-conflict path already used.
+fn command_put_error(error: CommandError) -> PutError {
+    match error {
+        CommandError::Conflict(_) | CommandError::StaleSelection { .. } => {
+            PutError::Authorization {
+                status: 409,
+                message: "the document changed; reload it before retrying",
+            }
+        }
+        CommandError::Storage(error) => PutError::Storage(error.to_string()),
+        CommandError::Sequencer(error) => PutError::Storage(error.to_string()),
+    }
+}
+
+/// A command's request id, cast to the number a batch's `client_seq` column
+/// holds (§7.3). Nothing compares this to another peer's own sequence, so the
+/// exact mapping does not matter -- only that it is stable across a retry
+/// that reuses the same request id.
+fn client_seq_of(id: Uuid) -> i64 {
+    i64::from_be_bytes(id.as_bytes()[..8].try_into().expect("a uuid is 16 bytes"))
+}
+
+/// Writes (or replaces) a document's whole file set as one semantic command.
+/// Preparing the batch removes every existing text and asset not named by
+/// the new set and then writes the new set, so the result is a true
+/// replacement rather than a merge -- and for a document that held nothing
+/// yet, removing nothing and writing everything is exactly a creation.
+struct ReplaceProject {
+    request_id: Uuid,
+    document_id: Uuid,
+    catalog: Arc<Catalog>,
+    texts: Vec<(String, String)>,
+    assets: Vec<(String, String)>,
+    main: String,
+    author_account_id: Option<Uuid>,
+    author_label: String,
+}
+
+impl Command for ReplaceProject {
+    type Output = ();
+
+    fn name(&self) -> &'static str {
+        "whole-project replacement"
+    }
+
+    // §7.2: a retry with the same `request_id` returns the label the first
+    // attempt's transaction wrote rather than replacing the project twice.
+    fn replay(&mut self) -> BoxFuture<'_, std::result::Result<Option<Self::Output>, CommandError>> {
+        Box::pin(async move {
+            self.catalog
+                .label_by_request(self.document_id, self.request_id)
+                .await
+                .map(|found| found.map(|_| ()))
+                .map_err(CommandError::from)
+        })
+    }
+
+    fn evaluate(
+        &mut self,
+        head: &Head<'_>,
+    ) -> std::result::Result<Option<PreparedSource>, CommandError> {
+        let texts = &self.texts;
+        let assets = &self.assets;
+        let main = self.main.as_str();
+        let client_seq = client_seq_of(self.request_id);
+        head.prepare(client_seq, move |draft| {
+            let wanted_texts: std::collections::HashSet<&str> =
+                texts.iter().map(|(path, _)| path.as_str()).collect();
+            let wanted_assets: std::collections::HashSet<&str> =
+                assets.iter().map(|(path, _)| path.as_str()).collect();
+            for path in crate::document::session::text_ids_of(draft).into_keys() {
+                if !wanted_texts.contains(path.as_str()) {
+                    crate::document::session::remove_path(draft, &path);
+                }
+            }
+            for path in crate::document::session::assets_of(draft).into_keys() {
+                if !wanted_assets.contains(path.as_str()) {
+                    crate::document::session::remove_asset(draft, &path);
+                }
+            }
+            let mut main_id = String::new();
+            for (path, body) in texts {
+                let id = crate::document::session::put_text(draft, path, body);
+                if path == main {
+                    main_id = id;
+                }
+            }
+            for (path, digest) in assets {
+                crate::document::session::put_asset(draft, path, digest);
+            }
+            if !main_id.is_empty() {
+                crate::document::session::set_main(draft, &main_id);
+            }
+            Ok(())
+        })
+        .map_err(CommandError::Conflict)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        evidence: &'a Evidence,
+    ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            // A no-op replacement (the new set exactly matches the head)
+            // produces no batch, so there is nothing after `prepare` beyond
+            // what was already true; the label still records that state,
+            // named by the state itself rather than by a change that did not
+            // happen.
+            let frontier = evidence
+                .after_frontier
+                .clone()
+                .unwrap_or_else(|| evidence.before_frontier.clone());
+            let digest_hex = evidence
+                .after_digest
+                .as_deref()
+                .unwrap_or(&evidence.before_digest);
+            let tree_digest = hex::decode(digest_hex)
+                .ok()
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
+            self.catalog
+                .insert_label(
+                    tx,
+                    &NewLabel {
+                        id: Uuid::new_v4(),
+                        document_id: self.document_id,
+                        source_sequence: evidence.source_sequence,
+                        vector: evidence.vector.clone(),
+                        frontier,
+                        tree_digest,
+                        label: None,
+                        reason: self.name().to_string(),
+                        request_id: Some(self.request_id),
+                        author_account_id: self.author_account_id,
+                        author_label: self.author_label.clone(),
+                    },
+                )
+                .await?;
+            Ok(())
+        })
+    }
+}
+
 impl Store {
     pub async fn open_with_catalog(
         blobs: Arc<dyn BlobStore>,
         config: Arc<Configuration>,
         catalog: Arc<Catalog>,
+        registry: Arc<Registry>,
     ) -> Result<Self, String> {
         Ok(Self {
             blobs,
             config,
             catalog,
+            registry,
         })
     }
 
+    /// Marks a document for deletion. That mark -- `documents.status =
+    /// 'deleting'` plus the `deleted_at` it already carries -- is the whole
+    /// of the durable state a purge needs: there is no job queue any more,
+    /// and the background worker's own startup scan finds every document in
+    /// this state without anything having to enqueue a task for it
+    /// (SPEC-server-is-a-log §8.6).
     pub async fn begin_delete(&self, slug: &str) -> Result<Option<String>, String> {
         let catalog = &self.catalog;
         let Some(document) = catalog
@@ -467,28 +645,10 @@ impl Store {
         else {
             return Ok(None);
         };
-        let changed = catalog
+        catalog
             .mark_document_deleting(document.id)
             .await
             .map_err(|e| e.to_string())?;
-        if changed {
-            catalog
-                .enqueue_job(crate::storage::postgres::NewJob {
-                    kind: "document_deletion".into(),
-                    document_id: Some(document.id),
-                    account_id: Some(document.owner_id),
-                    scope_key: format!("document:{}", document.id),
-                    dedupe_key: Some("delete".into()),
-                    payload: serde_json::json!({
-                        "document_id": document.id,
-                    }),
-                    priority: 0,
-                    max_attempts: 100,
-                    run_after: time::OffsetDateTime::now_utc() + time::Duration::days(7),
-                })
-                .await
-                .map_err(|e| e.to_string())?;
-        }
         Ok(Some(document.id.to_string()))
     }
 
@@ -641,13 +801,12 @@ impl Store {
     /// touched simply has no entry.
     /// Every file in a project, by path, as it currently stands.
     ///
-    /// Read from the durable operation history rather than from a version or
-    /// from the live room. Versions are moments somebody named, so the newest
-    /// one can be hours behind the text; the operation log is never behind,
-    /// and replaying it needs no room to be resident. A document that has no
-    /// operation history yet -- one created from a template and never opened
-    /// -- is read from the version it was created with, which is the only
-    /// thing that exists to read.
+    /// The log is the document (§1): this reads the head through the
+    /// document's own sequencer -- admitting it from the base and the rows if
+    /// it is not already resident -- rather than replaying the log a second
+    /// way here. A document created but never opened reads the same way,
+    /// because creation itself is now a row in the log rather than a version
+    /// kept beside it.
     pub async fn project_files(
         &self,
         slug: &str,
@@ -660,27 +819,21 @@ impl Store {
         else {
             return Ok(None);
         };
-        let collaboration = crate::storage::collaboration::CollaborationStorage::new(
-            self.catalog.clone(),
-            self.blobs.clone(),
-        );
-        let recovered = collaboration
-            .recover(document.id)
+        let sequencer = self
+            .registry
+            .get(document.id, slug)
             .await
             .map_err(|error| error.to_string())?;
-        if recovered.base.is_none() && recovered.updates.is_empty() {
-            return self.seeded_project_files(document.id).await;
-        }
-        let doc = crate::document::session::new_doc();
-        if let Some(base) = recovered.base {
-            crate::document::session::apply_update(&doc, &base)
-                .map_err(|error| error.to_string())?;
-        }
-        for update in recovered.updates {
-            crate::document::session::apply_update(&doc, &update.update_bytes)
-                .map_err(|error| error.to_string())?;
-        }
-        let mut files: Vec<(String, Vec<u8>)> = crate::document::session::texts_of(&doc)
+        let (texts, named_assets) = sequencer
+            .with_head(|doc| {
+                (
+                    crate::document::session::texts_of(doc),
+                    crate::document::session::assets_of(doc),
+                )
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut files: Vec<(String, Vec<u8>)> = texts
             .into_iter()
             .map(|(path, text)| (path, text.into_bytes()))
             .collect();
@@ -688,8 +841,7 @@ impl Store {
         // carries only the name somebody gave them. One whose bytes have gone
         // is skipped rather than failing the copy: a project missing a figure
         // is still worth having.
-        let named = crate::document::session::assets_of(&doc);
-        let digests: Vec<_> = named.values().cloned().collect();
+        let digests: Vec<_> = named_assets.values().cloned().collect();
         if !digests.is_empty() {
             let records = self
                 .catalog
@@ -700,47 +852,12 @@ impl Store {
                 .into_iter()
                 .map(|record| (hex::encode(&record.digest), record.storage_key))
                 .collect();
-            for (path, digest) in named {
+            for (path, digest) in named_assets {
                 let Some(key) = keys.get(&digest) else {
                     continue;
                 };
                 if let Ok(bytes) = self.blobs.get(key).await {
                     files.push((path, bytes));
-                }
-            }
-        }
-        Ok(Some(files))
-    }
-
-    /// The files of a document that has never been edited, read from the
-    /// version it was created with. Only `project_files` needs this, and only
-    /// for the window between a document being created and first opened.
-    async fn seeded_project_files(
-        &self,
-        document_id: uuid::Uuid,
-    ) -> Result<Option<Vec<(String, Vec<u8>)>>, String> {
-        let source = crate::storage::source::SourceStorage::new(
-            self.catalog.clone(),
-            self.blobs.clone(),
-            Default::default(),
-        );
-        let Some(project) = source
-            .read_current(document_id)
-            .await
-            .map_err(|error| format!("{error:?}"))?
-        else {
-            return Ok(None);
-        };
-        let mut files = Vec::with_capacity(project.archive.files.len());
-        for file in &project.archive.files {
-            match file {
-                crate::storage::source_archive::SourceFile::Inline { path, bytes } => {
-                    files.push((path.clone(), bytes.clone()));
-                }
-                crate::storage::source_archive::SourceFile::Asset { path, asset_id, .. } => {
-                    if let Some(bytes) = project.assets.get(asset_id) {
-                        files.push((path.clone(), bytes.clone()));
-                    }
                 }
             }
         }
@@ -822,6 +939,11 @@ impl Store {
         Ok((document.id, account_id))
     }
 
+    /// Writes a whole directory of files into a document as one semantic
+    /// command (§7): a brand-new slug, a fork into a new slug, and a
+    /// publish over an existing "open" document all call this, and from the
+    /// log's point of view they are the same act -- what differs is only
+    /// what the document held before the command ran.
     pub async fn put_directory_as_actor(
         &self,
         value: DocumentInput,
@@ -863,62 +985,105 @@ impl Store {
                 message: "edit access changed",
             });
         }
-        let mut project_files = vec![crate::storage::source::ProjectFile {
-            path: value.main.clone(),
-            bytes: value.source.into_bytes(),
-            media_type: "text/plain; charset=utf-8".into(),
-        }];
-        project_files.extend(files.into_iter().map(|(path, bytes)| {
-            crate::storage::source::ProjectFile {
-                path,
-                bytes,
-                media_type: "application/octet-stream".into(),
-            }
-        }));
-        crate::storage::source::SourceStorage::new(
-            catalog.clone(),
-            self.blobs.clone(),
-            Default::default(),
-        )
-        .with_retained_asset_limit(self.config.max_assets)
-        .commit_project(crate::storage::source::CommitProject {
+
+        // The main file is always text -- it is what a renderer runs on, and
+        // a renderer runs on source, not on an asset's bytes. Every other
+        // file is sorted and written by `sort_and_write_assets`.
+        let (mut texts, assets) = self.sort_and_write_assets(document.id, files).await?;
+        texts.insert(0, (value.main.clone(), value.source));
+
+        // The name, not the id. `actor.account_id` is the catalogue uuid,
+        // and a timeline signed with it can only say "Unknown editor".
+        let author_label = match catalog.account_display_name(account_id).await {
+            name if name.is_empty() => actor.owner_key.clone(),
+            name => name,
+        };
+        let sequencer = self
+            .registry
+            .get(document.id, &value.slug)
+            .await
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+        let authority = Authority {
+            principal_key: actor.owner_key.clone(),
+            account_id: Some(account_id),
+            link_hash: None,
+        };
+        let mut command = ReplaceProject {
+            request_id: Uuid::new_v4(),
             document_id: document.id,
-            files: project_files,
-            through_update_sequence: document.update_sequence,
-            project_generation: document.project_generation,
-            // What this is: a whole document written at once, from outside
-            // any room -- an upload, a fork, a starter, a seeded example. It
-            // used to be called "publish", from when publishing was something
-            // a person did; nothing here publishes anything.
-            reason: "created".into(),
-            label: None,
+            catalog: catalog.clone(),
+            texts,
+            assets,
+            main: value.main.clone(),
             author_account_id: Some(account_id),
-            // The name, not the id. `actor.account_id` is the catalogue uuid,
-            // and a timeline signed with it can only say "Unknown editor".
-            author_label: match catalog.account_display_name(account_id).await {
-                name if name.is_empty() => actor.owner_key.clone(),
-                name => name,
-            },
-            make_current: true,
-        })
-        .await
-        .map_err(|e| PutError::Storage(e.to_string()))?;
+            author_label,
+        };
+        sequencer
+            .command(&authority, &mut command)
+            .await
+            .map_err(command_put_error)?;
+
         self.get_result(&value.slug)
             .await
             .map_err(source_put_error)?
             .ok_or_else(|| PutError::Storage("document disappeared after commit".into()))
     }
 
-    pub async fn remove(&self, slug: &str) -> Result<usize, String> {
-        Ok(usize::from(self.begin_delete(slug).await?.is_some()))
+    /// Sorts a directory's non-entrypoint files by the deployment's path
+    /// rules and writes whatever is a figure to the blob store under its
+    /// digest, returning the texts as strings and the assets as path-digest
+    /// pairs ready for `put_text`/`put_asset`. Shared by a plain publish and
+    /// by `seed::activity`, which both start from the same kind of directory
+    /// and differ only in how many log rows the result becomes. A path the
+    /// rules refuse was already refused before the upload reached here
+    /// (`server::documents::preflight_directory`), so it is dropped rather
+    /// than failing the whole directory, the same way a figure whose bytes
+    /// never resolved is dropped when a project is read back.
+    pub(crate) async fn sort_and_write_assets(
+        &self,
+        document_id: uuid::Uuid,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<(Vec<(String, String)>, Vec<(String, String)>), PutError> {
+        let rules = self.config.paths();
+        let mut texts = Vec::new();
+        let mut asset_files = Vec::new();
+        for (path, bytes) in files {
+            match check(&rules, &path) {
+                Ok(Kind::Text) => texts.push((path, String::from_utf8_lossy(&bytes).into_owned())),
+                Ok(Kind::Asset) => asset_files.push(crate::storage::source::ProjectFile {
+                    path,
+                    bytes,
+                    media_type: "application/octet-stream".into(),
+                }),
+                Err(_) => {}
+            }
+        }
+        let assets = if asset_files.is_empty() {
+            Vec::new()
+        } else {
+            let written = crate::storage::source::SourceStorage::new(
+                self.catalog.clone(),
+                self.blobs.clone(),
+            )
+            .with_retained_asset_limit(self.config.max_assets)
+            .write_assets(document_id, asset_files.iter())
+            .await
+            .map_err(|error| PutError::Storage(error.to_string()))?;
+            asset_files
+                .iter()
+                .filter_map(|file| {
+                    let digest: [u8; 32] = Sha256::digest(&file.bytes).into();
+                    written
+                        .get(&(digest, file.bytes.len() as i64))
+                        .map(|record| (file.path.clone(), hex::encode(&record.digest)))
+                })
+                .collect()
+        };
+        Ok((texts, assets))
     }
 
-    pub async fn check_project_title(&self, _slug: &str, title: &str) -> Result<(), String> {
-        if title.trim().is_empty() {
-            Err("a project title is required".into())
-        } else {
-            Ok(())
-        }
+    pub async fn remove(&self, slug: &str) -> Result<usize, String> {
+        Ok(usize::from(self.begin_delete(slug).await?.is_some()))
     }
 
     pub async fn rename(&self, slug: &str, title: &str) -> Result<(), String> {
@@ -943,14 +1108,6 @@ impl Store {
             .await
             .map_err(|e| e.to_string())?;
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub async fn modify<F>(&self, slug: &str, change: F) -> Result<IndexEntry, ModifyError>
-    where
-        F: Fn(&mut IndexEntry) -> Result<(), String>,
-    {
-        self.modify_inner(slug, None, change).await
     }
 
     pub async fn pin_link_guest(
@@ -1193,10 +1350,11 @@ async fn entries_from_documents(
                 slug: document.slug.clone(),
                 storage_id: document.id.to_string(),
                 title: document.title.clone(),
-                sha: document
-                    .current_version_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_default(),
+                // There is no version row any more to name a moment by; the
+                // log's own sequence is the cheapest thing that changes
+                // exactly when the document does, so it is what a listing
+                // page uses as a change token.
+                sha: document.update_sequence.to_string(),
                 created_at: crate::util::format_unix(document.created_at.unix_timestamp()),
                 updated_at: crate::util::format_unix(document.updated_at.unix_timestamp()),
                 example: document.ownership_mode == "example",

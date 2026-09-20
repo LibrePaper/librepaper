@@ -116,6 +116,12 @@ pub async fn seed_with_backup(
             .unwrap_or_else(|e| die(e)),
     );
     catalog.migrate().await.unwrap_or_else(|e| die(e));
+    // A whole-directory write and a simulated history both go through the
+    // fenced document transaction (§5.1, §7 step 4), which checks this
+    // process against the durable writer epoch. Seeding is the only writer
+    // of a fresh deployment, but it is still a writer, and the fence does not
+    // know that.
+    let _writer_lease = catalog.claim_writer().await.unwrap_or_else(|e| die(e));
     let count = sqlx::query_scalar!(r#"SELECT count(*) AS "count!" FROM documents"#)
         .fetch_one(catalog.pool())
         .await
@@ -124,7 +130,11 @@ pub async fn seed_with_backup(
         die("refusing to reset a nonempty deployment without --backup <verified-point>")
     }
     if count > 0 {
-        sqlx::query!("TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,document_versions,document_assets,replies,annotations,share_links,grants,documents,accounts CASCADE").execute(catalog.pool()).await.unwrap_or_else(|e|die(e));
+        // The log is the document now (SPEC-server-is-a-log §1): there is no
+        // version, bundle or job table left to clear, and `document_labels`
+        // replaces `document_checkpoints` as the one thing besides the log
+        // itself that names a moment.
+        sqlx::query!("TRUNCATE document_updates,document_bases,document_labels,document_proposal_hunks,document_proposals,document_assets,replies,annotations,document_marks,share_links,grants,documents,accounts CASCADE").execute(catalog.pool()).await.unwrap_or_else(|e|die(e));
     }
     let handle = if owner.trim().is_empty() {
         "examples"
@@ -147,8 +157,38 @@ pub async fn seed_with_backup(
         .await
         .unwrap_or_else(|e| die(e));
     let config = Arc::new(Configuration::default());
+    // A whole-directory write is a semantic command now, and a semantic
+    // command runs through a document's sequencer (§7), so seeding needs a
+    // registry the same way the server does. The peer key it authors under
+    // is minted and stored exactly as `server::serve::deployment_peer_key`
+    // does, so a seed run and a later server process agree on one author.
+    let peer_key = match catalog
+        .runtime_state(crate::log::DEPLOYMENT_PEER_STATE)
+        .await
+        .unwrap_or_else(|e| die(e))
+        .and_then(|value| {
+            value
+                .get("key")
+                .and_then(|key| key.as_str())
+                .map(str::to_string)
+        }) {
+        Some(key) if !key.is_empty() => key,
+        _ => {
+            let key = crate::auth::random_token();
+            catalog
+                .set_runtime_state(
+                    crate::log::DEPLOYMENT_PEER_STATE,
+                    serde_json::json!({ "key": key }),
+                )
+                .await
+                .unwrap_or_else(|e| die(e));
+            key
+        }
+    };
+    let registry =
+        crate::log::Registry::new(catalog.clone(), blobs.clone(), config.clone(), peer_key);
     let store = Arc::new(
-        Store::open_with_catalog(blobs.clone(), config, catalog.clone())
+        Store::open_with_catalog(blobs.clone(), config, catalog.clone(), registry)
             .await
             .unwrap_or_else(|e| die(e)),
     );
@@ -163,13 +203,6 @@ pub async fn seed_with_backup(
             slugify(document.title, &store.config),
             example_suffix(document.title, &store.config)
         );
-        let bundle = DocumentInput {
-            slug: slug.clone(),
-            title: document.title.into(),
-            source,
-            source_format: format,
-            main,
-        };
         let actor = crate::document::store::MutationActor {
             account_id: account.id.to_string(),
             owner_key: String::new(),
@@ -178,25 +211,118 @@ pub async fn seed_with_backup(
             policy_editor: true,
             unowned_publisher: false,
         };
-        let entry = store
-            .put_directory_as_actor(bundle, files, actor)
+
+        let simulated = if let Some(days) = simulate_activity {
+            match seed_with_history(
+                &store,
+                &catalog,
+                account.id,
+                &account.display_name,
+                &slug,
+                document.title,
+                &main,
+                &source,
+                &format,
+                files.clone(),
+                days,
+            )
             .await
-            .unwrap_or_else(|e| die(e));
-        println!("  {:<28} {}", slug, document.title);
-        if let Some(days) = simulate_activity {
-            let id = uuid::Uuid::parse_str(&entry.storage_id).unwrap_or_else(|_| die("bad id"));
-            match activity::simulate(catalog.clone(), blobs.clone(), id, &slug, days).await {
-                Ok(written) => println!(
-                    "  {:<28} written in {} steps and {} versions over {} minutes, from {}",
-                    "",
-                    written.steps,
-                    written.versions,
-                    written.buckets,
-                    written.first.date()
-                ),
-                Err(error) => eprintln!("  {:<28} activity not simulated: {error}", ""),
+            {
+                Ok(written) => Some(written),
+                Err(error) => {
+                    eprintln!(
+                        "  {:<28} activity not simulated, publishing plainly instead: {error}",
+                        ""
+                    );
+                    None
+                }
             }
+        } else {
+            None
+        };
+        if simulated.is_none() {
+            let bundle = DocumentInput {
+                slug: slug.clone(),
+                title: document.title.into(),
+                source,
+                source_format: format,
+                main,
+            };
+            store
+                .put_directory_as_actor(bundle, files, actor)
+                .await
+                .unwrap_or_else(|e| die(e));
+        }
+        println!("  {:<28} {}", slug, document.title);
+        if let Some(written) = simulated {
+            println!(
+                "  {:<28} written in {} steps and {} labels over {} minutes, from {}",
+                "",
+                written.steps,
+                written.versions,
+                (time::OffsetDateTime::now_utc() - written.first).whole_minutes(),
+                written.first.date()
+            );
         }
     }
     catalog.close().await;
+}
+
+/// Creates one seeded example as its own written history rather than as one
+/// publish, so its calendar has something in it (`seed::activity`). Refuses
+/// -- leaving nothing behind for a plain publish to collide with -- if the
+/// document already exists, since a simulated history can only ever be a
+/// document's whole creation.
+#[allow(clippy::too_many_arguments)]
+async fn seed_with_history(
+    store: &Store,
+    catalog: &Arc<crate::storage::postgres::PostgresCatalog>,
+    author_account_id: uuid::Uuid,
+    author_label: &str,
+    slug: &str,
+    title: &str,
+    main: &str,
+    source: &str,
+    source_format: &str,
+    files: Vec<(String, Vec<u8>)>,
+    days: u32,
+) -> Result<activity::Simulated, String> {
+    if catalog
+        .document_by_slug(slug)
+        .await
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Err(format!("{slug} already exists"));
+    }
+    let document = catalog
+        .create_document(crate::storage::postgres::NewDocument {
+            slug: slug.to_string(),
+            owner_id: author_account_id,
+            ownership_mode: "owned".into(),
+            title: title.to_string(),
+            source_format: source_format.to_string(),
+            main_path: main.to_string(),
+            settings: serde_json::json!({"version":1}),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    let (texts, assets) = store
+        .sort_and_write_assets(document.id, files)
+        .await
+        .map_err(|error| error.to_string())?;
+    let texts: std::collections::BTreeMap<String, String> = texts.into_iter().collect();
+    activity::simulate(
+        catalog.clone(),
+        document.id,
+        slug,
+        main,
+        source,
+        &texts,
+        &assets,
+        author_account_id,
+        author_label,
+        days,
+    )
+    .await
 }

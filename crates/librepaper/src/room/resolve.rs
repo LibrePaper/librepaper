@@ -7,10 +7,15 @@
 //! the passage it was?
 //!
 //! The answer is a [`DerivedAttachment`]: a cache, not a record. It is keyed
-//! by the checkpoint it was computed against and is thrown away and recomputed
-//! whenever the source moves. Nothing it contains is ever written back into
-//! the original anchor -- not the offsets it finds, and not the replacement
-//! cursors Loro hands back, which belong to the cache for the same reason.
+//! by the projection digest it was computed against and is thrown away and
+//! recomputed whenever the source moves. Nothing it contains is ever written
+//! back into the original anchor -- not the offsets it finds, and not the
+//! replacement cursors Loro hands back, which belong to the cache for the
+//! same reason. Under SPEC-server-is-a-log §8.3 `annotation_live_state` is
+//! gone: the cursor pair that used to live there now lives only in the
+//! room's in-memory comment cache (`Room::reattach_comments`, below), and a
+//! process that starts cold recomputes it from scratch rather than reading it
+//! back from anywhere.
 //!
 //! Loro's own history is the first and best answer. A cursor captured when the
 //! comment was made follows the characters it was put between, through every
@@ -22,13 +27,20 @@
 //! file, does this fall back to looking for the words; and a fallback that
 //! finds two equally good candidates says `Ambiguous` rather than choosing.
 
+use std::collections::HashMap;
+
 use loro::cursor::{Cursor, Side};
+use loro::Frontiers;
+use serde_json::json;
 
 use super::annotation::{
     AnchorSide, AnchorStatus, CommentTarget, DerivedAttachment, LiveSourceRange, OriginalAnchor,
     ResolutionDiagnostic, SourceTextTarget,
 };
+use super::text::slice16;
+use super::Room;
 use crate::document::session::{self, CursorResolutionError};
+use crate::log::sequencer::SequencerError;
 
 /// The encoding of the cursor bytes stored beside a comment. Written with
 /// every pair, so a future change of Loro's cursor format is a recognisable
@@ -78,11 +90,6 @@ fn diagnostic_of(error: CursorResolutionError) -> ResolutionDiagnostic {
     }
 }
 
-/// Works out where a comment's passage is in the document as it stands.
-///
-/// `live` is whatever the last resolution stored: the cursors it was given, or
-/// the replacements Loro handed back. The attachment returned carries the
-/// cursors to store for next time, which may be the same ones.
 /// The document's files, read once for a whole pass.
 ///
 /// Every comment on a document is resolved together, whenever that document
@@ -118,10 +125,15 @@ impl Sources {
     }
 }
 
+/// Works out where a comment's passage is in the document `doc` stands for.
+///
+/// `live` is whatever the last resolution stored: the cursors it was given, or
+/// the replacements Loro handed back. The attachment returned carries the
+/// cursors to store for next time, which may be the same ones.
 pub(crate) fn resolve(
     doc: &loro::LoroDoc,
     sources: &Sources,
-    checkpoint: &str,
+    tree_digest: &str,
     anchor: &OriginalAnchor,
     live: Option<&LiveSourceRange>,
 ) -> DerivedAttachment {
@@ -129,7 +141,7 @@ pub(crate) fn resolve(
         // A comment on the document as a whole is about the document as a
         // whole, which is still here.
         CommentTarget::Document => {
-            return attached(checkpoint, AnchorStatus::Exact, None, None, None)
+            return attached(tree_digest, AnchorStatus::Exact, None, None, None)
         }
         CommentTarget::SourceText(target) => target,
     };
@@ -138,7 +150,7 @@ pub(crate) fn resolve(
         // cannot say where the passage went, which is not the same as saying
         // it was deleted.
         return attached(
-            checkpoint,
+            tree_digest,
             AnchorStatus::Unresolved,
             None,
             None,
@@ -147,19 +159,19 @@ pub(crate) fn resolve(
     };
     if let Some(live) = live {
         match through_cursors(doc, target, live, units) {
-            Ok(attachment) => return attachment.with_checkpoint(checkpoint),
+            Ok(attachment) => return attachment.with_digest(tree_digest),
             Err(diagnostic) => {
                 // The cursors are no help, but the words may still be. A
                 // diagnostic is kept either way: "the file was renamed out
                 // from under this" and "we had to go looking" are different
                 // things to show.
-                let mut found = anchored_by_words(doc, target, units, checkpoint);
+                let mut found = anchored_by_words(doc, target, units, tree_digest);
                 found.diagnostic = Some(diagnostic);
                 return found;
             }
         }
     }
-    anchored_by_words(doc, target, units, checkpoint)
+    anchored_by_words(doc, target, units, tree_digest)
 }
 
 /// The fallback, with cursors taken at whatever it found.
@@ -174,9 +186,9 @@ fn anchored_by_words(
     doc: &loro::LoroDoc,
     target: &SourceTextTarget,
     units: &[u16],
-    checkpoint: &str,
+    tree_digest: &str,
 ) -> DerivedAttachment {
-    let mut found = by_words(target, units, checkpoint);
+    let mut found = by_words(target, units, tree_digest);
     if let (true, Some((start, end))) = (found.status.is_placed(), found.resolved_range_utf16) {
         found.live_source_range = capture(
             doc,
@@ -270,12 +282,12 @@ fn replaced(
 /// This is evidence, not identity. It can say where a passage probably is now;
 /// it cannot say what the comment is about, and it never writes an answer back
 /// into the anchor. Two equally good candidates are reported as such.
-fn by_words(target: &SourceTextTarget, units: &[u16], checkpoint: &str) -> DerivedAttachment {
+fn by_words(target: &SourceTextTarget, units: &[u16], tree_digest: &str) -> DerivedAttachment {
     // Every source range has words: `locate` refuses a selection that
     // flattens to nothing, so a target with no `exact` is a record from
     // before that was true and there is nothing to look for.
     if target.exact.is_empty() {
-        return attached(checkpoint, AnchorStatus::Unresolved, None, None, None);
+        return attached(tree_digest, AnchorStatus::Unresolved, None, None, None);
     }
     let wanted: Vec<u16> = target.exact.encode_utf16().collect();
     let prefix: Vec<u16> = target.prefix.encode_utf16().collect();
@@ -303,7 +315,7 @@ fn by_words(target: &SourceTextTarget, units: &[u16], checkpoint: &str) -> Deriv
     let Some((at, _)) = best else {
         // The file is here and the words are not: what this comment was about
         // is gone. That is a thing to show, not an error to swallow.
-        return attached(checkpoint, AnchorStatus::Deleted, None, None, None);
+        return attached(tree_digest, AnchorStatus::Deleted, None, None, None);
     };
     let status = if ties > 1 {
         AnchorStatus::Ambiguous
@@ -313,7 +325,7 @@ fn by_words(target: &SourceTextTarget, units: &[u16], checkpoint: &str) -> Deriv
         AnchorStatus::Modified
     };
     attached(
-        checkpoint,
+        tree_digest,
         status,
         None,
         Some((at as u32, (at + wanted.len()) as u32)),
@@ -322,14 +334,14 @@ fn by_words(target: &SourceTextTarget, units: &[u16], checkpoint: &str) -> Deriv
 }
 
 fn attached(
-    checkpoint: &str,
+    tree_digest: &str,
     status: AnchorStatus,
     live_source_range: Option<LiveSourceRange>,
     resolved_range_utf16: Option<(u32, u32)>,
     diagnostic: Option<ResolutionDiagnostic>,
 ) -> DerivedAttachment {
     DerivedAttachment {
-        checkpoint_id: super::annotation::CheckpointId(checkpoint.to_string()),
+        tree_digest: tree_digest.to_string(),
         status,
         live_source_range,
         resolved_range_utf16,
@@ -338,17 +350,10 @@ fn attached(
 }
 
 impl DerivedAttachment {
-    fn with_checkpoint(mut self, checkpoint: &str) -> DerivedAttachment {
-        self.checkpoint_id = super::annotation::CheckpointId(checkpoint.to_string());
+    fn with_digest(mut self, tree_digest: &str) -> DerivedAttachment {
+        self.tree_digest = tree_digest.to_string();
         self
     }
-}
-
-fn slice16(units: &[u16], start: usize, end: usize) -> String {
-    if start >= end || start >= units.len() {
-        return String::new();
-    }
-    String::from_utf16_lossy(&units[start..end.min(units.len())])
 }
 
 fn common_prefix(a: &[u16], b: &[u16]) -> usize {
@@ -363,11 +368,149 @@ fn common_suffix(a: &[u16], b: &[u16]) -> usize {
         .count()
 }
 
+impl Room {
+    /// Re-anchors every cached comment against the document at head, and says
+    /// which ones moved.
+    ///
+    /// There is no `annotation_live_state` table any more (§8.3): the cursor
+    /// pair that lets a passage be tracked through edits lives only in this
+    /// room's in-memory comment cache, is never persisted, and is rebuilt from
+    /// nothing the first time a cold room needs it.
+    ///
+    /// Rebuilding it means forking the document at the state a comment names
+    /// (`anchor.frontier`, via `with_fork_at`, §4.3) and capturing cursors
+    /// there, because the anchor's own offsets are only valid at that state.
+    /// A cursor captured on a fork still resolves correctly against the head
+    /// document afterwards, because Loro cursors name an operation, not an
+    /// offset, and the fork shares the head document's history. Once a
+    /// comment has a cursor pair cached, every later pass resolves it
+    /// against head directly and never forks again for it.
+    pub(crate) async fn reattach_comments(
+        &self,
+    ) -> Result<Vec<(String, DerivedAttachment)>, SequencerError> {
+        // Which comments have no cached cursor pair yet, and the frontier to
+        // capture one at: the state the comment was written against, never
+        // head, because the anchor's offsets belong to that state alone.
+        let needing_capture: Vec<(String, Frontiers, SourceTextTarget)> = {
+            let guard = self.comments.read().await;
+            guard
+                .as_ref()
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|comment| {
+                            let anchor = comment.original_anchor.as_ref()?;
+                            let source = anchor.target.source()?;
+                            let cached = comment
+                                .attachment
+                                .as_ref()
+                                .and_then(|found| found.live_source_range.as_ref());
+                            if cached.is_some() {
+                                return None;
+                            }
+                            let frontier = Frontiers::decode(&anchor.frontier).ok()?;
+                            Some((comment.id.clone(), frontier, source.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut captured: HashMap<String, LiveSourceRange> = HashMap::new();
+        for (id, frontier, source) in needing_capture {
+            if let Ok(Some(live)) = self
+                .log()
+                .with_fork_at(&frontier, move |doc| capture(doc, &source))
+                .await
+            {
+                captured.insert(id, live);
+            }
+        }
+
+        let mut guard = self.comments.write().await;
+        let Some(list) = guard.as_mut() else {
+            return Ok(Vec::new());
+        };
+        if list.iter().all(|comment| comment.original_anchor.is_none()) {
+            return Ok(Vec::new());
+        }
+        self.log()
+            .with_head(|doc| {
+                let sources = Sources::of(doc);
+                let tree_digest = librepaper_document_core::project(doc, &self.config().paths())
+                    .projection
+                    .digest();
+                let mut moved = Vec::new();
+                for comment in list.iter_mut() {
+                    let Some(anchor) = comment.original_anchor.as_ref() else {
+                        continue;
+                    };
+                    let live = comment
+                        .attachment
+                        .as_ref()
+                        .and_then(|found| found.live_source_range.clone())
+                        .or_else(|| captured.get(&comment.id).cloned());
+                    let found = resolve(doc, &sources, &tree_digest, anchor, live.as_ref());
+                    if comment.attachment.as_ref() != Some(&found) {
+                        moved.push((comment.id.clone(), found.clone()));
+                        comment.attachment = Some(found);
+                    }
+                }
+                moved
+            })
+            .await
+    }
+
+    /// §4.5's cadence, applied to comments instead of to a reader's digest:
+    /// re-anchors and broadcasts at most once per housekeeping pass, and
+    /// only when there is something to do.
+    ///
+    /// Before the cutover this ran at the end of every accepted update, on
+    /// the write path. That is exactly the per-keystroke cost §1 and §5
+    /// exist to remove: `ingest` is a header decode, a gap check, an append
+    /// and a relay, full stop. So this is driven from `Rooms::housekeep`
+    /// instead, coalesced by construction (it only ever acts once per
+    /// digest, however many edits produced that digest) and free when
+    /// nothing is watching: a comments cache nobody has loaded is left
+    /// alone, and a document cache that is not already warm is not built
+    /// for this, the same restraint `Sequencer::projection_if_warm` gives a
+    /// reader's `source-changed`.
+    pub(crate) async fn reattach_comments_if_moved(&self) {
+        if self.comments.read().await.is_none() {
+            return;
+        }
+        let Some(projection) = self.log().projection_if_warm().await else {
+            return;
+        };
+        let digest = projection.projection.digest();
+        {
+            let mut last = self.reattached_digest.lock().await;
+            if last.as_deref() == Some(digest.as_str()) {
+                return;
+            }
+            *last = Some(digest);
+        }
+        let Ok(moved) = self.reattach_comments().await else {
+            return;
+        };
+        if moved.is_empty() {
+            return;
+        }
+        // Only editors: where a passage is in the source is source, and a
+        // reader of a published render is never told about it.
+        let payload = json!({
+            "type": "attachments",
+            "attachments": moved.iter().map(|(id, attachment)| {
+                json!({"comment_id": id, "attachment": attachment})
+            }).collect::<Vec<_>>(),
+        });
+        self.broadcast_editors_except(None, &payload).await;
+    }
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
     use crate::document::session;
-    use crate::room::annotation::{CheckpointId, FileId};
+    use crate::room::annotation::FileId;
 
     /// A document with one text file, the way a publish builds one.
     pub(super) fn document(path: &str, body: &str) -> (loro::LoroDoc, String) {
@@ -391,7 +534,8 @@ pub(super) mod tests {
 
     pub(super) fn anchor(target: SourceTextTarget) -> OriginalAnchor {
         OriginalAnchor {
-            checkpoint_id: CheckpointId("a".repeat(64)),
+            source_sequence: 1,
+            frontier: Vec::new(),
             target: CommentTarget::SourceText(target),
         }
     }
@@ -441,7 +585,8 @@ pub(super) mod tests {
     fn a_comment_on_the_whole_document_is_always_attached() {
         let (doc, _) = document("paper.md", "Anything at all.");
         let whole = OriginalAnchor {
-            checkpoint_id: CheckpointId("a".repeat(64)),
+            source_sequence: 1,
+            frontier: Vec::new(),
             target: CommentTarget::Document,
         };
         assert_eq!(

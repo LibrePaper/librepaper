@@ -2,7 +2,7 @@
 
 #figure(image("librepaper-icon.png", width: 24%), caption: [The LibrePaper icon, loaded as a relative project asset.])
 
-Welcome to LibrePaper. Edit this sentence in the browser and watch the preview update. Your Typst source, comments, highlights, and checkpoints travel with the document.
+Welcome to LibrePaper. Edit this sentence in the browser and watch the preview update. Your Typst source, comments, highlights, and labels travel with the document.
 
 == Source and preview
 
@@ -18,7 +18,7 @@ A formula is a rule a machine can be made to follow, the point Ada Lovelace made
 
 #include "sections/rendering.typ"
 
-The icon above is a relative project asset. Change its width, then make a checkpoint so a collaborator can compare the edit with the previous version.
+The icon above is a relative project asset. Change its width, then make a label so a collaborator can compare the edit with the previous version.
 
 == What Typst adds
 

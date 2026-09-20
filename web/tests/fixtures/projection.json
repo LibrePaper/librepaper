@@ -1,0 +1,898 @@
+{
+  "_comment": [
+    "The shared projection corpus (SPEC-server-is-a-log §4.4).",
+    "Read by crates/librepaper-document-core/tests/projection_fixtures.rs and by",
+    "web/tests/unit/projection.mjs, so the Rust and JavaScript projections are",
+    "held equal by trees and digests rather than by two people reading one",
+    "specification. `expect` is generated: run the Rust test with",
+    "LIBREPAPER_REGENERATE_FIXTURES=1 after adding a case, then read the diff."
+  ],
+  "cases": [
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [],
+        "digest": "4b1a5d15da93509b096d6c5e11e1e26bf7fd44b6a9ba30c005a0b19b1dfb47bc",
+        "files": [],
+        "main": "",
+        "mainId": ""
+      },
+      "files": [],
+      "meta": [],
+      "name": "an empty project",
+      "paths": []
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [],
+        "digest": "86a344c62d54c2632eb7e8f49975b6ed77f10ab872ee86ea336d71d89781c059",
+        "files": [
+          [
+            "paper.tex",
+            {
+              "bytes": 23,
+              "digest": "9f1c4eec1f3f6ab16d74135508a6667bb4ec027155c506bad8dfca807899f0a8",
+              "id": "aaa",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "paper.tex",
+        "mainId": "aaa"
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "\\documentclass{article}"
+        }
+      ],
+      "meta": [
+        {
+          "key": "main",
+          "value": "aaa"
+        }
+      ],
+      "name": "one file and its main pointer",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "paper.tex"
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [],
+        "digest": "975316db1b8404e559bf374c5cd6a2fb5ce2bac8421f34a72b47513417ae71d0",
+        "files": [
+          [
+            "chapters/résumé.md",
+            {
+              "bytes": 14,
+              "digest": "9106df4bcf78e2a07f8285e89c78d5056f8f3a55255c1b22e77dadd7ed20a652",
+              "id": "bbb",
+              "kind": "text"
+            }
+          ],
+          [
+            "😀.md",
+            {
+              "bytes": 22,
+              "digest": "0277d1253025c4f8be6f6a0c08d2157d4c4759db94fe42701a92fb79e735b020",
+              "id": "aaa",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "😀.md",
+        "mainId": "aaa"
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "😀 first line\nsecond"
+        },
+        {
+          "id": "bbb",
+          "text": "combining: é"
+        }
+      ],
+      "meta": [
+        {
+          "key": "main",
+          "value": "aaa"
+        }
+      ],
+      "name": "astral characters and combining marks in text and paths",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "😀.md"
+        },
+        {
+          "id": "bbb",
+          "path": "chapters/résumé.md"
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [
+          {
+            "from": "RÉSUMÉ.MD",
+            "id": "bbb",
+            "kind": "moved",
+            "to": "RÉSUMÉ (2).MD"
+          },
+          {
+            "from": "résumé.md",
+            "id": "ccc",
+            "kind": "moved",
+            "to": "résumé (3).md"
+          }
+        ],
+        "digest": "461ec085f31aaebb1f672d2d134f47aa02d0015b0df58df1fecd056b03ea63b6",
+        "files": [
+          [
+            "RÉSUMÉ (2).MD",
+            {
+              "bytes": 17,
+              "digest": "6e3e1675aadff6dbfb57687e619f5e9d2ad4dd7f83384b3c9dd5ba95453a54a3",
+              "id": "bbb",
+              "kind": "text"
+            }
+          ],
+          [
+            "Résumé.md",
+            {
+              "bytes": 9,
+              "digest": "2acb9cbbdb3b6b7c34acf499728a4a2d89b647327d8d5a25484065f8b7f57a7f",
+              "id": "aaa",
+              "kind": "text"
+            }
+          ],
+          [
+            "résumé (3).md",
+            {
+              "bytes": 17,
+              "digest": "61d30b37db3eb7237e8076708db27776d8210482b24afa7a3717d6ee259cb9ac",
+              "id": "ccc",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "Résumé.md",
+        "mainId": "aaa"
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "combining"
+        },
+        {
+          "id": "bbb",
+          "text": "precomposed upper"
+        },
+        {
+          "id": "ccc",
+          "text": "precomposed lower"
+        }
+      ],
+      "meta": [],
+      "name": "case and normalization collisions",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "Résumé.md"
+        },
+        {
+          "id": "bbb",
+          "path": "RÉSUMÉ.MD"
+        },
+        {
+          "id": "ccc",
+          "path": "résumé.md"
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [
+          {
+            "from": "paper.tex",
+            "id": "ccc",
+            "kind": "moved",
+            "to": "paper (3).tex"
+          },
+          {
+            "from": "paper.tex",
+            "id": "ddd",
+            "kind": "moved",
+            "to": "paper (4).tex"
+          }
+        ],
+        "digest": "e0edfe8051ddca4b61cefe399abee1c71fa299a43c5da1a583b3860d4dc4cfc6",
+        "files": [
+          [
+            "paper (2).tex",
+            {
+              "bytes": 12,
+              "digest": "573954d93658db3abbc1f1bd20d052a21cfa0bc72ad105c7b3b822dd995a4970",
+              "id": "bbb",
+              "kind": "text"
+            }
+          ],
+          [
+            "paper (3).tex",
+            {
+              "bytes": 6,
+              "digest": "16367aacb67a4a017c8da8ab95682ccb390863780f7114dda0a0e0c55644c7c4",
+              "id": "ccc",
+              "kind": "text"
+            }
+          ],
+          [
+            "paper (4).tex",
+            {
+              "bytes": 5,
+              "digest": "b1e99324505bd32da0e1f85dcf5e19a09db0481e8a15f62c41eb320304a8e927",
+              "id": "ddd",
+              "kind": "text"
+            }
+          ],
+          [
+            "paper.tex",
+            {
+              "bytes": 5,
+              "digest": "a7937b64b8caa58f03721bb6bacf5c78cb235febe0e70b1b84cd99541461a08e",
+              "id": "aaa",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "paper.tex",
+        "mainId": "aaa"
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "first"
+        },
+        {
+          "id": "bbb",
+          "text": "already here"
+        },
+        {
+          "id": "ccc",
+          "text": "second"
+        },
+        {
+          "id": "ddd",
+          "text": "third"
+        }
+      ],
+      "meta": [],
+      "name": "two concurrent creations of one path with a pre-existing name (2).ext",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "paper.tex"
+        },
+        {
+          "id": "bbb",
+          "path": "paper (2).tex"
+        },
+        {
+          "id": "ccc",
+          "path": "paper.tex"
+        },
+        {
+          "id": "ddd",
+          "path": "paper.tex"
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [
+          {
+            "id": "bbb",
+            "kind": "dropped",
+            "path": "chapters/one.tex/deeper.tex"
+          }
+        ],
+        "digest": "4da2b0714eaeec6303d34a9d9cc3a202dab1cc0f352bafee94484d5305cccf1e",
+        "files": [
+          [
+            "chapters/one.tex",
+            {
+              "bytes": 6,
+              "digest": "106b086224a4d945eae25f7be3805a931a873270326dd868b0e41f71ee9fff72",
+              "id": "aaa",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "chapters/one.tex",
+        "mainId": "aaa"
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "inside"
+        },
+        {
+          "id": "bbb",
+          "text": "shadowing the directory"
+        }
+      ],
+      "meta": [],
+      "name": "a file whose path is another file's directory",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "chapters/one.tex"
+        },
+        {
+          "id": "bbb",
+          "path": "chapters/one.tex/deeper.tex"
+        }
+      ]
+    },
+    {
+      "assets": [
+        {
+          "path": "fig/plot.svg",
+          "value": "a3f1c2d4e5b6978012345678901234567890abcdefabcdefabcdefabcdef0123"
+        }
+      ],
+      "expect": {
+        "diagnostics": [
+          {
+            "id": "aaa",
+            "kind": "invalid-path",
+            "path": "fig/plot.svg"
+          }
+        ],
+        "digest": "566460bf7acfdde4d502851726d48a58dcec3460054d49bba2a8fcc4cde7b74d",
+        "files": [
+          [
+            "fig/plot.svg",
+            {
+              "bytes": 0,
+              "digest": "a3f1c2d4e5b6978012345678901234567890abcdefabcdefabcdefabcdef0123",
+              "id": "",
+              "kind": "asset"
+            }
+          ]
+        ],
+        "main": "",
+        "mainId": ""
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "not really a figure"
+        }
+      ],
+      "meta": [],
+      "name": "a text and an asset at one path",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "fig/plot.svg"
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [
+          {
+            "id": "aaa",
+            "kind": "dangling"
+          },
+          {
+            "id": "aaa",
+            "kind": "not-a-text"
+          }
+        ],
+        "digest": "f74623085f5b6a6759e581aca8fd1789132c77678ee6d1cd9ff9ab05cd12549f",
+        "files": [
+          [
+            "right.md",
+            {
+              "bytes": 4,
+              "digest": "aa33996d60e89311b4d1a920dae03c6d7fa3ae1956c52662e273aad4683e577f",
+              "id": "bbb",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "right.md",
+        "mainId": "bbb"
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "value": 7
+        },
+        {
+          "id": "bbb",
+          "text": "real"
+        }
+      ],
+      "meta": [],
+      "name": "a files value of the wrong container kind",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "wrong.md"
+        },
+        {
+          "id": "bbb",
+          "path": "right.md"
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [
+          {
+            "id": "zzz",
+            "kind": "dangling"
+          },
+          {
+            "id": "aaa",
+            "kind": "unnamed"
+          },
+          {
+            "id": "aaa",
+            "kind": "unnamed"
+          }
+        ],
+        "digest": "4b1a5d15da93509b096d6c5e11e1e26bf7fd44b6a9ba30c005a0b19b1dfb47bc",
+        "files": [],
+        "main": "",
+        "mainId": ""
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "body"
+        }
+      ],
+      "meta": [],
+      "name": "a non-string path and a dangling path entry",
+      "paths": [
+        {
+          "id": "aaa",
+          "value": 7
+        },
+        {
+          "id": "zzz",
+          "path": "nobody-here.md"
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [
+          {
+            "id": "aaa",
+            "kind": "invalid-path",
+            "path": "../escape.md"
+          },
+          {
+            "id": "bbb",
+            "kind": "invalid-path",
+            "path": "a//b.md"
+          }
+        ],
+        "digest": "857353373426d282984e76b35418d54143057f1fdab50eddf047388aa35044b0",
+        "files": [
+          [
+            "ok.md",
+            {
+              "bytes": 4,
+              "digest": "d14a58bae804a2b80b5b76a010239c88ffca1fc7951a90f8e9131beda1e23c1b",
+              "id": "ccc",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "ok.md",
+        "mainId": "ccc"
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "escape"
+        },
+        {
+          "id": "bbb",
+          "text": "gap"
+        },
+        {
+          "id": "ccc",
+          "text": "fine"
+        }
+      ],
+      "meta": [],
+      "name": "a climbing path and an empty segment",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "../escape.md"
+        },
+        {
+          "id": "bbb",
+          "path": "a//b.md"
+        },
+        {
+          "id": "ccc",
+          "path": "ok.md"
+        }
+      ]
+    },
+    {
+      "assets": [
+        {
+          "path": "fig/a.png",
+          "value": "short"
+        },
+        {
+          "path": "fig/b.png",
+          "value": 7
+        },
+        {
+          "path": "fig/c.png",
+          "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }
+      ],
+      "expect": {
+        "diagnostics": [
+          {
+            "kind": "not-a-digest",
+            "path": "fig/a.png"
+          },
+          {
+            "kind": "not-a-digest",
+            "path": "fig/b.png"
+          }
+        ],
+        "digest": "a789a31434c047e2a7a3f6cc8528beeb66f8f83674454690433383d017cfe001",
+        "files": [
+          [
+            "fig/c.png",
+            {
+              "bytes": 0,
+              "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+              "id": "",
+              "kind": "asset"
+            }
+          ]
+        ],
+        "main": "",
+        "mainId": ""
+      },
+      "files": [],
+      "meta": [],
+      "name": "an asset value that is not a digest",
+      "paths": []
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [],
+        "digest": "4fb2d59849085dd60a3db94d0fc6a5deb662c1a0eb3edaf70375b6c86c92a31d",
+        "files": [
+          [
+            "alpha.md",
+            {
+              "bytes": 1,
+              "digest": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+              "id": "aaa",
+              "kind": "text"
+            }
+          ],
+          [
+            "zeta.md",
+            {
+              "bytes": 1,
+              "digest": "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+              "id": "bbb",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "alpha.md",
+        "mainId": "aaa"
+      },
+      "files": [
+        {
+          "id": "bbb",
+          "text": "b"
+        },
+        {
+          "id": "aaa",
+          "text": "a"
+        }
+      ],
+      "meta": [],
+      "name": "an absent main falls back to the first text",
+      "paths": [
+        {
+          "id": "bbb",
+          "path": "zeta.md"
+        },
+        {
+          "id": "aaa",
+          "path": "alpha.md"
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [
+          {
+            "id": "gone",
+            "kind": "main-missing"
+          }
+        ],
+        "digest": "9e1442386b4c36dc5efc15fd5130a10c12c66fa366015674675e61c31c197310",
+        "files": [
+          [
+            "a.md",
+            {
+              "bytes": 1,
+              "digest": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+              "id": "aaa",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "a.md",
+        "mainId": "aaa"
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "a"
+        }
+      ],
+      "meta": [
+        {
+          "key": "main",
+          "value": "gone"
+        }
+      ],
+      "name": "meta.main naming a deleted file",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "a.md"
+        }
+      ]
+    },
+    {
+      "assets": [],
+      "expect": {
+        "diagnostics": [
+          {
+            "id": "aaa",
+            "kind": "invalid-path",
+            "path": "paper.log"
+          },
+          {
+            "id": "bbb",
+            "kind": "invalid-path",
+            "path": "notes.xyz"
+          }
+        ],
+        "digest": "dab591df7f37452da6d04758bc4599e4282783aadd22c13f2922e8545b14a116",
+        "files": [
+          [
+            "paper.tex",
+            {
+              "bytes": 4,
+              "digest": "79f076abdd19a752db7267bfff2f9022161d120dea919fdaca2ffdfc24ca8c96",
+              "id": "ccc",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "paper.tex",
+        "mainId": "ccc"
+      },
+      "files": [
+        {
+          "id": "aaa",
+          "text": "log output"
+        },
+        {
+          "id": "bbb",
+          "text": "binary-ish"
+        },
+        {
+          "id": "ccc",
+          "text": "kept"
+        }
+      ],
+      "meta": [],
+      "name": "a derived extension and an unknown extension",
+      "paths": [
+        {
+          "id": "aaa",
+          "path": "paper.log"
+        },
+        {
+          "id": "bbb",
+          "path": "notes.xyz"
+        },
+        {
+          "id": "ccc",
+          "path": "paper.tex"
+        }
+      ]
+    },
+    {
+      "assets": [
+        {
+          "path": "fig/plot.png",
+          "value": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "path": "chapters/one.typ",
+          "value": "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ],
+      "expect": {
+        "diagnostics": [
+          {
+            "id": "0004",
+            "kind": "dangling"
+          },
+          {
+            "id": "asset:chapters/one.typ",
+            "kind": "invalid-path",
+            "path": "chapters/one.typ"
+          },
+          {
+            "from": "chapters/one.typ",
+            "id": "0003",
+            "kind": "moved",
+            "to": "chapters/one (2).typ"
+          },
+          {
+            "id": "0004",
+            "kind": "not-a-text"
+          }
+        ],
+        "digest": "c5d83f71d3602912dc76a271b1ac10976163d0dc01646ba8f373fd977857ed98",
+        "files": [
+          [
+            "chapters/one (2).typ",
+            {
+              "bytes": 11,
+              "digest": "c8523e9dd972b32cac1344a780576b729267ec94ed07be3dc6da493f461f9ee0",
+              "id": "0003",
+              "kind": "text"
+            }
+          ],
+          [
+            "chapters/one.typ",
+            {
+              "bytes": 11,
+              "digest": "d3c22a826e97e9ad2afbceb6f77f70d2245600844259b7596fb109b524b445e4",
+              "id": "0002",
+              "kind": "text"
+            }
+          ],
+          [
+            "fig/plot.png",
+            {
+              "bytes": 0,
+              "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+              "id": "",
+              "kind": "asset"
+            }
+          ],
+          [
+            "main.typ",
+            {
+              "bytes": 9,
+              "digest": "06b262597d8e28c5d76e44d7c70ae8f660977b72cf17d79bd2b0ff554c0f358f",
+              "id": "0001",
+              "kind": "text"
+            }
+          ]
+        ],
+        "main": "main.typ",
+        "mainId": "0001"
+      },
+      "files": [
+        {
+          "id": "0001",
+          "text": "main body"
+        },
+        {
+          "id": "0002",
+          "text": "chapter one"
+        },
+        {
+          "id": "0003",
+          "text": "chapter two"
+        },
+        {
+          "id": "0004",
+          "value": true
+        }
+      ],
+      "meta": [
+        {
+          "key": "main",
+          "value": "0001"
+        }
+      ],
+      "name": "a project with every shape at once",
+      "paths": [
+        {
+          "id": "0001",
+          "path": "main.typ"
+        },
+        {
+          "id": "0002",
+          "path": "chapters/one.typ"
+        },
+        {
+          "id": "0003",
+          "path": "chapters/one.typ"
+        },
+        {
+          "id": "0004",
+          "path": "bad.typ"
+        }
+      ]
+    }
+  ],
+  "rules": {
+    "asset_extensions": [
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".svg",
+      ".pdf",
+      ".gif",
+      ".webp"
+    ],
+    "derived_extensions": [
+      ".log",
+      ".aux",
+      ".out",
+      ".toc",
+      ".synctex"
+    ],
+    "max_path": 255,
+    "text_extensions": [
+      ".tex",
+      ".md",
+      ".typ",
+      ".qmd",
+      ".html",
+      ".bib",
+      ".txt",
+      ".css",
+      ".cls",
+      ".sty"
+    ]
+  }
+}

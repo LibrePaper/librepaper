@@ -21,7 +21,7 @@ const MAX_OUTPUT: usize = 32 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct RenderReceipt {
     pub candidate_id: String,
-    pub source_revision: String,
+    pub tree_digest: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
@@ -210,9 +210,13 @@ fn manifest(
     ));
     Ok(json!({
         "candidate_id": candidate_id,
-        "base_revision": candidate.base_revision,
-        "source_revision": candidate.source_revision,
-        "revision": candidate.source_revision,
+        // "base_revision" and "revision" are the render-preview protocol's
+        // wire keys (docs/protocol/chat.md), not this cutover's vocabulary;
+        // they stay as they are. "tree_digest" below is the same value as
+        // "revision" -- it used to be the redundant "source_revision" key.
+        "base_revision": candidate.base_tree_digest,
+        "revision": candidate.tree_digest,
+        "tree_digest": candidate.tree_digest,
         "main": view.snapshot.tree["main"],
         "files": files,
         "settings": settings,
@@ -262,18 +266,18 @@ impl Server {
         actor: &str,
         candidate_id: &str,
         task_id: &str,
-        base_revision: &str,
-        source_revision: &str,
+        base_tree_digest: &str,
+        tree_digest: &str,
         expires_at: i64,
     ) -> Value {
         json!({
             "type": "preview_request",
             // Stable across an MCP retry so a result arriving after the
             // bounded inline wait can be recovered from the channel journal.
-            "id": format!("render_{}", hex::encode(Sha256::digest(format!("{candidate_id}\0{source_revision}").as_bytes()))),
+            "id": format!("render_{}", hex::encode(Sha256::digest(format!("{candidate_id}\0{tree_digest}").as_bytes()))),
             "task_id": task_id,
-            "base_revision": base_revision,
-            "revision": source_revision,
+            "base_revision": base_tree_digest,
+            "revision": tree_digest,
             "candidate_id": candidate_id,
             "candidate_token": self.candidate_token(slug, candidate_id, actor, expires_at),
         })
@@ -285,11 +289,11 @@ impl Server {
     /// different source tree.
     pub(super) fn render_receipt(
         candidate_id: &str,
-        source_revision: &str,
+        tree_digest: &str,
         result: &Value,
     ) -> Result<RenderReceipt, Failure> {
         if !valid_id(candidate_id)
-            || result.get("revision").and_then(Value::as_str) != Some(source_revision)
+            || result.get("revision").and_then(Value::as_str) != Some(tree_digest)
             || result.get("ok").and_then(Value::as_bool).is_none()
             || !result.get("diagnostics").is_some_and(Value::is_array)
         {
@@ -333,7 +337,7 @@ impl Server {
         }
         Ok(RenderReceipt {
             candidate_id: candidate_id.to_string(),
-            source_revision: source_revision.to_string(),
+            tree_digest: tree_digest.to_string(),
             status: if result["ok"].as_bool().unwrap_or(false) {
                 "verified".into()
             } else {
@@ -381,8 +385,8 @@ impl Server {
             actor,
             candidate_id,
             task_id,
-            &candidate.base_revision,
-            &candidate.source_revision,
+            &candidate.base_tree_digest,
+            &candidate.tree_digest,
             candidate.expires_at,
         );
         let result = self
@@ -396,7 +400,7 @@ impl Server {
             )
             .await
             .map_err(|(_, message)| Failure::new("renderer_unavailable", message))?;
-        let receipt = Self::render_receipt(candidate_id, &candidate.source_revision, &result)?;
+        let receipt = Self::render_receipt(candidate_id, &candidate.tree_digest, &result)?;
         self.mcp_recheck(slug, headers, arrival, actor).await?;
         self.store_render_receipt(slug, actor, who, candidate, receipt.clone())
             .await?;
@@ -474,7 +478,7 @@ impl Server {
     ) -> Result<(), Failure> {
         if receipt.candidate_id.is_empty()
             || receipt.candidate_id.len() > MAX_CANDIDATE_ID
-            || receipt.source_revision != candidate.source_revision
+            || receipt.tree_digest != candidate.tree_digest
             || serde_json::to_vec(&receipt.diagnostics)
                 .map_err(|_| Failure::new("invalid_params", "invalid diagnostics"))?
                 .len()

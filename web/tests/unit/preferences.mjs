@@ -28,11 +28,11 @@ const got = (key) => JSON.parse(store.get(key));
 // A first visit: the defaults, and nothing written until something is chosen.
 {
   store.clear();
-  const prefs = createPreferences();
+  const prefs = createPreferences("paper");
   assert.equal(prefs.state.layout, "split");
   assert.equal(prefs.state.sourceSide, "left");
   assert.equal(prefs.state.keys, "default");
-  assert.equal(prefs.state.panel, "files", "every open starts on the shape of the project");
+  assert.equal(prefs.state.panel, "files", "a document not seen before opens on its files");
   assert.equal(prefs.state.mobileView, "document");
   assert.equal(store.size, 0, "reading remembers nothing");
 }
@@ -44,10 +44,12 @@ const got = (key) => JSON.parse(store.get(key));
   put("librepaper-layout", "three-columns");
   put("librepaper-source-side", "middle");
   put("librepaper-mobile-view", "elsewhere");
-  const prefs = createPreferences();
+  put("librepaper-panel", { paper: "nonsense" });
+  const prefs = createPreferences("paper");
   assert.equal(prefs.state.layout, "split");
   assert.equal(prefs.state.sourceSide, "left");
   assert.equal(prefs.state.mobileView, "document");
+  assert.equal(prefs.state.panel, "files", "an unrecognized remembered panel falls through to the files");
 }
 
 // Every setter writes. This is the whole reason the module exists: setting
@@ -55,7 +57,7 @@ const got = (key) => JSON.parse(store.get(key));
 // sites, and the second was the one that got left out.
 {
   store.clear();
-  const prefs = createPreferences();
+  const prefs = createPreferences("paper");
   prefs.setLayout("source");
   assert.equal(prefs.state.layout, "source");
   assert.equal(got("librepaper-layout"), "source");
@@ -75,16 +77,17 @@ const got = (key) => JSON.parse(store.get(key));
   assert.equal(got(PANES.editor.key), 0.35);
 }
 
-// The panel is the one arrangement that is not remembered: which panel the
-// last document was left on says nothing about the one being opened now, so
-// every open starts on the files.
+// The panel is remembered per document: returning to the one it was set on
+// finds it again, but a different document is unaffected and still opens on
+// its files.
 {
   store.clear();
-  const prefs = createPreferences();
+  const prefs = createPreferences("paper");
   prefs.setPanel("history");
   assert.equal(prefs.state.panel, "history");
-  assert.equal(store.size, 0, "showing a panel writes nothing");
-  assert.equal(createPreferences().state.panel, "files", "and the next open is back on the files");
+  assert.deepEqual(got("librepaper-panel"), { paper: "history" }, "the panel is written down against this document");
+  assert.equal(createPreferences("paper").state.panel, "history", "reopening the same document finds it again");
+  assert.equal(createPreferences("other").state.panel, "files", "a document not seen before still opens on its files");
 }
 
 // Storage can be switched off, and a page that threw when it was would be a
@@ -95,10 +98,12 @@ const got = (key) => JSON.parse(store.get(key));
     getItem: () => { throw new Error("storage is off"); },
     setItem: () => { throw new Error("storage is off"); },
   };
-  const prefs = createPreferences();
+  const prefs = createPreferences("paper");
   assert.equal(prefs.state.layout, "split");
   prefs.setLayout("document");
   assert.equal(prefs.state.layout, "document", "the choice still applies to this page");
+  prefs.setPanel("history");
+  assert.equal(prefs.state.panel, "history", "the choice still applies to this page");
   globalThis.localStorage = working;
 }
 

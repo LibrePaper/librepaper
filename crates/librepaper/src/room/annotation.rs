@@ -5,8 +5,8 @@
 //! it stood when they selected it: it is written once and never touched again,
 //! because a record of what someone said something about cannot be edited by
 //! later events. [`DerivedAttachment`] is where that passage is now, which
-//! changes every time anyone types. It is a cache, keyed by the checkpoint it
-//! was computed against, and throwing it away costs nothing.
+//! changes every time anyone types. It is a cache, keyed by the projection
+//! digest it was computed against, and throwing it away costs nothing.
 //!
 //! [`PresentationContext`] is the third thing, and the one that used to be
 //! mistaken for the first: the words as the page had them. It is evidence for
@@ -15,35 +15,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// How a revision that is a position in the operation history is spelled,
-/// rather than a checkpoint. The browser reads the same spelling, so one
-/// reader can tell the two kinds apart without being told which it is
-/// holding.
-pub const MOMENT: &str = "frontier:";
-
-/// Opaque identity of one immutable state of the document's source.
-///
-/// Two things are such a state and both are spelled here. A checkpoint id
-/// names a version somebody asked for -- a label, a bundle, a restore.
-/// A `frontier:`-prefixed anchor names a position in the operation log, which
-/// is every state the document has ever been in, including the ones nobody
-/// saved. A comment made on the live draft carries the second kind: it is
-/// exact, it is free, and the alternative was writing a whole source archive
-/// for every remark somebody made.
-///
-/// A path is never part of an anchor's identity, and neither is a render.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct CheckpointId(pub String);
-
-impl CheckpointId {
-    /// Whether this names a position in the operation history rather than a
-    /// checkpoint, and the anchor if it does.
-    pub fn moment(&self) -> Option<&str> {
-        self.0.strip_prefix(MOMENT)
-    }
-}
-
 /// Stable Loro `files` map key. Resolve it to a path only against the current
 /// document view, after the identity has already been established -- a path is
 /// a name, and names change.
@@ -51,16 +22,44 @@ impl CheckpointId {
 #[serde(transparent)]
 pub struct FileId(pub String);
 
-/// What a comment is about. Written once, with the checkpoint it was written
-/// against, and never written again.
+/// What a comment is about. Written once, with the evidence of the state it
+/// was written against, and never written again.
+///
+/// Two facts stand in for the old `checkpoint_id`, because they answer two
+/// different questions (§7 step 4, §8.2). `source_sequence` is the
+/// `document_updates` row that made the quoted text durable -- it is what
+/// says the comment and the text it quotes were written in one transaction.
+/// `frontier` is the encoded Loro frontier of the state the range was
+/// measured against -- it is what `fork_at` needs to reconstruct that state,
+/// and unlike the row it names, it survives compaction (§8.2, §8.4).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OriginalAnchor {
-    pub checkpoint_id: CheckpointId,
-    /// Flattened, so an anchor is one object on the wire -- `{checkpoint_id,
-    /// kind, target}` -- rather than a target nested inside a field of its own
-    /// name.
+    pub source_sequence: i64,
+    /// Base64 on the wire, like every other frontier this server sends (a
+    /// label's, in `history.rs`'s `label_wire`) -- a client that wants to
+    /// read a comment's own moment back (`GET .../history/frontier:<this>`)
+    /// passes it straight through rather than re-encoding a byte array.
+    #[serde(with = "frontier_wire")]
+    pub frontier: Vec<u8>,
+    /// Flattened, so an anchor is one object on the wire -- `{source_sequence,
+    /// frontier, kind, target}` -- rather than a target nested inside a field
+    /// of its own name.
     #[serde(flatten)]
     pub target: CommentTarget,
+}
+
+mod frontier_wire {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        crate::room::encode_update(bytes).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        crate::room::decode_update(&text)
+            .ok_or_else(|| serde::de::Error::custom("frontier is not base64"))
+    }
 }
 
 /// The kinds of thing a comment can be about.
@@ -70,7 +69,7 @@ pub struct OriginalAnchor {
 /// orphaned. Anchors onto generated objects -- a bibliography entry, a figure
 /// caption, one output of a Quarto cell -- need the renderer to say which
 /// producer made which part of the page, and the renderers this build serves
-/// do not say (see `docs/protocol/room-v1.md`).
+/// do not say (see `docs/protocol/room-v2.md`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "target", rename_all = "snake_case")]
 pub enum CommentTarget {
@@ -171,14 +170,16 @@ pub struct LiveSourceRange {
     pub cursor_format: String,
 }
 
-/// Where a comment's passage is in one particular checkpoint.
+/// Where a comment's passage is in one particular projection.
 ///
 /// A cache and nothing more: it is recomputed from the original anchor and the
 /// document's history whenever either moves, and no part of it is historical
-/// truth.
+/// truth. It is keyed by `tree_digest`, the projection's own identity (§2.2:
+/// "Projection identity is a tree digest, not a row number"), never
+/// persisted.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DerivedAttachment {
-    pub checkpoint_id: CheckpointId,
+    pub tree_digest: String,
     pub status: AnchorStatus,
     #[serde(default, skip_serializing)]
     pub live_source_range: Option<LiveSourceRange>,
@@ -295,7 +296,8 @@ mod tests {
 
     fn passage() -> OriginalAnchor {
         OriginalAnchor {
-            checkpoint_id: CheckpointId("abc".into()),
+            source_sequence: 42,
+            frontier: vec![1, 2, 3],
             target: CommentTarget::SourceText(SourceTextTarget {
                 file_id: FileId("file-1".into()),
                 start_utf16: 4,
@@ -310,11 +312,11 @@ mod tests {
     }
 
     /// The shape a client reads, pinned: one object, with the kind beside the
-    /// checkpoint rather than a target inside a target.
+    /// evidence rather than a target inside a target.
     #[test]
     fn an_anchor_is_one_object_on_the_wire() {
         let json = serde_json::to_value(passage()).unwrap();
-        assert_eq!(json["checkpoint_id"], "abc");
+        assert_eq!(json["source_sequence"], 42);
         assert_eq!(json["kind"], "source_text");
         assert_eq!(json["target"]["file_id"], "file-1");
         assert_eq!(json["target"]["start_utf16"], 4);
@@ -327,7 +329,8 @@ mod tests {
     #[test]
     fn a_document_anchor_has_a_kind_and_nothing_else() {
         let whole = OriginalAnchor {
-            checkpoint_id: CheckpointId("abc".into()),
+            source_sequence: 42,
+            frontier: vec![1, 2, 3],
             target: CommentTarget::Document,
         };
         let json = serde_json::to_value(&whole).unwrap();
@@ -344,7 +347,7 @@ mod tests {
     #[test]
     fn cursors_do_not_travel_with_an_attachment() {
         let attachment = DerivedAttachment {
-            checkpoint_id: CheckpointId("abc".into()),
+            tree_digest: "abc".into(),
             status: AnchorStatus::Modified,
             live_source_range: Some(LiveSourceRange {
                 start_cursor: vec![1, 2, 3],

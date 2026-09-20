@@ -24,6 +24,7 @@
 //! sentence, which is worse than asking for a longer selection.
 
 use super::annotation::{AnchorSide, FileId, SourceTextTarget};
+use super::text::slice16;
 
 /// Below this a phrase is too common to identify a place on its own:
 /// "the interval" appears throughout a document about intervals. A selection
@@ -556,13 +557,6 @@ fn unit_char(units: &[u16], at: usize) -> char {
         .copied()
         .and_then(|unit| char::from_u32(unit as u32))
         .unwrap_or('\u{fffd}')
-}
-
-fn slice16(units: &[u16], start: usize, end: usize) -> String {
-    if start >= end || start >= units.len() {
-        return String::new();
-    }
-    String::from_utf16_lossy(&units[start..end.min(units.len())])
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ use std::process::Stdio;
 use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use librepaper_document_core::{Entry, Projection};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
@@ -18,28 +19,42 @@ async fn project_export_writes_verified_text_and_binary_files() {
     let asset = b"\0PNG captured bytes".to_vec();
     let text_sha = hex::encode(Sha256::digest(text.as_bytes()));
     let asset_sha = hex::encode(Sha256::digest(&asset));
-    let tree = json!({"main":"paper.md","files":{
-        "figures/chart.png":{"kind":"asset","sha":asset_sha.clone(),"size":asset.len()},
-        "paper.md":{"kind":"text","id":"source-id","sha":text_sha.clone(),"size":text.len()}
-    }});
-    #[derive(serde::Serialize)]
-    struct Identity<'a> {
-        main: &'a str,
-        files: BTreeMap<&'a str, (&'a str, &'a str)>,
-    }
-    let identity = Identity {
-        main: "paper.md",
-        files: [
-            ("figures/chart.png", ("asset", asset_sha.as_str())),
-            ("paper.md", ("text", text_sha.as_str())),
-        ]
-        .into_iter()
-        .collect(),
+
+    // The live export reads `/snapshot`, which carries the head projection
+    // (SPEC-server-is-a-log §4.4) rather than the old `tree`/`sha` shape.
+    // Building a real `Projection` and asking it for its own digest, instead
+    // of hand-rolling the canonical form here, keeps this test honest against
+    // whatever `Projection::digest` actually does.
+    let mut files = BTreeMap::new();
+    files.insert(
+        "paper.md".to_string(),
+        Entry {
+            kind: "text".into(),
+            id: "source-id".into(),
+            digest: text_sha.clone(),
+            bytes: text.len() as u64,
+        },
+    );
+    files.insert(
+        "figures/chart.png".to_string(),
+        Entry {
+            kind: "asset".into(),
+            id: String::new(),
+            digest: asset_sha.clone(),
+            bytes: asset.len() as u64,
+        },
+    );
+    let projection = Projection {
+        main: "paper.md".into(),
+        main_id: "source-id".into(),
+        files,
+        diagnostics: Vec::new(),
     };
-    let tree_sha = hex::encode(Sha256::digest(serde_json::to_vec(&identity).unwrap()));
+    let digest = projection.digest();
     let snapshot = json!({
-        "version": 1, "protocol": "librepaper.snapshot.v1", "slug": SLUG,
-        "sha": tree_sha, "tree": tree, "texts": {"paper.md": text}
+        "digest": digest,
+        "projection": projection,
+        "texts": {"paper.md": text}
     });
     let listed = json!({"documents":[{"slug":SLUG,"title":"Paper"}]});
     let expected_asset_sha = asset_sha.clone();

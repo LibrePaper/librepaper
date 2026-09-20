@@ -162,9 +162,24 @@ impl Server {
                 if entry.publisher_id != who.id {
                     return Err("starter document belongs to another account".into());
                 }
+            } else if let Some(days) = self.simulate_activity {
+                // A demonstration deployment asks for a history it can look
+                // at: the starter is written as though it had been typed
+                // over the requested days rather than published whole.
+                // `seed::activity::simulate` insists its document holds no
+                // log rows yet, so this creates the bare catalogue row
+                // itself instead of going through `put_directory_as_actor`,
+                // which would give it one straight away. A failure here is
+                // cosmetic, so the account keeps its documents and the
+                // operator hears about it.
+                if let Err(error) = self
+                    .simulate_starter(catalog, &slug, starter, &actor, account_id, days)
+                    .await
+                {
+                    eprintln!("warning: {slug} activity not simulated: {error}");
+                }
             } else {
-                let entry = self
-                    .store
+                self.store
                     .put_directory_as_actor(
                         DocumentInput {
                             slug: slug.clone(),
@@ -182,29 +197,70 @@ impl Server {
                     )
                     .await
                     .map_err(|e| e.to_string())?;
-                // A demonstration deployment asks for a history it can look
-                // at: the starter is rewritten as though it had been typed
-                // over the requested days. The operations are real and only
-                // the clock is invented; see `crate::seed::activity`. A
-                // failure here is cosmetic, so the account keeps its
-                // documents and the operator hears about it.
-                if let Some(days) = self.simulate_activity {
-                    if let Ok(id) = uuid::Uuid::parse_str(&entry.storage_id) {
-                        if let Err(error) = crate::seed::activity::simulate(
-                            catalog.clone(),
-                            self.store.blobs.clone(),
-                            id,
-                            &slug,
-                            days,
-                        )
-                        .await
-                        {
-                            eprintln!("warning: {slug} activity not simulated: {error}");
-                        }
-                    }
-                }
             }
         }
         Ok(())
+    }
+
+    /// Creates one starter's catalogue row bare -- no content, no log rows --
+    /// and hands it to `seed::activity::simulate`, which is the only thing
+    /// allowed to write its first row: `simulate` insists on an empty log so
+    /// that every label it takes names a state the document's history
+    /// genuinely passed through, which a document already published by
+    /// `put_directory_as_actor` could no longer promise.
+    async fn simulate_starter(
+        &self,
+        catalog: &std::sync::Arc<crate::storage::postgres::PostgresCatalog>,
+        slug: &str,
+        starter: &Starter,
+        actor: &crate::document::store::MutationActor,
+        account_id: uuid::Uuid,
+        days: u32,
+    ) -> Result<(), String> {
+        let document = catalog
+            .create_document(crate::storage::postgres::NewDocument {
+                slug: slug.to_string(),
+                owner_id: account_id,
+                ownership_mode: if actor.unowned_publisher {
+                    "open".into()
+                } else {
+                    "owned".into()
+                },
+                title: starter.title.into(),
+                source_format: starter.format.into(),
+                main_path: starter.main.into(),
+                settings: serde_json::json!({"version":1}),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        let files: Vec<(String, Vec<u8>)> = starter
+            .files
+            .iter()
+            .map(|(path, bytes)| ((*path).into(), bytes.to_vec()))
+            .collect();
+        let (texts, assets) = self
+            .store
+            .sort_and_write_assets(document.id, files)
+            .await
+            .map_err(|e| e.to_string())?;
+        let texts: std::collections::BTreeMap<String, String> = texts.into_iter().collect();
+        let author_label = match catalog.account_display_name(account_id).await {
+            name if name.is_empty() => actor.owner_key.clone(),
+            name => name,
+        };
+        crate::seed::activity::simulate(
+            catalog.clone(),
+            document.id,
+            slug,
+            starter.main,
+            starter.source,
+            &texts,
+            &assets,
+            account_id,
+            &author_label,
+            days,
+        )
+        .await
+        .map(|_| ())
     }
 }

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM superseded_bases WHERE snapshot_key=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a3aea1427ba32396ee2da2de35b4a120f3c8a23315d5f837a5ec4c27720bdfdf"
+}

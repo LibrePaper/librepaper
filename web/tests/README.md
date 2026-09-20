@@ -19,15 +19,24 @@ each check asserts.
 
 ### Unit
 
-`agent-client`, `anchor`, `assistant-preview`, `assistant-review`, `assistant`,
-`citations`, `commands`, `diagnostics`, `downloads`, `file-manager`,
-`insert`, `landing`, `latex-biber`, `latex-bibliography`,
-`latex-driver`, `latex-engine`, `latex-log`, `latex-reader`, `latex-route`,
-`math`, `orphan`, `outline`, `passages`, `pdf-fit`,
-`quarto-options`, `quarto`, `quota-preferences`, `reader-annotations`,
-`reader-assistant`, `reader-preview`, `reader-races`, `reader-source-events`,
-`review-fixes`, `settings-quarto`, `share-links`,
-`submissions`, `suggestions`, `timeline`, `tree-digest`, and `vocabulary`.
+`activity`, `agent-client`, `anchor`, `annotating`, `annotation-bar`,
+`assistant`, `assistant-preview`, `assistant-review`, `build-catalog`,
+`build-preferences`, `citations`, `collab-awareness`, `commands`,
+`companion-status`, `diagnostics`, `downloads`, `file-manager`,
+`frame-overlays`, `generation`, `history-calendar`, `insert`, `landing`,
+`latex-biber`, `latex-bibliography`, `latex-driver`, `latex-engine`,
+`latex-log`, `latex-reader`, `loro-codemirror`, `math`, `offline-projects`,
+`orphan`, `outline`, `panels`, `passage-trace`, `passages`, `pdf-fit`,
+`playground`, `preferences`, `presence-colour`, `presence-distinct`,
+`preview-cache`, `project-session`, `project-upload`, `projection`,
+`projection-digest`, `proposal-contention`, `proposal-draft-marks`,
+`proposal-marks`, `proposals`, `quarto`, `quarto-options`,
+`quota-preferences`, `reader-annotations`, `reader-assistant`,
+`reader-preview`, `reader-races`, `reader-source-events`,
+`render-coordinator`, `render-diagnostics`, `review-fixes`, `room`,
+`settings-account`, `settings-quarto`, `steady-busy`, `submissions`,
+`suggestions`, `synctex`, `thread`, `timeline`, `vocabulary`, `workspace`,
+and `zip`.
 
 ### Integration
 

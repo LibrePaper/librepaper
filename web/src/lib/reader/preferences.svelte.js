@@ -1,9 +1,10 @@
 // What this reader has arranged, and what they find when they come back.
 //
 // The arrangement of the window, which side the source is on, which keys the
-// editor answers to, how wide the panes are: none of it is about the
-// document, all of it is about the person at this browser, and all of it is
-// remembered. The panel the column shows is the exception -- see below.
+// editor answers to, which panel the column is showing, how wide the panes
+// are: none of it is about the document, all of it is about the person at
+// this browser, and all of it is remembered. The panel is the one exception
+// remembered per document rather than globally -- see below.
 //
 // It is here rather than in the page because remembering was the part that
 // kept going wrong. Setting the arrangement and writing it down were two
@@ -17,8 +18,9 @@
 // this one does not, so every one of them is checked against what is on
 // offer now rather than trusted.
 
-import { KEYMAP, LAYOUT, SOURCE_SIDE, read, write } from "../storage.js";
+import { KEYMAP, LAYOUT, SOURCE_SIDE, panelFor, read, rememberPanel, write } from "../storage.js";
 import { LAYOUTS, PANES, remember, stored } from "../panes.js";
+import { PANEL_IDS } from "../panels.js";
 
 const MOBILE_VIEW = "librepaper-mobile-view";
 const KEYMAPS = ["vim", "emacs"];
@@ -26,17 +28,16 @@ const MOBILE_VIEWS = ["document", "source", "sidebar"];
 
 const oneOf = (options, value, fallback) => (options.includes(value) ? value : fallback);
 
-export function createPreferences() {
+export function createPreferences(slug) {
   const state = $state({
     layout: oneOf(LAYOUTS, read(LAYOUT, "split"), "split"),
     sourceSide: read(SOURCE_SIDE, "left") === "right" ? "right" : "left",
     keys: oneOf(KEYMAPS, read(KEYMAP, "default"), "default"),
-    // The one arrangement that is not remembered. Opening a document is
-    // opening its files: whichever panel the last document was left on --
-    // its history, its agent, its comments -- was about that document rather
-    // than this one, and starting there means starting somewhere the reader
-    // has to leave before they can see what they opened.
-    panel: "files",
+    // Remembered per document, not globally: a document this browser has not
+    // seen before opens on its files, but reloading the one being read --
+    // including the reconnect that follows a slow join -- returns to the
+    // panel it had open.
+    panel: oneOf(PANEL_IDS, panelFor(slug), "files"),
     collaborationTab: "comments",
     // Narrow screens show one workspace view at a time. Independent of the
     // desktop split, so widening the window restores the reader's layout.
@@ -67,10 +68,12 @@ export function createPreferences() {
       state.keys = next;
       write(KEYMAP, next);
     },
-    /// The panel the column is showing, for this visit only. Nothing is
-    /// written down: the next document opens on its files.
+    /// The panel the column is showing. Written down against this document,
+    /// so a browser that comes back to it -- rather than to a different one
+    /// -- finds it again.
     setPanel(name) {
       state.panel = name;
+      rememberPanel(slug, name);
     },
     setMobileView(view) {
       state.mobileView = view;

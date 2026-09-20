@@ -1,13 +1,16 @@
-//! MCP annotation actions.  All effects go through the room's atomic batch
-//! path; this module only translates the deliberately small MCP shape.
+//! MCP annotation actions.
+//!
+//! Under SPEC-server-is-a-log §7 every effect here is a semantic command
+//! (`crate::room::{AddComment, AddReply, ResolveComment, DeleteComment,
+//! RefineSuggestion, RejectSuggestion}`), run through `room.command`. A
+//! comment's anchor is no longer built here and handed down: `AddComment`
+//! relocates the quoted words against head itself (§7.1), which is what
+//! makes "the passage moved" a precondition failure instead of a race this
+//! module would have to guess about.
 
 use super::*;
 use crate::room::agent::OperationKey;
-use crate::room::agent_comments::AgentAnnotationAuthority;
-use crate::room::{
-    self, AnchorSide, BatchCaller, CheckpointId, Comment, CommentTarget, FileId, OriginalAnchor,
-    Reply, SourceTextTarget,
-};
+use crate::room::{self, Comment};
 
 fn validate_existing_action(
     action: &str,
@@ -72,12 +75,11 @@ fn validate_existing_action(
 /// The id a newly created annotation gets, for a comment and for a suggestion
 /// alike.
 ///
-/// Two requirements meet here. `room::catalog::catalog_comment_row` rejects
-/// anything that is not a UUID, so the old `comment-<hex>` and
-/// `<pass>-<index>` forms could never be stored: every annotation an agent
-/// created was refused with "annotation id must be a UUID". And a retry of the
-/// same operation must produce the same annotation rather than a second one,
-/// so the UUID is derived from a stable seed instead of generated fresh.
+/// Two requirements meet here. The `annotations` table's id column is a
+/// `uuid`, so the old `comment-<hex>` and `<pass>-<index>` forms could never
+/// be stored. And a retry of the same operation must produce the same
+/// annotation rather than a second one, so the UUID is derived from a stable
+/// seed instead of generated fresh.
 pub(super) fn comment_uuid(request_id: &str) -> String {
     let digest = Sha256::digest(request_id.as_bytes());
     let mut bytes = [0u8; 16];
@@ -85,6 +87,78 @@ pub(super) fn comment_uuid(request_id: &str) -> String {
     uuid::Builder::from_random_bytes(bytes)
         .into_uuid()
         .to_string()
+}
+
+pub(super) fn parse_uuid(value: &str, what: &str) -> Result<uuid::Uuid, Failure> {
+    uuid::Uuid::parse_str(value)
+        .map_err(|_| Failure::new("invalid_params", format!("{what} must be a UUID")))
+}
+
+/// This endpoint's writer identity for `storage::postgres::Authority`: an
+/// account id where one is live, else the link or session key the viewer
+/// carried. It is what the writer-epoch fence and the rung check at the
+/// commit boundary are made against (§7).
+///
+/// Its sibling `commit_authorization` builds the `MutationAuthorization`
+/// beside it, and the two are not interchangeable: this one names the
+/// principal, and that one additionally carries the session generation,
+/// which is what makes a write from a signed-out session fail rather than
+/// succeed. A command needs both.
+pub(super) fn commit_authority(who: &Viewer) -> crate::storage::postgres::Authority {
+    let account_id = uuid::Uuid::parse_str(&who.id.id).ok();
+    crate::storage::postgres::Authority {
+        principal_key: account_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| who.key.clone()),
+        account_id,
+        link_hash: (!who.link.is_empty())
+            .then(|| hex::decode(&who.link).ok())
+            .flatten(),
+    }
+}
+
+/// The same identity as `commit_authority`, in the shape
+/// `authorize_annotation_mutation` checks a comment command's rung against
+/// (§7): the account's live session and grant, or the link's, rather than
+/// only the writer-epoch fence `Authority` is for. `ceiling` is the
+/// deployment's own policy ceiling for this identity -- `self.ceiling_for`
+/// -- passed in because this is a free function, the same as its sibling.
+pub(super) fn commit_authorization(
+    who: &Viewer,
+    ceiling: crate::document::store::Ceiling,
+) -> crate::storage::postgres::MutationAuthorization {
+    let account_id = uuid::Uuid::parse_str(&who.id.id).ok();
+    let token_hash = (!who.link.is_empty())
+        .then(|| hex::decode(&who.link).ok())
+        .flatten()
+        .and_then(|bytes| bytes.try_into().ok());
+    crate::storage::postgres::MutationAuthorization {
+        principal_key: account_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| who.key.clone()),
+        account_id,
+        session_generation: who.id.session_generation.parse::<i64>().ok(),
+        token_hash,
+        policy_editor: ceiling.edit,
+    }
+}
+
+pub(super) fn command_failure(error: crate::log::sequencer::CommandError) -> Failure {
+    use crate::log::sequencer::CommandError;
+    match error {
+        // §7.1: the words the caller quoted no longer resolve to one place.
+        // A generic conflict reads to an agent as "try again unchanged",
+        // which does nothing here; naming the current digest is what lets it
+        // capture a fresh view and requote instead of looping.
+        CommandError::StaleSelection { digest } => Failure::new(
+            "conflict",
+            "captured selection belongs to another source revision",
+        )
+        .with_data(json!({"current_tree_digest": digest})),
+        CommandError::Conflict(message) => Failure::new("conflict", message),
+        CommandError::Storage(error) => Failure::new("unavailable", error.to_string()),
+        CommandError::Sequencer(error) => Failure::new("unavailable", error.to_string()),
+    }
 }
 
 impl Server {
@@ -96,10 +170,10 @@ impl Server {
         who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
-        peer: SocketAddr,
+        _peer: SocketAddr,
         args: &Value,
         key: &OperationKey,
-        digest: &str,
+        _digest: &str,
     ) -> Result<Value, Failure> {
         if !who.at_least(Role::Commenter) {
             return Err(Failure::new(
@@ -108,7 +182,7 @@ impl Server {
             ));
         }
         let action = args["action"].as_str().unwrap_or_default();
-        if matches!(action, "accept" | "checkpoint") {
+        if matches!(action, "accept" | "label") {
             return Err(Failure::new(
                 "unsupported",
                 "this annotation action requires the ordinary editor workflow",
@@ -123,9 +197,12 @@ impl Server {
 
         let room = self
             .rooms
-            .try_get(slug)
+            .get(slug)
             .await
             .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        if let Some(why) = room.unreadable().await {
+            return Err(Failure::new("unavailable", why));
+        }
         let author = self.mcp_author(headers, arrival, who, actor);
         let creator = if who.id.is_signed_in() {
             who.id.name.clone()
@@ -135,11 +212,13 @@ impl Server {
             pseudonym_for(&author, slug)
         };
         let comment_id = args["comment_id"].as_str().unwrap_or_default();
-        let existing = if comment_id.is_empty() {
-            None
-        } else {
-            room.agent_comment(comment_id).await
-        };
+        let comments = room
+            .comments()
+            .await
+            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        let existing = (!comment_id.is_empty())
+            .then(|| comments.iter().find(|c| c.id == comment_id).cloned())
+            .flatten();
         if !comment_id.is_empty() && existing.is_none() {
             return Err(Failure::new("not_found", "comment does not exist"));
         }
@@ -151,10 +230,12 @@ impl Server {
                 "comment_id is required for this action",
             ));
         }
-        let expected = if matches!(action, "reply" | "resolve" | "delete" | "refine" | "reject") {
+        if matches!(action, "reply" | "resolve" | "delete" | "refine" | "reject") {
             let supplied = args["expected_version"].as_str().unwrap_or_default();
             let editor = who.at_least(Role::Editor);
-            let current_version = room.agent_comment_version(comment_id).await;
+            let current_version = existing
+                .as_ref()
+                .map(crate::room::agent_comments::comment_version);
             validate_existing_action(
                 action,
                 comment_id,
@@ -164,10 +245,7 @@ impl Server {
                 &author,
                 editor,
             )?;
-            Some((comment_id.to_string(), supplied.to_string()))
-        } else {
-            None
-        };
+        }
 
         let view_id = args["view_id"].as_str().unwrap_or_default();
         let view = if view_id.is_empty() {
@@ -179,206 +257,226 @@ impl Server {
             )
         };
         // An agent comments on a range it captured, and a captured range is
-        // already what a comment is about: a file and an offset pair in the
-        // view's own checkpoint. So the anchor is built from it rather than
-        // searched for, and the quotation beside it is read out of the same
-        // text at the same offsets.
-        let anchored = match (view.as_ref(), args["range_id"].as_str()) {
-            (Some(view), Some(range_id)) if !range_id.is_empty() => {
-                let (path, start, end) = resolve_range(view, view_id, range_id, &self.key)?;
-                let text = &view.snapshot.texts[path];
-                let tree = super::operations::tree_of_view(view)?;
-                let file_id = tree
-                    .files
-                    .get(path)
-                    .map(|file| file.file_id.clone())
-                    .unwrap_or_default();
-                if file_id.is_empty() {
-                    return Err(Failure::new(
-                        "invalid_range",
-                        "that range names a file this checkpoint does not have",
-                    ));
-                }
-                Some(OriginalAnchor {
-                    checkpoint_id: CheckpointId(view.snapshot.source_revision.clone()),
-                    target: CommentTarget::SourceText(SourceTextTarget {
-                        file_id: FileId(file_id),
-                        start_utf16: text[..start].encode_utf16().count() as u32,
-                        end_utf16: text[..end].encode_utf16().count() as u32,
-                        start_side: AnchorSide::Left,
-                        end_side: AnchorSide::Right,
-                        exact: text[start..end].to_string(),
-                        prefix: text[..start]
+        // already what a comment is about: the quoted words and their
+        // context. `AddComment::evaluate` relocates them against head itself
+        // (§7.1), so this module supplies only what the client actually
+        // selected, never an offset it worked out on its own.
+        let (exact, prefix, suffix, whole_document) =
+            match (view.as_ref(), args["range_id"].as_str()) {
+                (Some(view), Some(range_id)) if !range_id.is_empty() => {
+                    let (path, start, end) = resolve_range(view, view_id, range_id, &self.key)?;
+                    let text = &view.snapshot.texts[path];
+                    (
+                        text[start..end].to_string(),
+                        text[..start]
                             .chars()
                             .rev()
                             .take(64)
                             .collect::<String>()
                             .chars()
                             .rev()
-                            .collect(),
-                        suffix: text[end..].chars().take(64).collect(),
-                    }),
-                })
-            }
-            (_, Some(range_id)) if !range_id.is_empty() => {
-                return Err(Failure::new(
-                    "invalid_range",
-                    "a valid view_id is required with range_id",
-                ));
-            }
-            _ => None,
-        };
+                            .collect::<String>(),
+                        text[end..].chars().take(64).collect::<String>(),
+                        false,
+                    )
+                }
+                (_, Some(range_id)) if !range_id.is_empty() => {
+                    return Err(Failure::new(
+                        "invalid_range",
+                        "a valid view_id is required with range_id",
+                    ));
+                }
+                _ => (String::new(), String::new(), String::new(), true),
+            };
 
         let request_id = key.scoped_request_id(actor);
-        let mut upserts = Vec::new();
-        let mut replies = Vec::new();
-        let mut deletes = Vec::new();
-        let base_revision = view
-            .as_ref()
-            .map(|view| view.snapshot.source_revision.clone());
-        match action {
+        let authority = commit_authority(who);
+        let authorization = commit_authorization(who, self.ceiling_for(&who.id));
+        let author_account_id = uuid::Uuid::parse_str(&who.id.id).ok();
+        let catalog = room.catalog().clone();
+        let document_id = room.document_id;
+
+        let result = match action {
             "create" => {
                 let body = args["body"].as_str().unwrap_or_default();
                 if body.is_empty() {
                     return Err(Failure::new("invalid_params", "body is required"));
                 }
-                // A comment has to be about something, and an agent that
-                // captured no range said nothing about what. The document as
-                // a whole is a thing to comment on, and is what this means.
-                let original_anchor = anchored.unwrap_or(OriginalAnchor {
-                    checkpoint_id: CheckpointId(
-                        view.as_ref()
-                            .map(|v| v.snapshot.source_revision.clone())
-                            .unwrap_or_default(),
-                    ),
-                    target: CommentTarget::Document,
-                });
-                let id = comment_uuid(&request_id);
-                upserts.push(Comment {
-                    id: id.clone(),
-                    motivation: "comment".into(),
-                    body: body.into(),
-                    creator: creator.clone(),
-                    author: author.clone(),
-                    created: crate::util::timestamp(),
-                    original_anchor: Some(original_anchor),
-                    ..Comment::default()
-                });
+                let id = parse_uuid(&comment_uuid(&request_id), "comment id")?;
+                let mut cmd = room::AddComment::new(
+                    catalog,
+                    document_id,
+                    id,
+                    &self.config,
+                    "comment",
+                    body,
+                    &creator,
+                    author_account_id,
+                    author.clone(),
+                    authorization.clone(),
+                    &exact,
+                    &prefix,
+                    &suffix,
+                    None,
+                    whole_document,
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(|error| Failure::new("invalid_params", error))?;
+                let comment = room
+                    .command(&authority, &mut cmd)
+                    .await
+                    .map_err(command_failure)?;
+                json!({"comment_id": comment.id, "comment": comment})
             }
             "reply" => {
                 let body = args["body"].as_str().unwrap_or_default();
-                if body.is_empty() || comment_id.is_empty() {
+                if body.is_empty() {
                     return Err(Failure::new(
                         "invalid_params",
                         "reply requires comment_id and body",
                     ));
                 }
-                let id = comment_uuid(&format!("reply\0{request_id}"));
-                replies.push((
-                    comment_id.to_string(),
-                    Reply {
-                        id,
-                        body: body.into(),
-                        creator: creator.clone(),
-                        author: author.clone(),
-                        created: crate::util::timestamp(),
-                    },
-                ));
+                let id = parse_uuid(&comment_uuid(&format!("reply\0{request_id}")), "reply id")?;
+                let comment_uuid_value = parse_uuid(comment_id, "comment_id")?;
+                let mut cmd = room::AddReply::new(
+                    catalog,
+                    document_id,
+                    id,
+                    comment_uuid_value,
+                    &self.config,
+                    body,
+                    &creator,
+                    author_account_id,
+                    author.clone(),
+                    authorization.clone(),
+                )
+                .map_err(|error| Failure::new("invalid_params", error))?;
+                let outcome = room
+                    .command(&authority, &mut cmd)
+                    .await
+                    .map_err(command_failure)?;
+                json!({"comment_id": outcome.comment_id, "reply": outcome.reply})
             }
             "resolve" => {
-                let mut comment = existing
-                    .clone()
-                    .ok_or_else(|| Failure::new("not_found", "comment does not exist"))?;
-                comment.resolved = args["resolved"].as_bool().unwrap_or(true);
-                comment.resolved_at = comment.resolved.then(crate::util::timestamp);
-                comment.resolved_in = view
-                    .as_ref()
-                    .map(|v| v.snapshot.source_revision.clone())
-                    .unwrap_or(comment.resolved_in);
-                upserts.push(comment);
+                let resolved = args["resolved"].as_bool().unwrap_or(true);
+                let mut cmd = room::ResolveComment::new(
+                    catalog.clone(),
+                    document_id,
+                    parse_uuid(comment_id, "comment_id")?,
+                    resolved,
+                    authorization.clone(),
+                );
+                let outcome = room
+                    .command(&authority, &mut cmd)
+                    .await
+                    .map_err(command_failure)?;
+                json!({"comment_id": outcome.comment_id, "resolved": outcome.resolved, "resolved_at": outcome.resolved_at})
             }
             "refine" => {
-                let mut comment = existing
-                    .clone()
-                    .ok_or_else(|| Failure::new("not_found", "comment does not exist"))?;
+                let existing = existing.expect("validated above");
                 let proposed = args["proposed"]
                     .as_str()
                     .ok_or_else(|| Failure::new("invalid_params", "proposed is required"))?;
-                comment.proposed = Some(proposed.to_string());
-                if let Some(body) = args["body"].as_str() {
-                    comment.body = body.to_string();
-                }
-                upserts.push(comment);
+                let body = args["body"].as_str().unwrap_or(&existing.body);
+                let source = existing.source().ok_or_else(|| {
+                    Failure::new("invalid_range", "suggestion has no source anchor")
+                })?;
+                let proposal_id = parse_uuid(&existing.proposal, "proposal")?;
+                let stored = catalog
+                    .proposal(proposal_id)
+                    .await
+                    .map_err(|error| Failure::new("unavailable", error.to_string()))?
+                    .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))?;
+                let editor = who.at_least(Role::Editor);
+                let mut cmd = room::RefineSuggestion::new(
+                    catalog,
+                    document_id,
+                    parse_uuid(comment_id, "comment_id")?,
+                    proposal_id,
+                    stored.version,
+                    author.clone(),
+                    editor,
+                    &self.config,
+                    body,
+                    &source.exact,
+                    &source.prefix,
+                    &source.suffix,
+                    proposed,
+                    authorization.clone(),
+                )
+                .map_err(|error| Failure::new("invalid_params", error))?;
+                let comment = room
+                    .command(&authority, &mut cmd)
+                    .await
+                    .map_err(command_failure)?;
+                json!({"comment_id": comment.id, "comment": comment})
             }
             "reject" => {
-                let mut comment = existing
-                    .clone()
-                    .ok_or_else(|| Failure::new("not_found", "comment does not exist"))?;
-                comment.resolved = true;
-                comment.resolved_at = Some(crate::util::timestamp());
-                comment.resolved_in = view
-                    .as_ref()
-                    .map(|v| v.snapshot.source_revision.clone())
-                    .unwrap_or(comment.resolved_in);
-                comment.outcome = "rejected".into();
-                upserts.push(comment);
+                let existing = existing.expect("validated above");
+                let proposal_id = parse_uuid(&existing.proposal, "proposal")?;
+                let stored = catalog
+                    .proposal(proposal_id)
+                    .await
+                    .map_err(|error| Failure::new("unavailable", error.to_string()))?
+                    .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))?;
+                let mut cmd = room::RejectSuggestion::new(
+                    catalog,
+                    document_id,
+                    parse_uuid(comment_id, "comment_id")?,
+                    proposal_id,
+                    stored.tip_frontiers,
+                    creator.clone(),
+                    authorization.clone(),
+                );
+                let comment = room
+                    .command(&authority, &mut cmd)
+                    .await
+                    .map_err(command_failure)?;
+                json!({"comment_id": comment.id, "comment": comment})
             }
             "delete" => {
-                let comment = existing
-                    .clone()
-                    .ok_or_else(|| Failure::new("not_found", "comment does not exist"))?;
-                if !room::deletable(&comment, &author, who.at_least(Role::Editor)) {
+                let existing = existing.expect("validated above");
+                let editor = who.at_least(Role::Editor);
+                if !room::deletable(&existing, &author, editor) {
                     return Err(Failure::new(
                         "permission_changed",
                         "only the comment author or an editor may delete it",
                     ));
                 }
-                deletes.push(comment_id.to_string());
+                let mut cmd = room::DeleteComment::new(
+                    catalog,
+                    document_id,
+                    parse_uuid(comment_id, "comment_id")?,
+                    author.clone(),
+                    editor,
+                    authorization.clone(),
+                );
+                room.command(&authority, &mut cmd)
+                    .await
+                    .map_err(command_failure)?;
+                json!({"comment_id": comment_id})
             }
             _ => unreachable!("actions validated above"),
-        }
+        };
 
-        let result = json!({
-            "operation": key, "action": action, "status": "committed", "replay": false,
-            "comment_id": if comment_id.is_empty() { upserts.first().map(|comment| comment.id.clone()).unwrap_or_default() } else { comment_id.to_string() },
-            "source_revision": view.as_ref().map(|v| v.snapshot.source_revision.clone()),
-        });
-        let address = client_address(peer, headers, &self.config.cost.trusted_proxies);
-        let batch = crate::room::agent_comments::AnnotationBatch {
-            request_id,
-            digest: digest.to_string(),
-            base_revision,
-            upserts,
-            expected: expected.into_iter().collect(),
-            deletes,
-            replies,
-            proposals: std::collections::HashMap::new(),
-            receipt: result,
-        };
-        let authority = AgentAnnotationAuthority {
-            link_hash: who.link.clone(),
-            policy_comment: who.at_least(Role::Commenter),
-            require_editor: action == "reject",
-        };
-        room.apply_agent_annotations(
-            batch,
-            BatchCaller {
-                address: &address,
-                author: &author,
-                via: &who.link,
-                budget: who.comment_budget,
-                creator: &creator,
-            },
-            authority,
-            || async {
-                self.mcp_recheck(slug, headers, arrival, actor)
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| error.message)
-            },
-        )
-        .await
-        .map_err(|error| Failure::new("conflict", error))
+        // `handle_mcp` rechecks access around every tool call already (mcp.rs
+        // `tools/call`), so this only shapes the reply this action produced.
+        //
+        // No `replay` key: none of `AddComment`, `AddReply`,
+        // `ResolveComment`, `DeleteComment`, `RefineSuggestion` or
+        // `RejectSuggestion` writes a §7.2 `document_labels` retry record --
+        // `create` and `reply` dedup by their own client-derived primary key
+        // (§7.2's first bullet) and the rest are conditional on
+        // `expected_version` (§7.2's second bullet), so there is no
+        // request-id-tracked replay to report for any action this function
+        // handles.
+        let mut result = result;
+        result["operation"] = json!(key);
+        result["action"] = json!(action);
+        result["status"] = json!("committed");
+        Ok(result)
     }
 }
 

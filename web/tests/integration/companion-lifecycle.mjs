@@ -89,7 +89,11 @@ try {
   const forbidden = await fetch(`${base}/manage`, { method: "POST", headers: { Origin: site }, body: new URLSearchParams({ nonce, action: "quit" }) });
   assert.equal(forbidden.status, 403);
 
-  await cli("restart");
+  // `librepaper local restart` was removed in the CLI cull; `stop` then
+  // `launch` is the replacement sequence and exercises the same instance
+  // change and permission persistence.
+  await cli("stop");
+  await cli("launch", "--port", String(port));
   assert.notEqual((await state()).instance, first.instance);
   assert.equal((await caps()).status, 200, "permission survives restart");
   await cli("stop");

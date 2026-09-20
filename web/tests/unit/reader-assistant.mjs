@@ -32,7 +32,7 @@ assert.equal(captured.exact, "same phrase");
 assert.equal(captured.prefix, "before ");
 assert.equal(captured.suffix, " after");
 assert.equal(captured.position, 7);
-assert.equal(captured.bundle_id, "");
+assert.equal(captured.render_digest, "");
 for (const field of ["source", "path", "revision", "file_id", "start", "end"]) {
   assert.ok(!(field in captured), `a selection must not carry ${field}`);
 }
@@ -49,6 +49,6 @@ assert.equal(ctx.pending, null);
 ctx.mayEdit = false;
 ctx.renderedProjectDigest = "project-1";
 vm.runInContext("showSelection({exact:'same phrase',prefix:'',suffix:'',position:0}, {})", ctx);
-assert.equal(ctx.pending.bundle_id, "project-1");
+assert.equal(ctx.pending.render_digest, "project-1");
 
 console.log("reader-assistant: a selection is what the page showed, and carries no source identity");

@@ -20,7 +20,7 @@ const current = "<p>current purple draft</p>";
 const points = sources.map((text, i) => ({
   sha: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
   at: `2026-09-10T09:0${i}:00Z`, seq: i + 1, main: "main.html", by: "Editor", why: i > 2 ? "quiet" : "label",
-  label: ["Original", "Blah blah", "Latest checkpoint"][i] || "", changed: ["main.html"],
+  label: ["Original", "Blah blah", "Latest label"][i] || "", changed: ["main.html"],
   texts: { "main.html": text }, files: { "main.html": { kind: "text" } },
 }));
 for (let i = 1; i < points.length; i++) points[i].parent = points[i - 1].sha;
@@ -49,7 +49,7 @@ export function openRoom(_slug, {onMessage, onConnected}) {
   let updateSub2 = server.subscribeLocalUpdates(update => onMessage({type:'doc-update', update:encode(update)}));
   queueMicrotask(() => onConnected(true));
   return { send(message) {
-    if (message.type === 'doc-open') setTimeout(() => onMessage({type:'doc-state',update:encode(server.export({ mode: "update" })),count:1}), location.search.includes('slowjoin') ? 350 : 0);
+    if (message.type === 'doc-open') setTimeout(() => onMessage({type:'doc-state',protocol:'librepaper.room.v2',vector:encode(server.oplogVersion().encode()),updates:[encode(server.export({ mode: "update" }))]}), location.search.includes('slowjoin') ? 350 : 0);
     if (message.type === 'doc-update') server.import(decode(message.update));
     return {ok:true};
   }, sendLive() { return {ok:true}; }, close() { updateSub2?.(); } };
@@ -84,16 +84,31 @@ try {
       docs_origin:`http://${request.headers.host}`, can_see_sharing:true, can_moderate:true,
     });
     if (url.pathname === "/api/documents/paper/share") return json(response, {links:{}});
-    if (url.pathname === "/api/documents/paper/bundle") return json(response, {bundle:null});
     if (url.pathname === "/api/documents/paper/history") {
-      const list = points.map(({texts, files, ...point}) => point).reverse();
-      return json(response, url.searchParams.has('after') ? {checkpoints:list.slice(-1)} : {checkpoints:list.slice(0, -1),next_cursor:2});
+      // The manifest wire is `document_labels` now: `label_wire` in
+      // crates/librepaper/src/server/history.rs names each row
+      // `{sha, sequence, at, by, label, reason, tree_sha, frontier,
+      // archive_status}` inside a `labels` array, not `checkpoints` (old name). There is
+      // no per-row `changed` any more (a manifest is a moment, not a diff;
+      // src/lib/history.js's own comment on `fromWire` says so) and `main` is
+      // named once at the top of the payload, not on every row.
+      const wire = point => ({
+        sha: point.sha, sequence: point.seq, at: point.at, by: point.by,
+        label: point.label, reason: point.why, tree_sha: `tree-${point.sha}`,
+        frontier: "", archive_status: "none",
+      });
+      const list = points.map(wire).reverse();
+      const page = url.searchParams.has('after') ? {labels:list.slice(-1)} : {labels:list.slice(0, -1),next_cursor:2};
+      return json(response, {slug:"paper", main:"main.html", ...page});
     }
     if (url.pathname.startsWith("/api/documents/paper/history/")) {
       const point = points.find(point => url.pathname.endsWith(point.sha));
-      if (!point || failed.has(point.sha)) return json(response, {error:"Checkpoint unavailable"}, 404);
-      // The real checkpoint endpoint omits parent; ancestry lives in the list.
-      const {parent, seq, changed, ...payload} = point;
+      if (!point || failed.has(point.sha)) return json(response, {error:"Label unavailable"}, 404);
+      // The real label endpoint omits parent and seq; ancestry and
+      // ordering live in the list, and it names the reason field `reason`,
+      // not `why` (history.js normalizes on the way in, not the way out).
+      const {parent, seq, changed, why, ...rest} = point;
+      const payload = {...rest, reason: why, tree_sha: `tree-${point.sha}`, source_format: "html"};
       if (point.sha === delayedSha) { delayed.push(() => json(response, payload)); return; }
       return json(response, payload);
     }
@@ -113,14 +128,14 @@ try {
   await tab.resize(1400, 900); await tab.navigate(`${origin}/docs/paper`);
   await until("initial current source", () => tab.evaluate(`document.querySelector('.cm-content')?.textContent.includes('current purple')`), 10000);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
-  await until("checkpoint timeline", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[1].sha}"]'))`), 10000);
+  await until("label timeline", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[1].sha}"]'))`), 10000);
   const select = async index => {
     const sha = points[index].sha;
     const position = await tab.evaluate(`(() => {
       const row = document.querySelector('[data-sha="${sha}"] .timeline-point');
       row.scrollIntoView({block:'nearest'});
       const box = row.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
-      if (document.elementFromPoint(x,y)?.closest('.timeline-point') !== row) throw new Error('Checkpoint row is obscured');
+      if (document.elementFromPoint(x,y)?.closest('.timeline-point') !== row) throw new Error('Label row is obscured');
       return {x,y};
     })()`);
     if (tab.command) {
@@ -142,7 +157,7 @@ try {
   await select(0); await expectDiff(sources[0], current);
   await select(2); await expectDiff(sources[2], current);
   await select(0); await expectDiff(sources[0], current);
-  console.log("history reader: repeated checkpoint selection updates both source endpoints");
+  console.log("history reader: repeated label selection updates both source endpoints");
   await tab.evaluate(`document.querySelector('.day-now .timeline-point').click()`);
   await until('current source alone', () => tab.evaluate(`document.querySelectorAll('.cm-content').length === 1 && document.querySelector('.cm-content').textContent === ${JSON.stringify(current)}`), 4000);
   await select(1); await expectDiff(sources[1], current);
@@ -160,17 +175,17 @@ try {
 
   failed.add(points[0].sha);
   await select(0);
-  await until('failed checkpoint is visible', () => tab.evaluate(`Boolean(document.querySelector('.history-workspace [role="alert"]'))`), 3000);
-  assert.equal(await tab.evaluate(`document.querySelectorAll('.history-workspace .cm-content').length`), 0, 'a failed selection does not leave the previous checkpoint displayed');
+  await until('failed label is visible', () => tab.evaluate(`Boolean(document.querySelector('.history-workspace [role="alert"]'))`), 3000);
+  assert.equal(await tab.evaluate(`document.querySelectorAll('.history-workspace .cm-content').length`), 0, 'a failed selection does not leave the previous label displayed');
   failed.delete(points[0].sha);
   await tab.evaluate(`document.querySelector('.history-workspace [role="alert"] button').click()`);
   await until('retry restores selected source', () => tab.evaluate(`document.querySelector('.history-workspace .cm-content')?.textContent === ${JSON.stringify(sources[0])}`), 3000);
 
   delayedSha = points[1].sha;
   await select(1);
-  await until('delayed checkpoint request', async () => delayed.length > 0, 3000);
+  await until('delayed label request', async () => delayed.length > 0, 3000);
   await tab.evaluate(`document.querySelector('iframe[title="Document"]')?.contentWindow.eval("parent.postMessage({type:'ready'}, '*')")`);
-  assert.equal(await tab.evaluate(`document.querySelectorAll('.history-workspace .cm-content').length`), 0, 'loading a checkpoint clears the old source');
+  assert.equal(await tab.evaluate(`document.querySelectorAll('.history-workspace .cm-content').length`), 0, 'loading a label clears the old source');
   await select(2);
   delayedSha = ''; delayed.splice(0).forEach(release => release());
   await until('latest click wins', () => tab.evaluate(`document.querySelector('.history-workspace .cm-content')?.textContent === ${JSON.stringify(sources[2])}`), 3000);
@@ -186,7 +201,7 @@ try {
   await tab.navigate(`${origin}/docs/paper?slowjoin=1`);
   await until("initial current source after reload", () => tab.evaluate(`document.querySelector('.cm-content')?.textContent.includes('current purple')`), 10000);
   await tab.evaluate(`document.querySelector('.sidebar-activity [aria-label="History"]').click()`);
-  await until("checkpoint timeline after reload", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[1].sha}"]'))`), 10000);
+  await until("label timeline after reload", () => tab.evaluate(`Boolean(document.querySelector('[data-sha="${points[1].sha}"]'))`), 10000);
   await select(1);
   await expectDiff(sources[1], current);
   assert.equal(await tab.evaluate(`document.querySelector('.reader')?.classList.contains('no-preview')`), true, 'history hides the preview');

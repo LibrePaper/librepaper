@@ -1,29 +1,63 @@
 //! The comments: what one is, how a submission from a reader becomes one, and
 //! the anchor that ties it to a passage.
+//!
+//! Under SPEC-server-is-a-log §7 every mutation here is a [`SequencerCommand`]:
+//! `evaluate` runs synchronously against the sequencer's cached document and
+//! decides what the write means (where a quoted passage is, whether a
+//! suggestion's branch still applies), and `transact` runs inside the fenced
+//! transaction that also wrote the log row naming the state `evaluate` saw.
+//! The comment and the source it quotes are one transaction because they are
+//! written by the same call (§7 step 4).
+//!
+//! `evaluate` has no database access -- it runs with the sequencer's lock
+//! held and nothing else may run meanwhile, which is precisely what makes it
+//! safe to trust. So a command that needs to know something about an
+//! *existing* row (a suggestion's current proposal, its stored branch) is
+//! constructed with that already read by its caller, before `room.command`
+//! is called, and re-validates what it needs of it against `tx` inside
+//! `transact`, which does have a connection.
+//!
+//! Every write to `annotations` and `replies` goes through
+//! `storage::postgres::annotations`'s `*_authorized` methods rather than SQL
+//! written here: that module is the one place `authorize_annotation_mutation`
+//! is called from, and it is what turns a rung the sequencer admitted
+//! (`Command::authority`, checked against the writer epoch and the document
+//! lock) into a check of the actor's actual grant and session. A command
+//! that also has to enforce "the suggestion's own author, not just any
+//! commenter" -- `RefineSuggestion` -- reads the existing row itself first
+//! and refuses before it writes, the same way `DeleteComment` does; that is
+//! narrower than what the catalogue checks and the catalogue has no way to
+//! express it.
+
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use futures_util::future::BoxFuture;
+use loro::{Frontiers, LoroDoc};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::Digest;
+use sqlx::{Postgres, Transaction};
+use uuid::Uuid;
+
+use crate::config::Configuration;
+use crate::document::session;
+use crate::log::sequencer::{
+    Command as SequencerCommand, CommandError, Evidence, Head, PreparedSource, Rung,
+};
+use crate::storage::postgres::{
+    self, AnnotationRecord, MutationAuthorization, NewAnnotation, NewLabel, NewProposal, NewReply,
+    PostgresCatalog, ReplyRecord,
+};
+use crate::util::clean;
 
 use super::annotation::{
-    AnchorStatus, CheckpointId, FileId, PresentationContext, SourceTextTarget, MOMENT,
+    CommentTarget, DerivedAttachment, FileId, OriginalAnchor, PresentationContext, SourceTextTarget,
 };
 use super::locate::{self, Quote};
-use super::resolve;
-use super::*;
-use serde::{Deserialize, Serialize};
+use super::{Room, WriteError};
 
-// Browser submissions carry a random UUID that remains stable across retries.
-// Keeping it as the record ID also lets a reconnect snapshot acknowledge a
-// write whose direct response was lost. Older clients may use arbitrary
-// temporary labels; those retain server-generated IDs.
-pub(super) fn submission_id(value: &str) -> Option<&str> {
-    (value.len() == 36
-        && value.bytes().enumerate().all(|(at, byte)| {
-            if [8, 13, 18, 23].contains(&at) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        }))
-    .then_some(value)
-}
+// -- the model ---------------------------------------------------------
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Reply {
@@ -31,81 +65,55 @@ pub struct Reply {
     pub body: String,
     pub creator: String,
     pub created: String,
-    /// Who actually posted this reply -- a github: or visitor: key, or "" for a
-    /// caller with neither -- so a delete can be restricted to it. Never
-    /// serialized: a reply is marshaled directly into broadcasts, snapshots and
-    /// REST responses. The catalog stores this private attribution separately.
-    #[serde(default, skip_serializing)]
-    pub author: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
-    #[serde(default)]
-    pub seq: i64,
     /// What this comment is about, in the document as it stood when it was
     /// made. Written once by the server, from the selection a client sent,
     /// and never written again: see [`super::annotation`].
     ///
-    /// Every stored comment has one -- the persistence layer refuses a comment
-    /// that does not. It is optional here because the view served to a reader
-    /// has it taken out: source identities and source quotations are
-    /// editorial, and a rendered reader is not shown them.
+    /// Every stored comment has one -- the persistence layer refuses a
+    /// comment that does not. It is optional here because the view served to
+    /// a reader has it taken out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_anchor: Option<OriginalAnchor>,
-    /// Where that passage is in the checkpoint this comment was last served
-    /// against. Derived, replaceable, and absent when nothing has resolved it
-    /// yet -- never a second opinion about what the comment is about.
+    /// Where that passage is in the projection this comment was last served
+    /// against. A cache, keyed by the projection digest, held only in this
+    /// room's memory and rebuilt whenever a cold process needs it (§8.3):
+    /// never a second opinion about what the comment is about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<DerivedAttachment>,
-    /// The page the comment was made on: the words as the render had them,
-    /// and which bundle that was. Display evidence only.
+    /// The page the comment was made on: the words as the render had them.
+    /// Display evidence only.
     #[serde(default, skip_serializing_if = "PresentationContext::is_empty")]
     pub presentation: PresentationContext,
     #[serde(default)]
     pub motivation: String,
-    /// The highlight colour a reader chose, as `#rrggbb`. Presentation, but
-    /// the reader's own rather than the render's, so it belongs to the
-    /// comment and is stored with it.
+    /// The highlight colour a reader chose, as `#rrggbb`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
-    /// Published rendering the reader selected from. Empty only for editor
-    /// annotations which are not tied to a rendered bundle. Kept beside
-    /// the comment rather than inside its presentation because who may see a
-    /// comment is decided by it.
+    /// The projection digest the rendered page had when this remark was made,
+    /// as hex. Empty for a comment made in the editor, against the source
+    /// directly. Evidence only: the staleness check it feeds happens once, in
+    /// `AddComment::evaluate`, and nothing here re-checks it later.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub bundle_id: String,
+    pub render_digest: String,
 
     /// The proposal this comment offers, when its motivation is `editing`.
-    ///
-    /// A suggestion is a proposed change with a remark attached, and the change
-    /// is a branch like any other (§1.2). This id is the whole of what the
-    /// comment knows about it.
+    /// A suggestion is a proposed change with a remark attached, and the
+    /// change is a branch like any other.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub proposal: String,
-
     /// What that proposal wants in place of the passage, and whether it was
-    /// taken. **Both are projections and neither is stored.**
-    ///
-    /// The branch owns the text and `document_proposal_hunks` owns the verdict.
-    /// These are filled in when a comment is served, so that a reader, an
-    /// export or an agent can see a suggestion without going and assembling it
-    /// from the branch itself. Nothing writes them back, and the persistence
-    /// layer does not look at them -- the columns that used to hold them are
-    /// dropped in migration 0010.
-    ///
-    /// The distinction is the point of §1.2: one of these being wrong is a
-    /// stale display, where before it was a second answer to "was this
-    /// accepted" that could disagree with the first.
+    /// taken. **Both are projections and neither is stored**: they are
+    /// filled in when a comment is served, from the branch and from
+    /// `document_proposal_hunks`, never read back out of a column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub outcome: String,
-    /// Batch identifier for assistant suggestions. Empty means this comment
-    /// was created independently of a batch.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub pass: String,
     #[serde(default)]
     pub body: String,
     #[serde(default)]
@@ -116,31 +124,27 @@ pub struct Comment {
     pub resolved: bool,
     #[serde(default)]
     pub resolved_at: Option<String>,
-    /// The checkpoint current when it was resolved, beside `resolved_at`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub resolved_in: String,
     #[serde(default)]
     pub replies: Vec<Reply>,
     /// Who actually posted this comment: "github:<login>" for a signed-in
     /// caller, "visitor:<sha256 of the visitor token>" for a verified
-    /// anonymous browser, or "" for neither (including every seeded example,
-    /// which belongs to nobody in particular). Kept out of every client-bound
-    /// shape for the same reason as `Reply::author`.
+    /// anonymous browser, or "" for neither. Kept out of every client-bound
+    /// shape -- it is checked server-side, never shown.
     #[serde(default, skip_serializing)]
     pub author: String,
 }
 
 impl Comment {
-    /// The checkpoint this comment was made against: what the reviewer was
-    /// actually looking at. It lives on the anchor, because that is what it
-    /// is a property of, and this is the one way to ask for it -- a second
-    /// copy beside it could disagree with it.
-    ///
+    /// A stable token for "the state this comment's quoted text was written
+    /// against": the log row that made it durable (§8.2). Not the frontier --
+    /// a frontier is a byte blob with no business on the wire as an opaque
+    /// revision token, and the row number is what a client actually needs to
+    /// echo back for a staleness check to mean something across a reload.
     /// Empty on the redacted view served to a reader, which has no anchor.
-    pub fn revision(&self) -> &str {
+    pub fn revision(&self) -> String {
         self.original_anchor
             .as_ref()
-            .map(|anchor| anchor.checkpoint_id.0.as_str())
+            .map(|anchor| anchor.source_sequence.to_string())
             .unwrap_or_default()
     }
 
@@ -162,77 +166,30 @@ pub fn valid_color(value: Option<&str>) -> Option<String> {
         .then(|| format!("#{}", digits.to_ascii_lowercase()))
 }
 
-pub(super) fn valid_revision(value: &str) -> bool {
-    value.is_empty()
-        || (matches!(value.len(), 32 | 64)
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
-}
-
-/// One proposal in an assistant pass. Validation and placement happen while
-/// the room's restore lock and state snapshot are held by
-/// [`Room::apply_suggestion_batch`].
-#[derive(Clone, Debug)]
-pub struct BatchSuggestion {
-    pub original_anchor: OriginalAnchor,
-    pub proposed: String,
-    pub body: String,
-}
-
-/// Caller identity and admission metadata for one assistant pass.
-pub struct BatchCaller<'a> {
-    pub address: &'a str,
-    pub author: &'a str,
-    pub via: &'a str,
-    pub budget: Option<i64>,
-    pub creator: &'a str,
-}
-
-/// Refusal of the entire assistant pass, before any annotation is written.
-#[derive(Clone, Debug)]
-pub struct BatchRefusal(pub String);
-
 /// What a caller is shown: every comment field a client ever sees, plus
 /// whether this particular caller may delete it.
 #[derive(Serialize)]
 pub struct CommentView {
     #[serde(flatten)]
     pub comment: Comment,
-    /// Whether this comment belongs to the caller. The author key itself
-    /// remains private; clients use this to decide which controls to show.
     pub mine: bool,
     pub deletable: bool,
 }
 
 impl CommentView {
-    /// The one place `mine` and `deletable` are derived from a caller's
-    /// identity, so a snapshot (`snapshot_for`, `snapshot_bundle`) and a
-    /// broadcast event (`comment_event_for`) can never disagree about what a
-    /// given author/owner combination is allowed to see or do. `author` is
-    /// empty for an anonymous caller, who is never "mine" on anything and can
-    /// only delete when `is_owner` is set.
     pub fn for_viewer(comment: &Comment, author: &str, is_owner: bool) -> CommentView {
         let mine = !author.is_empty() && comment.author == author;
         let deletable = deletable(comment, author, is_owner);
         let mut comment = comment.clone();
-        // Source provenance and suggestion proposals are editorial material.
-        // A rendered reader may discuss an annotation, but must never receive
-        // source file identities, source quotations, or proposed source edits.
         if !is_owner {
             comment.original_anchor = None;
             comment.attachment = None;
-            // An editor-only annotation quotes the draft, not a rendered page.
-            // A non-editor may receive the remark but never those source words.
-            if comment.bundle_id.is_empty() {
+            if comment.render_digest.is_empty() {
                 comment.presentation = PresentationContext::default();
             }
-            // Everything about a proposed source change: the id, and the two
-            // projections of it. A reader sees the remark, not the edit.
             comment.proposal.clear();
             comment.proposed = None;
             comment.outcome.clear();
-            comment.resolved_in.clear();
         }
         CommentView {
             comment,
@@ -242,46 +199,47 @@ impl CommentView {
     }
 }
 
-/// A suggestion is an edit, so only an editor may receive one: it carries a
-/// source anchor and the words proposed for that source, which is the project
-/// rather than anything a reader was shown.
-///
-/// Every other remark is a remark and reaches the reader.
-///
-/// What a reader gets of one is still only the remark. `CommentView::for_viewer`
-/// drops the source anchor and the attachment from every non-owner view, so
-/// what crosses is the words somebody wrote and the words they quoted, never a
-/// range in a file.
+/// A suggestion is an edit, so only an editor may receive one. Every other
+/// remark reaches the reader.
 pub fn visible_to_reader(comment: &Comment) -> bool {
     comment.motivation != "editing"
 }
 
 /// Rule H's authorization test: the document's owner may delete anything on
-/// it, and everyone else only their own -- and "their own" never matches on
-/// two callers who both have no author key, which is what an anonymous caller
-/// with no visitor cookie and a nobody's-in-particular seeded example both
-/// look like.
+/// it, and everyone else only their own.
 pub fn deletable(item: &Comment, author: &str, is_owner: bool) -> bool {
     is_owner || (!author.is_empty() && item.author == author)
 }
 
-fn source_target(anchor: &OriginalAnchor) -> Option<&SourceTextTarget> {
-    anchor.target.source()
+fn kind_of(motivation: &str) -> &'static str {
+    match motivation {
+        "highlighting" => "highlight",
+        "editing" => "suggestion",
+        _ => "comment",
+    }
 }
 
-pub(super) fn path_for_file_id(doc: &loro::LoroDoc, file_id: &FileId) -> Option<String> {
+fn motivation_of(kind: &str) -> String {
+    match kind {
+        "highlight" => "highlighting",
+        "suggestion" => "editing",
+        _ => "commenting",
+    }
+    .to_string()
+}
+
+fn format_time(value: time::OffsetDateTime) -> String {
+    crate::util::format_unix(value.unix_timestamp())
+}
+
+pub(super) fn path_for_file_id(doc: &LoroDoc, file_id: &FileId) -> Option<String> {
     session::paths_of(doc)
         .into_iter()
         .find_map(|(id, path)| (id == file_id.0).then_some(path))
 }
 
 /// The files a passage could have come from, main first.
-///
-/// Main first because a document is usually one file with the rest included
-/// into it, so the file being read is the likeliest answer and the order
-/// decides nothing else: a passage that occurs in two files is ambiguous
-/// whichever order they are tried in.
-fn source_files(doc: &loro::LoroDoc) -> Vec<(String, String, String)> {
+fn source_files(doc: &LoroDoc) -> Vec<(String, String, String)> {
     let main = session::main_path(doc);
     let paths = session::paths_of(doc);
     let texts = session::texts_of(doc);
@@ -297,92 +255,23 @@ fn source_files(doc: &loro::LoroDoc) -> Vec<(String, String, String)> {
     files
 }
 
-/// Checks a range somebody else worked out, and stamps it with the state it
-/// was checked against.
-///
-/// An assistant reads the source itself and sends offsets into it, so there is
-/// nothing to locate -- but there is something to verify, and it is not the
-/// bounds. It is that the text at the range is the text the caller says is
-/// there. A range that passes this is a range into the live document's own
-/// text, which is the same guarantee [`anchor_for`] gets by construction.
-///
-/// The revision a caller sends is never stored. A client does not get to say
-/// what state its work is on record against: `revision` is the room's own
-/// name for the document it just verified this range in, and it replaces
-/// whatever the caller put there. The caller's own claim about what it read is
-/// checked once for the whole pass, against the tree digest, before any of
-/// this.
-fn validate_original_anchor(
-    config: &Configuration,
-    doc: &loro::LoroDoc,
-    revision: &str,
-    anchor: OriginalAnchor,
-) -> Result<OriginalAnchor, &'static str> {
-    let mut anchor = anchor;
-    anchor.checkpoint_id = CheckpointId(revision.to_string());
-    let Some(source) = anchor.target.source() else {
-        return Ok(anchor);
-    };
-    if source.file_id.0.is_empty()
-        || source.start_utf16 > source.end_utf16
-        || source.exact.chars().count() > config.caps.exact
-        || source.prefix.chars().count() > config.caps.context
-        || source.suffix.chars().count() > config.caps.context
-    {
-        return Err("that source anchor is not valid");
-    }
-    let Some(path) = path_for_file_id(doc, &source.file_id) else {
-        return Err("that source file is not part of this document");
-    };
-    let texts = session::texts_of(doc);
-    let Some(text) = texts.get(&path) else {
-        return Err("that source file is not text");
-    };
-    let units: Vec<u16> = text.encode_utf16().collect();
-    if source.end_utf16 as usize > units.len() {
-        return Err("that source range is not valid");
-    }
-    let at = utf16_slice(text, source.start_utf16 as usize, source.end_utf16 as usize);
-    if at != source.exact {
-        // The range and the quotation disagree, so at most one of them is
-        // right and there is no way to tell which. Neither is stored.
-        return Err("that passage is not where the anchor says it is");
-    }
-    Ok(anchor)
-}
-
-/// Works out what a selection is about, in the document as it stands.
+/// Works out what a selection is about, in the document at `doc`.
 ///
 /// This is the one place a rendered selection becomes a source range, and it
-/// happens on the server because the server is what holds the checkpoint. A
-/// browser sends what it can see -- the words, and the words around them --
-/// and never an offset: an offset from a client is a claim about a file the
+/// happens against the sequencer's own head because that is the one copy of
+/// the document whose text the server can vouch for. A browser sends words,
+/// never an offset: an offset from a client is a claim about a file the
 /// client may not even be allowed to read.
-///
-/// The range this returns is by construction a range of the checkpoint's own
-/// text, and `exact` is the text at it, so there is nothing left to verify
-/// afterwards. That is the point of deriving it here rather than checking a
-/// submitted one.
-fn anchor_for(
-    config: &Configuration,
-    doc: &loro::LoroDoc,
-    current: &str,
+fn locate_anchor(
+    doc: &LoroDoc,
     quote: &Quote<'_>,
     whole_document: bool,
-) -> Result<OriginalAnchor, String> {
-    if current.is_empty() {
-        return Err("this document has no checkpoint to comment against".into());
-    }
-    let checkpoint_id = CheckpointId(current.to_string());
-    // A remark about the document as a whole, which is the one kind of
-    // comment that cannot be orphaned because it is not about a passage.
+    cap_exact: usize,
+) -> Result<CommentTarget, String> {
     if whole_document || quote.exact.trim().is_empty() {
-        return Ok(OriginalAnchor {
-            checkpoint_id,
-            target: CommentTarget::Document,
-        });
+        return Ok(CommentTarget::Document);
     }
-    if quote.exact.chars().count() > config.caps.exact {
+    if quote.exact.chars().count() > cap_exact {
         return Err("that selection is too long to comment on".into());
     }
     let files = source_files(doc);
@@ -394,408 +283,1358 @@ fn anchor_for(
             text,
         })
         .collect();
-    match locate::locate(&candidates, quote) {
-        Ok(target) => Ok(OriginalAnchor {
-            checkpoint_id,
-            target: CommentTarget::SourceText(target),
-        }),
-        Err(failure) => Err(failure.message().to_string()),
-    }
+    locate::locate(&candidates, quote)
+        .map(CommentTarget::SourceText)
+        .map_err(|failure| failure.message().to_string())
 }
 
-/// Works out where every comment's passage is in the document as it stands,
-/// and says which comments moved.
-///
-/// This is the only writer of `Comment::attachment`, and it writes nothing
-/// else: the anchors it reads from are left exactly as they were. Comments
-/// whose attachment is unchanged are not reported, so a document nobody is
-/// editing costs one pass and no writes at all.
-pub(super) fn reattach(state: &mut RoomState) -> Vec<(String, DerivedAttachment)> {
-    // Reading the files out of the CRDT is the cost of a pass, and a document
-    // nobody has commented on should not pay it on every keystroke.
-    if state.comments.is_empty() {
-        return Vec::new();
-    }
-    let checkpoint = state
-        .manifest
-        .latest()
-        .map(|point| point.sha.clone())
-        .unwrap_or_default();
-    // The files, read once for the whole pass rather than once per comment:
-    // a document with five hundred comments on it is resolved on every edit.
-    let sources = resolve::Sources::of(&state.session.doc);
-    let mut moved = Vec::new();
-    for comment in state.comments.iter_mut() {
-        let Some(anchor) = comment.original_anchor.as_ref() else {
-            continue;
-        };
-        // Whatever the last resolution stored, including the cursors Loro
-        // handed back then. Resolution starts from those, not from the
-        // original range, which is what lets a passage be followed through
-        // any number of edits rather than re-found after each one.
-        let live = comment
-            .attachment
+/// Strips the control characters a suggestion's proposed text must not carry,
+/// the same filter every other free-text field here is put through.
+fn strip_control(raw: &str) -> String {
+    raw.chars()
+        .filter(|&c| {
+            let code = c as u32;
+            !(code < 0x09
+                || (0x0b..=0x0c).contains(&code)
+                || (0x0e..=0x1f).contains(&code)
+                || code == 0x7f)
+        })
+        .collect()
+}
+
+/// What [`build_suggestion_branch`] works out ahead of the transaction:
+/// where the comment lands and the proposal branch that carries its edit.
+struct PreparedBranch {
+    target: CommentTarget,
+    base: Vec<u8>,
+    tip: Vec<u8>,
+    bytes: Vec<u8>,
+    peer: u64,
+}
+
+/// Builds a one-hunk branch putting `proposed` where a passage found at `doc`
+/// is, and locates that passage fresh -- a refine or a suggestion never
+/// trusts an old offset, because the point of locating at head is that
+/// offsets move.
+fn build_suggestion_branch(
+    doc: &LoroDoc,
+    quote: &Quote<'_>,
+    cap_exact: usize,
+    proposed: &str,
+) -> Result<PreparedBranch, String> {
+    let target = locate_anchor(doc, quote, false, cap_exact)?;
+    let source = target
+        .source()
+        .cloned()
+        .ok_or_else(|| "a suggestion has to be about a passage".to_string())?;
+    let path = path_for_file_id(doc, &source.file_id)
+        .ok_or_else(|| "that source file is not part of this document".to_string())?;
+    let (branch_doc, base, tip, peer) = crate::room::proposals::from_suggestion(
+        doc,
+        &path,
+        source.start_utf16 as usize,
+        &source.exact,
+        proposed,
+    )
+    .map_err(|error| error.to_string())?;
+    let branch_bytes = session::encode_diff(&branch_doc, &session::encode_vector(doc))?;
+    Ok(PreparedBranch {
+        target,
+        base: base.encode(),
+        tip: tip.encode(),
+        bytes: branch_bytes,
+        peer,
+    })
+}
+
+// -- reading -------------------------------------------------------------
+
+fn annotation_row_to_comment(
+    row: &AnnotationRecord,
+    replies: Vec<Reply>,
+) -> Result<Comment, WriteError> {
+    let original_anchor = postgres::original_anchor_from_record(row)?;
+    let presentation = postgres::presentation_from_record(row);
+    Ok(Comment {
+        id: row.id.to_string(),
+        original_anchor: Some(original_anchor),
+        attachment: None,
+        presentation,
+        motivation: motivation_of(&row.kind),
+        color: row.color.clone(),
+        render_digest: row
+            .render_digest
             .as_ref()
-            .and_then(|current| current.live_source_range.as_ref());
-        let found = resolve::resolve(&state.session.doc, &sources, &checkpoint, anchor, live);
-        if comment.attachment.as_ref() != Some(&found) {
-            moved.push((comment.id.clone(), found.clone()));
-            comment.attachment = Some(found);
-        }
-    }
-    moved
+            .map(hex::encode)
+            .unwrap_or_default(),
+        proposal: row.proposal_id.map(|id| id.to_string()).unwrap_or_default(),
+        proposed: None,
+        outcome: String::new(),
+        body: row.body.clone(),
+        creator: row.author_label.clone(),
+        created: format_time(row.created_at),
+        resolved: row.resolved_at.is_some(),
+        resolved_at: row.resolved_at.map(format_time),
+        replies,
+        author: row.author_key.clone(),
+    })
 }
 
-impl Room {
-    /// Which passage a message is about, for the callers that need the place
-    /// rather than the anchor: the file it is in, where it starts, and the
-    /// source text it covers.
-    ///
-    /// The same walk a comment takes, so a suggestion and a comment made on
-    /// the same words are about the same words.
-    pub(crate) async fn locate_passage(
-        &self,
-        message: &Message,
-    ) -> Result<(String, usize, String), String> {
-        let state = self.command_owner.state().await;
-        let files = source_files(&state.session.doc);
-        let candidates: Vec<locate::Candidate<'_>> = files
+fn reply_row_to_reply(row: ReplyRecord) -> Reply {
+    Reply {
+        id: row.id.to_string(),
+        body: row.body,
+        creator: row.author_label,
+        created: format_time(row.created_at),
+    }
+}
+
+/// This document's comments, from the catalogue. `room/mod.rs` calls this to
+/// fill its resident comment cache.
+/// A digest for "the annotation state changed": a hash of the current
+/// comment list, since there is no room-held sequence counter any more.
+/// Shared by `agent_query_snapshot`'s pagination cursors and
+/// `broadcast_comment_snapshot`'s wire payload, so both agree on what
+/// "changed" means.
+pub(crate) fn comment_digest_of(comments: &[Comment]) -> i64 {
+    let bytes = serde_json::to_vec(comments).unwrap_or_default();
+    let digest = sha2::Sha256::digest(&bytes);
+    i64::from_le_bytes(digest[..8].try_into().expect("8 bytes"))
+}
+
+pub async fn load(
+    catalog: &PostgresCatalog,
+    document_id: Uuid,
+) -> Result<Vec<Comment>, WriteError> {
+    let rows = catalog.annotations(document_id, None, 500).await?;
+    let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+    let reply_rows = catalog.replies(&ids).await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let mine: Vec<Reply> = reply_rows
             .iter()
-            .map(|(id, path, text)| locate::Candidate {
-                file_id: id,
-                path,
-                text,
-            })
+            .filter(|reply| reply.annotation_id == row.id)
+            .cloned()
+            .map(reply_row_to_reply)
             .collect();
-        let quote = Quote {
-            exact: message.exact(),
-            prefix: message.prefix(),
-            suffix: message.suffix(),
-        };
-        let found = locate::locate(&candidates, &quote).map_err(|failure| failure.message())?;
-        let path = files
-            .iter()
-            .find(|(id, _, _)| *id == found.file_id.0)
-            .map(|(_, path, _)| path.clone())
-            .ok_or("that passage is not in this document's source")?;
-        Ok((path, found.start_utf16 as usize, found.exact))
+        out.push(annotation_row_to_comment(row, mine)?);
     }
-
-    /// Reattaches every comment in the disposable in-memory projection.
-    /// Original evidence is durable; attachment is recomputed and is never a
-    /// semantic database write.
-    pub(crate) async fn reattach_comments(&self) {
-        let mut state = self.command_owner.state().await;
-        reattach(&mut state);
-    }
+    Ok(out)
 }
 
-/// Installs a comment the durable write has already accepted.
-///
-/// The comment is found again by identity rather than by the index the
-/// preparation used, because room state was released for the write. Under the
-/// comment gate nothing can have moved it, so this is a fence rather than a
-/// merge: a comment that is no longer here is one a reload replaced with the
-/// durable list, and that list is the one to keep.
-pub(super) fn install_comment(state: &mut RoomState, updated: Comment) {
-    if let Some(index) = state.comments.iter().position(|item| item.id == updated.id) {
-        state.comments[index] = updated;
-    }
+/// A bounded scan for the one row a command needs to read back before it
+/// writes -- to resolve, delete or refine a comment against what it
+/// currently says. Annotation counts are capped at `config.max_comments`
+/// (500) deployment-wide, so this is the same cost `load` already pays and
+/// not a new one; there is no `annotation_by_id` exposed for a caller
+/// outside `storage::postgres::annotations` to use instead.
+async fn find_annotation(
+    catalog: &PostgresCatalog,
+    document_id: Uuid,
+    id: Uuid,
+) -> Result<AnnotationRecord, CommandError> {
+    let rows = catalog.annotations(document_id, None, 500).await?;
+    rows.into_iter()
+        .find(|row| row.id == id)
+        .ok_or_else(|| CommandError::Conflict("unknown comment".into()))
 }
 
-impl Room {
-    /// Adds assistant suggestions against one immutable text snapshot. Bad or
-    /// stale anchors are item results; admission and rate-limit failures are
-    /// whole-pass refusals so a caller cannot use a batch to bypass caps.
-    pub async fn apply_suggestion_batch(
-        &self,
-        revision: &str,
-        items: &[BatchSuggestion],
-        caller: BatchCaller<'_>,
-        actor: crate::document::store::MutationActor,
-    ) -> Result<(String, Vec<Value>), BatchRefusal> {
-        if items.is_empty() {
-            return Err(BatchRefusal("a suggestion batch cannot be empty".into()));
+/// Rebuilds the `NewAnnotation` a row already holds, for the one field that
+/// is actually changing (`resolved`) to go through `replace_annotation_authorized`
+/// -- which replaces the whole row, immutable anchor included, and refuses
+/// when what it is handed does not match what is stored (the check that
+/// keeps an anchor from drifting).
+fn replay_of(row: &AnnotationRecord) -> Result<NewAnnotation, CommandError> {
+    let original_anchor =
+        postgres::original_anchor_from_record(row).map_err(CommandError::Storage)?;
+    let presentation = postgres::presentation_from_record(row);
+    Ok(NewAnnotation {
+        document_id: row.document_id,
+        kind: row.kind.clone(),
+        body: row.body.clone(),
+        author_account_id: row.author_account_id,
+        author_key: row.author_key.clone(),
+        author_label: row.author_label.clone(),
+        color: row.color.clone(),
+        proposal_id: row.proposal_id,
+        original_anchor,
+        presentation,
+        render_digest: row.render_digest.clone(),
+        attachment: None,
+    })
+}
+
+// -- semantic commands ---------------------------------------------------
+
+/// The proposal branch half of [`PreparedBranch`], for a caller that already
+/// keeps the target (here, `AddComment::resolved_target`) in a field of its
+/// own and would otherwise carry it twice.
+struct SuggestionBranch {
+    base: Vec<u8>,
+    tip: Vec<u8>,
+    bytes: Vec<u8>,
+    peer: u64,
+}
+
+/// What a new comment, highlight or suggestion needs before it reaches the
+/// sequencer: everything cleaned against the deployment's caps, with nothing
+/// left for `evaluate` to validate except where the words actually are.
+pub struct AddComment {
+    catalog: Arc<PostgresCatalog>,
+    id: Uuid,
+    document_id: Uuid,
+    motivation: String,
+    body: String,
+    creator: String,
+    color: Option<String>,
+    author_account_id: Option<Uuid>,
+    author_key: String,
+    actor: MutationAuthorization,
+    exact: String,
+    prefix: String,
+    suffix: String,
+    position: Option<u32>,
+    whole_document: bool,
+    proposed: Option<String>,
+    /// Set only for a comment made against a rendered page. `evaluate`
+    /// refuses with `StaleSelection` when this no longer matches the head
+    /// digest (§7.1) rather than anchoring against text the reader never saw.
+    expected_render_digest: Option<[u8; 32]>,
+    cap_exact: usize,
+    // filled in by evaluate, consumed by transact.
+    resolved_target: Option<CommentTarget>,
+    branch: Option<SuggestionBranch>,
+}
+
+impl AddComment {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        catalog: Arc<PostgresCatalog>,
+        document_id: Uuid,
+        id: Uuid,
+        config: &Configuration,
+        motivation: &str,
+        body: &str,
+        creator: &str,
+        author_account_id: Option<Uuid>,
+        author_key: String,
+        actor: MutationAuthorization,
+        exact: &str,
+        prefix: &str,
+        suffix: &str,
+        position: Option<i64>,
+        whole_document: bool,
+        color: Option<&str>,
+        proposed: Option<&str>,
+        expected_render_digest: Option<[u8; 32]>,
+    ) -> Result<Self, String> {
+        let body = clean(body, config.caps.body).trim().to_string();
+        let motivation = config.allowed_motivation(motivation);
+        // A highlight is the passage itself and needs no words; a suggestion
+        // is its proposal. Everything else is a remark, and a remark with no
+        // words is nothing.
+        if body.is_empty() && !matches!(motivation.as_str(), "highlighting" | "editing") {
+            return Err("comment body is required".into());
         }
-        if items.len() > 100 {
-            return Err(BatchRefusal(
-                "a suggestion batch may contain at most 100 items".into(),
-            ));
+        let mut creator = clean(creator, config.caps.creator).trim().to_string();
+        if creator.is_empty() {
+            creator = "Anonymous".to_string();
         }
-        if !valid_revision(revision) || revision.is_empty() {
-            return Err(BatchRefusal("that revision is not valid".into()));
-        }
-        let _command = self.command_owner.acquire().await;
-        if !self.hold().await {
-            return Err(BatchRefusal("this room is held by another server".into()));
-        }
-        let config = self.config.clone();
-        // The PostgreSQL catalogue has the same hard ceiling as the default
-        // configuration. Check its durable count too, since a hot room cache
-        // may lag a previous process while the room lease is being acquired.
-        // Asked before room state is taken: it is the catalogue's answer and
-        // needs nothing of this room's.
-        let durable_comments = match self.catalog.as_ref().get() {
-            Some(catalog) => Some(
-                count_catalog_comments(catalog, &self.slug)
-                    .await
-                    .map_err(BatchRefusal)?,
-            ),
-            None => None,
-        };
-        let mut state = self.command_owner.state().await;
-        // The caller read the source at a revision and is now proposing
-        // changes to it. What has to be true is that the source still says
-        // what it said then, which is the tree digest -- the same name
-        // `agent_view` hands the caller when it reads. It is not a checkpoint:
-        // nothing writes an archive to answer this question, and the digest
-        // answers it exactly, including for the states nobody saved.
-        let live_digest = tree_of(&state.session.doc, &state.session.asset_sizes)
-            .0
-            .digest();
-        if revision != live_digest {
-            return Err(BatchRefusal(
-                "source changed since you read it; read it again".into(),
-            ));
-        }
-        // What every anchor in this pass goes on record against: the position
-        // in the operation history the document is at right now, read under
-        // the lock the ranges are verified under. The digest above says the
-        // text has not moved; this says which state that is, in a way the
-        // history can be asked to reproduce.
-        let at = format!(
-            "{MOMENT}{}",
-            encode_update(&state.session.doc.state_frontiers().encode())
-        );
-        let existing_comments = durable_comments.unwrap_or_else(|| state.comments.len());
-        let max_comments = config.max_comments.min(500);
-        if existing_comments.saturating_add(items.len()) > max_comments {
-            return Err(BatchRefusal(
-                "this document has reached its comment limit".into(),
-            ));
-        }
-        if !self.rate_reserve(
-            &mut state,
-            caller.address,
-            caller.via,
-            caller.budget,
-            items.len() as i64,
-        ) {
-            return Err(BatchRefusal(
-                "too many comments from this caller; try later".into(),
-            ));
-        }
-        let pass = new_id();
-        let mut results: Vec<Value> = Vec::with_capacity(items.len());
-        let mut events = Vec::new();
-        // The whole pass is prepared under state and persisted without it.
-        // Each entry remembers which slot in `results` its outcome belongs to,
-        // so an item refused during preparation keeps its place in the reply.
-        // Each entry carries the branch its suggestion makes, because the branch
-        // is built here where the document is, and written down after the lock
-        // goes -- the room state cannot be taken twice.
-        type PreparedBranch = (loro::Frontiers, loro::Frontiers, Vec<u8>, loro::PeerID);
-        let mut prepared: Vec<(usize, Comment, PreparedBranch)> = Vec::new();
-        let mut next_seq = state.seq;
-        for item in items {
-            let original_anchor = match validate_original_anchor(
-                &config,
-                &state.session.doc,
-                &at,
-                item.original_anchor.clone(),
-            ) {
-                Ok(anchor) => anchor,
-                Err(reason) => {
-                    results.push(json!({"status":"refused","reason":reason}));
-                    continue;
-                }
-            };
-            let Some(source) = source_target(&original_anchor) else {
-                results.push(json!({"status":"refused","reason":"invalid anchor"}));
-                continue;
-            };
-            let Some(path) = path_for_file_id(&state.session.doc, &source.file_id) else {
-                results.push(json!({"status":"anchor-not-found"}));
-                continue;
-            };
-            let proposed: String = item
-                .proposed
-                .chars()
-                .filter(|character| {
-                    let code = *character as u32;
-                    !(code < 0x09
-                        || (0x0b..=0x0c).contains(&code)
-                        || (0x0e..=0x1f).contains(&code)
-                        || code == 0x7f)
-                })
-                .collect();
-            if proposed.chars().count() > config.caps.exact {
-                results.push(json!({"status":"refused","reason":"the suggestion is too long"}));
-                continue;
+        let color = match color {
+            Some(raw) if !raw.trim().is_empty() => {
+                Some(valid_color(Some(raw)).ok_or("color must be a #RRGGBB value")?)
             }
-            let body = clean(&item.body, config.caps.body).trim().to_string();
-            // The suggested words become a branch here, under the lock, because
-            // this is where the document is. It is written down after the lock
-            // goes. A passage that is not where the anchor says refuses the
-            // item rather than being placed somewhere plausible.
-            let branch = crate::room::proposals::from_suggestion(
-                &state.session.doc,
+            _ => None,
+        };
+        if motivation == "editing" && proposed.is_none() {
+            return Err("a suggestion needs a proposal".into());
+        }
+        let proposed = match motivation.as_str() {
+            "editing" => {
+                let cleaned = strip_control(proposed.unwrap_or_default());
+                if cleaned.chars().count() > config.caps.exact {
+                    return Err("the suggestion is too long".into());
+                }
+                Some(cleaned)
+            }
+            _ => None,
+        };
+        Ok(Self {
+            catalog,
+            id,
+            document_id,
+            motivation,
+            body,
+            creator,
+            color,
+            author_account_id,
+            author_key,
+            actor,
+            exact: clean(exact, config.caps.exact),
+            prefix: clean(prefix, config.caps.context),
+            suffix: clean(suffix, config.caps.context),
+            position: position
+                .filter(|at| *at >= 0)
+                .map(|at| at.min(u32::MAX as i64) as u32),
+            whole_document,
+            proposed,
+            expected_render_digest,
+            cap_exact: config.caps.exact,
+            resolved_target: None,
+            branch: None,
+        })
+    }
+}
+
+impl SequencerCommand for AddComment {
+    type Output = Comment;
+
+    fn name(&self) -> &'static str {
+        "comment"
+    }
+
+    // A comment, highlight or suggestion needs only commenter access: it is
+    // what a commenter link or an `open` document exists to admit, and it
+    // lands in exactly the same `annotations` row an editor's would (§7.1).
+    fn authority(&self) -> Rung {
+        Rung::Commenter
+    }
+
+    fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        if let Some(expected) = &self.expected_render_digest {
+            let current = head.digest();
+            if hex::encode(expected) != current {
+                return Err(CommandError::StaleSelection { digest: current });
+            }
+        }
+        let quote = Quote {
+            exact: &self.exact,
+            prefix: &self.prefix,
+            suffix: &self.suffix,
+        };
+        let target = locate_anchor(head.doc(), &quote, self.whole_document, self.cap_exact)
+            .map_err(CommandError::Conflict)?;
+        let source = target.source().cloned();
+        if source.is_none() && matches!(self.motivation.as_str(), "editing" | "highlighting") {
+            return Err(CommandError::Conflict(
+                "a suggestion or highlight has to be about a passage".into(),
+            ));
+        }
+        if self.motivation == "editing" {
+            let source = source.expect("checked above");
+            let path = path_for_file_id(head.doc(), &source.file_id).ok_or_else(|| {
+                CommandError::Conflict("that source file is not part of this document".into())
+            })?;
+            let proposed = self.proposed.as_deref().unwrap_or_default();
+            let (branch_doc, base, tip, peer) = crate::room::proposals::from_suggestion(
+                head.doc(),
                 &path,
                 source.start_utf16 as usize,
                 &source.exact,
-                &proposed,
+                proposed,
             )
-            .ok()
-            .and_then(|(made, base, tip, peer)| {
-                session::encode_diff(&made, &session::encode_vector(&state.session.doc))
-                    .ok()
-                    .map(|bytes| (base, tip, bytes, peer))
+            .map_err(|error| CommandError::Conflict(error.to_string()))?;
+            let branch_bytes =
+                session::encode_diff(&branch_doc, &session::encode_vector(head.doc()))
+                    .map_err(CommandError::Conflict)?;
+            self.branch = Some(SuggestionBranch {
+                base: base.encode(),
+                tip: tip.encode(),
+                bytes: branch_bytes,
+                peer,
             });
-            let Some(branch) = branch else {
-                results
-                    .push(json!({"status":"refused","reason":"that passage is not where it was"}));
-                continue;
-            };
-            next_seq = next_seq.saturating_add(1);
-            let added = Comment {
-                id: new_id(),
-                seq: next_seq,
-                attachment: Some(DerivedAttachment {
-                    checkpoint_id: CheckpointId(at.clone()),
-                    status: AnchorStatus::Exact,
-                    live_source_range: resolve::capture(&state.session.doc, source),
-                    resolved_range_utf16: Some((source.start_utf16, source.end_utf16)),
-                    diagnostic: None,
-                }),
-                original_anchor: Some(original_anchor.clone()),
-                presentation: PresentationContext::default(),
-                motivation: "editing".into(),
-                color: None,
-                bundle_id: String::new(),
-                proposal: String::new(),
-                // Projections, filled in when this is served rather than stored.
-                proposed: Some(proposed.clone()),
-                outcome: String::new(),
-                pass: pass.clone(),
-                body,
-                creator: caller.creator.to_string(),
-                created: timestamp(),
-                resolved: false,
-                resolved_at: None,
-                resolved_in: String::new(),
-                replies: Vec::new(),
-                author: caller.author.to_string(),
-            };
-            results.push(Value::Null);
-            prepared.push((results.len() - 1, added, branch));
         }
-        drop(state);
-        if let Some(catalog) = self.catalog.as_ref().get() {
-            // Row by row, each acknowledged individually, with room state
-            // released for the whole pass: a hundred inserts used to hold the
-            // document's lock from the first to the last.
-            let mut stored_rows = Vec::new();
-            for (slot, mut added, branch) in prepared {
-                // The branch becomes a proposal, and the comment carries its id.
-                // A suggestion whose branch cannot be stored is refused rather
-                // than kept as a remark with nothing behind it.
-                let proposal = match self.proposal_record(
-                    &added.creator,
-                    branch.3,
-                    &branch.0,
-                    &branch.1,
-                    branch.2,
-                ) {
-                    Ok((id, proposal)) => {
-                        added.proposal = id;
-                        proposal
-                    }
-                    Err(error) => {
-                        results[slot] = json!({"status":"refused","reason":error.to_string()});
-                        continue;
-                    }
+        self.resolved_target = Some(target);
+        Ok(None)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut Transaction<'static, Postgres>,
+        evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let target = self
+                .resolved_target
+                .take()
+                .expect("evaluate ran before transact");
+            let anchor = OriginalAnchor {
+                source_sequence: evidence.source_sequence,
+                frontier: evidence.before_frontier.clone(),
+                target,
+            };
+            let presentation = PresentationContext {
+                rendered_exact: self.exact.clone(),
+                rendered_prefix: self.prefix.clone(),
+                rendered_suffix: self.suffix.clone(),
+                rendered_position_utf16: self.position,
+            };
+            let row = if let Some(SuggestionBranch {
+                base: base_frontiers,
+                tip: tip_frontiers,
+                bytes: branch_bytes,
+                peer,
+            }) = self.branch.take()
+            {
+                let proposal_id = Uuid::new_v4();
+                self.catalog
+                    .put_suggestion_authorized(
+                        tx,
+                        self.id,
+                        NewAnnotation {
+                            document_id: self.document_id,
+                            kind: kind_of(&self.motivation).to_string(),
+                            body: self.body.clone(),
+                            author_account_id: self.author_account_id,
+                            author_key: self.author_key.clone(),
+                            author_label: self.creator.clone(),
+                            color: self.color.clone(),
+                            proposal_id: Some(proposal_id),
+                            original_anchor: anchor,
+                            presentation,
+                            render_digest: self
+                                .expected_render_digest
+                                .map(|digest| digest.to_vec()),
+                            attachment: None,
+                        },
+                        NewProposal {
+                            document_id: self.document_id,
+                            id: proposal_id,
+                            author: self.creator.clone(),
+                            author_peer: peer as i64,
+                            base_frontiers,
+                            tip_frontiers,
+                            branch_bytes,
+                        },
+                        &self.actor,
+                    )
+                    .await?
+            } else {
+                self.catalog
+                    .put_annotation_authorized(
+                        tx,
+                        self.id,
+                        NewAnnotation {
+                            document_id: self.document_id,
+                            kind: kind_of(&self.motivation).to_string(),
+                            body: self.body.clone(),
+                            author_account_id: self.author_account_id,
+                            author_key: self.author_key.clone(),
+                            author_label: self.creator.clone(),
+                            color: self.color.clone(),
+                            proposal_id: None,
+                            original_anchor: anchor,
+                            presentation,
+                            render_digest: self
+                                .expected_render_digest
+                                .map(|digest| digest.to_vec()),
+                            attachment: None,
+                        },
+                        &self.actor,
+                        false,
+                    )
+                    .await?
+            };
+            annotation_row_to_comment(&row, Vec::new())
+                .map_err(|error| CommandError::Storage(postgres::Error::Invalid(error.to_string())))
+        })
+    }
+}
+
+/// A reply to an existing comment. It never touches the source, so it needs
+/// nothing of the head; it exists as a command only because every write that
+/// reaches the comment cache goes through the sequencer's one lock (§7).
+pub struct AddReply {
+    catalog: Arc<PostgresCatalog>,
+    id: Uuid,
+    document_id: Uuid,
+    comment_id: Uuid,
+    body: String,
+    creator: String,
+    author_account_id: Option<Uuid>,
+    author_key: String,
+    actor: MutationAuthorization,
+}
+
+impl AddReply {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        catalog: Arc<PostgresCatalog>,
+        document_id: Uuid,
+        id: Uuid,
+        comment_id: Uuid,
+        config: &Configuration,
+        body: &str,
+        creator: &str,
+        author_account_id: Option<Uuid>,
+        author_key: String,
+        actor: MutationAuthorization,
+    ) -> Result<Self, String> {
+        let body = clean(body, config.caps.body).trim().to_string();
+        if body.is_empty() {
+            return Err("reply body is required".into());
+        }
+        let mut creator = clean(creator, config.caps.creator).trim().to_string();
+        if creator.is_empty() {
+            creator = "Anonymous".to_string();
+        }
+        Ok(Self {
+            catalog,
+            id,
+            document_id,
+            comment_id,
+            body,
+            creator,
+            author_account_id,
+            author_key,
+            actor,
+        })
+    }
+}
+
+pub struct ReplyOutcome {
+    pub comment_id: Uuid,
+    pub reply: Reply,
+}
+
+impl SequencerCommand for AddReply {
+    type Output = ReplyOutcome;
+
+    fn name(&self) -> &'static str {
+        "reply"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Commenter
+    }
+
+    fn evaluate(&mut self, _head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        Ok(None)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut Transaction<'static, Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let row = self
+                .catalog
+                .create_reply_authorized(
+                    tx,
+                    self.document_id,
+                    NewReply {
+                        id: self.id,
+                        annotation_id: self.comment_id,
+                        author_account_id: self.author_account_id,
+                        author_key: self.author_key.clone(),
+                        author_label: self.creator.clone(),
+                        body: self.body.clone(),
+                    },
+                    &self.actor,
+                )
+                .await?;
+            Ok(ReplyOutcome {
+                comment_id: row.annotation_id,
+                reply: reply_row_to_reply(row),
+            })
+        })
+    }
+}
+
+/// Resolves or reopens an ordinary comment (never a suggestion -- deciding
+/// one of those is `AcceptSuggestion` or `RejectSuggestion`). There is no
+/// per-annotation version column (§8.2 gives one only to
+/// `document_proposals`, where a race actually matters): resolving is
+/// idempotent by construction, so the last write standing is a correct
+/// answer either way.
+pub struct ResolveComment {
+    catalog: Arc<PostgresCatalog>,
+    document_id: Uuid,
+    comment_id: Uuid,
+    resolved: bool,
+    actor: MutationAuthorization,
+}
+
+impl ResolveComment {
+    pub fn new(
+        catalog: Arc<PostgresCatalog>,
+        document_id: Uuid,
+        comment_id: Uuid,
+        resolved: bool,
+        actor: MutationAuthorization,
+    ) -> Self {
+        Self {
+            catalog,
+            document_id,
+            comment_id,
+            resolved,
+            actor,
+        }
+    }
+}
+
+pub struct ResolveOutcome {
+    pub comment_id: Uuid,
+    pub resolved: bool,
+    pub resolved_at: Option<String>,
+}
+
+impl SequencerCommand for ResolveComment {
+    type Output = ResolveOutcome;
+
+    fn name(&self) -> &'static str {
+        "resolve"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Commenter
+    }
+
+    fn evaluate(&mut self, _head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        Ok(None)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut Transaction<'static, Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let existing =
+                find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            let input = replay_of(&existing)?;
+            self.catalog
+                .replace_annotation_authorized(
+                    tx,
+                    self.comment_id,
+                    input,
+                    self.resolved,
+                    &self.actor,
+                )
+                .await?;
+            let updated = find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            Ok(ResolveOutcome {
+                comment_id: self.comment_id,
+                resolved: updated.resolved_at.is_some(),
+                resolved_at: updated.resolved_at.map(format_time),
+            })
+        })
+    }
+}
+
+/// Deletes a comment. `is_owner` and `author_key` decide whether the caller
+/// may, exactly as [`deletable`] would; the check is made against the row's
+/// own author read here rather than a copy read earlier, because that is the
+/// only copy nothing can have raced. It is narrower than what
+/// `delete_annotation_authorized` itself checks (rung and session only, not
+/// authorship), so both run: this refuses a commenter deleting someone
+/// else's remark, and the catalogue refuses an actor whose access changed.
+pub struct DeleteComment {
+    catalog: Arc<PostgresCatalog>,
+    document_id: Uuid,
+    comment_id: Uuid,
+    author_key: String,
+    is_owner: bool,
+    actor: MutationAuthorization,
+}
+
+impl DeleteComment {
+    pub fn new(
+        catalog: Arc<PostgresCatalog>,
+        document_id: Uuid,
+        comment_id: Uuid,
+        author_key: String,
+        is_owner: bool,
+        actor: MutationAuthorization,
+    ) -> Self {
+        Self {
+            catalog,
+            document_id,
+            comment_id,
+            author_key,
+            is_owner,
+            actor,
+        }
+    }
+}
+
+impl SequencerCommand for DeleteComment {
+    type Output = ();
+
+    fn name(&self) -> &'static str {
+        "delete"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Commenter
+    }
+
+    fn evaluate(&mut self, _head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        Ok(None)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut Transaction<'static, Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let existing =
+                find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            if !(self.is_owner
+                || (!self.author_key.is_empty() && existing.author_key == self.author_key))
+            {
+                return Err(CommandError::Conflict(
+                    "you may only delete your own comments".into(),
+                ));
+            }
+            self.catalog
+                .delete_annotation_authorized(tx, self.document_id, self.comment_id, &self.actor)
+                .await?;
+            Ok(())
+        })
+    }
+}
+
+/// Replaces a pending suggestion's branch with a fresh one, re-locating the
+/// same passage at head rather than trusting the offsets it had before: the
+/// point of locating at head is that offsets move.
+///
+/// The branch is updated in place, on the proposal's existing id, through
+/// `proposals::update_proposal_branch` (version-conditional: a refine made
+/// against a tip somebody else already moved is refused with "read it again"
+/// rather than silently discarded or left to open a second, orphaned
+/// proposal beside the first). Only the annotation's `body` changes on the
+/// `annotations` row, through `replace_annotation_authorized`.
+///
+/// `authority()` is `Commenter`, not `Editor`, because the product has
+/// always let a suggestion's own author refine it without being an editor --
+/// only an editor deciding someone *else's* suggestion needed the higher
+/// rung. `replace_annotation_authorized` itself checks only commenter access
+/// here (`resolved` stays `false`, so its own editor-elevation branch does
+/// not fire), so the narrower "author or editor" rule is enforced here,
+/// reading the row first, the same way `DeleteComment` enforces its own
+/// narrower rule.
+/// What a refine carries from `evaluate` to `transact`. `build_suggestion_branch`
+/// also works out the target and the base frontiers, but a refine writes
+/// onto the proposal's existing branch and leaves its anchor exactly as
+/// `existing` already has it (see `RefineSuggestion::transact`), so neither
+/// is kept here -- only the tip the branch now sits at and the branch bytes
+/// themselves.
+struct RefineBranch {
+    tip: Vec<u8>,
+    bytes: Vec<u8>,
+}
+
+pub struct RefineSuggestion {
+    catalog: Arc<PostgresCatalog>,
+    document_id: Uuid,
+    comment_id: Uuid,
+    proposal_id: Uuid,
+    expected_version: i64,
+    author_key: String,
+    is_owner: bool,
+    body: String,
+    exact: String,
+    prefix: String,
+    suffix: String,
+    proposed: String,
+    actor: MutationAuthorization,
+    cap_exact: usize,
+    prepared: Option<RefineBranch>,
+}
+
+impl RefineSuggestion {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        catalog: Arc<PostgresCatalog>,
+        document_id: Uuid,
+        comment_id: Uuid,
+        proposal_id: Uuid,
+        expected_version: i64,
+        author_key: String,
+        is_owner: bool,
+        config: &Configuration,
+        body: &str,
+        exact: &str,
+        prefix: &str,
+        suffix: &str,
+        proposed: &str,
+        actor: MutationAuthorization,
+    ) -> Result<Self, String> {
+        let proposed = strip_control(proposed);
+        if proposed.chars().count() > config.caps.exact || body.chars().count() > config.caps.body {
+            return Err("refinement exceeds the suggestion size limit".into());
+        }
+        Ok(Self {
+            catalog,
+            document_id,
+            comment_id,
+            proposal_id,
+            expected_version,
+            author_key,
+            is_owner,
+            body: clean(body, config.caps.body).trim().to_string(),
+            exact: clean(exact, config.caps.exact),
+            prefix: clean(prefix, config.caps.context),
+            suffix: clean(suffix, config.caps.context),
+            proposed,
+            actor,
+            cap_exact: config.caps.exact,
+            prepared: None,
+        })
+    }
+}
+
+impl SequencerCommand for RefineSuggestion {
+    type Output = Comment;
+
+    fn name(&self) -> &'static str {
+        "refine"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Commenter
+    }
+
+    fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        let quote = Quote {
+            exact: &self.exact,
+            prefix: &self.prefix,
+            suffix: &self.suffix,
+        };
+        let PreparedBranch { tip, bytes, .. } =
+            build_suggestion_branch(head.doc(), &quote, self.cap_exact, &self.proposed)
+                .map_err(CommandError::Conflict)?;
+        self.prepared = Some(RefineBranch { tip, bytes });
+        Ok(None)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut Transaction<'static, Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let existing =
+                find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            if !(self.is_owner
+                || (!self.author_key.is_empty() && existing.author_key == self.author_key))
+            {
+                return Err(CommandError::Conflict(
+                    "only the suggestion author or an editor may refine it".into(),
+                ));
+            }
+            // `target` is only where the branch's replacement text is rooted
+            // at head; the suggestion's own anchor -- the passage it
+            // discusses -- is immutable and stays whatever `existing`
+            // already carries. It is not written back over that anchor.
+            let RefineBranch {
+                tip: tip_frontiers,
+                bytes: branch_bytes,
+            } = self.prepared.take().expect("evaluate ran before transact");
+            let stored = self
+                .catalog
+                .update_proposal_branch(
+                    tx,
+                    self.document_id,
+                    self.proposal_id,
+                    self.expected_version,
+                    tip_frontiers,
+                    branch_bytes,
+                )
+                .await?;
+            // `update_proposal_branch` never errors on a version mismatch --
+            // per §7.2 it just hands back the row as it stands, for the
+            // caller to compare with what it asked for. A version this call
+            // did not itself produce means somebody else moved the proposal
+            // first.
+            if stored.version != self.expected_version + 1 {
+                return Err(CommandError::Conflict(
+                    "suggestion changed; read it again before refining".into(),
+                ));
+            }
+            let mut input = replay_of(&existing)?;
+            input.body = self.body.clone();
+            self.catalog
+                .replace_annotation_authorized(tx, self.comment_id, input, false, &self.actor)
+                .await?;
+            let row = find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            annotation_row_to_comment(&row, Vec::new())
+                .map_err(|error| CommandError::Storage(postgres::Error::Invalid(error.to_string())))
+        })
+    }
+}
+
+/// Takes a suggestion. The one command here that produces source (§7.3): the
+/// branch is merged into a fork of head and the fork's export is what the
+/// row carries. A retry of the same `request_id` finds the `document_labels`
+/// row this writes and returns without merging twice (§7.2).
+///
+/// An editor decision about someone else's suggestion, never reachable by a
+/// commenter in the product this replaces -- `authority()` is `Editor`, and
+/// `replace_annotation_authorized` enforces the same rung a second time
+/// itself, because `resolved=true` on a `kind="suggestion"` row is exactly
+/// the case it raises its own check for.
+pub struct AcceptSuggestion {
+    catalog: Arc<PostgresCatalog>,
+    document_id: Uuid,
+    comment_id: Uuid,
+    proposal_id: Uuid,
+    base_frontiers: Vec<u8>,
+    tip_frontiers: Vec<u8>,
+    branch_bytes: Vec<u8>,
+    decided_by: String,
+    actor: MutationAuthorization,
+    request_id: Uuid,
+}
+
+impl AcceptSuggestion {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        catalog: Arc<PostgresCatalog>,
+        document_id: Uuid,
+        comment_id: Uuid,
+        proposal_id: Uuid,
+        base_frontiers: Vec<u8>,
+        tip_frontiers: Vec<u8>,
+        branch_bytes: Vec<u8>,
+        decided_by: String,
+        actor: MutationAuthorization,
+        request_id: Uuid,
+    ) -> Self {
+        Self {
+            catalog,
+            document_id,
+            comment_id,
+            proposal_id,
+            base_frontiers,
+            tip_frontiers,
+            branch_bytes,
+            decided_by,
+            actor,
+            request_id,
+        }
+    }
+}
+
+/// What accepting a suggestion answers with. `resolved_in` is
+/// `docs/protocol/room-v2.md`'s "the `source_sequence` of that row, which is
+/// the only durable name the state has now that there are no version ids" --
+/// the row §7 step 4 wrote alongside the merge, not a field on `Comment`
+/// itself, because nothing about a comment's own row carries the log
+/// position its own *acceptance* landed in.
+pub struct Accepted {
+    pub comment: Comment,
+    pub resolved_in: i64,
+}
+
+impl SequencerCommand for AcceptSuggestion {
+    type Output = Accepted;
+
+    fn name(&self) -> &'static str {
+        "accept"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Editor
+    }
+
+    // §7.2: a retry with the same `request_id` finds the `document_labels`
+    // row `transact` wrote for the merge and returns without merging twice.
+    fn replay(&mut self) -> BoxFuture<'_, Result<Option<Self::Output>, CommandError>> {
+        Box::pin(async move {
+            let Some(label) = self
+                .catalog
+                .label_by_request(self.document_id, self.request_id)
+                .await?
+            else {
+                return Ok(None);
+            };
+            let row = find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            let comment = annotation_row_to_comment(&row, Vec::new()).map_err(|error| {
+                CommandError::Storage(postgres::Error::Invalid(error.to_string()))
+            })?;
+            Ok(Some(Accepted {
+                comment,
+                resolved_in: label.source_sequence,
+            }))
+        })
+    }
+
+    fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        let base = Frontiers::decode(&self.base_frontiers)
+            .map_err(|error| CommandError::Conflict(format!("invalid proposal base: {error}")))?;
+        let tip = Frontiers::decode(&self.tip_frontiers)
+            .map_err(|error| CommandError::Conflict(format!("invalid proposal tip: {error}")))?;
+        let proposal = crate::room::proposals::Proposal {
+            base,
+            tip: tip.clone(),
+        };
+        let reviewer = fresh_peer();
+        head.prepare(self.request_id.as_u128() as i64, |draft| {
+            crate::room::proposals::resolve(
+                draft,
+                &proposal,
+                &self.branch_bytes,
+                &HashSet::new(),
+                &tip,
+                reviewer,
+            )
+            .map(|_diff| ())
+            .map_err(|error| error.to_string())
+        })
+        .map_err(CommandError::Conflict)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut Transaction<'static, Postgres>,
+        evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let after_frontier = evidence
+                .after_frontier
+                .clone()
+                .ok_or_else(|| CommandError::Conflict("accept produced no source".into()))?;
+            self.catalog
+                .decide_proposal_hunk(
+                    tx,
+                    self.document_id,
+                    self.proposal_id,
+                    0,
+                    true,
+                    &self.decided_by,
+                    &self.tip_frontiers,
+                    None,
+                    1,
+                )
+                .await
+                .map_err(CommandError::from)?;
+            self.catalog
+                .resolve_proposal(tx, self.proposal_id, &self.decided_by)
+                .await
+                .map_err(CommandError::from)?;
+            let existing =
+                find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            let input = replay_of(&existing)?;
+            self.catalog
+                .replace_annotation_authorized(tx, self.comment_id, input, true, &self.actor)
+                .await?;
+            let tree_digest = evidence
+                .after_digest
+                .as_deref()
+                .and_then(|digest| hex::decode(digest).ok())
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+            self.catalog
+                .insert_label(
+                    tx,
+                    &NewLabel {
+                        id: Uuid::new_v4(),
+                        document_id: self.document_id,
+                        source_sequence: evidence.source_sequence,
+                        vector: evidence.vector.clone(),
+                        frontier: after_frontier,
+                        tree_digest,
+                        label: None,
+                        reason: "accept".into(),
+                        request_id: Some(self.request_id),
+                        author_account_id: self.actor.account_id,
+                        author_label: self.decided_by.clone(),
+                    },
+                )
+                .await
+                .map_err(CommandError::from)?;
+            let row = find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            let comment = annotation_row_to_comment(&row, Vec::new()).map_err(|error| {
+                CommandError::Storage(postgres::Error::Invalid(error.to_string()))
+            })?;
+            Ok(Accepted {
+                comment,
+                resolved_in: evidence.source_sequence,
+            })
+        })
+    }
+}
+
+/// Declines a suggestion. Unlike accept, this produces no source: the branch
+/// is simply never merged, so there is nothing to prepare in `evaluate`. An
+/// editor decision, for the same reason `AcceptSuggestion` is.
+pub struct RejectSuggestion {
+    catalog: Arc<PostgresCatalog>,
+    document_id: Uuid,
+    comment_id: Uuid,
+    proposal_id: Uuid,
+    tip_frontiers: Vec<u8>,
+    decided_by: String,
+    actor: MutationAuthorization,
+}
+
+impl RejectSuggestion {
+    pub fn new(
+        catalog: Arc<PostgresCatalog>,
+        document_id: Uuid,
+        comment_id: Uuid,
+        proposal_id: Uuid,
+        tip_frontiers: Vec<u8>,
+        decided_by: String,
+        actor: MutationAuthorization,
+    ) -> Self {
+        Self {
+            catalog,
+            document_id,
+            comment_id,
+            proposal_id,
+            tip_frontiers,
+            decided_by,
+            actor,
+        }
+    }
+}
+
+impl SequencerCommand for RejectSuggestion {
+    type Output = Comment;
+
+    fn name(&self) -> &'static str {
+        "reject"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Editor
+    }
+
+    fn evaluate(&mut self, _head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        Ok(None)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut Transaction<'static, Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            self.catalog
+                .decide_proposal_hunk(
+                    tx,
+                    self.document_id,
+                    self.proposal_id,
+                    0,
+                    false,
+                    &self.decided_by,
+                    &self.tip_frontiers,
+                    None,
+                    1,
+                )
+                .await
+                .map_err(CommandError::from)?;
+            self.catalog
+                .resolve_proposal(tx, self.proposal_id, &self.decided_by)
+                .await
+                .map_err(CommandError::from)?;
+            let existing =
+                find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            let input = replay_of(&existing)?;
+            self.catalog
+                .replace_annotation_authorized(tx, self.comment_id, input, true, &self.actor)
+                .await?;
+            let row = find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            annotation_row_to_comment(&row, Vec::new())
+                .map_err(|error| CommandError::Storage(postgres::Error::Invalid(error.to_string())))
+        })
+    }
+}
+
+/// One suggestion offered as part of an assistant's batch, before it is
+/// checked against the head.
+///
+/// `id` is the caller's, not minted here, because a create's idempotency is
+/// its client-chosen primary key (§7.2): a batch retried after a lost
+/// response inserts nothing a second time, it just reads back what is
+/// already there. It also names the suggestion's proposal -- see
+/// `AgentSuggestionBatch::transact` -- so the two rows a suggestion is made
+/// of share one identity rather than two that a partial retry could let
+/// drift apart.
+#[derive(Clone, Debug)]
+pub struct BatchSuggestion {
+    pub id: Uuid,
+    pub exact: String,
+    pub prefix: String,
+    pub suffix: String,
+    pub proposed: String,
+    pub body: String,
+}
+
+/// Adds an assistant's suggestions against one head, each independently: a
+/// bad or stale anchor is that item's own refusal rather than the whole
+/// batch's. Every item that does succeed is anchored to the very same head,
+/// because the batch is one command and evaluates under one lock (§7 step 2).
+pub struct AgentSuggestionBatch {
+    catalog: Arc<PostgresCatalog>,
+    document_id: Uuid,
+    items: Vec<BatchSuggestion>,
+    creator: String,
+    author_account_id: Option<Uuid>,
+    author_key: String,
+    actor: MutationAuthorization,
+    cap_exact: usize,
+    prepared: Vec<Option<PreparedBranch>>,
+}
+
+impl AgentSuggestionBatch {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        catalog: Arc<PostgresCatalog>,
+        document_id: Uuid,
+        items: Vec<BatchSuggestion>,
+        config: &Configuration,
+        creator: String,
+        author_account_id: Option<Uuid>,
+        author_key: String,
+        actor: MutationAuthorization,
+    ) -> Result<Self, String> {
+        if items.is_empty() {
+            return Err("a suggestion batch cannot be empty".into());
+        }
+        if items.len() > 100 {
+            return Err("a suggestion batch may contain at most 100 items".into());
+        }
+        Ok(Self {
+            catalog,
+            document_id,
+            items,
+            creator,
+            author_account_id,
+            author_key,
+            actor,
+            cap_exact: config.caps.exact,
+            prepared: Vec::new(),
+        })
+    }
+}
+
+/// One item's outcome: what got made, or why it did not.
+pub enum BatchItemResult {
+    Created(Box<Comment>),
+    Refused(String),
+}
+
+impl SequencerCommand for AgentSuggestionBatch {
+    type Output = Vec<BatchItemResult>;
+
+    fn name(&self) -> &'static str {
+        "agent-suggestion-batch"
+    }
+
+    fn authority(&self) -> Rung {
+        Rung::Commenter
+    }
+
+    fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        self.prepared = self
+            .items
+            .iter()
+            .map(|item| {
+                let quote = Quote {
+                    exact: &item.exact,
+                    prefix: &item.prefix,
+                    suffix: &item.suffix,
                 };
-                let persisted = match catalog_comment_row(&self.slug, &added) {
-                    Ok(row) => {
-                        let request_id = super::catalog::derived_request_id(
-                            &pass,
-                            "batch-suggestion",
-                            &added.id,
-                        );
-                        let digest = request_digest(&json!({
-                            "kind": "batch-suggestion", "comment": added,
-                        }));
-                        insert_suggestion_request(
-                            catalog,
-                            row,
-                            proposal,
-                            actor.clone(),
-                            &request_id,
-                            digest,
-                        )
-                        .await
-                        .map(|(seq, _)| seq)
-                        .map_err(|error| error.to_string())
-                    }
-                    Err(error) => Err(error),
+                build_suggestion_branch(head.doc(), &quote, self.cap_exact, &item.proposed).ok()
+            })
+            .collect();
+        Ok(None)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut Transaction<'static, Postgres>,
+        evidence: &'a Evidence,
+    ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let prepared = std::mem::take(&mut self.prepared);
+            let mut results = Vec::with_capacity(prepared.len());
+            for (item, slot) in self.items.iter().zip(prepared) {
+                let Some(PreparedBranch {
+                    target,
+                    base,
+                    tip,
+                    bytes: branch_bytes,
+                    peer,
+                }) = slot
+                else {
+                    results.push(BatchItemResult::Refused(
+                        "that passage is not in this document's source".into(),
+                    ));
+                    continue;
                 };
-                match persisted {
-                    Ok(seq) => {
-                        let mut stored = added;
-                        stored.seq = seq;
-                        results[slot] = json!({"status":"created","id":stored.id});
-                        events.push(json!({"type":"comment","comment":stored.clone()}));
-                        stored_rows.push(stored);
-                    }
-                    Err(error) => results[slot] = json!({"status":"refused","reason":error}),
+                let anchor = OriginalAnchor {
+                    source_sequence: evidence.source_sequence,
+                    frontier: evidence.before_frontier.clone(),
+                    target,
+                };
+                // The proposal and the annotation that discusses it share one
+                // id, the caller's own: a replay finds both already there by
+                // that id and opens no second branch beside the first (§7.2).
+                let row = self
+                    .catalog
+                    .put_suggestion_authorized(
+                        tx,
+                        item.id,
+                        NewAnnotation {
+                            document_id: self.document_id,
+                            kind: "suggestion".into(),
+                            body: item.body.clone(),
+                            author_account_id: self.author_account_id,
+                            author_key: self.author_key.clone(),
+                            author_label: self.creator.clone(),
+                            color: None,
+                            proposal_id: Some(item.id),
+                            original_anchor: anchor,
+                            presentation: PresentationContext::default(),
+                            render_digest: None,
+                            attachment: None,
+                        },
+                        NewProposal {
+                            document_id: self.document_id,
+                            id: item.id,
+                            author: self.creator.clone(),
+                            author_peer: peer as i64,
+                            base_frontiers: base,
+                            tip_frontiers: tip,
+                            branch_bytes,
+                        },
+                        &self.actor,
+                    )
+                    .await;
+                match row {
+                    Ok(row) => match annotation_row_to_comment(&row, Vec::new()) {
+                        Ok(comment) => results.push(BatchItemResult::Created(Box::new(comment))),
+                        Err(error) => results.push(BatchItemResult::Refused(error.to_string())),
+                    },
+                    Err(error) => results.push(BatchItemResult::Refused(error.to_string())),
                 }
             }
-            let mut state = self.command_owner.state().await;
-            for stored in stored_rows {
-                state.seq = state.seq.max(stored.seq);
-                state.comments.push(stored);
-            }
-        } else {
-            return Err(BatchRefusal("durable catalog required".into()));
-        }
-        for event in events {
-            self.broadcast_comment_event(None, &event).await;
-        }
-        Ok((pass, results))
+            Ok(results)
+        })
     }
+}
 
-    pub(super) fn rate_reserve(
-        &self,
-        state: &mut RoomState,
-        address: &str,
-        link: &str,
-        budget: Option<i64>,
-        amount: i64,
-    ) -> bool {
-        if address.is_empty() && link.is_empty() {
-            return true;
-        }
-        let hour = now_unix() / 3600;
-        let caller = if link.is_empty() {
-            format!("address:{}", rate_key(address))
-        } else {
-            format!("link:{link}")
-        };
-        let key = format!("{caller}:{hour}");
-        let suffix = format!(":{hour}");
-        state.rate.retain(|existing, _| existing.ends_with(&suffix));
-        let count = state.rate.get(&key).copied().unwrap_or(0);
-        if count.saturating_add(amount) > budget.unwrap_or(self.config.rate_per_hour) {
-            return false;
-        }
-        state.rate.insert(key, count + amount);
-        true
-    }
+/// A peer id for a branch that nothing else will use, minted the same way
+/// `room::proposals::fresh_peer` does but for a command a reviewer's decision
+/// authors as the deployment rather than as any editor's own socket.
+fn fresh_peer() -> loro::PeerID {
+    let bytes = crate::auth::random_bytes(8);
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&bytes);
+    loro::PeerID::from_le_bytes(id) | 1
+}
 
+// -- broadcasting ---------------------------------------------------------
+
+impl Room {
     /// Adds the same caller-specific controls to a newly-created comment
-    /// event that a hello or REST snapshot carries. The shared broadcast can
-    /// use an empty author (so every other caller sees `mine: false`), while
-    /// the submitting socket or HTTP response asks for its own view.
+    /// event that a hello or REST snapshot carries.
     pub async fn comment_event_for(&self, payload: &Value, author: &str, is_owner: bool) -> Value {
         let kind = payload.get("type").and_then(Value::as_str);
         if !matches!(kind, Some("comment" | "refine" | "reply")) {
@@ -816,11 +1655,8 @@ impl Room {
                 json!({"type": "annotation-redacted"})
             };
         };
-        let state = self.command_owner.state().await;
-        let Some(comment) = state.comments.iter().find(|comment| comment.id == id) else {
-            // Another mutation can delete a comment after its event was
-            // prepared. Never fall back to the unprojected source-bearing
-            // payload when the current visibility can no longer be checked.
+        let comments = self.comments().await.unwrap_or_default();
+        let Some(comment) = comments.iter().find(|comment| comment.id == id) else {
             return if is_owner {
                 payload.clone()
             } else {
@@ -828,13 +1664,8 @@ impl Room {
             };
         };
         if !is_owner && !visible_to_reader(comment) {
-            // Editorial suggestions contain source anchors and proposed source
-            // text, which is the project rather than the page, so they do not
-            // belong in the public annotation channel. An ordinary remark
-            // does, wherever it was written.
-            return json!({"type": "annotation-redacted", "annotation_revision": comment.seq});
+            return json!({"type": "annotation-redacted"});
         }
-
         let view = CommentView::for_viewer(comment, author, is_owner);
         let mut event = payload.clone();
         if let Ok(value) = serde_json::to_value(view) {
@@ -844,18 +1675,9 @@ impl Room {
     }
 
     /// Relays a comment event to everyone else in the room, in the view each
-    /// peer is entitled to.
-    ///
-    /// There are two, because the room holds two kinds of peer. An editing
-    /// suggestion is part of the project an editor peer has open, so it sees
-    /// the same thing a reload would show it; a reader peer sees only what
-    /// the public annotation channel may carry, which for that comment is a
-    /// redaction. Sending one view to both is what left two editors unable
-    /// to see each other's comments until they reloaded.
-    ///
-    /// Both views are neutral about who is asking: `mine` and the delete
-    /// control belong to the frame sent back to the caller, never to a
-    /// shared one, so `skip` is the socket that submitted it.
+    /// peer is entitled to. An editing suggestion is part of the project an
+    /// editor peer has open; a reader peer sees only what the public
+    /// annotation channel may carry, which for that comment is a redaction.
     pub async fn broadcast_comment_event(&self, skip: Option<u64>, payload: &Value) {
         let editors = self.comment_event_for(payload, "", true).await;
         self.broadcast_editors_except(skip, &editors).await;
@@ -864,791 +1686,13 @@ impl Room {
     }
 
     /// The whole list, for a change no single event describes: an agent's
-    /// batch adds, edits and deletes in one act, so what a peer is told is
-    /// where the list ended up rather than each step it took.
-    ///
-    /// Split by authority for the same reason `broadcast_comment_event` is:
-    /// an editor peer sees the project's own annotations, a reader peer sees
-    /// only the ones the public channel may carry.
-    pub async fn broadcast_comment_snapshot(&self, revision: i64) {
-        let editors = json!({"type": "comments", "annotation_revision": revision,
+    /// batch adds, edits and deletes in one act.
+    pub async fn broadcast_comment_snapshot(&self, digest: i64) {
+        let editors = json!({"type": "comments", "comment_digest": digest,
             "comments": self.snapshot_for("", true).await});
         self.broadcast_editors_except(None, &editors).await;
-        let readers = json!({"type": "comments", "annotation_revision": revision,
+        let readers = json!({"type": "comments", "comment_digest": digest,
             "comments": self.snapshot_for("", false).await});
         self.broadcast_readers_except(None, &readers).await;
     }
-
-    // Wire metadata and authority remain explicit at the command boundary.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn apply_command_with_actor(
-        &self,
-        command: Command,
-        address: &str,
-        author: &str,
-        via: &str,
-        budget: Option<i64>,
-        is_owner: bool,
-        mut mutation_actor: crate::document::store::MutationActor,
-    ) -> (Value, bool) {
-        mutation_actor.owner_key = author.to_owned();
-        let temp_id = command.temp_id().to_owned();
-        let request_id = command.request_id().to_owned();
-        let comment_id = command.comment_id().to_owned();
-        // Suggestions are document operations as well as comment metadata.
-        // Serialize comment decisions with acceptance so a resolve/delete
-        // cannot race the CRDT edit and leave the catalogue outcome detached
-        // from the checkpoint it describes.
-        // Every comment mutation below prepares its change under state,
-        // persists it with state released, and installs it only once storage
-        // has taken it. This gate is what makes the middle phase safe: it is
-        // the only thing that keeps a second comment writer from preparing
-        // against the list this one is about to replace.
-        let _command = self.command_owner.acquire().await;
-        if !self.hold().await {
-            return (
-                json!({"type": "error", "message": "this room is held by another server", "temp_id": temp_id,
-                    "request_id": request_id}),
-                false,
-            );
-        }
-        let mut state = self.command_owner.state().await;
-        let config = self.config.clone();
-
-        let fail = |text: &str| -> (Value, bool) {
-            let mut payload = json!({"type": "error", "message": text, "temp_id": temp_id,
-                    "request_id": request_id});
-            // Named so the reader knows which optimistic row to roll back.
-            if !comment_id.is_empty() {
-                payload["comment_id"] = json!(comment_id);
-            }
-            (payload, false)
-        };
-        const UNSAVED: &str = "could not save that comment; try again";
-
-        if let Command::Comment { bundle_id, .. } = &command {
-            if !bundle_id.is_empty() {
-                let format = if state.session.format.is_empty() {
-                    "html"
-                } else {
-                    &state.session.format
-                };
-                let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
-                let current =
-                    crate::document::store::digest_of(&format!("{}:{}", format, tree.digest()));
-                if current != *bundle_id {
-                    return (
-                        json!({"type":"error","message":"source changed; refresh before annotating","stale_source":true,"temp_id":temp_id,"request_id":request_id}),
-                        false,
-                    );
-                }
-            }
-        }
-
-        // Retry before counting or writing again. Identity comes from the
-        // server, so choosing another person's record ID cannot take it over.
-        let requested_id = submission_id(&temp_id).map(str::to_owned).or_else(|| {
-            (!request_id.is_empty())
-                .then(|| format!("request:{}", crate::document::store::digest_of(&request_id)))
-        });
-        if let Some(id) = requested_id.as_deref() {
-            if self.catalog.as_ref().get().is_none()
-                && matches!(&command, Command::Comment { .. } | Command::Reply { .. })
-            {
-                for item in &state.comments {
-                    if item.id == id {
-                        if matches!(&command, Command::Comment { .. })
-                            && !author.is_empty()
-                            && item.author == author
-                        {
-                            let mut result = json!({"type": "comment", "comment": item, "temp_id": id,
-                                    "request_id": request_id});
-                            if !request_id.is_empty() {
-                                result["noop"] = json!(true);
-                            }
-                            return (result, true);
-                        }
-                        return fail("that submission ID is already in use");
-                    }
-                    if let Some(reply) = item.replies.iter().find(|reply| reply.id == id) {
-                        if matches!(&command, Command::Reply { .. })
-                            && item.id == comment_id
-                            && !author.is_empty()
-                            && reply.author == author
-                        {
-                            let mut result = json!({"type": "reply", "comment_id": item.id,
-                                "reply": reply, "temp_id": id,
-                                "request_id": request_id});
-                            if !request_id.is_empty() {
-                                result["noop"] = json!(true);
-                            }
-                            return (result, true);
-                        }
-                        return fail("that submission ID is already in use");
-                    }
-                }
-            }
-        }
-
-        let existing_submission = requested_id.as_deref().is_some_and(|id| {
-            state.comments.iter().any(|comment| {
-                comment.id == id || comment.replies.iter().any(|reply| reply.id == id)
-            })
-        });
-
-        // What the document says at this moment, by name: the frontier of the
-        // live document, read under the lock the anchor is taken under. For a
-        // comment this is the text the reviewer was looking at; for a resolve
-        // it is the text the author was looking at when they called it done.
-        // Either way it is the server's to record and never the client's to
-        // send.
-        //
-        // It is a frontier rather than a checkpoint because a checkpoint is a
-        // whole source archive and a comment is not a reason to write one. A
-        // frontier is a position in the operation log, which holds every one
-        // of these states already, so naming one costs nothing and the room
-        // can name the state it is actually in rather than the nearest state
-        // somebody happened to save. It also removes the race the old
-        // checkpoint-then-write had: there is no window between the name and
-        // the anchor, because they are taken from the same borrow.
-        //
-        // `frontier:` names a state nobody checkpointed, so a revision is
-        // self-describing: anything else is a checkpoint id, and the two are
-        // told apart by reading them rather than by knowing where they came
-        // from.
-        let current = format!(
-            "{MOMENT}{}",
-            encode_update(&state.session.doc.state_frontiers().encode())
-        );
-
-        // Resolving and deleting cost a slot too, the same as posting: a
-        // caller who could resolve or delete without limit could still make a
-        // thread unusable, just by different means than flooding it with text.
-        if !existing_submission && !self.rate_ok(&mut state, address, via, budget) {
-            let source = if via.is_empty() { "address" } else { "link" };
-            return fail(&format!("too many comments from this {source}; try later"));
-        }
-
-        match command {
-            Command::Refine {
-                comment_id,
-                proposed,
-                expected_proposed,
-                body,
-                revision,
-                request_id,
-                ..
-            } => {
-                let Some(index) = state.comments.iter().position(|item| item.id == comment_id)
-                else {
-                    return fail("unknown comment");
-                };
-                let target = &state.comments[index];
-                if !is_owner && (author.is_empty() || target.author != author) {
-                    return fail("only the suggestion author or an editor may refine it");
-                }
-                if target.motivation != "editing" || target.resolved || target.proposal.is_empty() {
-                    return fail("only a pending suggestion can be refined");
-                }
-                if target.revision() != revision {
-                    return fail("suggestion revision changed; read it again before refining");
-                }
-                if proposed.chars().count() > config.caps.exact
-                    || body.chars().count() > config.caps.body
-                {
-                    return fail("refinement exceeds the suggestion size limit");
-                }
-                let proposed = clean(&proposed, config.caps.exact);
-                let body = clean(&body, config.caps.body).trim().to_string();
-                let original_anchor = target.original_anchor.clone();
-                let was = target.proposal.clone();
-                let target = target.clone();
-                // Refining replaces the branch rather than editing it. The words
-                // somebody is refining away were proposed, and a proposal that
-                // quietly becomes a different proposal under the same id is one
-                // a reviewer could have agreed to without having seen it.
-                let rebuilt = original_anchor.as_ref().and_then(|anchor| {
-                    let source = source_target(anchor)?;
-                    let path = path_for_file_id(&state.session.doc, &source.file_id)?;
-                    let (made, base, tip, peer) = crate::room::proposals::from_suggestion(
-                        &state.session.doc,
-                        &path,
-                        source.start_utf16 as usize,
-                        &source.exact,
-                        &proposed,
-                    )
-                    .ok()?;
-                    let bytes =
-                        session::encode_diff(&made, &session::encode_vector(&state.session.doc))
-                            .ok()?;
-                    Some((base, tip, bytes, peer))
-                });
-                drop(state);
-                let Some((base, tip, bytes, peer)) = rebuilt else {
-                    return fail("that passage is not where it was; read it again before refining");
-                };
-                // What the reviewer last saw, so a refinement racing another
-                // refinement is refused rather than silently winning.
-                match self.proposed_text(&was).await {
-                    Ok(Some(current)) if current == expected_proposed => {}
-                    Ok(_) => return fail("suggestion changed; read it again before refining"),
-                    Err(error) => return fail(&error.to_string()),
-                }
-                let (refreshed, proposal) =
-                    match self.proposal_record(&target.creator, peer, &base, &tip, bytes) {
-                        Ok(prepared) => prepared,
-                        Err(error) => return fail(&error.to_string()),
-                    };
-                let mut refined = target;
-                refined.proposal = refreshed;
-                refined.body = body;
-                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
-                    match catalog_comment_row(&self.slug, &refined) {
-                        Ok(row) => {
-                            let digest = request_digest(&json!({
-                                "kind": "refine", "comment": refined,
-                            }));
-                            update_suggestion_row(
-                                catalog,
-                                row,
-                                proposal,
-                                mutation_actor.clone(),
-                                &request_id,
-                                digest,
-                            )
-                            .await
-                        }
-                        Err(error) => Err(error),
-                    }
-                } else {
-                    Err("durable catalog required".into())
-                };
-                state = self.command_owner.state().await;
-                if persisted.is_err() {
-                    return fail(UNSAVED);
-                }
-                if self.catalog.as_ref().get().is_some() {
-                    install_comment(&mut state, refined.clone());
-                }
-                (
-                    json!({"type":"refine","comment_id":comment_id,"comment":refined,"request_id":request_id}),
-                    true,
-                )
-            }
-            Command::Resolve {
-                comment_id,
-                resolved,
-                request_id,
-                ..
-            } => {
-                let Some(index) = state.comments.iter().position(|item| item.id == comment_id)
-                else {
-                    return fail("unknown comment");
-                };
-                // A suggestion's resolve doubles as its plain-language reject and
-                // reopen, with one refusal an ordinary comment never needs: an
-                // accepted suggestion already changed the document, and reopening
-                // it here would say it is merely unresolved rather than say what
-                // actually happened to the text.
-                let is_suggestion = state.comments[index].motivation == "editing";
-                if is_suggestion && !is_owner {
-                    return fail("only an editor may decide a suggestion");
-                }
-                // Whether a suggestion was taken is not recorded here any more:
-                // it is the state of its proposal, which only the server writes.
-                // Settled means its hunks were decided and the words either
-                // landed or did not -- either way that is done, and resolving
-                // the remark again is a no-op rather than a second decision.
-                let settled = state.comments[index].proposal.clone();
-                if is_suggestion && !settled.is_empty() {
-                    let open = self.open_proposals().await.unwrap_or_default();
-                    let still_open = open.iter().any(|proposal| proposal["id"] == json!(settled));
-                    if !still_open {
-                        if !resolved {
-                            return fail(
-                                "a decided suggestion cannot be reopened; restore the checkpoint instead",
-                            );
-                        }
-                        let target = &state.comments[index];
-                        return (
-                            json!({
-                                "type": "resolve", "comment_id": target.id,
-                                "resolved": target.resolved, "resolved_at": target.resolved_at,
-                                "resolved_in": target.resolved_in,
-                            }),
-                            true,
-                        );
-                    }
-                }
-                let was_resolved = state.comments[index].resolved;
-                if was_resolved == resolved {
-                    let target = &state.comments[index];
-                    let mut result = json!({
-                        "type": "resolve", "comment_id": target.id,
-                        "resolved": target.resolved, "resolved_at": target.resolved_at,
-                        "resolved_in": target.resolved_in, "request_id": request_id,
-                    });
-                    if !request_id.is_empty() {
-                        result["noop"] = json!(true);
-                    }
-                    return (result, true);
-                }
-                // The decision is prepared on a copy and applied to room state
-                // only once it is durable. The catalogue write is awaited now,
-                // and a caller that disappears at that await must not leave
-                // this room showing a decision no peer was told about and no
-                // row records.
-                let mut decided = state.comments[index].clone();
-                decided.resolved = resolved;
-                decided.resolved_at = resolved.then(timestamp);
-                // Which text it was resolved against. Cleared when a comment is
-                // reopened, because it is no longer resolved in anything.
-                decided.resolved_in = if resolved {
-                    current.clone()
-                } else {
-                    String::new()
-                };
-                drop(state);
-                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
-                    match catalog_comment_row(&self.slug, &decided) {
-                        Ok(row) => {
-                            let digest = request_digest(&json!({
-                                "kind": "resolve", "comment": decided,
-                            }));
-                            update_comment_row(
-                                catalog,
-                                row,
-                                mutation_actor.clone(),
-                                &request_id,
-                                digest,
-                            )
-                            .await
-                        }
-                        Err(error) => Err(error),
-                    }
-                } else {
-                    Err("durable catalog required".into())
-                };
-                state = self.command_owner.state().await;
-                if persisted.is_err() {
-                    return fail(UNSAVED);
-                }
-                if self.catalog.as_ref().get().is_some() {
-                    install_comment(&mut state, decided.clone());
-                }
-                (
-                    json!({
-                        "type": "resolve", "comment_id": decided.id,
-                        "resolved": decided.resolved, "resolved_at": decided.resolved_at,
-                        "resolved_in": decided.resolved_in,
-                        "request_id": request_id,
-                    }),
-                    true,
-                )
-            }
-            Command::Delete {
-                comment_id,
-                request_id,
-                ..
-            } => {
-                let Some(index) = state.comments.iter().position(|item| item.id == comment_id)
-                else {
-                    return fail("unknown comment");
-                };
-                if !deletable(&state.comments[index], author, is_owner) {
-                    return fail("you may only delete your own comments");
-                }
-                // Removed from room state only once the row is gone, so a
-                // cancelled caller cannot hide a comment from this room that
-                // every other reader still has.
-                drop(state);
-                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
-                    let digest = request_digest(&json!({
-                        "kind": "delete", "comment_id": comment_id,
-                    }));
-                    delete_comment_row(
-                        catalog,
-                        &self.slug,
-                        &comment_id,
-                        mutation_actor.clone(),
-                        &request_id,
-                        digest,
-                    )
-                    .await
-                } else {
-                    Err("durable catalog required".into())
-                };
-                state = self.command_owner.state().await;
-                if persisted.is_err() {
-                    return fail(UNSAVED);
-                }
-                if self.catalog.as_ref().get().is_some() {
-                    state.comments.retain(|item| item.id != comment_id);
-                }
-                (
-                    json!({"type": "delete", "comment_id": comment_id,
-                    "request_id": request_id}),
-                    true,
-                )
-            }
-
-            Command::Reply {
-                comment_id,
-                body: raw_body,
-                creator: raw_creator,
-                temp_id,
-                request_id,
-            } => {
-                let body = clean(&raw_body, config.caps.body).trim().to_string();
-                if body.is_empty() {
-                    return fail("reply body is required");
-                }
-                let mut creator = clean(&raw_creator, config.caps.creator).trim().to_string();
-                if creator.is_empty() {
-                    creator = "Anonymous".to_string();
-                }
-                let Some(index) = state.comments.iter().position(|item| item.id == comment_id)
-                else {
-                    return fail("unknown comment");
-                };
-                if !existing_submission && state.comments[index].replies.len() >= config.max_replies
-                {
-                    return fail("this comment has reached its reply limit");
-                }
-                let mut added = Reply {
-                    id: requested_id.clone().unwrap_or_else(new_id),
-                    body,
-                    creator,
-                    created: timestamp(),
-                    author: author.to_string(),
-                };
-                // The reply joins room state once its receipt is durable. A
-                // retry of the same request id matches that receipt rather
-                // than inserting the reply twice.
-                let target_id = state.comments[index].id.clone();
-                drop(state);
-                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
-                    let row = ReplyRow {
-                        comment_id: target_id.clone(),
-                        id: added.id.clone(),
-                        body: added.body.clone(),
-                        creator: added.creator.clone(),
-                        author: added.author.clone(),
-                    };
-                    let digest = request_digest(&json!({
-                        "kind": "reply",
-                        "comment_id": row.comment_id,
-                        "reply": row.id,
-                        "body": row.body,
-                        "creator": row.creator,
-                        "author": row.author,
-                    }));
-                    insert_reply_request(
-                        catalog,
-                        row,
-                        request_id.clone(),
-                        digest,
-                        now_unix(),
-                        mutation_actor.clone(),
-                    )
-                    .await
-                    .map(|created| added.created = created)
-                } else {
-                    Err(WriteError::Storage("durable catalog required".into()))
-                };
-                state = self.command_owner.state().await;
-                if let Err(error) = persisted {
-                    let (mut response, _) = fail(&error.client_message());
-                    response["status"] = json!(error.status());
-                    response["code"] = json!("annotation_refused");
-                    response["retryable"] = json!(error.is_temporary());
-                    return (response, false);
-                }
-                if self.catalog.as_ref().get().is_some() {
-                    if let Some(target) =
-                        state.comments.iter_mut().find(|item| item.id == target_id)
-                    {
-                        if !target.replies.iter().any(|reply| reply.id == added.id) {
-                            target.replies.push(added.clone());
-                        }
-                    }
-                }
-                (
-                    json!({
-                        "type": "reply", "comment_id": target_id,
-                        "reply": added, "temp_id": temp_id,
-                        "request_id": request_id,
-                    }),
-                    true,
-                )
-            }
-            Command::Comment {
-                motivation: raw_motivation,
-                bundle_id: _,
-                body: raw_body,
-                creator: raw_creator,
-                exact: raw_exact,
-                prefix: raw_prefix,
-                suffix: raw_suffix,
-                position,
-                document,
-                color: raw_color,
-                proposed: raw_proposed,
-                temp_id,
-                request_id,
-            } => {
-                let body = clean(&raw_body, config.caps.body).trim().to_string();
-                let motivation = config.allowed_motivation(&raw_motivation);
-                // A highlight is the passage itself: marking something as worth
-                // returning to needs no words. A suggestion is its proposal: the
-                // words are the replacement, and `body` beside it is an optional
-                // note. Everything else is a remark, and a remark with no words is
-                // nothing.
-                if body.is_empty() && !matches!(motivation.as_str(), "highlighting" | "editing") {
-                    return fail("comment body is required");
-                }
-                let mut creator = clean(&raw_creator, config.caps.creator).trim().to_string();
-                if creator.is_empty() {
-                    creator = "Anonymous".to_string();
-                }
-                if !existing_submission && state.comments.len() >= config.max_comments {
-                    return fail("this document has reached its comment limit");
-                }
-                let color = match raw_color {
-                    Some(raw) if !raw.trim().is_empty() => match valid_color(Some(&raw)) {
-                        Some(color) => Some(color),
-                        None => return fail("color must be a #RRGGBB value"),
-                    },
-                    _ => None,
-                };
-                // What the browser saw. Capped here, before any of it is used
-                // to search with, and kept afterwards as the presentation
-                // context: what a comment looked like where it was made is
-                // worth showing, and is never what it is about.
-                let seen = PresentationContext {
-                    rendered_exact: clean(&raw_exact, config.caps.exact),
-                    rendered_prefix: clean(&raw_prefix, config.caps.context),
-                    rendered_suffix: clean(&raw_suffix, config.caps.context),
-                    rendered_position_utf16: position
-                        .filter(|at| *at >= 0)
-                        .map(|at| at.min(u32::MAX as i64) as u32),
-                };
-                let quote = Quote {
-                    exact: &seen.rendered_exact,
-                    prefix: &seen.rendered_prefix,
-                    suffix: &seen.rendered_suffix,
-                };
-                // The passage, found in the document's own source. A client
-                // sends words; where those words are is the server's answer,
-                // because the server is what holds the checkpoint.
-                let original_anchor =
-                    match anchor_for(&config, &state.session.doc, &current, &quote, document) {
-                        Ok(anchor) => anchor,
-                        Err(reason) => return fail(&reason),
-                    };
-                // A suggestion is its proposal; without one it is an
-                // annotation with nothing to act on. `proposed` on any other
-                // motivation is not something a client meant to send, so it
-                // is dropped rather than stored.
-                if motivation == "editing" && raw_proposed.is_none() {
-                    return fail("a suggestion needs a proposal");
-                }
-
-                let proposed = if motivation == "editing" {
-                    let raw = raw_proposed.as_deref().unwrap_or_default();
-                    let cleaned: String = raw
-                        .chars()
-                        .filter(|&c| {
-                            let code = c as u32;
-                            !(code < 0x09
-                                || (0x0b..=0x0c).contains(&code)
-                                || (0x0e..=0x1f).contains(&code)
-                                || code == 0x7f)
-                        })
-                        .collect();
-                    if cleaned.chars().count() > config.caps.exact {
-                        return fail("the suggestion is too long");
-                    }
-                    Some(cleaned)
-                } else {
-                    None
-                };
-                // A suggestion replaces a passage, so there has to be one: a
-                // proposal against the document as a whole has nothing to
-                // put its words in place of.
-                let source = match source_target(&original_anchor) {
-                    Some(target) => Some(target.clone()),
-                    None if matches!(motivation.as_str(), "editing" | "highlighting") => {
-                        return fail("a suggestion or highlight has to be about a passage")
-                    }
-                    None => None,
-                };
-                // The cursors that will follow this passage from here on,
-                // captured at the same current checkpoint where it was found.
-                let attachment = source.as_ref().map(|target| DerivedAttachment {
-                    checkpoint_id: CheckpointId(current.clone()),
-                    status: AnchorStatus::Exact,
-                    live_source_range: resolve::capture(&state.session.doc, target),
-                    resolved_range_utf16: Some((target.start_utf16, target.end_utf16)),
-                    diagnostic: None,
-                });
-                let mut added = Comment {
-                    id: requested_id.unwrap_or_else(new_id),
-                    seq: state.seq.saturating_add(1),
-                    original_anchor: Some(original_anchor),
-                    attachment,
-                    presentation: seen,
-                    motivation,
-                    color,
-                    bundle_id: String::new(),
-
-                    proposal: String::new(),
-                    proposed: proposed.clone(),
-                    outcome: String::new(),
-                    body,
-                    creator,
-                    created: timestamp(),
-                    resolved: false,
-                    resolved_at: None,
-                    resolved_in: String::new(),
-                    pass: String::new(),
-                    replies: Vec::new(),
-                    author: author.to_string(),
-                };
-                // A comment that proposes different words for a passage makes a
-                // branch for them, built here where the document is (§1.2).
-                let offered = added
-                    .original_anchor
-                    .as_ref()
-                    .zip(proposed.clone())
-                    .and_then(|(anchor, wanted)| {
-                        let source = source_target(anchor)?;
-                        let path = path_for_file_id(&state.session.doc, &source.file_id)?;
-                        // A branch is made against the document as it stands,
-                        // so it starts where the passage is now -- which is
-                        // the range it was just anchored at for a suggestion
-                        // made against the current draft, and whatever the
-                        // resolver found for one made against an older
-                        // checkpoint. `from_suggestion` refuses a range whose
-                        // text is not the text the anchor quotes.
-                        let at = added
-                            .attachment
-                            .as_ref()
-                            .and_then(|found| found.resolved_range_utf16)
-                            .map(|(start, _)| start)
-                            .unwrap_or(source.start_utf16);
-                        let (made, base, tip, peer) = crate::room::proposals::from_suggestion(
-                            &state.session.doc,
-                            &path,
-                            at as usize,
-                            &source.exact,
-                            &wanted,
-                        )
-                        .ok()?;
-                        let bytes = session::encode_diff(
-                            &made,
-                            &session::encode_vector(&state.session.doc),
-                        )
-                        .ok()?;
-                        Some((base, tip, bytes, peer))
-                    });
-                drop(state);
-                let suggestion = if proposed.is_some() {
-                    let Some((base, tip, bytes, peer)) = offered else {
-                        return fail("that passage is not where it was");
-                    };
-                    match self.proposal_record(&added.creator, peer, &base, &tip, bytes) {
-                        Ok((id, proposal)) => {
-                            added.proposal = id;
-                            Some(proposal)
-                        }
-                        Err(error) => return fail(&error.to_string()),
-                    }
-                } else {
-                    None
-                };
-                let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
-                    let digest = request_digest(&json!({
-                        "kind": "comment",
-                        "comment": added,
-                    }));
-                    let row = match catalog_comment_row(&self.slug, &added) {
-                        Ok(row) => row,
-                        Err(_) => return fail(UNSAVED),
-                    };
-                    // Pushed into room state only once the receipt is durable,
-                    // so a cancelled caller leaves neither an unbroadcast
-                    // comment here nor a row nobody was told about.
-                    let saved = match suggestion {
-                        Some(proposal) => insert_suggestion_request(
-                            catalog,
-                            row,
-                            proposal,
-                            mutation_actor.clone(),
-                            &request_id,
-                            digest,
-                        )
-                        .await
-                        .map_err(WriteError::Storage),
-                        None => {
-                            insert_comment_request(
-                                catalog,
-                                row,
-                                request_id.clone(),
-                                digest,
-                                now_unix(),
-                                mutation_actor.clone(),
-                                false,
-                            )
-                            .await
-                        }
-                    };
-                    match saved {
-                        Ok((seq, created)) => {
-                            added.seq = seq;
-                            added.created = created;
-                            let stored = added.clone();
-                            let mut state = self.command_owner.state().await;
-                            state.seq = state.seq.max(seq);
-                            if !state.comments.iter().any(|comment| comment.id == stored.id) {
-                                state.comments.push(stored);
-                            }
-                            Ok(())
-                        }
-                        Err(error) => {
-                            eprintln!("catalog comment insert failed for {}: {error}", self.slug);
-                            Err(error)
-                        }
-                    }
-                } else {
-                    Err(WriteError::Storage("durable catalog required".into()))
-                };
-                if let Err(error) = persisted {
-                    let (mut response, _) = fail(&error.client_message());
-                    response["status"] = json!(error.status());
-                    response["code"] = json!("annotation_refused");
-                    response["retryable"] = json!(error.is_temporary());
-                    return (response, false);
-                }
-                (
-                    json!({"type": "comment", "comment": added, "temp_id": temp_id,
-                        "request_id": request_id}),
-                    true,
-                )
-            }
-            Command::Accept { .. } | Command::Reject { .. } => {
-                fail("suggestion decisions use the decision handler")
-            }
-            Command::RevisionDecide {
-                revision_id,
-                action,
-                ..
-            } => {
-                let _ = (revision_id, action);
-                fail("suggestion decisions use the decision handler")
-            }
-        }
-    }
-
-    /* ---------------------------------------------------------- the document */
 }

@@ -17,6 +17,7 @@
 import * as defaultPassages from "../passages.js";
 import { keyHeaders } from "../api.js";
 import { createGeneration } from "./generation.js";
+import { MOMENT } from "../moment.js";
 
 export function createPassageTrace({
   slug,
@@ -25,9 +26,9 @@ export function createPassageTrace({
   // The source generation and the visible text, as they stand right now.
   now = () => ({ source: 0, visible: "" }),
   // The manifest, read only if a walk needs one and none has been read.
-  loadCheckpoints = async () => [],
+  loadLabels = async () => [],
   // What each of this document's files is called, by its stable id: a
-  // comment names the file it is about by id, and an old checkpoint is read
+  // comment names the file it is about by id, and an old label is read
   // by path.
   paths = () => new Map(),
 }) {
@@ -39,19 +40,19 @@ export function createPassageTrace({
   // it is not made.
   let last = null;
 
-  async function trace({ comments, tree, checkpoints = [] }) {
+  async function trace({ comments, tree, labels = [] }) {
     const { source, visible } = now();
     const lost = comments.filter((comment) => comment.orphaned);
     const ids = lost
-      .map((comment) => `${comment.id}:${comment.original_anchor?.checkpoint_id || ""}`)
+      .map((comment) => `${comment.id}:${comment.original_anchor?.frontier || ""}`)
       .join("|");
     if (last?.source === source && last?.visible === visible && last?.ids === ids) return;
     last = { source, visible, ids };
     const stale = walks.begin();
     const went = {};
     const replacements = {};
-    let list = checkpoints;
-    if (lost.length && !list.length) list = await loadCheckpoints();
+    let list = labels;
+    if (lost.length && !list.length) list = await loadLabels();
     const current = () => {
       const state_ = now();
       return !stale() && state_.source === source && state_.visible === visible;
@@ -62,15 +63,15 @@ export function createPassageTrace({
         const traced = passages.tracedBy(comment, paths());
         const point = await passages.wentAt(slug, traced, list, keyHeaders(key));
         if (point) went[comment.id] = point;
-        if (!traced?.checkpoint) continue;
+        if (!traced?.frontier) continue;
         const oldText = await passages.sourceTextAt(
-          slug, traced.checkpoint, { file_id: traced.file_id }, keyHeaders(key),
+          slug, MOMENT + traced.frontier, { file_id: traced.file_id }, keyHeaders(key),
         );
         const against = traced.path ? tree.texts[traced.path] ?? null : null;
         const replacement = await passages.replacementAt(oldText, against, traced.selector);
         if (replacement !== null) replacements[comment.id] = replacement;
       } catch {
-        // A missing checkpoint cannot establish a replacement. The walk is
+        // A missing label cannot establish a replacement. The walk is
         // forgotten rather than recorded, so the next one tries again.
         if (!stale()) last = null;
       }

@@ -76,6 +76,10 @@
 
   const floor = (column) => Math.max(FLOOR, column.min || FLOOR);
   const sized = (column) => widths[column.key] ?? column.width ?? null;
+  // The grip's aria-valuenow: what the column is actually set to, or its
+  // floor when nothing has set it yet -- never null, because a focusable
+  // separator with no value fails axe's aria-required-attr check.
+  const currentWidth = (column) => sized(column) ?? floor(column);
   // A table whose columns have been pinned wider than the page scrolls rather
   // than squeezing them back to where they were.
   const least = $derived(
@@ -206,6 +210,8 @@
                 role="separator"
                 aria-orientation="vertical"
                 aria-label="Resize the {column.label || column.key} column"
+                aria-valuenow={currentWidth(column)}
+                aria-valuemin={floor(column)}
                 tabindex="0"
                 onpointerdown={(event) => grab(event, column)}
                 ondblclick={() => reset(column)}

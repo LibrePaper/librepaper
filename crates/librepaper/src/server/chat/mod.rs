@@ -83,7 +83,6 @@ impl Server {
             may_edit: who.at_least(Role::Editor),
             can_comment: who.at_least(Role::Commenter),
             link: who.link,
-            link_expires,
             comment_budget: who.comment_budget,
             authorized_at: tokio::time::Instant::now(),
             chat: Some(id.into()),
@@ -96,11 +95,18 @@ impl Server {
         };
         upgrade
             .max_message_size(64 * 1024)
-            .on_upgrade(move |socket| async move { self.run_chat_socket(socket, connection).await })
+            .on_upgrade(move |socket| async move {
+                self.run_chat_socket(socket, connection, link_expires).await
+            })
             .into_response()
     }
 
-    pub(super) async fn run_chat_socket(&self, mut socket: WebSocket, mut connection: Connection) {
+    pub(super) async fn run_chat_socket(
+        &self,
+        mut socket: WebSocket,
+        mut connection: Connection,
+        link_expires: Option<i64>,
+    ) {
         let first = tokio::time::timeout(Duration::from_secs(10), socket.recv()).await;
         let Ok(Some(Ok(WsMessage::Text(first)))) = first else {
             return;
@@ -223,6 +229,14 @@ impl Server {
                 }
                 _ = housekeeping.tick() => {
                     if !self.chat.attached(&id, socket_id).await || last_frame.elapsed() > Duration::from_secs(self.socket_budget.policy.idle_seconds) { break; }
+                    // §12: "link expiry is a per-connection deadline" -- no
+                    // sweep goes looking for this, so the connection notices
+                    // its own link expiring on the same ticker that already
+                    // checks idleness and drives the ping, rather than a
+                    // second timer just for this.
+                    if link_expires.is_some_and(|until| until <= crate::util::now_unix()) {
+                        break;
+                    }
                     if last_ping.elapsed() >= Duration::from_secs(10) {
                         if !matches!(tokio::time::timeout(Duration::from_secs(5), socket.send(WsMessage::Ping(Vec::new().into()))).await, Ok(Ok(()))) { break; }
                         last_ping = tokio::time::Instant::now();

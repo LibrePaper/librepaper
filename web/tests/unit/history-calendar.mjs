@@ -5,9 +5,7 @@
 // day falls in, which month a day either side of the grid belongs to, which
 // minute of the day a timestamp is at once the reader's own timezone is
 // applied -- get any of those wrong and the panel still draws, it is just
-// wrong about when things happened. The last of those matters more than it
-// used to: the day view positions a bar and a version by the same number, so
-// one mistake in it moves both.
+// wrong about when things happened.
 
 import assert from "node:assert/strict";
 import {
@@ -18,7 +16,6 @@ import {
 const mark = (at, extra = {}) => ({
   sha: String(at).replace(/\D/g, "").padEnd(64, "0"), at, by: "Vincent", why: "sync", label: "", ...extra,
 });
-const row = (at, changes, state_bytes, frontier = "") => ({ at, changes, state_bytes, frontier, peer: "" });
 
 // --- day and month arithmetic -----------------------------------------------
 
@@ -46,15 +43,12 @@ assert.equal(monthOf("2026-09-16"), "2026-09");
       mark("2026-09-01T17:30:00Z", { label: "Sent to the journal" }),
       mark("2026-09-10T11:00:00Z"),
     ],
-    [row("2026-09-05T08:00:00Z", 4, 1000), row("2026-09-10T11:00:00Z", 2, 1400)],
     "UTC",
   );
   assert.equal(byDay.get("2026-09-01").count, 2, "a day sums the versions on it");
   assert.equal(byDay.get("2026-09-01").named, true, "and remembers that one of them was named");
   assert.equal(byDay.get("2026-09-10").named, false);
-  assert.equal(byDay.get("2026-09-05").count, 0, "a day nothing was saved on has no versions");
-  assert.equal(byDay.get("2026-09-05").worked, true, "but is still a day somebody wrote on");
-  assert.equal(byDay.get("2026-09-05").changes, 4);
+  assert.equal(byDay.get("2026-09-05"), undefined, "a day with no version on it is not in the map");
   assert.deepEqual(
     byDay.get("2026-09-01").points.map((point) => point.at),
     ["2026-09-01T09:00:00Z", "2026-09-01T17:30:00Z"],
@@ -62,7 +56,7 @@ assert.equal(monthOf("2026-09-16"), "2026-09");
   );
   // The day boundary is the reader's. 17:30 UTC is past midnight in Tokyo,
   // so that version belongs to the second there.
-  const tokyo = versionDays([mark("2026-09-01T17:30:00Z")], [], "Asia/Tokyo");
+  const tokyo = versionDays([mark("2026-09-01T17:30:00Z")], "Asia/Tokyo");
   assert.deepEqual([...tokyo.keys()], ["2026-09-02"]);
 }
 
@@ -75,7 +69,6 @@ assert.equal(monthOf("2026-09-16"), "2026-09");
       mark("2026-09-01T11:00:00Z"), mark("2026-09-01T12:00:00Z"),
       mark("2026-09-10T11:00:00Z", { label: "Draft" }),
     ],
-    [row("2026-09-05T08:00:00Z", 4, 1000)],
     "UTC",
   );
   const { weeks, most } = monthGrid("2026-09", byDay, { today: "2026-09-16" });
@@ -97,7 +90,6 @@ assert.equal(monthOf("2026-09-16"), "2026-09");
   assert.equal(find("2026-09-10").level, 1, "one version is the faintest shade, never nothing");
   assert.equal(find("2026-09-10").named, true);
   assert.equal(find("2026-09-05").level, 0, "a day nothing was saved on takes no shade");
-  assert.equal(find("2026-09-05").worked, true, "and says separately that somebody wrote on it");
   assert.equal(find("2026-09-16").today, true);
   assert.ok(cells.some((cell) => cell.day.startsWith("2026-10")),
     "the run-on into October is drawn rather than left as holes in the corner");
@@ -107,7 +99,7 @@ assert.equal(monthOf("2026-09-16"), "2026-09");
 // --- how far the panel can walk ---------------------------------------------
 
 {
-  const byDay = versionDays([mark("2025-11-03T09:00:00Z"), mark("2026-02-01T09:00:00Z")], [], "UTC");
+  const byDay = versionDays([mark("2025-11-03T09:00:00Z"), mark("2026-02-01T09:00:00Z")], "UTC");
   assert.deepEqual(monthSpan(byDay, "2026-09-16"), { first: "2025-11", last: "2026-09" },
     "from the first month worked to the month today is in");
   assert.deepEqual(monthSpan(new Map(), "2026-09-16"), { first: "2026-09", last: "2026-09" },
@@ -221,10 +213,10 @@ const coarse = (points, options = {}) =>
 }
 
 {
-  // A different name on two checkpoints is NOT a boundary, and this is the
+  // A different name on two labels is NOT a boundary, and this is the
   // test that says so on purpose. An autosave is attributed to whoever sent
   // the last update before it fired, so on a document two people are writing
-  // at once the name alternates with typing order while every checkpoint
+  // at once the name alternates with typing order while every label
   // holds both their work. Splitting on it would invent a handover that never
   // happened and credit each run to one of them.
   const hand = (minute, by) =>
@@ -321,7 +313,7 @@ const coarse = (points, options = {}) =>
 
 {
   // What counts as asked for. A name is the most deliberate thing anybody
-  // does to a checkpoint, whatever the document's own reason for taking it.
+  // does to a label, whatever the document's own reason for taking it.
   assert.equal(deliberate({ why: "sync" }), false);
   assert.equal(deliberate({ why: "sync", label: "Draft" }), true);
   assert.equal(deliberate({ why: "cli" }), true);

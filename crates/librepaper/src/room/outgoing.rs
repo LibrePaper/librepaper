@@ -157,7 +157,12 @@ impl Sender {
         queue_metric: Option<Arc<dyn Fn(isize, usize) + Send + Sync>>,
         queue_admission: Option<Arc<dyn Fn(usize) -> bool + Send + Sync>>,
     ) -> (Self, Receiver) {
-        let (inner, receiver) = mpsc::channel(frame_limit.max(1));
+        // One slot more than the budget admits. Every ordinary send passes
+        // `QueueState::reserve()` first and so can never occupy more than
+        // `frame_limit` slots, which leaves this last raw slot structurally
+        // free for `force_close` to terminate a transport that has run out
+        // of budget.
+        let (inner, receiver) = mpsc::channel(frame_limit.max(1) + 1);
         (
             Self {
                 inner: Arc::new(Inner::Bounded(inner)),
@@ -202,6 +207,35 @@ impl Sender {
 
     pub fn try_send_durable(&self, outgoing: Outgoing) -> Result<(), Outgoing> {
         self.try_send_kind(outgoing, true)
+    }
+
+    /// Terminate this transport, ignoring the queue budget.
+    ///
+    /// A close is not traffic the budget exists to bound: it is what ends the
+    /// traffic. Charging it against `QueueState` would make the one frame
+    /// that stops an overflowing subscriber compete for admission with the
+    /// very flood that caused the overflow, so the more overloaded a
+    /// subscriber is, the less likely it would be to ever be told to go. The
+    /// extra raw slot `channel` allocates is reserved for exactly this, so
+    /// the `try_send` below cannot fail for want of room.
+    ///
+    /// Marked durable: the writer must put it on the wire before it tears the
+    /// socket down.
+    pub fn force_close(&self, reason: impl Into<String>) -> Result<(), ()> {
+        let outgoing = Outgoing::Close(reason.into());
+        #[cfg(not(test))]
+        let Inner::Bounded(inner) = self.inner.as_ref();
+        #[cfg(test)]
+        let inner = match self.inner.as_ref() {
+            Inner::Bounded(inner) => inner,
+            Inner::Raw(inner) => return inner.try_send(outgoing).map_err(|_| ()),
+        };
+        let queued = QueuedOutgoing {
+            outgoing,
+            durability: true,
+            reservation: None,
+        };
+        inner.try_send(queued).map_err(|_| ())
     }
 
     fn try_send_kind(&self, outgoing: Outgoing, durability: bool) -> Result<(), Outgoing> {

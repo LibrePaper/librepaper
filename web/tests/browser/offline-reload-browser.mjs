@@ -51,7 +51,10 @@ const session = join({
   send: () => ({ ok: true }),
 });
 window.session = session;
-window.ready = session.start({}).then(() => true);
+// A real server always names its protocol on this frame (§6.1); this stands
+// in for "nothing else arrived" rather than for a server that predates the
+// handshake, which no longer exists to simulate.
+window.ready = session.start({ protocol: "librepaper.room.v2" }).then(() => true);
 window.mainText = () => {
   const files = session.doc.getMap("files");
   const id = session.doc.getMap("meta").get("main");

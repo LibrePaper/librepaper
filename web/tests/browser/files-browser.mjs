@@ -233,7 +233,6 @@ window.sharingSetup = async () => {
     open: true,
     slug: 'paper',
     canShare: true,
-    bundleReady: true,
   } });
   await flush();
 };

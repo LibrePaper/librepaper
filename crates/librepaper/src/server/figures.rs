@@ -78,9 +78,9 @@ impl Server {
         }
         // Atomic object admission accounts for physical bytes and recognizes
         // deduplicated uploads even when the owner's quota is full.
-        let room = match self.rooms.try_get(slug).await {
+        let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(503, &error.to_string()),
+            Err(error) => return plain(error.status(), &error.client_message()),
         };
         let mutation_actor = crate::document::store::MutationActor {
             account_id: who.id.id.clone(),
@@ -136,12 +136,22 @@ impl Server {
         // Assets retained for history are not part of the reader contract.
         // Resolve the resident room and prove the digest is in its current
         // tree before looking up the document-scoped physical object.
-        let room = match self.rooms.try_get(slug).await {
+        let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(_) => return plain(503, "room state temporarily unavailable"),
         };
-        if room.agent_recovery_pending() || !room.references_asset(sha).await {
-            return plain(404, "not found");
+        // Whether this digest is in the current projection is a question
+        // about what the document says, so it can fail for a reason that is
+        // not "no": a projection that breached a resource bound answers 503
+        // with its reason rather than 404, because saying the figure is not
+        // there would be a lie (§9.3).
+        match room.references_asset(sha).await {
+            Ok(true) => {}
+            Ok(false) => return plain(404, "not found"),
+            Err(error) => {
+                let refusal = crate::room::WriteError::from(error);
+                return plain(refusal.status(), &refusal.client_message());
+            }
         }
         let catalog = self.store.catalog.clone();
         let Ok(document_id) = uuid::Uuid::parse_str(&entry.storage_id) else {

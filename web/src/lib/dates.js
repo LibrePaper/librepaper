@@ -2,7 +2,7 @@
 //
 // Every date a reader sees is a calendar day, and the same day has to look
 // the same wherever it is shown: the project listing writes the day a
-// document was updated, the history heading writes the day a checkpoint was
+// document was updated, the history heading writes the day a label was
 // taken, and a comment writes the day its passage went. `toLocaleDateString()`
 // on its own gives each of those the browser's own order -- 9/7/2026 in one
 // place beside 2026-09-07 in another, which reads as two different days

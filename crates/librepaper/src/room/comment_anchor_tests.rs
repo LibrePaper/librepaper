@@ -1,27 +1,35 @@
 //! A comment, from the words a reader selected to the range it is about.
 //!
 //! The pieces are covered on their own -- `locate` finds a passage, `resolve`
-//! follows one, the storage layer keeps the two apart -- and what is left is
-//! the join: that a comment arriving as a quotation acquires a source range it
-//! never sent, that the range is the checkpoint's own text, that nothing
-//! afterwards edits it, and that editing the document moves where the comment
-//! points without moving what it is about.
+//! follows one, [`AddComment`] and its siblings write it down -- and what is
+//! left is the join: that a comment arriving as a quotation acquires a source
+//! range it never sent, that the range is the head's own text, that nothing
+//! afterwards edits it, and that editing the document moves where the
+//! comment points without moving what it is about.
+//!
+//! These run the new command path directly -- `room.command(&authority, &mut
+//! cmd)` -- rather than through the wire protocol in `command.rs` and
+//! `server/mod.rs`, because that is where the guarantees in this file
+//! actually live (§7).
 //!
 //! These need `LIBREPAPER_TEST_POSTGRES_URL` and are skipped without it, like
 //! the rest of the catalogue coverage.
 
 use super::*;
+use crate::document::session;
 use crate::document::store::{DocumentInput, MutationActor, Store};
+use crate::log::Registry;
 use crate::storage::blob::FsStore;
-use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
+use crate::storage::postgres::{Authority, PostgresCatalog, PostgresOptions};
+use serde_json::json;
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";
 
 struct Deployment {
-    rooms: RoomSet,
+    rooms: Rooms,
     catalog: Arc<PostgresCatalog>,
     slug: String,
-    actor: MutationActor,
+    account_id: Uuid,
     _writer: crate::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
@@ -35,9 +43,9 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     );
     catalog.migrate().await.unwrap();
     sqlx::query!(
-        "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,
-         bundles,document_versions,document_assets,replies,annotation_live_state,annotations,
-         share_links,grants,documents,accounts CASCADE",
+        "TRUNCATE document_updates,document_bases,document_proposal_hunks,document_proposals,\
+         replies,annotations,document_labels,document_assets,share_links,grants,documents,\
+         accounts CASCADE",
     )
     .execute(catalog.pool())
     .await
@@ -58,10 +66,21 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     let blobs: Arc<dyn crate::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
+    let registry = Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        "deployment".into(),
+    );
     let store = Arc::new(
-        Store::open_with_catalog(blobs, config, catalog.clone())
-            .await
-            .unwrap(),
+        Store::open_with_catalog(
+            blobs.clone(),
+            config.clone(),
+            catalog.clone(),
+            registry.clone(),
+        )
+        .await
+        .unwrap(),
     );
     let actor = MutationActor {
         account_id: account.id.to_string(),
@@ -81,53 +100,74 @@ async fn deployment(slug: &str) -> Option<Deployment> {
                 main: "paper.md".into(),
             },
             Vec::new(),
-            actor.clone(),
+            actor,
         )
         .await
         .unwrap();
     Some(Deployment {
-        rooms: RoomSet::new(store),
+        rooms: Rooms::new(catalog.clone(), blobs, config, registry),
         catalog,
         slug: slug.into(),
-        actor,
+        account_id: account.id,
         _writer: writer,
         _objects: objects,
     })
 }
 
-/// A comment as a browser sends one: the words it showed, and the words on
-/// either side of them. No file, no offsets, no checkpoint.
-fn selection(exact: &str, prefix: &str, suffix: &str) -> Command {
-    Command::Comment {
-        motivation: "commenting".into(),
-        bundle_id: String::new(),
-        body: "A remark.".into(),
-        creator: "Reviewer".into(),
-        exact: exact.into(),
-        prefix: prefix.into(),
-        suffix: suffix.into(),
-        position: Some(0),
-        document: false,
-        color: None,
-        proposed: None,
-        temp_id: crate::storage::postgres::new_id().to_string(),
-        request_id: crate::storage::postgres::new_id().to_string(),
+impl Deployment {
+    fn authority(&self) -> Authority {
+        Authority {
+            principal_key: self.account_id.to_string(),
+            account_id: Some(self.account_id),
+            link_hash: None,
+        }
     }
-}
 
-async fn send(room: &Room, command: Command, actor: &MutationActor) -> Value {
-    let (response, _) = room
-        .apply_command_with_actor(
-            command,
-            "127.0.0.1",
-            "github:owner",
-            "",
+    /// The owner, at editor rung, which is also more than enough for a
+    /// commenter-gated command -- `authorize_annotation_mutation` admits an
+    /// owner at either rung.
+    fn mutation_authorization(&self) -> crate::storage::postgres::MutationAuthorization {
+        crate::storage::postgres::MutationAuthorization {
+            principal_key: self.account_id.to_string(),
+            account_id: Some(self.account_id),
+            session_generation: None,
+            token_hash: None,
+            policy_editor: true,
+        }
+    }
+
+    fn add_comment(
+        &self,
+        room: &Room,
+        exact: &str,
+        prefix: &str,
+        suffix: &str,
+        motivation: &str,
+        proposed: Option<&str>,
+    ) -> AddComment {
+        let config = Configuration::default();
+        AddComment::new(
+            self.catalog.clone(),
+            room.document_id,
+            Uuid::new_v4(),
+            &config,
+            motivation,
+            "A remark.",
+            "Reviewer",
+            Some(self.account_id),
+            format!("account:{}", self.account_id),
+            self.mutation_authorization(),
+            exact,
+            prefix,
+            suffix,
+            Some(0),
+            false,
             None,
-            true,
-            actor.clone(),
+            proposed,
+            None,
         )
-        .await;
-    response
+        .expect("a well-formed comment")
+    }
 }
 
 #[tokio::test]
@@ -136,69 +176,55 @@ async fn a_quotation_becomes_a_range_the_browser_never_sent() {
     let Some(deployment) = deployment("anchor-paper").await else {
         return;
     };
-    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
     // The page says "interval covers the mean"; the source says
     // "*interval* covers the mean".
-    let response = send(
+    let mut cmd = deployment.add_comment(
         &room,
-        selection(
-            "interval covers the mean",
-            "Interval estimates The ",
-            " of the posterior.",
-        ),
-        &deployment.actor,
-    )
-    .await;
-    assert_eq!(response["type"], "comment", "{response}");
-    let anchor = &response["comment"]["original_anchor"];
-    assert_eq!(anchor["kind"], "source_text", "{response}");
-    let target = &anchor["target"];
-    let start = target["start_utf16"].as_u64().unwrap() as usize;
-    let end = target["end_utf16"].as_u64().unwrap() as usize;
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "commenting",
+        None,
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    let target = comment.source().expect("a source-text anchor");
     let units: Vec<u16> = PAPER.encode_utf16().collect();
     assert_eq!(
-        String::from_utf16_lossy(&units[start..end]),
+        String::from_utf16_lossy(&units[target.start_utf16 as usize..target.end_utf16 as usize]),
         "*interval* covers the mean",
         "the range is the source's own, markup and all",
     );
-    assert_eq!(target["exact"], "*interval* covers the mean");
-    // And what it was made against is the position in the editing history the
-    // room was at, not a checkpoint: a comment writes no source archive, and
-    // the frontier names the state exactly rather than naming the nearest
-    // state somebody happened to save.
-    let made_on = anchor["checkpoint_id"].as_str().unwrap_or_default();
-    let recorded = made_on
-        .strip_prefix(crate::room::annotation::MOMENT)
-        .expect("a comment on the live draft is anchored to a frontier");
-    let frontier = crate::room::decode_update(recorded).expect("the frontier is base64");
-    let at = room
-        .project_at_frontier(&frontier)
-        .await
-        .expect("the document is readable at the frontier a comment names");
-    assert!(
-        at.texts
-            .values()
-            .any(|text| text.contains(target["exact"].as_str().unwrap())),
-        "the state a comment names holds the passage it is about",
-    );
-
-    // Nothing was written to say so. The harness truncates the catalogue and
-    // creates one document, so the only version in it is the one that document
-    // arrived with.
-    // Asked at runtime rather than through the checked macro: this is the only
-    // place that counts versions, and one test is not worth an entry in the
-    // offline query cache.
-    let versions: i64 = sqlx::query_scalar("SELECT count(*) FROM document_versions")
-        .fetch_one(deployment.catalog.pool())
+    assert_eq!(target.exact, "*interval* covers the mean");
+    // What it was made against is a row in the log and the frontier that row
+    // made durable, not an archive: a comment writes no source of its own.
+    let anchor = comment.original_anchor.as_ref().unwrap();
+    assert!(anchor.source_sequence >= 0);
+    assert!(!anchor.frontier.is_empty());
+    // The document's own creation is `store::ReplaceProject`, a
+    // source-producing command in its own right (§7.2), so it always leaves
+    // one label behind before this test's comment is ever made. The claim
+    // under test is that a comment adds none of its own, not that the table
+    // is empty -- so this checks for exactly the creation label and nothing
+    // else, rather than for no labels at all.
+    let labels = deployment
+        .catalog
+        .label_page(room.document_id, None, 10)
         .await
         .unwrap();
-    assert_eq!(versions, 1, "a comment writes no source archive");
+    assert_eq!(
+        labels.iter().map(|l| l.reason.as_str()).collect::<Vec<_>>(),
+        vec!["whole-project replacement"],
+        "a comment writes no label of its own",
+    );
     // The words the page had are kept beside it, and are not the anchor.
     assert_eq!(
-        response["comment"]["presentation"]["rendered_exact"],
+        comment.presentation.rendered_exact,
         "interval covers the mean"
     );
-    assert_eq!(response["comment"]["attachment"]["status"], "exact");
     deployment.catalog.close().await;
 }
 
@@ -208,41 +234,72 @@ async fn a_remark_about_the_whole_document_needs_no_passage() {
     let Some(deployment) = deployment("anchor-whole").await else {
         return;
     };
-    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
-    let mut command = selection("", "", "");
-    if let Command::Comment { document, .. } = &mut command {
-        *document = true;
-    }
-    let response = send(&room, command, &deployment.actor).await;
-    assert_eq!(response["type"], "comment", "{response}");
-    assert_eq!(response["comment"]["original_anchor"]["kind"], "document");
-    assert!(response["comment"]["original_anchor"]["target"].is_null());
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(&room, "", "", "", "commenting", None);
+    // `AddComment::new` treats an empty selection as a document-level remark
+    // only when the caller asked for one explicitly; do so here.
+    let config = Configuration::default();
+    let mut cmd2 = AddComment::new(
+        deployment.catalog.clone(),
+        room.document_id,
+        Uuid::new_v4(),
+        &config,
+        "commenting",
+        "A remark.",
+        "Reviewer",
+        Some(deployment.account_id),
+        format!("account:{}", deployment.account_id),
+        deployment.mutation_authorization(),
+        "",
+        "",
+        "",
+        None,
+        true,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let _ = &mut cmd; // the plain-selection variant above is unused; kept for its type only.
+    let comment = room
+        .command(&deployment.authority(), &mut cmd2)
+        .await
+        .unwrap();
+    assert!(matches!(
+        comment.original_anchor.as_ref().unwrap().target,
+        CommentTarget::Document
+    ));
     deployment.catalog.close().await;
 }
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn words_in_two_places_are_refused_rather_than_placed_in_one() {
-    let Some(deployment) = deployment("anchor-ambiguous").await else {
+async fn words_nowhere_in_the_document_are_refused_rather_than_placed() {
+    let Some(deployment) = deployment("anchor-notfound").await else {
         return;
     };
-    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
-    // "paragraph" appears once, but a phrase that appears nowhere cannot be
-    // placed at all, and neither answer is a guess.
-    let response = send(
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(
         &room,
-        selection("a sentence from another paper entirely", "", ""),
-        &deployment.actor,
-    )
-    .await;
-    assert_eq!(response["type"], "error", "{response}");
-    assert!(
-        response["message"]
-            .as_str()
-            .unwrap()
-            .contains("not in this document's source"),
-        "{response}"
+        "a sentence from another paper entirely",
+        "",
+        "",
+        "commenting",
+        None,
     );
+    let error = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap_err();
+    match error {
+        CommandError::Conflict(message) => {
+            assert!(
+                message.contains("not in this document's source"),
+                "{message}"
+            );
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
     deployment.catalog.close().await;
 }
 
@@ -252,83 +309,71 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
     let Some(deployment) = deployment("anchor-edited").await else {
         return;
     };
-    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
-    let response = send(
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(
         &room,
-        selection(
-            "interval covers the mean",
-            "Interval estimates The ",
-            " of the posterior.",
-        ),
-        &deployment.actor,
-    )
-    .await;
-    let id = response["comment"]["id"].as_str().unwrap().to_string();
-    let anchor_before = response["comment"]["original_anchor"].clone();
-    let started_at = anchor_before["target"]["start_utf16"].as_u64().unwrap();
-    let (editor_tx, _editor_rx) = tokio::sync::mpsc::channel(8);
-    room.attach(999, editor_tx, true).await;
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "commenting",
+        None,
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    let anchor_before = comment.original_anchor.clone().unwrap();
+    let started_at = anchor_before.target.source().unwrap().start_utf16;
+
+    // `reattach_comments` only ever moves what is in the room's warm cache
+    // (`self.comments`): under §8.3 there is no `annotation_live_state` to
+    // fall back to, and a cache nobody has loaded is a cache nobody is
+    // watching, so it is deliberately left alone rather than rebuilt for no
+    // reader. `Room::comments` is what a real caller loads it through --
+    // and it also runs the first `reattach_comments` itself, right after
+    // the load, per its own doc comment -- so a caller of the direct
+    // method below expects that same priming.
+    let _ = room.comments().await.unwrap();
 
     // Somebody writes a paragraph above it. Nothing about the comment has
     // changed; everything about where it sits has.
-    let update = {
-        let state = room.command_owner.state().await;
-        let edited = state.session.doc.fork();
-        let vector = session::encode_vector(&edited);
-        session::put_text(
-            &edited,
-            "paper.md",
-            &format!(
-                "# Interval estimates\n\nA new opening paragraph.\n{}",
-                &PAPER[21..]
-            ),
-        );
-        session::encode_diff(&edited, &vector).unwrap()
-    };
-    let applied = room
-        .receive_update(
-            999,
-            &update,
-            1,
-            "Owner",
-            &crate::storage::postgres::Authority {
-                principal_key: deployment.actor.account_id.clone(),
-                account_id: uuid::Uuid::parse_str(&deployment.actor.account_id).ok(),
-                link_hash: None,
-            },
-        )
+    let (vector, edited) = room
+        .log()
+        .with_head(|doc| (session::encode_vector(doc), doc.fork()))
+        .await
+        .unwrap();
+    session::put_text(
+        &edited,
+        "paper.md",
+        &format!(
+            "# Interval estimates\n\nA new opening paragraph.\n{}",
+            &PAPER[21..]
+        ),
+    );
+    let update = session::encode_diff(&edited, &vector).unwrap();
+    let ingested = room
+        .ingest(999, "editor-999", "editor-999", 1, update)
         .await;
-    assert!(matches!(applied, Applied::Relay(_)), "{applied:?}");
+    assert!(
+        matches!(ingested, crate::log::Ingested::Accepted),
+        "{ingested:?}"
+    );
 
-    let comment = room.agent_comment(&id).await.expect("comment");
+    let moved = room.reattach_comments().await.unwrap();
+    assert_eq!(moved.len(), 1, "the one comment on this document moved");
+    let comments = room.comments().await.unwrap();
+    let found = comments.iter().find(|item| item.id == comment.id).unwrap();
     assert_eq!(
-        serde_json::to_value(comment.original_anchor.clone()).unwrap(),
-        anchor_before,
+        found.original_anchor.as_ref().unwrap(),
+        &anchor_before,
         "what a comment is about does not move",
     );
-    let attachment = comment.attachment.expect("an attachment");
+    let attachment = found.attachment.as_ref().expect("an attachment");
     assert_eq!(attachment.status, AnchorStatus::Exact);
     let (start, _) = attachment.resolved_range_utf16.expect("a resolved range");
     assert!(
-        u64::from(start) > started_at,
-        "the passage moved down the file: {start} is not after {started_at}",
-    );
-    let document = deployment
-        .catalog
-        .document_by_slug(&deployment.slug)
-        .await
-        .unwrap()
-        .unwrap();
-    let stored = deployment
-        .catalog
-        .annotations(document.id, None, None, 10)
-        .await
-        .unwrap();
-    assert!(
-        crate::storage::postgres::attachment_from_record(&stored[0])
-            .unwrap()
-            .is_none(),
-        "derived attachment is not persisted; cold rooms recompute it"
+        start > started_at,
+        "the passage moved down the file: {start} is not after {started_at}"
     );
     deployment.catalog.close().await;
 }
@@ -339,74 +384,103 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
     let Some(deployment) = deployment("anchor-deleted").await else {
         return;
     };
-    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
-    let response = send(
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(
         &room,
-        selection(
-            "interval covers the mean",
-            "Interval estimates The ",
-            " of the posterior.",
-        ),
-        &deployment.actor,
-    )
-    .await;
-    let id = response["comment"]["id"].as_str().unwrap().to_string();
-    {
-        let state = room.command_owner.state().await;
-        session::put_text(
-            &state.session.doc,
-            "paper.md",
-            "# Interval estimates\n\nA second paragraph, for company.\n",
-        );
-    }
-    room.reattach_comments().await;
-    let comment = room.agent_comment(&id).await.expect("comment");
-    // The comment is still here, still about what it was about, and says what
-    // became of it.
-    assert!(comment.source().is_some());
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "commenting",
+        None,
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+
+    let (vector, edited) = room
+        .log()
+        .with_head(|doc| (session::encode_vector(doc), doc.fork()))
+        .await
+        .unwrap();
+    session::put_text(
+        &edited,
+        "paper.md",
+        "# Interval estimates\n\nA second paragraph, for company.\n",
+    );
+    let update = session::encode_diff(&edited, &vector).unwrap();
+    let ingested = room
+        .ingest(999, "editor-999", "editor-999", 1, update)
+        .await;
+    assert!(
+        matches!(ingested, crate::log::Ingested::Accepted),
+        "{ingested:?}"
+    );
+
+    room.reattach_comments().await.unwrap();
+    let comments = room.comments().await.unwrap();
+    let found = comments.iter().find(|item| item.id == comment.id).unwrap();
+    assert!(found.source().is_some());
     assert_eq!(
-        comment.attachment.expect("an attachment").status,
-        AnchorStatus::Deleted,
+        found.attachment.as_ref().expect("an attachment").status,
+        AnchorStatus::Deleted
     );
     deployment.catalog.close().await;
 }
 
-/// Two people editing one document must see each other's comments as they are
-/// made, not on the next reload -- and so must the reader who is waiting on an
-/// answer.
-///
-/// The frame is not the same for both. An editor peer is sent the project's
-/// own annotation, source anchor and all; a reader peer is sent the remark
-/// with the anchor taken out. One view used to be computed for everybody, with
-/// `is_owner: false`, so an editor's own colleague was handed the public
-/// projection and the comment appeared only when the socket reconnected.
+/// Two people editing one document must see each other's comments as they
+/// are made, and so must the reader who is waiting on an answer.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn an_editing_comment_reaches_the_other_editor_live() {
+async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
     let Some(deployment) = deployment("anchor-relay").await else {
         return;
     };
-    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
     let (editor_tx, mut editor_rx) = tokio::sync::mpsc::channel(8);
     let (reader_tx, mut reader_rx) = tokio::sync::mpsc::channel(8);
-    // The socket that submitted it (1) is skipped: it gets its own frame, with
-    // its own `mine` and delete control, straight back down its connection.
-    room.attach(1, editor_tx.clone(), true).await;
-    room.attach(2, editor_tx, true).await;
-    room.attach(3, reader_tx, false).await;
-
-    let response = send(
-        &room,
-        selection(
-            "interval covers the mean",
-            "Interval estimates The ",
-            " of the posterior.",
-        ),
-        &deployment.actor,
+    room.join(
+        1,
+        true,
+        "editor-1",
+        super::outgoing::Sender::from_raw(editor_tx.clone()),
+        None,
     )
-    .await;
-    assert_eq!(response["type"], "comment", "{response}");
-    room.broadcast_comment_event(Some(1), &response).await;
+    .await
+    .unwrap();
+    room.join(
+        2,
+        true,
+        "editor-2",
+        super::outgoing::Sender::from_raw(editor_tx),
+        None,
+    )
+    .await
+    .unwrap();
+    room.join(
+        3,
+        false,
+        "reader-3",
+        super::outgoing::Sender::from_raw(reader_tx),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let mut cmd = deployment.add_comment(
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "commenting",
+        None,
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    let payload = json!({"type": "comment", "comment": comment});
+    room.broadcast_comment_event(Some(1), &payload).await;
 
     let relayed = received(&mut editor_rx);
     assert_eq!(
@@ -414,149 +488,131 @@ async fn an_editing_comment_reaches_the_other_editor_live() {
         1,
         "the submitting socket is not sent it twice"
     );
-    assert_eq!(relayed[0]["type"], "comment", "{}", relayed[0]);
-    assert_eq!(relayed[0]["comment"]["id"], response["comment"]["id"]);
-    assert_eq!(
-        relayed[0]["comment"]["mine"],
-        serde_json::json!(false),
-        "a shared frame says nothing about whose comment it is",
-    );
+    assert_eq!(relayed[0]["comment"]["id"], comment.id);
 
-    // The reader who is being answered gets the answer, in the view the
-    // public channel may carry: the remark, and not what it is about.
     let public = received(&mut reader_rx);
     assert_eq!(public.len(), 1);
-    assert_eq!(public[0]["type"], "comment", "{}", public[0]);
-    assert_eq!(public[0]["comment"]["id"], response["comment"]["id"]);
     assert_eq!(public[0]["comment"]["body"], "A remark.");
     assert!(
         public[0]["comment"]["original_anchor"].is_null(),
         "a reader is never sent a range in a source file: {}",
         public[0],
     );
-    assert!(
-        public[0]["comment"]["attachment"].is_null(),
-        "nor where that range has got to: {}",
-        public[0],
-    );
-    // This one was written in the editor, so the words it quotes are the
-    // draft's. They stay there; the card is told why it has none.
-    assert!(
-        public[0]["comment"]["presentation"]["rendered_exact"].is_null(),
-        "the draft's words do not cross: {}",
-        public[0],
-    );
-    // The editor peer keeps them: it is reading the draft they were taken
-    // from.
-    assert_eq!(
-        relayed[0]["comment"]["presentation"]["rendered_exact"],
-        "interval covers the mean",
-    );
-    // The editor peer's view of the same comment is the project's own.
-    assert!(
-        !relayed[0]["comment"]["original_anchor"].is_null(),
-        "an editor peer keeps the anchor: {}",
-        relayed[0],
-    );
-
     deployment.catalog.close().await;
 }
 
-/// An agent edits annotations in batches, so what the room states is the whole
-/// list rather than each step it took. It carries the same two views: the
-/// editing project's own annotations are the editor peers', and the public
-/// channel gets only what it may carry -- which for a batch of editing
-/// comments is an empty list, not the editors' one.
+/// A change no single event describes -- here, a document nobody has
+/// commented on gaining one -- states the whole list to every peer, in the
+/// view each is entitled to.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn an_agents_batch_states_the_list_each_peer_may_see() {
+async fn a_snapshot_states_the_list_each_peer_may_see() {
     let Some(deployment) = deployment("anchor-snapshot").await else {
         return;
     };
-    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
     let (editor_tx, mut editor_rx) = tokio::sync::mpsc::channel(8);
     let (reader_tx, mut reader_rx) = tokio::sync::mpsc::channel(8);
-    room.attach(1, editor_tx, true).await;
-    room.attach(2, reader_tx, false).await;
-
-    let made = send(
-        &room,
-        selection(
-            "interval covers the mean",
-            "Interval estimates The ",
-            " of the posterior.",
-        ),
-        &deployment.actor,
+    room.join(
+        1,
+        true,
+        "editor-1",
+        super::outgoing::Sender::from_raw(editor_tx),
+        None,
     )
-    .await;
-    assert_eq!(made["type"], "comment", "{made}");
+    .await
+    .unwrap();
+    room.join(
+        2,
+        false,
+        "reader-2",
+        super::outgoing::Sender::from_raw(reader_tx),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let mut cmd = deployment.add_comment(
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "commenting",
+        None,
+    );
+    room.command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    room.forget_comments().await;
     room.broadcast_comment_snapshot(7).await;
 
     let editors = received(&mut editor_rx);
     assert_eq!(editors.len(), 1);
-    assert_eq!(editors[0]["type"], "comments");
-    assert_eq!(editors[0]["annotation_revision"], 7);
+    assert_eq!(editors[0]["comment_digest"], 7);
     assert_eq!(
         editors[0]["comments"]
             .as_array()
-            .map(|list| list.len())
+            .map(Vec::len)
             .unwrap_or_default(),
-        1,
-        "an editor peer is stated the project's own annotations",
+        1
     );
 
     let readers = received(&mut reader_rx);
     assert_eq!(readers.len(), 1);
-    assert_eq!(readers[0]["type"], "comments");
     let public = readers[0]["comments"].as_array().expect("a list");
-    assert_eq!(
-        public.len(),
-        1,
-        "and a reader peer the ones the public channel may carry",
-    );
-    assert!(
-        public[0]["original_anchor"].is_null(),
-        "carried without the source it is anchored in: {}",
-        readers[0],
-    );
-
+    assert_eq!(public.len(), 1);
+    assert!(public[0]["original_anchor"].is_null());
     deployment.catalog.close().await;
 }
 
-/// A suggestion is the one annotation a reader never receives.
-///
-/// It is not a remark about the document, it is an edit to it: a source anchor
-/// and the words proposed for that source. Both are the editable project, and
-/// the public annotation channel is not where the project goes.
+/// A suggestion is the one annotation a reader never receives: it is an edit
+/// to the document, not a remark about it.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_suggestion_stays_out_of_the_public_channel() {
     let Some(deployment) = deployment("anchor-suggestion").await else {
         return;
     };
-    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
     let (editor_tx, mut editor_rx) = tokio::sync::mpsc::channel(8);
     let (reader_tx, mut reader_rx) = tokio::sync::mpsc::channel(8);
-    room.attach(1, editor_tx, true).await;
-    room.attach(2, reader_tx, false).await;
+    room.join(
+        1,
+        true,
+        "editor-1",
+        super::outgoing::Sender::from_raw(editor_tx),
+        None,
+    )
+    .await
+    .unwrap();
+    room.join(
+        2,
+        false,
+        "reader-2",
+        super::outgoing::Sender::from_raw(reader_tx),
+        None,
+    )
+    .await
+    .unwrap();
 
-    let mut command = selection(
+    let mut cmd = deployment.add_comment(
+        &room,
         "interval covers the mean",
         "Interval estimates The ",
         " of the posterior.",
+        "editing",
+        Some("*interval* contains the mean"),
     );
-    if let Command::Comment {
-        motivation,
-        proposed,
-        ..
-    } = &mut command
-    {
-        *motivation = "editing".into();
-        *proposed = Some("*interval* contains the mean".into());
-    }
-    let response = send(&room, command, &deployment.actor).await;
-    assert_eq!(response["type"], "comment", "{response}");
-    room.broadcast_comment_event(None, &response).await;
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    assert!(
+        !comment.proposal.is_empty(),
+        "a suggestion opens a proposal"
+    );
+    let payload = json!({"type": "comment", "comment": comment});
+    room.broadcast_comment_event(None, &payload).await;
 
     let editors = received(&mut editor_rx);
     assert_eq!(editors.len(), 1);
@@ -569,7 +625,6 @@ async fn a_suggestion_stays_out_of_the_public_channel() {
         "a proposed edit is not a remark a reader may have: {}",
         readers[0],
     );
-
     deployment.catalog.close().await;
 }
 

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO superseded_bases(snapshot_key,document_id,delete_after)\n                     VALUES($1,$2,$3) ON CONFLICT(snapshot_key) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8b310f9654fc836e139f810c5f735d0e5916c6e78bed14c264b7c7a872945e67"
+}

@@ -17,10 +17,14 @@ const temporary = mkdtempSync(join(tmpdir(), "librepaper-math-browser-"));
 
 const types = { js: "text/javascript", css: "text/css", woff2: "font/woff2", html: "text/html" };
 // The page is its own parent: the agent takes messages from `parent`, which
-// at the top level is the window itself, so the check plays the sidebar.
-const shell = `<!doctype html><html><head><meta charset="utf-8"></head><body>
+// at the top level is the window itself, so the check plays the sidebar. The
+// agent now refuses to speak to a wildcard reader (`reader=*` fails its own
+// `new URL()` and it says nothing rather than saying it to everybody), so the
+// query string has to name this page's real origin -- which is not known
+// until the server has picked its port.
+const shell = (origin) => `<!doctype html><html><head><meta charset="utf-8"></head><body>
 <script>window.published=[];addEventListener("message",e=>{if(e.data&&e.data.librepaper&&e.data.type==="ready")window.published.push(e.data.text)});</script>
-<script src="/agent.js?reader=*"></script>
+<script src="/agent.js?reader=${encodeURIComponent(origin)}"></script>
 </body></html>`;
 
 let server, page;
@@ -29,7 +33,7 @@ try {
     const path = new URL(request.url, "http://127.0.0.1").pathname;
     if (path === "/") {
       response.setHeader("content-type", types.html);
-      response.end(shell);
+      response.end(shell(`http://${request.headers.host}`));
       return;
     }
     const file = join(dist, path);

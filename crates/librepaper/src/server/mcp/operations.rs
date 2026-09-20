@@ -1,12 +1,8 @@
 //! Domain operations behind the five MCP tools. Transport ids never identify effects.
 use super::*;
+use crate::room;
 use crate::room::agent::{
     self, Affinity, AgentAuthority, OperationKey, Patch, PatchRequest, SourceFile, SourceTree,
-};
-use crate::room::agent_comments::AnnotationBatch;
-use crate::room::{
-    AnchorSide, BatchCaller, CheckpointId, Comment, CommentTarget, FileId, OriginalAnchor,
-    SourceTextTarget,
 };
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -22,8 +18,8 @@ pub(super) struct CandidateGrant {
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Candidate {
     pub view_id: String,
-    pub base_revision: String,
-    pub source_revision: String,
+    pub base_tree_digest: String,
+    pub tree_digest: String,
     pub patches: Vec<Patch>,
     pub dependencies: Vec<agent::Dependency>,
     pub operation: OperationKey,
@@ -53,7 +49,12 @@ pub(super) fn failure(error: agent::AgentError) -> Failure {
 }
 
 pub(super) fn tree_of_view(view: &View) -> Result<SourceTree, Failure> {
-    let canonical: crate::document::history::Tree =
+    // The view's `tree` field is `json!(projected.projection)` (§4.4): the
+    // same `Projection` the sequencer produced, not a document-core type of
+    // its own. It is used here only to look up each path's stable file id;
+    // there is no separate canonical checkpoint to carry alongside it any
+    // more, so `canonical` is left empty.
+    let projection: librepaper_document_core::Projection =
         serde_json::from_value(view.snapshot.tree.clone())
             .map_err(|e| Failure::new("internal", e.to_string()))?;
     let files = view
@@ -64,7 +65,7 @@ pub(super) fn tree_of_view(view: &View) -> Result<SourceTree, Failure> {
             (
                 path.clone(),
                 SourceFile {
-                    file_id: canonical
+                    file_id: projection
                         .files
                         .get(path)
                         .map(|entry| entry.id.clone())
@@ -74,7 +75,11 @@ pub(super) fn tree_of_view(view: &View) -> Result<SourceTree, Failure> {
             )
         })
         .collect();
-    Ok(SourceTree::with_canonical(canonical, files))
+    Ok(SourceTree {
+        main: projection.main,
+        files,
+        revision: view.snapshot.tree_digest.clone(),
+    })
 }
 
 fn apply_candidate_patches<'a>(
@@ -331,9 +336,16 @@ impl Server {
                             &key.scoped_request_id(actor),
                         ))
                         .await;
-                        items.push(match outcome {Ok(result)=>json!({"index":index,"status":result["status"],"candidate_id":result["candidate_id"],"effects":result["effects"]}),Err(error)=>json!({"index":index,"error":{"code":error.code,"message":error.message}})});
+                        items.push(match outcome {Ok(result)=>json!({"index":index,"status":result["status"],"candidate_id":result["candidate_id"],"effects":result["effects"],"replay":result["replay"]}),Err(error)=>json!({"index":index,"error":{"code":error.code,"message":error.message}})});
                     }
-                    let result = json!({"operation":key,"status":"committed","batch":"independent","items":items,"replay":false});
+                    // `independent` means each patch is its own command with
+                    // its own retry record, so "did this batch replay" has
+                    // no single answer -- one item can be a fresh commit
+                    // while another, retried separately, replays. `replay`
+                    // is carried per item above (`null` where the item's own
+                    // command has none to report, e.g. a private candidate);
+                    // there is no batch-level key here.
+                    let result = json!({"operation":key,"status":"committed","batch":"independent","items":items});
                     let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
                     return self
                         .mcp_private_receipt(
@@ -406,8 +418,7 @@ impl Server {
                             args["candidate_id"].as_str().unwrap_or_default(),
                         )
                         .await?;
-                    if receipt.status != "verified"
-                        || receipt.source_revision != candidate.source_revision
+                    if receipt.status != "verified" || receipt.tree_digest != candidate.tree_digest
                     {
                         return Err(Failure::new(
                             "validation_failed",
@@ -416,9 +427,8 @@ impl Server {
                     }
                 }
                 let request = PatchRequest {
-                    acceptance: None,
                     operation: key,
-                    base_tree: candidate.base_revision,
+                    base_tree: candidate.base_tree_digest,
                     consistency,
                     dependencies: candidate.dependencies,
                     patches: candidate.patches,
@@ -437,7 +447,7 @@ impl Server {
                 };
                 let room = self
                     .rooms
-                    .try_get(slug)
+                    .get(slug)
                     .await
                     .map_err(|e| Failure::new("unavailable", e.to_string()))?;
                 let receipt = room
@@ -454,12 +464,21 @@ impl Server {
             "document_comment" => {
                 if args["action"] == "accept" {
                     return self
-                        .mcp_accept(slug, actor, &current, headers, arrival, args, &key, &digest)
+                        .mcp_accept(
+                            slug, actor, &current, headers, arrival, peer, args, &key, &digest,
+                        )
                         .await;
                 }
-                if args["action"] == "checkpoint" {
+                if args["action"] == "label" {
                     return self
-                        .mcp_checkpoint(slug, actor, &current, headers, (args, &key, &digest))
+                        .mcp_label(
+                            slug,
+                            actor,
+                            &current,
+                            headers,
+                            arrival,
+                            (args, &key, &digest),
+                        )
                         .await;
                 }
                 self.mcp_comment(
@@ -471,14 +490,11 @@ impl Server {
         }
     }
 
-    /// Takes a suggestion: the proposal it carries becomes an edit to the
-    /// passage it is about.
-    ///
-    /// The passage is named by the comment's own anchor -- the file's stable
-    /// id and a UTF-16 range in the checkpoint it was made against -- so this
-    /// does not go looking for it. It checks that the range still reads the
-    /// way the anchor says it does and refuses when it does not, because a
-    /// proposal applied to different words is a different proposal.
+    /// Takes a suggestion: its proposal branch is merged into a fork of head
+    /// (§7.3), which is the one command here that produces source. A retry
+    /// with the same operation id finds the `document_labels` row this
+    /// writes and returns without merging twice (§7.2), so the request id
+    /// is derived from the operation key the same way a new comment's id is.
     #[allow(clippy::too_many_arguments)]
     async fn mcp_accept(
         &self,
@@ -487,9 +503,10 @@ impl Server {
         who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
+        _peer: SocketAddr,
         args: &Value,
         key: &OperationKey,
-        digest: &str,
+        _digest: &str,
     ) -> Result<Value, Failure> {
         if !who.at_least(Role::Editor) {
             return Err(Failure::new(
@@ -497,31 +514,28 @@ impl Server {
                 "editor access is required to accept a suggestion",
             ));
         }
-        let view: View = self
-            .mcp_load(
-                slug,
-                actor,
-                who,
-                args["view_id"]
-                    .as_str()
-                    .ok_or_else(|| Failure::new("invalid_params", "accept requires view_id"))?,
-                "view",
-            )
-            .await?;
         let room = self
             .rooms
-            .try_get(slug)
+            .get(slug)
             .await
             .map_err(|e| Failure::new("unavailable", e.to_string()))?;
+        if let Some(why) = room.unreadable().await {
+            return Err(Failure::new("unavailable", why));
+        }
         let id = args["comment_id"]
             .as_str()
             .ok_or_else(|| Failure::new("invalid_params", "accept requires comment_id"))?;
         let expected = args["expected_version"]
             .as_str()
             .ok_or_else(|| Failure::new("invalid_params", "accept requires expected_version"))?;
-        let comment = room
-            .agent_comment(id)
+        let comments = room
+            .comments()
             .await
+            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        let comment = comments
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
             .ok_or_else(|| Failure::new("not_found", "suggestion unavailable"))?;
         if crate::room::agent_comments::comment_version(&comment) != expected
             || comment.motivation != "editing"
@@ -533,94 +547,65 @@ impl Server {
                 "suggestion changed or is already decided",
             ));
         }
-        if comment.revision() != view.snapshot.source_revision {
-            return Err(Failure::new(
-                "conflict",
-                "suggestion belongs to another source tree; capture and propose against the current passage",
-            ));
-        }
-        let anchor = comment
-            .source()
-            .ok_or_else(|| Failure::new("invalid_range", "suggestion has no source anchor"))?;
-        let tree = tree_of_view(&view)?;
-        let path = tree
-            .files
-            .iter()
-            .find(|(_, entry)| entry.file_id == anchor.file_id.0)
-            .map(|(path, _)| path.clone())
-            .ok_or_else(|| Failure::new("conflict", "suggestion file disappeared"))?;
-        let text = view
-            .snapshot
-            .texts
-            .get(&path)
-            .ok_or_else(|| Failure::new("conflict", "suggestion file disappeared"))?;
-        // The anchor counts in UTF-16 units and a patch is stated in bytes;
-        // the conversion is exact, and a position that falls inside a
-        // character is a refusal rather than a rounding.
-        let start = byte_of_utf16(text, anchor.start_utf16 as usize)
-            .ok_or_else(|| Failure::new("invalid_range", "position splits a Unicode character"))?;
-        let end = byte_of_utf16(text, anchor.end_utf16 as usize)
-            .ok_or_else(|| Failure::new("invalid_range", "position splits a Unicode character"))?;
-        if text.get(start..end) != Some(anchor.exact.as_str()) {
-            return Err(Failure::new("conflict", "suggestion passage changed"));
-        }
-        let request = PatchRequest {
-            acceptance: Some(agent::AgentAcceptance {
-                comment_id: id.to_string(),
-                expected_version: expected.to_string(),
-                expected_seq: comment.seq,
-            }),
-            operation: key.clone(),
-            base_tree: view.snapshot.source_revision.clone(),
-            consistency: agent::Consistency::ExactTree,
-            dependencies: Vec::new(),
-            patches: vec![Patch {
-                path: path.clone(),
-                file_id: anchor.file_id.0.clone(),
-                start,
-                end,
-                exact: anchor.exact.clone(),
-                replacement: comment.proposed.clone().ok_or_else(|| {
-                    Failure::new("invalid_params", "suggestion has no replacement")
-                })?,
-                affinity: Affinity::Before,
-            }],
-            request_digest: digest.to_string(),
+        let comment_id = super::comments::parse_uuid(&comment.id, "comment_id")?;
+        let proposal_id = super::comments::parse_uuid(&comment.proposal, "proposal")?;
+        let stored = room
+            .catalog()
+            .proposal(proposal_id)
+            .await
+            .map_err(|error| Failure::new("unavailable", error.to_string()))?
+            .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))?;
+        let decided_by = if who.id.is_signed_in() {
+            who.id.name.clone()
+        } else {
+            pseudonym_for(&self.mcp_author(headers, arrival, who, actor), slug)
         };
-        let authority = AgentAuthority {
-            automation: true,
-            account_id: who.id.id.clone(),
-            owner_key: who.key.clone(),
-            generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            policy_editor: self.publishers.allows(&who.id.handle),
-            unowned_publisher: false,
-            operation_scope: actor.to_string(),
-            execution_epoch: runner_execution_epoch(headers),
-        };
-        room.apply_agent_request(request, authority, || async {
-            self.mcp_recheck(slug, headers, arrival, actor)
-                .await
-                .map(|_| ())
-                .map_err(|error| agent::AgentError::Conflict(error.message))
-        })
-        .await
-        .map(|receipt| json!(receipt))
-        .map_err(failure)
+        let authorization = super::comments::commit_authorization(who, self.ceiling_for(&who.id));
+        let request_id = super::comments::parse_uuid(
+            &super::comments::comment_uuid(&key.scoped_request_id(actor)),
+            "operation id",
+        )?;
+        let mut cmd = room::AcceptSuggestion::new(
+            room.catalog().clone(),
+            room.document_id,
+            comment_id,
+            proposal_id,
+            stored.base_frontiers,
+            stored.tip_frontiers,
+            stored.branch_bytes,
+            decided_by,
+            authorization,
+            request_id,
+        );
+        let authority = super::comments::commit_authority(who);
+        let (accepted, replay) = room
+            .command_reporting_replay(&authority, &mut cmd)
+            .await
+            .map_err(super::comments::command_failure)?;
+        Ok(json!({
+            "operation": key,
+            "status": "committed",
+            "action": "accept",
+            "comment_id": accepted.comment.id,
+            "comment": accepted.comment,
+            "resolved_in": accepted.resolved_in,
+            "replay": replay,
+        }))
     }
 
-    async fn mcp_checkpoint(
+    async fn mcp_label(
         &self,
         slug: &str,
         actor: &str,
         who: &Viewer,
         headers: &HeaderMap,
-        (args, key, digest): (&Value, &OperationKey, &str),
+        arrival: &Arrival,
+        (args, key, _digest): (&Value, &OperationKey, &str),
     ) -> Result<Value, Failure> {
         if !who.at_least(Role::Editor) {
             return Err(Failure::new(
                 "permission_changed",
-                "editor access is required to checkpoint",
+                "editor access is required to label",
             ));
         }
         if let Some(cancellation) = self.mcp_cancellation(slug, actor, who, key).await? {
@@ -633,44 +618,45 @@ impl Server {
                 who,
                 args["view_id"]
                     .as_str()
-                    .ok_or_else(|| Failure::new("invalid_params", "checkpoint requires view_id"))?,
+                    .ok_or_else(|| Failure::new("invalid_params", "label requires view_id"))?,
                 "view",
             )
             .await?;
+        let _ = view;
         let room = self
             .rooms
-            .try_get(slug)
+            .get(slug)
             .await
             .map_err(|e| Failure::new("unavailable", e.to_string()))?;
-        let authority = AgentAuthority {
-            automation: true,
-            account_id: who.id.id.clone(),
-            owner_key: who.key.clone(),
-            generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            policy_editor: self.publishers.allows(&who.id.handle),
-            unowned_publisher: false,
-            operation_scope: actor.to_string(),
-            execution_epoch: runner_execution_epoch(headers),
-        };
-        let commit = json!({
-            "request_id": key.scoped_request_id(actor),
-            "digest": digest,
-            "operation": key,
-            "source_revision": view.snapshot.source_revision,
-        });
-        let checkpoint = room
-            .ensure_agent_checkpoint(
-                &view.snapshot.source_revision,
-                authority,
-                &who.id.name,
-                commit,
+        if let Some(why) = room.unreadable().await {
+            return Err(Failure::new("unavailable", why));
+        }
+        // §7.1 checks nothing for a label: it always names whatever head
+        // `take_label` finds. There is no `checkpoint_id` any more (§8.2) --
+        // a label is `source_sequence` plus the frontier at that row -- so
+        // that is what the response carries in place of one.
+        let authority = super::comments::commit_authority(who);
+        let by = room
+            .signed_by(
+                &who.id.id,
+                &pseudonym_for(&self.mcp_author(headers, arrival, who, actor), slug),
             )
+            .await;
+        let request_id = super::comments::parse_uuid(
+            &super::comments::comment_uuid(&key.scoped_request_id(actor)),
+            "operation id",
+        )?;
+        let (recorded, replay) = room
+            .take_label_reporting_replay("agent", None, by, &authority, Some(request_id))
             .await
-            .map_err(|e| Failure::new("conflict", e))?;
-        Ok(
-            json!({"operation":key,"status":"committed","action":"checkpoint","checkpoint_id":checkpoint,"source_revision":view.snapshot.source_revision,"replay":false}),
-        )
+            .map_err(|error| Failure::new("conflict", error.to_string()))?;
+        Ok(json!({
+            "operation": key,
+            "status": "committed",
+            "action": "label",
+            "source_sequence": recorded.source_sequence,
+            "replay": replay,
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -769,9 +755,8 @@ impl Server {
             });
         }
         let request = PatchRequest {
-            acceptance: None,
             operation: key.clone(),
-            base_tree: view.snapshot.source_revision.clone(),
+            base_tree: view.snapshot.tree_digest.clone(),
             consistency: agent::Consistency::ExactTree,
             dependencies: Vec::new(),
             patches: patches.clone(),
@@ -780,8 +765,8 @@ impl Server {
         let applied = agent::apply_patches(&tree, &request).map_err(failure)?;
         let candidate = Candidate {
             view_id: view_id.to_string(),
-            base_revision: applied.before_tree,
-            source_revision: applied.after_tree,
+            base_tree_digest: applied.before,
+            tree_digest: applied.after,
             patches,
             dependencies,
             operation: key.clone(),
@@ -840,7 +825,7 @@ impl Server {
         who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
-        peer: SocketAddr,
+        _peer: SocketAddr,
         candidate_id: &str,
         candidate: &Candidate,
         view: &View,
@@ -873,7 +858,13 @@ impl Server {
         // "suggestions"`, overwrites both fields below. Callers read
         // "committed" as "done" and report an edit that never happened, so
         // the result says outright what has not happened yet.
-        let mut result = json!({"operation":key,"status":"committed","candidate_id":candidate_id,"source_revision":candidate.source_revision,"base_revision":candidate.base_revision,"validation":{"source":"passed","compile":"not_requested"},"effects":[],"replay":false,
+        //
+        // No `replay` key here: storing a private candidate runs no §7.2
+        // command at all (it is candidate-store idempotency, keyed by the
+        // request digest, not a `document_labels` retry record), so there is
+        // nothing honest to report until the `publish: "suggestions"` branch
+        // below actually runs one.
+        let mut result = json!({"operation":key,"status":"committed","candidate_id":candidate_id,"tree_digest":candidate.tree_digest,"base_tree_digest":candidate.base_tree_digest,"validation":{"source":"passed","compile":"not_requested"},"effects":[],
             "published":false,
             "next":"This candidate is private: nobody can see it and the document is unchanged. Propose again with publish: \"suggestions\" to offer it for review, or, only if the user authorized direct edits, apply it with document_apply quoting this candidate_id. Report neither until one of them returns."});
         if let Some(render) = render {
@@ -901,68 +892,99 @@ impl Server {
             } else {
                 pseudonym_for(&author, slug)
             };
-            let pass = key.scoped_request_id(actor);
             let room = self
                 .rooms
-                .try_get(slug)
+                .get(slug)
                 .await
                 .map_err(|e| Failure::new("unavailable", e.to_string()))?;
-            let mut rows = Vec::with_capacity(candidate.patches.len());
-            let mut proposals = std::collections::HashMap::new();
-            for (index, patch) in candidate.patches.iter().enumerate() {
-                let source = &view.snapshot.texts[&patch.path];
-                let prefix = source[..patch.start]
-                    .chars()
-                    .rev()
-                    .take(64)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect::<String>();
-                let suffix = source[patch.end..].chars().take(64).collect::<String>();
-                let (proposal, prepared) = room
-                    .prepare_suggestion(
-                        &author,
-                        &patch.path,
-                        patch.start,
-                        &patch.exact,
-                        &patch.replacement,
-                    )
-                    .await
-                    .map_err(|error| Failure::new("conflict", error.to_string()))?;
-                let id = super::comments::comment_uuid(&format!("{}-{index}", &pass[..32]));
-                proposals.insert(id.clone(), prepared);
-                rows.push(Comment {
-                    // Stable per suggestion within the pass, so a retry lands
-                    // on the same annotation. The replacement itself lives in
-                    // the ordinary persisted proposal branch.
-                    id,
-                    motivation: "editing".into(),
-                    proposal,
-                    original_anchor: Some(OriginalAnchor {
-                        checkpoint_id: CheckpointId(view.snapshot.source_revision.clone()),
-                        target: CommentTarget::SourceText(SourceTextTarget {
-                            file_id: FileId(patch.file_id.clone()),
-                            start_utf16: source[..patch.start].encode_utf16().count() as u32,
-                            end_utf16: source[..patch.end].encode_utf16().count() as u32,
-                            start_side: AnchorSide::Left,
-                            end_side: AnchorSide::Right,
-                            exact: patch.exact.clone(),
-                            prefix,
-                            suffix,
-                        }),
-                    }),
-                    body: candidate.notes.get(index).cloned().unwrap_or_default(),
-                    creator: creator.clone(),
-                    created: crate::util::timestamp(),
-                    author: author.clone(),
-                    pass: pass.clone(),
-                    ..Comment::default()
-                });
+            if let Some(why) = room.unreadable().await {
+                return Err(Failure::new("unavailable", why));
             }
-            result["effects"] = json!(rows
+            // Every suggestion in the pass is anchored fresh against the one
+            // head `AgentSuggestionBatch::evaluate` locks (§7 step 2); this
+            // module supplies only what the candidate actually asked for.
+            // Each item's id is derived from the pass's own request id and
+            // its position, so a retried pass mints the same ids and lands
+            // on the same annotations (§7.2) rather than duplicating them.
+            let pass = key.scoped_request_id(actor);
+            let items: Vec<room::BatchSuggestion> = candidate
+                .patches
                 .iter()
-                .map(|c| json!({"kind":"suggestion","id":c.id}))
+                .enumerate()
+                .map(|(index, patch)| {
+                    let source = &view.snapshot.texts[&patch.path];
+                    let prefix = source[..patch.start]
+                        .chars()
+                        .rev()
+                        .take(64)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect::<String>();
+                    let suffix = source[patch.end..].chars().take(64).collect::<String>();
+                    let id = super::comments::parse_uuid(
+                        &super::comments::comment_uuid(&format!("{pass}-{index}")),
+                        "suggestion id",
+                    )
+                    .expect("comment_uuid always returns a UUID string");
+                    room::BatchSuggestion {
+                        id,
+                        exact: patch.exact.clone(),
+                        prefix,
+                        suffix,
+                        proposed: patch.replacement.clone(),
+                        body: candidate.notes.get(index).cloned().unwrap_or_default(),
+                    }
+                })
+                .collect();
+            let author_account_id = uuid::Uuid::parse_str(&who.id.id).ok();
+            let authorization =
+                super::comments::commit_authorization(who, self.ceiling_for(&who.id));
+            let mut cmd = room::AgentSuggestionBatch::new(
+                room.catalog().clone(),
+                room.document_id,
+                items,
+                &self.config,
+                creator.clone(),
+                author_account_id,
+                author.clone(),
+                authorization,
+            )
+            .map_err(|error| Failure::new("invalid_params", error))?;
+            let authority = super::comments::commit_authority(who);
+            // `AgentSuggestionBatch` is idempotent by each item's own
+            // primary key (§7.2's create rule), not by a `document_labels`
+            // retry record, so this is honestly always `false`: dedup on
+            // retry happens per item at insert time, not here.
+            let (outcomes, replay) = room
+                .command_reporting_replay(&authority, &mut cmd)
+                .await
+                .map_err(super::comments::command_failure)?;
+            result["replay"] = json!(replay);
+            let refusal = outcomes.iter().find_map(|outcome| match outcome {
+                room::BatchItemResult::Refused(reason) => Some(reason.clone()),
+                room::BatchItemResult::Created(_) => None,
+            });
+            if let Some(reason) = refusal {
+                return Err(Failure::new("conflict", reason));
+            }
+            // The batch wrote straight through the sequencer, not through
+            // any of the room's own cache-invalidating comment methods, and
+            // it is a change no single comment event describes -- so this is
+            // `broadcast_comment_snapshot`, not `broadcast_comment_event`,
+            // and the room's cached list is dropped first so the snapshot it
+            // sends is the one it just wrote.
+            room.forget_comments().await;
+            let comment_digest =
+                room::comments::comment_digest_of(&room.comments().await.unwrap_or_default());
+            room.broadcast_comment_snapshot(comment_digest).await;
+            result["effects"] = json!(outcomes
+                .iter()
+                .filter_map(|outcome| match outcome {
+                    room::BatchItemResult::Created(comment) =>
+                        Some(json!({"kind":"suggestion","id":comment.id})),
+                    room::BatchItemResult::Refused(_) => None,
+                })
                 .collect::<Vec<_>>());
             // These suggestions are real and visible, so the warning above no
             // longer applies. They are still proposals: the document's own
@@ -971,41 +993,7 @@ impl Server {
             result["next"] = json!(
                 "These suggestions are visible for review. The document's text is unchanged until someone accepts them; do not report the words as corrected."
             );
-            let address = client_address(peer, headers, &self.config.cost.trusted_proxies);
-            return room
-                .apply_agent_annotations(
-                    AnnotationBatch {
-                        request_id: pass,
-                        digest,
-                        base_revision: Some(view.snapshot.source_revision.clone()),
-                        upserts: rows,
-                        expected: Vec::new(),
-                        deletes: Vec::new(),
-                        replies: Vec::new(),
-                        proposals,
-                        receipt: result,
-                    },
-                    BatchCaller {
-                        address: &address,
-                        author: &author,
-                        via: &who.link,
-                        budget: who.comment_budget,
-                        creator: &creator,
-                    },
-                    crate::room::agent_comments::AgentAnnotationAuthority {
-                        link_hash: who.link.clone(),
-                        policy_comment: true,
-                        require_editor: false,
-                    },
-                    || async {
-                        self.mcp_recheck(slug, headers, arrival, actor)
-                            .await
-                            .map(|_| ())
-                            .map_err(|error| error.message)
-                    },
-                )
-                .await
-                .map_err(|e| Failure::new("conflict", e));
+            return Ok(result);
         }
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
         self.mcp_private_receipt(
@@ -1097,7 +1085,7 @@ impl Server {
                     return Ok(cancellation);
                 }
                 Ok(
-                    json!({"candidate_id":args["id"],"source_revision":candidate.source_revision,"base_revision":candidate.base_revision,"validation":candidate.validation,"expires_at":candidate.expires_at,"status":if candidate.validation=="compile"{"awaiting_renderer"}else{"ready"}}),
+                    json!({"candidate_id":args["id"],"tree_digest":candidate.tree_digest,"base_tree_digest":candidate.base_tree_digest,"validation":candidate.validation,"expires_at":candidate.expires_at,"status":if candidate.validation=="compile"{"awaiting_renderer"}else{"ready"}}),
                 )
             }
             _ => Err(Failure::new("invalid_params", "unknown result kind")),

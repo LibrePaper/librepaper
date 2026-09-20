@@ -28,7 +28,7 @@ compaction if its captured source is no longer available to you.
 ## Comment and edit
 
 Use `document_comment` for comments, replies, thread resolution, deletion,
-suggestion refinement or decisions, and checkpoints. Existing-comment actions
+suggestion refinement or decisions, and labels. Existing-comment actions
 must carry the `comment_version` returned by the read as `expected_version`.
 
 Use `document_propose` with captured range handles for source changes.
@@ -53,5 +53,5 @@ session receives the more focused `librepaper-write` skill automatically.
 
 ## References
 
-- [editing.md](references/editing.md) — proposals, application, conflicts, projects, and compilation
-- [install.md](references/install.md) — installing or upgrading the CLI used to host the MCP adapter
+- [editing.md](references/editing.md) -- proposals, application, conflicts, projects, and compilation
+- [install.md](references/install.md) -- installing or upgrading the CLI used to host the MCP adapter

@@ -1,6 +1,6 @@
 // SHA-256, as hex, in one place.
 //
-// Nine call sites derived this independently -- `tree-digest.js`,
+// Nine call sites derived this independently -- `projection-digest.js`,
 // `companion/client.js`, `latex/bibliography.js`, `latex/jobs.js`,
 // `latex/resources.js`, `latex/worker.js`, `results-hash.js` and
 // `agent/agent.js` -- each re-writing the same

@@ -17,9 +17,20 @@ import * as latex from "./latex.js";
 import * as latexHtml from "./latex/html.js";
 import * as quarto from "./engines/quarto.js";
 import * as localBridge from "./companion/client.js";
-import { snapshotDigest } from "./tree-digest.js";
+import { snapshotDigest } from "./projection-digest.js";
 
 import { rendererRequest } from "./renderer-client.js";
+
+/// This browser's identity for a render tree -- `{ main, texts, digests }`
+/// -- used only as a transient cache key: whether a local build's job
+/// matches the source it was started from, and whether a page kept from a
+/// previous visit still matches the document open now. It is never sent to
+/// the server.
+///
+/// Re-exported from the leaf that owns the canonical form of §4.4, so this
+/// browser has one digest algorithm rather than two. A renderer tree is not
+/// a projection -- it has no Loro ids -- but the question is the same one.
+export { snapshotDigest };
 
 /// Whether this deployment serves LaTeX distributions, which is the one
 /// renderer that is a property of the deployment rather than of the build:
@@ -211,7 +222,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
     if (requestedFormat === "html") {
       // Historical endpoints carry the settings captured with their tree.
       // Falling back to the live chooser is only for the ordinary preview
-      // path, never for a checkpoint comparison.
+      // path, never for a label comparison.
       const settings = configuration?.latex && Object.prototype.hasOwnProperty.call(configuration.latex, "settings")
         ? configuration.latex.settings
         : Object.prototype.hasOwnProperty.call(tree, "settings") ? tree.settings || {} : latex.settings();
@@ -242,7 +253,7 @@ export async function render(tree, title, { manual = false, format: requestedFor
       ok,
     };
   }
-  // Checkpoints may be Svelte proxies, which cannot cross a worker boundary.
+  // Labels may be Svelte proxies, which cannot cross a worker boundary.
   // Send only the compiler inputs, copied into ordinary maps.
   const quartoTree = format === "quarto" ? await quarto.virtualTree(tree, {
     expandIncludes: tree.texts || {},

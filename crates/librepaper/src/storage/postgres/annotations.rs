@@ -1,22 +1,35 @@
 //! Annotations, as rows.
 //!
 //! The shape of these rows is the shape of the comment model: what a comment
-//! is about is columns of `annotations` and is written once; where that
-//! passage was historically cached in `annotation_live_state`. New writes do
-//! not persist that derived projection; legacy rows remain readable while the
-//! cache is phased out. The insert writes immutable anchor evidence, and
-//! nothing else ever changes it.
+//! is about is columns of `annotations`, written once at creation and never
+//! touched again. Where a comment's passage is now is not a column at all --
+//! `annotation_live_state` is gone (§8.3) -- it is recomputed on demand from
+//! the original evidence against whatever projection is current (§4.3).
+//!
+//! Every mutating method here takes a transaction the caller owns rather
+//! than opening one. A comment and the source text it quotes are one
+//! transaction (§7 step 4): the sequencer opens it with
+//! `document_log::begin_document_command`, which fences on the writer epoch
+//! and locks the document row, so a method here that opened its own
+//! transaction could not be part of that. Because that transaction already
+//! pins one document, the mutating methods take `document_id` explicitly
+//! rather than looking it up from an annotation id under a fresh lock.
+//!
+//! Retries are handled by the two mechanisms of §7.2, not by a receipt
+//! table: a create carries a client-generated UUID as primary key and is
+//! inserted with `ON CONFLICT DO NOTHING`, then the row is read back and
+//! compared with what the caller asked for.
 
-use sqlx::{FromRow, Postgres, Row, Transaction};
+use sqlx::{FromRow, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::room::annotation::{
-    AnchorSide, AnchorStatus, CheckpointId, CommentTarget, DerivedAttachment, FileId,
-    LiveSourceRange, OriginalAnchor, PresentationContext, ResolutionDiagnostic, SourceTextTarget,
+    AnchorSide, CommentTarget, DerivedAttachment, FileId, OriginalAnchor, PresentationContext,
+    SourceTextTarget,
 };
 
-use super::{Error, PostgresCatalog, Result, SemanticReceipt};
+use super::{Error, PostgresCatalog, Result};
 
 #[derive(Clone, Debug)]
 pub struct MutationAuthorization {
@@ -35,20 +48,29 @@ pub struct NewAnnotation {
     pub author_account_id: Option<Uuid>,
     pub author_key: String,
     pub author_label: String,
-    pub bundle_id: Option<Uuid>,
     pub color: Option<String>,
     pub proposal_id: Option<Uuid>,
     /// Written once to `annotations`; an update that changes it is refused.
+    /// Carries its own `source_sequence` and `frontier` (§8.2), so this is
+    /// the only place evidence for a write needs to be threaded from.
     pub original_anchor: OriginalAnchor,
     /// Written beside it, and just as immutable: what the page said.
     pub presentation: PresentationContext,
-    /// Transitional caller projection. It is deliberately not persisted;
+    /// The projection digest of the rendered page this remark was made
+    /// against, when a reader made it rather than the editor (§7.1). A
+    /// comment whose render is no longer the head projection is refused
+    /// with the current digest rather than anchored against text the reader
+    /// never saw. `None` for a comment made against the live source, which
+    /// is checked against the anchor's own evidence instead.
+    pub render_digest: Option<Vec<u8>>,
+    /// Transitional caller projection. It is deliberately not persisted:
     /// attachment is recomputed from original evidence and committed source.
     pub attachment: Option<DerivedAttachment>,
 }
 
-/// One annotation as it is stored: the immutable columns, the presentation
-/// beside them, and whatever the live-state row had when it was last written.
+/// One annotation as it is stored: the immutable evidence columns and the
+/// presentation beside them. Nothing here is a cache of where the passage
+/// has got to -- that is recomputed, never read back (§4.3, §8.3).
 #[derive(Clone, Debug, FromRow)]
 pub struct AnnotationRecord {
     pub id: Uuid,
@@ -58,10 +80,11 @@ pub struct AnnotationRecord {
     pub author_account_id: Option<Uuid>,
     pub author_key: String,
     pub author_label: String,
-    pub bundle_id: Option<Uuid>,
     pub color: Option<String>,
     pub proposal_id: Option<Uuid>,
-    pub checkpoint_id: String,
+    pub source_sequence: Option<i64>,
+    pub frontier: Option<Vec<u8>>,
+    pub render_digest: Option<Vec<u8>>,
     pub target_kind: String,
     pub file_id: Option<String>,
     pub start_utf16: Option<i32>,
@@ -76,14 +99,6 @@ pub struct AnnotationRecord {
     pub rendered_suffix: String,
     pub rendered_position_utf16: Option<i32>,
     pub resolved_at: Option<OffsetDateTime>,
-    pub attachment_checkpoint_id: Option<String>,
-    pub attachment_status: Option<String>,
-    pub start_cursor: Option<Vec<u8>>,
-    pub end_cursor: Option<Vec<u8>>,
-    pub cursor_format: Option<String>,
-    pub resolved_start_utf16: Option<i32>,
-    pub resolved_end_utf16: Option<i32>,
-    pub diagnostic: Option<String>,
     pub created_at: OffsetDateTime,
 }
 
@@ -109,15 +124,6 @@ pub struct ReplyRecord {
     pub updated_at: OffsetDateTime,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, FromRow)]
-pub struct AnnotationRevisionAudit {
-    pub total: i64,
-    pub mapped: i64,
-    pub frontier_not_retained: i64,
-    pub checkpoint_frontier_not_retained: i64,
-    pub unknown_evidence: i64,
-}
-
 pub struct AnnotationBatchUpsert {
     pub id: Uuid,
     pub input: NewAnnotation,
@@ -125,15 +131,23 @@ pub struct AnnotationBatchUpsert {
     pub proposal: Option<super::NewProposal>,
 }
 
+/// A whole agent turn's worth of annotation writes, applied under one
+/// document lock (§7 step 4). What used to make this replay-safe as a unit
+/// was a lifetime receipt; now each piece is idempotent on its own -- the
+/// upserts through `put_annotation`'s `ON CONFLICT DO NOTHING`, the replies
+/// through the same, and a delete of an already-deleted row is simply
+/// `NotFound`, which a retrying caller already has to handle.
 pub struct AnnotationBatchCommand {
     pub document_id: Uuid,
     pub upserts: Vec<AnnotationBatchUpsert>,
     pub deletes: Vec<Uuid>,
     pub replies: Vec<NewReply>,
     pub require_editor: bool,
-    pub receipt: SemanticReceipt,
 }
 
+/// Inserts an annotation's immutable evidence, or -- on a retry with the
+/// same id -- reads back the row that a previous attempt already wrote and
+/// checks it says the same thing.
 async fn put_annotation(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,
@@ -142,12 +156,10 @@ async fn put_annotation(
     let anchor = Stored::of(&input.original_anchor)?;
     let inserted = sqlx::query(
         "INSERT INTO annotations(id,document_id,kind,body,author_account_id,author_key,author_label,
-                                 bundle_id,color,proposal_id,checkpoint_id,target_kind,file_id,
-                                 start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,
-                                 rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16,
-                                 source_revision)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-                (SELECT source_revision FROM documents WHERE id=$2))
+                                 color,proposal_id,source_sequence,frontier,render_digest,target_kind,
+                                 file_id,start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,
+                                 rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
          ON CONFLICT(id) DO NOTHING",
     )
     .bind(id)
@@ -157,10 +169,11 @@ async fn put_annotation(
     .bind(input.author_account_id)
     .bind(&input.author_key)
     .bind(&input.author_label)
-    .bind(input.bundle_id)
     .bind(&input.color)
     .bind(input.proposal_id)
-    .bind(&input.original_anchor.checkpoint_id.0)
+    .bind(input.original_anchor.source_sequence)
+    .bind(&input.original_anchor.frontier)
+    .bind(&input.render_digest)
     .bind(anchor.kind)
     .bind(anchor.file_id)
     .bind(anchor.start_utf16)
@@ -200,16 +213,57 @@ async fn put_annotation(
     ))
 }
 
+/// Inserts a reply, or -- on a retry with the same id -- reads back the row
+/// a previous attempt already wrote and checks it says the same thing.
+/// Shared by the single-reply path and the batch path, which is the only
+/// thing the old `*_inner` split bought there.
+async fn put_reply(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    input: &NewReply,
+) -> Result<ReplyRecord> {
+    sqlx::query!(
+        "INSERT INTO replies(id,annotation_id,author_account_id,author_key,author_label,body) \
+         VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING",
+        input.id,
+        input.annotation_id,
+        input.author_account_id,
+        input.author_key,
+        input.author_label,
+        input.body,
+    )
+    .execute(&mut **tx)
+    .await?;
+    let row = sqlx::query_as!(
+        ReplyRecord,
+        "SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at \
+         FROM replies WHERE id=$1",
+        input.id
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    if row.annotation_id != input.annotation_id
+        || row.author_account_id != input.author_account_id
+        || row.author_key != input.author_key
+        || row.author_label != input.author_label
+        || row.body != input.body
+    {
+        return Err(Error::Conflict(
+            "reply id was reused with different content".into(),
+        ));
+    }
+    Ok(row)
+}
+
 impl PostgresCatalog {
-    /// Applies an agent annotation batch under one document lock and one
-    /// lifetime receipt. Any validation or write failure rolls back every
-    /// item; replay returns the original stable result without reapplying a
-    /// prefix of the batch.
+    /// Applies an agent annotation batch under one document lock (§7 step 4).
+    /// Any validation or write failure rolls back the caller's transaction
+    /// with it; nothing here commits on its own.
     pub async fn apply_annotation_batch(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         batch: AnnotationBatchCommand,
         actor: &MutationAuthorization,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<()> {
         for upsert in &batch.upserts {
             validate(&upsert.input)?;
             if upsert.input.document_id != batch.document_id {
@@ -233,44 +287,17 @@ impl PostgresCatalog {
             }
         }
 
-        let mut tx = self
-            .begin_annotation_commit(batch.document_id, actor, batch.require_editor)
+        Self::authorize_annotation_mutation(tx, batch.document_id, actor, batch.require_editor)
             .await?;
-        if let Some(result) =
-            Self::replay_annotation_receipt(&mut tx, batch.document_id, actor, &batch.receipt)
-                .await?
-        {
-            return Ok(result);
-        }
 
-        let mut changed = false;
         for upsert in batch.upserts {
-            let existing = annotation_by_id(&mut tx, upsert.id).await?;
+            let existing = annotation_by_id(tx, upsert.id).await?;
             match (existing, upsert.proposal) {
                 (None, proposal) => {
                     if let Some(proposal) = proposal {
-                        let inserted = sqlx::query(
-                            "INSERT INTO document_proposals(id,document_id,author,author_peer,base_frontiers,\
-                                                             tip_frontiers,branch_bytes,status) \
-                             VALUES($1,$2,$3,$4,$5,$6,$7,'pending') ON CONFLICT(id) DO NOTHING",
-                        )
-                        .bind(proposal.id)
-                        .bind(proposal.document_id)
-                        .bind(proposal.author)
-                        .bind(proposal.author_peer)
-                        .bind(proposal.base_frontiers)
-                        .bind(proposal.tip_frontiers)
-                        .bind(proposal.branch_bytes)
-                        .execute(&mut *tx)
-                        .await?
-                        .rows_affected()
-                            == 1;
-                        if !inserted {
-                            return Err(Error::Conflict("proposal id was already used".into()));
-                        }
+                        self.open_proposal(tx, proposal).await?;
                     }
-                    let (_, inserted) = put_annotation(&mut tx, upsert.id, &upsert.input).await?;
-                    changed |= inserted;
+                    put_annotation(tx, upsert.id, &upsert.input).await?;
                 }
                 (Some(existing), None) => {
                     if existing.document_id != batch.document_id
@@ -281,13 +308,8 @@ impl PostgresCatalog {
                         ));
                     }
                     if upsert.input.kind == "suggestion" && upsert.resolved {
-                        Self::authorize_annotation_mutation(
-                            &mut tx,
-                            batch.document_id,
-                            actor,
-                            true,
-                        )
-                        .await?;
+                        Self::authorize_annotation_mutation(tx, batch.document_id, actor, true)
+                            .await?;
                     }
                     sqlx::query(
                         "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,\
@@ -304,9 +326,8 @@ impl PostgresCatalog {
                     .bind(&upsert.input.color)
                     .bind(upsert.input.proposal_id)
                     .bind(upsert.resolved)
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await?;
-                    changed = true;
                 }
                 (Some(_), Some(_)) => {
                     return Err(Error::Conflict(
@@ -320,157 +341,34 @@ impl PostgresCatalog {
             let deleted = sqlx::query("DELETE FROM annotations WHERE id=$1 AND document_id=$2")
                 .bind(id)
                 .bind(batch.document_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?
                 .rows_affected();
             if deleted != 1 {
                 return Err(Error::NotFound);
             }
-            changed = true;
         }
 
         for reply in batch.replies {
             let parent: Option<Uuid> =
                 sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1")
                     .bind(reply.annotation_id)
-                    .fetch_optional(&mut *tx)
+                    .fetch_optional(&mut **tx)
                     .await?;
             if parent != Some(batch.document_id) {
                 return Err(Error::NotFound);
             }
-            let inserted = sqlx::query(
-                "INSERT INTO replies(id,annotation_id,author_account_id,author_key,author_label,body) \
-                 VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING",
-            )
-            .bind(reply.id)
-            .bind(reply.annotation_id)
-            .bind(reply.author_account_id)
-            .bind(&reply.author_key)
-            .bind(&reply.author_label)
-            .bind(&reply.body)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected()
-                == 1;
-            if !inserted {
-                return Err(Error::Conflict("reply id was already used".into()));
-            }
-            changed = true;
+            put_reply(tx, &reply).await?;
         }
 
-        let commit_sequence = if changed {
-            Self::advance_annotation_commit(&mut tx, batch.document_id).await?
-        } else {
-            sqlx::query_scalar("SELECT commit_sequence FROM documents WHERE id=$1")
-                .bind(batch.document_id)
-                .fetch_one(&mut *tx)
-                .await?
-        };
-        let result = batch.receipt.stable_result.clone();
-        Self::store_annotation_receipt(
-            &mut tx,
-            batch.document_id,
-            actor,
-            &batch.receipt,
-            commit_sequence,
-            result.clone(),
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(result)
-    }
-
-    async fn replay_annotation_receipt(
-        tx: &mut Transaction<'_, Postgres>,
-        document_id: Uuid,
-        actor: &MutationAuthorization,
-        receipt: &SemanticReceipt,
-    ) -> Result<Option<serde_json::Value>> {
-        let digest = receipt.digest()?;
-        let row = sqlx::query(
-            "SELECT command_digest,result FROM document_command_receipts \
-             WHERE document_id=$1 AND principal_key=$2 AND request_id=$3",
-        )
-        .bind(document_id)
-        .bind(&actor.principal_key)
-        .bind(receipt.request_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-        let Some(row) = row else { return Ok(None) };
-        let stored: Vec<u8> = row.try_get(0)?;
-        if stored != digest {
-            return Err(Error::Conflict(
-                "request id was already used for different content".into(),
-            ));
-        }
-        Ok(Some(row.try_get(1)?))
-    }
-
-    async fn store_annotation_receipt(
-        tx: &mut Transaction<'_, Postgres>,
-        document_id: Uuid,
-        actor: &MutationAuthorization,
-        receipt: &SemanticReceipt,
-        commit_sequence: i64,
-        result: serde_json::Value,
-    ) -> Result<()> {
-        let source_revision: i64 =
-            sqlx::query_scalar("SELECT source_revision FROM documents WHERE id=$1")
-                .bind(document_id)
-                .fetch_one(&mut **tx)
-                .await?;
-        let digest = receipt.digest()?;
-        sqlx::query(
-            "INSERT INTO document_command_receipts(document_id,principal_key,request_id,command_digest, \
-             status,commit_sequence,source_revision,result) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
-        )
-        .bind(document_id)
-        .bind(&actor.principal_key)
-        .bind(receipt.request_id)
-        .bind(digest.as_slice())
-        .bind(&receipt.status)
-        .bind(commit_sequence)
-        .bind(source_revision)
-        .bind(result)
-        .execute(&mut **tx)
-        .await?;
         Ok(())
     }
 
-    async fn begin_annotation_commit<'a>(
-        &'a self,
-        document_id: Uuid,
-        actor: &MutationAuthorization,
-        require_editor: bool,
-    ) -> Result<Transaction<'a, Postgres>> {
-        let expected_epoch = self.writer_epoch()?;
-        let mut tx = self.pool.begin().await?;
-        let durable_epoch: i64 =
-            sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton=true FOR SHARE")
-                .fetch_one(&mut *tx)
-                .await?
-                .try_get(0)?;
-        if durable_epoch != expected_epoch {
-            return Err(Error::Ownership("writer epoch was superseded".into()));
-        }
-        Self::authorize_annotation_mutation(&mut tx, document_id, actor, require_editor).await?;
-        Ok(tx)
-    }
-
-    async fn advance_annotation_commit(
-        tx: &mut Transaction<'_, Postgres>,
-        document_id: Uuid,
-    ) -> Result<i64> {
-        sqlx::query_scalar(
-            "UPDATE documents SET commit_sequence=commit_sequence+1,updated_at=now() \
-             WHERE id=$1 AND status='active' RETURNING commit_sequence",
-        )
-        .bind(document_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or(Error::NotFound)
-    }
-
+    /// The in-transaction authorization check a document command runs
+    /// before writing. The writer-epoch fence and the document row lock
+    /// already happened when the caller opened `tx`
+    /// (`document_log::begin_document_command`); this checks that the
+    /// account or link behind `actor` still has the access it claims.
     pub(super) async fn authorize_annotation_mutation(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
@@ -544,6 +442,12 @@ impl PostgresCatalog {
         Ok(())
     }
 
+    /// A standalone probe of the same check, for a caller that wants to know
+    /// whether an actor could write before it has anything to write. It
+    /// opens and rolls back its own transaction, which is fine here because
+    /// nothing about this check needs to share a transaction with a write:
+    /// unlike a mutation, its answer is not itself evidence that has to be
+    /// committed atomically with anything else.
     pub(crate) async fn authorize_document_mutation(
         &self,
         document_id: Uuid,
@@ -558,113 +462,25 @@ impl PostgresCatalog {
 
     pub async fn put_annotation_authorized(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         id: Uuid,
         input: NewAnnotation,
         actor: &MutationAuthorization,
         require_editor: bool,
-    ) -> Result<AnnotationRecord> {
-        self.put_annotation_authorized_inner(id, input, actor, require_editor, None)
-            .await
-    }
-
-    pub async fn put_annotation_receipted(
-        &self,
-        id: Uuid,
-        input: NewAnnotation,
-        actor: &MutationAuthorization,
-        require_editor: bool,
-        receipt: &SemanticReceipt,
-    ) -> Result<AnnotationRecord> {
-        self.put_annotation_authorized_inner(id, input, actor, require_editor, Some(receipt))
-            .await
-    }
-
-    async fn put_annotation_authorized_inner(
-        &self,
-        id: Uuid,
-        input: NewAnnotation,
-        actor: &MutationAuthorization,
-        require_editor: bool,
-        receipt: Option<&SemanticReceipt>,
     ) -> Result<AnnotationRecord> {
         validate(&input)?;
-        let mut tx = self
-            .begin_annotation_commit(input.document_id, actor, require_editor)
-            .await?;
-        if let Some(receipt) = receipt {
-            if let Some(result) =
-                Self::replay_annotation_receipt(&mut tx, input.document_id, actor, receipt).await?
-            {
-                let stored_id = result
-                    .get("annotation_id")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|value| Uuid::parse_str(value).ok())
-                    .ok_or_else(|| Error::Invalid("annotation receipt is malformed".into()))?;
-                return annotation_by_id(&mut tx, stored_id)
-                    .await?
-                    .ok_or(Error::NotFound);
-            }
-        }
-        let (row, inserted) = put_annotation(&mut tx, id, &input).await?;
-        let mut commit_sequence = None;
-        if inserted {
-            commit_sequence =
-                Some(Self::advance_annotation_commit(&mut tx, input.document_id).await?);
-        }
-        if let Some(receipt) = receipt {
-            let sequence = match commit_sequence {
-                Some(sequence) => sequence,
-                None => {
-                    sqlx::query_scalar("SELECT commit_sequence FROM documents WHERE id=$1")
-                        .bind(input.document_id)
-                        .fetch_one(&mut *tx)
-                        .await?
-                }
-            };
-            Self::store_annotation_receipt(
-                &mut tx,
-                input.document_id,
-                actor,
-                receipt,
-                sequence,
-                serde_json::json!({"annotation_id": row.id}),
-            )
-            .await?;
-        }
-        tx.commit().await?;
+        Self::authorize_annotation_mutation(tx, input.document_id, actor, require_editor).await?;
+        let (row, _inserted) = put_annotation(tx, id, &input).await?;
         Ok(row)
     }
 
     pub async fn put_suggestion_authorized(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         id: Uuid,
         input: NewAnnotation,
         proposal: super::NewProposal,
         actor: &MutationAuthorization,
-    ) -> Result<AnnotationRecord> {
-        self.put_suggestion_authorized_inner(id, input, proposal, actor, None)
-            .await
-    }
-
-    pub async fn put_suggestion_receipted(
-        &self,
-        id: Uuid,
-        input: NewAnnotation,
-        proposal: super::NewProposal,
-        actor: &MutationAuthorization,
-        receipt: &SemanticReceipt,
-    ) -> Result<AnnotationRecord> {
-        self.put_suggestion_authorized_inner(id, input, proposal, actor, Some(receipt))
-            .await
-    }
-
-    async fn put_suggestion_authorized_inner(
-        &self,
-        id: Uuid,
-        input: NewAnnotation,
-        proposal: super::NewProposal,
-        actor: &MutationAuthorization,
-        receipt: Option<&SemanticReceipt>,
     ) -> Result<AnnotationRecord> {
         validate(&input)?;
         if input.kind != "suggestion"
@@ -675,108 +491,24 @@ impl PostgresCatalog {
                 "suggestion annotation and proposal do not match".into(),
             ));
         }
-        let mut tx = self
-            .begin_annotation_commit(input.document_id, actor, false)
-            .await?;
-        if let Some(receipt) = receipt {
-            if let Some(result) =
-                Self::replay_annotation_receipt(&mut tx, input.document_id, actor, receipt).await?
-            {
-                let stored_id = result
-                    .get("annotation_id")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|value| Uuid::parse_str(value).ok())
-                    .ok_or_else(|| Error::Invalid("suggestion receipt is malformed".into()))?;
-                return annotation_by_id(&mut tx, stored_id)
-                    .await?
-                    .ok_or(Error::NotFound);
-            }
-        }
-        let inserted = sqlx::query(
-            "INSERT INTO document_proposals(id,document_id,author,author_peer,base_frontiers,
-                                             tip_frontiers,branch_bytes,status)
-             VALUES($1,$2,$3,$4,$5,$6,$7,'pending')
-             ON CONFLICT(id) DO NOTHING",
-        )
-        .bind(proposal.id)
-        .bind(proposal.document_id)
-        .bind(proposal.author)
-        .bind(proposal.author_peer)
-        .bind(proposal.base_frontiers)
-        .bind(proposal.tip_frontiers)
-        .bind(proposal.branch_bytes)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            == 1;
-        if !inserted {
-            let same_document: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM document_proposals WHERE id=$1 AND document_id=$2)",
-            )
-            .bind(proposal.id)
-            .bind(proposal.document_id)
-            .fetch_one(&mut *tx)
-            .await?;
-            if !same_document {
-                return Err(Error::Conflict(
-                    "proposal id belongs to another document".into(),
-                ));
-            }
-        }
-        let (row, annotation_inserted) = put_annotation(&mut tx, id, &input).await?;
-        let sequence = if inserted || annotation_inserted {
-            Self::advance_annotation_commit(&mut tx, input.document_id).await?
-        } else {
-            sqlx::query_scalar("SELECT commit_sequence FROM documents WHERE id=$1")
-                .bind(input.document_id)
-                .fetch_one(&mut *tx)
-                .await?
-        };
-        if let Some(receipt) = receipt {
-            Self::store_annotation_receipt(
-                &mut tx,
-                input.document_id,
-                actor,
-                receipt,
-                sequence,
-                serde_json::json!({"annotation_id": row.id, "proposal_id": proposal.id}),
-            )
-            .await?;
-        }
-        tx.commit().await?;
+        Self::authorize_annotation_mutation(tx, input.document_id, actor, false).await?;
+        self.open_proposal(tx, proposal).await?;
+        let (row, _inserted) = put_annotation(tx, id, &input).await?;
         Ok(row)
     }
 
+    /// Rewrites a suggestion to a fresh proposal branch. Unlike opening a
+    /// suggestion for the first time, this always mints a new proposal id
+    /// (the caller's), so it goes through `open_proposal` the same way a
+    /// first suggestion does and a retry of the same refine is idempotent
+    /// on that id.
     pub async fn replace_suggestion_authorized(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         id: Uuid,
         input: NewAnnotation,
         proposal: super::NewProposal,
         actor: &MutationAuthorization,
-    ) -> Result<AnnotationRecord> {
-        self.replace_suggestion_authorized_inner(id, input, proposal, actor, None)
-            .await
-    }
-
-    pub async fn replace_suggestion_receipted(
-        &self,
-        id: Uuid,
-        input: NewAnnotation,
-        proposal: super::NewProposal,
-        actor: &MutationAuthorization,
-        receipt: &SemanticReceipt,
-    ) -> Result<AnnotationRecord> {
-        self.replace_suggestion_authorized_inner(id, input, proposal, actor, Some(receipt))
-            .await
-    }
-
-    async fn replace_suggestion_authorized_inner(
-        &self,
-        id: Uuid,
-        input: NewAnnotation,
-        proposal: super::NewProposal,
-        actor: &MutationAuthorization,
-        receipt: Option<&SemanticReceipt>,
     ) -> Result<AnnotationRecord> {
         validate(&input)?;
         if input.kind != "suggestion"
@@ -787,26 +519,8 @@ impl PostgresCatalog {
                 "suggestion annotation and proposal do not match".into(),
             ));
         }
-        let mut tx = self
-            .begin_annotation_commit(input.document_id, actor, false)
-            .await?;
-        if let Some(receipt) = receipt {
-            if let Some(result) =
-                Self::replay_annotation_receipt(&mut tx, input.document_id, actor, receipt).await?
-            {
-                let stored_id = result
-                    .get("annotation_id")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|value| Uuid::parse_str(value).ok())
-                    .ok_or_else(|| Error::Invalid("refine receipt is malformed".into()))?;
-                return annotation_by_id(&mut tx, stored_id)
-                    .await?
-                    .ok_or(Error::NotFound);
-            }
-        }
-        let existing = annotation_by_id(&mut tx, id)
-            .await?
-            .ok_or(Error::NotFound)?;
+        Self::authorize_annotation_mutation(tx, input.document_id, actor, false).await?;
+        let existing = annotation_by_id(tx, id).await?.ok_or(Error::NotFound)?;
         if existing.document_id != input.document_id
             || !same_anchor(&existing, &input.original_anchor)?
         {
@@ -814,20 +528,7 @@ impl PostgresCatalog {
                 "annotation original anchor is immutable".into(),
             ));
         }
-        sqlx::query(
-            "INSERT INTO document_proposals(id,document_id,author,author_peer,base_frontiers, \
-                                             tip_frontiers,branch_bytes,status) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,'pending')",
-        )
-        .bind(proposal.id)
-        .bind(proposal.document_id)
-        .bind(proposal.author)
-        .bind(proposal.author_peer)
-        .bind(proposal.base_frontiers)
-        .bind(proposal.tip_frontiers)
-        .bind(proposal.branch_bytes)
-        .execute(&mut *tx)
-        .await?;
+        self.open_proposal(tx, proposal).await?;
         sqlx::query(
             "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6, \
                                     color=$7,proposal_id=$8,updated_at=now() WHERE id=$1",
@@ -840,79 +541,28 @@ impl PostgresCatalog {
         .bind(&input.author_label)
         .bind(&input.color)
         .bind(input.proposal_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-        let sequence = Self::advance_annotation_commit(&mut tx, input.document_id).await?;
-        let row = annotation_by_id(&mut tx, id)
-            .await?
-            .ok_or(Error::NotFound)?;
-        if let Some(receipt) = receipt {
-            Self::store_annotation_receipt(
-                &mut tx,
-                input.document_id,
-                actor,
-                receipt,
-                sequence,
-                serde_json::json!({"annotation_id": row.id, "proposal_id": proposal.id}),
-            )
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(row)
+        annotation_by_id(tx, id).await?.ok_or(Error::NotFound)
     }
 
     /// Rewrites the parts of an annotation that can change: its words, its
-    /// kind, whether it is resolved, and where its passage has got to.
+    /// kind, and whether it is resolved.
     ///
     /// Not its anchor. An update that arrives with a different one is refused
     /// rather than applied, which is the invariant this whole design exists
     /// for, enforced at the only place that could break it.
     pub async fn replace_annotation_authorized(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         id: Uuid,
         input: NewAnnotation,
         resolved: bool,
         actor: &MutationAuthorization,
-    ) -> Result<bool> {
-        self.replace_annotation_authorized_inner(id, input, resolved, actor, None)
-            .await
-    }
-
-    pub async fn replace_annotation_receipted(
-        &self,
-        id: Uuid,
-        input: NewAnnotation,
-        resolved: bool,
-        actor: &MutationAuthorization,
-        receipt: &SemanticReceipt,
-    ) -> Result<bool> {
-        self.replace_annotation_authorized_inner(id, input, resolved, actor, Some(receipt))
-            .await
-    }
-
-    async fn replace_annotation_authorized_inner(
-        &self,
-        id: Uuid,
-        input: NewAnnotation,
-        resolved: bool,
-        actor: &MutationAuthorization,
-        receipt: Option<&SemanticReceipt>,
     ) -> Result<bool> {
         validate(&input)?;
-        let mut tx = self
-            .begin_annotation_commit(input.document_id, actor, false)
-            .await?;
-        if let Some(receipt) = receipt {
-            if Self::replay_annotation_receipt(&mut tx, input.document_id, actor, receipt)
-                .await?
-                .is_some()
-            {
-                return Ok(true);
-            }
-        }
-        let existing = annotation_by_id(&mut tx, id)
-            .await?
-            .ok_or(Error::NotFound)?;
+        Self::authorize_annotation_mutation(tx, input.document_id, actor, false).await?;
+        let existing = annotation_by_id(tx, id).await?.ok_or(Error::NotFound)?;
         if existing.document_id != input.document_id
             || !same_anchor(&existing, &input.original_anchor)?
         {
@@ -922,7 +572,7 @@ impl PostgresCatalog {
         }
         let deciding_suggestion = input.kind == "suggestion" && resolved;
         if deciding_suggestion {
-            Self::authorize_annotation_mutation(&mut tx, input.document_id, actor, true).await?;
+            Self::authorize_annotation_mutation(tx, input.document_id, actor, true).await?;
         }
         sqlx::query(
             "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6,
@@ -940,201 +590,57 @@ impl PostgresCatalog {
         .bind(&input.color)
         .bind(input.proposal_id)
         .bind(resolved)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-        let sequence = Self::advance_annotation_commit(&mut tx, input.document_id).await?;
-        if let Some(receipt) = receipt {
-            Self::store_annotation_receipt(
-                &mut tx,
-                input.document_id,
-                actor,
-                receipt,
-                sequence,
-                serde_json::json!({"annotation_id": id, "updated": true}),
-            )
-            .await?;
-        }
-        tx.commit().await?;
         Ok(true)
     }
 
+    /// `document_id` is the caller's rather than looked up here, because the
+    /// transaction it hands us already pins one document (it was opened
+    /// through `document_log::begin_document_command` for that document).
     pub async fn delete_annotation_authorized(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
         id: Uuid,
         actor: &MutationAuthorization,
     ) -> Result<bool> {
-        self.delete_annotation_authorized_inner(id, actor, None)
-            .await
-    }
-
-    pub async fn delete_annotation_receipted(
-        &self,
-        id: Uuid,
-        actor: &MutationAuthorization,
-        receipt: &SemanticReceipt,
-    ) -> Result<bool> {
-        self.delete_annotation_authorized_inner(id, actor, Some(receipt))
-            .await
-    }
-
-    async fn delete_annotation_authorized_inner(
-        &self,
-        id: Uuid,
-        actor: &MutationAuthorization,
-        receipt: Option<&SemanticReceipt>,
-    ) -> Result<bool> {
-        let document_id: Option<Uuid> =
-            sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?;
-        let document_id = document_id.ok_or(Error::NotFound)?;
-        let mut tx = self
-            .begin_annotation_commit(document_id, actor, false)
-            .await?;
-        if let Some(receipt) = receipt {
-            if Self::replay_annotation_receipt(&mut tx, document_id, actor, receipt)
-                .await?
-                .is_some()
-            {
-                return Ok(true);
-            }
-        }
-        let changed = sqlx::query!(
+        Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
+        let deleted = sqlx::query!(
             "DELETE FROM annotations WHERE id=$1 AND document_id=$2",
             id,
             document_id
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?
         .rows_affected()
             == 1;
-        if !changed {
+        if !deleted {
             return Err(Error::NotFound);
         }
-        let sequence = Self::advance_annotation_commit(&mut tx, document_id).await?;
-        if let Some(receipt) = receipt {
-            Self::store_annotation_receipt(
-                &mut tx,
-                document_id,
-                actor,
-                receipt,
-                sequence,
-                serde_json::json!({"annotation_id": id, "deleted": true}),
-            )
-            .await?;
-        }
-        tx.commit().await?;
         Ok(true)
     }
 
     pub async fn create_reply_authorized(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
         input: NewReply,
         actor: &MutationAuthorization,
-    ) -> Result<ReplyRecord> {
-        self.create_reply_authorized_inner(input, actor, None).await
-    }
-
-    pub async fn create_reply_receipted(
-        &self,
-        input: NewReply,
-        actor: &MutationAuthorization,
-        receipt: &SemanticReceipt,
-    ) -> Result<ReplyRecord> {
-        self.create_reply_authorized_inner(input, actor, Some(receipt))
-            .await
-    }
-
-    async fn create_reply_authorized_inner(
-        &self,
-        input: NewReply,
-        actor: &MutationAuthorization,
-        receipt: Option<&SemanticReceipt>,
     ) -> Result<ReplyRecord> {
         if input.body.is_empty() || input.author_key.is_empty() || input.author_label.is_empty() {
             return Err(Error::Invalid("invalid reply".into()));
         }
-        let document_id: Option<Uuid> =
+        Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
+        let parent: Option<Uuid> =
             sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1")
                 .bind(input.annotation_id)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut **tx)
                 .await?;
-        let document_id = document_id.ok_or(Error::NotFound)?;
-        let mut tx = self
-            .begin_annotation_commit(document_id, actor, false)
-            .await?;
-        if let Some(receipt) = receipt {
-            if let Some(result) =
-                Self::replay_annotation_receipt(&mut tx, document_id, actor, receipt).await?
-            {
-                let stored_id = result
-                    .get("reply_id")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|value| Uuid::parse_str(value).ok())
-                    .ok_or_else(|| Error::Invalid("reply receipt is malformed".into()))?;
-                return sqlx::query_as!(
-                    ReplyRecord,
-                    "SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at FROM replies WHERE id=$1",
-                    stored_id
-                )
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or(Error::NotFound);
-            }
+        if parent != Some(document_id) {
+            return Err(Error::NotFound);
         }
-        let inserted = sqlx::query!(
-            "INSERT INTO replies(id,annotation_id,author_account_id,author_key,author_label,body) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING",
-            input.id,
-            input.annotation_id,
-            input.author_account_id,
-            input.author_key,
-            input.author_label,
-            input.body,
-        )
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            == 1;
-        let row = sqlx::query_as!(
-            ReplyRecord,
-            "SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at FROM replies WHERE id=$1",
-            input.id
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        if !inserted
-            && (row.annotation_id != input.annotation_id
-                || row.author_account_id != input.author_account_id
-                || row.author_key != input.author_key
-                || row.author_label != input.author_label
-                || row.body != input.body)
-        {
-            return Err(Error::Conflict(
-                "reply id was reused with different content".into(),
-            ));
-        }
-        let commit_sequence = if inserted {
-            Self::advance_annotation_commit(&mut tx, document_id).await?
-        } else {
-            sqlx::query_scalar("SELECT commit_sequence FROM documents WHERE id=$1")
-                .bind(document_id)
-                .fetch_one(&mut *tx)
-                .await?
-        };
-        if let Some(receipt) = receipt {
-            Self::store_annotation_receipt(
-                &mut tx,
-                document_id,
-                actor,
-                receipt,
-                commit_sequence,
-                serde_json::json!({"reply_id": row.id}),
-            )
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(row)
+        put_reply(tx, &input).await
     }
 
     pub async fn annotation_count(&self, document_id: Uuid) -> Result<i64> {
@@ -1147,28 +653,9 @@ impl PostgresCatalog {
         .unwrap_or(0))
     }
 
-    /// Exact migration accounting for cutover. An exception remains attached
-    /// to its original evidence; callers must report it rather than treating
-    /// an absent revision as the nearest recoverable state.
-    pub async fn annotation_revision_audit(&self) -> Result<AnnotationRevisionAudit> {
-        sqlx::query_as::<_, AnnotationRevisionAudit>(
-            "SELECT count(*)::bigint AS total,\
-                    count(*) FILTER (WHERE a.source_revision IS NOT NULL)::bigint AS mapped,\
-                    count(*) FILTER (WHERE e.reason='frontier_not_retained')::bigint AS frontier_not_retained,\
-                    count(*) FILTER (WHERE e.reason='checkpoint_frontier_not_retained')::bigint AS checkpoint_frontier_not_retained,\
-                    count(*) FILTER (WHERE e.reason='unknown_evidence')::bigint AS unknown_evidence\
-             FROM annotations a LEFT JOIN annotation_revision_migration_exceptions e\
-               ON e.annotation_id=a.id",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
     pub async fn annotations(
         &self,
         document_id: Uuid,
-        bundle_id: Option<Uuid>,
         after: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
     ) -> Result<Vec<AnnotationRecord>> {
@@ -1177,76 +664,30 @@ impl PostgresCatalog {
                 "annotation page limit must be 1..=500".into(),
             ));
         }
-        // Two queries rather than one with `($2 IS NULL OR bundle_id=$2)`:
-        // the timeline and the bundle-scoped timeline have a purpose-built
-        // index each, and a predicate that is sometimes a constant and
-        // sometimes a match cannot be planned against either.
-        //
         // The cursor stays a single predicate. `-infinity` and the nil UUID sort
         // below every row, so an absent cursor starts the same index scan from
         // the beginning instead of turning the range into an OR the planner
         // cannot use as a scan bound.
         let after_time = after.map(|v| v.0);
         let after_id = after.map(|v| v.1);
-        match bundle_id {
-            Some(bundle_id) => {
-                sqlx::query_as::<_, AnnotationRecord>(
-                    r#"SELECT a.id,a.document_id,a.kind,a.body,a.author_account_id,a.author_key,a.author_label,
-                              a.bundle_id,a.color,a.proposal_id,a.checkpoint_id,a.target_kind,a.file_id,
-                              a.start_utf16,a.end_utf16,a.start_side,a.end_side,a.exact,a.prefix,a.suffix,
-                              a.rendered_exact,a.rendered_prefix,a.rendered_suffix,a.rendered_position_utf16,
-                              a.resolved_at,
-                              l.checkpoint_id AS attachment_checkpoint_id,
-                              l.status AS attachment_status,
-                              l.start_cursor AS start_cursor,l.end_cursor AS end_cursor,
-                              l.cursor_format AS cursor_format,
-                              l.resolved_start_utf16 AS resolved_start_utf16,
-                              l.resolved_end_utf16 AS resolved_end_utf16,
-                              l.diagnostic AS diagnostic,
-                              a.created_at
-                       FROM annotations a LEFT JOIN annotation_live_state l ON l.annotation_id=a.id
-                       WHERE a.document_id=$1 AND a.bundle_id=$2
-                         AND (a.created_at,a.id) > (COALESCE($3::timestamptz,'-infinity'),
-                                                    COALESCE($4::uuid,'00000000-0000-0000-0000-000000000000'))
-                       ORDER BY a.created_at,a.id LIMIT $5"#,
-                )
-                .bind(document_id)
-                .bind(bundle_id)
-                .bind(after_time)
-                .bind(after_id)
-                .bind(limit)
-                .fetch_all(&self.pool)
-                .await
-            }
-            None => {
-                sqlx::query_as::<_, AnnotationRecord>(
-                    r#"SELECT a.id,a.document_id,a.kind,a.body,a.author_account_id,a.author_key,a.author_label,
-                              a.bundle_id,a.color,a.proposal_id,a.checkpoint_id,a.target_kind,a.file_id,
-                              a.start_utf16,a.end_utf16,a.start_side,a.end_side,a.exact,a.prefix,a.suffix,
-                              a.rendered_exact,a.rendered_prefix,a.rendered_suffix,a.rendered_position_utf16,
-                              a.resolved_at,
-                              l.checkpoint_id AS attachment_checkpoint_id,
-                              l.status AS attachment_status,
-                              l.start_cursor AS start_cursor,l.end_cursor AS end_cursor,
-                              l.cursor_format AS cursor_format,
-                              l.resolved_start_utf16 AS resolved_start_utf16,
-                              l.resolved_end_utf16 AS resolved_end_utf16,
-                              l.diagnostic AS diagnostic,
-                              a.created_at
-                       FROM annotations a LEFT JOIN annotation_live_state l ON l.annotation_id=a.id
-                       WHERE a.document_id=$1
-                         AND (a.created_at,a.id) > (COALESCE($2::timestamptz,'-infinity'),
-                                                    COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'))
-                       ORDER BY a.created_at,a.id LIMIT $4"#,
-                )
-                .bind(document_id)
-                .bind(after_time)
-                .bind(after_id)
-                .bind(limit)
-                .fetch_all(&self.pool)
-                .await
-            }
-        }
+        sqlx::query_as::<_, AnnotationRecord>(
+            r#"SELECT id,document_id,kind,body,author_account_id,author_key,author_label,
+                      color,proposal_id,source_sequence,frontier,render_digest,target_kind,file_id,
+                      start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,
+                      rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16,
+                      resolved_at,created_at
+               FROM annotations
+               WHERE document_id=$1
+                 AND (created_at,id) > (COALESCE($2::timestamptz,'-infinity'),
+                                        COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'))
+               ORDER BY created_at,id LIMIT $4"#,
+        )
+        .bind(document_id)
+        .bind(after_time)
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
         .map_err(Error::from)
     }
 
@@ -1275,21 +716,12 @@ async fn annotation_by_id(
     id: Uuid,
 ) -> Result<Option<AnnotationRecord>> {
     Ok(sqlx::query_as::<_, AnnotationRecord>(
-        r#"SELECT a.id,a.document_id,a.kind,a.body,a.author_account_id,a.author_key,a.author_label,
-                  a.bundle_id,a.color,a.proposal_id,a.checkpoint_id,a.target_kind,a.file_id,
-                  a.start_utf16,a.end_utf16,a.start_side,a.end_side,a.exact,a.prefix,a.suffix,
-                  a.rendered_exact,a.rendered_prefix,a.rendered_suffix,a.rendered_position_utf16,
-                  a.resolved_at,
-                  l.checkpoint_id AS attachment_checkpoint_id,
-                  l.status AS attachment_status,
-                  l.start_cursor AS start_cursor,l.end_cursor AS end_cursor,
-                  l.cursor_format AS cursor_format,
-                  l.resolved_start_utf16 AS resolved_start_utf16,
-                  l.resolved_end_utf16 AS resolved_end_utf16,
-                  l.diagnostic AS diagnostic,
-                  a.created_at
-           FROM annotations a LEFT JOIN annotation_live_state l ON l.annotation_id=a.id
-           WHERE a.id=$1"#,
+        r#"SELECT id,document_id,kind,body,author_account_id,author_key,author_label,
+                  color,proposal_id,source_sequence,frontier,render_digest,target_kind,file_id,
+                  start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,
+                  rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16,
+                  resolved_at,created_at
+           FROM annotations WHERE id=$1"#,
     )
     .bind(id)
     .fetch_optional(&mut **tx)
@@ -1345,9 +777,16 @@ impl<'a> Stored<'a> {
     }
 }
 
+/// Whether a row's evidence is the same evidence an anchor carries. The
+/// evidence -- `source_sequence` and `frontier` -- is part of the identity
+/// check just as much as the range: an update that arrives with the same
+/// range but claiming a different moment it was measured against is not a
+/// retry of the same write, and is refused for the same reason a different
+/// range is.
 fn same_anchor(row: &AnnotationRecord, anchor: &OriginalAnchor) -> Result<bool> {
     let stored = Stored::of(anchor)?;
-    Ok(row.checkpoint_id == anchor.checkpoint_id.0
+    Ok(row.source_sequence == Some(anchor.source_sequence)
+        && row.frontier.as_deref() == Some(anchor.frontier.as_slice())
         && row.target_kind == stored.kind
         && row.file_id.as_deref() == stored.file_id
         && row.start_utf16 == stored.start_utf16
@@ -1389,7 +828,10 @@ pub fn original_anchor_from_record(row: &AnnotationRecord) -> Result<OriginalAnc
         _ => return Err(invalid("an unknown target kind")),
     };
     Ok(OriginalAnchor {
-        checkpoint_id: CheckpointId(row.checkpoint_id.clone()),
+        source_sequence: row
+            .source_sequence
+            .ok_or_else(|| invalid("no source sequence"))?,
+        frontier: row.frontier.clone().ok_or_else(|| invalid("no frontier"))?,
         target,
     })
 }
@@ -1404,39 +846,6 @@ pub fn presentation_from_record(row: &AnnotationRecord) -> PresentationContext {
             .filter(|at| *at >= 0)
             .map(|at| at as u32),
     }
-}
-
-pub fn attachment_from_record(row: &AnnotationRecord) -> Result<Option<DerivedAttachment>> {
-    let Some(status) = row.attachment_status.as_deref() else {
-        return Ok(None);
-    };
-    let cursors = match (&row.start_cursor, &row.end_cursor, &row.cursor_format) {
-        (Some(start), Some(end), Some(format)) => Some(LiveSourceRange {
-            start_cursor: start.clone(),
-            end_cursor: end.clone(),
-            cursor_format: format.clone(),
-        }),
-        (None, None, _) => None,
-        _ => return Err(invalid("an incomplete live cursor range")),
-    };
-    let range = match (row.resolved_start_utf16, row.resolved_end_utf16) {
-        (Some(start), Some(end)) if start >= 0 && end >= start => Some((start as u32, end as u32)),
-        (None, None) => None,
-        _ => return Err(invalid("an invalid resolved range")),
-    };
-    Ok(Some(DerivedAttachment {
-        checkpoint_id: CheckpointId(row.attachment_checkpoint_id.clone().unwrap_or_default()),
-        status: AnchorStatus::parse(status).ok_or_else(|| invalid("an unknown status"))?,
-        live_source_range: cursors,
-        resolved_range_utf16: range,
-        diagnostic: match row.diagnostic.as_deref() {
-            None => None,
-            Some(value) => Some(
-                ResolutionDiagnostic::parse(value)
-                    .ok_or_else(|| invalid("an unknown diagnostic"))?,
-            ),
-        },
-    }))
 }
 
 fn side(value: Option<&str>) -> Result<AnchorSide> {
@@ -1457,10 +866,17 @@ fn validate(input: &NewAnnotation) -> Result<()> {
             "suggestion annotations require exactly one proposal".into(),
         ));
     }
-    if input.original_anchor.checkpoint_id.0.is_empty() {
+    if input.original_anchor.frontier.is_empty() {
         return Err(Error::Invalid(
-            "an annotation needs the checkpoint it was made against".into(),
+            "an annotation needs the frontier it was made against".into(),
         ));
+    }
+    if let Some(digest) = &input.render_digest {
+        if digest.len() != 32 {
+            return Err(Error::Invalid(
+                "a render digest is a 32 byte projection digest".into(),
+            ));
+        }
     }
     if let Some(target) = input.original_anchor.target.source() {
         if target.file_id.0.is_empty() || target.end_utf16 < target.start_utf16 {
@@ -1483,10 +899,11 @@ mod tests {
             author_account_id: None,
             author_key: "a".into(),
             author_label: "A".into(),
-            bundle_id: None,
             color: None,
             proposal_id: None,
-            checkpoint_id: "checkpoint".into(),
+            source_sequence: Some(7),
+            frontier: Some(vec![9, 9, 9]),
+            render_digest: None,
             target_kind: "source_text".into(),
             file_id: Some("file-key".into()),
             start_utf16: Some(2),
@@ -1501,14 +918,6 @@ mod tests {
             rendered_suffix: String::new(),
             rendered_position_utf16: Some(11),
             resolved_at: None,
-            attachment_checkpoint_id: Some("current".into()),
-            attachment_status: Some("modified".into()),
-            start_cursor: Some(vec![1]),
-            end_cursor: Some(vec![2]),
-            cursor_format: Some("loro-1.16-postcard".into()),
-            resolved_start_utf16: Some(3),
-            resolved_end_utf16: Some(6),
-            diagnostic: None,
             created_at: OffsetDateTime::UNIX_EPOCH,
         }
     }
@@ -1516,7 +925,8 @@ mod tests {
     #[test]
     fn a_source_anchor_round_trips_through_its_columns() {
         let anchor = original_anchor_from_record(&row()).unwrap();
-        assert_eq!(anchor.checkpoint_id.0, "checkpoint");
+        assert_eq!(anchor.source_sequence, 7);
+        assert_eq!(anchor.frontier, vec![9, 9, 9]);
         let target = anchor.target.source().unwrap();
         assert_eq!(target.file_id.0, "file-key");
         assert_eq!((target.start_utf16, target.end_utf16), (2, 5));
@@ -1540,22 +950,14 @@ mod tests {
         assert!(same_anchor(&stored, &anchor).unwrap());
     }
 
+    /// A retry that names the same range but a different moment it was
+    /// measured against is not the same write.
     #[test]
-    fn the_attachment_is_read_back_beside_the_anchor_rather_than_into_it() {
-        let stored = row();
-        let attachment = attachment_from_record(&stored).unwrap().unwrap();
-        assert_eq!(attachment.status, AnchorStatus::Modified);
-        assert_eq!(attachment.resolved_range_utf16, Some((3, 6)));
-        // The anchor still says what it always said.
-        let anchor = original_anchor_from_record(&stored).unwrap();
-        assert_eq!(anchor.target.source().unwrap().start_utf16, 2);
-    }
-
-    #[test]
-    fn an_annotation_with_no_live_state_row_is_simply_unresolved() {
-        let mut stored = row();
-        stored.attachment_status = None;
-        assert!(attachment_from_record(&stored).unwrap().is_none());
+    fn same_anchor_checks_the_evidence_too() {
+        let anchor = original_anchor_from_record(&row()).unwrap();
+        let mut moved = row();
+        moved.source_sequence = Some(8);
+        assert!(!same_anchor(&moved, &anchor).unwrap());
     }
 
     #[test]

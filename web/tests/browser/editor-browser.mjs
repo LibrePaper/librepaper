@@ -47,7 +47,6 @@ const undoDepth = (state) => Boolean(state.field(undoManagerStateField, false)?.
 import MergeEditor from ${JSON.stringify(join(root, "web/src/components/MergeEditor.svelte"))};
 import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte"))};
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
-import History from ${JSON.stringify(join(root, "web/src/components/reader/History.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
 import { durableProjectPersistence, prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
@@ -244,7 +243,10 @@ window.collabCacheCheck = async () => {
   };
   const snapshot = (value) => {
     const update = value.doc.export({ mode: "update" });
-    return { update: btoa(String.fromCharCode(...new Uint8Array(update))) };
+    // Sec 6.1: doc-state now names the protocol on the frame itself (no
+    // version/schema_version field) and carries updates, an array of
+    // Loro exports each importable on its own.
+    return { protocol: "librepaper.room.v2", updates: [btoa(String.fromCharCode(...new Uint8Array(update)))] };
   };
   const cached = async (createdAt, documentId) => {
     let ready;
@@ -408,77 +410,6 @@ window.diagnosticsCheck = async () => {
 
 // Switching Vim keys on and off must reconfigure the view in place: the same
 // EditorView, with the undo history it had.
-// The history panel for a document nobody has checkpointed: a month that
-// marks the days somebody wrote on, days that say so and list nothing, plus
-// arrow keys that move the month without a mouse. The version side of the
-// same panel is checked in history-panel-browser.mjs.
-window.activityCheck = async () => {
-  const host = document.createElement("aside");
-  document.body.append(host);
-  const rows = [
-    { at: "2026-09-14T09:05:00Z", peer: "", changes: 2, state_bytes: 1000, frontier: "one" },
-    { at: "2026-09-14T09:40:00Z", peer: "", changes: 3, state_bytes: 1600, frontier: "two" },
-    { at: "2026-09-15T15:00:00Z", peer: "", changes: 1, state_bytes: 1750, frontier: "three" },
-  ];
-  const component = createClassComponent({ component: History, target: host, props: {
-    checkpoints: [], activity: rows, onview: () => {},
-  } });
-  const versions = () => [...host.querySelectorAll(".day-row:not(.day-now)")];
-  const back = async () => { host.querySelector("#history-tab-calendar").click(); await tick(); };
-  const into = async (day) => {
-    host.querySelector('[data-history-day="' + day + '"]').click();
-    await tick();
-  };
-  const chosen = () => host.querySelector("[data-history-day][aria-pressed=true]")?.dataset.historyDay;
-  await tick();
-
-  // It opens on a day, with no month beside it. Nothing here was ever saved
-  // as a version, so the day has nothing to list -- and it says which kind of
-  // empty it is, because somebody did write on it.
-  const first = {
-    month: host.querySelectorAll("[data-history-day]").length,
-    versions: versions().length,
-    unsaved: host.querySelectorAll(".unsaved, .unsaved-more, .unsaved-row").length,
-    says: host.querySelector(".day > ol > li p")?.textContent.replace(/\\s+/g, " ").trim() ?? null,
-  };
-
-  // Back to the month: two days marked as written on, and no count on either,
-  // because neither holds a version.
-  await back();
-  const month = {
-    cells: host.querySelectorAll("[data-history-day]").length,
-    marked: host.querySelectorAll(".cal-mark").length,
-    counted: host.querySelectorAll(".cal-count").length,
-    versions: versions().length,
-    picked: chosen(),
-  };
-
-  // A day at a time across the calendar, and a week at a time up it.
-  const press = async (key) => {
-    host.querySelector(".cal-grid").dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
-    await tick();
-    return chosen();
-  };
-  const afterLeft = await press("ArrowLeft");
-  const afterUp = await press("ArrowUp");
-
-  // A day nobody worked says so, rather than drawing an empty anything.
-  await into("2026-09-07");
-  const emptyDay = versions().length === 0
-    && host.textContent.includes("Nothing was written on this day");
-
-  // The document starts in September, so there is nowhere to the left of its
-  // first day to go.
-  await back();
-  await into("2026-09-01");
-  await back();
-  const atTheStart = await press("ArrowLeft");
-
-  const result = { ...first, ...month, afterLeft, afterUp, emptyDay, atTheStart };
-  component.$destroy();
-  host.remove();
-  return result;
-};
 
 window.vimCheck = async () => {
   await tick();
@@ -697,22 +628,6 @@ try {
   assert.match(diagnostics.fromAttempt, /Emergency stop/, "a transcript carried by the attempt was not shown");
   assert.equal(diagnostics.copyFromAttempt, true, "the attempt's transcript was shown without a way to take it");
   console.log("editor-browser: diagnostics, hints, source links, empty state and the compile log passed");
-  const activity = await evaluate("activityCheck()");
-  assert.equal(activity.month, 0, "the panel opens on a day, with the month nowhere on screen");
-  assert.equal(activity.versions, 0, "a document nobody saved from has no versions to list");
-  assert.equal(activity.unsaved, 0, "the minutes nobody saved are not listed");
-  assert.match(activity.says, /Written on, but nothing was saved as a version/,
-    "a day written on and never saved from says which kind of empty it is");
-  assert.equal(activity.cells % 7, 0, "the month draws whole weeks");
-  assert.equal(activity.marked, 2, "with the two days somebody wrote on marked");
-  assert.equal(activity.counted, 0, "and no version counted on any of them");
-  assert.equal(activity.picked, "2026-09-15", "the panel opened on the last day anything happened");
-  assert.equal(activity.afterLeft, "2026-09-14", "ArrowLeft moves the calendar a day back");
-  assert.equal(activity.afterUp, "2026-09-07", "ArrowUp moves a week");
-  assert.equal(activity.emptyDay, true, "a day nobody worked says so rather than drawing nothing");
-  assert.equal(activity.atTheStart, "2026-09-01",
-    "arrowing past the first month the document has must go nowhere");
-  console.log("editor-browser: the history panel's month, its marked days and its arrow keys passed");
   const cache = await evaluate("collabCacheCheck()");
   assert.equal(cache.recovered, "new offline server");
   assert.equal(cache.prepared, "Cached paper");

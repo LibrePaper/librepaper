@@ -28,10 +28,11 @@ const text = new LoroText(); text.insert(0, "a line of source");
 files.setContainer("main", text); paths.set("main", "main.md"); meta.set("main", "main");
 server.commit();
 const update = encode(server.export({ mode: "update" }));
+const vector = encode(server.oplogVersion().encode());
 export function openRoom(slug, {onMessage, onConnected}) {
   queueMicrotask(() => onConnected(true));
   return {
-    send(message) { if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", update, count:1})); return {ok:true}; },
+    send(message) { if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", protocol:"librepaper.room.v2", vector, updates:[update]})); return {ok:true}; },
     sendLive() { return {ok:true}; },
     close() {}
   };

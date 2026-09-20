@@ -34,7 +34,7 @@ durable hosting for whatever they upload. `LIBREPAPER_EXPIRE_AFTER=30d`.
 
 | | |
 | --- | --- |
-| `postgres` volume | the database: bundles, comments, collaboration |
+| `postgres` volume | the database: documents, the update log, comments, collaboration |
 | `data` volume | immutable objects, and the secrets that keep sessions and share links valid |
 | `caddy-data` volume | the certificates |
 | `config.yaml` | `trusted_proxies`, so visitors are rate-limited by their own address rather than the proxy's |

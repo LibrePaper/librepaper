@@ -68,19 +68,28 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     .fetch_one(&mut *connection)
     .await
     .map_err(|e| e.to_string())?;
+    // §8.5: the backup set is PostgreSQL plus the blobs these tables name --
+    // an asset, the live compaction base, a base still inside its seven-day
+    // grace, or a label's on-demand plain-source archive. The superseded
+    // bases are in because the database half of a backup names them: restore
+    // it and the sweeper's own table points at blobs that were never copied,
+    // so the sweep either fails or, worse, the orphan pass treats the
+    // restored deployment's store as missing what it is still referencing.
+    // This list has to agree with `maintenance.rs::referenced_keys`, which
+    // the orphan sweeper reads to decide what is safe to delete; the two are
+    // changed together. A label archive stores no digest (only its key and
+    // byte count), and a superseded base's digest and size live only on the
+    // `document_bases` row that has since been rewritten, so both branches
+    // leave those columns empty.
     let rows = sqlx::query!(
-        r#"SELECT archive_key AS "key!",archive_bytes AS "bytes!",
-                  encode(archive_digest,'hex') AS "digest!"
-           FROM document_versions
-           UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM document_assets
-           UNION ALL SELECT manifest_key,0,encode(manifest_digest,'hex') FROM bundles
-             WHERE manifest_key IS NOT NULL
-
-           UNION ALL SELECT storage_key,byte_length,encode(digest,'hex') FROM bundle_files
+        r#"SELECT storage_key AS "key!",byte_length AS "bytes!",
+                  encode(digest,'hex') AS "digest!"
+           FROM document_assets
            UNION ALL SELECT snapshot_key,snapshot_bytes,encode(snapshot_digest,'hex')
              FROM document_bases
-           UNION ALL SELECT previous_snapshot_key,0,'' FROM document_bases
-             WHERE previous_snapshot_key IS NOT NULL"#
+           UNION ALL SELECT snapshot_key,0,'' FROM superseded_bases
+           UNION ALL SELECT archive_key,COALESCE(archive_bytes,0),'' FROM document_labels
+             WHERE archive_key IS NOT NULL"#
     )
     .fetch_all(&mut *connection)
     .await

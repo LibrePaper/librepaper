@@ -100,6 +100,14 @@ annotations.receive({ type: "refine", comment_id: draft.id,
   comment: { id: draft.id, body: "Refined response", replies: draft.replies } });
 assert.equal(view.comments.find((item) => item.id === draft.id)?.body, "Refined response");
 assert.equal(view.comments.find((item) => item.id === draft.id)?.pending, false);
+// The actual wire response (`Ok(json!({"type": "refine", "comment":
+// comment}))` in `server/mod.rs`) carries no top-level `comment_id` at all --
+// only the full, updated comment. Without falling back to `comment.id`, a
+// real refine broadcast finds no row to update and is silently dropped.
+annotations.receive({ type: "refine",
+  comment: { id: draft.id, body: "Refined again, wire-shaped", replies: draft.replies } });
+assert.equal(view.comments.find((item) => item.id === draft.id)?.body, "Refined again, wire-shaped",
+  "a refine response with no comment_id field still finds its row, by comment.id");
 annotations.receive({ type: "delete", comment_id: "remote" });
 assert.equal(view.comments.length, 1);
 assert.equal(annotations.receive({ type: "doc-state" }), false);
@@ -180,7 +188,7 @@ assert.equal(sent.at(-1).color, undefined, "suggestions keep their own review st
   assert.equal(
     annotations.receive({
       type: "comments",
-      annotation_revision: 42,
+      comment_digest: 42,
       comments: [
         { id: "from-the-agent", body: "One the agent wrote", replies: [] },
         { id: "another", body: "And another", replies: [] },
@@ -199,7 +207,7 @@ assert.equal(sent.at(-1).color, undefined, "suggestions keep their own review st
   // rather than appearing twice.
   annotations.receive({
     type: "comments",
-    annotation_revision: 43,
+    comment_digest: 43,
     comments: [{ id: draft.id, body: "Not sent yet", replies: [] }],
   });
   assert.deepEqual(

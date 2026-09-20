@@ -45,25 +45,19 @@
   import PanelTabs from "../PanelTabs.svelte";
 
   let {
-    checkpoints = [],
-    durability = null,
+    labels = [],
     viewing = null,
     canEdit = false,
     onview,
     problem = "",
     onname,
     currentLabel = "",
-    // When the document was written, minute by minute, and the anchors that
-    // open those moments.
-    activity = [],
-    activityProblem = "",
-    activityLoading = false,
   } = $props();
 
   let timezone = $state(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
   const today = $derived(dayOf(new Date(), timezone));
 
-  // The checkpoint being bookmarked, and what it is being called. One at a
+  // The label being bookmarked, and what it is being called. One at a
   // time, because naming two moments at once is not a thing anybody does.
   let naming = $state("");
   let draft = $state("");
@@ -82,14 +76,14 @@
   let pickedDay = $state("");
   let pickedMonth = $state("");
 
-  const byDay = $derived(versionDays(checkpoints, activity, timezone));
+  const byDay = $derived(versionDays(labels, timezone));
   const span = $derived(monthSpan(byDay, today));
   const latest = $derived([...byDay.keys()].sort().pop() || today);
   // The day the selection is on, so that opening a version from the
   // bookmarks brings its own day with it.
   const viewingDay = $derived.by(() => {
     if (viewing) {
-      const point = checkpoints.find((one) => one.sha === viewing);
+      const point = labels.find((one) => one.sha === viewing);
       if (point) return dayOf(point.at, timezone);
     }
     return "";
@@ -100,12 +94,12 @@
   // A bookmark is a version somebody put a name on. Nothing else writes a
   // label, so the two are the same thing said twice.
   const bookmarks = $derived(
-    checkpoints.filter((point) => point.label).sort((a, b) => (a.at < b.at ? 1 : -1)),
+    labels.filter((point) => point.label).sort((a, b) => (a.at < b.at ? 1 : -1)),
   );
   const bookmarked = (point) => Boolean(point?.label);
-  const anything = $derived(checkpoints.length > 0 || activity.length > 0);
+  const anything = $derived(labels.length > 0);
 
-  const entries = $derived(dayEntries(checkpoints, day, timezone));
+  const entries = $derived(dayEntries(labels, day, timezone));
   // Which runs are open. A run holding the version being compared is open
   // whether or not anybody opened it: the alternative is a selection nobody
   // can see.
@@ -161,7 +155,6 @@
   function says(cell) {
     const when = dayLabel(cell.day);
     if (cell.count) return `${when}: ${versions(cell.count)}${cell.named ? ", one of them bookmarked" : ""}`;
-    if (cell.worked) return `${when}: written on, nothing saved`;
     return `${when}: nothing`;
   }
 
@@ -230,7 +223,7 @@
 
   /* ------------------------------------------------------------ a version */
 
-  // What a checkpoint was taken for, in words rather than in the manifest's
+  // What a label was taken for, in words rather than in the manifest's
   // own vocabulary -- and only when there is something to say. `sync` is the
   // one nobody asked for by hand, and on a document edited from the command
   // line it is most of the rows: a word on every one of them is the absence
@@ -353,19 +346,11 @@
 {#snippet notices()}
   {#if problem}
     <p class="text-error-500" role="status">{problem}</p>
-  {:else if !anything && !activityLoading}
+  {:else if !anything}
     <p class="panel-muted">
       Nothing yet. A version is saved when the typing stops, when the last
       editor leaves, and whenever the document is published to.
     </p>
-  {/if}
-  {#if durability?.live_save === "pending"}
-    <p class="panel-muted text-xs" role="status">Live edits are still being saved.</p>
-  {/if}
-  {#if activityProblem && !checkpoints.length}
-    <p class="text-error-500 text-sm" role="status">{activityProblem}</p>
-  {:else if activityLoading && !anything}
-    <p class="panel-muted">Reading this document's past…</p>
   {/if}
 {/snippet}
 
@@ -395,7 +380,7 @@
                 data-history-day={cell.day}
                 data-level={cell.level}
                 class:cal-outside={!cell.inMonth}
-                class:cal-quiet={!cell.count && !cell.worked}
+                class:cal-quiet={!cell.count}
                 class:cal-today={cell.today}
                 class:cal-shown={cell.day === day}
                 aria-pressed={cell.day === day}
@@ -406,10 +391,6 @@
               >
                 <span class="cal-date">{cell.date}</span>
                 {#if cell.count}<span class="cal-count">{cell.count}</span>{/if}
-                <!-- A day somebody wrote on and saved nothing from. Without
-                     this there is no way to find one: it has no versions to
-                     count, and the day below is a list of versions. -->
-                {#if !cell.count && cell.worked}<span class="cal-mark"></span>{/if}
               </button>
             </li>
           {/each}
@@ -466,8 +447,8 @@
 {#snippet dayStep()}
   <div class="day">
     <ol>
-      <!-- The live document. It is not a checkpoint, but it is what every
-           checkpoint is compared against and the only way back from one, so
+      <!-- The live document. It is not a label, but it is what every
+           label is compared against and the only way back from one, so
            it belongs at the head of the list rather than in a banner above
            the month: the list runs newest first, and nothing is newer. -->
       <li class="day-row day-now">
@@ -525,14 +506,7 @@
         {/if}
       {/each}
       {#if !entries.length}
-        <!-- A day with no versions is two different days, and saying the
-             wrong one of them is worse than saying nothing: somebody may have
-             written all afternoon and saved none of it. -->
-        <li><p class="panel-muted">
-          {byDay.get(day)?.worked
-            ? "Written on, but nothing was saved as a version."
-            : "Nothing was written on this day."}
-        </p></li>
+        <li><p class="panel-muted">Nothing was written on this day.</p></li>
       {/if}
     </ol>
   </div>
@@ -691,18 +665,6 @@
     font-weight: 600;
     color: var(--color-primary-600-400);
   }
-  /* A day written on that nothing was saved from: no number to show, so a
-     dot, which is the least that can be said and still be seen. */
-  .cal-mark {
-    position: absolute;
-    bottom: 5px;
-    width: 3px;
-    height: 3px;
-    border-radius: 50%;
-    background: var(--color-primary-500);
-    opacity: 0.5;
-  }
-
   /* ----------------------------------------------------------- the marks */
 
   .marks { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }

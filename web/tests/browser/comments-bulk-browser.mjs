@@ -27,8 +27,8 @@ const comments=[
   {id:'theirs',seq:1,motivation:'commenting',presentation:{rendered_exact:'Two'},body:'Somebody else, open',deletable:false,replies:[]},
   {id:'done',seq:2,motivation:'commenting',presentation:{rendered_exact:'Three'},body:'Resolved',resolved:true,deletable:true,replies:[]},
   {id:'locked',seq:3,motivation:'commenting',presentation:{rendered_exact:'Four'},body:'Somebody else, resolved',resolved:true,deletable:false,replies:[]},
-  {id:'accepted',seq:4,motivation:'editing',presentation:{rendered_exact:'Five'},proposed:'Six',resolved:true,outcome:'accepted',deletable:true,original_anchor:{kind:'source_text',checkpoint_id:'abc',target:{file_id:'f1',exact:'Five',prefix:'',suffix:''}},replies:[]},
-  {id:'proposed',seq:5,motivation:'editing',presentation:{rendered_exact:'Seven'},proposed:'Eight',deletable:true,original_anchor:{kind:'source_text',checkpoint_id:'abc',target:{file_id:'f1',exact:'Seven',prefix:'',suffix:''}},replies:[]},
+  {id:'accepted',seq:4,motivation:'editing',presentation:{rendered_exact:'Five'},proposed:'Six',resolved:true,outcome:'accepted',deletable:true,original_anchor:{kind:'source_text',source_sequence:1,frontier:'AAAA',target:{file_id:'f1',exact:'Five',prefix:'',suffix:''}},replies:[]},
+  {id:'proposed',seq:5,motivation:'editing',presentation:{rendered_exact:'Seven'},proposed:'Eight',deletable:true,original_anchor:{kind:'source_text',source_sequence:2,frontier:'AAAA',target:{file_id:'f1',exact:'Seven',prefix:'',suffix:''}},replies:[]},
 ];
 const handlers={onresolve:c=>window.resolved.push(c.id),ondeletemany:list=>window.deleted.push(list.map(c=>c.id))};
 let component=mount(Comments,{target:document.body,props:{comments,canModerate:false,...handlers}});

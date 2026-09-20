@@ -85,4 +85,4 @@ Candidate verification uses the browser's renderer on temporary source files. It
 
 The runner keeps task continuity and writing preferences locally. The browser keeps its assistant history on the same device. The document server relays messages without storing transcripts. Reconnection reconciles known task IDs; it does not blindly repeat uncertain work. Use the panel's New conversation control to clear its history and start a fresh channel, and the sidebar's Stop control to detach the assistant.
 
-See the [assistant protocol](https://github.com/LibrePaper/librepaper/blob/main/docs/protocol/chat.md) and [document operations](https://github.com/LibrePaper/librepaper/blob/main/docs/protocol/room-v1.md).
+See the [assistant protocol](https://github.com/LibrePaper/librepaper/blob/main/docs/protocol/chat.md) and [document operations](https://github.com/LibrePaper/librepaper/blob/main/docs/protocol/room-v2.md).

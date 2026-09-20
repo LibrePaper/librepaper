@@ -14,10 +14,11 @@ project for offline use, reopen it without the server, edit its source, preview
 it with available dependencies, restart, and synchronize when connectivity
 returns. Independent offline project creation is outside the initial scope.
 
-This specification complements [REVIEW-architecture.md](REVIEW-architecture.md).
-It preserves the distinction between local CRDT edits, authoritative commands,
-and snapshot transformations. The related editor integration is specified in
-[SPEC-vscode-extenions.md](SPEC-vscode-extenions.md).
+This specification complements `REVIEW-architecture.md`, which is not in the
+repository; the link is left out rather than repeated. It preserves the
+distinction between local CRDT edits, authoritative commands, and snapshot
+transformations. There is no separate editor integration specification at
+present.
 
 ## Product contract
 
@@ -39,11 +40,17 @@ ordinary source-and-asset export. A custom archive format is not required.
 
 ## Current foundations and gaps
 
-`web/src/lib/collab.js` already uses Loro, IndexedDB persistence, and server
-acknowledgements. The persistence layer is ours -- `loro-indexeddb` does not
-exist -- so nothing about it is inherited from a package. `web/src/lib/reader/collaboration.js` owns the room lifetime
-and checks metadata on reconnection. `collab-cache.js` includes document
-creation identity in cache names. Assets are referenced by digest, with their
+`web/src/lib/collab.js` joins a document and already uses Loro, IndexedDB
+persistence, and server acknowledgements. The persistence layer is ours --
+`loro-indexeddb` does not exist -- so nothing about it is inherited from a
+package; it lives in `web/src/lib/offline-projects.js`, keyed by the immutable
+document identity in `web/src/lib/project-identity.js` rather than by slug, so
+a recreated slug does not collide with an earlier project's cache.
+`web/src/lib/project-session.js` owns one client's document: it holds the
+Loro document, tracks which of this browser's updates the server has not yet
+acknowledged (`doc-ack`), and is what a "pending" or "synced" indicator reads.
+`web/src/lib/reader/collaboration.js` owns the room lifetime for a reader and
+checks metadata on reconnection. Assets are referenced by digest, with their
 bytes held outside the CRDT.
 
 These mechanisms do not alone establish offline startup or complete local
@@ -110,7 +117,7 @@ remote content with stale credentials.
 | Accept/reject tracked changes, restore, publish, change sharing | Requires current server authorization; no automatic delayed execution |
 
 Existing unconfirmed submissions must remain recoverable and reconcile with
-server receipts; they must not become duplicate new submissions. Offline drafts
+the server's acknowledgement; they must not become duplicate new submissions. Offline drafts
 are not authoritative review records. A general command outbox is not part of
 this specification.
 
@@ -166,10 +173,12 @@ The UI derives concise messages from them:
 | Remote update refused | Local changes not synced; retain work and explain recovery |
 
 A connected socket, successful send, empty in-memory queue after restart, or
-initial IndexedDB hydration is insufficient evidence of durability.
-Define the persisted acknowledgement bookkeeping during implementation against
-the existing room protocol; extend the protocol only if its receipts cannot
-support the required claim. Conservative status is preferable to false success.
+initial IndexedDB hydration is insufficient evidence of durability. The room
+protocol acknowledges a batch with `doc-ack {upTo}` once it is in PostgreSQL
+(SPEC-server-is-a-log.md §5.1, §6.1); there is no per-keystroke receipt beyond
+that. Define the persisted acknowledgement bookkeeping during implementation
+against `doc-ack`; extend the protocol only if it cannot support the required
+claim. Conservative status is preferable to false success.
 
 Before reconciliation that may remove locally edited content, preserve a
 recoverable local version. CRDT state alone must not be assumed to provide a

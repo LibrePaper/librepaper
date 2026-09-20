@@ -31,6 +31,12 @@ export const LINKED = "librepaper-linked";
 // editor lands where they left it.
 export const LAYOUT = "librepaper-layout";
 export const SOURCE_SIDE = "librepaper-source-side";
+// Which panel the column last showed for a given document -- the files, the
+// comments or the history -- or "" for closed, keyed by slug. Per document
+// rather than global: arriving at a document you have not seen opens on its
+// files, but reloading the one you were reading (or the join reconnecting
+// underneath you) returns to the panel you had open.
+export const PANEL = "librepaper-panel";
 // The link keys this browser has been given, by slug. A key is a secret, and
 // this is the right place for one: it is per browser, so opening the link on a
 // phone means pasting it again, and it is cleared with everything else.
@@ -68,6 +74,23 @@ export function keyFor(slug) {
   const key = typeof keys[slug] === "string" ? keys[slug] : "";
   if (key) memoryKeys.set(slug, key);
   return key;
+}
+
+/// The panel this browser last had open for a document, or `null` if this
+/// document has never set one -- distinct from "", which is a document whose
+/// column was explicitly closed.
+export function panelFor(slug) {
+  const panels = read(PANEL, {});
+  return Object.prototype.hasOwnProperty.call(panels, slug) ? panels[slug] : null;
+}
+
+/// Remembers which panel a document's column is showing, so returning to it
+/// -- a reload, a reconnect -- lands back there. A different document is
+/// unaffected: this is one row in the map, not a single global value.
+export function rememberPanel(slug, name) {
+  const panels = read(PANEL, {});
+  panels[slug] = name;
+  write(PANEL, panels);
 }
 
 /// The link to hand somebody: the one that was shared, key and all, so a link

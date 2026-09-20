@@ -150,9 +150,9 @@ A deployment keeps its state in PostgreSQL and its bulk bytes in an object
 store.
 
 Postgres holds what must be ordered, related and transactional: accounts,
-documents, grants and share links, annotations and replies, the version
-timeline, bundle records, proposals and their hunk decisions, storage
-accounting and background jobs.
+documents, grants and share links, annotations and replies, the log of
+updates and the labels named on it, proposals and their hunk decisions, and
+storage accounting.
 
 The object store holds immutable blobs: collaboration bases, source archives,
 document assets and published files, keyed by content digest or by a name that
@@ -180,13 +180,15 @@ continuous. A checkpoint is a distinct event that records the whole document
 directory as a canonical tree: every file, its path and its contents, plus the
 compile settings in force.
 
-Nothing schedules a checkpoint. One is written when somebody labels a moment,
-publishes, restores an earlier version, leaves a comment on a passage, or
-commits from the command line -- and at no other time. The clock does not
-write history, because the operation graph above already holds every keystroke
-between two checkpoints and can be read at any position in it. A checkpoint is
-therefore a name somebody put on a moment, not a recovery point: recovery is
-the operation log's job.
+Nothing schedules a checkpoint, and nothing prunes one. One is written when
+somebody labels a moment, restores an earlier version, commits from the
+command line, or a proposal is accepted -- and at no other time: there is no
+quiet-period timer, and a plain comment does not write one, since a comment
+carries its own evidence of the moment it was made without needing a named
+one. The clock does not write history, because the operation graph above
+already holds every keystroke between two checkpoints and can be read at any
+position in it. A checkpoint is therefore a name somebody put on a moment,
+not a recovery point: recovery is the operation log's job.
 
 Recording the whole directory is what makes a checkpoint restorable. A chapter
 and the file that includes it cannot come back out of step, because they were
@@ -202,10 +204,14 @@ naming the checkpointer.
 
 ### Source archives
 
-Each checkpoint also has a format-independent source archive: the directory as
-plain files. It is the fastest way to retrieve a document at a point in time,
-and it is readable without the CRDT, which is what makes an export or a restore
-independent of the collaboration format.
+A checkpoint can also have a format-independent source archive: the directory
+as plain files, readable without the CRDT. It is produced on request rather
+than written the moment the checkpoint is made, keyed by the tree's own
+digest. Requesting one records the request; a later restore or export can ask
+again and get the same archive without recomputing it, and a failed attempt
+is retried rather than left silently missing. Because it is content-addressed
+and independent of the collaboration format, it is also the fastest way to
+retrieve a document at a point in time once it exists.
 
 ### Asset storage
 
@@ -235,8 +241,8 @@ Owners can set a softer history budget, retention density and warning thresholds
 of their own, but these cannot raise the deployment's hard limits. Material
 reductions require a preview and confirmation and carry a grace period.
 
-Documents may also expire. A retention duration counts from creation or last
-bundle, and zero means never.
+Documents may also expire. A retention duration counts from creation or from
+the document's last edit, and zero means never.
 
 ### Backups
 
@@ -249,11 +255,16 @@ documents.
 
 ### Background work
 
-Maintenance runs as typed jobs in Postgres: compaction, orphan reclamation,
-retention passes, and settling interrupted allocations. Reclamation releases a
-charge only after physical deletion is confirmed. Superseded objects become
-eligible only after a grace period during which no current root or lease
-protects them. Reaching a byte quota does not prevent cleanup from running.
+Maintenance -- compaction, archiving, deletion -- runs on an in-process
+bounded queue rather than a table other processes poll. There is nothing to
+lose on restart: what survives is the durable state the work exists to act
+on (a document over a compaction threshold, a label with a requested archive
+and no archive yet, a document marked for deletion), and the process
+rediscovers and re-enqueues it at startup. An idle deployment issues no
+maintenance queries at all. Reclamation releases a storage charge only after
+physical deletion is confirmed. Superseded objects become eligible only
+after a grace period during which no current root or lease protects them.
+Reaching a byte quota does not prevent cleanup from running.
 
 ## Comments
 
@@ -473,59 +484,48 @@ and a short-lived draft representation is built for the Markdown renderer,
 recording enough structure to map source annotations without guessing from
 rendered paragraphs. It does not execute code, filters, shortcodes or JavaScript.
 
-### Publishing
+### What a reader sees
 
-Readers do not load a document's source. They load a *bundle*, a display
-bundle an editor rendered and explicitly published. Source saves, checkpoints,
-previews and reconnects never upload one. Before the first bundle, a
-document's bundle metadata is null.
+There is no publish step and no stored rendered page. A reader sees the same
+head an editor sees, projected: the text tree, the main file, the format and
+the assets a text-only pass over the document derives from it, identified by
+a digest of that tree rather than by a version number. Opening, reconnecting
+and every edit that lands all resolve to the same operation -- fetch the
+current projection and render it -- so there is no separate moment at which
+a reader's copy becomes stale in a way that needs a publish to fix.
 
-A bundle stores its rendering and nothing else. The rendered page is the one
-artifact the server cannot reproduce, since the renderers run in the author's
-browser. Figures are not copied into it, because document assets are already
-content-addressed and the bundle references them.
+The projection algorithm that turns the document into a render tree and a
+file panel is one algorithm, implemented once in Rust and once in
+JavaScript, and both implementations are held to the same behaviour by a
+shared fixture (`web/tests/fixtures/projection.json`) so a reader's browser
+and the server agree on what a projection is without either serving the
+other a stored answer.
 
-Only dependencies actually referenced by the rendered page become public. Inputs
-used by the compiler, such as bibliographies, data files, maps and source, are
-deliberately absent from the display allowlist.
-
-### Publish sequence
-
-Publishing is three operations under one idempotency key, so a retry after a lost
-response cannot produce a second bundle.
-
-1. `prepare` sends a manifest and receives the list of objects the server is
-   missing. It atomically reserves the whole bundle's capacity before any upload
-   begins.
-2. `upload` sends each missing object. Limits and hashes are checked against
-   decoded bytes.
-3. `activate` re-sends the same body and key, and commits the bundle's roots,
-   pointer and receipt together after rechecking access and the source and
-   bundle generations.
-
-The manifest names a bundle digest, the source and render-config digests, the
-HTML, and each asset by path, digest, size and type. The server supplies the
-bundle identity, timestamp and attribution. A conflicting expected
-bundle is a 409, and a changed descriptor cannot reuse a prepared key.
-Successful retries reuse the original attribution and timestamp.
-
-Unfinished preparations expire after fifteen minutes. Superseded objects become
-reclaimable after a grace period once no root or lease protects them.
+When the document changes under a reader, the socket carries
+`source-changed {digest}`: not the new text, just its digest. The reader
+refetches the projection using that digest as an etag, so an unaffected file
+already in the browser's cache is not re-sent. Rendering itself -- Markdown,
+Typst, LaTeX, Quarto's draft subset -- runs in the reader's own browser with
+the same WebAssembly engines an editor's browser uses, so the deployment
+never renders and never stores a compiled page. Readers and commenters still
+never receive CRDT bytes or edit history; a projection carries text and
+assets, not the operation log behind them.
 
 ### Serving
 
-Published HTML and its assets are served only on the document origin, never the
-one the application answers on. A signed display capability conveys no source
-credential, and the reader's live link or account authority is rechecked on every
-response, including conditional asset requests.
+Projected source and its assets are served only on the document origin,
+never the one the application answers on. A signed display capability
+conveys no source credential, and the reader's live link or account
+authority is rechecked on every response, including conditional asset
+requests.
 
-Assets use stable document-scoped paths with private revalidation, so unchanged
-assets reuse browser cache bytes across bundles. Bytes already downloaded
-cannot be revoked retroactively.
+Assets use stable document-scoped paths with private revalidation, so
+unchanged assets reuse browser cache bytes across edits: only a file whose
+digest actually changed is worth re-fetching.
 
-Every published document renders under one policy: it may run its own code and
-may not fetch code from another host. Publishing reports the hosts of a document
-that tries to. Images, fonts and connections still reach the open web, which is
+Every document renders under one policy: it may run its own code and may not
+fetch code from another host. Serving reports the hosts of a document that
+tries to. Images, fonts and connections still reach the open web, which is
 an accepted leak rather than an oversight.
 
 ## Live collaboration
@@ -536,12 +536,15 @@ A room is one document's comments and the open sockets of everyone reading it,
 held in one process. A write by one reader reaches the others without anybody
 polling.
 
-The socket carries document updates, presence, comments and bundle notices.
-Presence, meaning who is here and where their cursor is, travels as ephemeral
-state that is never persisted.
+The socket carries document updates, presence, comments and
+`source-changed {digest}` notices. Presence, meaning who is here and where
+their cursor is, travels as ephemeral state that is never persisted.
 
-Editors synchronise source through the socket. Readers of a published document
-use the same connection for annotations, without any source state at all.
+Editors synchronise source through the socket. Readers use the same
+connection for annotations and for the digest notices that tell them when to
+refetch the projection; source updates and read access follow the same
+authority rules either way, since a reader now sees the same head an editor
+does, not a separately published copy.
 
 The source is edited in CodeMirror 6, bound to the shared document, so each
 editor keeps their own undo history and sees the others' carets where they

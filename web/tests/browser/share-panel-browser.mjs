@@ -100,7 +100,7 @@ Object.defineProperty(navigator, "clipboard", {
 });
 
 const mount = () => createClassComponent({ component: Share, target: document.body, props: {
-  open: true, inline: true, slug: "paper", canShare: true, bundleReady: true,
+  open: true, inline: true, slug: "paper", canShare: true,
 } });
 mount();
 const flush = async () => { await tick(); await new Promise((resolve) => setTimeout(resolve, 40)); await tick(); };
@@ -130,7 +130,7 @@ window.sharePanelCheck = async () => {
   /* ------------------------------------- a permission is what it is, not a form */
 
   check(sections().length === 3, "read, comment and edit");
-  check(/^Read Anyone with this link can view\\. Expires Mar 1[67], 2027 This link was made before its URL could be kept\\. Replace it to get a new URL\\.$/.test(seen(0)),
+  check(/^Read Anyone with this link can read the current source and see ongoing changes\\. Expires Mar 1[67], 2027 This link was made before its URL could be kept\\. Replace it to get a new URL\\.$/.test(seen(0)),
     "a link that exists is its expiry and a row of icons that spell nothing: " + seen(0));
   check(!seen(0).includes("•••"), "nothing is behind an overflow any more: " + seen(0));
   // No copy among them: this one link's key predates the column that would
@@ -142,7 +142,7 @@ window.sharePanelCheck = async () => {
       + [...sections()[0].querySelectorAll(".share-icon")].map((node) => node.getAttribute("aria-label")).join("|"));
   check([...sections()[0].querySelectorAll(".share-icon svg")].length === 3,
     "and each of them is drawn rather than written");
-  check(seen(1).startsWith("Comment Anyone with this link can view and comment. Sign-in required."),
+  check(seen(1).startsWith("Comment Anyone with this link can read the current source, see ongoing changes, and comment. Sign-in required."),
     "each says what the link it hands out lets somebody do: " + seen(1));
   check(seen(2) === "Edit Signed-in users with this link can edit. Sign-in required. Create link",
     "and a role with no link offers to open one rather than saying it has none: " + seen(2));

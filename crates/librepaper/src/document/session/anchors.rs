@@ -1,7 +1,7 @@
 //! Anchors for Loro: stable positions that follow CRDT content.
 //!
 //! A `Cursor` is a CRDT anchor that captures a position in a container such that
-//! concurrent edits shifting its ordinary Unicode offset do not move the anchor —
+//! concurrent edits shifting its ordinary Unicode offset do not move the anchor --
 //! it stays with the same content.
 //!
 //! The Loro coordinate system for text positions uses Unicode code points. Every

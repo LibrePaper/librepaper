@@ -6,7 +6,7 @@ use super::*;
 struct AccountStorageUsage {
     charged_bytes: i64,
     document_count: i64,
-    checkpoint_count: i64,
+    label_count: i64,
 }
 
 impl Server {
@@ -59,14 +59,14 @@ impl Server {
             .usage_bytes(Some(id))
             .await
             .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?;
-        let (document_count, checkpoints) = catalog
+        let (document_count, labels) = catalog
             .document_counts_by_owner(id)
             .await
             .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?;
         Ok(AccountStorageUsage {
             charged_bytes,
             document_count,
-            checkpoint_count: checkpoints,
+            label_count: labels,
         })
     }
 
@@ -89,7 +89,7 @@ impl Server {
                 "usage": {
                     "chargedBytes": usage.charged_bytes,
                     "documentCount": usage.document_count,
-                    "checkpointCount": usage.checkpoint_count,
+                    "labelCount": usage.label_count,
                     "hardQuotaBytes": self.config.storage.per_owner,
                 },
                 "constraints": {

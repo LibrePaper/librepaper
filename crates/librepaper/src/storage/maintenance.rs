@@ -7,6 +7,11 @@ use time::Duration;
 use super::blob::BlobStore;
 use super::postgres::PostgresCatalog;
 
+/// How long a deleted document stays in the trash before it is purged.
+/// Derived state, not a queue row: `documents.deleted_at` plus this is when
+/// the background worker may take it (§8.6).
+pub const DELETION_GRACE: Duration = Duration::days(7);
+
 pub struct Maintenance {
     catalog: Arc<PostgresCatalog>,
     blobs: Arc<dyn BlobStore>,
@@ -21,10 +26,9 @@ impl Maintenance {
         if !(1..=500).contains(&batch) {
             return Err("base cleanup batch must be 1..=500".into());
         }
-        let rows = sqlx::query!(
-            r#"SELECT document_id,previous_snapshot_key AS "previous_snapshot_key!"
-               FROM document_bases WHERE previous_delete_after<=now()
-               ORDER BY previous_delete_after LIMIT $1"#,
+        let keys = sqlx::query_scalar!(
+            "SELECT snapshot_key FROM superseded_bases WHERE delete_after<=now()
+             ORDER BY delete_after LIMIT $1",
             batch,
         )
         .fetch_all(self.catalog.pool())
@@ -32,21 +36,17 @@ impl Maintenance {
         .map_err(|e| e.to_string())?;
         let mut removed = 0;
         let mut failures = Vec::new();
-        for row in rows {
-            let (document_id, key) = (row.document_id, row.previous_snapshot_key);
+        for key in keys {
             match self.blobs.delete(std::slice::from_ref(&key)).await {
                 Ok(()) => {
-                    removed += sqlx::query!(
-                        "UPDATE document_bases
-                         SET previous_snapshot_key=NULL, previous_delete_after=NULL
-                         WHERE document_id=$1 AND previous_snapshot_key=$2",
-                        document_id,
-                        key,
-                    )
-                    .execute(self.catalog.pool())
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .rows_affected() as usize;
+                    // The row goes only after the bytes do, so a failed
+                    // delete is retried rather than forgotten.
+                    removed +=
+                        sqlx::query!("DELETE FROM superseded_bases WHERE snapshot_key=$1", key,)
+                            .execute(self.catalog.pool())
+                            .await
+                            .map_err(|error| error.to_string())?
+                            .rows_affected() as usize;
                 }
                 Err(error) => failures.push(format!("{key}: {error}")),
             }
@@ -60,89 +60,6 @@ impl Maintenance {
                 failures.join("; ")
             ))
         }
-    }
-
-    /// Remove old immutable objects which have no domain-row reference.
-    /// Persistent cursors make each run bounded without starving keys late in
-    /// a large namespace. A complete pass resets its cursor to the beginning.
-    /// Points versions that hold identical archives at a single object.
-    ///
-    /// Every version written before archives were shared holds a private copy
-    /// of its bytes, so a document saved repeatedly between two edits holds
-    /// many copies of one thing. This is not a change to the history: each
-    /// event keeps its row, its time and its author, and only the object
-    /// behind it becomes the one an earlier event already had. The oldest
-    /// version of each identical set is the keeper, so the surviving object is
-    /// the one that has been there longest.
-    ///
-    /// Nothing is deleted here. The copies this releases become unreferenced
-    /// and are collected by `delete_orphans`, which holds them for its grace
-    /// period first -- so the bytes are reclaimed a week after they stop being
-    /// needed rather than the instant a query says so.
-    pub async fn share_duplicate_archives(&self, batch: i64) -> Result<usize, String> {
-        if !(1..=5000).contains(&batch) {
-            return Err("archive sharing batch must be 1..=5000".into());
-        }
-        // Identity is the archive digest within one document. Across documents
-        // it is deliberately not shared: an object lives under its document's
-        // prefix, and erasing a document must be able to take its bytes with
-        // it without asking who else was reading them.
-        let updated = sqlx::query!(
-            "WITH keeper AS (
-               SELECT DISTINCT ON (document_id, archive_digest)
-                      document_id, archive_digest, archive_key
-               FROM document_versions
-               ORDER BY document_id, archive_digest, sequence, id
-             ), target AS (
-               SELECT v.id, k.archive_key
-               FROM document_versions v
-               JOIN keeper k
-                 ON k.document_id = v.document_id AND k.archive_digest = v.archive_digest
-               WHERE v.archive_key <> k.archive_key
-               LIMIT $1
-             )
-             UPDATE document_versions v SET archive_key = t.archive_key
-             FROM target t WHERE v.id = t.id",
-            batch,
-        )
-        .execute(self.catalog.pool())
-        .await
-        .map_err(|error| error.to_string())?
-        .rows_affected() as usize;
-        if updated == 0 {
-            return Ok(0);
-        }
-        // The usage counter is maintained by triggers on insert and delete,
-        // and this moved neither: it changed which object a row names. Rebuilt
-        // from what is referenced now, which is the same sum the counter is
-        // meant to hold.
-        //
-        // Between here and the orphan sweep the released copies are still on
-        // disk while no longer counted. That window is the sweep's grace
-        // period, and erring low means a deployment admits a write it has the
-        // room for rather than refusing one it does not.
-        sqlx::query!(
-            "UPDATE storage_usage SET bytes = (
-               SELECT COALESCE(sum(bytes), 0)::bigint FROM (
-                 SELECT byte_length AS bytes FROM document_assets
-                 UNION ALL SELECT archive_bytes FROM (
-                   SELECT DISTINCT ON (archive_key) archive_bytes
-                   FROM document_versions ORDER BY archive_key, id
-                 ) distinct_archives
-                 UNION ALL SELECT byte_length FROM (
-                   SELECT DISTINCT ON (f.storage_key) f.byte_length
-                   FROM bundle_files f
-                   WHERE NOT EXISTS(SELECT 1 FROM document_assets a
-                                    WHERE a.storage_key = f.storage_key)
-                   ORDER BY f.storage_key, f.bundle_id, f.path
-                 ) distinct_bundle_files
-               ) held
-             )",
-        )
-        .execute(self.catalog.pool())
-        .await
-        .map_err(|error| error.to_string())?;
-        Ok(updated)
     }
 
     pub async fn delete_orphans(&self, batch: usize, grace: Duration) -> Result<usize, String> {
@@ -163,12 +80,17 @@ impl Maintenance {
             ),
             ("temporary_objects", "temporary/", grace),
         ] {
-            let cursor: Option<String> =
-                sqlx::query_scalar!("SELECT cursor FROM maintenance_cursors WHERE name=$1", name,)
-                    .fetch_optional(self.catalog.pool())
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .flatten();
+            // Where the last pass stopped, kept in the deployment's own
+            // runtime state rather than a table of its own: it is one string
+            // per prefix, it is regenerated by the next pass if it is lost,
+            // and a table whose whole contents are three rows is a table
+            // nobody remembers to look at.
+            let cursor: Option<String> = self
+                .catalog
+                .runtime_state(&format!("sweep.{name}"))
+                .await
+                .map_err(|error| error.to_string())?
+                .and_then(|value| value.as_str().map(str::to_string));
             let page = self
                 .blobs
                 .list_page(prefix, cursor.as_deref(), batch)
@@ -201,15 +123,16 @@ impl Maintenance {
             } else {
                 keys.last().cloned()
             };
-            sqlx::query!(
-                "INSERT INTO maintenance_cursors(name,cursor) VALUES($1,$2)
-                 ON CONFLICT(name) DO UPDATE SET cursor=excluded.cursor,updated_at=now()",
-                name,
-                next,
-            )
-            .execute(self.catalog.pool())
-            .await
-            .map_err(|error| error.to_string())?;
+            self.catalog
+                .set_runtime_state(
+                    &format!("sweep.{name}"),
+                    match next {
+                        Some(key) => serde_json::Value::String(key),
+                        None => serde_json::Value::Null,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
         }
         Ok(removed)
     }
@@ -222,14 +145,17 @@ async fn referenced_keys(
     if keys.is_empty() {
         return Ok(HashSet::new());
     }
+    // Four tables name a blob now: assets, label archives, the live
+    // compaction base and the bases still inside their seven-day grace. The
+    // last one is not optional: a superseded base is still being read, so a
+    // sweep that did not know about it would delete bytes out from under a
+    // reader. That list is the same one the backup enumerator reads, and the
+    // two are changed together (§8.5).
     let found = sqlx::query_scalar!(
         r#"SELECT storage_key AS "key!" FROM document_assets WHERE storage_key=ANY($1)
-           UNION SELECT archive_key FROM document_versions WHERE archive_key=ANY($1)
-           UNION SELECT manifest_key FROM bundles WHERE manifest_key=ANY($1)
-           UNION SELECT storage_key FROM bundle_files WHERE storage_key=ANY($1)
+           UNION SELECT archive_key FROM document_labels WHERE archive_key=ANY($1)
            UNION SELECT snapshot_key FROM document_bases WHERE snapshot_key=ANY($1)
-           UNION SELECT previous_snapshot_key FROM document_bases
-             WHERE previous_snapshot_key=ANY($1)"#,
+           UNION SELECT snapshot_key FROM superseded_bases WHERE snapshot_key=ANY($1)"#,
         keys,
     )
     .fetch_all(catalog.pool())

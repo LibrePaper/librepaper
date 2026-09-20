@@ -98,8 +98,7 @@ test: wasm $(SHELL_OUT)  ## Run rustfmt, clippy and the test suite
 	@echo "test: passed -- NOT everything. Still to run:"
 	@echo "  make browser                              the components in a real chromium"
 	@echo "  LIBREPAPER_TEST_POSTGRES_URL=... \\"
-	@echo "    cargo test -p librepaper --lib -- --ignored --test-threads=1 \\"
-	@echo "      --skip catalog_v3_release_benchmark   (that one wants its own database)"
+	@echo "    cargo test -p librepaper --lib -- --ignored --test-threads=1"
 	@echo "  make check-all                            test + browser in one go"
 
 # Explicit suites kept out of the default inventory because they require

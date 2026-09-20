@@ -214,6 +214,36 @@ pub fn sign_in_advice(
     advice
 }
 
+/// The stable Loro peer identity this deployment authors source under
+/// (§7.3). Kept in `server_runtime_state` under `crate::log::DEPLOYMENT_PEER_STATE`
+/// so a label written by one process and read by the next names one author,
+/// rather than a fresh peer on every restart. Minted once, the first time a
+/// deployment reads it absent.
+async fn deployment_peer_key(
+    catalog: &crate::storage::postgres::PostgresCatalog,
+) -> Result<String, String> {
+    if let Some(existing) = catalog
+        .runtime_state(crate::log::DEPLOYMENT_PEER_STATE)
+        .await
+        .map_err(|error| format!("could not read the deployment peer key: {error}"))?
+    {
+        if let Some(key) = existing.get("key").and_then(|value| value.as_str()) {
+            if !key.is_empty() {
+                return Ok(key.to_string());
+            }
+        }
+    }
+    let key = crate::auth::random_token();
+    catalog
+        .set_runtime_state(
+            crate::log::DEPLOYMENT_PEER_STATE,
+            serde_json::json!({ "key": key }),
+        )
+        .await
+        .map_err(|error| format!("could not store the deployment peer key: {error}"))?;
+    Ok(key)
+}
+
 /// What the catalogue is allowed to hold, and how fast it may be asked to
 /// hold it, as this deployment's configuration says.
 ///
@@ -221,10 +251,10 @@ pub fn sign_in_advice(
 /// which knob each field comes from, and two of these read alike and mean
 /// nothing like each other: `rate_per_hour` is what one person may *say*
 /// about a document in an hour -- comments, twenty by default -- while
-/// `session.checkpoint_owner_per_hour` is how often their work may be
+/// `session.label_owner_per_hour` is how often their work may be
 /// *marked*, three hundred, because a room marks the document after every
 /// thirty seconds of quiet. The version budget wired to the comment one let
-/// an hour of ordinary writing spend it, after which every checkpoint was
+/// an hour of ordinary writing spend it, after which every label was
 /// refused; the sweeper has nowhere to put that error, so the timeline simply
 /// stopped, and the next version that got through held a whole afternoon.
 fn storage_policy(config: &Configuration) -> crate::storage::postgres::StoragePolicy {
@@ -232,7 +262,7 @@ fn storage_policy(config: &Configuration) -> crate::storage::postgres::StoragePo
         owner_bytes: config.storage.per_owner,
         deployment_bytes: config.storage.total,
         asset_uploads_per_hour: config.storage.uploads_per_hour as i64,
-        versions_per_hour: config.session.checkpoint_owner_per_hour,
+        versions_per_hour: config.session.label_owner_per_hour,
         max_uncompacted_updates: 1_000,
         max_uncompacted_bytes: config.persistence().max_staging_bytes as i64,
     }
@@ -365,11 +395,42 @@ pub async fn serve(options: ServeOptions) {
         .claim_writer()
         .await
         .unwrap_or_else(|error| die(format!("could not claim deployment writer: {error}")));
-    let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
+    // The registry, the rooms and the background worker all share one
+    // catalogue, blob store and configuration; they are wired together here
+    // rather than separately so there is exactly one cache of any document
+    // in this process (§4.3). The deployment's peer key is settled first
+    // because the registry needs it to admit a sequencer.
+    let peer_key = deployment_peer_key(&catalog)
+        .await
+        .unwrap_or_else(|err| die(err));
+    let registry =
+        crate::log::Registry::new(catalog.clone(), blobs.clone(), config.clone(), peer_key);
+    let rooms = crate::room::Rooms::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        registry.clone(),
+    );
+    let (worker, background) = crate::storage::worker::Worker::new(
+        catalog.clone(),
+        blobs.clone(),
+        registry.clone(),
+        config.clone(),
+    );
+    // §8.4: a flush that leaves the backlog over the threshold asks this
+    // worker for compaction. Wired after the worker exists and before it is
+    // spawned, because the worker is built from the registry and so cannot
+    // be handed to it at construction.
+    registry.compacts_through(background.clone());
+    tokio::spawn(worker.run());
+
+    let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog, registry.clone())
         .await
         .unwrap_or_else(|err| die(err));
     let mut instance = Server::new(
         store,
+        rooms,
+        background,
         shell,
         app,
         key,
@@ -405,9 +466,6 @@ pub async fn serve(options: ServeOptions) {
         }
     };
     let instance = Arc::new(instance);
-    if let Err(error) = instance.cost.restore().await {
-        eprintln!("warning: transfer checkpoint could not be restored: {error}");
-    }
 
     match (origins.reader(), origins.docs()) {
         (Some(reader), Some(docs)) => {
@@ -490,64 +548,25 @@ pub async fn serve(options: ServeOptions) {
         });
     }
 
-    // The sweeper. A document nobody has open is still written out and still
-    // gets its checkpoints: that is the whole difference between a session the
-    // server holds and a session it relays, and it is why no browser has to
-    // stay open to save another client's work.
+    // The one periodic thing left (§8.6): flush what is due and retire idle
+    // sequencers, and only while something is resident. An idle deployment
+    // ticks this timer but touches no room and issues no query, which is
+    // what keeps the last test of §14.2 true -- nothing here polls a job
+    // table, sweeps a link deadline, or checkpoints a cost meter on a clock;
+    // link expiry is a per-connection deadline, and the background worker
+    // above wakes on the durable state its own tasks write rather than on a
+    // timer (§12).
     let sweeper = instance.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            sweeper.rooms.sweep().await;
-        }
-    });
-
-    // A link's expiry is not a request anything hangs off of -- nobody asks
-    // the server "has this key gone stale yet". A socket that dialed in while
-    // it was still live would otherwise keep answering after it lapsed, so
-    // this revisits only sockets whose known link deadline has elapsed. A
-    // sharing change or transfer still reauthorizes its document on the spot.
-    let reauthorizer = instance.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            ticker.tick().await;
-            reauthorizer.reauthorize_expired_links().await;
-        }
-    });
-
-    {
-        let catalog = instance.store.catalog.clone();
-        let worker = crate::storage::worker::Worker::new(catalog.clone(), blobs.clone());
-        tokio::spawn(worker.run());
-        let maintenance_catalog = catalog;
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
-            ticker.tick().await;
-            loop {
-                ticker.tick().await;
-                let now = time::OffsetDateTime::now_utc();
-                let generation = now.unix_timestamp() / 3600;
-                let job = crate::storage::postgres::NewJob {
-                    kind: "maintenance".into(),
-                    document_id: None,
-                    account_id: None,
-                    scope_key: "deployment".into(),
-                    dedupe_key: Some(format!("lifecycle:{generation}")),
-                    payload: serde_json::json!({}),
-                    priority: -10,
-                    max_attempts: 5,
-                    run_after: now,
-                };
-                if let Err(error) = maintenance_catalog.enqueue_job(job).await {
-                    eprintln!("warning: maintenance scheduling failed: {error}");
-                }
+            if !sweeper.rooms.registry().all().await.is_empty() {
+                sweeper.rooms.housekeep().await;
             }
-        });
-    }
+        }
+    });
 
     // A server on its way down writes what it holds. An acknowledged edit
     // survives a restart because it was written when it was acknowledged; this
@@ -556,25 +575,9 @@ pub async fn serve(options: ServeOptions) {
     let closing = instance.clone();
     let shutdown = async move {
         shutdown_signal().await;
-        closing.rooms.flush().await;
+        closing.rooms.shutdown().await;
     };
 
-    let reporting = Arc::downgrade(&instance);
-    let reporting_task = tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            let Some(server) = reporting.upgrade() else {
-                break;
-            };
-            if let Err(error) = server.cost.checkpoint().await {
-                eprintln!("warning: transfer checkpoint failed: {error}");
-            }
-            println!("{}", server.cost_snapshot().await);
-        }
-    });
-    let closing_cost = instance.cost.clone();
     let closing_catalog = instance.store.catalog.clone();
     let router = instance.router();
     let serve_result = axum::serve(
@@ -583,13 +586,8 @@ pub async fn serve(options: ServeOptions) {
     )
     .with_graceful_shutdown(shutdown)
     .await;
-    reporting_task.abort();
-    let _ = reporting_task.await;
     if let Some(local) = &local {
         local.stop().await;
-    }
-    if let Err(error) = closing_cost.checkpoint().await {
-        eprintln!("warning: final transfer checkpoint failed: {error}");
     }
     closing_catalog.close().await;
     if let Err(err) = serve_result {
@@ -621,15 +619,15 @@ mod policy_tests {
     use super::*;
     use crate::config::SessionLimit;
 
-    /// The version budget is the checkpoint budget. It was the comment one,
+    /// The version budget is the label budget. It was the comment one,
     /// which is fifteen times smaller and counts a different thing, and the
     /// difference was a history that stopped partway through an afternoon.
     #[test]
-    fn the_version_budget_is_the_checkpoint_budget() {
+    fn the_version_budget_is_the_label_budget() {
         let config = Configuration {
             rate_per_hour: 20,
             session: SessionLimit {
-                checkpoint_owner_per_hour: 300,
+                label_owner_per_hour: 300,
                 ..Configuration::default().session
             },
             ..Configuration::default()
@@ -637,7 +635,7 @@ mod policy_tests {
         let policy = storage_policy(&config);
         assert_eq!(
             policy.versions_per_hour, 300,
-            "versions are budgeted by session.checkpoint_owner_per_hour"
+            "versions are budgeted by session.label_owner_per_hour"
         );
         assert_ne!(
             policy.versions_per_hour, config.rate_per_hour,

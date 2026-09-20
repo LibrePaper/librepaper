@@ -1,5 +1,5 @@
 <script>
-  // A compact two pane merge editor. The old checkpoint is deliberately
+  // A compact two pane merge editor. The old label is deliberately
   // read-only; the live side is editable and is written back through the
   // caller after every accepted hunk or manual edit.
   import { EditorState, Prec } from "@codemirror/state";
@@ -21,7 +21,7 @@
     loroDoc = null,
     editable = false,
     diff = true,
-    baselineLabel = "checkpoint",
+    baselineLabel = "label",
     targetLabel = "Live document",
     // A stale suggestion opens this editor with an explanation of why: the
     // passage it named no longer matches, so the header carries that reason
@@ -100,7 +100,7 @@
   });
 </script>
 
-<section class="merge-editor flex h-full flex-col" aria-label={diff ? `Compare ${baselineLabel} with ${targetLabel}` : "Checkpoint source"}>
+<section class="merge-editor flex h-full flex-col" aria-label={diff ? `Compare ${baselineLabel} with ${targetLabel}` : "Label source"}>
   <header class="merge-toolbar flex items-center justify-between gap-2 border-surface-200-800 border-b p-2">
     <div class="truncate text-sm">
       <strong>{path || "document"}</strong><span class="panel-muted">{diff ? ` · ${baselineLabel} on the left, ${targetLabel} on the right` : ` · ${baselineLabel} source`}</span>

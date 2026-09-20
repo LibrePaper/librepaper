@@ -1043,7 +1043,7 @@ console.log('reader-races: View and compact menus expose the same explicit previ
   const timeline = createTimeline({
     slug: "doc",
     key: "",
-    history: { loadWithStatus: async () => ({ checkpoints: [], durability: null }) },
+    history: { loadWithStatus: async () => ({ labels: [] }) },
     fetcher: async (url, options) => {
       posted.push({ url, body: options.body });
       return { ok: true, json: async () => ({}) };
@@ -1054,23 +1054,33 @@ console.log('reader-races: View and compact menus expose the same explicit previ
   const asShown = JSON.stringify({ main: "main.md", texts: { "main.md": "as confirmed" }, files: {} });
   const moved = JSON.stringify({ main: "main.md", texts: { "main.md": "somebody else typed" }, files: {} });
 
-  timeline.ask("sha-one", asShown);
+  // The frontier is the caller's to read and hand over (`Reader.svelte`
+  // reads it from the live Loro session); `ask` and `confirm` only carry it.
+  timeline.ask("sha-one", asShown, "frontier-as-shown");
   assert.equal(timeline.state.restoring, true);
-  await timeline.confirm(moved);
+  await timeline.confirm(moved, "frontier-moved");
   assert.equal(posted.length, 0, "a project that moved is not restored over without a second look");
   assert.equal(timeline.state.restoreMoved, true, "and the dialog says so");
   assert.equal(timeline.state.restoring, true, "and stays open");
 
-  await timeline.confirm(moved);
+  await timeline.confirm(moved, "frontier-moved");
   assert.equal(posted.length, 1, "confirming against what is now on the screen restores");
-  assert.equal(JSON.parse(posted[0].body).sha, "sha-one");
+  const body = JSON.parse(posted[0].body);
+  assert.equal(body.sha, "sha-one");
+  // §7.1: a restore is refused unless `expected_frontier` equals the head
+  // frontier, so the server can tell a concurrent edit nobody here has seen
+  // from the moment this browser is actually asking to replace. The dialog
+  // reasked once the project moved, so this is the frontier of the project
+  // the reader actually confirmed against -- the second reading, not the
+  // first.
+  assert.equal(body.expected_frontier, "frontier-moved", "the restore names the frontier it was confirmed against");
   assert.equal(timeline.state.restoring, false);
   assert.equal(timeline.state.restoreMoved, false);
 
   // A reader who cannot edit cannot restore, whatever reaches the action.
   const readOnly = createTimeline({ slug: "doc", fetcher: () => assert.fail("a reader must not restore") });
-  readOnly.ask("sha-one", asShown);
+  readOnly.ask("sha-one", asShown, "frontier-as-shown");
   assert.equal(readOnly.state.restoring, false);
-  await readOnly.confirm(asShown);
+  await readOnly.confirm(asShown, "frontier-as-shown");
 }
 console.log('reader-races: a restore is confirmed against the project it will replace');

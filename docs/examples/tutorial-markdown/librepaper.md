@@ -9,7 +9,7 @@ bibliography-style: apa
 
 *The LibrePaper icon, loaded as a relative project asset.*
 
-Welcome to LibrePaper. Edit this sentence in the browser and watch the preview update. Your Markdown source, comments, highlights, and checkpoints travel with the document.
+Welcome to LibrePaper. Edit this sentence in the browser and watch the preview update. Your Markdown source, comments, highlights, and labels travel with the document.
 
 ## Source and preview
 
@@ -27,7 +27,7 @@ A formula is a rule a machine can be made to follow, the point Ada Lovelace made
 
 [Read the rendering guide in this project](sections/rendering.md). Markdown has no include directive, so a normal link is its portable multi-file equivalent.
 
-The icon above is a relative project asset. Change the caption, then make a checkpoint so a collaborator can compare the edit with the previous version.
+The icon above is a relative project asset. Change the caption, then make a label so a collaborator can compare the edit with the previous version.
 
 ## What Markdown adds
 

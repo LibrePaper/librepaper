@@ -6,10 +6,10 @@
 // deliberately has no dependency on preview rendering or the live editor.
 import { createGeneration } from "./generation.js";
 
-/// A selection is a checkpoint's id, and nothing else: the timeline lists
+/// A selection is a label's id, and nothing else: the timeline lists
 /// versions, and a minute nobody saved is not one.
 
-export function createHistorySource({ checkpoint, currentTree, checkpoints = () => [], preferredPath = () => "" }) {
+export function createHistorySource({ read, currentTree, labels = () => [], preferredPath = () => "" }) {
   const state = $state({ selected: "", path: "", loading: false, problem: "", result: null });
   const selections = createGeneration();
   let disposed = false;
@@ -20,10 +20,10 @@ export function createHistorySource({ checkpoint, currentTree, checkpoints = () 
     || (point.sha ? point.sha.slice(0, 7) : "An earlier moment");
 
   async function readPoint(sha) {
-    const listed = checkpoints().find(point => point.sha === sha);
-    const point = { ...listed, ...(await checkpoint(sha)) };
+    const listed = labels().find(point => point.sha === sha);
+    const point = { ...listed, ...(await read(sha)) };
     if (point.sha !== sha || !point.texts || typeof point.texts !== "object") {
-      throw new Error("This checkpoint did not return its source files.");
+      throw new Error("This label did not return its source files.");
     }
     return snapshot(point);
   }
@@ -94,7 +94,7 @@ export function createHistorySource({ checkpoint, currentTree, checkpoints = () 
         diff: Boolean(sha),
       };
     } catch (error) {
-      if (!disposed && !stale()) state.problem = error.message || "Could not load checkpoint source.";
+      if (!disposed && !stale()) state.problem = error.message || "Could not load label source.";
     } finally {
       if (!disposed && !stale()) state.loading = false;
     }

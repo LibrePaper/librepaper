@@ -39,7 +39,7 @@ Four principals, in decreasing order of what they are allowed to assume:
 2. **The signed-in owner** of a document holds every authority over it.
 3. **A link holder** holds exactly the role their link names, for as long as the
    link lives. The link is the credential; possession is the grant.
-4. **A document** — the bytes a person uploads or writes — is *hostile*. It runs
+4. **A document** -- the bytes a person uploads or writes -- is *hostile*. It runs
    its own scripts, it is framed by the reader, and it may have been written by
    anyone with editor access.
 
@@ -95,7 +95,7 @@ every document.
 (`server/sharing.rs:17`). The rationale in that module is that a round of
 review has an end; the default is longer than most of them. Keys are stored
 hashed, `referrer-policy: no-referrer` is set, and revocation and rotation both
-work — the exposure is the forwarded mail, not the protocol.
+work -- the exposure is the forwarded mail, not the protocol.
 
 **Required.** The default becomes 30 days with renewal offered from the sharing
 dialog. `never` remains available and is labelled as what it is.
@@ -105,7 +105,7 @@ dialog. `never` remains available and is labelled as what it is.
 - **The TeX mirror.** `web/src/lib/latex.js:38` sends every browser to
   `https://latex.librepaper.workers.dev/`. A self-hosted deployment still
   leaks each user's address and the exact set of TeX packages their document
-  pulls — a usable fingerprint of the document — to a third party the operator
+  pulls -- a usable fingerprint of the document -- to a third party the operator
   never chose. Bytes are sha256-verified (`web/src/lib/latex/resources.js`), so
   this is a privacy and availability dependency, not an integrity hole.
 - **Visitor identity and presence.** An anonymous reader receives a persistent
@@ -122,8 +122,8 @@ are visible through it, and a reader may attend without broadcasting.
 `deploy/install.sh` and `deploy/install-companion.sh` verify the release
 archive against a `checksums.txt` fetched from the same release. That detects
 corruption, not a compromised pipeline or account. The macOS application is
-ad-hoc signed. The wasm engines are the good pattern — pinned by digest in
-`wasm-modules.lock`, refused on mismatch — and the release binaries are not
+ad-hoc signed. The wasm engines are the good pattern -- pinned by digest in
+`wasm-modules.lock`, refused on mismatch -- and the release binaries are not
 held to it. `deploy/keys.yaml` holds live OAuth client secrets and a Cloudflare
 token encrypted to a single PGP recipient, with no second recipient and no
 rotation record.
@@ -135,8 +135,8 @@ pressure.
 
 ### 6. Indirect prompt injection is unbounded
 
-`server/mcp.rs` and the chat relay feed document text and comments — hostile
-content by the definition above — to an agent that proposes edits and posts
+`server/mcp.rs` and the chat relay feed document text and comments -- hostile
+content by the definition above -- to an agent that proposes edits and posts
 comments. The relay is well bounded in size and lifetime (`server/chat.rs`:
 16 KiB of context, channels that expire after an hour of idleness rather than
 an hour of life, no stored transcript) and the model runs on the user's own
@@ -184,10 +184,10 @@ deployment is HTTPS, POST-only logout behind rule A, path rules that refuse
 capabilities stored only as digests, 0600 and 0700 on every secret and state
 directory, atomic key creation,
 `x-content-type-options` and `no-referrer` throughout, postMessage
-authenticated at both ends — origin-checked inbound on the reader
+authenticated at both ends -- origin-checked inbound on the reader
 (`web/src/components/Preview.svelte:50`), source-checked inbound in the frame
 (`web/src/agent/agent.js:748`), and addressed to a named target origin rather
-than `*` on each side — inert `template` parsing with resource attributes
+than `*` on each side -- inert `template` parsing with resource attributes
 stripped before the parser runs (`web/src/lib/diff-display.js:229`), no process
 spawn on any request path (the operator's `admin backup` shells out to
 `pg_dump`, which is not one), and no constructed SQL outside benchmark

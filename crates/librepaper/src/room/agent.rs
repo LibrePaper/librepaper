@@ -1,29 +1,36 @@
-//! Transaction primitives used by the document agent tools.
+//! Applying an agent's patch as a semantic command (§7).
 //!
-//! This module deliberately keeps the patch language independent of MCP.  A
+//! This module deliberately keeps the patch language independent of MCP. A
 //! caller supplies a source tree identity and immutable byte ranges; the
-//! validator produces a new source without ever guessing an anchor.  The
-//! room implementation below persists the operation before it changes
-//! Loro and commits the receipt only after the resulting snapshot is durable.
+//! validator produces a new source without ever guessing an anchor.
 //!
-//! The room integration applies a validated batch across all text files in a
-//! single Loro commit. Candidate storage can therefore share the same
-//! operation and conflict rules without a main-file special case.
+//! Under SPEC-server-is-a-log an agent patch is a command like any other: it
+//! is evaluated against the sequencer's head, its precondition is that every
+//! patch's captured range still reads what the caller says it reads (§7.1),
+//! and the edit itself is prepared on a fork so a failed transaction cannot
+//! have touched the document anybody is looking at (§7.3). What used to be a
+//! bespoke lock-acquire-checkpoint sequence is now one call to
+//! `room.command`.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use loro::LoroDoc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::document::session;
-use crate::room::{Room, WriteError};
+use crate::log::sequencer::{Command, CommandError, Evidence, Head, PreparedSource};
+use crate::room::Room;
+use crate::storage::postgres::{LabelRecord, NewLabel, PostgresCatalog};
 
 const MAX_OPERATION_EPOCH: usize = 128;
 const MAX_OPERATION_ID: usize = 128;
 const MAX_PATCHES: usize = 100;
 const MAX_PATCH_BYTES: usize = 256 * 1024;
 
-/// A server-issued epoch and a client-chosen operation id.  The pair, rather
+/// A server-issued epoch and a client-chosen operation id. The pair, rather
 /// than an MCP request id, is the durable retry identity.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct OperationKey {
@@ -117,7 +124,7 @@ pub struct Patch {
     pub file_id: String,
     pub start: usize,
     pub end: usize,
-    /// The bytes captured by the immutable view.  It is required even for an
+    /// The bytes captured by the immutable view. It is required even for an
     /// empty insertion, where it must be the empty string.
     pub exact: String,
     pub replacement: String,
@@ -125,7 +132,7 @@ pub struct Patch {
     pub affinity: Affinity,
 }
 
-/// Which side of a character boundary an insertion belongs to.  Affinity is
+/// Which side of a character boundary an insertion belongs to. Affinity is
 /// retained in the durable payload even though a single source transaction
 /// rejects two ambiguous insertions at the same endpoint.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -142,7 +149,7 @@ pub struct Dependency {
     pub path: String,
     #[serde(default)]
     pub file_id: String,
-    /// Hash of the complete captured file.  Range text alone cannot identify
+    /// Hash of the complete captured file. Range text alone cannot identify
     /// which identical occurrence an unchanged-dependency request observed.
     #[serde(default)]
     pub file_hash: String,
@@ -151,16 +158,22 @@ pub struct Dependency {
     pub exact: String,
 }
 
-/// The canonical source tree used by the patch validator.  Content is kept
-/// as UTF-8 because the source protocol hashes exact source bytes.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+/// The source tree the patch validator checks patches against: the head
+/// projection's text files, read at the moment a command evaluates (§7 step
+/// 2). Nothing here is stored; it is rebuilt from `Head` on every attempt,
+/// including a retried one, because the head it is rebuilt from is what a
+/// retry's precondition has to agree with.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SourceTree {
     pub main: String,
     pub files: BTreeMap<String, SourceFile>,
-    /// Canonical checkpoint identity, present for live room snapshots. This
-    /// preserves assets, stable file ids, and render settings in revisions.
-    #[serde(skip)]
-    pub canonical: Option<crate::document::history::Tree>,
+    /// The projection digest this tree was read at (§4.4's
+    /// `Projection::digest`). This is the identity `base_tree` is checked
+    /// against -- not a hash recomputed from these fields, because the
+    /// client's own copy of "the tree" came from the same projection an
+    /// editor or a reader was shown, and that is what its digest has to
+    /// agree with.
+    pub revision: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -170,26 +183,8 @@ pub struct SourceFile {
 }
 
 impl SourceTree {
-    pub fn with_canonical(
-        canonical: crate::document::history::Tree,
-        files: BTreeMap<String, SourceFile>,
-    ) -> Self {
-        Self {
-            main: canonical.main.clone(),
-            files,
-            canonical: Some(canonical),
-        }
-    }
-
     pub fn digest(&self) -> String {
-        // BTreeMap gives stable key order.  Serialization failure is
-        // impossible for these types; hashing an empty value is safer than an
-        // unwrap in a public identity function if serde ever changes.
-        if let Some(tree) = &self.canonical {
-            return tree.digest();
-        }
-        let bytes = serde_json::to_vec(self).unwrap_or_default();
-        hex::encode(Sha256::digest(bytes))
+        self.revision.clone()
     }
 
     pub fn main_file(&self) -> Option<&SourceFile> {
@@ -212,16 +207,6 @@ pub struct PatchRequest {
     /// alter the request identity through JSON fields.
     #[serde(skip)]
     pub request_digest: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acceptance: Option<AgentAcceptance>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct AgentAcceptance {
-    pub comment_id: String,
-    pub expected_version: String,
-    #[serde(skip)]
-    pub expected_seq: i64,
 }
 
 /// Authorization captured by the endpoint and rechecked by catalogue commit.
@@ -242,30 +227,29 @@ pub struct AgentAuthority {
     pub operation_scope: String,
 }
 
-/// The exact source effect produced by a validated request.
+/// The exact source effect produced by a validated request, before it is
+/// applied to the shared document. Informational: the identity that actually
+/// matters is the projection digest `head.prepare` computes from the fork
+/// (§7.3), not a hash this validator produces independently.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppliedSource {
-    pub before_tree: String,
-    pub after_tree: String,
     pub before: String,
     pub after: String,
 }
 
 /// A compact durable result. The source itself is intentionally absent: a
-/// receipt identifies the exact tree transition, while bounded reads fetch
+/// label identifies the exact tree transition, while bounded reads fetch
 /// source text when a client asks for it.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AgentReceipt {
     pub operation: OperationKey,
     pub status: String,
-    pub source_revision_before: String,
-    pub source_revision_after: String,
+    pub tree_digest_before: String,
+    pub tree_digest_after: String,
     pub replay: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted_comment_id: Option<String>,
 }
 
-/// Validate and apply a request to a source tree.  No input is normalized:
+/// Validate and apply a request to a source tree. No input is normalized:
 /// offsets address raw UTF-8 bytes and the captured `exact` text must match
 /// byte-for-byte.
 pub fn apply_patches(
@@ -289,8 +273,9 @@ pub fn apply_patches(
     if patch_bytes > MAX_PATCH_BYTES {
         return Err(AgentError::Invalid("patch payload is too large".into()));
     }
-    let before_tree = tree.digest();
-    if request.consistency == Consistency::ExactTree && request.base_tree != before_tree {
+    // §7.1: "each expected passage matches at head" starts with the whole
+    // tree the caller says it read, when it asked for that strength.
+    if request.consistency == Consistency::ExactTree && request.base_tree != tree.digest() {
         return Err(AgentError::Conflict("source tree changed".into()));
     }
 
@@ -353,35 +338,15 @@ pub fn apply_patches(
                 .replace_range(patch.start..patch.end, &patch.replacement);
         }
     }
-    let canonical = tree.canonical.as_ref().map(|base| {
-        let mut updated = base.clone();
-        for (path, file) in &files {
-            if let Some(entry) = updated.files.get_mut(path) {
-                entry.sha = crate::document::store::digest_of(&file.text);
-                entry.size = file.text.len() as i64;
-            }
-        }
-        updated
-    });
-    let after_tree = SourceTree {
-        main: tree.main.clone(),
-        files,
-        canonical,
-    };
     let before = tree
         .main_file()
         .map(|file| file.text.clone())
         .unwrap_or_default();
-    let after = after_tree
-        .main_file()
+    let after = files
+        .get(&tree.main)
         .map(|file| file.text.clone())
         .unwrap_or_default();
-    Ok(AppliedSource {
-        before_tree,
-        after_tree: after_tree.digest(),
-        before,
-        after,
-    })
+    Ok(AppliedSource { before, after })
 }
 
 fn validate_path(path: &str) -> Result<(), AgentError> {
@@ -460,38 +425,22 @@ impl std::fmt::Display for AgentError {
 
 impl std::error::Error for AgentError {}
 
-impl From<WriteError> for AgentError {
-    fn from(error: WriteError) -> Self {
+impl From<CommandError> for AgentError {
+    fn from(error: CommandError) -> Self {
         match error {
-            // Admission refused the candidate before changing the document;
-            // its outcome is known, unlike a failed storage write.
-            WriteError::Size(_) => Self::Conflict(error.client_message()),
-            _ => Self::Storage(error.to_string()),
+            CommandError::Conflict(why) => Self::Conflict(why),
+            CommandError::StaleSelection { digest } => {
+                Self::Conflict(format!("source changed: {digest}"))
+            }
+            CommandError::Storage(error) => Self::Storage(error.to_string()),
+            CommandError::Sequencer(error) => Self::Storage(error.to_string()),
         }
     }
 }
 
-async fn room_tree_locked(room: &Room) -> SourceTree {
-    let state = room.command_owner.state().await;
-    let (canonical, _) = super::tree_of(&state.session.doc, &state.session.asset_sizes);
-    let files = session::texts_of(&state.session.doc)
-        .into_iter()
-        .map(|(path, text)| {
-            let file_id = canonical
-                .files
-                .get(&path)
-                .map(|entry| entry.id.clone())
-                .unwrap_or_default();
-            (path, SourceFile { file_id, text })
-        })
-        .collect();
-    SourceTree {
-        main: canonical.main.clone(),
-        files,
-        canonical: Some(canonical),
-    }
-}
-
+/// Turns a byte offset in `text` into the UTF-16 offset the CRDT text API
+/// wants (§3.2 of SPEC-loro.md: every offset that crosses the document layer
+/// counts UTF-16 code units).
 fn byte_to_utf16(text: &str, byte: usize) -> usize {
     text[..byte].encode_utf16().count()
 }
@@ -518,6 +467,238 @@ fn source_size_after(tree: &SourceTree, request: &PatchRequest) -> Result<usize,
     })
 }
 
+/// The head's text files, as the patch validator needs them. Rebuilt on
+/// every evaluation -- including a retried one -- because the head it is
+/// built from is exactly what a retry's precondition has to agree with.
+fn tree_from_head(head: &Head<'_>) -> SourceTree {
+    let projection = &head.projection.projection;
+    let files = projection
+        .files
+        .iter()
+        .filter(|(_, entry)| entry.kind == "text")
+        .filter_map(|(path, entry)| {
+            head.projection.texts.get(path).map(|text| {
+                (
+                    path.clone(),
+                    SourceFile {
+                        file_id: entry.id.clone(),
+                        text: text.clone(),
+                    },
+                )
+            })
+        })
+        .collect();
+    SourceTree {
+        main: projection.main.clone(),
+        files,
+        revision: head.digest(),
+    }
+}
+
+/// Applies the request's patches to `doc`, one Loro commit covering every
+/// file it touches, so a document that suggests changes across several
+/// files shares the same conflict rules a main-file-only edit does.
+fn apply_patch_edits(
+    doc: &LoroDoc,
+    tree: &SourceTree,
+    request: &PatchRequest,
+) -> Result<(), String> {
+    let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
+    for patch in &request.patches {
+        by_path.entry(&patch.path).or_default().push(patch);
+    }
+    for (path, mut patches) in by_path {
+        patches.sort_by_key(|patch| std::cmp::Reverse(patch.start));
+        let original = tree
+            .files
+            .get(path)
+            .ok_or_else(|| format!("file is absent: {path}"))?;
+        let edits: Vec<_> = patches
+            .into_iter()
+            .map(|patch| wasm_helpers::text::Edit {
+                at: byte_to_utf16(&original.text, patch.start),
+                delete: byte_to_utf16(&original.text[patch.start..], patch.end - patch.start),
+                insert: patch.replacement.clone(),
+            })
+            .collect();
+        session::apply_path_edits(doc, path, &edits);
+    }
+    Ok(())
+}
+
+/// A stable, mostly-arbitrary i64 derived from the request id. §7.3 says the
+/// batch a source-producing command prepares carries "the command's request
+/// id as `client_seq`"; nothing reads this value back to make a decision --
+/// it is a trace, not a key -- so a deterministic slice of the id is all the
+/// value it needs to carry.
+fn client_seq_of(id: Uuid) -> i64 {
+    let bytes = id.as_bytes();
+    let mut half = [0u8; 8];
+    half.copy_from_slice(&bytes[8..16]);
+    i64::from_be_bytes(half) & i64::MAX
+}
+
+fn parse_digest(hex_digest: &str) -> Option<[u8; 32]> {
+    let bytes = hex::decode(hex_digest).ok()?;
+    bytes.try_into().ok()
+}
+
+/// One agent patch, run as a semantic command (§7). `evaluate` rebuilds the
+/// tree from head and checks it against the request; `transact` records the
+/// idempotency row that makes a retry of the same request answer without
+/// re-applying anything (§7.2).
+struct AgentPatchCommand<'a> {
+    request: &'a PatchRequest,
+    request_id: Uuid,
+    catalog: Arc<PostgresCatalog>,
+    document_id: Uuid,
+    author_account_id: Option<Uuid>,
+    author_label: String,
+    max_document: usize,
+}
+
+impl Command for AgentPatchCommand<'_> {
+    type Output = AgentReceipt;
+
+    fn name(&self) -> &'static str {
+        "agent-patch"
+    }
+
+    // §7.2: a source-producing command's idempotency key is the
+    // `document_labels` row its transaction writes. A response the client
+    // never received makes it resend the identical request; by then the
+    // head has moved to what that request produced, so its `base_tree`
+    // would no longer match and a legitimate retry would be refused as a
+    // conflict rather than answered with what already happened. Checking
+    // here -- inside `Sequencer::command`, before the lock and before
+    // anything is prepared -- is what makes that retry answer instead of
+    // fail, and it is the one place this is checked: the sequencer already
+    // serializes every command against one document, so there is no window
+    // between a caller finding no label and another caller committing one.
+    fn replay(
+        &mut self,
+    ) -> futures_util::future::BoxFuture<'_, std::result::Result<Option<Self::Output>, CommandError>>
+    {
+        Box::pin(async move {
+            let existing = label_for_request(&self.catalog, self.document_id, self.request_id)
+                .await
+                .map_err(CommandError::from)?;
+            Ok(existing.map(|label| receipt_from_label(self.request, &label)))
+        })
+    }
+
+    fn evaluate(
+        &mut self,
+        head: &Head<'_>,
+    ) -> std::result::Result<Option<PreparedSource>, CommandError> {
+        let tree = tree_from_head(head);
+        apply_patches(&tree, self.request).map_err(to_conflict)?;
+        let after_bytes = source_size_after(&tree, self.request).map_err(to_conflict)?;
+        if after_bytes > self.max_document {
+            return Err(CommandError::Conflict(
+                "document size limit exceeded".into(),
+            ));
+        }
+        let request = self.request;
+        let client_seq = client_seq_of(self.request_id);
+        head.prepare(client_seq, |draft| apply_patch_edits(draft, &tree, request))
+            .map_err(CommandError::Conflict)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        evidence: &'a Evidence,
+    ) -> futures_util::future::BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            // A patch always produces source when it evaluates successfully
+            // (an accepted `PatchRequest` never has zero patches), so the
+            // "after" identity is always present here.
+            let after_digest = evidence
+                .after_digest
+                .clone()
+                .unwrap_or_else(|| evidence.before_digest.clone());
+            let label = self
+                .catalog
+                .insert_label(
+                    tx,
+                    &NewLabel {
+                        id: crate::storage::postgres::new_id(),
+                        document_id: self.document_id,
+                        source_sequence: evidence.source_sequence,
+                        vector: evidence.vector.clone(),
+                        frontier: evidence
+                            .after_frontier
+                            .clone()
+                            .unwrap_or_else(|| evidence.before_frontier.clone()),
+                        tree_digest: parse_digest(&after_digest),
+                        label: None,
+                        reason: self.name().to_string(),
+                        request_id: Some(self.request_id),
+                        author_account_id: self.author_account_id,
+                        author_label: self.author_label.clone(),
+                    },
+                )
+                .await?;
+            Ok(AgentReceipt {
+                operation: self.request.operation.clone(),
+                status: "committed".into(),
+                tree_digest_before: evidence.before_digest.clone(),
+                tree_digest_after: label.tree_digest.map(hex::encode).unwrap_or(after_digest),
+                replay: false,
+            })
+        })
+    }
+}
+
+fn to_conflict(error: AgentError) -> CommandError {
+    match error {
+        AgentError::Conflict(why) | AgentError::Invalid(why) => CommandError::Conflict(why),
+        AgentError::Storage(why) => CommandError::Conflict(why),
+    }
+}
+
+/// Finds the label a previous attempt at this request left behind, if any
+/// (§7.2). A plain read rather than a method on [`PostgresCatalog`], because
+/// nothing else needs "the label for this request id" -- `insert_label`
+/// already does the equivalent lookup for the row it is about to write, and
+/// this is the same query run before a command is attempted at all, so a
+/// retry answers without redoing work that the head has since moved past.
+async fn label_for_request(
+    catalog: &PostgresCatalog,
+    document_id: Uuid,
+    request_id: Uuid,
+) -> Result<Option<LabelRecord>, crate::storage::postgres::Error> {
+    sqlx::query_as::<_, LabelRecord>(
+        "SELECT id,document_id,sequence,source_sequence,vector,frontier,tree_digest,label,reason,\
+         request_id,author_account_id,author_label,created_at,archive_requested_at,archive_key,\
+         archive_bytes,archive_error FROM document_labels WHERE document_id=$1 AND request_id=$2",
+    )
+    .bind(document_id)
+    .bind(request_id)
+    .fetch_optional(catalog.pool())
+    .await
+    .map_err(crate::storage::postgres::Error::from)
+}
+
+fn receipt_from_label(request: &PatchRequest, label: &LabelRecord) -> AgentReceipt {
+    AgentReceipt {
+        operation: request.operation.clone(),
+        status: "committed".into(),
+        // Not recoverable from the label alone: only the state a command
+        // left behind is recorded, not the one it started from. A replaying
+        // caller already knows what it sent as `base_tree`; this is here so
+        // the shape of a replayed receipt matches a fresh one.
+        tree_digest_before: String::new(),
+        tree_digest_after: label
+            .tree_digest
+            .as_ref()
+            .map(hex::encode)
+            .unwrap_or_default(),
+        replay: true,
+    }
+}
+
 impl Room {
     pub async fn apply_agent_request<F, Fut>(
         &self,
@@ -536,11 +717,9 @@ impl Room {
         {
             return Err(AgentError::Conflict("edit access changed".into()));
         }
-        let command = self.command_owner.acquire().await;
-        if !self.hold().await {
-            return Err(AgentError::Storage(self.fenced().to_string()));
-        }
         recheck().await?;
+
+        let catalog = self.catalog().clone();
         let actor = crate::document::store::MutationActor {
             account_id: if authority.automation {
                 String::new()
@@ -561,17 +740,10 @@ impl Room {
             policy_editor: !authority.automation && authority.policy_editor,
             unowned_publisher: !authority.automation && authority.unowned_publisher,
         };
-        let catalog = self
-            .catalog
-            .as_ref()
-            .get()
-            .ok_or_else(|| AgentError::Storage("durable catalog required".into()))?;
-        let document_id = uuid::Uuid::parse_str(&self.storage_id)
-            .map_err(|_| AgentError::Storage("room has no storage identity".into()))?;
         let authorization = super::catalog::mutation_authorization(&actor)
             .map_err(|error| AgentError::Conflict(error.to_string()))?;
         catalog
-            .authorize_document_mutation(document_id, &authorization, true)
+            .authorize_document_mutation(self.document_id, &authorization, true)
             .await
             .map_err(|error| AgentError::Conflict(error.to_string()))?;
         let document_authority = crate::storage::postgres::Authority {
@@ -583,6 +755,7 @@ impl Room {
             account_id: authorization.account_id,
             link_hash: authorization.token_hash.map(Vec::from),
         };
+
         let request_id = {
             let digest = Sha256::digest(
                 request
@@ -592,156 +765,29 @@ impl Room {
             );
             let mut bytes = [0_u8; 16];
             bytes.copy_from_slice(&digest[..16]);
-            uuid::Uuid::from_bytes(bytes)
+            Uuid::from_bytes(bytes)
         };
-        let canonical_command = serde_json::json!({
-            "kind": "agent-source-patch",
-            "operation": request.operation,
-            "base_tree": request.base_tree,
-            "consistency": request.consistency,
-            "dependencies": request.dependencies,
-            "patches": request.patches,
-            "acceptance": request.acceptance,
-            "request_digest": request.request_digest,
-            "operation_scope": authority.operation_scope,
-            "execution_epoch": authority.execution_epoch,
-        });
-        let receipt_probe = crate::storage::postgres::SemanticReceipt {
-            request_id,
-            canonical_command: canonical_command.clone(),
-            stable_result: serde_json::Value::Null,
-            status: "committed".into(),
-        };
-        if let Some(stable) = catalog
-            .semantic_receipt_result(
-                document_id,
-                &document_authority.principal_key,
-                &receipt_probe,
-            )
-            .await
-            .map_err(|error| AgentError::Conflict(error.to_string()))?
-        {
-            let mut replay: AgentReceipt = serde_json::from_value(stable)
-                .map_err(|error| AgentError::Storage(error.to_string()))?;
-            replay.replay = true;
-            return Ok(replay);
-        }
-        let resolve_annotation_id = if let Some(acceptance) = &request.acceptance {
-            let state = self.command_owner.state().await;
-            let comment = state
-                .comments
-                .iter()
-                .find(|comment| comment.id == acceptance.comment_id)
-                .ok_or_else(|| AgentError::Conflict("suggestion disappeared".into()))?;
-            if comment.resolved
-                || comment.seq != acceptance.expected_seq
-                || super::agent_comments::comment_version(comment) != acceptance.expected_version
-            {
-                return Err(AgentError::Conflict("suggestion changed".into()));
-            }
-            Some(
-                uuid::Uuid::parse_str(&acceptance.comment_id)
-                    .map_err(|_| AgentError::Conflict("suggestion identity is invalid".into()))?,
-            )
-        } else {
-            None
-        };
-        let tree = room_tree_locked(self).await;
-        let applied = apply_patches(&tree, &request)?;
-        if source_size_after(&tree, &request)? > self.config.max_document {
-            return Err(AgentError::Conflict("document size limit exceeded".into()));
-        }
-        let stable_receipt = AgentReceipt {
-            operation: request.operation.clone(),
-            status: "committed".into(),
-            source_revision_before: applied.before_tree.clone(),
-            source_revision_after: applied.after_tree.clone(),
-            replay: false,
-            accepted_comment_id: request
-                .acceptance
-                .as_ref()
-                .map(|acceptance| acceptance.comment_id.clone()),
-        };
-        let semantic_receipt = crate::storage::postgres::SemanticReceipt {
-            request_id,
-            canonical_command,
-            stable_result: serde_json::to_value(&stable_receipt)
-                .map_err(|error| AgentError::Storage(error.to_string()))?,
-            status: "committed".into(),
-        };
-        let (_, update, replayed) = self
-            .commit_edit_owned(
-                &command,
-                &document_authority,
-                crate::room::Attribution::account(&authority.account_id, &authority.owner_key),
-                super::CommitEditOptions {
-                    resolve_annotation_id,
-                    receipt: Some(&semantic_receipt),
-                    ..super::CommitEditOptions::default()
-                },
-                |candidate, _, _| {
-                    let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
-                    for patch in &request.patches {
-                        by_path.entry(&patch.path).or_default().push(patch);
-                    }
-                    for (path, mut patches) in by_path {
-                        patches.sort_by_key(|patch| std::cmp::Reverse(patch.start));
-                        let original = tree.files.get(path).ok_or_else(|| {
-                            WriteError::Conflict(format!("file is absent: {path}"))
-                        })?;
-                        let edits: Vec<_> = patches
-                            .into_iter()
-                            .map(|patch| wasm_helpers::text::Edit {
-                                at: byte_to_utf16(&original.text, patch.start),
-                                delete: byte_to_utf16(
-                                    &original.text[patch.start..],
-                                    patch.end - patch.start,
-                                ),
-                                insert: patch.replacement.clone(),
-                            })
-                            .collect();
-                        session::apply_path_edits(candidate, path, &edits);
-                    }
-                    Ok::<_, WriteError>(())
-                },
-            )
-            .await
-            .map_err(AgentError::from)?;
-        if replayed && update.is_empty() {
-            let mut replay = stable_receipt;
-            replay.replay = true;
-            return Ok(replay);
-        }
-        let signature = self
-            .signed_by(&authority.account_id, &authority.owner_key)
-            .await;
-        let checkpoint = self
-            .commit_version_owned(&command, "cli", signature, &document_authority, None)
-            .await
-            .map_err(AgentError::from)?;
 
-        let mut accepted_comment_id = None;
-        if let Some(acceptance) = &request.acceptance {
-            {
-                let mut state = self.command_owner.state().await;
-                let comment = state
-                    .comments
-                    .iter_mut()
-                    .find(|comment| comment.id == acceptance.comment_id)
-                    .ok_or_else(|| AgentError::Conflict("suggestion disappeared".into()))?;
-                comment.resolved_in = checkpoint.clone().unwrap_or_default();
-            }
-            accepted_comment_id = Some(acceptance.comment_id.clone());
-        }
-        self.broadcast_editors_except(
-            None,
-            &serde_json::json!({"type":"doc-update","update":super::encode_update(&update)}),
-        )
-        .await;
-        Ok(AgentReceipt {
-            accepted_comment_id,
-            ..stable_receipt
-        })
+        let mut command = AgentPatchCommand {
+            request: &request,
+            request_id,
+            catalog: catalog.clone(),
+            document_id: self.document_id,
+            author_account_id: document_authority.account_id,
+            author_label: authority.owner_key.clone(),
+            max_document: self.config().max_document,
+        };
+
+        // The replay check that used to run here, before the command, is
+        // now `AgentPatchCommand::replay`: it runs inside `Sequencer::command`
+        // under the transaction lock, which is what actually rules out a
+        // race between two callers both finding no label and both then
+        // running the patch. A lock held here could not have done that,
+        // because it would have been released before `command` took the
+        // sequencer's own lock.
+        self.command(&document_authority, &mut command)
+            .await
+            .map_err(AgentError::from)
     }
 }
 
@@ -750,18 +796,20 @@ mod tests {
     use super::*;
 
     fn tree(text: &str) -> SourceTree {
+        let files = [(
+            "paper.md".to_string(),
+            SourceFile {
+                file_id: "file-1".into(),
+                text: text.into(),
+            },
+        )]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+        let revision = "fixed-test-revision".to_string();
         SourceTree {
             main: "paper.md".into(),
-            files: [(
-                "paper.md".into(),
-                SourceFile {
-                    file_id: "file-1".into(),
-                    text: text.into(),
-                },
-            )]
-            .into_iter()
-            .collect(),
-            canonical: None,
+            files,
+            revision,
         }
     }
 
@@ -776,7 +824,6 @@ mod tests {
             dependencies: Vec::new(),
             patches,
             request_digest: String::new(),
-            acceptance: None,
         }
     }
 
@@ -865,6 +912,7 @@ mod tests {
         };
         assert_ne!(a.request_id(), b.request_id());
     }
+
     /// Each half of an operation key fails for its own reason, and the caller
     /// has to be told which. A single "invalid operation key" sent a model
     /// rewriting its perfectly good id five times while the epoch was the

@@ -143,11 +143,11 @@ librepaper admin serve --typst-fonts /srv/librepaper/fonts
 ```
 
 The directory is read once at startup for the families each file carries, and
-served by family at `/api/fonts/`. The editor and `publish` ask the same
-deployment for the same files, so a preview uses the same faces as a published
-rendering. Without it, a document naming a family the compiler does not embed
-is set in Typst's default faces and warned about. Which fonts a deployment
-offers, and under what licence, is the operator's decision.
+served by family at `/api/fonts/`. An editor's browser and a reader's browser
+ask the same deployment for the same files, so a preview uses the same faces
+a reader ends up seeing. Without it, a document naming a family the compiler
+does not embed is set in Typst's default faces and warned about. Which fonts
+a deployment offers, and under what licence, is the operator's decision.
 
 ## Rights
 
@@ -271,7 +271,7 @@ server whose publishers you know, and the wrong one for a server anybody may
 publish to. A public deployment that accepts uploads from strangers is durable
 hosting for whatever they upload, so set a lifetime on it.
 
-Delete documents automatically after their most recent bundle:
+Delete documents automatically after their most recent update:
 
 ```sh
 librepaper admin serve --document-expire-after 24h

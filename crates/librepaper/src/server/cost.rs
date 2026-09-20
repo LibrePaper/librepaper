@@ -103,9 +103,7 @@ struct State {
 
 pub struct CostMeter {
     config: Arc<Configuration>,
-    catalog: Arc<crate::storage::postgres::PostgresCatalog>,
     state: Mutex<State>,
-    checkpoint_gate: tokio::sync::Mutex<()>,
     pub transfers: Arc<tokio::sync::Semaphore>,
     work: Arc<tokio::sync::Semaphore>,
     emergency_work: Arc<tokio::sync::Semaphore>,
@@ -113,35 +111,22 @@ pub struct CostMeter {
 }
 
 impl CostMeter {
-    pub async fn restore(&self) -> Result<(), String> {
-        let catalog = &self.catalog;
-        let Some(value) = catalog
-            .runtime_state("cost-meter-v2")
-            .await
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(());
-        };
-        let durable: Durable = serde_json::from_value(value.get("state").cloned().unwrap_or(value))
-            .map_err(|error| format!("invalid transfer checkpoint: {error}"))?;
-        let mut state = self.state();
-        state.durable = durable;
-        Self::expire(&mut state, now_unix());
-        state.durable.policy = self.config.effective_policy();
-        self.refresh_mode(&mut state);
-        Ok(())
-    }
-
-    pub fn new(
-        config: &Arc<Configuration>,
-        catalog: Arc<crate::storage::postgres::PostgresCatalog>,
-    ) -> Self {
+    // There used to be a `restore` here, loading a durable snapshot of this
+    // struct's counters at boot to match the periodic `checkpoint` that
+    // wrote one every minute. §12 deletes that checkpoint outright ("the
+    // cost meter upserts every minute" is one of the timers REVIEW-BIG-IDEAS
+    // 2.7 names), and §14.2 requires that an idle deployment issue no
+    // queries beyond the lease keepalive. Everything this meter tracks --
+    // the rolling transfer window, request-rate buckets, response
+    // histograms -- is soft admission control, not a durable ledger: losing
+    // it on a restart means the rolling windows start empty, which is no
+    // different from what already happens every time this window's oldest
+    // minute expires. Nothing here is worth a query on a clock to save.
+    pub fn new(config: &Arc<Configuration>) -> Self {
         let durable = Durable::default();
         let unavailable = false;
         Self {
             config: config.clone(),
-            catalog,
-            checkpoint_gate: tokio::sync::Mutex::new(()),
             transfers: Arc::new(tokio::sync::Semaphore::new(config.cost.artifact_transfers)),
             work: Arc::new(tokio::sync::Semaphore::new(config.cost.work_concurrency)),
             emergency_work: Arc::new(tokio::sync::Semaphore::new(16)),
@@ -346,22 +331,6 @@ impl CostMeter {
         true
     }
 
-    pub async fn checkpoint(&self) -> Result<(), String> {
-        let _checkpoint = self.checkpoint_gate.lock().await;
-        let catalog = &self.catalog;
-        let saved = {
-            let mut state = self.state();
-            Self::expire(&mut state, now_unix());
-            self.refresh_mode(&mut state);
-            state.durable.policy = self.config.effective_policy();
-            json!({"version":2,"state":state.durable})
-        };
-        catalog
-            .set_runtime_state("cost-meter-v2", saved)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
     pub fn snapshot(&self) -> Value {
         let mut state = self.state();
         Self::expire(&mut state, now_unix());
@@ -453,6 +422,11 @@ impl Server {
         snapshot["policy"] = self.config.effective_policy();
         snapshot["rooms"] = self.rooms.cost_snapshot().await;
         snapshot["sockets"] = self.socket_budget.snapshot();
+        // §9.2's budget is the one resource that can refuse a read outright,
+        // and until it was reported a deployment that thrashed -- every read
+        // a rebuild because entries keep evicting one another -- looked from
+        // outside exactly like one that never ran short.
+        snapshot["memory_budget"] = self.rooms.registry().budget().snapshot();
         snapshot["filesystem"] = self
             .store
             .blobs

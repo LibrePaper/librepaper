@@ -55,9 +55,13 @@ export function join({ slug, documentId = "", createdAt = "", key = "", persiste
   const legacyIdentity = slug && createdAt
     ? projectIdentity({ server: globalThis.location?.origin, slug, createdAt })
     : null;
-  const browserStore = persistence === undefined && identity && options.mayEdit !== false
+  // A document known only by slug+createdAt (no documentId yet) still needs a
+  // primary key to persist under -- fall back to legacyIdentity rather than
+  // silently skipping local storage.
+  const primaryIdentity = identity || legacyIdentity;
+  const browserStore = persistence === undefined && primaryIdentity && options.mayEdit !== false
     && typeof indexedDB !== "undefined"
-    ? durableProjectPersistence(identity, globalThis.indexedDB, legacyIdentity)
+    ? durableProjectPersistence(primaryIdentity, globalThis.indexedDB, identity ? legacyIdentity : null)
     : persistence;
   return createProjectSession({
     ...options,

@@ -8,10 +8,9 @@
   import * as sync from "../lib/sync.js";
   import * as quarto from "../lib/engines/quarto.js";
   import * as figures from "../lib/figures.js";
-  import * as activity from "../lib/activity.js";
   import * as history from "../lib/history.js";
   import { createHistorySource } from "../lib/reader/history-source.svelte.js";
-  import { anchorOf, isMoment } from "../lib/moment.js";
+  import { MOMENT } from "../lib/moment.js";
   import HistoryWorkspace from "./reader/HistoryWorkspace.svelte";
   import * as passages from "../lib/passages.js";
   import * as suggestions from "../lib/suggestions.js";
@@ -23,7 +22,6 @@
   import * as localQuarto from "../lib/companion/client.js";
   import { companion } from "../lib/companion/status.svelte.js";
   import { basename } from "../lib/file-manager.js";
-  import { snapshotDigest } from "../lib/tree-digest.js";
   import { createAnnotations } from "../lib/reader/annotations.svelte.js";
   import { createReaderBoot } from "../lib/reader/boot.js";
   import { createPendingChat } from "../lib/reader/chat.js";
@@ -126,6 +124,11 @@
   let projectRefreshPending = false;
   let projectRefreshTimer = null;
   let renderedProjectDigest = $state("");
+  // Set only when this browser has never successfully shown a projection for
+  // this document: an empty pane has nothing else to say for itself, so this
+  // is what the document pane below renders instead of staying blank while
+  // `settled` silently ends the loading state (§2.2).
+  let projectUnreadable = $state("");
   const previewCacheKey = () => `${SLUG}:${doc?.created_at || "unknown"}`;
   let offlinePrepared = $state(false);
   let preparingOffline = $state(false);
@@ -153,7 +156,7 @@
   // whether the socket is up. `pending` counts the updates the server has not
   // yet said it has written; `local` says the document is in this browser's
   // own storage, which is what makes a reload safe while the socket is down.
-  let persistence = $state({ pending: 0, local: false, localPending: 0, localError: "", joined: false, confirmedCoverage: "" });
+  let persistence = $state({ pending: 0, local: false, localPending: 0, localError: "", joined: false });
 
   /* --------------------------------------------------------------- anchoring */
 
@@ -198,7 +201,7 @@
     anchor: anchorComments,
     repaint: applyHighlights,
     send: (message) => collaboration?.send(message),
-    bundleId: () => renderedProjectDigest,
+    renderDigest: () => renderedProjectDigest,
   });
   const comments = $derived(annotations.state.comments);
   const unconfirmed = $derived(annotations.state.unconfirmed);
@@ -548,7 +551,7 @@
       suffix: String(selector.suffix || ""),
       position: Number.isInteger(selector.position) && selector.position >= 0 ? selector.position : null,
     };
-    pending.bundle_id = mayEdit ? "" : renderedProjectDigest;
+    pending.render_digest = mayEdit ? "" : renderedProjectDigest;
     placeBar(rect);
   }
 
@@ -570,19 +573,25 @@
       suffix: target.suffix || "",
       position: comment.sourceStart ?? target.start_utf16,
     } : null;
+    // `Comment::revision()` (comments.rs) is the row that made the quoted
+    // text durable, not the frontier: a frontier is a byte blob with no
+    // business on the wire as an opaque staleness token, and this is the
+    // number a client echoes back for that check to mean anything (§8.2).
+    const revision = comment.original_anchor?.source_sequence != null
+      ? String(comment.original_anchor.source_sequence) : "";
     assistantRequest = {
       id: crypto.randomUUID(),
       comment: {
         id: String(comment.id), body: comment.body || "", exact: shownSelector(comment).exact,
-        proposed: comment.proposed || "", revision: comment.original_anchor?.checkpoint_id || "",
+        proposed: comment.proposed || "", revision,
         source, replies: (comment.replies || []).map((reply) => ({ body: reply.body, creator: reply.creator })),
         suggestion: comment.motivation === "editing" ? {
-          id: String(comment.id), proposed: comment.proposed || "", revision: comment.original_anchor?.checkpoint_id || "",
+          id: String(comment.id), proposed: comment.proposed || "", revision,
           path: source?.path || "", exact: source?.exact || "",
         } : null,
       },
       selection: source,
-      revision: comment.original_anchor?.checkpoint_id || "",
+      revision,
     };
     showPanel("agent");
     if (width <= 760) showMobileView("sidebar");
@@ -602,7 +611,7 @@
       tree.urls = held.urls;
     }
     return previewCandidate({ request, tree, render: renderers.render,
-      title: headingOf, digest: snapshotDigest });
+      title: headingOf, digest: renderers.snapshotDigest });
   }
 
   async function reviewAssistantResults({ suggestions: ids = [], pass = "" }) {
@@ -772,7 +781,7 @@
 
   function submitAnnotation({ motivation, body }) {
     if (!pending || !mayChat) return false;
-    if (!mayEdit && pending.bundle_id !== currentProject?.project_digest) {
+    if (!mayEdit && pending.render_digest !== currentProject?.project_digest) {
       say("The source changed since this passage was selected. Wait for the current page to finish rendering, then select the passage again; the draft is kept.", { kind: "problem", id: "reader:source-moved" });
       return false;
     }
@@ -790,14 +799,14 @@
   // One exception, and it is the recovery this reader asks for by name: when
   // the document has been published to since the draft was started, it says
   // "refresh, select it again, and submit". Selecting it again has to mean
-  // something, so a fresh selection made against the bundle now on
+  // something, so a fresh selection made against the projection now on
   // screen replaces the one the draft was holding -- which is stale by then
   // and would only be refused.
   function sendDraft({ body }) {
     if (!composing) return false;
     const held = composing.pending;
-    const moved = !mayEdit && held.bundle_id !== currentProject?.project_digest;
-    const reselected = moved && pending && pending.bundle_id === renderedProjectDigest;
+    const moved = !mayEdit && held.render_digest !== currentProject?.project_digest;
+    const reselected = moved && pending && pending.render_digest === renderedProjectDigest;
     pending = reselected ? { ...pending } : held;
     if (!submitAnnotation({ motivation: motivationFor("comment"), body })) return false;
     composing = null;
@@ -847,25 +856,23 @@
 
   // A suggestion the server refused to apply because the passage it named no
   // longer matches (`{"type":"error","stale":true,...}`): open the merge
-  // editor on the proposal applied to the checkpoint it was made against,
+  // editor on the proposal applied to the frontier it was made against,
   // beside the live text, so an editor can take what still applies by hand.
   async function openStaleSuggestion(comment) {
     const anchored = comment.original_anchor;
     const target = anchored?.kind === "source_text" ? anchored.target : null;
-    const madeOn = anchored?.checkpoint_id || "";
+    // A suggestion always carries its own frontier now, never a label
+    // (§7.3: nothing writes a label for a comment) -- `history.read`
+    // reads a `frontier:`-prefixed sha through the same route a label's sha
+    // goes through (`history.rs`'s `handle_label_read`).
+    const madeOn = anchored?.frontier ? MOMENT + anchored.frontier : "";
     if (!target || !madeOn || !session) {
       say("The passage this was suggested against has changed, and there is no earlier version of it to compare against.", { kind: "problem", id: "reader:suggestion-stale" });
       return;
     }
     const path = session.paths?.get(target.file_id) || "";
     try {
-      // A suggestion is made against whatever the document was at the time,
-      // which is usually a position in the operation history rather than a
-      // checkpoint -- nothing writes an archive for a comment. Both are read
-      // the same way here, by asking whichever endpoint holds that kind.
-      const point = isMoment(madeOn)
-        ? await activity.documentAt(SLUG, anchorOf(madeOn), keyHeaders(KEY))
-        : await history.checkpoint(SLUG, madeOn, keyHeaders(KEY));
+      const point = await history.read(SLUG, madeOn, keyHeaders(KEY));
       const baseText = point.texts?.[path] ?? "";
       const oldText = suggestions.applyProposal(baseText, target, comment.proposed ?? "");
       const tree = treeNow();
@@ -1173,7 +1180,7 @@
       annotations.replace(event.comments);
       commentsReady = true;
       reanchor();
-      if (panel === "history" && !checkpoints.length) void loadHistory();
+      if (panel === "history" && !labels.length) void loadHistory();
       return;
     }
     if (event.type === "submission-failed") {
@@ -1184,6 +1191,25 @@
       if (event.temp_id && pendingChat?.has(event.temp_id)) {
         pendingChat.acknowledge(event.temp_id, false);
         say(event.message || "The server rejected that chat message.", { kind: "problem", id: "reader:chat-rejected" });
+        return;
+      }
+      // A comment on rendered text was refused because the passage's
+      // projection moved under it before the comment landed
+      // (`CommandError::StaleSelection`, room-v2.md "Annotation HTTP
+      // results"). The server names the digest a retry should read against;
+      // a reader holds no source to reconcile a stale selection by hand, so
+      // the useful response is to refresh to that projection -- which also
+      // brings `renderedProjectDigest` current for the next attempt -- and
+      // ask the reader to reselect, rather than a generic conflict toast.
+      if (event.stale_source && event.digest) {
+        outbox.failed(event.temp_id, "That passage changed before the comment could be attached.");
+        if (event.temp_id) annotations.removePending(event.temp_id);
+        renderedProjectDigest = event.digest;
+        if (!mayEdit) void refreshCurrentProject();
+        say(
+          "The page changed while that comment was being placed. It has been refreshed to the current text; reselect the passage and try again.",
+          { kind: "problem", id: "reader:stale-selection" },
+        );
         return;
       }
       // A decision (accept or reject) that did not go through: the card was
@@ -1231,11 +1257,40 @@
     if (event.type === "doc-state") {
       session
         ?.start(event)
-        .then(() => {
-          return paintPreview();
-        })
+        .then(() => paintPreview())
         .catch((error) => say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" }));
       peers = event.count || 1;
+      return;
+    }
+    if (event.type === "doc-rows") {
+      // The rows this browser's vector did not cover, plus whatever is still
+      // in the server's buffer (§6.2). It is a join like `doc-state`, and it
+      // is awaited the same way: `doc-rows` can arrive as the whole join
+      // reply on its own, so `session.rows` awaits hydration itself, and it
+      // is sequenced behind any `start` that is still mid-fetch for a
+      // referenced base (project-session.js `joinGate`), so it can no longer
+      // be assumed synchronous.
+      session
+        ?.rows(event)
+        .then(() => paintPreview())
+        .catch((error) => say(error.message || "This document could not be opened.", { kind: "problem", id: "reader:open-failed" }));
+      return;
+    }
+    if (event.type === "doc-gap") {
+      // The server refused a batch because it did not cover what that batch
+      // started from, and dropped it rather than queueing it (§5 step 4).
+      // Nothing is lost: exporting from the vector the server named resends
+      // the refused operations along with anything else it is missing.
+      session?.gap(event.vector);
+      return;
+    }
+    if (event.type === "source-changed") {
+      // Readers and commenters never join CRDT sync (§2.1), so this frame is
+      // the only way this browser learns the head moved: refetch the
+      // projection, carrying the digest this fetch already remembers as the
+      // etag (§11). An editor's own `session` hears every edit directly and
+      // has nothing to do here.
+      if (!mayEdit) void refreshCurrentProject();
       return;
     }
     if (event.type === "doc-update") {
@@ -1249,7 +1304,7 @@
     if (event.type === "doc-ack") {
       // The server has written this far. Relaying was never durability; this
       // is, and it is what the badge is allowed to speak from.
-      session?.acknowledge(event.seq || 0, event.vector || "");
+      session?.acknowledge(event.upTo || 0);
       return;
     }
     if (event.type === "doc-peers") {
@@ -1270,21 +1325,6 @@
 
     if (event.type === "project-changed") {
       scheduleCurrentProjectRefresh();
-      return;
-    }
-
-
-    if (event.type === "attachment") {
-      // The server has resolved where a comment's passage is now, after
-      // somebody edited the document. Nothing here decides anything: the
-      // answer is taken and drawn.
-      const comment = comments.find((item) => item.id === event.comment_id);
-      if (!comment) return;
-      comment.attachment = event.attachment;
-      placeSources(session, [comment]);
-      applyAnchorFlags(comment);
-      annotations.publish();
-      applyHighlights();
       return;
     }
   }
@@ -1374,7 +1414,7 @@
   // aliases keep the existing panel and redline code readable while making
   // every value a focused controller getter rather than a Reader-owned bag.
   let mergeTarget = $state(null);
-  // The checkpoint being shown in the document pane, whole -- its tree and its
+  // The label being shown in the document pane, whole -- its tree and its
   // texts -- or null for the document as it stands.
 
   // Whether this browser should be running Quarto's own live preview rather
@@ -1498,19 +1538,18 @@
     onrestored: () => historySource.select(""),
     disposed: () => readerDisposed,
   });
-  const checkpoints = $derived(timeline.state.checkpoints);
-  const historyDurability = $derived(timeline.state.durability);
+  const labels = $derived(timeline.state.labels);
   const historyProblem = $derived(timeline.state.problem);
   // Selection is a user-interface fact, not proof that the source could be
   // read: a failed comparison reports itself in the workspace and cannot make
   // a clicked version appear unselected.
   const historySource = createHistorySource({
-    checkpoint: sha => history.checkpoint(SLUG, sha, keyHeaders(KEY)),
-    checkpoints: () => checkpoints,
+    read: sha => history.read(SLUG, sha, keyHeaders(KEY)),
+    labels: () => labels,
     preferredPath: () => session?.paths?.get(openFile) || "",
     currentTree: () => {
       if (session && session.joined !== false) return session.tree();
-      // A checkpoint URL can arrive before the initial collaborative state.
+      // A label URL can arrive before the initial collaborative state.
       // Wait for that state instead of comparing with a temporary empty tree.
       return (async () => {
         const deadline = Date.now() + 10000;
@@ -1539,31 +1578,6 @@
 
   const loadHistory = () => timeline.load();
 
-  /* ------------------------------------------- when the document was written */
-
-  // The minute-by-minute record behind the Activity view. Read when the panel
-  // that shows it is open, and not otherwise: it is a whole document's
-  // lifetime of rows, and nothing else on the page wants them.
-  let activityRows = $state([]);
-  let activityProblem = $state("");
-  let activityLoading = $state(false);
-  let activityRead = 0;
-  async function loadActivity() {
-    const mine = ++activityRead;
-    activityLoading = true;
-    try {
-      const rows = await activity.load(SLUG, keyHeaders(KEY));
-      if (readerDisposed || mine !== activityRead) return;
-      activityRows = rows;
-      activityProblem = "";
-    } catch (error) {
-      if (readerDisposed || mine !== activityRead) return;
-      activityProblem = error.message || "This document's activity could not be read.";
-    } finally {
-      if (!readerDisposed && mine === activityRead) activityLoading = false;
-    }
-  }
-
   // The timeline and the source workspace share one selection. Selecting a
   // version compares it with the current source and nothing else: the
   // document pane always shows the document as it stands.
@@ -1582,9 +1596,60 @@
     const tree = session?.tree?.();
     return JSON.stringify({ main: tree?.main || "", texts: tree?.texts || {}, files: tree?.files || {} });
   };
-  const restoreCheckpoint = (sha) => timeline.ask(sha, projectSignature());
-  const confirmRestore = () => timeline.confirm(projectSignature());
-  const nameCheckpoint = (sha, given) => timeline.name(sha, given);
+  // The base64 Loro frontier of the session as it stands right now: what a
+  // restore's `expected_frontier` names (§7.1), so the server can tell a
+  // concurrent edit nobody here has seen from the moment this browser is
+  // actually asking to replace. `loro-crdt` is imported dynamically because
+  // restoring is an editor-only action and a reader, who never opens a
+  // source session, must not pay for the wasm to reach this line.
+  async function projectFrontier() {
+    if (!session?.doc) return "";
+    const { encodeFrontiers } = await import("loro-crdt");
+    const bytes = encodeFrontiers(session.doc.frontiers());
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  }
+  const restoreLabel = async (sha) => timeline.ask(sha, projectSignature(), await projectFrontier());
+  const confirmRestore = async () => timeline.confirm(projectSignature(), await projectFrontier());
+  const nameLabel = (sha, given) => timeline.name(sha, given);
+
+  /// A version's plain-source archive is produced on request (room-v2.md
+  /// "Labels", §8.5): the first ask starts it, and it is a 404 until it
+  /// finishes. Without this the only affordance would be a click that either
+  /// does nothing visible for a while or silently 404s a moment later; this
+  /// polls `archive_status` and keeps the panel saying so until it is
+  /// `"ready"` (then downloads) or `"failed"` (then says that instead of
+  /// spinning forever).
+  let downloadingSha = $state("");
+  let downloadProblem = $state("");
+  async function downloadArchive(sha) {
+    if (downloadingSha === sha) return;
+    downloadingSha = sha;
+    downloadProblem = "";
+    try {
+      for (;;) {
+        const label = await history.requestArchive(SLUG, sha, keyHeaders(KEY));
+        if (downloadingSha !== sha) return; // superseded by a later request
+        if (label.archive_status === "ready") {
+          const anchor = document.createElement("a");
+          anchor.href = history.archiveUrl(SLUG, sha);
+          anchor.download = "";
+          anchor.click();
+          return;
+        }
+        if (label.archive_status === "failed") {
+          downloadProblem = "That version's archive could not be prepared.";
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    } catch (error) {
+      if (downloadingSha === sha) downloadProblem = error.message || "That version's archive could not be prepared.";
+    } finally {
+      if (downloadingSha === sha) downloadingSha = "";
+    }
+  }
 
   /* -------------------------------------------- the passage, then and now */
 
@@ -1597,9 +1662,9 @@
     key: KEY,
     now: () => ({ source: sourceGeneration, visible: docText }),
     paths: () => session?.paths,
-    loadCheckpoints: async () => {
+    loadLabels: async () => {
       await loadHistory();
-      return timeline.state.checkpoints;
+      return timeline.state.labels;
     },
   });
   const went = $derived(passageTrace.state.went);
@@ -1607,7 +1672,7 @@
 
   async function tracePassages() {
     if (docText === null || !session) return;
-    return passageTrace.trace({ comments, tree: session.tree(), checkpoints });
+    return passageTrace.trace({ comments, tree: session.tree(), labels });
   }
 
   // The document as a renderer takes it: every text in it, the figures by
@@ -1616,7 +1681,7 @@
   //
   // Before a session arrives there is no source tree to render.
   // The file manager always operates on the live directory. In particular,
-  // its list remains live while the document pane is showing a checkpoint, so
+  // its list remains live while the document pane is showing a label, so
   // downloads must use the same source as that list.
   function liveTreeNow() {
     if (!session) {
@@ -1791,7 +1856,7 @@
   // `navigateFrame`. That is what lets every HTML document be served as
   // itself, scripts and all, now that reading always takes a credential.
   //
-  // And a checkpoint is always painted, whatever the format: the frame is
+  // And a label is always painted, whatever the format: the frame is
   // served from the live document, so there is nothing on the documents origin
   // that is the document as it was on Tuesday.
   const displayedFormat = $derived(
@@ -2028,7 +2093,7 @@
     if (!remembered || readerDisposed || everPainted || !paintsTheFrame) return;
     paintedFromCache = true;
     cacheMatchedSource = Boolean(remembered.identity)
-      && remembered.identity === await snapshotDigest(treeNow()).catch(() => "");
+      && remembered.identity === await renderers.snapshotDigest(treeNow()).catch(() => "");
     if (readerDisposed || everPainted) return;
     framePreview.publish(remembered.kind === "pdf"
       ? { kind: "pdf", sha: remembered.identity, bytes: new Uint8Array(remembered.bytes).slice() }
@@ -2114,7 +2179,7 @@
     },
     diagnostics: diagnosticPainter,
     renderers,
-    snapshotDigest,
+    snapshotDigest: renderers.snapshotDigest,
     diagnosticContext,
     parseSynctex,
     rememberPreview: (page, identity) => {
@@ -2316,7 +2381,7 @@
   // reader's habits rather than anything about a document. The preferences
   // own them, and own writing them down -- see `reader/preferences.svelte.js`
   // for why those are one act and not two.
-  const preferences = createPreferences();
+  const preferences = createPreferences(SLUG);
   const prefs = preferences.state;
   const layout = $derived(prefs.layout);
   const sourceSide = $derived(prefs.sourceSide);
@@ -2405,7 +2470,7 @@
   });
 
   // The history panel refreshes itself while it is open. It polls rather than
-  // listening because a checkpoint is written by the server and there is no
+  // listening because a label is written by the server and there is no
   // room event that says so.
   //
   // Only while the panel is open, only while this tab is the one being looked
@@ -2443,7 +2508,6 @@
     // doing, not a view to come back to, so it is set rather than remembered.
     if (compact) prefs.mobileView = name ? "sidebar" : "document";
     if (name !== "history") return Promise.resolve();
-    void loadActivity();
     return loadHistory();
   }
 
@@ -2974,11 +3038,23 @@
     projectFetch = (async () => {
       const response = await fetch(`/api/documents/${encodeURIComponent(SLUG)}/project`, { headers });
       if (response.status === 304) return;
-      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "The current project could not be loaded.");
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        // A document whose projection exceeds a resource bound answers 503
+        // and stays unreadable on the server until recovered (§2.2); its
+        // editors can still type and export locally, but this browser is a
+        // reader with no source of its own to fall back to. Carry the status
+        // so the catch below can say that plainly rather than the generic
+        // "could not be loaded" a transient network failure gets.
+        const failure = new Error(body.error || "The current project could not be loaded.");
+        failure.status = response.status;
+        throw failure;
+      }
       const next = await response.json();
       if (readerDisposed || mayEdit) return;
       projectEtag = response.headers.get("etag") || `"${next.project_digest}"`;
       currentProject = next;
+      projectUnreadable = "";
       sourceFormat = next.format || sourceFormat;
       configureLatex(sourceFormat, readerProjectOwner);
       sourceGeneration += 1;
@@ -2987,7 +3063,19 @@
       renderers.warm(sourceFormat);
       void paintPreview();
     })().catch((error) => {
-      if (!readerDisposed) say(error.message || "The current project could not be loaded.", { kind: "problem", id: "reader:project-load" });
+      if (readerDisposed) return;
+      const message = error?.status === 503
+        ? (error.message || "This document is too large to render right now. It stays unreadable here until its editors bring it back under the limit; they can still type and export locally in the meantime.")
+        : (error?.message || "The current project could not be loaded.");
+      // Never leave the pane spinning on a project this browser has not yet
+      // shown anything for: a reader with no source of its own has nothing
+      // else to paint while this stays broken, so the loading state has to
+      // end here rather than waiting on a render that is never coming.
+      if (!currentProject) {
+        projectUnreadable = message;
+        settled = true;
+      }
+      say(message, { kind: "problem", id: "reader:project-load" });
     }).finally(() => {
       projectFetch = null;
       if (projectRefreshPending) {
@@ -3066,7 +3154,7 @@
     // until then.
     void restoreLastPreview();
     await startCollaboration(document_);
-    // `onSource` starts bundle metadata only after the initial document state
+    // `onSource` starts projection metadata only after the initial document state
     // has populated the source tree. A session object alone is not a snapshot.
     // No chooser and no saved distribution: `latex.configure` tells the
     // controller which project this is and what it is allowed to do, and the
@@ -3082,7 +3170,6 @@
       // The column reopened where it was left, and this panel has to fetch
       // what it shows.
       loadHistory();
-      void loadActivity();
     }
   }
 
@@ -3650,10 +3737,9 @@
   {/snippet}
 
   {#snippet historyPanel()}
-    <History {checkpoints} viewing={historySelectedSha} canEdit={mayEdit}
-      durability={historyDurability} problem={historyProblem} onview={viewPoint}
-      activity={activityRows} activityProblem={activityProblem} activityLoading={activityLoading}
-      onname={nameCheckpoint} />
+    <History {labels} viewing={historySelectedSha} canEdit={mayEdit}
+      problem={historyProblem} onview={viewPoint}
+      onname={nameLabel} />
   {/snippet}
 
   <!-- Annotations the server has not acknowledged, offered back wherever
@@ -3700,13 +3786,16 @@
            a PDF through the browser's own viewer, which shows the first page
            without this application carrying a PDF renderer of its own. -->
       {#if panel === "history"}
-        <HistoryWorkspace source={historySource} canEdit={mayEdit} onrestore={restoreCheckpoint} />
+        <HistoryWorkspace source={historySource} canEdit={mayEdit} onrestore={restoreLabel}
+          ondownload={downloadArchive}
+          downloading={downloadingSha === historySource.selected ? downloadingSha : ""}
+          downloadProblem={downloadingSha === historySource.selected ? downloadProblem : ""} />
       {:else if mergeTarget && MergeEditor}
         <MergeEditor path={mergeTarget.path} oldText={mergeTarget.oldText} newText={mergeTarget.newText}
                      liveText={mergeTarget.liveText} ephemeral={mergeTarget.ephemeral} loroDoc={mergeTarget.loroDoc}
                      diff
                      editable={mergeTarget.editable !== false && mayEdit && editing}
-                     baselineLabel={mergeTarget.baselineLabel || "checkpoint"}
+                     baselineLabel={mergeTarget.baselineLabel || "label"}
                      targetLabel={mergeTarget.targetLabel}
                      note={mergeTarget.note || ""}
                      onclose={() => (mergeTarget = null)} />
@@ -3751,7 +3840,22 @@
        the engine on its own, automatically, and the Preview header carries
        loading and failure states. Every paged format
        renders from source on demand; generated output remains transient. -->
-  {#if shown.document && failedBeforeRender}
+  {#if shown.document && projectUnreadable}
+    <!-- No projection ever arrived, so there is no tree to compile and no
+         renderer card below has anything to say. This is the one state that
+         is not "not yet" -- the server itself has nothing to hand this
+         browser -- so it gets its own plain message instead of a blank pane
+         or a spinner that `settled` silently ended (§2.2). -->
+    <section class="latexpane">
+      <div class="notyet">
+        <h2 class="h4">This document cannot be shown right now</h2>
+        <p class="text-surface-700-300 text-sm">{projectUnreadable}</p>
+        <div class="notyet-actions">
+          <button class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void refreshCurrentProject()}>Try again</button>
+        </div>
+      </div>
+    </section>
+  {:else if shown.document && failedBeforeRender}
     <section class="latexpane">
       <div class="notyet">
         <h2 class="h4">Could not render</h2>
@@ -3825,7 +3929,7 @@
   {/snippet}
   <Preview bind:this={preview} src={frameSrc} {docsOrigin} onmessage={fromFrame} onload={frameLoaded} {grabbing}
            controls={previewControls}
-           away={!shown.document || unrendered || failedBeforeRender} />
+           away={!shown.document || unrendered || failedBeforeRender || projectUnreadable} />
 
   <!-- The panels, and only the panels. Which face the main area wears -- the
        document or its source -- is not a panel, and it rode in this row for

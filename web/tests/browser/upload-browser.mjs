@@ -40,7 +40,7 @@ try {
     globalThis.fetch = async (url, init = {}) => {
       const path = String(url);
       if (path === '/api/config') return new Response(JSON.stringify(config), { headers: {'content-type':'application/json'} });
-      if (path === '/api/me') return new Response(JSON.stringify({can_publish:true, providers:[]}));
+      if (path === '/api/me') return new Response(JSON.stringify({name:'Tester', can_publish:true, providers:[]}));
       if (path === '/api/list') return new Response(JSON.stringify({documents:[]}));
       if (path === '/api/documents' && init.method === 'POST') {
         for (const [name, value] of init.body.entries()) window.uploadEntries.push({name, filename:value.name, bytes:value instanceof Blob ? await value.text() : value});

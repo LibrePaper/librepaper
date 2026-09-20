@@ -36,8 +36,8 @@ use crate::document::store::{
     Role, Store,
 };
 use crate::room::{
-    decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomHandle,
-    RoomSet, Sender,
+    decode_update, encode_update, Message as RoomMessage, Outgoing, Room, RoomCommand, Rooms,
+    Sender,
 };
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
@@ -46,11 +46,15 @@ use crate::server::shell::{renderers, ShellFile};
 use crate::util::clean;
 
 mod chat;
+#[cfg(test)]
+mod comment_http_tests;
 pub mod cost;
 mod documents;
 mod figures;
 pub mod fonts;
 mod history;
+#[cfg(test)]
+mod history_frontier_tests;
 mod host_metrics;
 mod mcp;
 mod onboarding;
@@ -81,14 +85,21 @@ use socket::*;
 /// its authorization-aware API.
 pub struct DocumentService {
     pub store: Arc<Store>,
-    pub rooms: RoomSet,
+    pub rooms: Rooms,
+    /// Wakes the in-process background worker for state a request just
+    /// wrote -- an archive request, a delete -- rather than leaving it to be
+    /// found on the worker's next startup scan (§8.6). Cheap to hold: it is
+    /// a channel sender, not the worker itself.
+    pub background: crate::storage::worker::Handle,
 }
 
 impl DocumentService {
-    pub fn new(store: Store) -> Self {
-        let store = Arc::new(store);
-        let rooms = RoomSet::new(store.clone());
-        Self { store, rooms }
+    pub fn new(store: Store, rooms: Rooms, background: crate::storage::worker::Handle) -> Self {
+        Self {
+            store: Arc::new(store),
+            rooms,
+            background,
+        }
     }
 
     /// Read through the authoritative catalogue without conflating a storage
@@ -380,6 +391,33 @@ impl Viewer {
         }
     }
 
+    /// The same identity as `document_authority`, in the shape
+    /// `authorize_annotation_mutation` checks a comment command's rung
+    /// against (§7): the account's live session, and the link's token hash
+    /// rather than only its digest. `policy_editor` is the deployment's own
+    /// ceiling for this identity (`Server::ceiling_for`), passed in because
+    /// a viewer does not know the deployment's policy on its own.
+    pub fn mutation_authorization(
+        &self,
+        policy_editor: bool,
+    ) -> crate::storage::postgres::MutationAuthorization {
+        let account_id = uuid::Uuid::parse_str(&self.id.id).ok();
+        let token_hash = (!self.link.is_empty())
+            .then(|| hex::decode(&self.link).ok())
+            .flatten()
+            .and_then(|bytes| bytes.try_into().ok());
+        crate::storage::postgres::MutationAuthorization {
+            principal_key: account_id
+                .map(|id| id.to_string())
+                .or_else(|| (!self.link.is_empty()).then(|| format!("link:{}", self.link)))
+                .unwrap_or_else(|| format!("visitor:{}", self.key)),
+            account_id,
+            session_generation: self.id.session_generation.parse::<i64>().ok(),
+            token_hash,
+            policy_editor,
+        }
+    }
+
     /// What a write by this caller is attributed to. The display string is
     /// the one the timeline has always shown -- the owner key, or the handle
     /// for a caller who has no key -- and the account is the stable provider
@@ -538,6 +576,8 @@ impl Server {
     #[allow(clippy::too_many_arguments)] // a server is made of exactly these
     pub fn new(
         store: Store,
+        rooms: Rooms,
+        background: crate::storage::worker::Handle,
         shell: HashMap<String, ShellFile>,
         app: GithubApp,
         key: Vec<u8>,
@@ -546,13 +586,13 @@ impl Server {
         commenters: Policy,
     ) -> Server {
         // Rooms and durable document storage form one service boundary and
-        // are wired before the server can be observed.
-        let documents = DocumentService::new(store);
+        // are wired before the server can be observed. The rooms and the
+        // worker handle come from the caller because they share the registry
+        // (§4.3) that `serve` also hands the worker itself; building a second
+        // one here would mean two caches of the same documents.
+        let documents = DocumentService::new(store, rooms, background);
         let accounts = Arc::new(GithubAccounts::new(&app));
-        let cost = Arc::new(cost::CostMeter::new(
-            &config,
-            documents.store.catalog.clone(),
-        ));
+        let cost = Arc::new(cost::CostMeter::new(&config));
         let socket_budget = socket_budget::SocketBudget::new(config.sockets);
         let mcp_capacity = mcp::Capacity::default();
         Server {
@@ -1099,14 +1139,21 @@ impl Server {
         })
     }
 
-    /// Enforces the comment policy, then hands the message to the room. When
-    /// commenting needs a GitHub account, the name on the comment is the
-    /// verified login rather than whatever the client typed.
+    /// Enforces the comment policy, then runs the message as a semantic
+    /// command (§7). When commenting needs a GitHub account, the name on the
+    /// comment is the verified login rather than whatever the client typed.
+    ///
+    /// `_address` and `_budget` are unused: the per-caller comment rate is
+    /// the deployment's own concern and belongs beside the other request
+    /// budgets (`server::quota`), not reimplemented ad hoc here against the
+    /// annotation tables. Nothing about identity or authority is looser for
+    /// it -- every command below still runs through `room.command`, which
+    /// still fences on the writer epoch (§7 step 4).
     async fn apply_from(
         &self,
         room: &Room,
         incoming: RoomMessage,
-        address: &str,
+        _address: &str,
         who: &Viewer,
         author: &str,
     ) -> (Value, bool) {
@@ -1153,69 +1200,450 @@ impl Server {
         } else {
             pseudonym_for(author, &room.slug)
         };
-        // Which link the remark came in on, so an owner can tell reviewer two
-        // from reviewer three without either having signed anything. Empty for
-        // a commenter by name.
-        let command = command.with_creator(creator.clone());
-        // Nothing is written here before the comment is. A source-side comment
-        // still records the state of the document the reviewer was looking at,
-        // but it names that state by the frontier the room is at when the
-        // anchor is taken, under the same lock -- so there is no window for a
-        // co-editor to invalidate, nothing to retry, and no source archive
-        // written for the sake of having something to point at.
-        let (mut result, ok) = room
-            .apply_command_with_actor(
+        let command = command.with_creator(creator);
+        let authority = who.document_authority();
+        let authorization = who.mutation_authorization(self.ceiling_for(&who.id).edit);
+        let author_account_id = uuid::Uuid::parse_str(&id.id).ok();
+        let author_key = author.to_owned();
+        let temp_id = command.temp_id().to_owned();
+        let comment_id_field = command.comment_id().to_owned();
+
+        let outcome = self
+            .run_comment_command(
+                room,
                 command,
-                address,
-                author,
-                &who.link,
-                who.comment_budget,
+                &authority,
+                authorization,
+                author_account_id,
+                &author_key,
                 may_edit,
-                self.annotation_mutation_actor(who, false),
             )
             .await;
-        if !request_id.is_empty() {
-            result["request_id"] = json!(request_id);
+        // Every command above wrote straight to `annotations` (or the
+        // proposal tables beside it) through the sequencer rather than
+        // through the room's own comment-mutating methods, so nothing has
+        // invalidated the room's cached list yet; this is that invalidation
+        // (`comments()` on the next read rebuilds it from the catalogue).
+        room.forget_comments().await;
+        let (mut result, ok) = match outcome {
+            Ok(value) => (value, true),
+            Err(response) => (response, false),
+        };
+        if let Some(fields) = result.as_object_mut() {
+            if !request_id.is_empty() {
+                fields.entry("request_id").or_insert(json!(request_id));
+            }
+            if !temp_id.is_empty() {
+                fields.entry("temp_id").or_insert(json!(temp_id));
+            }
+            if !comment_id_field.is_empty() {
+                fields
+                    .entry("comment_id")
+                    .or_insert(json!(comment_id_field));
+            }
+            fields.insert("version".into(), json!(1));
+            fields.insert("protocol".into(), json!("librepaper.room.v1"));
         }
-        result["version"] = json!(1);
-        result["protocol"] = json!("librepaper.room.v1");
         (result, ok)
     }
 
-    /// Decides a suggestion -- an `accept` or a `reject` -- the way
-    /// `apply_from` decides everything else a room takes: it returns what to
-    /// answer the requester with, and whether it is also worth broadcasting.
-    /// Called from both places a room accepts a message, the socket loop and
-    /// the REST comments route, so the two speak identical JSON.
-    ///
-    /// Unlike `apply_from`, an accept can itself change the live document, so
-    /// its document update is relayed here, the way `handle_restore` relays a
-    /// restore's -- to every socket, sender included, since nobody's own copy
-    /// already has an edit the server made on their behalf.
-    fn annotation_mutation_actor(
+    /// Turns one validated [`RoomCommand`] into the [`crate::log::Command`]
+    /// it names and runs it. Split out of `apply_from` because the match has
+    /// eight arms and each one needs its own lookup before it can build its
+    /// command -- `apply_from` stays about policy and shape, this is only
+    /// about which command a wire message means.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_comment_command(
         &self,
-        who: &Viewer,
-        require_editor: bool,
-    ) -> crate::document::store::MutationActor {
-        let ceiling = self.ceiling_for(&who.id);
-        crate::document::store::MutationActor {
-            account_id: who.id.id.clone(),
-            owner_key: who.key.clone(),
-            session_generation: who.id.session_generation.clone(),
-            link_hash: who.link.clone(),
-            policy_editor: if require_editor {
-                ceiling.edit
-            } else {
-                ceiling.comment
-            },
-            unowned_publisher: false,
+        room: &Room,
+        command: RoomCommand,
+        authority: &crate::storage::postgres::Authority,
+        authorization: crate::storage::postgres::MutationAuthorization,
+        author_account_id: Option<uuid::Uuid>,
+        author_key: &str,
+        may_edit: bool,
+    ) -> Result<Value, Value> {
+        let catalog = self.store.catalog.clone();
+        let config = &self.config;
+        let document_id = room.document_id;
+        let fail = |message: String| Err(json!({"type": "error", "message": message}));
+
+        match command {
+            RoomCommand::Comment {
+                motivation,
+                render_digest,
+                body,
+                creator,
+                exact,
+                prefix,
+                suffix,
+                position,
+                document,
+                color,
+                proposed,
+                request_id,
+                ..
+            } => {
+                let id =
+                    uuid::Uuid::parse_str(&request_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+                let expected_render_digest = (!render_digest.is_empty())
+                    .then(|| hex::decode(&render_digest).ok())
+                    .flatten()
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+                let mut new_comment = crate::room::AddComment::new(
+                    catalog.clone(),
+                    document_id,
+                    id,
+                    config,
+                    &motivation,
+                    &body,
+                    &creator,
+                    author_account_id,
+                    author_key.to_string(),
+                    authorization.clone(),
+                    &exact,
+                    &prefix,
+                    &suffix,
+                    position,
+                    document,
+                    color.as_deref(),
+                    proposed.as_deref(),
+                    expected_render_digest,
+                )
+                .map_err(|error| json!({"type": "error", "message": error}))?;
+                let comment = room
+                    .command(authority, &mut new_comment)
+                    .await
+                    .map_err(command_error_value)?;
+                Ok(json!({"type": "comment", "comment": comment}))
+            }
+            RoomCommand::Reply {
+                comment_id,
+                body,
+                creator,
+                request_id,
+                ..
+            } => {
+                let Ok(comment_id) = uuid::Uuid::parse_str(&comment_id) else {
+                    return fail("unknown comment".into());
+                };
+                let id =
+                    uuid::Uuid::parse_str(&request_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+                let mut add_reply = crate::room::AddReply::new(
+                    catalog.clone(),
+                    document_id,
+                    id,
+                    comment_id,
+                    config,
+                    &body,
+                    &creator,
+                    author_account_id,
+                    author_key.to_string(),
+                    authorization.clone(),
+                )
+                .map_err(|error| json!({"type": "error", "message": error}))?;
+                let outcome = room
+                    .command(authority, &mut add_reply)
+                    .await
+                    .map_err(command_error_value)?;
+                Ok(
+                    json!({"type": "reply", "comment_id": outcome.comment_id, "reply": outcome.reply}),
+                )
+            }
+            RoomCommand::Resolve {
+                comment_id,
+                resolved,
+                ..
+            } => {
+                let Ok(comment_id) = uuid::Uuid::parse_str(&comment_id) else {
+                    return fail("unknown comment".into());
+                };
+                let mut resolve = crate::room::ResolveComment::new(
+                    catalog.clone(),
+                    document_id,
+                    comment_id,
+                    resolved,
+                    authorization.clone(),
+                );
+                let outcome = room
+                    .command(authority, &mut resolve)
+                    .await
+                    .map_err(command_error_value)?;
+                Ok(json!({"type": "resolve", "comment_id": outcome.comment_id,
+                    "resolved": outcome.resolved, "resolved_at": outcome.resolved_at}))
+            }
+            RoomCommand::Delete { comment_id, .. } => {
+                let Ok(parsed_id) = uuid::Uuid::parse_str(&comment_id) else {
+                    return fail("unknown comment".into());
+                };
+                let mut delete = crate::room::DeleteComment::new(
+                    catalog.clone(),
+                    document_id,
+                    parsed_id,
+                    author_key.to_string(),
+                    may_edit,
+                    authorization.clone(),
+                );
+                room.command(authority, &mut delete)
+                    .await
+                    .map_err(command_error_value)?;
+                Ok(json!({"type": "delete", "comment_id": comment_id}))
+            }
+            RoomCommand::Refine {
+                comment_id,
+                proposed,
+                body,
+                ..
+            } => {
+                let Ok(parsed_id) = uuid::Uuid::parse_str(&comment_id) else {
+                    return fail("unknown comment".into());
+                };
+                let (proposal_id, expected_version, exact, prefix, suffix) = match self
+                    .proposal_for_comment(&catalog, document_id, parsed_id)
+                    .await
+                {
+                    Ok(found) => found,
+                    Err(message) => return fail(message),
+                };
+                let mut refine = crate::room::RefineSuggestion::new(
+                    catalog.clone(),
+                    document_id,
+                    parsed_id,
+                    proposal_id,
+                    expected_version,
+                    author_key.to_string(),
+                    may_edit,
+                    config,
+                    &body,
+                    &exact,
+                    &prefix,
+                    &suffix,
+                    &proposed,
+                    authorization.clone(),
+                )
+                .map_err(|error| json!({"type": "error", "message": error}))?;
+                let comment = room
+                    .command(authority, &mut refine)
+                    .await
+                    .map_err(command_error_value)?;
+                Ok(json!({"type": "refine", "comment": comment}))
+            }
+            RoomCommand::Accept { comment_id, .. } => {
+                let Ok(parsed_id) = uuid::Uuid::parse_str(&comment_id) else {
+                    return fail("unknown comment".into());
+                };
+                let (proposal_id, request_id, decided_by) = match self
+                    .accept_reject_context(&catalog, document_id, parsed_id, author_key)
+                    .await
+                {
+                    Ok(found) => found,
+                    Err(message) => return fail(message),
+                };
+                let proposal = match catalog.proposal(proposal_id).await {
+                    Ok(Some(proposal)) => proposal,
+                    Ok(None) => return fail("unknown suggestion".into()),
+                    Err(error) => return fail(error.to_string()),
+                };
+                let mut accept = crate::room::AcceptSuggestion::new(
+                    catalog.clone(),
+                    document_id,
+                    parsed_id,
+                    proposal_id,
+                    proposal.base_frontiers,
+                    proposal.tip_frontiers,
+                    proposal.branch_bytes,
+                    decided_by,
+                    authorization.clone(),
+                    request_id,
+                );
+                let accepted = room
+                    .command(authority, &mut accept)
+                    .await
+                    .map_err(command_error_value)?;
+                Ok(json!({
+                    "type": "accept",
+                    "comment": accepted.comment,
+                    "resolved_in": accepted.resolved_in,
+                }))
+            }
+            RoomCommand::Reject { comment_id, .. } => {
+                let Ok(parsed_id) = uuid::Uuid::parse_str(&comment_id) else {
+                    return fail("unknown comment".into());
+                };
+                let (proposal_id, _request_id, decided_by) = match self
+                    .accept_reject_context(&catalog, document_id, parsed_id, author_key)
+                    .await
+                {
+                    Ok(found) => found,
+                    Err(message) => return fail(message),
+                };
+                let proposal = match catalog.proposal(proposal_id).await {
+                    Ok(Some(proposal)) => proposal,
+                    Ok(None) => return fail("unknown suggestion".into()),
+                    Err(error) => return fail(error.to_string()),
+                };
+                let mut reject = crate::room::RejectSuggestion::new(
+                    catalog.clone(),
+                    document_id,
+                    parsed_id,
+                    proposal_id,
+                    proposal.tip_frontiers,
+                    decided_by,
+                    authorization.clone(),
+                );
+                let comment = room
+                    .command(authority, &mut reject)
+                    .await
+                    .map_err(command_error_value)?;
+                Ok(json!({"type": "reject", "comment": comment}))
+            }
+            // Agent candidate revisions are the assistant surface's own
+            // concept (`server::mcp`), not an annotation command; nothing in
+            // this room's comment protocol produces one.
+            RoomCommand::RevisionDecide => {
+                fail("revision decisions are not handled on the comment channel".into())
+            }
         }
+    }
+
+    /// The proposal a suggestion comment names, and the version a refine
+    /// checks its edit against (§7.2: a conditional transition reads the
+    /// version rather than trusting a client-supplied one).
+    async fn proposal_for_comment(
+        &self,
+        catalog: &crate::storage::postgres::PostgresCatalog,
+        document_id: uuid::Uuid,
+        comment_id: uuid::Uuid,
+    ) -> Result<(uuid::Uuid, i64, String, String, String), String> {
+        let comment = self
+            .comment_row(catalog, document_id, comment_id)
+            .await
+            .ok_or_else(|| "unknown comment".to_string())?;
+        let proposal_id = uuid::Uuid::parse_str(&comment.proposal)
+            .map_err(|_| "that comment has no suggestion".to_string())?;
+        let proposal = catalog
+            .proposal(proposal_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "unknown suggestion".to_string())?;
+        // The passage as the comment currently has it anchored, which is
+        // what `RefineSuggestion` relocates from -- not anything the wire
+        // message carries, since `Command::Refine` names only the new
+        // proposal, never the old quote.
+        let (exact, prefix, suffix) = match comment.source() {
+            Some(target) => (
+                target.exact.clone(),
+                target.prefix.clone(),
+                target.suffix.clone(),
+            ),
+            None => return Err("that comment has no source passage".to_string()),
+        };
+        Ok((proposal_id, proposal.version, exact, prefix, suffix))
+    }
+
+    /// What `accept` and `reject` both need before they can build their
+    /// command: the proposal id and a display name for who decided.
+    async fn accept_reject_context(
+        &self,
+        catalog: &crate::storage::postgres::PostgresCatalog,
+        document_id: uuid::Uuid,
+        comment_id: uuid::Uuid,
+        author_key: &str,
+    ) -> Result<(uuid::Uuid, uuid::Uuid, String), String> {
+        let comment = self
+            .comment_row(catalog, document_id, comment_id)
+            .await
+            .ok_or_else(|| "unknown comment".to_string())?;
+        let proposal_id = uuid::Uuid::parse_str(&comment.proposal)
+            .map_err(|_| "that comment has no suggestion".to_string())?;
+        let decided_by = if author_key.is_empty() {
+            "Anonymous".to_string()
+        } else {
+            author_key.to_string()
+        };
+        Ok((proposal_id, uuid::Uuid::new_v4(), decided_by))
+    }
+
+    /// A comment by id, read straight from the catalogue rather than through
+    /// the room's cache: `run_comment_command` needs it to look up a
+    /// suggestion's proposal before the command that decides it exists, so
+    /// there is no cached copy to trust yet.
+    async fn comment_row(
+        &self,
+        catalog: &crate::storage::postgres::PostgresCatalog,
+        document_id: uuid::Uuid,
+        comment_id: uuid::Uuid,
+    ) -> Option<crate::room::Comment> {
+        // The catalogue-backed loader already used by `Room::comments`
+        // (`room::comments::load`) is document-wide; reuse it rather than
+        // hand-rolling a single-row query, since a suggestion decision is
+        // rare enough that the extra rows cost nothing.
+        crate::room::comments::load(catalog, document_id)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|comment| comment.id == comment_id.to_string())
     }
 }
 /// Where the manual lives. It is a static site, deployed separately from this
 /// binary, so a documentation change never needs a release and a deployment
 /// never carries a copy of the text.
 pub const DOCUMENTATION: &str = "https://librepaper.org";
+
+/// A sequencer failure as an HTTP answer. Every variant of
+/// [`crate::log::SequencerError`] is retryable from a caller's point of
+/// view -- an unreadable document waits on recovery, a busy budget or a lost
+/// fence waits on the next attempt -- so this is the one place that decides
+/// it is a 503, and every route that reads a projection reads the reason out
+/// of the same error rather than reimplementing `unreadable()`'s message.
+pub(super) fn sequencer_reply(error: &crate::log::SequencerError) -> Reply {
+    write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+}
+
+/// A semantic command's failure as an HTTP answer (§7.1, §7.2). `Conflict`
+/// and `StaleSelection` are the command's own precondition speaking, so they
+/// answer 409 with the message or the current digest a client refreshes
+/// against; the other two variants are `SequencerError` in different
+/// clothing and get the same 503 treatment.
+pub(super) fn command_reply(error: crate::log::CommandError) -> Reply {
+    match error {
+        crate::log::CommandError::Conflict(message) => write_json(409, &json!({"error": message})),
+        crate::log::CommandError::StaleSelection { digest } => write_json(
+            409,
+            &json!({
+                "error": "current project identity is required; refresh before annotating",
+                "digest": digest,
+            }),
+        ),
+        crate::log::CommandError::Storage(error) => {
+            write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+        }
+        crate::log::CommandError::Sequencer(error) => sequencer_reply(&error),
+    }
+}
+
+/// The same mapping as [`command_reply`], for a caller that answers over the
+/// socket protocol rather than with an HTTP status: `apply_from` builds one
+/// JSON value either way, and the room's own error frame shape (`{"type":
+/// "error", ...}`) is what both the socket loop and the REST comments route
+/// send back to a client.
+fn command_error_value(error: crate::log::CommandError) -> Value {
+    match error {
+        crate::log::CommandError::Conflict(message) => json!({"type": "error", "message": message}),
+        crate::log::CommandError::StaleSelection { digest } => json!({
+            "type": "error",
+            "message": "current project identity is required; refresh before annotating",
+            "stale_source": true,
+            "digest": digest,
+        }),
+        crate::log::CommandError::Storage(error) => {
+            json!({"type": "error", "message": error.to_string(), "retryable": true})
+        }
+        crate::log::CommandError::Sequencer(error) => {
+            json!({"type": "error", "message": error.to_string(), "retryable": true})
+        }
+    }
+}
 
 #[cfg(test)]
 mod automation_authority_tests {

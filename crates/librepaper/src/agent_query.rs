@@ -16,9 +16,9 @@ use sha2::{Digest, Sha256};
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct QuerySnapshot {
     #[serde(default)]
-    pub source_revision: String,
+    pub tree_digest: String,
     #[serde(default)]
-    pub annotation_revision: u64,
+    pub comment_digest: u64,
     #[serde(default)]
     pub main: String,
     /// Canonical tree metadata. It is never returned whole.
@@ -128,9 +128,9 @@ const MAX_STRUCTURAL_ITEMS: usize = 16_384;
 
 fn snapshot_index_key(snapshot: &QuerySnapshot) -> String {
     let mut hash = Sha256::new();
-    hash.update(snapshot.source_revision.as_bytes());
+    hash.update(snapshot.tree_digest.as_bytes());
     hash.update([0]);
-    hash.update(snapshot.annotation_revision.to_le_bytes());
+    hash.update(snapshot.comment_digest.to_le_bytes());
     for (path, source) in &snapshot.texts {
         hash.update(path.as_bytes());
         hash.update([0]);
@@ -871,7 +871,7 @@ fn range_value(
     let (file_id, file_hash) = file_identity(snapshot, path, source);
     json!({
         "path":path, "file_id":file_id, "file_hash":file_hash,
-        "source_revision":snapshot.source_revision,
+        "tree_digest":snapshot.tree_digest,
         "start":start, "end":end,
         "range":{"start":start,"end":end,"start_byte":start,"end_byte":end},
         "source":&source[start..end], "partial":partial
@@ -997,7 +997,7 @@ fn search_query(
             "path":hit.path.as_ref(), "file_id":file_id,
             "start":hit.start, "end":hit.end,
             "range":{"start":hit.start,"end":hit.end,"start_byte":hit.start,"end_byte":hit.end},
-            "source_revision":snapshot.source_revision, "exact":&source[hit.start..hit.end],
+            "tree_digest":snapshot.tree_digest, "exact":&source[hit.start..hit.end],
             "line":hit.line, "column":hit.column,
             "prefix":&source[prefix_start..hit.start], "suffix":&source[hit.end..suffix_end]
         }));
@@ -1154,7 +1154,7 @@ fn outline_query(
                 "line":heading.line, "level":heading.level, "text":heading.title,
                 "range":{"start":heading.start,"end":heading.end,"start_byte":heading.start,"end_byte":heading.end},
                 "title_range":{"start":heading.title_start,"end":heading.end,"start_byte":heading.title_start,"end_byte":heading.end},
-                "source_revision":snapshot.source_revision
+                "tree_digest":snapshot.tree_digest
             }));
         }
     }
@@ -1355,7 +1355,7 @@ fn bibliography_query(
                     "type":entry.entry_type,"author":entry.author,"title":entry.title,
                     "start":entry.start,"end":entry.end,
                     "range":{"start":entry.start,"end":entry.end,"start_byte":entry.start,"end_byte":entry.end},
-                    "source_revision":snapshot.source_revision
+                    "tree_digest":snapshot.tree_digest
                 }));
             }
         }
@@ -1657,10 +1657,7 @@ fn paginate_array(
 fn encode_cursor(snapshot: &QuerySnapshot, kind: &str, query: &str, offset: usize) -> String {
     let cursor = Cursor {
         version: 1,
-        revision: format!(
-            "{}.{}",
-            snapshot.source_revision, snapshot.annotation_revision
-        ),
+        revision: format!("{}.{}", snapshot.tree_digest, snapshot.comment_digest),
         kind: kind.to_string(),
         query: query.to_string(),
         offset,
@@ -1682,11 +1679,7 @@ fn decode_cursor(
     let cursor: Cursor =
         serde_json::from_slice(&bytes).map_err(|_| "invalid pagination cursor".to_string())?;
     if cursor.version != 1
-        || cursor.revision
-            != format!(
-                "{}.{}",
-                snapshot.source_revision, snapshot.annotation_revision
-            )
+        || cursor.revision != format!("{}.{}", snapshot.tree_digest, snapshot.comment_digest)
         || cursor.kind != kind
         || cursor.query != fingerprint(query)
     {
@@ -1717,8 +1710,8 @@ fn envelope(
     budget: QueryBudget,
 ) -> Value {
     let mut value = json!({
-        "source_revision":snapshot.source_revision,
-        "annotation_revision":snapshot.annotation_revision,
+        "tree_digest":snapshot.tree_digest,
+        "comment_digest":snapshot.comment_digest,
         "results":results, "complete":complete,
         "truncation_reason":reason, "next_cursor":next_cursor,
         "returned_bytes":0, "returned_tokens":0
@@ -1780,8 +1773,8 @@ mod tests {
 
     fn snapshot() -> QuerySnapshot {
         QuerySnapshot {
-            source_revision: "rev-a".into(),
-            annotation_revision: 7,
+            tree_digest: "rev-a".into(),
+            comment_digest: 7,
             main: "main.md".into(),
             tree: json!({"files":{"main.md":{"id":"file-1","sha":"sha-1"}}}),
             texts: [
@@ -2009,8 +2002,8 @@ mod tests {
             .map(|index| format!("@book{{key{index},title={{Title {index}}}}}\n"))
             .collect::<String>();
         let captured = QuerySnapshot {
-            source_revision: "structural-pagination".into(),
-            annotation_revision: 1,
+            tree_digest: "structural-pagination".into(),
+            comment_digest: 1,
             main: "main.md".into(),
             tree: Value::Null,
             texts: [
@@ -2064,8 +2057,8 @@ mod tests {
         let filler = "x".repeat(4 * 1024 * 1024);
         let source = format!("# Intro\nneedle\n{filler}\nneedle\n");
         let captured = QuerySnapshot {
-            source_revision: "index-benchmark-revision".into(),
-            annotation_revision: 1,
+            tree_digest: "index-benchmark-revision".into(),
+            comment_digest: 1,
             main: "main.md".into(),
             tree: Value::Null,
             texts: [("main.md".into(), source)].into_iter().collect(),

@@ -19,11 +19,13 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents/{slug}/state", get(document_state))
         .route("/api/documents/{slug}/project", get(document_project))
         .route("/api/documents/{slug}/history", get(history))
-        .route("/api/documents/{slug}/activity", get(activity))
-        .route("/api/documents/{slug}/at", get(document_at))
         .route(
             "/api/documents/{slug}/history/{sha}",
-            get(checkpoint).patch(label_checkpoint),
+            get(label_read).patch(label_patch),
+        )
+        .route(
+            "/api/documents/{slug}/history/{sha}/archive",
+            get(label_archive),
         )
         .route("/api/documents/{slug}/restore", post(restore))
         .route("/api/documents/{slug}/rename", post(rename))
@@ -166,38 +168,6 @@ async fn document_project(
         .await
 }
 
-async fn document_at(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    Path(slug): Path<String>,
-    request: Request<Body>,
-) -> Reply {
-    server
-        .handle_at(
-            request.headers(),
-            &ctx.arrival,
-            &slug,
-            request.uri().query(),
-        )
-        .await
-}
-
-async fn activity(
-    State(server): State<Arc<Server>>,
-    Extension(ctx): Extension<RequestContext>,
-    Path(slug): Path<String>,
-    request: Request<Body>,
-) -> Reply {
-    server
-        .handle_activity(
-            request.headers(),
-            &ctx.arrival,
-            &slug,
-            request.uri().query(),
-        )
-        .await
-}
-
 async fn history(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
@@ -214,18 +184,35 @@ async fn history(
         .await
 }
 
-async fn checkpoint(
+async fn label_read(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
     Path((slug, sha)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_checkpoint(request.headers(), &ctx.arrival, &slug, &sha)
+        .handle_label_read(
+            request.headers(),
+            &ctx.arrival,
+            &slug,
+            &sha,
+            request.uri().query(),
+        )
         .await
 }
 
-async fn label_checkpoint(
+async fn label_archive(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, sha)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_label_archive(request.headers(), &ctx.arrival, &slug, &sha)
+        .await
+}
+
+async fn label_patch(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
     Path((slug, sha)): Path<(String, String)>,
@@ -503,7 +490,7 @@ pub(super) fn bundled_documentation(path: &str) -> Option<&'static str> {
         "/skills/librepaper-document/references/editing.md" => Some(include_str!(
             "../../../../skills/librepaper-document/references/editing.md"
         )),
-        "/docs/protocol/room-v1.md" => Some(include_str!("../../../../docs/protocol/room-v1.md")),
+        "/docs/protocol/room-v2.md" => Some(include_str!("../../../../docs/protocol/room-v2.md")),
         "/docs/protocol/chat.md" => Some(include_str!("../../../../docs/protocol/chat.md")),
         _ => None,
     }
@@ -813,7 +800,7 @@ pub(super) async fn dispatch(
             if !server.may_read(&entry, &who) {
                 return write_json(404, &json!({"error": "not found"}));
             }
-            let room = match server.rooms.try_get(slug).await {
+            let room = match server.rooms.get(slug).await {
                 Ok(room) => room,
                 Err(error) => {
                     return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
@@ -822,8 +809,14 @@ pub(super) async fn dispatch(
             let (total, open) = room.counts().await;
             // Every path in the directory, for the landing page's search: a
             // project is found by the files in it as well as by its title.
-            // Paths only -- the digests are the timeline's business.
-            let files: Vec<String> = room.tree().await.files.into_keys().collect();
+            // Paths only -- the digests are the timeline's business. An
+            // unreadable document still lists by title; it just has no
+            // paths to search on until it is recovered (§9.3).
+            let files: Vec<String> = room
+                .projection()
+                .await
+                .map(|projected| projected.projection.files.keys().cloned().collect())
+                .unwrap_or_default();
             let role = who.role;
             let owned = role.at_least(Role::Editor);
             let metadata = crate::results::document_metadata(&entry.source_format);
@@ -909,7 +902,7 @@ pub(super) async fn dispatch(
             });
             // Paths and source format are project metadata. They are useful to
             // editors and local source rendering, but have no place in a
-            // bundle reader response.
+            // reader's response, which sees only the projection (§2.2).
             if owned {
                 body["sha"] = json!(entry.sha);
                 body["execution_engine"] = json!(metadata.execution_engine);
@@ -1070,8 +1063,8 @@ impl Server {
         // shell below.
         //
         // The shell contains no project bytes. It is intentionally available
-        // before a first bundle so editors keep their local preview;
-        // reader display bytes use the bundle route above instead.
+        // before a document exists so editors keep their local preview;
+        // reader display bytes come from the projection instead (§2.2).
         let empty =
             b"<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>"
                 .to_vec();

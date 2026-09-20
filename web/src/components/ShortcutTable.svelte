@@ -19,12 +19,18 @@
   let { context = {}, modalEditor = false, apple = APPLE } = $props();
 
   const groups = $derived(helpTable(context, { apple }));
+
+  // This table is deliberately mounted twice at once (behind `?` and in
+  // settings), and a static id would collide between the two copies in the
+  // DOM. `$props.id()` is unique per component instance, so each mount gets
+  // its own ids without either caller having to know the other exists.
+  const uid = $props.id();
 </script>
 
 <div class="shortcuts">
   {#each groups as group (group.name)}
-    <section class="group" aria-labelledby="shortcuts-{group.name}">
-      <h3 class="group-name" id="shortcuts-{group.name}">{group.name}</h3>
+    <section class="group" aria-labelledby="shortcuts-{uid}-{group.name}">
+      <h3 class="group-name" id="shortcuts-{uid}-{group.name}">{group.name}</h3>
       <table class="keytable">
         <thead class="sr-only">
           <tr><th scope="col">Command</th><th scope="col">Shortcut</th><th scope="col">Where it works</th></tr>

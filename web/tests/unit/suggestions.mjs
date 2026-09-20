@@ -102,7 +102,7 @@ function check(what, condition) {
   check("beginning a decision marks the card busy, not resolved", comment.deciding === "accept" && comment.resolved === false);
 
   applyDecision(comment, { resolved_in: "4f2a91c", resolved_at: "2026-09-07T00:00:00Z" }, "accepted");
-  check("a settled accept resolves the card with its outcome and checkpoint", comment.resolved === true && comment.outcome === "accepted" && comment.resolved_in === "4f2a91c" && !("deciding" in comment));
+  check("a settled accept resolves the card with its outcome and label", comment.resolved === true && comment.outcome === "accepted" && comment.resolved_in === "4f2a91c" && !("deciding" in comment));
 }
 
 {

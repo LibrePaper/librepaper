@@ -62,7 +62,7 @@
     {:else}
       <div class="flex flex-col gap-3">
         <ul class="account-consequences">
-          <li>Every project you own is deleted, with its files, comments, checkpoints and share links.</li>
+          <li>Every project you own is deleted, with its files, comments, labels and share links.</li>
           <li>Comments and suggestions you left on other people's documents stay there, relabelled “Deleted user” and no longer linked to this account.</li>
           <li>The account record — provider, handle, name and email — is deleted once its documents are gone.</li>
           <li>You are signed out immediately and cannot sign in again, so nothing here can call it off. Only the operator can, and only before the deletion runs.</li>

@@ -55,6 +55,10 @@ pub enum KnownMessage {
         #[serde(default)]
         temp_id: String,
     },
+    // `librepaper.room.v2` requires `protocol` before any update is
+    // accepted and has no `after` fallback (SPEC-server-is-a-log.md §6.1);
+    // `version`/`schema_version` are gone because the protocol string alone
+    // now carries the handshake, and `doc-sync` no longer exists.
     #[serde(rename = "doc-open")]
     DocOpen {
         #[serde(default)]
@@ -63,23 +67,6 @@ pub enum KnownMessage {
         request_id: String,
         #[serde(default)]
         protocol: String,
-        #[serde(default)]
-        version: u32,
-        #[serde(default)]
-        schema_version: u32,
-    },
-    #[serde(rename = "doc-sync")]
-    DocSync {
-        #[serde(default)]
-        vector: String,
-        #[serde(default)]
-        request_id: String,
-        #[serde(default)]
-        protocol: String,
-        #[serde(default)]
-        version: u32,
-        #[serde(default)]
-        schema_version: u32,
     },
     #[serde(rename = "doc-presence")]
     DocPresence {
@@ -124,8 +111,8 @@ pub enum KnownMessage {
         #[serde(default)]
         request_id: String,
     },
-    #[serde(rename = "doc-checkpoint")]
-    DocCheckpoint {
+    #[serde(rename = "doc-label")]
+    DocLabel {
         #[serde(default)]
         why: String,
         #[serde(default)]
@@ -187,7 +174,7 @@ pub enum KnownMessage {
         #[serde(default)]
         motivation: String,
         #[serde(default)]
-        bundle_id: String,
+        render_digest: String,
         #[serde(default)]
         body: String,
         #[serde(default)]
@@ -255,8 +242,6 @@ pub enum KnownMessage {
         #[serde(default)]
         body: String,
         #[serde(default)]
-        revision: String,
-        #[serde(default)]
         temp_id: String,
         #[serde(default)]
         request_id: String,
@@ -307,13 +292,12 @@ impl KnownMessage {
             "ping"
                 | "chat"
                 | "doc-open"
-                | "doc-sync"
                 | "doc-presence"
                 | "doc-update"
                 | "doc-update-start"
                 | "doc-update-chunk"
                 | "doc-update-end"
-                | "doc-checkpoint"
+                | "doc-label"
                 | "proposal-suggest"
                 | "proposal-open"
                 | "proposal-update"
@@ -335,13 +319,12 @@ impl KnownMessage {
             Self::Ping => "ping",
             Self::Chat { .. } => "chat",
             Self::DocOpen { .. } => "doc-open",
-            Self::DocSync { .. } => "doc-sync",
             Self::DocPresence { .. } => "doc-presence",
             Self::DocUpdate { .. } => "doc-update",
             Self::DocUpdateStart { .. } => "doc-update-start",
             Self::DocUpdateChunk { .. } => "doc-update-chunk",
             Self::DocUpdateEnd { .. } => "doc-update-end",
-            Self::DocCheckpoint { .. } => "doc-checkpoint",
+            Self::DocLabel { .. } => "doc-label",
             Self::ProposalSuggest { .. } => "proposal-suggest",
             Self::ProposalOpen { .. } => "proposal-open",
             Self::ProposalUpdate { .. } => "proposal-update",
@@ -361,12 +344,11 @@ impl KnownMessage {
         request_id,
         request_id,
         DocOpen
-            | DocSync
             | DocUpdate
             | DocUpdateStart
             | DocUpdateChunk
             | DocUpdateEnd
-            | DocCheckpoint
+            | DocLabel
             | ProposalSuggest
             | ProposalOpen
             | ProposalUpdate
@@ -393,7 +375,7 @@ impl KnownMessage {
     );
     string_field!(body, body, Chat | Comment | Reply | Refine);
     string_field!(motivation, motivation, Comment);
-    string_field!(bundle_id, bundle_id, Comment);
+    string_field!(render_digest, render_digest, Comment);
     string_field!(creator, creator, Comment | Reply);
     string_field!(exact, exact, ProposalSuggest | Comment);
     string_field!(prefix, prefix, ProposalSuggest | Comment);
@@ -403,14 +385,13 @@ impl KnownMessage {
         update,
         DocPresence | DocUpdate | DocUpdateChunk | ProposalUpdate
     );
-    string_field!(vector, vector, DocOpen | DocSync);
-    string_field!(protocol, protocol, DocOpen | DocSync);
+    string_field!(vector, vector, DocOpen);
+    string_field!(protocol, protocol, DocOpen);
     string_field!(proposal_id, proposal_id, ProposalUpdate | ProposalDecide);
     string_field!(base, base, ProposalOpen);
     string_field!(tip, tip, ProposalUpdate | ProposalDecide);
     string_field!(note, note, ProposalDecide);
-    string_field!(why, why, DocCheckpoint);
-    string_field!(revision, revision, Refine);
+    string_field!(why, why, DocLabel);
     string_field!(revision_id, revision_id, RevisionDecide);
     string_field!(action, action, RevisionDecide);
     option_field!(proposed, proposed, ProposalSuggest | Comment | Refine);
@@ -430,8 +411,6 @@ impl KnownMessage {
     value_field!(chunks, chunks, usize, DocUpdateStart);
     value_field!(index, index, usize, DocUpdateChunk);
     value_field!(hunk, hunk, usize, ProposalDecide);
-    value_field!(version, version, u32, DocOpen | DocSync);
-    value_field!(schema_version, schema_version, u32, DocOpen | DocSync);
 }
 
 impl Message {
@@ -486,8 +465,8 @@ impl Message {
     pub fn motivation(&self) -> &str {
         self.string(KnownMessage::motivation)
     }
-    pub fn bundle_id(&self) -> &str {
-        self.string(KnownMessage::bundle_id)
+    pub fn render_digest(&self) -> &str {
+        self.string(KnownMessage::render_digest)
     }
     pub fn creator(&self) -> &str {
         self.string(KnownMessage::creator)
@@ -524,9 +503,6 @@ impl Message {
     }
     pub fn why(&self) -> &str {
         self.string(KnownMessage::why)
-    }
-    pub fn revision(&self) -> &str {
-        self.string(KnownMessage::revision)
     }
     pub fn revision_id(&self) -> &str {
         self.string(KnownMessage::revision_id)
@@ -569,12 +545,6 @@ impl Message {
     }
     pub fn hunk(&self) -> usize {
         self.value(KnownMessage::hunk)
-    }
-    pub fn version(&self) -> u32 {
-        self.value(KnownMessage::version)
-    }
-    pub fn schema_version(&self) -> u32 {
-        self.value(KnownMessage::schema_version)
     }
     pub fn doc_update(update: String, seq: i64, request_id: String) -> Self {
         Self::Known(KnownMessage::DocUpdate {

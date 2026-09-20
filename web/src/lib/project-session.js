@@ -215,18 +215,40 @@ export function createProjectSession({
   let presenceConnection = 0;
   let announcedConnection = -1;
   let left = false;
+
+  // A join can arrive as `doc-state` alone, `doc-rows` alone, or `doc-state`
+  // naming a base by reference followed by `doc-rows` (§6.2 steps 3-5). Each
+  // is its own WebSocket frame and its own turn on the event loop, so nothing
+  // about receiving them stops `doc-rows` from running while `start`'s
+  // hydration wait or referenced-base fetch is still in flight -- `start` is
+  // asynchronous and its caller does not block on it before the next message
+  // is dispatched. `sequenceJoin` gives every step that imports into `doc` on
+  // the way in a strict order: whichever one is in flight is awaited before
+  // the next one imports anything or exports a catch-up, so the exported
+  // vector never describes a document this browser has not finished
+  // assembling, and a `doc-rows` frame that turns out to be the first frame
+  // of a join still gets hydration awaited, the same as `start` gets it.
+  let joinGate = Promise.resolve();
+  function sequenceJoin(step) {
+    const ran = joinGate.then(step, step);
+    // The gate itself must never reject, or every join step queued behind a
+    // failed one would be skipped; the failure still reaches this step's own
+    // caller through `ran`.
+    joinGate = ran.then(() => {}, () => {});
+    return ran;
+  }
+
   // Whether the document is in this client's own storage, which is what makes
   // a reload safe while the socket is down.
   let local = !mayEdit;
   let localPending = 0;
   let localError = "";
-  let confirmedCoverage = "";
 
   // A read-only client keeps nothing: it has no local changes to lose. An
   // editor can still work when storage is unavailable, but `local` remains
   // false so its UI does not call those changes safe on this device.
   let persister = null;
-  const report = () => onState?.({ pending: unacknowledged.size, local, localPending, localError, joined, confirmedCoverage });
+  const report = () => onState?.({ pending: unacknowledged.size, local, localPending, localError, joined });
   try {
     persister = persistence?.open?.(doc, {
       hydrated() { local = true; report(); },
@@ -247,10 +269,8 @@ export function createProjectSession({
         localError = error?.message || String(error || "local persistence failed");
         report();
       },
-      confirmed(coverage) {
-        confirmedCoverage = coverage || "";
-        report();
-      },
+      // §6.3: nothing is persisted per batch and there is no replay cursor,
+      // so there is no coverage confirmation to record here any more.
     }) || null;
   } catch (error) {
     localError = error?.message || String(error || "local persistence failed");
@@ -393,24 +413,26 @@ export function createProjectSession({
     }
   }
 
-  /// Everything this browser has, as one update. Sending it after a join is
-  /// how the changes made while the socket was down reach the server: applying
-  /// it is idempotent, so it costs nothing when there were none.
+  /// Everything this browser has beyond `vector`, as one update. Sending it
+  /// after a join (§6.2 step 6) is how the changes made while the socket was
+  /// down reach the server: applying it is idempotent, so it costs nothing
+  /// when there were none. The same export is what a `doc-gap` reply asks
+  /// for (§5 step 4): the server refused a batch it could not place and
+  /// dropped it rather than queueing it, so this is what makes that work
+  /// reach the log.
   function catchUp(vector) {
-    // A server can include the state vector used for its state response. In
-    // that case only this browser's missing operations are sent back; older
-    // servers omit it, so the bounded full-history path remains compatible.
-    let whole;
-    if (vector) {
-      // And the mirror of the above: what arrives is bytes, and what `from`
-      // wants is a version vector. Handing it the bytes is not an error --
-      // it reads as an empty vector and resends the whole history, which is
-      // correct but is the thing this branch exists to avoid.
-      whole = doc.export({ mode: "update", from: VersionVector.decode(decode(vector)) });
-    } else {
-      // Export the full history from an empty version vector
-      whole = doc.export({ mode: "update" });
-    }
+    // What arrives on the wire is bytes, and what `from` wants is a version
+    // vector, so it has to be decoded first. Handing `from` the bytes is not
+    // an error, it just reads as an empty vector and resends the whole
+    // history, which is correct but is the thing this decode exists to
+    // avoid.
+    //
+    // Absent or empty bytes ARE the empty vector, and mean "send
+    // everything": the server reads them the same way
+    // (`sequencer::decode_vector`), and the two sides have to agree or a
+    // document nobody has typed into yet cannot be joined at all.
+    const from = vector ? VersionVector.decode(decode(vector)) : new VersionVector();
+    const whole = doc.export({ mode: "update", from });
     const mine = ++seq;
     // One entry stands for every update it contains: the acknowledgment of
     // this send is the acknowledgment of all of them.
@@ -418,6 +440,17 @@ export function createProjectSession({
     unacknowledged.set(mine, whole);
     report();
     sendUpdate(whole, mine);
+  }
+
+  /// What both `doc-state` and `doc-rows` do once the import they carried is
+  /// applied (§6.2 step 6): the browser is caught up with the server, so it
+  /// announces itself and, if it may edit, sends back whatever it has that
+  /// the server's vector does not cover yet.
+  function finishJoin(vector) {
+    joined = true;
+    announcePresence();
+    if (mayEdit) catchUp(vector);
+    else report();
   }
 
   return {
@@ -772,61 +805,91 @@ export function createProjectSession({
       return {
         type: "doc-open",
         vector: encode(doc.oplogVersion().encode()),
-        protocol: "librepaper.room.v1",
-        version: 1,
-        schema_version: 1,
+        // The protocol string carries the version now; there is no separate
+        // `version`/`schema_version` field to keep in step with it. A server
+        // that cannot speak this protocol answers with upgrade-required
+        // before this socket can send an update (§6.1).
+        protocol: "librepaper.room.v2",
       };
     },
 
-    /// The server's answer to `doc-open`: the document, or -- when it is too
-    /// large for a text frame -- somewhere to fetch it from.
-    async start(state) {
-      // Disk recovery must win the race with the room handshake. Otherwise a
-      // delayed import lands after catch-up and is never offered to the
-      // server (hydration is intentionally not a local Loro update).
-      await persister?.hydration;
-      if (left) return;
-      if ((state.protocol && state.protocol !== "librepaper.room.v1")
-        || Number(state.version || 1) > 1
-        || Number(state.schema_version || 1) > 1) {
-        throw new Error("This document requires a newer LibrePaper version.");
-      }
-      if (state.ref) {
-        // Same origin, immutable, digest-bound, and short-lived. Whatever arrives during the
-        // fetch is caught up by the state sent below, which is why the fetch
-        // does not have to be atomic with anything.
-        //
-        // It carries what every other call to the API carries. The opaque
-        // reference identifies bytes but does not authorize whoever holds
-        // it, so the route asks again -- and asking means the
-        // same-origin marker rule A turns on, and the link key a reader
-        // arrived with. Without them a document too large to send inline was
-        // refused, which is what the notebook examples were doing.
-        if (!fetchReference) throw new Error("this client cannot fetch referenced document state");
-        let referenced;
-        try {
-          referenced = await fetchReference(state.ref);
-        } catch (error) {
-          if (error?.restartBaseline && !left) {
-            send(open());
-            return;
+    /// The server's answer to `doc-open`: either everything (§6.2 step 3),
+    /// or the base -- inline or by reference -- for a join `doc-rows` (below)
+    /// will finish (§6.2 steps 4-5). Sequenced through `joinGate` so a
+    /// `doc-rows` frame that lands mid-fetch waits for this to finish
+    /// importing before it touches `doc` itself.
+    start(state) {
+      return sequenceJoin(async () => {
+        // Disk recovery must win the race with the room handshake. Otherwise a
+        // delayed import lands after catch-up and is never offered to the
+        // server (hydration is intentionally not a local Loro update).
+        await persister?.hydration;
+        if (left) return;
+        if (state.protocol !== "librepaper.room.v2") {
+          throw new Error("This document requires a newer LibrePaper version.");
+        }
+        if (state.ref) {
+          // Same origin, immutable, digest-bound, and short-lived. Whatever arrives during the
+          // fetch is caught up by the state sent below, which is why the fetch
+          // does not have to be atomic with anything.
+          //
+          // It carries what every other call to the API carries. The opaque
+          // reference identifies bytes but does not authorize whoever holds
+          // it, so the route asks again -- and asking means the
+          // same-origin marker rule A turns on, and the link key a reader
+          // arrived with. Without them a document too large to send inline was
+          // refused, which is what the notebook examples were doing.
+          if (!fetchReference) throw new Error("this client cannot fetch referenced document state");
+          let referenced;
+          try {
+            referenced = await fetchReference(state.ref);
+          } catch (error) {
+            if (error?.restartBaseline && !left) {
+              send(open());
+              return;
+            }
+            throw error;
           }
-          throw error;
+          if (!state.digest || await sha256Hex(referenced) !== state.digest) {
+            throw new Error("referenced document state failed its integrity check");
+          }
+          doc.import(referenced);
+        } else if (state.base) {
+          doc.import(decode(state.base));
         }
-        if (!state.digest || await sha256Hex(referenced) !== state.digest) {
-          throw new Error("referenced document state failed its integrity check");
-        }
-        doc.import(referenced);
-      } else if (state.update) {
-        doc.import(decode(state.update));
-      }
-      joined = true;
-      announcePresence();
-      // Whatever this browser has that the server may not: its own unsent
-      // work, and -- after a reference fetch -- anything that landed while it
-      // was in flight.
-      if (mayEdit) catchUp(state.vector);
-      else report();
+        // Two Loro updates concatenated are not one Loro update, so each row
+        // is imported as its own entry in the batch rather than joined first.
+        if (state.updates?.length) doc.importBatch(state.updates.map(decode));
+        finishJoin(state.vector);
+      });
+    },
+
+    /// Rows the join's `doc-open` vector did not cover, sent after (or
+    /// instead of, when the base alone was enough) `doc-state` (§6.2 steps
+    /// 4-5). Importing is the same batch operation as above; catching up is
+    /// the same operation as `start`, hence `finishJoin`. `doc-rows` can also
+    /// arrive as the WHOLE join reply (step 4), so this awaits hydration
+    /// itself rather than assuming `start` already did -- and `sequenceJoin`
+    /// still lines it up behind a `start` that is mid-fetch for a referenced
+    /// base, so the rows this frame carries are never caught up ahead of the
+    /// base they build on.
+    rows(frame) {
+      return sequenceJoin(async () => {
+        await persister?.hydration;
+        if (left) return;
+        if (frame.updates?.length) doc.importBatch(frame.updates.map(decode));
+        finishJoin(frame.vector);
+      });
+    },
+
+    /// The server refused a batch because its start vector was not covered
+    /// (§5 step 4): the batch was dropped, not queued, so this export from
+    /// the vector the server actually holds is what makes that work reach
+    /// the log. A reader never sends updates, so a `doc-gap` naming one
+    /// should not reach it, but nothing here assumes that holds.
+    gap(vector) {
+      if (left || !mayEdit) return;
+      catchUp(vector);
     },
 
     apply(update) {
@@ -839,18 +902,14 @@ export function createProjectSession({
       settleColour();
     },
 
-    /// The server has written everything up to this number. Relaying was never
-    /// this; storage is.
-    acknowledge(upTo, coverage = "") {
-      // A transport sequence alone is not durable evidence. New servers send
-      // the committed Loro coverage; old acknowledgements remain conservative
-      // and leave work pending for vector reconciliation.
-      if (!coverage) return;
+    /// The server has written everything up to this number. Relaying was
+    /// never this; storage is. §6.3: nothing is persisted per batch and
+    /// there is no replay cursor, so there is nothing else to reconcile here
+    /// -- clearing the in-memory map is the whole of it.
+    acknowledge(upTo) {
       for (const mine of [...unacknowledged.keys()]) {
         if (mine <= upTo) unacknowledged.delete(mine);
       }
-      confirmedCoverage = coverage;
-      void persister?.confirm?.(coverage);
       report();
     },
 

@@ -174,7 +174,6 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             let next = current?.version === 3 ? current : {
               version: 3,
               snapshot: current?.snapshot || (current instanceof Uint8Array ? current : null),
-              confirmedCoverage: current?.confirmedCoverage || "",
             };
             if (!next.snapshot || count >= COMPACT_AFTER_UPDATES || bytes >= COMPACT_AFTER_BYTES) {
               const merging = new LoroDoc();
@@ -247,7 +246,6 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
             const pending = await updatesFor(transaction);
             for (const item of pending) doc.import(new Uint8Array(item.update));
             if (pending.length) persistedVector = doc.oplogVersion().encode();
-            events.confirmed?.(record?.confirmedCoverage || "");
           }
           hydrating = false;
           unsubscribe = doc.subscribe(changed);
@@ -274,20 +272,15 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
           if (dirty) await putState();
           await pendingFlush;
         },
-        async confirm(coverage) {
-          await hydration;
-          await pendingFlush;
-          if (closed || !coverage) return;
-          database ||= await openOfflineDatabase(indexedDB_);
-          const transaction = database.transaction(STATES, "readwrite");
-          const done = transactionDone(transaction);
-          const store = transaction.objectStore(STATES);
-          const current = await requestResult(store.get(key));
-          record = { ...(current || record || { version: 3, snapshot: null }), confirmedCoverage: coverage };
-          store.put(record, key);
-          await done;
-          events.confirmed?.(coverage);
-        },
+        // There is no `confirm(coverage)` any more, and there is no stored
+        // coverage to confirm. The server used to send the Loro vector it
+        // had durably covered on every acknowledgement, and this kept it so
+        // a restart could tell which of its own updates were already safe.
+        // SPEC-server-is-a-log §6.3 removes it: nothing is persisted per
+        // batch and no replay cursor exists, so there is no ordering between
+        // cursor persistence and update persistence to get wrong. What is
+        // here is the whole document, and reconnecting exports whatever the
+        // server's vector says it is missing.
         close() {
           closed = true;
           unsubscribe?.();

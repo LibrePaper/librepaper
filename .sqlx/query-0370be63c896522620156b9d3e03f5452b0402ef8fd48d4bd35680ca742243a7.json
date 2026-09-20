@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT update_sequence AS \"update_sequence!\",update_bytes AS \"update_bytes!\",\n                      vector AS \"vector!\",created_at AS \"created_at!\"\n               FROM document_updates\n               WHERE document_id=$1 AND update_sequence>$2 AND update_sequence<=$3\n               ORDER BY update_sequence",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "update_sequence!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "update_bytes!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "vector!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0370be63c896522620156b9d3e03f5452b0402ef8fd48d4bd35680ca742243a7"
+}

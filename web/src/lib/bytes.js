@@ -1,7 +1,7 @@
 // Coercing arbitrary values to bytes, in the three contracts this codebase
 // actually uses.
 //
-// These were five separate copies -- in `tree-digest.js`, `latex.js`,
+// These were five separate copies -- in `projection-digest.js`, `latex.js`,
 // `companion/client.js` and `latex/bibliography.js` -- and they had
 // already drifted into three different answers for the same input: a string
 // was `null` in one, encoded UTF-8 in another; an unrecognised value was

@@ -41,6 +41,10 @@ fn document() -> Router {
 
 #[tokio::test]
 async fn history_outage_fails_export_without_overwriting_output() {
+    // A "response" export always reads the label list (SPEC-server-is-a-log
+    // §8.2, `document_labels`), because it needs `source_sequence` to compare
+    // against even when `--from` was not given. An outage there must fail the
+    // export rather than silently produce one with nothing to compare against.
     let app = document()
         .route(
             "/api/documents/paper/comments",
@@ -74,14 +78,17 @@ async fn history_outage_fails_export_without_overwriting_output() {
 
 #[tokio::test]
 async fn typst_response_uses_its_immutable_source_target() {
-    // A comment as the server serves one: the passage it is about, in the
-    // checkpoint it was made against, and -- separately -- what became of that
-    // passage since. The export reads both and re-renders nothing.
+    // A comment as the server serves one: the passage it is about, with the
+    // evidence of the state it was made against (SPEC-server-is-a-log §7 step
+    // 4: `source_sequence` and `frontier`, not a label sha), and --
+    // separately -- what became of that passage since. The export reads both
+    // and re-renders nothing.
     let comment = json!({
         "id": "review",
         "body": "Cats are not blue.",
         "original_anchor": {
-            "checkpoint_id": "old",
+            "source_sequence": 1,
+            "frontier": "",
             "kind": "source_text",
             "target": {
                 "file_id": "main-file",
@@ -95,7 +102,7 @@ async fn typst_response_uses_its_immutable_source_target() {
             }
         },
         "attachment": {
-            "checkpoint_id": "new",
+            "tree_digest": "cafef00d",
             "status": "deleted"
         }
     });
@@ -109,7 +116,7 @@ async fn typst_response_uses_its_immutable_source_target() {
         )
         .route(
             "/api/documents/paper/history",
-            get(|| async { Json(json!({"checkpoints":[{"sha":"old"},{"sha":"new"}]})) }),
+            get(|| async { Json(json!({"labels":[]})) }),
         );
     let (server, task) = serve(app).await;
     let output = cli(&server, &["export", "paper", "--format", "response"]).await;

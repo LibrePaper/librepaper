@@ -16,7 +16,7 @@
 
 import { authHeaders } from "./api.js";
 
-export function openRoom(slug, { onMessage, onConnected, key = "" }) {
+export function openRoom(slug, { onMessage, onConnected, onSourceChanged, key = "" }) {
   let socket = null;
   let backoff = 500;
   let dropped = null;
@@ -102,6 +102,12 @@ export function openRoom(slug, { onMessage, onConnected, key = "" }) {
       }
       // The answer to the liveness check carries nothing and is not an event.
       if (message?.type === "pong") return;
+      // Fanned out as well as passed on, not instead of it: a caller that
+      // only wants to know the source moved should not have to filter the
+      // whole message stream for it. The digest is null when the server had
+      // no warm cache to compute one from, which is a "come and ask", not a
+      // missing field -- see `emit_source_changed`.
+      if (message?.type === "source-changed") onSourceChanged?.(message.digest);
       onMessage(message);
     };
     next.onclose = () => {
@@ -177,7 +183,17 @@ export function openRoom(slug, { onMessage, onConnected, key = "" }) {
         .then(async (response) => {
           if (!response.ok) {
             const body = await response.json().catch(() => ({}));
-            throw new Error(body.error || `comment submission failed (${response.status})`);
+            // A room command's own refusal (§7.1) answers with `message`,
+            // the same field the socket's error frame carries, not `error`
+            // -- that spelling belongs to the handful of routes that refuse
+            // before a command is even built (bad slug, no access). Reading
+            // only `error` silently dropped every command refusal's actual
+            // wording, and with it `stale_source`/`digest` (§7.1's
+            // `StaleSelection`), which a caller needs to re-render before
+            // retrying.
+            const failure = new Error(body.message || body.error || `comment submission failed (${response.status})`);
+            failure.body = body;
+            throw failure;
           }
           const event = await response.json();
           onMessage(event);
@@ -189,10 +205,20 @@ export function openRoom(slug, { onMessage, onConnected, key = "" }) {
           // draft. Existing callers may ignore the event; recovery-aware
           // callers can display it and offer retry.
           if (message.temp_id) {
+            const body = error?.body || {};
             onMessage({
-              type: "submission-failed",
+              // A stale rendered selection carries a digest to re-render
+              // against (§7.1), which the reader-facing "error" frame the
+              // live socket delivers already carries; giving the same shape
+              // here means one handler in the caller covers both transports
+              // instead of a second one that would only ever see `stale_source`
+              // when the socket happened to be down.
+              type: body.stale_source ? "error" : "submission-failed",
               temp_id: message.temp_id,
+              comment_id: body.comment_id,
               message: error?.message || "comment submission failed",
+              stale_source: body.stale_source,
+              digest: body.digest,
             });
           }
           return { ok: false, error };

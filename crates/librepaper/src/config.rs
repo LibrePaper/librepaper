@@ -59,6 +59,21 @@ pub struct Configuration {
     pub max_files: usize,
     /// The longest one path may be, in bytes.
     pub max_path: usize,
+    /// What one document's log may weigh: its compaction base plus every row
+    /// since. Past this, new updates are refused with a retryable reason and
+    /// semantic commands still work against the log as it stands
+    /// (SPEC-server-is-a-log §9.1). It is the real bound on how long a build
+    /// can occupy a thread, which is why it is a per-document ceiling and not
+    /// a deployment-wide one.
+    pub log_quota_bytes: usize,
+    /// One process-wide budget for everything holding a decoded document:
+    /// resident cache entries, in-flight builds, temporary forks and
+    /// projection output (§9.2).
+    pub memory_budget_bytes: u64,
+    /// How much larger a decoded document is than the bytes it was loaded
+    /// from. A measurement rather than a constant of nature, so a deployment
+    /// can correct it without a build.
+    pub cache_expansion: u64,
     /// What the figures of one document may come to, and what one of them may
     /// be. Assets are where the bytes of a paper actually go -- a directory of
     /// figures is an order of magnitude larger than its text -- so they get
@@ -472,9 +487,9 @@ pub struct SessionLimit {
     pub write_after_seconds: i64,
     /// Rolling-hour version budget for one owner. Versions are asked for
     /// rather than scheduled, so this bounds a client asking in a loop.
-    pub checkpoint_owner_per_hour: i64,
+    pub label_owner_per_hour: i64,
     /// Rolling-hour version budget shared by the deployment.
-    pub checkpoint_deployment_per_hour: i64,
+    pub label_deployment_per_hour: i64,
     /// A state larger than this is fetched over HTTP instead of being sent
     /// down the socket, so one cold join of a large document does not sit in a
     /// text frame.
@@ -493,9 +508,6 @@ pub struct SessionLimit {
     pub updates_per_minute: i64,
 }
 
-/// The quiet period before an edited document receives an automatic checkpoint.
-/// Keep this separate from the configurable session limit so deployments can
-/// tune policy without changing the scheduling algorithm.
 /// The maximum length of each free-text field on an annotation.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct CapLimit {
@@ -511,6 +523,9 @@ impl Default for Configuration {
             max_document: DEFAULT_MAX_SOURCE_BYTES,
             max_files: 200,
             max_path: 200,
+            log_quota_bytes: 64 * 1024 * 1024,
+            memory_budget_bytes: 512 * 1024 * 1024,
+            cache_expansion: crate::log::budget::DEFAULT_EXPANSION,
             max_assets: 32 * 1024 * 1024,
             max_asset: 8 * 1024 * 1024,
             text_extensions: [
@@ -606,8 +621,8 @@ impl Default for Configuration {
             max_replies: 100,
             session: SessionLimit {
                 write_after_seconds: 2,
-                checkpoint_owner_per_hour: 300,
-                checkpoint_deployment_per_hour: 10_000,
+                label_owner_per_hour: 300,
+                label_deployment_per_hour: 10_000,
                 inline_state_max: 256 * 1024,
                 rooms_max: 200,
                 rooms_bytes_max: 512 * 1024 * 1024,
@@ -799,16 +814,16 @@ impl Configuration {
             Some(60),
         );
         add(
-            "session.checkpoint_owner_per_hour",
-            json!(self.session.checkpoint_owner_per_hour),
-            "checkpoints",
+            "session.label_owner_per_hour",
+            json!(self.session.label_owner_per_hour),
+            "labels",
             "owner",
             Some(3600),
         );
         add(
-            "session.checkpoint_deployment_per_hour",
-            json!(self.session.checkpoint_deployment_per_hour),
-            "checkpoints",
+            "session.label_deployment_per_hour",
+            json!(self.session.label_deployment_per_hour),
+            "labels",
             "deployment",
             Some(3600),
         );

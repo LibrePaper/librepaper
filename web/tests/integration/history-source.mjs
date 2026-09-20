@@ -10,8 +10,8 @@ const points = [tree("A", "original"), tree("B", "revision", { parent: "A" })];
 let live = tree("live", "current");
 const controller = createHistorySource({
   currentTree: () => live,
-  checkpoints: () => points,
-  checkpoint: async sha => {
+  labels: () => points,
+  read: async sha => {
     const found = points.find(point => point.sha === sha);
     if (!found) throw new Error("missing");
     const { parent, ...endpoint } = found; // The real endpoint omits the list's parent.
@@ -40,7 +40,7 @@ assert.equal(controller.result.status["main.md"], "same");
 
 // Capture current before a delayed read, and never share its mutable maps.
 const pending = [];
-const raced = createHistorySource({ currentTree: () => live, checkpoint: sha => new Promise((resolve, reject) => pending.push({sha, resolve, reject})) });
+const raced = createHistorySource({ currentTree: () => live, read: sha => new Promise((resolve, reject) => pending.push({sha, resolve, reject})) });
 const first = raced.select("A");
 live.texts["main.md"] = "new live edit";
 pending.shift().resolve(points[0]); await first;

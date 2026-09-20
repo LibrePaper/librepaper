@@ -428,7 +428,7 @@
             "delete",
             "refine",
             "reject",
-            "checkpoint"
+            "label"
           ]
         },
         "comment_id": {

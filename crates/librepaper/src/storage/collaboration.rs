@@ -1,10 +1,14 @@
-//! Durable collaboration as one compressed base plus ordered PostgreSQL updates.
+//! The compaction base: one compressed Loro snapshot under the log.
 //!
-//! A base is Loro's full operation history -- `ExportMode::Updates` from an
-//! empty version vector -- and not `ExportMode::Snapshot`, which additionally
-//! stores a materialised state and measures about twice the size for no gain
-//! here (SPEC-loro.md §4, §7.1). The parameter is named `base` rather than
-//! `snapshot` so that the wrong export mode is not the obvious thing to pass.
+//! The log itself is `document_updates`, which `storage::postgres::log`
+//! writes and reads. What is here is the blob half: the base is too large for
+//! a row, so it lives in the object store under a key the catalogue names,
+//! and this is the only place that writes or reads it.
+//!
+//! A base is `ExportMode::Snapshot` rather than a bare update history,
+//! because §8.4 step 4 proves coverage against the snapshot's own header
+//! before deleting the rows behind it -- and a snapshot is what a cold build
+//! wants to load anyway.
 
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read};
@@ -13,18 +17,10 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use super::blob::{BlobError, BlobStore};
-use super::postgres::{CollaborationBase, PersistedUpdate, PostgresCatalog};
+use super::postgres::{NewSnapshot, PostgresCatalog};
 
 const MAX_BASE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_EXPANDED_BASE_BYTES: usize = 128 * 1024 * 1024;
-
-#[derive(Clone, Debug)]
-pub struct RecoveredCollaboration {
-    pub base: Option<Vec<u8>>,
-    pub updates: Vec<PersistedUpdate>,
-    pub update_sequence: i64,
-    pub project_generation: i64,
-}
 
 #[derive(Debug)]
 pub enum Error {
@@ -33,6 +29,7 @@ pub enum Error {
     Invalid(String),
     Io(std::io::Error),
 }
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -64,51 +61,55 @@ pub struct CollaborationStorage {
     catalog: Arc<PostgresCatalog>,
     blobs: Arc<dyn BlobStore>,
 }
+
 impl CollaborationStorage {
     pub fn new(catalog: Arc<PostgresCatalog>, blobs: Arc<dyn BlobStore>) -> Self {
         Self { catalog, blobs }
     }
 
-    /// `frontier` is where this write leaves the document, carried from the
-    /// room so the activity index can anchor a moment to a version.
-    pub async fn append(
-        &self,
-        document_id: Uuid,
-        update: &[u8],
-        frontier: &[u8],
-        state_bytes: i64,
-    ) -> Result<i64, Error> {
-        self.catalog
-            .append_update(document_id, update, frontier, state_bytes)
-            .await
-            .map_err(Error::from)
-    }
-
-    pub async fn recover(&self, document_id: Uuid) -> Result<RecoveredCollaboration, Error> {
-        let state = self.catalog.collaboration_state(document_id).await?;
-        let base = match state.base {
-            Some(base) => Some(self.read_base(&base).await?),
-            None => None,
+    /// The compaction base of one document, verified and decompressed. What
+    /// a cache build starts from, and what a join sends to a client that
+    /// covers none of it (§4.3, §6.2). Empty when the document has no base,
+    /// which is every document that has never been compacted.
+    pub async fn read_document_base(&self, document_id: Uuid) -> Result<Vec<u8>, Error> {
+        let Some(base) = self.catalog.log_base(document_id).await? else {
+            return Ok(Vec::new());
         };
-        Ok(RecoveredCollaboration {
-            base,
-            updates: state.updates,
-            update_sequence: state.current_update_sequence,
-            project_generation: state.project_generation,
-        })
+        let encoded = self.blobs.get(&base.snapshot_key).await?;
+        if encoded.len() as i64 != base.snapshot_bytes
+            || Sha256::digest(&encoded).as_slice() != base.snapshot_digest
+        {
+            return Err(Error::Invalid(
+                "collaboration base failed integrity verification".into(),
+            ));
+        }
+        decompress(encoded)
     }
 
-    pub async fn compact(
+    /// §8.4 step 5, first half: compress the proven snapshot and put it in
+    /// the object store under a key nothing references yet.
+    ///
+    /// Separate from the activation that will reference it, because the two
+    /// have to be held differently. This is compression and an object-store
+    /// round trip over as much as 32 MiB, and the caller runs it with no
+    /// lock held so typing is not stalled behind it; the activation is a
+    /// short transaction the caller runs under the sequencer's compaction
+    /// gate, so nothing can read the base and the rows in disagreement
+    /// (`log::sequencer::Sequencer::compaction_gate`). A base written here
+    /// and never activated is inert -- no row names it -- and the orphan
+    /// sweep collects it.
+    ///
+    /// Nothing here checks coverage: the proof needs a Loro decoder and this
+    /// module deliberately has none.
+    pub async fn write_base(
         &self,
         document_id: Uuid,
-        through: i64,
-        project_generation: i64,
-        base: &[u8],
-    ) -> Result<Option<CollaborationBase>, Error> {
-        if base.len() > MAX_EXPANDED_BASE_BYTES {
+        snapshot: &[u8],
+    ) -> Result<NewSnapshot, Error> {
+        if snapshot.len() > MAX_EXPANDED_BASE_BYTES {
             return Err(Error::Invalid("collaboration base exceeds limit".into()));
         }
-        let encoded = zstd::stream::encode_all(Cursor::new(base), 3)?;
+        let encoded = zstd::stream::encode_all(Cursor::new(snapshot), 3)?;
         if encoded.len() > MAX_BASE_BYTES {
             return Err(Error::Invalid(
                 "compressed collaboration base exceeds limit".into(),
@@ -125,38 +126,29 @@ impl CollaborationStorage {
                 "collaboration base failed verification".into(),
             ));
         }
-        self.catalog
-            .activate_collaboration_base(
-                document_id,
-                through,
-                project_generation,
-                key,
-                digest,
-                encoded.len() as i64,
-                OffsetDateTime::now_utc() + Duration::days(7),
-            )
-            .await
-            .map_err(Error::from)
+        Ok(NewSnapshot {
+            key,
+            digest,
+            bytes: encoded.len() as i64,
+        })
     }
+}
 
-    async fn read_base(&self, base: &CollaborationBase) -> Result<Vec<u8>, Error> {
-        let encoded = self.blobs.get(&base.snapshot_key).await?;
-        if encoded.len() as i64 != base.snapshot_bytes
-            || Sha256::digest(&encoded).as_slice() != base.snapshot_digest
-        {
-            return Err(Error::Invalid(
-                "collaboration base failed integrity verification".into(),
-            ));
-        }
-        let mut decoded = Vec::new();
-        zstd::stream::Decoder::new(Cursor::new(encoded))?
-            .take((MAX_EXPANDED_BASE_BYTES + 1) as u64)
-            .read_to_end(&mut decoded)?;
-        if decoded.len() > MAX_EXPANDED_BASE_BYTES {
-            return Err(Error::Invalid(
-                "expanded collaboration base exceeds limit".into(),
-            ));
-        }
-        Ok(decoded)
+/// When a base that compaction replaced stops being readable (§8.4 step 5).
+/// A reader already downloading the old one is not cut off mid-stream.
+pub fn superseded_base_deadline() -> OffsetDateTime {
+    OffsetDateTime::now_utc() + Duration::days(7)
+}
+
+fn decompress(encoded: Vec<u8>) -> Result<Vec<u8>, Error> {
+    let mut decoded = Vec::new();
+    zstd::stream::Decoder::new(Cursor::new(encoded))?
+        .take((MAX_EXPANDED_BASE_BYTES + 1) as u64)
+        .read_to_end(&mut decoded)?;
+    if decoded.len() > MAX_EXPANDED_BASE_BYTES {
+        return Err(Error::Invalid(
+            "expanded collaboration base exceeds limit".into(),
+        ));
     }
+    Ok(decoded)
 }

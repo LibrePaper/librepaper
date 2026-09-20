@@ -1,6 +1,17 @@
 //! Export annotations with their immutable source target and their separately
 //! derived live attachment.  The export deliberately does not recreate a
 //! rendered selector: that selector was never durable identity.
+//!
+//! A whole-project export needs no CRDT decoder on the user's side
+//! (SPEC-server-is-a-log §2.1, preserved). The live project satisfies that by
+//! walking the head projection and fetching each file: cheap, because a
+//! projection is a pure read of the log's cache (§1) and needs nobody to
+//! build anything first. A labelled, historical project is different: an
+//! archive for it is produced on request now rather than eagerly at label
+//! time (§8.5), so exporting one means asking the server to build it and
+//! waiting while the background worker does. That wait is made visible
+//! rather than silent -- see `fetch_labelled_project` below -- because a
+//! command that just hangs looks like it has failed.
 
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -10,30 +21,36 @@ use sha2::{Digest, Sha256};
 
 use crate::cli::{resolve_identifier, server_or_die};
 use crate::config::Configuration;
-use crate::http::{get_as, send, Credentials};
+use crate::http::{detail_of, get_as, send, Credentials};
 use crate::room::{Comment, CommentTarget};
+use crate::storage::source_archive::{self, ArchiveLimits, SourceFile};
 use crate::util::die;
 
 #[derive(serde::Deserialize)]
 struct ProjectSnapshot {
-    sha: String,
-    tree: crate::document::history::Tree,
+    digest: String,
+    projection: librepaper_document_core::Projection,
     #[serde(default)]
     texts: std::collections::BTreeMap<String, String>,
 }
 
-/// Download an immutable, server-captured project tree into a new directory.
-/// Text bodies arrive in the snapshot response; assets are fetched by the
-/// content digest recorded in that response and verified before bundle.
+/// Download an immutable, server-captured project into a new directory.
+///
+/// The live project (`at` empty) reads the head projection: text bodies
+/// arrive in the snapshot response, and assets are fetched by the content
+/// digest recorded in it and verified before write. A labelled project (`at`
+/// a label id or name) instead requests that label's archive and downloads
+/// it once the background worker has built it (§8.5).
 pub async fn export_project(
     identifier: &str,
     server: Option<String>,
     token: Option<String>,
     output: &str,
     key: String,
+    at: String,
 ) {
     if let Err(error) =
-        export_project_inner(identifier, server, token, Path::new(output), key).await
+        export_project_inner(identifier, server, token, Path::new(output), key, at).await
     {
         die(error);
     }
@@ -45,6 +62,7 @@ async fn export_project_inner(
     token: Option<String>,
     destination: &Path,
     key: String,
+    at: String,
 ) -> Result<(), String> {
     if destination.as_os_str().is_empty() {
         return Err("--output must name a destination directory".into());
@@ -73,65 +91,20 @@ async fn export_project_inner(
         &crate::cli::stored_token_for(&server, token.as_deref()),
         &key,
     );
-    let (status, raw) = get_as(
-        &format!("{server}/api/documents/{slug}/snapshot"),
-        &who,
-        Duration::from_secs(60),
-    )
-    .await?;
-    if status != 200 {
-        return Err(format!("could not capture project snapshot ({status})"));
-    }
-    let snapshot: ProjectSnapshot = serde_json::from_value(raw)
-        .map_err(|error| format!("invalid project snapshot: {error}"))?;
-    if snapshot.sha != snapshot.tree.digest() {
-        return Err("project snapshot tree digest does not match its identity".into());
-    }
+    let files: Vec<(PathBuf, Vec<u8>)> = if at.is_empty() {
+        fetch_live_project(&server, &slug, &who).await?
+    } else {
+        let labels = super::history::labels_for(&server, &slug, &who).await?;
+        let (label_id, _at) = super::history::find_label(&labels, &slug, &at)?;
+        fetch_labelled_project(&server, &slug, &label_id, &who).await?
+    };
 
     let staging = tempfile::Builder::new()
         .prefix(".librepaper-export-")
         .tempdir_in(parent)
         .map_err(|error| format!("could not create export staging directory: {error}"))?;
-    for (relative, entry) in &snapshot.tree.files {
-        let relative = safe_relative_path(relative)?;
-        let bytes = match entry.kind.as_str() {
-            "text" => snapshot
-                .texts
-                .get(relative.to_str().unwrap_or_default())
-                .ok_or_else(|| format!("snapshot omitted text file {}", relative.display()))?
-                .as_bytes()
-                .to_vec(),
-            "asset" => {
-                let owned = who.headers();
-                let headers: Vec<(&str, &str)> =
-                    owned.iter().map(|(n, v)| (*n, v.as_str())).collect();
-                let (status, bytes) = send(
-                    reqwest::Method::GET,
-                    &format!("{server}/api/documents/{slug}/assets/{}", entry.sha),
-                    &headers,
-                    None,
-                    Duration::from_secs(60),
-                )
-                .await?;
-                if status != 200 {
-                    return Err(format!(
-                        "could not download asset {} ({status})",
-                        relative.display()
-                    ));
-                }
-                bytes
-            }
-            kind => return Err(format!("snapshot has unknown file kind {kind:?}")),
-        };
-        if bytes.len() as i64 != entry.size {
-            return Err(format!("file {} has the wrong size", relative.display()));
-        }
-        if hex::encode(Sha256::digest(&bytes)) != entry.sha {
-            return Err(format!(
-                "file {} failed digest verification",
-                relative.display()
-            ));
-        }
+    let file_count = files.len();
+    for (relative, bytes) in files {
         let target = staging.path().join(&relative);
         if let Some(directory) = target.parent() {
             std::fs::create_dir_all(directory)
@@ -154,13 +127,193 @@ async fn export_project_inner(
             destination.display()
         ));
     }
-    eprintln!(
-        "wrote {} ({} files, snapshot {})",
-        destination.display(),
-        snapshot.tree.files.len(),
-        snapshot.sha
-    );
+    eprintln!("wrote {} ({file_count} files)", destination.display());
     Ok(())
+}
+
+/// The live project: every file in the head projection, its text bodies
+/// already in hand and its assets fetched by digest. Nothing here waits on
+/// the server to build anything -- a projection is a pure read of the log's
+/// cache (§1), so this is as cheap as it looks.
+async fn fetch_live_project(
+    server: &str,
+    slug: &str,
+    who: &Credentials,
+) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+    let (status, raw) = get_as(
+        &format!("{server}/api/documents/{slug}/snapshot"),
+        who,
+        Duration::from_secs(60),
+    )
+    .await?;
+    if status != 200 {
+        return Err(format!("could not capture project snapshot ({status})"));
+    }
+    let snapshot: ProjectSnapshot = serde_json::from_value(raw)
+        .map_err(|error| format!("invalid project snapshot: {error}"))?;
+    if snapshot.digest != snapshot.projection.digest() {
+        return Err("project snapshot digest does not match its identity".into());
+    }
+    let mut files = Vec::with_capacity(snapshot.projection.files.len());
+    for (path, entry) in &snapshot.projection.files {
+        let relative = safe_relative_path(path)?;
+        let bytes = match entry.kind.as_str() {
+            "text" => snapshot
+                .texts
+                .get(relative.to_str().unwrap_or_default())
+                .ok_or_else(|| format!("snapshot omitted text file {}", relative.display()))?
+                .as_bytes()
+                .to_vec(),
+            "asset" => fetch_asset(server, slug, &entry.digest, who).await?,
+            kind => return Err(format!("snapshot has unknown file kind {kind:?}")),
+        };
+        if entry.kind == "text" && bytes.len() as u64 != entry.bytes {
+            return Err(format!("file {} has the wrong size", relative.display()));
+        }
+        if hex::encode(Sha256::digest(&bytes)) != entry.digest {
+            return Err(format!(
+                "file {} failed digest verification",
+                relative.display()
+            ));
+        }
+        files.push((relative, bytes));
+    }
+    Ok(files)
+}
+
+async fn fetch_asset(
+    server: &str,
+    slug: &str,
+    digest: &str,
+    who: &Credentials,
+) -> Result<Vec<u8>, String> {
+    let owned = who.headers();
+    let headers: Vec<(&str, &str)> = owned.iter().map(|(n, v)| (*n, v.as_str())).collect();
+    let (status, bytes) = send(
+        reqwest::Method::GET,
+        &format!("{server}/api/documents/{slug}/assets/{digest}"),
+        &headers,
+        None,
+        Duration::from_secs(60),
+    )
+    .await?;
+    if status != 200 {
+        return Err(format!("could not download asset {digest} ({status})"));
+    }
+    Ok(bytes)
+}
+
+/// A label's project, as of when it was recorded.
+///
+/// The archive is produced on request now, not eagerly at label time
+/// (SPEC-server-is-a-log §8.5). `GET .../history/{sha}?archive=1` both makes
+/// the request, the first time it is asked, and reports where that request
+/// stands (`crate::server::history::handle_label_read`); it never blocks on
+/// the background worker itself, so this polls it until `archive_status`
+/// says "ready". The wait is printed rather than left silent, because a
+/// command that just sits there while a worker runs looks indistinguishable
+/// from one that has hung.
+///
+/// Once ready, the bytes themselves are fetched from the sibling path that
+/// serves them: `.../history/{sha}/archive`, the same shape as every other
+/// content route here (`.../assets/{sha}` serves bytes beside the JSON
+/// `.../assets` listing).
+async fn fetch_labelled_project(
+    server: &str,
+    slug: &str,
+    label_id: &str,
+    who: &Credentials,
+) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+    let status_target = format!("{server}/api/documents/{slug}/history/{label_id}?archive=1");
+
+    // Capped exponential backoff. Nothing here treats a still-building
+    // archive as a failure to report and act on -- it is something to keep
+    // waiting through, visibly.
+    let started = std::time::Instant::now();
+    let deadline = Duration::from_secs(10 * 60);
+    let mut wait = Duration::from_secs(1);
+    loop {
+        let (status, payload) = get_as(&status_target, who, Duration::from_secs(30)).await?;
+        if status != 200 && status != 202 {
+            return Err(format!(
+                "could not request the archive for {label_id} ({status}): {}",
+                detail_of(&payload)
+            ));
+        }
+        match payload.get("archive_status").and_then(Value::as_str) {
+            Some("ready") => break,
+            status => {
+                let status = status.unwrap_or("pending");
+                if started.elapsed() >= deadline {
+                    return Err(format!(
+                        "the archive for {label_id} is still {status} after {}s; \
+                         the server keeps retrying it in the background, try the export again later",
+                        deadline.as_secs()
+                    ));
+                }
+                eprintln!(
+                    "waiting for the archive of {label_id} to build ({status}, {}s elapsed)...",
+                    started.elapsed().as_secs()
+                );
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(Duration::from_secs(30));
+            }
+        }
+    }
+
+    let owned = who.headers();
+    let headers: Vec<(&str, &str)> = owned.iter().map(|(n, v)| (*n, v.as_str())).collect();
+    let (status, bytes) = send(
+        reqwest::Method::GET,
+        &format!("{server}/api/documents/{slug}/history/{label_id}/archive"),
+        &headers,
+        None,
+        Duration::from_secs(60),
+    )
+    .await?;
+    if status != 200 {
+        return Err(format!(
+            "the archive for {label_id} was ready but could not be downloaded ({status})"
+        ));
+    }
+    unpack_archive(server, slug, &bytes, who).await
+}
+
+/// Unpacks the archive's inline files directly, and fetches each asset it
+/// only references by digest -- the same content-addressed route the live
+/// export uses, and still no CRDT decoder anywhere in this path.
+async fn unpack_archive(
+    server: &str,
+    slug: &str,
+    bytes: &[u8],
+    who: &Credentials,
+) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+    // The plain tar-and-manifest format `crate::storage::source_archive`
+    // already reads and writes for every compaction base (§8.5).
+    let archive = source_archive::decode(bytes, ArchiveLimits::default())
+        .map_err(|error| format!("label archive is not readable: {error}"))?;
+    let mut files = Vec::with_capacity(archive.files.len());
+    for file in archive.files {
+        let relative = safe_relative_path(file.path())?;
+        let bytes = match file {
+            // `decode` already checked this file's digest against the
+            // manifest, so there is nothing further to verify.
+            SourceFile::Inline { bytes, .. } => bytes,
+            SourceFile::Asset { digest, .. } => {
+                let digest = hex::encode(digest);
+                let bytes = fetch_asset(server, slug, &digest, who).await?;
+                if hex::encode(Sha256::digest(&bytes)) != digest {
+                    return Err(format!(
+                        "asset {} failed digest verification",
+                        relative.display()
+                    ));
+                }
+                bytes
+            }
+        };
+        files.push((relative, bytes));
+    }
+    Ok(files)
 }
 
 fn safe_relative_path(path: &str) -> Result<PathBuf, String> {
@@ -171,7 +324,7 @@ fn safe_relative_path(path: &str) -> Result<PathBuf, String> {
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
     {
-        return Err(format!("snapshot contains unsafe path {:?}", path));
+        return Err(format!("archive contains unsafe path {:?}", path));
     }
     Ok(path.to_path_buf())
 }
@@ -285,8 +438,8 @@ pub async fn export_document(
     let source = format!("{server}/docs/{slug}");
     let config = Configuration::default();
 
-    let checkpoints = if !from.is_empty() || format == "response" {
-        super::history::manifest_for(&server, &slug, &who)
+    let labels = if !from.is_empty() || format == "response" {
+        super::history::labels_for(&server, &slug, &who)
             .await
             .unwrap_or_else(|err| die(err))
     } else {
@@ -294,9 +447,9 @@ pub async fn export_document(
     };
     let mut comments = listing.comments;
     if !from.is_empty() {
-        let full = super::history::checkpoint_sha(&checkpoints, &slug, &from)
-            .unwrap_or_else(|err| die(err));
-        comments = since(comments, &checkpoints, &full);
+        let (_id, cut) =
+            super::history::find_label(&labels, &slug, &from).unwrap_or_else(|err| die(err));
+        comments = since(comments, cut);
     }
 
     let rendered = match format {
@@ -357,16 +510,14 @@ pub fn render_jsonld(
         if let Some(at) = &item.resolved_at {
             annotation.insert("librepaper:resolved_at".into(), json!(at));
         }
-        // Which text this was said about, and which text it was settled
-        // against. The same kind of extra property, and the two that make an
-        // exported annotation checkable against a document that has moved on:
-        // a quotation with no version behind it is a quotation of nothing in
-        // particular. Absent on a comment made before they were recorded.
+        // Which text this was said about: the `source_sequence` durable
+        // alongside it (SPEC-server-is-a-log §7 step 4), stringified. The
+        // extra property that makes an exported annotation checkable against
+        // a document that has moved on -- a quotation with no version behind
+        // it is a quotation of nothing in particular. Absent on a comment
+        // made before that accounting existed.
         if !item.revision().is_empty() {
             annotation.insert("librepaper:revision".into(), json!(item.revision()));
-        }
-        if !item.resolved_in.is_empty() {
-            annotation.insert("librepaper:resolved_in".into(), json!(item.resolved_in));
         }
         // What an editor decided about a suggestion, beside the ordinary
         // resolved bookkeeping every comment carries.
@@ -485,7 +636,7 @@ pub fn render_markdown(
 /// Response export with the inserted side of a replacement for comments whose
 /// quoted passage disappeared. The public `render_response` remains useful to
 /// callers that already have only current text; the command line supplies this
-/// extra map after reading the relevant historical checkpoints.
+/// extra map after reading the relevant historical labels.
 pub fn render_response(
     title: &str,
     comments: &[Comment],
@@ -547,24 +698,21 @@ fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The comments made at or after one checkpoint.
+/// The comments made at or after one label.
 ///
-/// "At or after" is a question about the manifest, not about clocks: a
-/// comment's `revision` is a checkpoint, and what matters is where that
-/// checkpoint sits in the list. A comment from before checkpoints were
-/// recorded on one is read as made on the oldest moment the manifest still
-/// has, which is the earliest thing that can be true of it.
-pub fn since(comments: Vec<Comment>, checkpoints: &[Value], from: &str) -> Vec<Comment> {
-    let place = |sha: &str| {
-        checkpoints
-            .iter()
-            .position(|point| crate::http::text(point, "sha") == sha)
-    };
-    let Some(cut) = place(from) else {
-        return comments;
-    };
+/// "At or after" used to be a question about position on a fetched
+/// checkpoint list, kept off the clock on purpose. That position no longer
+/// exists to ask about: a label's `source_sequence` -- the `document_updates`
+/// row that made its state durable (SPEC-server-is-a-log §7 step 4, §8.2) --
+/// is server-side evidence a label's own wire shape does not carry (see
+/// `crate::server::history::label_wire`), so there is nothing here to place
+/// a comment against except the one thing both a label and a comment do
+/// carry: when each was made. `cut` and `item.created` are both RFC 3339
+/// timestamps, which sort lexicographically exactly as they sort in time, so
+/// this is a plain string comparison.
+pub fn since(comments: Vec<Comment>, cut: String) -> Vec<Comment> {
     comments
         .into_iter()
-        .filter(|item| place(item.revision()).unwrap_or(0) >= cut)
+        .filter(|item| item.created.as_str() >= cut.as_str())
         .collect()
 }

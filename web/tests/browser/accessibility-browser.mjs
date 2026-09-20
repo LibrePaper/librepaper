@@ -61,11 +61,12 @@ const notes = files.setContainer("notes", new LoroText()); notes.insert(0, "Note
 paths.set("notes", "notes.html");
 server.commit();
 const update = encode(server.export({ mode: "update" }));
+const vector = encode(server.oplogVersion().encode());
 export function openRoom(slug, {onMessage, onConnected}) {
   window.roomReceive = onMessage;
   queueMicrotask(() => onConnected(true));
   return {
-    send(message) { if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", update, count:1})); return {ok:true}; },
+    send(message) { if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", protocol:"librepaper.room.v2", vector, updates:[update]})); return {ok:true}; },
     sendLive() { return {ok:true}; },
     close() {},
   };

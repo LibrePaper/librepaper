@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id FROM documents WHERE status='active'\n               AND (uncompacted_update_count >= $1 OR uncompacted_update_bytes >= $2)\n             ORDER BY uncompacted_update_bytes DESC LIMIT 1000",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a92577afb4be4279fd396c9fcc97bd5e8e58d16b6c5ac8b3120d9eae2c2a2068"
+}

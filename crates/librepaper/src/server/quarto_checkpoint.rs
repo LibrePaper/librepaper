@@ -1,5 +1,14 @@
 //! Deliberate, execution-free input checkpoint for a local Quarto invocation.
+//!
+//! A local render needs the source it is about to run on to be durable and
+//! named before it starts, so a slow render's result can be traced back to
+//! the exact input it ran against rather than to whatever the document
+//! happens to say by the time it finishes. That is exactly what a label is
+//! (§7.1: no precondition, records head vector, frontier and digest), so
+//! this route is `history::Label` with `reason: "render"` in place of
+//! `"label"`.
 
+use super::history::Label;
 use super::*;
 
 impl Server {
@@ -39,54 +48,59 @@ impl Server {
         if !is_sha(&input.tree_sha256) {
             return write_json(400, &json!({"error":"invalid tree_sha256"}));
         }
-        let room = match self.rooms.try_get(slug).await {
+        let room = match self.rooms.get(slug).await {
             Ok(room) => room,
             Err(error) => {
                 return write_json(503, &json!({"error":error.to_string(),"retryable":true}))
             }
         };
-        let tree = room.tree().await;
-        if !crate::document::render::is_quarto(&tree.main) {
+        let projected = match room.projection().await {
+            Ok(projected) => projected,
+            Err(error) => return sequencer_reply(&error),
+        };
+        if !crate::document::render::is_quarto(&projected.projection.main) {
             return write_json(400, &json!({"error":"document is not Quarto source"}));
         }
-        if tree.digest() != input.tree_sha256 {
+        if projected.projection.digest() != input.tree_sha256 {
             return write_json(
                 409,
                 &json!({"error":"source changed or edits have not synchronized"}),
             );
         }
-        let revision = match room
-            .checkpoint("render", who.attribution(), &who.document_authority())
-            .await
-        {
-            Ok(Some(revision)) => revision,
-            Ok(None) => {
-                return write_json(
-                    503,
-                    &json!({"error":"source checkpoint is not ready","retryable":true}),
-                )
-            }
-            Err(error) => return refused("could not checkpoint Quarto source", &error),
+        let authority = who.document_authority();
+        let mut command = Label {
+            request_id: uuid::Uuid::new_v4(),
+            document_id: room.document_id,
+            catalog: self.store.catalog.clone(),
+            reason: "render".to_string(),
+            label: None,
+            author_account_id: uuid::Uuid::parse_str(&who.id.id).ok(),
+            author_label: who.attribution().display().to_string(),
         };
-        let point = match room.checkpoint_by_sha(&revision).await {
-            Ok(Some(point)) => point,
-            Ok(None) => {
-                return write_json(
-                    503,
-                    &json!({"error":"source checkpoint is unavailable","retryable":true}),
-                )
-            }
-            Err(error) => return write_json(503, &json!({"error":error,"retryable":true})),
+        let row = match room.command(&authority, &mut command).await {
+            Ok(row) => row,
+            Err(error) => return command_reply(error),
         };
-        // Edits can arrive while durable storage is awaited. A checkpoint of
-        // different inputs is useful history, but cannot authorize this job's
-        // claimed source association.
-        if point.content_sha() != input.tree_sha256 {
+        // Edits can arrive while the transaction above was in flight. The
+        // label names whatever head the flush actually captured, which may
+        // already differ from the digest this render claimed; a checkpoint
+        // of different inputs is useful history, but cannot authorize this
+        // job's claimed source association.
+        let captured = row
+            .tree_digest
+            .as_ref()
+            .map(hex::encode)
+            .unwrap_or_default();
+        if captured != input.tree_sha256 {
             return write_json(409, &json!({"error":"source changed while checkpointing"}));
         }
         write_json(
             200,
-            &json!({"revision":revision,"tree_sha256":point.content_sha(),"main":tree.main}),
+            &json!({
+                "revision": row.id,
+                "tree_sha256": captured,
+                "main": projected.projection.main,
+            }),
         )
     }
 }

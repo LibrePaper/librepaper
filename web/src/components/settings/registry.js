@@ -29,7 +29,7 @@ export const CATEGORIES = [
     id: "storage", says: "Storage", offered: (context) => latex(context) || account(context),
     entries: [
       { id: "storage-account", says: "Account storage", terms: "quota usage space used limit bytes", offered: account },
-      { id: "storage-retention", says: "Versions", terms: "checkpoints versions history retention prune cleanup label publish restore", offered: account },
+      { id: "storage-retention", says: "Versions", terms: "labels versions history retention prune cleanup label publish restore", offered: account },
       { id: "storage-latex", says: "Downloaded LaTeX files", terms: "cache clear free space packages compiler", offered: latex },
     ],
   },

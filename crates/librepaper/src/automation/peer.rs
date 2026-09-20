@@ -47,7 +47,7 @@ pub struct Capabilities {
     pub can_edit: bool,
     pub can_resolve: bool,
     pub can_delete: bool,
-    pub can_checkpoint: bool,
+    pub can_label: bool,
 }
 
 impl Capabilities {
@@ -80,8 +80,8 @@ impl Capabilities {
                 .get("can_delete")
                 .and_then(Value::as_bool)
                 .unwrap_or(can_comment),
-            can_checkpoint: document
-                .get("can_checkpoint")
+            can_label: document
+                .get("can_label")
                 .and_then(Value::as_bool)
                 .unwrap_or(can_edit),
             role,

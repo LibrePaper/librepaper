@@ -7,10 +7,19 @@
 //! operations, and whether each of its hunks was accepted is a row in Postgres
 //! that only the server writes.
 //!
+//! Under SPEC-server-is-a-log §7, opening a proposal, moving its tip and
+//! deciding a hunk are each a semantic command: `OpenProposal`, `UpdateProposal`
+//! and `DecideProposalHunk` below. What used to be a Room method that acquired
+//! `command_owner` by hand is now a command the sequencer runs -- head is
+//! materialized, `evaluate` reads what it needs from it and (for a decision
+//! that completes the review) prepares the merge, and `transact` writes the
+//! proposal's own rows in the same transaction as the log row that made that
+//! head durable.
+//!
 //! ## Accepting part of one
 //!
-//! The obvious implementation — filter the diff to the accepted hunks and apply
-//! it — produces the right text over the wrong authorship, because
+//! The obvious implementation -- filter the diff to the accepted hunks and apply
+//! it -- produces the right text over the wrong authorship, because
 //! `apply_diff` re-authors everything it applies as the applying peer. The
 //! reviewer would appear to have written the prose they approved.
 //!
@@ -23,19 +32,26 @@
 //!
 //! ## Why it happens once, at the end
 //!
-//! Decisions stream, but the document changes when the proposal resolves
-//! (§5.1a). The revert has to be computed against the tip, so merging on the
-//! first accept would leave a later accept with nothing to do but re-apply a
-//! hunk it had already reverted — as the reviewer, which is the re-authoring
-//! this design exists to avoid. For a tracked edit, which is usually one hunk,
+//! Decisions stream, but the document changes when the proposal resolves.
+//! The revert has to be computed against the tip, so merging on the first
+//! accept would leave a later accept with nothing to do but re-apply a hunk
+//! it had already reverted -- as the reviewer, which is the re-authoring this
+//! design exists to avoid. For a tracked edit, which is usually one hunk,
 //! deciding it resolves the proposal and the difference is invisible.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
+use futures_util::future::BoxFuture;
 use loro::{Frontiers, LoroDoc, PeerID};
+use uuid::Uuid;
 
 use crate::document::hunks::{hunks_of_batch, keep_declined_batch, Hunk};
 use crate::document::session;
+use crate::log::{Command, CommandError, Evidence, Head, PreparedSource};
+use crate::storage::postgres::{
+    self, NewLabel, NewProposal, PostgresCatalog, StoredDecision, StoredProposal,
+};
 
 /// Where a branch forked and where it has reached.
 ///
@@ -47,18 +63,6 @@ use crate::document::session;
 pub struct Proposal {
     pub base: Frontiers,
     pub tip: Frontiers,
-}
-
-/// One stored proposal in the shape the wire uses, so that a client sent the
-/// whole list and a client sent a single change are reading the same fields.
-fn summarize(p: &crate::storage::postgres::StoredProposal) -> serde_json::Value {
-    serde_json::json!({
-        "id": p.id.to_string(),
-        "author": p.author,
-        "base": super::encode_update(&p.base_frontiers),
-        "tip": super::encode_update(&p.tip_frontiers),
-        "branch": super::encode_update(&p.branch_bytes),
-    })
 }
 
 /// What went wrong deciding one.
@@ -104,6 +108,10 @@ impl std::fmt::Display for ProposalError {
 /// one counting system to the other -- the mistake §3.2 exists to prevent --
 /// and the hunk that comes out is whatever actually changed rather than
 /// whatever we calculated ought to have.
+///
+/// Takes a plain `&LoroDoc` rather than a room, so it is called both from a
+/// command's `evaluate` -- against `head.doc()` -- and from the pure tests
+/// below.
 pub fn from_suggestion(
     doc: &LoroDoc,
     path: &str,
@@ -170,7 +178,8 @@ pub fn hunks(
     // The branch as it was at the base, so a hunk that bridged a short retain
     // can say what its new side reads as rather than dropping the bridged words
     // (`document/hunks.rs`). These hunks are read by people -- the Changes
-    // queue, and `proposed_text` below -- which is what that costs a fork for.
+    // queue, and a suggestion's proposed text -- which is what that costs a
+    // fork for.
     let at_base = branch
         .fork_at(&proposal.base)
         .map_err(|error| ProposalError::Failed(error.to_string()))?;
@@ -190,10 +199,13 @@ pub fn hunks(
 /// since, the decisions describe a diff that no longer exists and are refused
 /// rather than applied to text the reviewer never saw.
 ///
-/// The returned update covers the merge and the revert together. That is not a
-/// convenience: between them the document holds the declined text, and §3.4
-/// requires that no peer ever receives it and that it is never persisted as a
-/// version of its own.
+/// Called both directly, by the tests below, and from `DecideProposalHunk`'s
+/// `evaluate`, where `doc` is the draft `Head::prepare` forked -- so this
+/// function's own return value is not what makes it into the log row there;
+/// `prepare` exports its own diff of what this leaves on `doc`. What matters
+/// is that between the merge and the revert `doc` holds the declined text,
+/// and no peer ever sees that intermediate state: it is the caller's job,
+/// same as ever, to make sure `doc` is a fork nobody else can read.
 pub fn resolve(
     doc: &LoroDoc,
     proposal: &Proposal,
@@ -237,25 +249,6 @@ pub fn resolve(
     session::encode_diff(doc, &before).map_err(ProposalError::Failed)
 }
 
-/// One reviewer's answer about one hunk.
-///
-/// Gathered into a struct because these travel together and mean nothing
-/// apart: `against` is only meaningful beside `hunk`, and `reviewer` is the
-/// peer that `by` writes as.
-pub(crate) struct Decision<'a> {
-    pub hunk: usize,
-    pub accepted: bool,
-    pub by: &'a str,
-    /// The tip the reviewer was looking at when they answered.
-    pub against: &'a [u8],
-    pub note: Option<String>,
-    /// The peer the revert is written as, so that declining attributes the
-    /// removal to whoever declined it.
-    pub reviewer: PeerID,
-    pub request_id: uuid::Uuid,
-    pub authority: &'a crate::storage::postgres::Authority,
-}
-
 /// A peer id for a branch that nothing else will use.
 ///
 /// This is not a nicety. Loro names an operation by its peer and a counter that
@@ -278,514 +271,394 @@ fn fresh_peer() -> PeerID {
     PeerID::from_le_bytes(id) | 1
 }
 
-/// What the room does with a proposal, as opposed to what a document does with
-/// one.
+/// A command's request id, cast to the number a batch's `client_seq` column
+/// holds (§7.3). Nothing compares this to another peer's own sequence, so the
+/// exact mapping does not matter -- only that it is stable across a retry
+/// that reuses the same request id.
+fn client_seq_of(id: Uuid) -> i64 {
+    i64::from_be_bytes(id.as_bytes()[..8].try_into().expect("a uuid is 16 bytes"))
+}
+
+// -- §7: the three semantic commands ------------------------------------
+
+/// Opens a proposal at the frontier the author forked their own copy at.
 ///
-/// The split matters: everything above this point is pure and testable against
-/// two `LoroDoc`s, and everything below it is the part that has to agree with
-/// Postgres and with everyone connected. The rule that keeps them apart is that
-/// a proposal never reaches the shared document until Postgres has accepted the
-/// resolution, so a crash cannot leave text that no proposal accounts for.
-impl super::Room {
-    fn catalog_and_document(
-        &self,
-    ) -> Result<
-        (
-            std::sync::Arc<crate::storage::postgres::PostgresCatalog>,
-            uuid::Uuid,
-        ),
-        ProposalError,
-    > {
-        let catalog = self
-            .catalog
-            .as_ref()
-            .get()
-            .ok_or_else(|| ProposalError::Failed("this deployment has no catalog".into()))?;
-        let document = uuid::Uuid::parse_str(&self.storage_id)
-            .map_err(|_| ProposalError::Failed("this room has no storage identity".into()))?;
-        Ok((catalog.clone(), document))
+/// The id is the client's, so a retry after a lost response finds the row it
+/// already made rather than opening a second one (§7.2). The base comes from
+/// the client because only the client knows it: the room's frontier at the
+/// moment this command happens to run is a different thing entirely, and
+/// recording that instead would make every later read of this proposal --
+/// `rebuild` forks at it, `hunks` diffs from it -- describe a fork that never
+/// happened.
+pub struct OpenProposal {
+    pub document_id: Uuid,
+    pub catalog: Arc<PostgresCatalog>,
+    pub id: Uuid,
+    pub author: String,
+    pub base: Frontiers,
+}
+
+impl Command for OpenProposal {
+    type Output = StoredProposal;
+
+    fn name(&self) -> &'static str {
+        "proposal-open"
     }
 
-    /// Opens a proposal at the frontier the author forked their own copy at.
-    ///
-    /// The base comes from the client because only the client knows it. The
-    /// room's frontier at the moment this message is handled is a different
-    /// thing entirely: anything committed here since the author forked is not
-    /// in their branch, so recording the room's frontier as the base makes
-    /// every later read of this proposal -- `rebuild` forks at it, `hunks`
-    /// diffs from it -- describe a fork that never happened.
-    ///
-    /// Recording the wrong one is not known to lose or misattribute text:
-    /// `declining_a_proposal_does_not_revert_a_concurrent_writer` reproduces
-    /// the race and Loro's merge converges either way. What it does is put the
-    /// server's record of a proposal at odds with §5.1 and with where the
-    /// author is actually typing, which is a bad thing to be casual about in
-    /// the one structure the review model is built on.
-    ///
-    /// Forking here is also the check that we can fork at all. [`rebuild`]
-    /// forks at this frontier on every read of the proposal, so a base this
-    /// room cannot reach is refused now, at the one moment there is a client
-    /// waiting to be told, rather than on somebody's first attempt to review.
-    pub(crate) async fn open_proposal(
-        &self,
-        author: &str,
-        base: &Frontiers,
-        authority: &crate::storage::postgres::Authority,
-        request_id: uuid::Uuid,
-    ) -> Result<String, ProposalError> {
-        let peer = fresh_peer();
-        let (catalog, document) = self.catalog_and_document()?;
-        {
-            let state = self.command_owner.state().await;
-            state
-                .session
-                .doc
-                .fork_at(base)
-                .map_err(|_| ProposalError::UnknownBase)?;
-        }
-        let base = base.clone();
-        let id = crate::storage::postgres::new_id();
+    /// Forking here is also the check that the room can reach this base at
+    /// all: `rebuild` forks at it on every later read of the proposal, so a
+    /// base this room cannot reach is refused now, at the one moment there is
+    /// a client waiting to be told, rather than on somebody's first attempt
+    /// to review.
+    fn evaluate(
+        &mut self,
+        head: &Head<'_>,
+    ) -> std::result::Result<Option<PreparedSource>, CommandError> {
+        head.doc()
+            .fork_at(&self.base)
+            .map_err(|_| CommandError::Conflict(ProposalError::UnknownBase.to_string()))?;
         // A proposal opens empty. The author's first keystroke arrives as an
-        // update, so there is nothing to store yet and the tip is the base.
-        let receipt = crate::storage::postgres::SemanticReceipt {
-            request_id,
-            canonical_command: serde_json::json!({
-                "type": "proposal-open", "author": author, "base": base.encode(),
-            }),
-            stable_result: serde_json::Value::Null,
-            status: "committed".into(),
-        };
-        let result = catalog
-            .open_proposal(
-                crate::storage::postgres::NewProposal {
-                    document_id: document,
-                    id,
-                    author: author.to_string(),
-                    author_peer: peer as i64,
-                    base_frontiers: base.encode(),
-                    tip_frontiers: base.encode(),
-                    branch_bytes: Vec::new(),
-                },
-                authority,
-                &receipt,
-            )
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?;
-        Ok(result.proposal_id.to_string())
+        // `UpdateProposal`, so there is nothing to store yet and the tip is
+        // the base; opening never moves the document.
+        Ok(None)
     }
 
-    /// Opens a proposal for a suggestion, and returns its id for the comment to
-    /// carry.
-    ///
-    /// A suggestion arrives as a passage and the text somebody wants in its
-    /// place. That is a one-hunk branch, so this makes one: the comment ends up
-    /// holding an id, and the change it offers is reviewed and decided like any
-    /// other (§1.2).
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn open_suggestion(
-        &self,
-        author: &str,
-        path: &str,
-        at: usize,
-        exact: &str,
-        proposed: &str,
-        authority: &crate::storage::postgres::Authority,
-        request_id: uuid::Uuid,
-    ) -> Result<String, ProposalError> {
-        let (_id, proposal) = self
-            .prepare_suggestion(author, path, at, exact, proposed)
-            .await?;
-        let (catalog, _) = self.catalog_and_document()?;
-        let receipt = crate::storage::postgres::SemanticReceipt {
-            request_id,
-            canonical_command: serde_json::json!({
-                "type": "proposal-suggest", "author": author, "path": path,
-                "at": at, "exact": exact, "proposed": proposed,
-            }),
-            stable_result: serde_json::Value::Null,
-            status: "committed".into(),
-        };
-        let result = catalog
-            .open_proposal(proposal, authority, &receipt)
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?;
-        Ok(result.proposal_id.to_string())
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let peer = fresh_peer();
+            let base = self.base.encode();
+            self.catalog
+                .open_proposal(
+                    tx,
+                    NewProposal {
+                        document_id: self.document_id,
+                        id: self.id,
+                        author: self.author.clone(),
+                        author_peer: peer as i64,
+                        base_frontiers: base.clone(),
+                        tip_frontiers: base,
+                        branch_bytes: Vec::new(),
+                    },
+                )
+                .await
+                .map_err(CommandError::from)
+        })
+    }
+}
+
+/// Moves a proposal's branch to a new tip, conditional on the version the
+/// caller read (§7.2). The author typing again is what calls this.
+///
+/// The whole branch is sent each time rather than appended to, because a
+/// branch is small -- it is one person's edits since they started -- and
+/// because replacing it means the stored blob and the stored tip can never
+/// disagree about what the branch contains. It produces no source: the
+/// document does not move until the proposal is decided.
+pub struct UpdateProposal {
+    pub document_id: Uuid,
+    pub catalog: Arc<PostgresCatalog>,
+    pub id: Uuid,
+    pub expected_version: i64,
+    pub tip: Frontiers,
+    pub branch: Vec<u8>,
+}
+
+impl Command for UpdateProposal {
+    type Output = StoredProposal;
+
+    fn name(&self) -> &'static str {
+        "proposal-update"
     }
 
-    pub(crate) async fn prepare_suggestion(
-        &self,
-        author: &str,
-        path: &str,
-        at: usize,
-        exact: &str,
-        proposed: &str,
-    ) -> Result<(String, crate::storage::postgres::NewProposal), ProposalError> {
-        let (_, document) = self.catalog_and_document()?;
-        let (branch, base, tip, peer, bytes) = {
-            let state = self.command_owner.state().await;
-            let (branch, base, tip, peer) =
-                from_suggestion(&state.session.doc, path, at, exact, proposed)?;
-            // The branch's own operations, which is all that is stored:
-            // rebuilding it means forking the room at the base and replaying
-            // these.
-            let bytes = session::encode_diff(&branch, &session::encode_vector(&state.session.doc))
-                .map_err(ProposalError::Failed)?;
-            (branch, base, tip, peer, bytes)
-        };
-        let _ = branch;
-        let id = crate::storage::postgres::new_id();
-        Ok((
-            id.to_string(),
-            crate::storage::postgres::NewProposal {
-                document_id: document,
-                id,
-                author: author.to_string(),
-                author_peer: peer as i64,
-                base_frontiers: base.encode(),
-                tip_frontiers: tip.encode(),
-                branch_bytes: bytes,
-            },
-        ))
+    /// Nothing here checks the branch against the head document: its
+    /// operations live on a peer the room's own graph does not have yet
+    /// (they arrive only when the proposal resolves), so there is nothing
+    /// about it `head` can confirm. The version column is the whole of the
+    /// precondition, and it is checked transactionally in `transact`.
+    fn evaluate(
+        &mut self,
+        _head: &Head<'_>,
+    ) -> std::result::Result<Option<PreparedSource>, CommandError> {
+        Ok(None)
     }
 
-    pub(crate) fn proposal_record(
-        &self,
-        author: &str,
-        peer: PeerID,
-        base: &Frontiers,
-        tip: &Frontiers,
-        branch: Vec<u8>,
-    ) -> Result<(String, crate::storage::postgres::NewProposal), ProposalError> {
-        let document = uuid::Uuid::parse_str(&self.storage_id)
-            .map_err(|_| ProposalError::Failed("room has an invalid document id".into()))?;
-        let id = crate::storage::postgres::new_id();
-        Ok((
-            id.to_string(),
-            crate::storage::postgres::NewProposal {
-                document_id: document,
-                id,
-                author: author.to_string(),
-                author_peer: peer as i64,
-                base_frontiers: base.encode(),
-                tip_frontiers: tip.encode(),
-                branch_bytes: branch,
-            },
-        ))
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        _evidence: &'a Evidence,
+    ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            self.catalog
+                .update_proposal_branch(
+                    tx,
+                    self.document_id,
+                    self.id,
+                    self.expected_version,
+                    self.tip.encode(),
+                    self.branch.clone(),
+                )
+                .await
+                .map_err(CommandError::from)
+        })
+    }
+}
+
+/// What deciding one hunk produced.
+#[derive(Debug)]
+pub struct ProposalDecided {
+    /// Whether this was the decision that completed the review. Until every
+    /// hunk has an answer the document does not move (§5.1a): a partial
+    /// answer only records the row.
+    pub resolved: bool,
+}
+
+/// Records one reviewer's answer about one hunk, and resolves the proposal
+/// once every hunk has one.
+///
+/// `evaluate` has no database access (§7 step 2 is synchronous), so the
+/// proposal row and the hunks already decided are read in `load`, which runs
+/// under the sequencer lock, and left on `stored` and `decided` for
+/// `evaluate` to use. The caller may hand in whatever it read before the
+/// command started -- the socket reads the row anyway, to refuse an unknown
+/// proposal with something better than a conflict -- but nothing prepared
+/// here depends on that copy.
+///
+/// It has to be read under the lock because the merge this command prepares
+/// depends on it: which hunks were declined, and whether this answer is the
+/// last one. A snapshot taken before the lock can be one decision short of
+/// what `transact` will count, and then the decision that completes the
+/// review prepares no source at all while still resolving the proposal.
+///
+/// §7.1's precondition -- that the proposal's tip still matches what the
+/// reviewer saw -- is checked against that reread here; the authoritative
+/// check, against a fresh row locked `FOR UPDATE`, happens inside
+/// `catalog.decide_proposal_hunk` in `transact`, which is what adjudicates a
+/// race against an `UpdateProposal` from a different writer.
+pub struct DecideProposalHunk {
+    pub document_id: Uuid,
+    pub catalog: Arc<PostgresCatalog>,
+    pub proposal_id: Uuid,
+    /// The proposal row. Whatever the caller read is replaced by `load`.
+    pub stored: StoredProposal,
+    /// Every hunk already decided, for the same proposal. Read by `load`.
+    pub decided: Vec<StoredDecision>,
+    pub hunk_index: i32,
+    pub accepted: bool,
+    pub decided_by: String,
+    pub note: Option<String>,
+    /// The tip the reviewer was looking at when they answered, encoded the
+    /// same way the browser encoded it (`Proposal::tip.encode()`).
+    pub against: Vec<u8>,
+    /// The peer the revert is written as, so that declining attributes the
+    /// removal to whoever declined it.
+    pub reviewer: PeerID,
+    pub request_id: Uuid,
+    /// Set by `evaluate`, so `transact` does not have to recompute it under a
+    /// different lock than the one it was measured under. The caller
+    /// constructs this at zero; `evaluate` always runs before `transact` and
+    /// overwrites it before it is read.
+    pub total_hunks: i64,
+}
+
+impl Command for DecideProposalHunk {
+    type Output = ProposalDecided;
+
+    fn name(&self) -> &'static str {
+        "proposal-decide"
     }
 
-    /// Records what the author has added to their branch.
-    ///
-    /// The whole branch is stored each time rather than appended to, because a
-    /// branch is small -- it is one person's edits since they started -- and
-    /// because replacing it means the stored blob and the stored tip can never
-    /// disagree about what the branch contains.
-    pub(crate) async fn update_proposal(
-        &self,
-        id: &str,
-        tip: &[u8],
-        branch: &[u8],
-        authority: &crate::storage::postgres::Authority,
-        request_id: uuid::Uuid,
-    ) -> Result<(), ProposalError> {
-        let (catalog, document) = self.catalog_and_document()?;
-        let id = uuid::Uuid::parse_str(id)
-            .map_err(|_| ProposalError::Failed("that is not a proposal".into()))?;
-        let receipt = crate::storage::postgres::SemanticReceipt {
-            request_id,
-            canonical_command: serde_json::json!({
-                "type": "proposal-update", "proposal_id": id, "tip": tip, "branch": branch,
-            }),
-            stable_result: serde_json::Value::Null,
-            status: "committed".into(),
-        };
-        catalog
-            .update_proposal_branch(
-                document,
-                id,
-                tip.to_vec(),
-                branch.to_vec(),
-                authority,
-                &receipt,
-            )
-            .await
-            .map(|_| ())
-            .map_err(|error| ProposalError::Failed(error.to_string()))
+    // §7.2: a decision only produces source, and so only writes a
+    // `document_labels` row, when it is the one that completes the review
+    // (§5.1a). A retry with the same `request_id` of exactly that decision
+    // finds the row and returns the completion it already recorded, rather
+    // than re-running `resolve` against a proposal `decide_proposal_hunk`
+    // would now refuse as no longer pending. A retry of a decision that did
+    // not complete the review wrote no label and is unaffected: the answer
+    // itself is idempotent by the hunk's primary key, which is checked
+    // inside `transact`.
+    fn replay(&mut self) -> BoxFuture<'_, std::result::Result<Option<Self::Output>, CommandError>> {
+        Box::pin(async move {
+            let found = self
+                .catalog
+                .label_by_request(self.document_id, self.request_id)
+                .await
+                .map_err(CommandError::from)?;
+            Ok(found.map(|_| ProposalDecided { resolved: true }))
+        })
     }
 
-    /// What a suggestion proposes, read from its branch.
-    ///
-    /// The text is not stored beside the comment any more, so this is how the
-    /// places that show it -- a reader's view, an export, an agent asking what
-    /// is pending -- get it. A suggestion is one hunk, and the words it wants
-    /// are that hunk's insertion.
-    ///
-    /// `None` when the comment is not a suggestion. An error only when the
-    /// proposal it names cannot be read, which means something is wrong rather
-    /// than absent.
-    pub(crate) async fn proposed_text(
-        &self,
-        proposal: &str,
-    ) -> Result<Option<String>, ProposalError> {
-        if proposal.is_empty() {
-            return Ok(None);
+    // The decision set this command merges from, read with the sequencer
+    // lock held. Only another semantic command can add to it, and every one
+    // of those holds the same lock, so what this reads is what `transact`
+    // will count.
+    fn load(&mut self) -> BoxFuture<'_, std::result::Result<(), CommandError>> {
+        Box::pin(async move {
+            let stored = self
+                .catalog
+                .proposal(self.proposal_id)
+                .await
+                .map_err(CommandError::from)?
+                .ok_or_else(|| CommandError::Conflict("that proposal is not open".into()))?;
+            // That the row belongs to this document is checked in `transact`
+            // under the row lock, where it also has to be checked for the
+            // benefit of anything that reached `transact` another way.
+            self.stored = stored;
+            self.decided = self
+                .catalog
+                .decisions(self.proposal_id)
+                .await
+                .map_err(CommandError::from)?;
+            Ok(())
+        })
+    }
+
+    fn evaluate(
+        &mut self,
+        head: &Head<'_>,
+    ) -> std::result::Result<Option<PreparedSource>, CommandError> {
+        if self.stored.tip_frontiers != self.against {
+            return Err(CommandError::Conflict(ProposalError::Stale.to_string()));
         }
-        let (catalog, _) = self.catalog_and_document()?;
-        let id = uuid::Uuid::parse_str(proposal)
-            .map_err(|_| ProposalError::Failed("that is not a proposal".into()))?;
-        let Some(stored) = catalog
-            .proposal(id)
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?
-        else {
-            return Ok(None);
-        };
         let proposal = Proposal {
-            base: Frontiers::decode(&stored.base_frontiers)
-                .map_err(|error| ProposalError::Failed(error.to_string()))?,
-            tip: Frontiers::decode(&stored.tip_frontiers)
-                .map_err(|error| ProposalError::Failed(error.to_string()))?,
+            base: Frontiers::decode(&self.stored.base_frontiers)
+                .map_err(|error| CommandError::Conflict(error.to_string()))?,
+            tip: Frontiers::decode(&self.stored.tip_frontiers)
+                .map_err(|error| CommandError::Conflict(error.to_string()))?,
         };
-        let found = {
-            let state = self.command_owner.state().await;
-            hunks(&state.session.doc, &proposal, &stored.branch_bytes)?
-        };
-        // A suggestion is one hunk by construction. More than one means the
-        // branch has grown beyond what a suggestion is, and joining them would
-        // read as a single replacement that nobody proposed.
-        Ok(found.first().map(|hunk| hunk.inserted.clone()))
-    }
-
-    pub(crate) async fn hydrate_proposed_comments(
-        &self,
-        comments: &mut [crate::room::Comment],
-    ) -> Result<(), ProposalError> {
-        for comment in comments {
-            if !comment.proposal.is_empty() {
-                comment.proposed = self.proposed_text(&comment.proposal).await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// The proposals a joining client needs to know about.
-    pub(crate) async fn open_proposals(&self) -> Result<Vec<serde_json::Value>, ProposalError> {
-        let (catalog, document) = self.catalog_and_document()?;
-        let open = catalog
-            .open_proposals(document)
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?;
-        Ok(open.iter().map(summarize).collect())
-    }
-
-    /// One proposal, as the list would have described it.
-    ///
-    /// A branch that has just been opened or added to is news: until somebody
-    /// is told, the author is typing into a fork nobody can see -- including
-    /// their own browser, which draws the queue from what the server says is
-    /// open. Sending the whole list on every flush would carry everyone else's
-    /// branch bytes with it, so the one that changed travels alone, in the
-    /// same shape, and the client merges it into the list it already has.
-    ///
-    /// `None` once the proposal is no longer pending: a decided branch is not
-    /// something to put back into a reviewer's queue.
-    pub(crate) async fn proposal_summary(
-        &self,
-        id: &str,
-    ) -> Result<Option<serde_json::Value>, ProposalError> {
-        let (catalog, _) = self.catalog_and_document()?;
-        let id = uuid::Uuid::parse_str(id)
-            .map_err(|_| ProposalError::Failed("that is not a proposal".into()))?;
-        let stored = catalog
-            .proposal(id)
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?;
-        Ok(stored
-            .filter(|p| p.status == "pending")
-            .as_ref()
-            .map(summarize))
-    }
-
-    /// Records one hunk decision, and resolves the proposal once every hunk has
-    /// one.
-    ///
-    /// Returns the update the room should broadcast, if this decision was the
-    /// last one. Until then the document does not move: §5.1a explains why the
-    /// merge waits for the whole answer rather than landing a hunk at a time.
-    pub(crate) async fn decide_hunk(
-        &self,
-        id: &str,
-        decision: Decision<'_>,
-    ) -> Result<Option<Vec<u8>>, ProposalError> {
-        let Decision {
-            hunk,
-            accepted,
-            by,
-            against,
-            note,
-            reviewer,
-            request_id,
-            authority,
-        } = decision;
-        let _owner = self.command_owner.acquire().await;
-        let (catalog, document) = self.catalog_and_document()?;
-        let uuid = uuid::Uuid::parse_str(id)
-            .map_err(|_| ProposalError::Failed("that is not a proposal".into()))?;
-        let stored = catalog
-            .proposal(uuid)
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?
-            .ok_or_else(|| ProposalError::Failed("that proposal is not open".into()))?;
-
-        // The reviewer decided about a diff. If the author has typed since,
-        // that diff no longer exists and the decision is about hunks that are
-        // not there -- so it is refused rather than guessed at.
-        if stored.tip_frontiers != against {
-            return Err(ProposalError::Stale);
+        let found = hunks(head.doc(), &proposal, &self.stored.branch_bytes)
+            .map_err(|error| CommandError::Conflict(error.to_string()))?;
+        self.total_hunks = found.len() as i64;
+        if self.hunk_index < 0 || i64::from(self.hunk_index) >= self.total_hunks {
+            return Err(CommandError::Conflict(
+                "that hunk is not part of this proposal".into(),
+            ));
         }
 
-        let proposal = Proposal {
-            base: Frontiers::decode(&stored.base_frontiers)
-                .map_err(|error| ProposalError::Failed(error.to_string()))?,
-            tip: Frontiers::decode(&stored.tip_frontiers)
-                .map_err(|error| ProposalError::Failed(error.to_string()))?,
-        };
-
-        let mut decided = catalog
-            .decisions(uuid)
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?;
+        let mut decided = self.decided.clone();
         if let Some(existing) = decided
             .iter_mut()
-            .find(|item| item.hunk_index == hunk as i32)
+            .find(|item| item.hunk_index == self.hunk_index)
         {
-            existing.accepted = accepted;
-            existing.decided_by = by.to_string();
-            existing.note = note.clone();
+            existing.accepted = self.accepted;
+            existing.decided_by = self.decided_by.clone();
+            existing.note = self.note.clone();
         } else {
-            decided.push(crate::storage::postgres::StoredDecision {
-                hunk_index: hunk as i32,
-                accepted,
-                decided_by: by.to_string(),
-                note: note.clone(),
+            decided.push(StoredDecision {
+                hunk_index: self.hunk_index,
+                accepted: self.accepted,
+                decided_by: self.decided_by.clone(),
+                note: self.note.clone(),
             });
         }
+        if decided.len() as i64 != self.total_hunks {
+            // Not the last answer yet: the row this command writes in
+            // `transact` is all there is to do.
+            return Ok(None);
+        }
 
-        // Resolve on a fork, so that a Postgres failure below leaves the room's
-        // own document exactly where it was. The shared document moves only
-        // after the decision is durable.
-        let (candidate, total) = {
-            let state = self.command_owner.state().await;
-            let candidate = state.session.doc.fork();
-            let total = hunks(&candidate, &proposal, &stored.branch_bytes)?.len();
-            (candidate, total)
-        };
-        let complete = decided.len() == total;
-        let (update, frontier, state_bytes, previous_sequence) = if complete {
-            let declined: HashSet<usize> = decided
-                .iter()
-                .filter(|d| !d.accepted)
-                .map(|d| d.hunk_index as usize)
-                .collect();
-            let update = resolve(
-                &candidate,
+        let declined: HashSet<usize> = decided
+            .iter()
+            .filter(|item| !item.accepted)
+            .map(|item| item.hunk_index as usize)
+            .collect();
+        let branch_bytes = self.stored.branch_bytes.clone();
+        let reviewer = self.reviewer;
+        let client_seq = client_seq_of(self.request_id);
+        head.prepare(client_seq, |draft| {
+            resolve(
+                draft,
                 &proposal,
-                &stored.branch_bytes,
+                &branch_bytes,
                 &declined,
                 &proposal.tip,
                 reviewer,
-            )?;
-            let measured = librepaper_document_core::validate(
-                &candidate,
-                librepaper_document_core::Limits {
-                    source_bytes: self.config.max_document,
-                    encoded_history_bytes: self.config.persistence().max_encoded_snapshot_bytes,
-                    files: self.config.max_files,
-                },
             )
-            .map_err(|error| ProposalError::Failed(format!("{error:?}")))?;
-            let previous = self.command_owner.state().await.session.durable_sequence;
-            (
-                Some(update),
-                Some(candidate.state_frontiers().encode()),
-                measured.encoded_history_bytes as i64,
-                previous,
-            )
-        } else {
-            (
-                None,
-                None,
-                0,
-                self.command_owner.state().await.session.durable_sequence,
-            )
-        };
-        let canonical = serde_json::json!({
-            "type": "DecideProposal",
-            "proposal_id": id,
-            "hunk": hunk.to_string(),
-            "accepted": accepted,
-            "tip": super::encode_update(against),
-            "note": note.clone(),
-        });
-        let receipt = crate::storage::postgres::SemanticReceipt {
-            request_id,
-            canonical_command: canonical,
-            stable_result: serde_json::Value::Null,
-            status: "committed".into(),
-        };
-        let source = update
-            .as_ref()
-            .map(|bytes| crate::storage::postgres::PreparedSource {
-                expected_update_sequence: previous_sequence,
-                update: bytes,
-                frontier: frontier.as_deref().unwrap_or_default(),
-                encoded_history_bytes: state_bytes,
-                actor_key: by,
-                source_format: None,
-                main_path: None,
-                resolve_annotation_id: None,
-                supersede_proposals: false,
-            });
-        let committed = catalog
-            .commit_proposal_decision(
-                document,
-                authority,
-                crate::storage::postgres::PreparedProposalDecision {
-                    proposal_id: uuid,
-                    hunk_index: hunk as i32,
-                    accepted,
-                    decided_by: by,
-                    decided_against: against,
-                    note: note.as_deref(),
-                    total_hunks: total as i64,
-                    source,
-                },
-                &receipt,
-            )
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?;
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        })
+        .map_err(CommandError::Conflict)
+    }
 
-        if committed.replayed {
-            return Ok(None);
-        }
-        if committed.resolved {
-            let update = update.unwrap_or_default();
-            let mut state = self.command_owner.state().await;
-            if !update.is_empty() {
-                session::apply_update(&state.session.doc, &update)
-                    .map_err(ProposalError::Failed)?;
-                let metadata = LoroDoc::decode_import_blob_meta(&update, true)
-                    .map_err(|error| ProposalError::Failed(error.to_string()))?;
-                state.session.durable_vector.merge(&metadata.partial_end_vv);
+    fn transact<'a>(
+        &'a mut self,
+        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        evidence: &'a Evidence,
+    ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
+        Box::pin(async move {
+            let complete = self
+                .catalog
+                .decide_proposal_hunk(
+                    &mut *tx,
+                    self.document_id,
+                    self.proposal_id,
+                    self.hunk_index,
+                    self.accepted,
+                    &self.decided_by,
+                    &self.against,
+                    self.note.as_deref(),
+                    self.total_hunks,
+                )
+                .await?;
+            if !complete {
+                return Ok(ProposalDecided { resolved: false });
             }
-            state.session.durable_sequence = committed
-                .update_sequence
-                .parse()
-                .map_err(|_| ProposalError::Failed("invalid committed sequence".into()))?;
-            return Ok(Some(update));
-        }
-        Ok(None)
+
+            self.catalog
+                .resolve_proposal(&mut *tx, self.proposal_id, &self.decided_by)
+                .await?;
+
+            // The suggestion this proposal answers, if it is one, stops
+            // being open discussion the moment its branch is decided. A
+            // proposal typed directly rather than suggested has no matching
+            // row, so this touches nothing for it.
+            sqlx::query(
+                "UPDATE annotations SET resolved_at=COALESCE(resolved_at,now()),updated_at=now() \
+                 WHERE proposal_id=$1",
+            )
+            .bind(self.proposal_id)
+            .execute(&mut **tx)
+            .await?;
+
+            // The idempotency record for the merge this decision produced,
+            // if it produced one: a retry with the same request id finds
+            // this row rather than resolving the proposal a second time
+            // (§7.2). A retry that lands after `head` already reflects the
+            // resolution reruns `resolve` against already-seen operations,
+            // which `Head::prepare` exports as an empty batch -- so
+            // `evidence.after_frontier` is `None` and the label is written
+            // against the head it found instead, which is the same state.
+            let frontier = evidence
+                .after_frontier
+                .clone()
+                .unwrap_or_else(|| evidence.before_frontier.clone());
+            self.catalog
+                .insert_label(
+                    &mut *tx,
+                    &NewLabel {
+                        id: postgres::new_id(),
+                        document_id: self.document_id,
+                        source_sequence: evidence.source_sequence,
+                        vector: evidence.vector.clone(),
+                        frontier,
+                        tree_digest: None,
+                        label: None,
+                        reason: "accept".into(),
+                        request_id: Some(self.request_id),
+                        author_account_id: None,
+                        author_label: self.decided_by.clone(),
+                    },
+                )
+                .await?;
+
+            Ok(ProposalDecided { resolved: true })
+        })
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -853,20 +726,15 @@ mod tests {
 
     /// A proposal's base is where its author forked, and nowhere else.
     ///
-    /// `open_proposal` used to record the room's frontier at the moment the
-    /// `proposal-open` message happened to be handled, ignoring the base the
-    /// client sent. The two agree in a quiet room, so this was invisible until
-    /// somebody else was typing -- which is the only time proposals matter.
-    ///
-    /// When they disagree the recorded base is *ahead* of the fork, and the
-    /// branch does not contain what the room did in between.
+    /// `OpenProposal` records the base the client sent, never the room's own
+    /// frontier at the moment the command happens to run: the two agree in a
+    /// quiet room, so a regression here is invisible until somebody else is
+    /// typing -- which is the only time proposals matter.
     ///
     /// This pins the property that makes the base worth getting right: given
     /// the author's own fork point, the hunks of a proposal describe only what
     /// its author did, and resolving it leaves a concurrent writer's sentence
-    /// alone. The existing `main_moving_on_does_not_disturb_a_proposal` covers
-    /// a concurrent edit to a different file; this one is the same file, which
-    /// is the case where a diff could actually confuse the two.
+    /// alone.
     #[test]
     fn a_proposal_holds_only_its_authors_work_when_the_room_moves_under_it() {
         let room = session::new_doc();

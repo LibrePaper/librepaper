@@ -89,3 +89,18 @@ export function kindOf(rules, path) {
   if (ends(rules?.asset_extensions)) return { kind: "asset" };
   return { error: `${path}: a document holds texts and figures, and this is neither` };
 }
+
+/// The next spelling of a path that is already taken: `paper.tex` becomes
+/// `paper (2).tex`, then `paper (3).tex`. Before the extension rather than
+/// after it, because a name that stops being a `.tex` stops being a file the
+/// compiler will read. The mirror of `paths::suffixed` in
+/// `librepaper-document-core`.
+export function suffixed(path, nth) {
+  const dot = path.lastIndexOf(".");
+  // A leading dot is not an extension, and a dot in a directory name is not
+  // this file's.
+  const usable = dot > 0 && !path.slice(dot).includes("/");
+  const stem = usable ? path.slice(0, dot) : path;
+  const extension = usable ? path.slice(dot) : "";
+  return `${stem} (${nth})${extension}`;
+}

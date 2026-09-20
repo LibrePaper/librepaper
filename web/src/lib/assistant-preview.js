@@ -1,4 +1,4 @@
-import { snapshotDigest } from "./tree-digest.js";
+import { snapshotDigest } from "./projection-digest.js";
 import { diagnosticContext } from "./assistant-review.js";
 
 const owns = (value, key) => Object.prototype.hasOwnProperty.call(value, key);

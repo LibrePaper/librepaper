@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { previewCandidate } from "../../src/lib/assistant-preview.js";
-import { snapshotDigest } from "../../src/lib/tree-digest.js";
+import { snapshotDigest } from "../../src/lib/projection-digest.js";
 
 const tree = { main: "main.md", texts: { "main.md": "Before", "other.md": "Other" },
   files: { "main.md": { kind: "text", id: "main" }, "other.md": { kind: "text", id: "other" } },

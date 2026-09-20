@@ -27,6 +27,7 @@ files.setContainer(id, text); paths.set(id, "main.html"); meta.set("main", id);
 for (let i = 0; i < 70; i++) { const file = new LoroText(); file.insert(0, 'chapter ' + i); files.setContainer('chapter-' + i, file); paths.set('chapter-' + i, 'chapter-' + i + '.html'); }
 server.commit();
 const update = encode(server.export({ mode: "update" }));
+const vector = encode(server.oplogVersion().encode());
 export function openRoom(slug, {onMessage, onConnected}) {
   window.roomReceive = onMessage;
   window.roomSent = [];
@@ -34,7 +35,7 @@ export function openRoom(slug, {onMessage, onConnected}) {
   return {
     send(message) {
       window.roomSent.push(message);
-      if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", update, count:1}));
+      if (message.type === "doc-open") queueMicrotask(() => onMessage({type:"doc-state", protocol:"librepaper.room.v2", vector, updates:[update]}));
       return {ok:true};
     },
     sendLive(message) { window.roomSent.push(message); return {ok:true}; },

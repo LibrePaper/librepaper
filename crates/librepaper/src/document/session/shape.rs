@@ -93,7 +93,7 @@ pub fn main_path(doc: &LoroDoc) -> String {
 }
 
 /// Names the main file. An editor's act rather than a keystroke: the server
-/// needs it to render a checkpoint and to say what format the document is in.
+/// needs it to render a label and to say what format the document is in.
 pub fn set_main(doc: &LoroDoc, id: &str) {
     let meta = doc.get_map(META);
     meta.insert(MAIN, id).ok();
@@ -117,7 +117,7 @@ pub fn latex_engine(doc: &LoroDoc) -> String {
 }
 
 /// Every text in the document, by path. What a renderer is given and what a
-/// checkpoint is made of.
+/// label is made of.
 pub fn texts_of(doc: &LoroDoc) -> BTreeMap<String, String> {
     let files = doc.get_map(FILES);
     let path_map = doc.get_map(PATHS);

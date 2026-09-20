@@ -52,9 +52,6 @@ pub struct DocumentRecord {
     pub source_format: String,
     pub main_path: String,
     pub update_sequence: i64,
-    pub project_generation: i64,
-    pub current_version_id: Option<Uuid>,
-    pub current_bundle_id: Option<Uuid>,
     pub settings: Value,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -80,58 +77,6 @@ pub struct AssetRecord {
     pub byte_length: i64,
     pub media_type: String,
     pub original_name: Option<String>,
-    pub created_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug)]
-pub struct NewVersion {
-    pub document_id: Uuid,
-    pub parent_id: Option<Uuid>,
-    pub through_update_sequence: i64,
-    pub project_generation: i64,
-    pub archive_key: String,
-    pub archive_encoding_version: i16,
-    pub archive_digest: [u8; 32],
-    pub archive_bytes: i64,
-    pub logical_bytes: i64,
-    /// The digest of the canonical file tree this version holds, when the
-    /// writer knew it. It is what says two versions are the same document.
-    pub tree_digest: Option<[u8; 32]>,
-    /// The paths whose contents differ from the parent version's. `None` when
-    /// the writer could not answer, which is not the same as "nothing moved".
-    pub changed_paths: Option<Vec<String>>,
-    /// How many files this version holds. `None` when the writer did not say,
-    /// which is what every version written before the listing needed the
-    /// number reads back as. The listing shows it as unknown rather than as
-    /// zero: a project has at least a main file, so zero would be a lie.
-    pub file_count: Option<i32>,
-    pub reason: String,
-    pub label: Option<String>,
-    pub author_account_id: Option<Uuid>,
-    pub author_label: String,
-    pub make_current: bool,
-}
-
-#[derive(Clone, Debug, sqlx::FromRow)]
-pub struct VersionRecord {
-    pub id: Uuid,
-    pub document_id: Uuid,
-    pub sequence: i64,
-    pub parent_id: Option<Uuid>,
-    pub through_update_sequence: i64,
-    pub project_generation: i64,
-    pub archive_key: String,
-    pub archive_encoding_version: i16,
-    pub archive_digest: Vec<u8>,
-    pub archive_bytes: i64,
-    pub logical_bytes: i64,
-    pub tree_digest: Option<Vec<u8>>,
-    pub changed_paths: Option<Vec<String>>,
-    pub file_count: Option<i32>,
-    pub reason: String,
-    pub label: Option<String>,
-    pub author_account_id: Option<Uuid>,
-    pub author_label: String,
     pub created_at: OffsetDateTime,
 }
 
@@ -196,36 +141,12 @@ impl PostgresCatalog {
         )
         .execute(&mut *tx)
         .await?;
-        let delete_after = OffsetDateTime::now_utc() + recovery_grace;
-        for document_id in document_ids {
-            sqlx::query!(
-                "INSERT INTO jobs(id,kind,document_id,account_id,scope_key,dedupe_key,payload,status,priority,max_attempts,run_after)
-                 VALUES($1,'document_deletion',$2,$3,$4,'delete',$5,'queued',0,100,$6)
-                 ON CONFLICT (kind,scope_key,dedupe_key)
-                 WHERE dedupe_key IS NOT NULL AND status IN ('queued','running') DO NOTHING",
-                new_id(),
-                document_id,
-                account_id,
-                format!("document:{document_id}"),
-                serde_json::json!({"document_id":document_id}),
-                delete_after,
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-        sqlx::query!(
-            "INSERT INTO jobs(id,kind,account_id,scope_key,dedupe_key,payload,status,priority,max_attempts,run_after)
-             VALUES($1,'account_deletion',$2,$3,'delete',$4,'queued',0,100,$5)
-             ON CONFLICT (kind,scope_key,dedupe_key)
-             WHERE dedupe_key IS NOT NULL AND status IN ('queued','running') DO NOTHING",
-            new_id(),
-            account_id,
-            format!("account:{account_id}"),
-            serde_json::json!({"account_id":account_id}),
-            delete_after + time::Duration::minutes(5),
-        )
-        .execute(&mut *tx)
-        .await?;
+        // No queue rows. `documents.status = 'deleting'` is the durable
+        // state the background worker rediscovers at startup and acts on
+        // (§8.6), and the account row's own `erasing` status is what says
+        // the account is still owed its deletion. A queue row would be a
+        // third copy of both, able to disagree with either.
+        let _ = (&document_ids, recovery_grace);
         tx.commit().await?;
         Ok(true)
     }
@@ -261,15 +182,8 @@ impl PostgresCatalog {
         .execute(&mut *tx)
         .await?;
         sqlx::query!(
-            "UPDATE document_versions SET author_account_id=NULL,author_label='Deleted user'
+            "UPDATE document_labels SET author_account_id=NULL,author_label='Deleted user'
              WHERE author_account_id=$1",
-            account_id,
-        )
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query!(
-            "UPDATE bundles SET rendered_by_account_id=NULL,rendered_by_label='Deleted user'
-             WHERE rendered_by_account_id=$1",
             account_id,
         )
         .execute(&mut *tx)
@@ -458,8 +372,8 @@ impl PostgresCatalog {
              (id,slug,owner_id,ownership_mode,title,status,source_format,main_path,settings)
              VALUES($1,$2,$3,$4,$5,'active',$6,$7,$8)
              RETURNING id,slug,owner_id,ownership_mode,title,status,source_format,
-                       main_path,update_sequence,project_generation,current_version_id,
-                       current_bundle_id,settings,created_at,updated_at,deleted_at",
+                       main_path,update_sequence,
+                       settings,created_at,updated_at,deleted_at",
             id,
             input.slug,
             input.owner_id,
@@ -478,8 +392,8 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,project_generation,current_version_id,
-                    current_bundle_id,settings,created_at,updated_at,deleted_at
+                    main_path,update_sequence,
+                       settings,created_at,updated_at,deleted_at
              FROM documents WHERE slug=$1",
             slug,
         )
@@ -492,8 +406,8 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,project_generation,current_version_id,
-                    current_bundle_id,settings,created_at,updated_at,deleted_at
+                    main_path,update_sequence,
+                       settings,created_at,updated_at,deleted_at
              FROM documents WHERE id=$1",
             id,
         )
@@ -513,8 +427,8 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,project_generation,current_version_id,
-                    current_bundle_id,settings,created_at,updated_at,deleted_at
+                    main_path,update_sequence,
+                       settings,created_at,updated_at,deleted_at
              FROM documents
              WHERE status='active'
                AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
@@ -540,8 +454,8 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,project_generation,current_version_id,
-                    current_bundle_id,settings,created_at,updated_at,deleted_at
+                    main_path,update_sequence,
+                       settings,created_at,updated_at,deleted_at
              FROM documents WHERE owner_id=$1 AND status='active'
              ORDER BY updated_at DESC,id DESC LIMIT $2",
             owner_id,
@@ -564,8 +478,8 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,project_generation,current_version_id,
-                    current_bundle_id,settings,created_at,updated_at,deleted_at
+                    main_path,update_sequence,
+                       settings,created_at,updated_at,deleted_at
              FROM documents WHERE owner_id=$1 AND status='active'
              AND (updated_at,id) < (COALESCE($2::timestamptz,'infinity'),
                                     COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
@@ -593,8 +507,8 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
-                    d.source_format,d.main_path,d.update_sequence,d.project_generation,
-                    d.current_version_id,d.current_bundle_id,d.settings,d.created_at,
+                    d.source_format,d.main_path,d.update_sequence,
+                    d.settings,d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
              WHERE d.status='active'
@@ -622,14 +536,14 @@ impl PostgresCatalog {
 
     pub async fn document_counts_by_owner(&self, owner_id: Uuid) -> Result<(i64, i64)> {
         let row = sqlx::query!(
-            // Counted separately rather than over a join: joining documents to
-            // their versions multiplies one side by the other only to collapse
-            // it again with DISTINCT, and materializes a row per version to
-            // count the documents.
+            // Counted separately rather than over a join: joining documents
+            // to their labels multiplies one side by the other only to
+            // collapse it again with DISTINCT, and materializes a row per
+            // label to count the documents.
             r#"SELECT (SELECT count(*) FROM documents d
                        WHERE d.owner_id=$1 AND d.status='active')::bigint AS "documents!",
-                      (SELECT count(*) FROM document_versions v
-                       JOIN documents d ON d.id=v.document_id
+                      (SELECT count(*) FROM document_labels l
+                       JOIN documents d ON d.id=l.document_id
                        WHERE d.owner_id=$1 AND d.status='active')::bigint AS "versions!""#,
             owner_id,
         )
@@ -948,314 +862,6 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
-    pub async fn current_version(&self, document_id: Uuid) -> Result<Option<VersionRecord>> {
-        sqlx::query_as!(
-            VersionRecord,
-            "SELECT v.id,v.document_id,v.sequence,v.parent_id,v.through_update_sequence,
-                    v.project_generation,v.archive_key,v.archive_encoding_version,v.archive_digest,
-                    v.archive_bytes,v.logical_bytes,v.tree_digest,v.changed_paths,v.file_count,v.reason,
-                    v.label,v.author_account_id,v.author_label,v.created_at
-             FROM documents d
-             JOIN document_versions v ON v.id=d.current_version_id
-             WHERE d.id=$1 AND d.status='active'",
-            document_id,
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
-    /// The immutable source checkpoint a published bundle names by tree
-    /// digest. The newest match is enough: identical trees have identical
-    /// source bytes and stable file identities.
-    pub async fn version_by_tree_digest(
-        &self,
-        document_id: Uuid,
-        digest: &[u8],
-    ) -> Result<Option<VersionRecord>> {
-        sqlx::query_as::<_, VersionRecord>(
-            // Every column `VersionRecord` has, because this is the one
-            // version query that is not the checked macro: `FromRow` looks
-            // the fields up by name at run time, so a column left out here is
-            // a request that fails rather than a build that does.
-            "SELECT id,document_id,sequence,parent_id,through_update_sequence,
-                    project_generation,archive_key,archive_encoding_version,archive_digest,
-                    archive_bytes,logical_bytes,tree_digest,changed_paths,file_count,reason,label,
-                    author_account_id,author_label,created_at
-             FROM document_versions WHERE document_id=$1 AND tree_digest=$2
-             ORDER BY sequence DESC LIMIT 1",
-        )
-        .bind(document_id)
-        .bind(digest)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
-    pub async fn create_version(&self, input: NewVersion) -> Result<VersionRecord> {
-        if input.archive_bytes < 0 || input.logical_bytes < 0 || input.archive_key.is_empty() {
-            return Err(Error::Invalid("invalid source version".into()));
-        }
-        let mut tx = self.begin_writer_transaction().await?;
-        let document = sqlx::query!(
-            "SELECT update_sequence,project_generation,status,owner_id FROM documents
-             WHERE id=$1 FOR UPDATE",
-            input.document_id,
-        )
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(Error::NotFound)?;
-        if document.status != "active" {
-            return Err(Error::Conflict("document is being deleted".into()));
-        }
-        if input.through_update_sequence > document.update_sequence {
-            return Err(Error::Conflict("version is ahead of durable source".into()));
-        }
-        if input.project_generation > document.project_generation {
-            return Err(Error::Conflict(
-                "version is ahead of project structure".into(),
-            ));
-        }
-        if let Some(parent_id) = input.parent_id {
-            let belongs = sqlx::query_scalar!(
-                r#"SELECT EXISTS(SELECT 1 FROM document_versions WHERE id=$1 AND document_id=$2)
-                   AS "exists!""#,
-                parent_id,
-                input.document_id,
-            )
-            .fetch_one(&mut *tx)
-            .await?;
-            if !belongs {
-                return Err(Error::Invalid(
-                    "version parent belongs to another document".into(),
-                ));
-            }
-        }
-        // Nothing is pruned here. A version exists because somebody asked for
-        // one -- a label, a bundle, a restore, a comment's anchor -- and
-        // there is no routine churn left to shed. What a document did between
-        // two of them is in the operation history, which is kept whole.
-        let recent = sqlx::query_scalar!(
-            r#"SELECT count(*) AS "count!" FROM document_versions v
-               JOIN documents d ON d.id=v.document_id
-               WHERE d.owner_id=$1 AND v.created_at>=now()-interval '1 hour'"#,
-            document.owner_id,
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        if recent >= self.policy.versions_per_hour {
-            return Err(Error::Conflict(
-                "account version creation rate exceeded".into(),
-            ));
-        }
-        // What this version adds to the store, which is not the same as what
-        // it holds. An archive that another version already names is already
-        // there; naming it again writes no bytes, and charging an account for
-        // them would bill it twice for one object.
-        let held = sqlx::query_scalar!(
-            r#"SELECT EXISTS(SELECT 1 FROM document_versions WHERE archive_key=$1)
-               AS "held!""#,
-            input.archive_key,
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        let charge = if held { 0 } else { input.archive_bytes };
-        let owner_usage = owner_usage_bytes(&mut *tx, document.owner_id).await?;
-        let deployment_usage =
-            sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
-                .fetch_one(&mut *tx)
-                .await?;
-        if owner_usage.saturating_add(charge) > self.policy.owner_bytes {
-            return Err(Error::Conflict("account storage quota exceeded".into()));
-        }
-        if deployment_usage.saturating_add(charge) > self.policy.deployment_bytes {
-            return Err(Error::Conflict(
-                "deployment storage threshold exceeded".into(),
-            ));
-        }
-        let sequence = sqlx::query_scalar!(
-            r#"SELECT COALESCE(max(sequence),0)+1 AS "sequence!"
-               FROM document_versions WHERE document_id=$1"#,
-            input.document_id,
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        let id = new_id();
-        let tree_digest = input.tree_digest.map(|digest| digest.to_vec());
-        let version = sqlx::query_as!(
-            VersionRecord,
-            "INSERT INTO document_versions
-             (id,document_id,sequence,parent_id,through_update_sequence,project_generation,
-              archive_key,archive_encoding_version,archive_digest,archive_bytes,logical_bytes,
-              tree_digest,changed_paths,file_count,reason,label,author_account_id,author_label)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-             RETURNING id,document_id,sequence,parent_id,through_update_sequence,project_generation,
-                       archive_key,archive_encoding_version,archive_digest,archive_bytes,
-                       logical_bytes,tree_digest,changed_paths,file_count,reason,label,
-                       author_account_id,author_label,created_at",
-            id,
-            input.document_id,
-            sequence,
-            input.parent_id,
-            input.through_update_sequence,
-            input.project_generation,
-            input.archive_key,
-            input.archive_encoding_version,
-            input.archive_digest.as_slice(),
-            input.archive_bytes,
-            input.logical_bytes,
-            tree_digest,
-            input.changed_paths.as_deref(),
-            input.file_count,
-            input.reason,
-            input.label,
-            input.author_account_id,
-            input.author_label,
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        if input.make_current {
-            sqlx::query!(
-                "UPDATE documents SET current_version_id=$2,updated_at=now() WHERE id=$1",
-                input.document_id,
-                id,
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(version)
-    }
-
-    /// Move a version back in time, for a writer that has the moment in hand
-    /// rather than the clock -- today, the seeded examples, which are written
-    /// as a history rather than accumulated as one. See `seed::activity`: the
-    /// archive and everything named in it are real, and this column is the
-    /// one thing about them that is invented.
-    ///
-    /// Nothing else writes `created_at`; a version records when it was made,
-    /// and that is not a fact a caller gets to supply.
-    pub async fn backdate_version(&self, id: Uuid, at: OffsetDateTime) -> Result<()> {
-        let mut tx = self.begin_writer_transaction().await?;
-        sqlx::query!(
-            "UPDATE document_versions SET created_at=$2 WHERE id=$1",
-            id,
-            at,
-        )
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
-    pub async fn versions(&self, document_id: Uuid, limit: i64) -> Result<Vec<VersionRecord>> {
-        if !(1..=1000).contains(&limit) {
-            return Err(Error::Invalid("version page limit must be 1..=1000".into()));
-        }
-        sqlx::query_as!(
-            VersionRecord,
-            "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,
-                    archive_key,archive_encoding_version,archive_digest,archive_bytes,
-                    logical_bytes,tree_digest,changed_paths,file_count,reason,label,author_account_id,
-                    author_label,created_at
-             FROM document_versions WHERE document_id=$1
-             ORDER BY sequence DESC LIMIT $2",
-            document_id,
-            limit,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
-    /// The object an existing version of this document already holds these
-    /// exact archive bytes under, if one does.
-    ///
-    /// Returns the stored key rather than a bare yes, because it is the key a
-    /// new version must name to share the object -- and it is not always the
-    /// content-addressed name a writer would mint today. A version written
-    /// before archives were shared holds its bytes under its own id, and the
-    /// cheapest thing a duplicate of it can do is point at that.
-    pub async fn archive_for_digest(
-        &self,
-        document_id: Uuid,
-        digest: &[u8],
-    ) -> Result<Option<String>> {
-        sqlx::query_scalar!(
-            "SELECT archive_key FROM document_versions
-             WHERE document_id=$1 AND archive_digest=$2
-             ORDER BY sequence LIMIT 1",
-            document_id,
-            digest,
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
-    pub async fn version(&self, document_id: Uuid, id: Uuid) -> Result<Option<VersionRecord>> {
-        sqlx::query_as!(
-            VersionRecord,
-            "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,
-                    archive_key,archive_encoding_version,archive_digest,archive_bytes,
-                    logical_bytes,tree_digest,changed_paths,file_count,reason,label,author_account_id,
-                    author_label,created_at
-             FROM document_versions WHERE document_id=$1 AND id=$2",
-            document_id,
-            id,
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
-    pub async fn version_page(
-        &self,
-        document_id: Uuid,
-        after_sequence: Option<i64>,
-        limit: i64,
-    ) -> Result<Vec<VersionRecord>> {
-        if !(1..=200).contains(&limit) {
-            return Err(Error::Invalid("version page limit must be 1..=200".into()));
-        }
-        sqlx::query_as!(
-            VersionRecord,
-            "SELECT id,document_id,sequence,parent_id,through_update_sequence,project_generation,
-                    archive_key,archive_encoding_version,archive_digest,archive_bytes,
-                    logical_bytes,tree_digest,changed_paths,file_count,reason,label,author_account_id,
-                    author_label,created_at
-             FROM document_versions WHERE document_id=$1
-             AND sequence < COALESCE($2::bigint, 9223372036854775807) ORDER BY sequence DESC LIMIT $3",
-            document_id,
-            after_sequence,
-            limit,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
-    pub async fn label_version(
-        &self,
-        document_id: Uuid,
-        id: Uuid,
-        label: Option<&str>,
-    ) -> Result<bool> {
-        let mut tx = self.begin_writer_transaction().await?;
-        let changed = sqlx::query!(
-            "UPDATE document_versions SET label=$3 WHERE document_id=$1 AND id=$2",
-            document_id,
-            id,
-            label.filter(|v| !v.is_empty()),
-        )
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            == 1;
-        tx.commit().await?;
-        Ok(changed)
-    }
-
     pub async fn mark_document_deleting(&self, document_id: Uuid) -> Result<bool> {
         let mut tx = self.begin_writer_transaction().await?;
         let changed = sqlx::query!(
@@ -1292,8 +898,8 @@ impl PostgresCatalog {
         sqlx::query_as!(
             DocumentRecord,
             "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
-                    d.source_format,d.main_path,d.update_sequence,d.project_generation,
-                    d.current_version_id,d.current_bundle_id,d.settings,d.created_at,
+                    d.source_format,d.main_path,d.update_sequence,
+                    d.settings,d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
              WHERE d.owner_id=$1 AND d.status='deleting'
@@ -1306,44 +912,32 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
-    /// When the queued purge of a deleted document is due, so a listing can
-    /// say how long is left rather than making the reader count days from the
-    /// deletion themselves. `None` for a document with no purge queued, which
-    /// is a document that is not in the trash.
+    /// When the purge of a deleted document is due, so a listing can say how
+    /// long is left rather than making the reader count days from the
+    /// deletion themselves. `None` for a document that is not in the trash.
+    ///
+    /// Derived from `deleted_at` rather than read off a queue row. There is
+    /// no queue: the status and the timestamp on the document are the
+    /// durable state, and the background worker rediscovers them (§8.6).
     pub async fn deletion_due(&self, document_id: Uuid) -> Result<Option<OffsetDateTime>> {
         Ok(sqlx::query_scalar!(
-            "SELECT run_after FROM jobs
-             WHERE kind='document_deletion' AND document_id=$1 AND status='queued'
-             ORDER BY run_after LIMIT 1",
+            "SELECT deleted_at FROM documents WHERE id=$1 AND status='deleting'",
             document_id,
         )
         .fetch_optional(&self.pool)
-        .await?)
+        .await?
+        .flatten()
+        .map(|at| at + crate::storage::maintenance::DELETION_GRACE))
     }
 
     /// Take a document back out of the trash.
     ///
-    /// Cancelling the queued purge is the operation; flipping the status back
-    /// is bookkeeping that follows from it. They happen in one transaction and
-    /// in that order because the job is the thing that can be lost: if the
-    /// purge has already been claimed and is running, its blobs are already
-    /// going, and a document restored on top of that would be an entry in the
-    /// listing pointing at files that are half gone. So a purge that is no
-    /// longer 'queued' refuses the restore rather than racing it.
+    /// The status is the whole of it. The worker reads `status='deleting'`
+    /// under the document lock before it touches a blob and again after, so
+    /// a document restored while a purge is in flight is left alone rather
+    /// than half deleted.
     pub async fn restore_document(&self, document_id: Uuid) -> Result<bool> {
         let mut tx = self.begin_writer_transaction().await?;
-        let cancelled = sqlx::query!(
-            "UPDATE jobs SET status='cancelled',updated_at=now()
-             WHERE kind='document_deletion' AND document_id=$1 AND status='queued'",
-            document_id,
-        )
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        if cancelled == 0 {
-            tx.rollback().await?;
-            return Ok(false);
-        }
         let restored = sqlx::query!(
             "UPDATE documents SET status='active',deleted_at=NULL,updated_at=now()
              WHERE id=$1 AND status='deleting'",
@@ -1361,14 +955,25 @@ impl PostgresCatalog {
     }
 
     /// Purge a deleted document now instead of when its seven days are up.
-    /// "Delete forever" in the trash: the job is already queued and already
-    /// knows how to do it, so this only brings it forward.
+    /// "Delete forever" in the trash: backdating `deleted_at` past the grace
+    /// period is what makes the next sweep pick it up.
     pub async fn hasten_deletion(&self, document_id: Uuid) -> Result<bool> {
         let mut tx = self.begin_writer_transaction().await?;
         let changed = sqlx::query!(
-            "UPDATE jobs SET run_after=now(),updated_at=now()
-             WHERE kind='document_deletion' AND document_id=$1 AND status='queued'",
+            "UPDATE documents SET deleted_at=now() - $2::interval,updated_at=now()
+             WHERE id=$1 AND status='deleting'",
             document_id,
+            // `query!` resolves an `interval` parameter to `PgInterval`, not
+            // to `time::Duration` (recent `time` releases alias `Duration`
+            // to `SignedDuration`, which sqlx does not pick as the default
+            // encoding for this oid), so the conversion has to be explicit.
+            // `DELETION_GRACE * 2` is a fixed fourteen days, nowhere near
+            // the range `PgInterval` can reject, so the conversion is
+            // infallible in practice.
+            sqlx::postgres::types::PgInterval::try_from(
+                crate::storage::maintenance::DELETION_GRACE * 2,
+            )
+            .expect("fourteen days fits in an interval"),
         )
         .execute(&mut *tx)
         .await?
@@ -1448,21 +1053,34 @@ where
 {
     sqlx::query_scalar!(
         r#"SELECT COALESCE(sum(bytes),0)::bigint AS "total!" FROM (
-             SELECT v.archive_bytes AS bytes FROM (
-               SELECT DISTINCT ON (v.archive_key) v.archive_key, v.archive_bytes
-               FROM document_versions v
-               JOIN documents d ON d.id=v.document_id WHERE d.owner_id=$1
-               ORDER BY v.archive_key, v.id
-             ) v
+             SELECT l.archive_bytes AS bytes FROM (
+               SELECT DISTINCT ON (l.archive_key) l.archive_key, l.archive_bytes
+               FROM document_labels l
+               JOIN documents d ON d.id=l.document_id
+               WHERE d.owner_id=$1 AND l.archive_key IS NOT NULL
+               ORDER BY l.archive_key, l.id
+             ) l
              UNION ALL SELECT a.byte_length FROM document_assets a
                JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
-             UNION ALL SELECT f.byte_length FROM bundle_files f
-               JOIN bundles p ON p.id=f.bundle_id
-               JOIN documents d ON d.id=p.document_id WHERE d.owner_id=$1
            ) usage"#,
         account_id,
     )
     .fetch_one(executor)
     .await
     .map_err(Error::from)
+}
+
+impl PostgresCatalog {
+    /// Every blob key one document's assets name, for the purge. Assets are
+    /// content-addressed and unique per document, so each key here is this
+    /// document's alone.
+    pub async fn document_asset_keys(&self, document_id: Uuid) -> Result<Vec<String>> {
+        sqlx::query_scalar!(
+            "SELECT storage_key FROM document_assets WHERE document_id=$1",
+            document_id,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
 }

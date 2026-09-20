@@ -22,6 +22,8 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 librepaper = { path = "../../crates/librepaper" }
+# The projection algorithm the `document` target attacks for totality.
+librepaper-document-core = { path = "../../crates/librepaper-document-core" }
 wasm-helpers = { git = "https://github.com/LibrePaper/wasm-helpers", tag = "v0.1.1" }
 # Pinned to what the binary uses, so a peer's raw write into the shared
 # document is made with the same encoder the room decodes.
@@ -39,7 +41,8 @@ test = false
 doc = false
 bench = false
 
-# A shared document built by a peer who may write any key, then repaired.
+# A shared document built by a peer who may write any key, then projected.
+# §4.4 claims the projection is total over every LoroDoc; this attacks that.
 [[bin]]
 name = "document"
 path = "fuzz_targets/document.rs"

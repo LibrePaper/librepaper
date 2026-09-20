@@ -136,7 +136,7 @@ pub(crate) struct ServiceFlags {
         value_name = "DURATION"
     )]
     expire_after: Option<String>,
-    /// Start expiry at 'updated' (default; last bundle) or 'created'
+    /// Start expiry at 'updated' (default; last write) or 'created'
     #[arg(
         long = "document-expire-from",
         env = "LIBREPAPER_EXPIRE_FROM",
@@ -240,11 +240,9 @@ impl ServiceFlags {
                     "peer_queue" if value > 0 => config.session.peer_queue = value,
                     "inline_state_max" => config.session.inline_state_max = value,
                     "updates_per_minute" if value > 0 => config.session.updates_per_minute = signed,
-                    "checkpoint_owner_per_hour" => {
-                        config.session.checkpoint_owner_per_hour = signed
-                    }
-                    "checkpoint_deployment_per_hour" => {
-                        config.session.checkpoint_deployment_per_hour = signed
+                    "label_owner_per_hour" => config.session.label_owner_per_hour = signed,
+                    "label_deployment_per_hour" => {
+                        config.session.label_deployment_per_hour = signed
                     }
                     "write_after_seconds" if value > 0 => {
                         config.session.write_after_seconds = signed
@@ -442,9 +440,15 @@ pub(crate) enum Command {
         /// jsonld (W3C Web Annotation), markdown, or response
         #[arg(long, value_name = "FORMAT")]
         format: Option<String>,
-        /// Only comments made at or after this checkpoint, using its history digest
-        #[arg(long, value_name = "SHA")]
+        /// Only comments made at or after this label, by id (or a prefix of
+        /// it) or by the name somebody gave it
+        #[arg(long, value_name = "LABEL")]
         since: Option<String>,
+        /// With --project, export the project as it stood at this label
+        /// instead of its live state; requesting a historical export waits
+        /// for the server to build it (SPEC-server-is-a-log §8.5)
+        #[arg(long, value_name = "LABEL")]
+        at: Option<String>,
         /// File for comments, or a new directory for a project
         #[arg(long, value_name = "PATH")]
         output: Option<String>,
@@ -519,6 +523,27 @@ pub(crate) enum AdminCommand {
     Backup {
         #[command(subcommand)]
         command: BackupCommand,
+    },
+    /// Delete objects no catalogue row names any more.
+    ///
+    /// Every blob a deployment keeps on purpose is named by an asset, a
+    /// compaction base or a label archive (§8.5); anything else under the
+    /// object store's prefixes is left over from a crash between writing
+    /// bytes and committing the row that would have named them. Reclaiming
+    /// it means listing the store, which is why this is a command an
+    /// operator runs after a bug rather than something a boot does.
+    Sweep {
+        #[command(flatten)]
+        storage: StorageFlags,
+        /// How many objects to examine per prefix. The sweep remembers where
+        /// it stopped, so running it again continues from there.
+        #[arg(
+            long,
+            default_value_t = 500,
+            value_parser = clap::value_parser!(u32).range(1..=1000),
+            value_name = "COUNT"
+        )]
+        batch: u32,
     },
 }
 
@@ -740,6 +765,7 @@ pub async fn main() {
             id,
             format,
             since,
+            at,
             output,
             key,
             project,
@@ -755,9 +781,13 @@ pub async fn main() {
                     token,
                     &output,
                     key.unwrap_or_default(),
+                    at.unwrap_or_default(),
                 )
                 .await
             } else {
+                if at.is_some() {
+                    die("--at applies only to --project export");
+                }
                 crate::cli::export::export_document(
                     &id,
                     server,
@@ -847,6 +877,34 @@ async fn run_admin(command: AdminCommand) {
                     directory,
                 },
         } => crate::storage::backup::restore_cli(storage.options(), backup, directory).await,
+        AdminCommand::Sweep { storage, batch } => sweep(storage, batch as usize).await,
+    }
+}
+
+/// `librepaper admin sweep`. The seven-day floor is the orphan sweeper's
+/// own: a blob younger than that may belong to a write still in flight, and
+/// `delete_orphans` refuses a shorter grace rather than trusting a flag.
+async fn sweep(storage: StorageFlags, batch: usize) {
+    let options = storage.options();
+    let blobs = match crate::storage::open_storage(options.clone()).await {
+        Ok(blobs) => blobs,
+        Err(error) => die(error),
+    };
+    let catalog = match crate::storage::postgres::PostgresCatalog::connect(
+        crate::storage::postgres::PostgresOptions::new(&options.database_url),
+    )
+    .await
+    {
+        Ok(catalog) => std::sync::Arc::new(catalog),
+        Err(error) => die(error.to_string()),
+    };
+    match crate::storage::maintenance::Maintenance::new(catalog, blobs)
+        .delete_orphans(batch, time::Duration::days(7))
+        .await
+    {
+        Ok(0) => println!("no unreferenced objects were due"),
+        Ok(removed) => println!("deleted {removed} unreferenced object(s)"),
+        Err(error) => die(error),
     }
 }
 

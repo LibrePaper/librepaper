@@ -109,6 +109,52 @@ admitting traffic after a restore. Horizontally scaled deployments use the same
 schema and object interface; use a bounded pool per process and route a
 document's WebSocket connections consistently to one application process.
 
+## Resource limits
+
+The server keeps a document's collaborative state as one compressed base
+plus a log of updates, and a document is only ever fully decoded in memory
+while something needs it -- an editor typing, a reader's projection, a
+compaction. Two limits protect a deployment from a document that asks for
+more of that than it should get.
+
+**The per-document log quota** bounds one document's compaction base plus
+every row since it, 64 MiB by default. An update that would push a document
+past its quota is refused with a retryable reason; the document's existing
+log is untouched and semantic commands (restore, comment, label) still work
+against it. This is the real bound on how long a cache rebuild for that
+document can occupy a thread, which is why it is a per-document ceiling and
+not a deployment-wide one.
+
+**The memory budget** is one process-wide figure, 512 MiB by default, shared
+by every resident cache entry, in-flight build, temporary fork and
+projection output buffer across every document the process is holding. A
+request that cannot reserve its share waits briefly and then fails with
+`busy`. Alongside it there is a second, separate bound on how many documents
+may be decoded at once: `min(cores, 4)`. Memory and CPU run out
+independently, and a machine with room for a hundred small documents can
+still be brought down by a hundred simultaneous decodes. A document's own
+lock keeps only one build running for that document at a time; the
+`min(cores, 4)` ceiling is what keeps four large documents from taking every
+core the relay path needs. Compaction exports count against the same
+ceiling, because they are the same uninterruptible work over the same
+decoded document.
+
+**Unreadable.** A build that breaches its wall-clock bound (10 seconds) or
+its memory reservation marks that document unreadable: its projection and
+semantic commands answer 503 until it recovers. Ingest and flush keep
+running underneath, so an editor can keep typing and the log keeps growing,
+but nobody, including the document's own editors, can read a rendered
+projection of it until someone shrinks it. Recovery happens automatically
+the next time a build for that document succeeds, which an editor can
+trigger by exporting, trimming the document's size, and re-importing it, or
+an operator can trigger after raising the relevant limit.
+
+Both limits exist because encoded bytes bound ingress and storage, but they
+do not bound the CPU and memory a decode of those bytes costs, and Loro's
+synchronous work cannot be interrupted once it starts. A limit here is
+therefore a limit on what gets scheduled, not a way to reclaim a thread that
+is already running. See `SPEC-server-is-a-log.md` §9 for the full reasoning.
+
 ## Containers
 
 `deploy/docker` holds a compose file for the whole of the above: PostgreSQL,

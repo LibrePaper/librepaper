@@ -9,7 +9,7 @@ import { applyDecision } from "../suggestions.js";
 // is about was the one thing it did not have. Anchoring and repainting are
 // still the page's, and genuinely so: both depend on the visible frame, which
 // this module cannot see.
-export function createAnnotations({ slug, anchor, repaint, send, bundleId = () => "" }) {
+export function createAnnotations({ slug, anchor, repaint, send, renderDigest = () => "" }) {
   const state = $state({
     comments: [],
     // What this browser has said and the server has not yet acknowledged.
@@ -73,7 +73,7 @@ export function createAnnotations({ slug, anchor, repaint, send, bundleId = () =
     anchor([optimistic]);
     update([...list(), optimistic]);
     repaint();
-    submit({ type: "comment", ...selection, bundle_id: selection.bundle_id ?? bundleId() ?? "", motivation, body, ...editingFields, ...colorFields, temp_id });
+    submit({ type: "comment", ...selection, render_digest: selection.render_digest ?? renderDigest() ?? "", motivation, body, ...editingFields, ...colorFields, temp_id });
   }
 
   function reply(parent, body, creator) {
@@ -157,7 +157,10 @@ export function createAnnotations({ slug, anchor, repaint, send, bundleId = () =
       repaint();
     } else if (event.type === "refine") {
       outbox.acknowledge(event);
-      const item = list().find((candidate) => candidate.id === event.comment_id);
+      // The response carries `comment_id` nowhere on the wire (`Ok(json!({
+      // "type": "refine", "comment": comment}))` in `server/mod.rs`) -- only
+      // the full, updated comment, which is where its own id actually is.
+      const item = list().find((candidate) => candidate.id === (event.comment_id ?? event.comment?.id));
       if (!item || !event.comment) return true;
       // The authoritative comment may have arrived through a read-only link;
       // preserve the caller's existing delete permission instead of granting

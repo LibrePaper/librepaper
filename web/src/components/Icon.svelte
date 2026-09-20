@@ -40,7 +40,7 @@
     ],
     "chevron-down": [["path", "m6 9 6 6 6-6"]],
     "chevron-up": [["path", "m18 15-6-6-6 6"]],
-    // Lucide's diff, for "compare since this checkpoint" in the timeline.
+    // Lucide's diff, for "compare since this label" in the timeline.
     diff: [["path", "M12 3v14"], ["path", "M5 10h14"], ["path", "M5 21h14"]],
     "chevron-right": [["path", "m9 6 6 6-6 6"]],
     "chevron-left": [["path", "m15 18-6-6 6-6"]],

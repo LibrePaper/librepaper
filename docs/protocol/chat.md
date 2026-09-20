@@ -176,10 +176,12 @@ When a candidate is private to the agent actor, the browser sends its
 short-lived `candidate_token` as `X-LibrePaper-Candidate-Token`; it is never
 placed in a URL. Published candidates may omit this token.
 
-The manifest contains `base_revision`, `revision`, `main`, `files`, and
-optional render `settings`. `files` includes every text and asset entry;
-source responses are exact UTF-8 text and assets continue to use their
-content digest. The browser returns diagnostics tied to that candidate revision:
+The manifest contains `base_revision`, `revision`, `tree_digest` (the same
+value as `revision`, under the name the rest of the MCP surface uses for a
+projection digest), `main`, `files`, and optional render `settings`. `files`
+includes every text and asset entry; source responses are exact UTF-8 text
+and assets continue to use their content digest. The browser returns
+diagnostics tied to that candidate revision:
 
 ```json
 {

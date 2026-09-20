@@ -10,7 +10,7 @@ use super::Message;
 pub enum Command {
     Comment {
         motivation: String,
-        bundle_id: String,
+        render_digest: String,
         body: String,
         creator: String,
         /// The selection as the page had it. Made into a source range by the
@@ -36,37 +36,30 @@ pub enum Command {
         comment_id: String,
         resolved: bool,
         temp_id: String,
-        request_id: String,
     },
     Delete {
         comment_id: String,
         temp_id: String,
-        request_id: String,
     },
     Refine {
         comment_id: String,
         proposed: String,
-        expected_proposed: String,
         body: String,
-        revision: String,
         temp_id: String,
-        request_id: String,
     },
     Accept {
         comment_id: String,
         temp_id: String,
-        request_id: String,
     },
     Reject {
         comment_id: String,
         temp_id: String,
-        request_id: String,
     },
-    RevisionDecide {
-        revision_id: String,
-        action: String,
-        request_id: String,
-    },
+    // Agent candidate revisions are the assistant surface's own concept, not
+    // an annotation command (`server::mod`'s handler refuses this on sight),
+    // so the wire fields that named which revision and what to do with it
+    // carry no meaning past validating that the message had them.
+    RevisionDecide,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,19 +120,6 @@ impl CommandError {
 }
 
 impl Command {
-    pub fn request_id(&self) -> &str {
-        match self {
-            Self::Comment { request_id, .. }
-            | Self::Reply { request_id, .. }
-            | Self::Resolve { request_id, .. }
-            | Self::Delete { request_id, .. }
-            | Self::Refine { request_id, .. }
-            | Self::Accept { request_id, .. }
-            | Self::Reject { request_id, .. }
-            | Self::RevisionDecide { request_id, .. } => request_id,
-        }
-    }
-
     pub fn comment_id(&self) -> &str {
         match self {
             Self::Reply { comment_id, .. }
@@ -148,7 +128,7 @@ impl Command {
             | Self::Refine { comment_id, .. }
             | Self::Accept { comment_id, .. }
             | Self::Reject { comment_id, .. } => comment_id,
-            Self::RevisionDecide { .. } => "",
+            Self::RevisionDecide => "",
             Self::Comment { .. } => "",
         }
     }
@@ -162,7 +142,7 @@ impl Command {
             | Self::Refine { temp_id, .. }
             | Self::Accept { temp_id, .. }
             | Self::Reject { temp_id, .. } => temp_id,
-            Self::RevisionDecide { .. } => "",
+            Self::RevisionDecide => "",
         }
     }
 
@@ -170,7 +150,7 @@ impl Command {
         match self {
             Self::Comment {
                 motivation,
-                bundle_id,
+                render_digest,
                 body,
                 exact,
                 prefix,
@@ -195,7 +175,7 @@ impl Command {
                 proposed,
                 temp_id,
                 request_id,
-                bundle_id,
+                render_digest,
             },
             Self::Reply {
                 comment_id,
@@ -234,7 +214,7 @@ impl Message {
         match kind.as_str() {
             "comment" => Ok(Command::Comment {
                 motivation: self.motivation().to_owned(),
-                bundle_id: self.bundle_id().to_owned(),
+                render_digest: self.render_digest().to_owned(),
                 body: self.body().to_owned(),
                 creator: self.creator().to_owned(),
                 exact: self.exact().to_owned(),
@@ -267,7 +247,6 @@ impl Message {
                     comment_id,
                     resolved: self.resolved(),
                     temp_id,
-                    request_id,
                 })
             }
             "delete" => {
@@ -277,30 +256,23 @@ impl Message {
                 Ok(Command::Delete {
                     comment_id,
                     temp_id,
-                    request_id,
                 })
             }
             "refine" => {
                 if comment_id.trim().is_empty() {
                     return missing("refine", "comment_id");
                 }
-                if self.revision().trim().is_empty() {
-                    return missing("refine", "revision");
-                }
                 let Some(proposed) = self.proposed().map(str::to_owned) else {
                     return missing("refine", "proposed");
                 };
-                let Some(expected_proposed) = self.expected_proposed().map(str::to_owned) else {
+                if self.expected_proposed().is_none() {
                     return missing("refine", "expected_proposed");
-                };
+                }
                 Ok(Command::Refine {
                     comment_id,
                     proposed,
-                    expected_proposed,
                     body: self.body().to_owned(),
-                    revision: self.revision().to_owned(),
                     temp_id,
-                    request_id,
                 })
             }
             "accept" => {
@@ -310,7 +282,6 @@ impl Message {
                 Ok(Command::Accept {
                     comment_id,
                     temp_id,
-                    request_id,
                 })
             }
             "reject" => {
@@ -320,7 +291,6 @@ impl Message {
                 Ok(Command::Reject {
                     comment_id,
                     temp_id,
-                    request_id,
                 })
             }
             "revision-decide" => {
@@ -333,11 +303,7 @@ impl Message {
                 if !matches!(self.action(), "accept" | "reject" | "undo") {
                     return missing("revision-decide", "action");
                 }
-                Ok(Command::RevisionDecide {
-                    revision_id: self.revision_id().to_owned(),
-                    action: self.action().to_owned(),
-                    request_id,
-                })
+                Ok(Command::RevisionDecide)
             }
             _ => Err(CommandError::Unknown {
                 kind,

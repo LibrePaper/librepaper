@@ -30,7 +30,8 @@ const KEPT = 12;
 const CEILING = 96 * 1024 * 1024;
 /// A compile finishes every few seconds while somebody is typing, and none of
 /// those pages is worth a write of its own. The newest one wins after a
-/// pause, which is the same shape the checkpoint and the bundle use.
+/// pause, the same debounce shape used wherever a fast-moving stream is
+/// reduced to the one state worth keeping.
 const SETTLE_MS = 5_000;
 
 let opened = null;

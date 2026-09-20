@@ -69,29 +69,12 @@ const earlier = {
   sha: "d".repeat(64), at: "2026-06-15T12:00:00Z", by: "Vincent", why: "quiet", label: "",
 };
 
-// The writes the activity strip is drawn from: four minutes falling in three
-// ten-minute bins, the last of them the busiest, so the bars can be checked
-// for where they are and for how long they are.
-// The writes the sittings are cut from. Nine o'clock to twenty past is one
-// sitting; forty minutes of nothing, then ten o'clock is another. The panel
-// draws no height at all for the forty minutes.
 // One version somebody asked for, set on the panel partway through, so that
 // a row with a word on it can be told from the rows without one.
 const published = {
   sha: "f".repeat(64), at: "2026-09-11T10:20:00Z", by: "Vincent", why: "cli", label: "",
   changed: ["main.md"],
 };
-
-// A day's writing. Three of these minutes hold no version, and are the ones
-// the panel folds away; the fourth is the minute 10:00's versions were taken
-// in, and belongs to them rather than to the folded line.
-const write = (at, changes) => ({ at, peer: "", changes, state_bytes: changes * 100, frontier: at });
-const rows = [
-  write("2026-09-11T09:00:00Z", 2),
-  write("2026-09-11T09:02:00Z", 1),
-  write("2026-09-11T09:20:00Z", 3),
-  write("2026-09-11T10:14:00Z", 4),
-];
 
 // Thirty autosaves a minute apart, half from each of two people, on a day too
 // big to list -- so whether they are one run or two is entirely the question
@@ -115,10 +98,6 @@ const busyDay = Array.from({ length: 90 }, (_, index) => {
   };
 });
 
-// A day somebody wrote on and saved nothing from, which the month has to mark
-// because it has no versions to count.
-const quietDay = write("2026-09-07T11:00:00Z", 5);
-
 const source = `
 import History from ${JSON.stringify(join(root, "web/src/components/reader/History.svelte"))};
 import { tick } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
@@ -127,15 +106,13 @@ const points = ${JSON.stringify(points)};
 const otherFilePoint = ${JSON.stringify(otherFilePoint)};
 const movedPoints = ${JSON.stringify(movedPoints)};
 const earlier = ${JSON.stringify(earlier)};
-const rows = ${JSON.stringify(rows)};
 const published = ${JSON.stringify(published)};
-const quietDay = ${JSON.stringify(quietDay)};
 const shared = ${JSON.stringify(shared)};
 const busyDay = ${JSON.stringify(busyDay)};
 const all = [...points, otherFilePoint, ...movedPoints];
 const events = [];
 const component = createClassComponent({ component: History, target: document.body, props: {
-  checkpoints: all, activity: rows, canEdit: true, currentLabel: "",
+  labels: all, canEdit: true, currentLabel: "",
   onview: (sha) => events.push(["view", sha]),
   onname: (sha, label) => events.push(["name", sha, label]),
 } });
@@ -201,19 +178,19 @@ window.historyPanelCheck = async () => {
     && first.title.includes('Synced'),
     'what it was is said where saying it costs the eye nothing');
   // And one somebody asked for says which, wherever it appears.
-  component.$set({ checkpoints: [...all, published] }); await flush();
+  component.$set({ labels: [...all, published] }); await flush();
   // "Saved", not "Published": nobody publishes anything any more, and the
   // word outlived the act by a release.
   check(seen(list()[0]) === '10:20 AM Saved',
     'a version somebody asked for says which it was: ' + seen(list()[0]));
-  component.$set({ checkpoints: all }); await flush();
+  component.$set({ labels: all }); await flush();
 
   /* ------------------------------ a day too big to read is coarsened */
 
   // Ninety versions in one afternoon is what the server actually produces --
   // it saves after thirty seconds of quiet -- and that is the day the
   // coarsening exists for.
-  component.$set({ checkpoints: busyDay }); await flush();
+  component.$set({ labels: busyDay }); await flush();
   check(!list().length && runs().length > 1,
     'a day too big to read is its runs: ' + runs().length + ' runs, ' + list().length + ' rows');
   check(runs().length < 10, 'a handful of them, not ninety: ' + runs().length);
@@ -254,7 +231,7 @@ window.historyPanelCheck = async () => {
   // An autosave is attributed to whoever sent the last update before it
   // fired, which on a shared document is a coin toss -- so the panel never
   // turns that name into a claim about whose work a stretch of it was.
-  component.$set({ checkpoints: shared }); await flush();
+  component.$set({ labels: shared }); await flush();
   const hands = [...document.querySelectorAll('.run-what')].map(text);
   // Two, because thirty is past the ceiling -- not thirty, which is what
   // splitting on the name would have given.
@@ -262,7 +239,7 @@ window.historyPanelCheck = async () => {
     'thirty alternating authors are cut by the ceiling, never by the name: '
     + hands.join(' | '));
   check(!hands.some((one) => /Anne|Vincent/.test(one)), 'and no run credits either of them');
-  component.$set({ checkpoints: all }); await flush();
+  component.$set({ labels: all }); await flush();
 
   /* ----------------------------------------------- one version at a time */
 
@@ -289,10 +266,10 @@ window.historyPanelCheck = async () => {
     'on the row itself');
   check(/^\\d.*3 files changed$/.test(text(card())),
     'an autosave says its exact time and what it moved, and claims no author: ' + text(card()));
-  component.$set({ checkpoints: [...all, published], viewing: published.sha }); await flush();
+  component.$set({ labels: [...all, published], viewing: published.sha }); await flush();
   check(text(card()).startsWith('Vincent · '),
     'a version somebody asked for names the person who asked: ' + text(card()));
-  component.$set({ checkpoints: all }); await flush();
+  component.$set({ labels: all }); await flush();
   component.$set({ viewing: movedPoints[0].sha }); await flush();
   const tools = () => document.querySelector('.day-row:not(.day-now):has(.timeline-here) .day-tools');
   check(tools() && tools().querySelector('[aria-label="Bookmark this version"]')
@@ -335,16 +312,6 @@ window.historyPanelCheck = async () => {
   check(count('2026-09-09') === '1' && count('2026-09-10') === '4' && count('2026-09-11') === '5',
     'and the number of versions that landed on it');
   check(count('2026-09-08') === null, 'a day nothing happened on carries no number');
-  // A day written on that nothing was saved from has no number to show, so it
-  // is marked instead -- otherwise there would be no way to find one, because
-  // the day below is a list of versions.
-  component.$set({ activity: [...rows, quietDay] }); await flush();
-  check(cell('2026-09-07').querySelector('.cal-mark'), 'a day written on and never saved is marked');
-  check(count('2026-09-07') === null, 'with no count, because it has no versions');
-  check(!cell('2026-09-11').querySelector('.cal-mark'),
-    'and a day that does have versions is not marked twice');
-  check(!cell('2026-09-08').querySelector('.cal-mark'), 'nor a day nobody touched at all');
-  component.$set({ activity: rows }); await flush();
   check(cell('2026-09-11').getAttribute('aria-pressed') === 'true',
     'the day that was open is the day the month opens on');
 
@@ -354,7 +321,7 @@ window.historyPanelCheck = async () => {
     'the month header is two arrows and the month itself');
   const prev = () => document.querySelector('[aria-label="Previous month"]');
   check(prev().disabled, 'September is the first month this document has');
-  component.$set({ checkpoints: [earlier, ...all] }); await flush();
+  component.$set({ labels: [earlier, ...all] }); await flush();
   check(!prev().disabled, 'a version in June is a June to walk back to');
   prev().click(); await flush();
   check(document.querySelector('.cal-month').textContent.trim() === 'August 2026',

@@ -2,9 +2,9 @@
 title: "Edit in the browser"
 ---
 
-A document published from markdown or typst keeps that source, so it can be
-edited in the page it is read in: the source on one side, the document as it will be
-published on the other, and the comments beside both. Either of the two panes
+A document opened from markdown or typst keeps that source, so it can be
+edited in the page it is read in: the source on one side, the rendered
+document on the other, and the comments beside both. Either of the two panes
 next to the source folds away.
 
 The **Files** sidebar is a folder tree. Its toolbar creates files and folders
@@ -32,17 +32,17 @@ until another file is made the main file.
 
 The editor is offered to whoever may replace the document, and the document
 opens ready to work on. Edits save automatically. Readers and commenters see
-the last explicitly published HTML version, and receive no editable source or
-project files. In **Share → Published version**, choose **Publish** or **Publish
-update** to prepare a new version for them. The toolbar's **Unpublished changes**
-indicator opens that section. Saving and compiling previews do not publish.
+the same document editors do, rendered live in their own browser as it is
+edited; they receive no editable source or project files, but there is no
+separate published version to fall behind. Saving and compiling previews
+happen the same way for everyone.
 
 Comments retain their source checkpoint, source passage, and the rendering on
 which they were made. Edits move their displayed source attachment without
-changing what they refer to. A new bundle may move their highlight in
-the rendered page; comments whose rendered words cannot be found still retain
-their discussion and indicate an earlier bundle. Only the current full
-rendering is retained, so old comments do not preserve an old page.
+changing what they refer to; comments whose words can no longer be found in
+the current text still retain their discussion and say so, rather than
+silently pointing at the wrong passage. Only the current rendering is shown,
+so an old comment does not carry an old page along with it.
 
 Several people can edit at once. The source is a CRDT, so two people
 typing in the same sentence converge without either waiting for the other, and
@@ -51,24 +51,26 @@ relays every update and keeps it, so closing the last tab loses nothing
 and whoever opens the document next, in a browser or from the terminal, joins
 what is there.
 
-Editors synchronize source and render previews locally. Explicit bundle
-uploads compressed HTML and only missing public display assets. Readers reuse
-unchanged assets and refresh deliberately when a newer bundle is available.
-The origin pays for source transfer between editors, bundle delivery,
-collaboration, persistence, and history maintenance.
+Editors synchronize source through the socket and render previews locally.
+Readers render the same source locally too, refetching only the files whose
+digest actually changed since they last had it. The origin pays for source
+transfer between editors, that projection delivery to readers, collaboration,
+persistence, and history maintenance.
 
-History is kept for you. The server takes a checkpoint of the source when the
-document has been quiet for a while, when the last editor leaves, when someone
-comments, and whenever a terminal publishes to it. Unchanged text reuses its
-checkpoint; an explicit restore records a new event. The history panel lets you
-read earlier versions, compare changes, and restore a whole version or bring
-back individual passages in the editor.
+History is kept for you. The server records a checkpoint when somebody names
+one, when a restore lands, when the command line commits, or when a proposal
+is accepted -- and at no other time: there is no timer, and unlike those, a
+plain comment does not add one, since it carries its own record of the moment
+it was made. An explicit restore records a new event of its own. The history
+panel lets you read earlier versions, compare changes, and restore a whole
+version or bring back individual passages in the editor.
 
-Rendering happens on editors' devices. The server stores one current published
-HTML bundle per document and serves it to readers and commenters; it does not
-compile documents. Source APIs, synchronization state, private assets, and source
-history require editor access. Published HTML and everything embedded in it are
-readable and downloadable; private inputs must be excluded from the display bundle.
+Rendering happens on editors' and readers' own devices; the server never
+compiles a document. Source APIs, synchronisation state, private assets, and
+source history require editor access. A rendered document and everything
+embedded in it are readable and downloadable by anyone who can open it;
+private inputs -- bibliographies, data files, anything the compiler reads but
+the page does not show -- are never sent to a reader's browser at all.
 
 The formats, and they are not available in the same places:
 
@@ -81,10 +83,10 @@ The formats, and they are not available in the same places:
 | LaTeX | the browser engine, fetched directly from the mirror | ~6 MB and requested packages from the mirror; these are not origin transfer |
 
 Both renderers are the same crate the binary itself renders with, compiled to
-WebAssembly. Nothing else has to be installed: publishing a `.typ` file needs
-no `typst` binary on your PATH, because the compiler is inside LibrePaper, and it
-is the same one the editor runs, so a document cannot render one way when it
-is published and another way when it is edited.
+WebAssembly. Nothing else has to be installed: opening a `.typ` file needs no
+`typst` binary on your PATH, because the compiler is inside LibrePaper, and it
+is the same one both editors and readers run, so a document cannot render one
+way for one of them and another way for the other.
 
 The Typst module contains the compiler and embedded fonts. Renderer URLs include
 their content digest and are cached for a year.
@@ -111,12 +113,15 @@ companion.
 The Typst renderer is fetched with the other pinned browser modules as part of
 `make build`, so every deployment serves the same four renderer interfaces.
 
-A document published as HTML is its own source, and its renderer is the
-identity: it is shown as it was published, which it always was, and it opens in
-the editor like the other two. That covers everything Quarto, Jupyter and
-marimo produce, so the live preview, the co-editing and the comments reach the
-documents most papers actually arrive in. Editors may change raw HTML source;
-readers see only its last explicitly published version.
+A document created in HTML format is its own source, and its renderer is the
+identity: it is shown exactly as written, and it opens in the editor like the
+other two. That covers everything Quarto, Jupyter and marimo produce, so the
+live preview, the co-editing and the comments reach the documents most papers
+actually arrive in. Editors may change raw HTML source, and a reader sees
+that source live, the same as any other format.
 
-The `.qmd` is the durable Quarto source. Previews remain local until an editor
-explicitly publishes an HTML display bundle.
+The `.qmd` is the durable Quarto source. What a reader sees is the browser's
+Markdown-draft rendering of it, the same subset an editor sees without
+running Quarto -- code is never executed for a reader. A local Quarto render
+with real computed output is visible only on the machine that produced it,
+through the companion.

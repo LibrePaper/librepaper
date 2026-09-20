@@ -267,8 +267,8 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     const texts = Object.fromEntries(fetched.filter(Boolean).map(([path, text]) => [path, text]));
     return {
       ...metadata,
-      base_revision: metadata.base_revision || metadata.source_revision || "",
-      revision: metadata.revision || metadata.digest || "",
+      base_revision: metadata.base_revision || "",
+      revision: metadata.revision || metadata.tree_digest || "",
       files: manifest,
       texts,
     };

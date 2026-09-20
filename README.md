@@ -32,9 +32,9 @@ Linux and macOS; Windows binaries are on the
 
 ## Documentation
 
-The manual lives at **[librepaper.org](https://librepaper.org)** — authoring in
-each format, sharing and review, the CLI, and running a server of your own. Its
-source is in [`site/`](site/), and `make site` builds it.
+The manual lives at **[librepaper.org](https://librepaper.org)** -- authoring
+in each format, sharing and review, the CLI, and running a server of your own.
+Its source is in [`site/`](site/), and `make site` builds it.
 
 The ordinary CLI covers `login`, `logout`, `list`, and one-shot `export`.
 `admin` operates a deployment, `local` operates the companion on your own

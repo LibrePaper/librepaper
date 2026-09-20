@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const ARCHIVE_FORMAT_VERSION: u32 = 1;
-pub const ARCHIVE_ENCODING_VERSION: i16 = 1;
 pub const DEFAULT_INLINE_FILE_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_MAX_ARCHIVE_BYTES: usize = 16 * 1024 * 1024;
@@ -74,7 +73,6 @@ pub struct EncodedArchive {
     pub bytes: Vec<u8>,
     pub digest: [u8; 32],
     pub logical_bytes: u64,
-    pub encoding_version: i16,
 }
 
 #[derive(Debug)]
@@ -257,7 +255,6 @@ pub fn encode(
         bytes,
         digest,
         logical_bytes,
-        encoding_version: ARCHIVE_ENCODING_VERSION,
     })
 }
 
@@ -457,65 +454,6 @@ fn reject_duplicate_paths<'a>(paths: impl Iterator<Item = &'a str>) -> Result<()
         }
     }
     Ok(())
-}
-
-/// The canonical tree an archive holds, and the body of every text in it.
-///
-/// A version's archive and a live session are two encodings of the same
-/// directory, and this is the one place that says so: it is what lets a
-/// version be named by what it says, so that a room which has just loaded a
-/// timeline can tell whether the document in front of it is already the
-/// document the newest version holds.
-///
-/// The entries carry no `id`: those belong to the shared session, not to the
-/// bytes. `settings` is likewise absent, because an archive does not record
-/// the engine -- so a document that names one is, at worst, checkpointed once
-/// more than it had to be, never once less.
-pub fn tree_of(
-    archive: &SourceArchive,
-) -> (crate::document::history::Tree, HashMap<String, String>) {
-    use crate::document::history::{Tree, TreeEntry};
-    let mut tree = Tree {
-        main: archive.main_path.clone(),
-        ..Default::default()
-    };
-    let mut bodies = HashMap::new();
-    for file in &archive.files {
-        match file {
-            SourceFile::Inline { path, bytes } => {
-                let sha = crate::document::store::digest_of_bytes(bytes);
-                tree.files.insert(
-                    path.clone(),
-                    TreeEntry {
-                        kind: "text".into(),
-                        sha: sha.clone(),
-                        size: bytes.len() as i64,
-                        ..Default::default()
-                    },
-                );
-                if let Ok(body) = String::from_utf8(bytes.clone()) {
-                    bodies.insert(sha, body);
-                }
-            }
-            SourceFile::Asset {
-                path,
-                digest,
-                bytes,
-                ..
-            } => {
-                tree.files.insert(
-                    path.clone(),
-                    TreeEntry {
-                        kind: "asset".into(),
-                        sha: hex::encode(digest),
-                        size: *bytes as i64,
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-    }
-    (tree, bodies)
 }
 
 #[cfg(test)]

@@ -123,4 +123,6 @@ fn operands_are_positional_and_modifiers_are_named() {
     let help = help_of(&["export", "--help"]);
     assert!(help.contains("--output <PATH>"), "{help}");
     assert!(help.contains("--project"), "{help}");
+    assert!(help.contains("--at <LABEL>"), "{help}");
+    assert!(help.contains("--since <LABEL>"), "{help}");
 }

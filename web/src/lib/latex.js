@@ -30,7 +30,7 @@ import * as bibliography from "./latex/bibliography.js";
 import * as statusStore from "./latex/status.js";
 import * as logMod from "./latex/log.js";
 import * as engineMod from "./latex/engine.js";
-import { snapshotDigest } from "./tree-digest.js";
+import { snapshotDigest } from "./projection-digest.js";
 import { maybeBytes as toBytes } from "./bytes.js";
 import { named } from "./latex/errors.js";
 

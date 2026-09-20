@@ -10,11 +10,11 @@ reproduced from it. Nothing is written on a timer and nothing is thinned as
 it ages.
 
 Versions are the moments somebody asked for: a checkpoint you name in the
-History panel, a publication, a restore, a commit from the CLI. Each of those
-records the whole directory, so a chapter and the file that includes it can
-never come back out of step. A comment on the live draft is anchored to the
-moment it was made rather than to a version, so a round of review no longer
-leaves a copy of the paper behind for every remark.
+History panel, a restore, an accepted proposal, a commit from the CLI. Each
+of those records the whole directory, so a chapter and the file that
+includes it can never come back out of step. A comment on the live draft is
+anchored to the moment it was made rather than to a version, so a round of
+review no longer leaves a copy of the paper behind for every remark.
 
 In the reader, the history button opens the same list beside the document,
 newest first, with the live document as the top row. Picking a moment shows

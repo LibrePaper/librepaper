@@ -12,30 +12,26 @@ use sqlx::{ConnectOptions, PgPool};
 
 mod access;
 mod annotations;
-mod bundles;
-mod checkpoints;
-mod collaboration;
+
 mod commit;
-mod jobs;
+mod document_log;
+mod labels;
 mod marks;
 mod ownership;
 mod proposals;
 mod repository;
 
-pub use bundles::{BundleFileRecord, BundleRecord, NewBundle, NewBundleFile};
-pub use checkpoints::{CheckpointRecord, NewCheckpoint};
-pub use collaboration::{ActivityBucket, CollaborationBase, CollaborationState, PersistedUpdate};
-pub use commit::{
-    Authority, CommitResult, PreparedProposalDecision, PreparedSource, ProposalDecisionResult,
-    SemanticReceipt, SourceRevisionRecord,
+pub use commit::Authority;
+pub use document_log::{
+    FlushRow, LogBase, LogHead, LogRow, NewSnapshot, PendingWork, RowCoverage,
+    MAX_RECOVERABLE_LOG_BYTES,
 };
-pub use jobs::{Job, JobClaim, JobStatus, NewJob};
+pub use labels::{LabelRecord, NewLabel};
 pub use marks::{CountRecord, MarkRecord};
 pub use ownership::WriterLease;
 pub use proposals::{NewProposal, StoredDecision, StoredProposal};
 pub use repository::{
-    AccountRecord, AssetRecord, DocumentRecord, NewAccount, NewAsset, NewDocument, NewVersion,
-    VersionRecord,
+    AccountRecord, AssetRecord, DocumentRecord, NewAccount, NewAsset, NewDocument,
 };
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
@@ -125,6 +121,20 @@ impl PostgresCatalog {
         &self.pool
     }
 
+    /// §8.4's compaction triggers -- rows, then bytes -- as this deployment
+    /// has them configured.
+    ///
+    /// `pending_background_work` finds documents already over these lines at
+    /// startup; a sequencer reads them so the flush that crosses one asks for
+    /// compaction at the same moment (§8.4, §8.6). Nowhere else should decide
+    /// what "over the threshold" means.
+    pub fn compaction_thresholds(&self) -> (i64, i64) {
+        (
+            self.policy.compaction_count_threshold(),
+            self.policy.compaction_byte_threshold(),
+        )
+    }
+
     pub async fn migrate(&self) -> std::result::Result<(), sqlx::migrate::MigrateError> {
         // Migrations are serialized across application processes. The lock is
         // session-scoped, so keeping this one pooled connection checked out
@@ -187,51 +197,124 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    };
+    use std::sync::Arc;
 
+    use futures_util::future::BoxFuture;
     use serde_json::json;
     use time::{Duration, OffsetDateTime};
 
     use super::*;
-    use crate::storage::blob::{BlobError, BlobInfo, BlobResult, BlobStore, FsStore};
-    use crate::storage::bundle::{BundleFile, BundleStorage, StoreBundle};
+    use crate::log::sequencer::LogCatalog;
+    use crate::log::{
+        Budget, Command, CommandError, Evidence, Head, PreparedSource, Role, Sequencer,
+    };
+    use crate::room::annotation::{CommentTarget, OriginalAnchor, PresentationContext};
+    use crate::room::outgoing::Sender;
+    use crate::storage::blob::{BlobStore, FsStore};
     use crate::storage::collaboration::CollaborationStorage;
     use crate::storage::maintenance::Maintenance;
-    use crate::storage::source::{CommitProject, ProjectFile, SourceStorage};
-    use crate::storage::source_archive::ArchiveLimits;
-    use crate::storage::worker::Worker;
 
-    struct PartialDeleteStore {
-        inner: FsStore,
-        fail_once: AtomicBool,
+    /// §8.4 step 5 end to end, for the catalogue tests that only care about
+    /// where a base and its rows end up. Production splits these two -- the
+    /// blob is written with nothing locked and the activation runs under
+    /// the sequencer's compaction gate (`storage::worker::Worker::compact`)
+    /// -- and no sequencer exists in these tests to gate anything against.
+    async fn compact_base(
+        storage: &CollaborationStorage,
+        catalog: &PostgresCatalog,
+        document_id: uuid::Uuid,
+        through: i64,
+        vector: &[u8],
+        snapshot: &[u8],
+    ) -> Option<LogBase> {
+        let written = storage.write_base(document_id, snapshot).await.unwrap();
+        catalog
+            .activate_log_base(
+                document_id,
+                through,
+                vector,
+                written,
+                crate::storage::collaboration::superseded_base_deadline(),
+            )
+            .await
+            .unwrap()
     }
 
-    #[async_trait::async_trait]
-    impl BlobStore for PartialDeleteStore {
-        async fn get(&self, key: &str) -> BlobResult<Vec<u8>> {
-            self.inner.get(key).await
+    /// Every table the "server is a log" schema still has. Each test starts
+    /// from one of two postures: this whole-catalogue reset, for a test that
+    /// makes claims about the catalogue as a whole, or a unique tag folded
+    /// into every id it creates, for a test that is scoped to its own rows
+    /// and would rather not race a truncate against whatever else is running.
+    async fn truncate(catalog: &PostgresCatalog) {
+        sqlx::query!(
+            "TRUNCATE document_proposal_hunks,document_proposals,document_labels,\
+             document_updates,document_bases,document_assets,replies,annotations,\
+             document_marks,share_links,grants,documents,accounts CASCADE",
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+    }
+
+    async fn seed_account(catalog: &PostgresCatalog, tag: &str) -> AccountRecord {
+        catalog
+            .create_account(NewAccount {
+                kind: "registered".into(),
+                provider: Some("test".into()),
+                provider_subject: Some(format!("subject-{tag}")),
+                handle: format!("handle-{tag}"),
+                display_name: "Test Owner".into(),
+                email: None,
+            })
+            .await
+            .unwrap()
+    }
+
+    async fn seed_document(
+        catalog: &PostgresCatalog,
+        owner_id: uuid::Uuid,
+        tag: &str,
+    ) -> DocumentRecord {
+        catalog
+            .create_document(NewDocument {
+                slug: format!("slug-{tag}"),
+                owner_id,
+                ownership_mode: "owned".into(),
+                title: "A Paper".into(),
+                source_format: "markdown".into(),
+                main_path: "paper.md".into(),
+                settings: json!({"version":1}),
+            })
+            .await
+            .unwrap()
+    }
+
+    fn document_anchor(source_sequence: i64, frontier: Vec<u8>) -> OriginalAnchor {
+        OriginalAnchor {
+            source_sequence,
+            frontier,
+            target: CommentTarget::Document,
         }
-        async fn put_new(&self, key: &str, body: Vec<u8>, content_type: &str) -> BlobResult<()> {
-            self.inner.put_new(key, body, content_type).await
-        }
-        async fn delete(&self, keys: &[String]) -> BlobResult<()> {
-            if self.fail_once.swap(false, Ordering::SeqCst) && !keys.is_empty() {
-                self.inner.delete(&keys[..1]).await?;
-                return Err(BlobError::Other("injected partial deletion".into()));
-            }
-            self.inner.delete(keys).await
-        }
-        async fn list(&self, prefix: &str) -> BlobResult<Vec<BlobInfo>> {
-            self.inner.list(prefix).await
-        }
-        fn describe(&self) -> String {
-            self.inner.describe()
-        }
-        fn is_local(&self) -> bool {
-            true
+    }
+
+    fn annotation_input(
+        document_id: uuid::Uuid,
+        author: uuid::Uuid,
+        anchor: OriginalAnchor,
+    ) -> NewAnnotation {
+        NewAnnotation {
+            document_id,
+            kind: "comment".into(),
+            body: "Review this".into(),
+            author_account_id: Some(author),
+            author_key: format!("account:{author}"),
+            author_label: "Reviewer".into(),
+            color: None,
+            proposal_id: None,
+            original_anchor: anchor,
+            presentation: PresentationContext::default(),
+            render_digest: None,
+            attachment: None,
         }
     }
 
@@ -245,41 +328,13 @@ mod tests {
             .unwrap();
         catalog.migrate().await.unwrap();
         let _writer = catalog.claim_writer().await.unwrap();
-        sqlx::query!(
-            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
-             document_versions,document_assets,replies,annotations,share_links,grants,documents,
-             accounts CASCADE",
-        )
-        .execute(catalog.pool())
-        .await
-        .unwrap();
+        truncate(&catalog).await;
 
-        let account = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some("one".into()),
-                handle: "owner".into(),
-                display_name: "Owner".into(),
-                email: None,
-            })
-            .await
-            .unwrap();
-        let first = catalog
-            .create_document(NewDocument {
-                slug: "first".into(),
-                owner_id: account.id,
-                ownership_mode: "owned".into(),
-                title: "Same title".into(),
-                source_format: "quarto".into(),
-                main_path: "paper.qmd".into(),
-                settings: json!({"version":1}),
-            })
-            .await
-            .unwrap();
+        let account = seed_account(&catalog, "v3-owner").await;
+        let first = seed_document(&catalog, account.id, "v3-first").await;
         let second = catalog
             .create_document(NewDocument {
-                slug: "second".into(),
+                slug: "v3-second".into(),
                 owner_id: account.id,
                 ownership_mode: "owned".into(),
                 title: "Same title".into(),
@@ -290,17 +345,7 @@ mod tests {
             .await
             .unwrap();
 
-        let collaborator = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some("two".into()),
-                handle: "collaborator".into(),
-                display_name: "Collaborator".into(),
-                email: None,
-            })
-            .await
-            .unwrap();
+        let collaborator = seed_account(&catalog, "v3-collaborator").await;
         assert_eq!(
             catalog
                 .set_grant(first.id, collaborator.id, AccessRole::Editor)
@@ -373,10 +418,12 @@ mod tests {
                 .unwrap(),
             Some(AccessRole::Commenter)
         );
+
         // Reading a page of documents batches the three per-document lookups
-        // that assembling a listing entry needs. Each batch must return exactly
-        // what the per-document call returns, grouped to the right document:
-        // getting that wrong would show one document's guests on another.
+        // that assembling a listing entry needs. Each batch must return
+        // exactly what the per-document call returns, grouped to the right
+        // document: getting that wrong would show one document's guests on
+        // another.
         let pages = [first.id, second.id];
         let batched_grants = catalog.grants_for_documents(&pages).await.unwrap();
         let batched_links = catalog.share_links_for_documents(&pages).await.unwrap();
@@ -400,7 +447,6 @@ mod tests {
                 .map(|grant| (grant.account_id, grant.role, grant.source_link_hash))
                 .collect();
             assert_eq!(grants, expected, "grants for {document_id}");
-
             let links: Vec<_> = batched_links
                 .iter()
                 .filter(|link| link.document_id == document_id)
@@ -415,7 +461,6 @@ mod tests {
                 .collect();
             assert_eq!(links, expected, "share links for {document_id}");
         }
-        // Only `first` was shared, so the grouping is load-bearing here.
         assert!(batched_grants.iter().any(|g| g.document_id == first.id));
         assert!(!batched_grants.iter().any(|g| g.document_id == second.id));
 
@@ -430,8 +475,6 @@ mod tests {
         let mut expected = vec![account.id, collaborator.id];
         expected.sort();
         assert_eq!(accounts, expected);
-        // An id that names nothing is skipped, not an error: a listing entry
-        // whose guest was erased still renders.
         assert!(catalog
             .accounts_by_ids(&[uuid::Uuid::from_u128(0)])
             .await
@@ -461,18 +504,7 @@ mod tests {
                 .unwrap(),
             None
         );
-        assert_eq!(
-            catalog
-                .access_role(
-                    first.id,
-                    Some(collaborator.id),
-                    None,
-                    OffsetDateTime::now_utc()
-                )
-                .await
-                .unwrap(),
-            None
-        );
+
         assert!(catalog
             .update_document_identity(second.id, "Transferred", collaborator.id, "owned")
             .await
@@ -494,51 +526,100 @@ mod tests {
             .await
             .unwrap());
 
-        let annotation_input = || NewAnnotation {
-            document_id: first.id,
-            kind: "comment".into(),
-            body: "Authorized review".into(),
-            author_account_id: Some(collaborator.id),
-            author_key: format!("account:{}", collaborator.id),
-            author_label: "Collaborator".into(),
-            original_anchor: crate::room::OriginalAnchor {
-                checkpoint_id: crate::room::annotation::CheckpointId("checkpoint".into()),
-                target: crate::room::CommentTarget::Document,
-            },
-            bundle_id: None,
-            color: None,
-            proposal_id: None,
-            presentation: Default::default(),
-            attachment: None,
-        };
-        let collaborator_actor = MutationAuthorization {
+        // The log: a flush writes a row, and the row identity moves onto the
+        // document.
+        let sequence = catalog
+            .flush_log_row(
+                first.id,
+                FlushRow {
+                    expected_update_sequence: 0,
+                    update_bytes: b"framed-batch-one",
+                    vector: b"vector-one",
+                    source_format: Some("quarto"),
+                    main_path: Some("paper.qmd"),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(sequence, 1);
+        assert_eq!(catalog.log_sequence(first.id).await.unwrap(), 1);
+        assert_eq!(
+            catalog.document(first.id).await.unwrap().unwrap().main_path,
+            "paper.qmd",
+            "a flush that names an identity stamps it on the document row"
+        );
+
+        // Annotations and replies. Authorization is checked at the write, and
+        // a retry with the same id returns the row a previous attempt wrote.
+        let anchor = document_anchor(sequence, b"frontier-bytes".to_vec());
+        let unauthorized = MutationAuthorization {
             principal_key: collaborator.id.to_string(),
             account_id: Some(collaborator.id),
             session_generation: Some(collaborator.session_generation),
             token_hash: None,
             policy_editor: false,
         };
-        assert!(catalog
-            .put_annotation_authorized(new_id(), annotation_input(), &collaborator_actor, false,)
-            .await
-            .is_err());
+        {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            assert!(catalog
+                .put_annotation_authorized(
+                    &mut tx,
+                    new_id(),
+                    annotation_input(first.id, collaborator.id, anchor.clone()),
+                    &unauthorized,
+                    false,
+                )
+                .await
+                .is_err());
+        }
         catalog
             .set_grant(first.id, collaborator.id, AccessRole::Commenter)
             .await
             .unwrap();
-        catalog
-            .put_annotation_authorized(new_id(), annotation_input(), &collaborator_actor, false)
-            .await
-            .unwrap();
-        assert!(catalog
-            .put_annotation_authorized(new_id(), annotation_input(), &collaborator_actor, true,)
-            .await
-            .is_err());
+        let annotation_id = new_id();
+        let input = annotation_input(first.id, collaborator.id, anchor.clone());
+        let first_write = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let row = catalog
+                .put_annotation_authorized(
+                    &mut tx,
+                    annotation_id,
+                    input.clone(),
+                    &unauthorized,
+                    false,
+                )
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            row
+        };
+        let retried = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let row = catalog
+                .put_annotation_authorized(&mut tx, annotation_id, input, &unauthorized, false)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            row
+        };
+        assert_eq!(
+            first_write.id, retried.id,
+            "a retried create returns the row it already wrote"
+        );
         catalog
             .remove_grant(first.id, collaborator.id)
             .await
             .unwrap();
 
+        let reply_id = new_id();
+        let reply_input = NewReply {
+            id: reply_id,
+            annotation_id: first_write.id,
+            author_account_id: Some(account.id),
+            author_key: format!("account:{}", account.id),
+            author_label: "Owner".into(),
+            body: "Done".into(),
+        };
         let owner_actor = MutationAuthorization {
             principal_key: account.id.to_string(),
             account_id: Some(account.id),
@@ -546,187 +627,40 @@ mod tests {
             token_hash: None,
             policy_editor: false,
         };
-        let annotation_id = new_id();
-        let annotation_input = NewAnnotation {
-            document_id: first.id,
-            kind: "comment".into(),
-            body: "Review this".into(),
-            author_account_id: Some(collaborator.id),
-            author_key: format!("account:{}", collaborator.id),
-            author_label: "Collaborator".into(),
-            original_anchor: crate::room::OriginalAnchor {
-                checkpoint_id: crate::room::annotation::CheckpointId("checkpoint".into()),
-                target: crate::room::CommentTarget::Document,
-            },
-            bundle_id: None,
-            color: None,
-            proposal_id: None,
-            presentation: Default::default(),
-            attachment: None,
+        let reply = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let row = catalog
+                .create_reply_authorized(&mut tx, first.id, reply_input.clone(), &owner_actor)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            row
         };
-        let annotation_receipt = SemanticReceipt {
-            request_id: uuid::Uuid::new_v4(),
-            canonical_command: serde_json::json!({"type":"comment","body":"Review this"}),
-            stable_result: serde_json::Value::Null,
-            status: "committed".into(),
+        let reply_retried = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let row = catalog
+                .create_reply_authorized(&mut tx, first.id, reply_input, &owner_actor)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            row
         };
-        let annotation = catalog
-            .put_annotation_receipted(
-                annotation_id,
-                annotation_input.clone(),
-                &owner_actor,
-                false,
-                &annotation_receipt,
-            )
-            .await
-            .unwrap();
-        catalog
-            .put_annotation_receipted(
-                annotation_id,
-                annotation_input,
-                &owner_actor,
-                false,
-                &annotation_receipt,
-            )
-            .await
-            .unwrap();
-        let reply_id = new_id();
-        let reply_input = NewReply {
-            id: reply_id,
-            annotation_id: annotation.id,
-            author_account_id: Some(account.id),
-            author_key: format!("account:{}", account.id),
-            author_label: "Owner".into(),
-            body: "Done".into(),
-        };
-        let reply_receipt = SemanticReceipt {
-            request_id: uuid::Uuid::new_v4(),
-            canonical_command: serde_json::json!({"type":"reply","body":"Done"}),
-            stable_result: serde_json::Value::Null,
-            status: "committed".into(),
-        };
-        let reply = catalog
-            .create_reply_receipted(reply_input.clone(), &owner_actor, &reply_receipt)
-            .await
-            .unwrap();
-        catalog
-            .create_reply_receipted(reply_input, &owner_actor, &reply_receipt)
-            .await
-            .unwrap();
+        assert_eq!(reply.id, reply_retried.id);
         assert_eq!(
             catalog
-                .annotations(first.id, None, None, 500)
+                .annotations(first.id, None, 500)
                 .await
                 .unwrap()
                 .len(),
-            2
-        );
-        assert_eq!(
-            catalog.replies(&[annotation.id]).await.unwrap()[0].id,
-            reply.id
-        );
-        let semantic_head: (i64, i64, Option<i64>) = sqlx::query_as(
-            "SELECT d.commit_sequence,d.source_revision,a.source_revision \
-             FROM documents d JOIN annotations a ON a.document_id=d.id \
-             WHERE d.id=$1 AND a.id=$2",
-        )
-        .bind(first.id)
-        .bind(annotation.id)
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap();
-        assert_eq!(
-            semantic_head.0, 3,
-            "retried comment and reply identities do not create extra commits"
-        );
-        let receipt_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM document_command_receipts WHERE document_id=$1",
-        )
-        .bind(first.id)
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap();
-        assert_eq!(receipt_count, 2, "comment and reply receipts are durable");
-        let changed_receipt = SemanticReceipt {
-            canonical_command: serde_json::json!({"type":"reply","body":"Changed"}),
-            ..reply_receipt
-        };
-        assert!(catalog
-            .create_reply_receipted(
-                NewReply {
-                    id: reply.id,
-                    annotation_id: annotation.id,
-                    author_account_id: Some(account.id),
-                    author_key: format!("account:{}", account.id),
-                    author_label: "Owner".into(),
-                    body: "Done".into(),
-                },
-                &owner_actor,
-                &changed_receipt,
-            )
-            .await
-            .is_err());
-        assert_eq!(
-            semantic_head.1, 0,
-            "comment-only commits do not move source"
-        );
-        assert_eq!(
-            semantic_head.2,
-            Some(0),
-            "original comment evidence names the committed source revision"
-        );
-        // One update on the log, so the cap below is already reached and the
-        // next append has to refuse. This used to arrive as a side effect of
-        // accepting a suggestion here; suggestions are proposals now and do not
-        // write through this path, so the precondition is set up plainly.
-        assert_eq!(
-            catalog
-                .append_update(first.id, b"first", b"", 5)
-                .await
-                .unwrap(),
             1
         );
-        let limited = PostgresCatalog {
-            pool: catalog.pool.clone(),
-            writer_epoch: catalog.writer_epoch.clone(),
-            policy: StoragePolicy {
-                max_uncompacted_updates: 1,
-                max_uncompacted_bytes: i64::MAX / 4,
-                ..catalog.policy
-            },
-        };
-        assert!(matches!(
-            limited.append_update(first.id, b"over-cap", b"", 8).await,
-            Err(Error::Conflict(message)) if message.contains("requires compaction")
-        ));
-        let durable = sqlx::query!(
-            "SELECT update_sequence,uncompacted_update_count,uncompacted_update_bytes
-             FROM documents WHERE id=$1",
-            first.id,
-        )
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap();
         assert_eq!(
-            durable.update_sequence, 1,
-            "a refused update must not advance the stream"
+            catalog.replies(&[first_write.id]).await.unwrap()[0].id,
+            reply.id
         );
-        assert_eq!(durable.uncompacted_update_count, 1);
-        assert_eq!(durable.uncompacted_update_bytes, b"first".len() as i64);
-        let byte_limited = PostgresCatalog {
-            pool: catalog.pool.clone(),
-            writer_epoch: catalog.writer_epoch.clone(),
-            policy: StoragePolicy {
-                max_uncompacted_updates: i64::MAX / 4,
-                max_uncompacted_bytes: durable.uncompacted_update_bytes,
-                ..catalog.policy
-            },
-        };
-        assert!(matches!(
-            byte_limited.append_update(first.id, b"over-byte-cap", b"", 13).await,
-            Err(Error::Conflict(message)) if message.contains("requires compaction")
-        ));
 
+        // Assets: content-addressed, and a duplicate upload is reclaimed
+        // rather than stored twice.
         let asset = NewAsset {
             document_id: first.id,
             storage_key: format!("documents/{}/assets/one", first.id),
@@ -741,98 +675,26 @@ mod tests {
         assert!(!catalog.complete_asset(duplicate).await.unwrap().1);
         assert_eq!(catalog.retained_asset_bytes(first.id).await.unwrap(), 100);
 
+        // Orphan sweep: an object under `documents/` that no row names is
+        // reclaimed once it is old enough; a referenced one never is.
         let object_root = tempfile::tempdir().unwrap();
         let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
-        let sources = SourceStorage::new(
-            Arc::new(catalog.clone()),
-            blobs.clone(),
-            ArchiveLimits::default(),
-        );
-        for reason in ["first image version", "unchanged image version"] {
-            sources
-                .commit_project(CommitProject {
-                    document_id: first.id,
-                    files: vec![
-                        ProjectFile {
-                            path: "paper.qmd".into(),
-                            bytes: b"# Paper\n".to_vec(),
-                            media_type: "text/markdown".into(),
-                        },
-                        ProjectFile {
-                            path: "figures/large.png".into(),
-                            bytes: vec![17; 1024 * 1024 + 1],
-                            media_type: "image/png".into(),
-                        },
-                    ],
-                    through_update_sequence: 0,
-                    project_generation: 0,
-                    reason: reason.into(),
-                    label: None,
-                    author_account_id: Some(account.id),
-                    author_label: "Owner".into(),
-                    make_current: true,
-                })
-                .await
-                .unwrap();
-        }
-        let stored_assets = blobs
-            .list(&format!("documents/{}/assets/", first.id))
+        let referenced_key = format!("documents/{}/assets/one", first.id);
+        blobs
+            .put_new(
+                &referenced_key,
+                b"kept".to_vec(),
+                "application/octet-stream",
+            )
             .await
             .unwrap();
-        assert_eq!(
-            stored_assets.len(),
-            1,
-            "unchanged asset must not be uploaded twice"
-        );
-        assert_eq!(catalog.versions(first.id, 10).await.unwrap().len(), 2);
-        let concurrent_commit = |marker: &'static [u8]| {
-            let storage = SourceStorage::new(
-                Arc::new(catalog.clone()),
-                blobs.clone(),
-                ArchiveLimits::default(),
-            );
-            async move {
-                storage
-                    .commit_project(CommitProject {
-                        document_id: first.id,
-                        files: vec![ProjectFile {
-                            path: "paper.qmd".into(),
-                            bytes: marker.to_vec(),
-                            media_type: "text/markdown".into(),
-                        }],
-                        through_update_sequence: 1,
-                        project_generation: 0,
-                        reason: "concurrent version".into(),
-                        label: None,
-                        author_account_id: Some(account.id),
-                        author_label: "Owner".into(),
-                        make_current: true,
-                    })
-                    .await
-                    .unwrap()
-            }
-        };
-        let (left, right) = tokio::join!(
-            concurrent_commit(b"# Concurrent A\n"),
-            concurrent_commit(b"# Concurrent B\n")
-        );
-        assert_ne!(left.version.sequence, right.version.sequence);
-        assert_eq!(
-            [left.version.sequence, right.version.sequence]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>(),
-            [3, 4].into_iter().collect()
-        );
-
-        let orphan_id = new_id();
-        let orphan_key = format!("documents/{}/versions/{orphan_id}.tar.zst", first.id);
+        let orphan_key = format!("documents/{}/assets/orphan-object", first.id);
         blobs
-            .put_new(&orphan_key, b"uncommitted".to_vec(), "application/zstd")
-            .await
-            .unwrap();
-        let temporary_key = format!("temporary/agent/{orphan_id}/current");
-        blobs
-            .put_new(&temporary_key, b"in-flight".to_vec(), "application/json")
+            .put_new(
+                &orphan_key,
+                b"unreferenced".to_vec(),
+                "application/octet-stream",
+            )
             .await
             .unwrap();
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 24 * 60 * 60);
@@ -849,325 +711,32 @@ mod tests {
             1
         );
         assert!(!blobs.exists(&orphan_key).await.unwrap());
-        assert!(blobs.exists(&temporary_key).await.unwrap());
+        assert!(blobs.exists(&referenced_key).await.unwrap());
 
-        let bundles = BundleStorage::new(Arc::new(catalog.clone()), blobs.clone());
-        let first_bundle = bundles
-            .publish(StoreBundle {
-                document_id: first.id,
-                source_version_id: catalog
-                    .current_version(first.id)
-                    .await
-                    .unwrap()
-                    .map(|v| v.id),
-                request_key: "publish-one".into(),
-                expected_current_id: None,
-                rendered_by_account_id: Some(account.id),
-                rendered_by_label: "Owner".into(),
-                files: vec![BundleFile {
-                    path: "index.html".into(),
-                    source: crate::storage::bundle::BundleSource::Owned(b"<h1>One</h1>".to_vec()),
-                    media_type: "text/html".into(),
-                }],
-            })
-            .await
-            .unwrap();
-        let object_count = blobs
-            .list(&format!("documents/{}/bundles/", first.id))
+        // Trash and restore.
+        assert!(catalog.mark_document_deleting(second.id).await.unwrap());
+        assert!(catalog
+            .trashed_documents(account.id, 50)
             .await
             .unwrap()
-            .len();
-        let retry = bundles
-            .publish(StoreBundle {
-                document_id: first.id,
-                source_version_id: catalog
-                    .current_version(first.id)
-                    .await
-                    .unwrap()
-                    .map(|v| v.id),
-                request_key: "publish-one".into(),
-                expected_current_id: None,
-                rendered_by_account_id: Some(account.id),
-                rendered_by_label: "Owner".into(),
-                files: vec![BundleFile {
-                    path: "index.html".into(),
-                    source: crate::storage::bundle::BundleSource::Owned(b"<h1>One</h1>".to_vec()),
-                    media_type: "text/html".into(),
-                }],
-            })
-            .await
-            .unwrap();
-        assert_eq!(retry.id, first_bundle.id);
-        assert_eq!(
-            blobs
-                .list(&format!("documents/{}/bundles/", first.id))
-                .await
-                .unwrap()
-                .len(),
-            object_count,
-            "idempotent bundle retry must not upload objects"
-        );
-        let second_bundle = bundles
-            .publish(StoreBundle {
-                document_id: first.id,
-                source_version_id: catalog
-                    .current_version(first.id)
-                    .await
-                    .unwrap()
-                    .map(|v| v.id),
-                request_key: "publish-two".into(),
-                expected_current_id: Some(first_bundle.id),
-                rendered_by_account_id: Some(account.id),
-                rendered_by_label: "Owner".into(),
-                files: vec![BundleFile {
-                    path: "index.html".into(),
-                    source: crate::storage::bundle::BundleSource::Owned(b"<h1>Two</h1>".to_vec()),
-                    media_type: "text/html".into(),
-                }],
-            })
-            .await
-            .unwrap();
-        assert_ne!(second_bundle.id, first_bundle.id);
-        // The current bundle is not something a cleanup may forget, and
-        // says so by refusing rather than by removing nothing.
+            .iter()
+            .any(|row| row.id == second.id));
+        assert!(catalog.deletion_due(second.id).await.unwrap().is_some());
+        assert!(catalog.restore_document(second.id).await.unwrap());
         assert!(
-            !catalog
-                .finish_bundle_cleanup(second_bundle.id)
-                .await
-                .unwrap(),
-            "the page readers are on cannot be cleaned up"
+            !catalog.restore_document(second.id).await.unwrap(),
+            "already restored"
         );
-        assert!(catalog
-            .finish_bundle_cleanup(first_bundle.id)
-            .await
-            .unwrap());
-        // Publishing over a page queues its retirement, and queues it due
-        // rather than days out. Take it off the queue here so the job
-        // assertions below are about the jobs they name.
-        let queued = catalog.claim_jobs("retirement", 10).await.unwrap();
-        assert_eq!(
-            queued.len(),
-            1,
-            "superseding a bundle queues exactly one retirement"
-        );
-        assert_eq!(queued[0].job.kind, "bundle_cleanup");
-        catalog
-            .complete_job(&queued[0], json!({"retired": true}))
-            .await
-            .unwrap();
+        assert!(catalog.mark_document_deleting(second.id).await.unwrap());
+        assert!(catalog.hasten_deletion(second.id).await.unwrap());
+        assert!(catalog.finish_document_deletion(second.id).await.unwrap());
+        assert!(catalog.document(second.id).await.unwrap().is_none());
 
-        let collaboration = CollaborationStorage::new(Arc::new(catalog.clone()), blobs.clone());
-        let sequence = collaboration
-            .append(first.id, b"update-one", b"at-one", 10)
-            .await
-            .unwrap();
-        assert_eq!(sequence, 2);
-        let before = collaboration.recover(first.id).await.unwrap();
-        assert!(before.base.is_none());
-        assert_eq!(before.updates[1].update_bytes, b"update-one");
-        let (base, second_sequence) = tokio::join!(
-            collaboration.compact(first.id, sequence, 0, b"base-state"),
-            collaboration.append(first.id, b"update-two", b"at-two", 20)
-        );
-        assert!(base.unwrap().is_some());
-        assert_eq!(second_sequence.unwrap(), 3);
-        let recovered = collaboration.recover(first.id).await.unwrap();
-        assert_eq!(recovered.base.as_deref(), Some(b"base-state".as_slice()));
-        assert_eq!(recovered.updates.len(), 1);
-        assert_eq!(recovered.updates[0].update_bytes, b"update-two");
-        let backlog = sqlx::query!(
-            "SELECT uncompacted_update_count,uncompacted_update_bytes FROM documents WHERE id=$1",
-            first.id,
-        )
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap();
-        assert_eq!(
-            (
-                backlog.uncompacted_update_count,
-                backlog.uncompacted_update_bytes
-            ),
-            (1, b"update-two".len() as i64)
-        );
-        assert!(collaboration
-            .compact(first.id, 0, 0, b"stale-base")
-            .await
-            .unwrap()
-            .is_none());
-
-        let input = NewJob {
-            kind: "source_compaction".into(),
-            document_id: Some(first.id),
-            account_id: None,
-            scope_key: format!("document:{}", first.id),
-            dedupe_key: Some("compact:1".into()),
-            payload: json!({"through_update_sequence":1}),
-            priority: 0,
-            max_attempts: 3,
-            run_after: OffsetDateTime::now_utc(),
-        };
-        let job = catalog.enqueue_job(input.clone()).await.unwrap();
-        assert_eq!(catalog.enqueue_job(input).await.unwrap().id, job.id);
-        let claim = catalog.claim_jobs("worker-one", 1).await.unwrap().remove(0);
-        catalog
-            .complete_job(&claim, json!({"ok":true}))
-            .await
-            .unwrap();
-
-        for generation in 0..16 {
-            catalog
-                .enqueue_job(NewJob {
-                    kind: "maintenance".into(),
-                    document_id: None,
-                    account_id: None,
-                    scope_key: "deployment".into(),
-                    dedupe_key: Some(format!("contract:{generation}")),
-                    payload: json!({
-                        "base_cleanup_batch":100,
-                        "completed_job_retention_days":7,
-                        "completed_job_batch":1000,
-                        "orphan_scan_batch":500,
-                        "orphan_grace_hours":168
-                    }),
-                    priority: 0,
-                    max_attempts: 3,
-                    run_after: OffsetDateTime::now_utc(),
-                })
-                .await
-                .unwrap();
-        }
-        let (left, right) = tokio::join!(
-            catalog.claim_jobs("worker-left", 8),
-            catalog.claim_jobs("worker-right", 8)
-        );
-        let mut claims = left.unwrap();
-        claims.extend(right.unwrap());
-        assert_eq!(claims.len(), 16);
-        let unique: std::collections::HashSet<_> =
-            claims.iter().map(|claim| claim.job.id).collect();
-        assert_eq!(unique.len(), 16, "workers must receive disjoint claims");
-
-        let stale = claims.pop().unwrap();
-        for claim in &claims {
-            catalog
-                .complete_job(claim, json!({"ok":true}))
-                .await
-                .unwrap();
-        }
-        sqlx::query!(
-            "UPDATE jobs SET locked_at=now()-interval '10 minutes' WHERE id=$1",
-            stale.job.id,
-        )
-        .execute(catalog.pool())
-        .await
-        .unwrap();
-        assert_eq!(
-            catalog
-                .recover_expired_jobs(OffsetDateTime::now_utc() - Duration::minutes(5), 10)
-                .await
-                .unwrap(),
-            1
-        );
-        let replacement = catalog
-            .claim_jobs("replacement", 1)
-            .await
-            .unwrap()
-            .remove(0);
-        assert_eq!(replacement.job.id, stale.job.id);
-        assert!(catalog
-            .complete_job(&stale, json!({"stale":true}))
-            .await
-            .is_err());
-        catalog
-            .complete_job(&replacement, json!({"ok":true}))
-            .await
-            .unwrap();
-
-        // A deletion job must survive the row it deletes so its fenced claim
-        // can still be completed and audited.
-        let disposable = catalog
-            .create_document(NewDocument {
-                slug: "disposable".into(),
-                owner_id: account.id,
-                ownership_mode: "owned".into(),
-                title: "Disposable".into(),
-                source_format: "markdown".into(),
-                main_path: "document.md".into(),
-                settings: json!({"version":1}),
-            })
-            .await
-            .unwrap();
-        let deletion_root = tempfile::tempdir().unwrap();
-        let deletion_blobs: Arc<dyn BlobStore> = Arc::new(PartialDeleteStore {
-            inner: FsStore::new(deletion_root.path(), false),
-            fail_once: AtomicBool::new(true),
-        });
-        let deletion_keys = [
-            format!("documents/{}/assets/{}", disposable.id, new_id()),
-            format!("documents/{}/versions/{}.tar.zst", disposable.id, new_id()),
-        ];
-        for key in &deletion_keys {
-            deletion_blobs
-                .put_new(key, b"delete-me".to_vec(), "application/octet-stream")
-                .await
-                .unwrap();
-        }
-        catalog.mark_document_deleting(disposable.id).await.unwrap();
-        let deletion = catalog
-            .enqueue_job(NewJob {
-                kind: "document_deletion".into(),
-                document_id: Some(disposable.id),
-                account_id: Some(account.id),
-                scope_key: format!("document:{}", disposable.id),
-                dedupe_key: Some("delete".into()),
-                payload: json!({"document_id":disposable.id}),
-                priority: 0,
-                max_attempts: 3,
-                run_after: OffsetDateTime::now_utc(),
-            })
-            .await
-            .unwrap();
-        let deletion_claim = catalog
-            .claim_jobs("deletion-worker", 1)
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|claim| claim.job.id == deletion.id)
-            .unwrap();
-        let worker = Worker::new(Arc::new(catalog.clone()), deletion_blobs.clone());
-        assert!(worker.execute(&deletion_claim).await.is_err());
-        assert!(catalog.document(disposable.id).await.unwrap().is_some());
-        assert_eq!(
-            deletion_blobs
-                .list(&format!("documents/{}/", disposable.id))
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        worker.execute(&deletion_claim).await.unwrap();
-        assert!(catalog.document(disposable.id).await.unwrap().is_none());
-        let completed = catalog
-            .complete_job(&deletion_claim, json!({"deleted":true}))
-            .await
-            .unwrap();
-        assert_eq!(completed.status, "succeeded");
-        assert_eq!(completed.document_id, None);
-
-        let erased = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some("erase".into()),
-                handle: "erase".into(),
-                display_name: "Erase".into(),
-                email: Some("erase@example.invalid".into()),
-            })
-            .await
-            .unwrap();
+        // Account erasure.
+        let erased = seed_account(&catalog, "v3-erased").await;
         let erased_document = catalog
             .create_document(NewDocument {
-                slug: "erase-document".into(),
+                slug: "v3-erase-document".into(),
                 owner_id: erased.id,
                 ownership_mode: "owned".into(),
                 title: "Erase document".into(),
@@ -1205,546 +774,261 @@ mod tests {
         catalog.close().await;
     }
 
-    /// A version carries what it holds and what it moved, or says it cannot.
+    /// A label names a state by its vector, its frontier and its projection
+    /// digest (§8.2), and a retry with the same `request_id` returns the row
+    /// a previous attempt already wrote rather than a second one (§7.2).
     ///
-    /// Both answers come back from the catalogue rather than from the memory
-    /// of the process that wrote them, which is the whole point of the
-    /// columns: a server that has just loaded a timeline must be able to tell
-    /// that the live document is the one the newest version already holds,
-    /// and a reader must be able to scope a file's history without opening
-    /// two archives per row.
+    /// `document_versions` is gone, and with it the claim the old test made
+    /// about a version's tree digest and the paths it moved: nothing in the
+    /// new schema records which paths a commit touched, because nothing
+    /// computes a diff of trees any more (§8.2, §8.3). What is left to claim
+    /// about a named moment is what the row actually holds.
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-    async fn a_version_records_its_tree_and_the_paths_it_moved() {
+    async fn a_label_records_the_vector_frontier_and_digest_of_the_moment_it_names() {
         let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
             .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
         let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
             .await
             .unwrap();
         catalog.migrate().await.unwrap();
-        sqlx::query!(
-            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
-             document_versions,document_assets,replies,annotations,share_links,grants,documents,
-             accounts CASCADE",
-        )
-        .execute(catalog.pool())
-        .await
-        .unwrap();
-        let account = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some("one".into()),
-                handle: "owner".into(),
-                display_name: "Owner".into(),
-                email: None,
-            })
-            .await
-            .unwrap();
-        let document = catalog
-            .create_document(NewDocument {
-                slug: "paper".into(),
-                owner_id: account.id,
-                ownership_mode: "owned".into(),
-                title: "A Paper".into(),
-                source_format: "latex".into(),
-                main_path: "paper.tex".into(),
-                settings: json!({"version":1}),
-            })
-            .await
-            .unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        let tag = new_id().simple().to_string();
+        let account = seed_account(&catalog, &format!("label-{tag}")).await;
+        let document = seed_document(&catalog, account.id, &format!("label-{tag}")).await;
 
-        let object_root = tempfile::tempdir().unwrap();
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
-        let sources = SourceStorage::new(
-            Arc::new(catalog.clone()),
-            blobs.clone(),
-            ArchiveLimits::default(),
-        );
-        let source = |body: &str| crate::storage::source_archive::SourceArchive {
-            source_format: "latex".into(),
-            main_path: "paper.tex".into(),
-            files: vec![crate::storage::source_archive::SourceFile::Inline {
-                path: "paper.tex".into(),
-                bytes: body.as_bytes().to_vec(),
-            }],
-        };
-
-        // A commit given files rather than a tree has to read its parent to
-        // know what moved. This one has no parent: it is the document
-        // arriving, and what it moved is everything it brought.
-        sources
-            .commit_project(CommitProject {
-                document_id: document.id,
-                files: vec![ProjectFile {
-                    path: "paper.tex".into(),
-                    bytes: b"\\documentclass{article}\n".to_vec(),
-                    media_type: "text/x-tex".into(),
-                }],
-                through_update_sequence: 0,
-                project_generation: 0,
-                reason: "created".into(),
-                label: None,
-                author_account_id: Some(account.id),
-                author_label: "Owner".into(),
-                make_current: true,
-            })
-            .await
-            .unwrap();
-
-        let tree_digest = [7_u8; 32];
-        let committed = sources
-            .commit_archive(crate::storage::source::CommitArchive {
-                document_id: document.id,
-                archive: source("\\documentclass{article}\n\\begin{document}\n"),
-                through_update_sequence: 0,
-                project_generation: 0,
-                tree_digest: Some(tree_digest),
-                changed_paths: Some(vec!["paper.tex".into()]),
-                reason: "quiet".into(),
-                label: None,
-                author_account_id: Some(account.id),
-                author_label: "Owner".into(),
-                make_current: true,
-            })
-            .await
-            .unwrap();
-        assert_eq!(
-            committed.version.tree_digest.as_deref(),
-            Some(&tree_digest[..])
-        );
-
-        let versions = catalog.versions(document.id, 10).await.unwrap();
-        assert_eq!(versions.len(), 2);
-        let (newest, first) = (&versions[0], &versions[1]);
-        assert_eq!(newest.tree_digest.as_deref(), Some(&tree_digest[..]));
-        assert_eq!(
-            newest.changed_paths.as_deref(),
-            Some(&["paper.tex".to_string()][..]),
-            "the paths a version moved survive the catalogue"
-        );
-        // A publish hands storage files rather than a tree, and storage names
-        // the tree itself: the version is still recognisable as the document
-        // it holds.
-        let published = crate::storage::source_archive::tree_of(
-            &crate::storage::source_archive::SourceArchive {
-                source_format: "latex".into(),
-                main_path: "paper.tex".into(),
-                files: vec![crate::storage::source_archive::SourceFile::Inline {
-                    path: "paper.tex".into(),
-                    bytes: b"\\documentclass{article}\n".to_vec(),
-                }],
-            },
-        )
-        .0;
-        assert_eq!(
-            first.tree_digest.as_deref(),
-            Some(&published.digest_bytes()[..]),
-            "a version is named by what it holds, however it was written"
-        );
-        // And the arrival answers too. The timeline cannot say what a version
-        // holds differently unless every version in a run can, so the row at
-        // the head of a history names every path in it rather than leaving
-        // the run to be totalled from a guess.
-        assert_eq!(
-            first.changed_paths.as_deref(),
-            Some(&["paper.tex".to_string()][..]),
-            "a document arriving moved every file it brought",
-        );
-
-        catalog.close().await;
-    }
-
-    /// The copies already on disk are reclaimed without losing an event.
-    ///
-    /// Sharing only helps versions written after it existed; every version
-    /// written before holds its own copy of its bytes, which is where the
-    /// duplication actually accumulated. The maintenance pass repoints those
-    /// at one object. What it must not do -- and what this pins -- is shorten
-    /// the history: the rows, their order and their reasons all survive, and
-    /// only the storage behind them is shared.
-    #[tokio::test]
-    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-    async fn duplicate_archives_already_written_are_reclaimed() {
-        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
-            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
-        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
-            .await
-            .unwrap();
-        catalog.migrate().await.unwrap();
-        let unique = new_id().simple().to_string();
-        let account = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some(format!("legacy-{unique}")),
-                handle: format!("owner-{unique}"),
-                display_name: "Owner".into(),
-                email: None,
-            })
-            .await
-            .unwrap();
-        let document = catalog
-            .create_document(NewDocument {
-                slug: format!("paper-{unique}"),
-                owner_id: account.id,
-                ownership_mode: "owned".into(),
-                title: "A Paper".into(),
-                source_format: "latex".into(),
-                main_path: "paper.tex".into(),
-                settings: json!({"version":1}),
-            })
-            .await
-            .unwrap();
-
-        // Two versions holding the same bytes under private names: what every
-        // version looked like before archives were shared.
-        let digest = [11_u8; 32];
-        let legacy = |name: &str| NewVersion {
+        let request_id = uuid::Uuid::new_v4();
+        let first = NewLabel {
+            id: new_id(),
             document_id: document.id,
-            parent_id: None,
-            through_update_sequence: 0,
-            project_generation: 0,
-            archive_key: format!("documents/{}/versions/{name}.tar.zst", document.id),
-            archive_encoding_version: 1,
-            archive_digest: digest,
-            archive_bytes: 500,
-            logical_bytes: 400,
-            tree_digest: None,
-            changed_paths: None,
-            file_count: None,
-            reason: "quiet".into(),
-            label: None,
+            source_sequence: 1,
+            vector: b"vector-a".to_vec(),
+            frontier: b"frontier-a".to_vec(),
+            tree_digest: Some([7; 32]),
+            label: Some("v1".into()),
+            reason: "restore".into(),
+            request_id: Some(request_id),
             author_account_id: Some(account.id),
             author_label: "Owner".into(),
-            make_current: true,
         };
-        let first = catalog.create_version(legacy("one")).await.unwrap();
-        let second = catalog.create_version(legacy("two")).await.unwrap();
-        assert_ne!(first.archive_key, second.archive_key);
-        assert_eq!(
-            catalog.usage_bytes(Some(account.id)).await.unwrap(),
-            1000,
-            "two private copies are two objects, and are charged as two"
-        );
-
-        let object_root = tempfile::tempdir().unwrap();
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
-        let maintenance = Maintenance::new(Arc::new(catalog.clone()), blobs);
-        assert_eq!(
-            maintenance.share_duplicate_archives(100).await.unwrap(),
-            1,
-            "the later copy is repointed at the earlier one"
-        );
-
-        let versions = catalog.versions(document.id, 10).await.unwrap();
-        assert_eq!(versions.len(), 2, "reclaiming bytes does not remove events");
-        assert!(
-            versions.iter().all(|v| v.archive_key == first.archive_key),
-            "both events now name the object that was there first"
-        );
-        assert_eq!(
-            catalog.usage_bytes(Some(account.id)).await.unwrap(),
-            500,
-            "one object is charged once"
-        );
-        assert_eq!(
-            maintenance.share_duplicate_archives(100).await.unwrap(),
-            0,
-            "a second pass finds nothing left to share"
-        );
-
-        catalog.close().await;
-    }
-
-    /// Two versions that hold the same document hold one archive.
-    ///
-    /// The timeline still gets a row for each -- returning to what a document
-    /// said an hour ago is an event, and the history is the record of events
-    /// -- but the bytes behind those rows are one object, named by their own
-    /// digest. The account is charged for it once, which is the half that
-    /// used to be wrong in the expensive direction: a document saved fifty
-    /// times between two edits was fifty archives and fifty charges for one
-    /// document.
-    ///
-    /// Deliberately account-scoped and given its own object store, so it
-    /// makes no claim about a counter other tests are also moving.
-    #[tokio::test]
-    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-    async fn versions_holding_the_same_document_share_one_archive() {
-        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
-            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
-        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
-            .await
-            .unwrap();
-        catalog.migrate().await.unwrap();
-        let unique = new_id().simple().to_string();
-        let account = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some(format!("shared-{unique}")),
-                handle: format!("owner-{unique}"),
-                display_name: "Owner".into(),
-                email: None,
-            })
-            .await
-            .unwrap();
-        let document = catalog
-            .create_document(NewDocument {
-                slug: format!("paper-{unique}"),
-                owner_id: account.id,
-                ownership_mode: "owned".into(),
-                title: "A Paper".into(),
-                source_format: "latex".into(),
-                main_path: "paper.tex".into(),
-                settings: json!({"version":1}),
-            })
-            .await
-            .unwrap();
-
-        let object_root = tempfile::tempdir().unwrap();
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
-        let sources = SourceStorage::new(
-            Arc::new(catalog.clone()),
-            blobs.clone(),
-            ArchiveLimits::default(),
-        );
-        let commit = |body: &'static str, reason: &'static str| {
-            let sources = &sources;
-            let id = document.id;
-            async move {
-                sources
-                    .commit_archive(crate::storage::source::CommitArchive {
-                        document_id: id,
-                        archive: crate::storage::source_archive::SourceArchive {
-                            source_format: "latex".into(),
-                            main_path: "paper.tex".into(),
-                            files: vec![crate::storage::source_archive::SourceFile::Inline {
-                                path: "paper.tex".into(),
-                                bytes: body.as_bytes().to_vec(),
-                            }],
-                        },
-                        through_update_sequence: 0,
-                        project_generation: 0,
-                        tree_digest: None,
-                        changed_paths: None,
-                        reason: reason.into(),
-                        label: None,
-                        author_account_id: Some(account.id),
-                        author_label: "Owner".into(),
-                        make_current: true,
-                    })
-                    .await
-                    .unwrap()
-            }
+        let written = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let row = catalog.insert_label(&mut tx, &first).await.unwrap();
+            tx.commit().await.unwrap();
+            row
         };
+        assert_eq!(written.sequence, 1);
+        assert_eq!(written.vector, b"vector-a");
+        assert_eq!(written.frontier, b"frontier-a");
+        assert_eq!(written.tree_digest.as_deref(), Some(&[7u8; 32][..]));
+        assert_eq!(written.label.as_deref(), Some("v1"));
 
-        let first = commit("\\documentclass{article}\n", "created").await;
-        let charged = catalog.usage_bytes(Some(account.id)).await.unwrap();
-        assert_eq!(
-            charged, first.version.archive_bytes,
-            "the first version is charged for the archive it wrote"
-        );
-
-        // The same document again: a new event, no new bytes.
-        let same = commit("\\documentclass{article}\n", "quiet").await;
-        assert_eq!(
-            same.version.archive_key, first.version.archive_key,
-            "an identical document is stored under the name its bytes already have"
-        );
-        assert_ne!(
-            same.version.id, first.version.id,
-            "sharing the archive must not collapse two events into one row"
-        );
-        assert_eq!(
-            catalog.usage_bytes(Some(account.id)).await.unwrap(),
-            charged,
-            "holding the same bytes again costs nothing"
-        );
-        let archives = blobs
-            .list(&format!("documents/{}/archives/", document.id))
+        let read_back = catalog
+            .label(document.id, written.id)
             .await
+            .unwrap()
             .unwrap();
-        assert_eq!(archives.len(), 1, "one object stands behind both versions");
+        assert_eq!(read_back.vector, written.vector);
+        assert_eq!(read_back.frontier, written.frontier);
 
-        // A document that says something else is a different object, and is
-        // charged for, so the saving is in duplication alone.
-        let changed = commit("\\documentclass{book}\n", "quiet").await;
-        assert_ne!(changed.version.archive_key, first.version.archive_key);
+        // A second, unrelated label bumps the sequence.
+        let second = NewLabel {
+            id: new_id(),
+            document_id: document.id,
+            source_sequence: 2,
+            vector: b"vector-b".to_vec(),
+            frontier: b"frontier-b".to_vec(),
+            tree_digest: None,
+            label: None,
+            reason: "restore".into(),
+            request_id: None,
+            author_account_id: Some(account.id),
+            author_label: "Owner".into(),
+        };
+        let second_written = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let row = catalog.insert_label(&mut tx, &second).await.unwrap();
+            tx.commit().await.unwrap();
+            row
+        };
+        assert_eq!(second_written.sequence, 2);
+        let page = catalog.label_page(document.id, None, 10).await.unwrap();
         assert_eq!(
-            catalog.usage_bytes(Some(account.id)).await.unwrap(),
-            charged + changed.version.archive_bytes,
-            "new bytes are still new bytes"
+            page.iter().map(|row| row.sequence).collect::<Vec<_>>(),
+            vec![2, 1],
+            "the timeline is newest first"
         );
 
-        catalog.close().await;
-    }
-
-    /// Compaction deletes the update rows; the activity they measured has to
-    /// outlive them, and the two sources must never disagree about a row.
-    ///
-    /// Account-scoped like the test above, so it makes no claim about rows
-    /// another test is moving.
-    #[tokio::test]
-    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-    async fn activity_outlives_the_updates_it_was_measured_from() {
-        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
-            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
-        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+        assert!(catalog
+            .rename_label(document.id, written.id, Some("renamed"))
             .await
-            .unwrap();
-        catalog.migrate().await.unwrap();
-        let unique = new_id().simple().to_string();
-        let account = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some(format!("activity-{unique}")),
-                handle: format!("writer-{unique}"),
-                display_name: "Writer".into(),
-                email: None,
-            })
-            .await
-            .unwrap();
-        let document = catalog
-            .create_document(NewDocument {
-                slug: format!("activity-{unique}"),
-                owner_id: account.id,
-                ownership_mode: "owned".into(),
-                title: "A Paper".into(),
-                source_format: "latex".into(),
-                main_path: "paper.tex".into(),
-                settings: json!({"version":1}),
-            })
-            .await
-            .unwrap();
-
-        // Three writes in the same minute. A persisted row is the document's
-        // whole encoded history, so these stand for a document growing rather
-        // than for three separate edits -- which is why the bucket keeps the
-        // largest of them and not their sum.
-        let writes: [(&[u8], &[u8]); 3] = [
-            (b"one", b"frontier-1"),
-            (b"two-two", b"frontier-2"),
-            (b"three-three", b"frontier-3"),
-        ];
-        let largest = writes
-            .iter()
-            .map(|(body, _)| body.len() as i64)
-            .max()
-            .unwrap();
-        let last_anchor = b"frontier-3".to_vec();
-        for (body, frontier) in writes {
+            .unwrap());
+        assert_eq!(
             catalog
-                .append_update(document.id, body, frontier, body.len() as i64)
+                .label(document.id, written.id)
                 .await
-                .unwrap();
-        }
-        // What the minute says about itself: how much of it was worked in, how
-        // large the document got, and where to go to see it as it was left.
-        let shape = |buckets: &[ActivityBucket]| {
-            (
-                buckets.iter().map(|row| row.changes).sum::<i64>(),
-                buckets.iter().map(|row| row.state_bytes).max().unwrap_or(0),
-                buckets
-                    .last()
-                    .map(|row| row.frontier.clone())
-                    .unwrap_or_default(),
-            )
-        };
-
-        // Before any compaction the answer comes entirely from the live rows.
-        let live = catalog.document_activity(document.id, None).await.unwrap();
-        assert_eq!(shape(&live), (3, largest, last_anchor.clone()));
-
-        let compact = |through: i64, key: &'static str| {
-            let catalog = catalog.clone();
-            let id = document.id;
-            async move {
-                catalog
-                    .activate_collaboration_base(
-                        id,
-                        through,
-                        0,
-                        format!("documents/{id}/collaboration/{key}.loro.zst"),
-                        [7; 32],
-                        128,
-                        OffsetDateTime::now_utc() + Duration::days(1),
-                    )
-                    .await
-                    .unwrap()
-                    .expect("the base must be activated")
-            }
-        };
-
-        // Two of the three are now in the base. The rows are gone and the
-        // count is unchanged: one source handed those updates to the other.
-        compact(2, "first").await;
-        let after_first = catalog.document_activity(document.id, None).await.unwrap();
-        assert_eq!(
-            shape(&after_first),
-            (3, largest, last_anchor.clone()),
-            "compaction lost the updates it absorbed, or the anchor of the write still live"
+                .unwrap()
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("renamed")
         );
-        let remaining = sqlx::query_scalar!(
-            "SELECT count(*) FROM document_updates WHERE document_id=$1",
-            document.id,
-        )
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap();
-        assert_eq!(remaining, Some(1), "compaction kept an absorbed update row");
 
-        // The third lands in the same minute as the first two, so the bucket
-        // it already wrote must accumulate rather than be replaced.
-        compact(3, "second").await;
-        let after_second = catalog.document_activity(document.id, None).await.unwrap();
+        // A retry with the same request_id, even carrying different
+        // evidence, returns the first row rather than writing (or
+        // overwriting) anything: `insert_label` finds it by `request_id`
+        // before it looks at anything else the caller sent.
+        let retry = NewLabel {
+            id: new_id(),
+            document_id: document.id,
+            source_sequence: 99,
+            vector: b"vector-different".to_vec(),
+            frontier: b"frontier-different".to_vec(),
+            tree_digest: None,
+            label: Some("should not stick".into()),
+            reason: "restore".into(),
+            request_id: Some(request_id),
+            author_account_id: Some(account.id),
+            author_label: "Owner".into(),
+        };
+        let retried = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let row = catalog.insert_label(&mut tx, &retry).await.unwrap();
+            tx.commit().await.unwrap();
+            row
+        };
         assert_eq!(
-            shape(&after_second),
-            (3, largest, last_anchor.clone()),
-            "a second compaction into a live bucket replaced it instead of adding to it"
+            retried.id, written.id,
+            "a retry by request_id returns the original row"
         );
-        let stored = sqlx::query_scalar!(
-            "SELECT COALESCE(sum(changes),0)::bigint FROM document_activity WHERE document_id=$1",
-            document.id,
-        )
-        .fetch_one(catalog.pool())
-        .await
-        .unwrap();
-        assert_eq!(stored, Some(3), "the whole history is in the buckets now");
+        assert_eq!(
+            retried.vector, b"vector-a",
+            "not the evidence the retry carried"
+        );
+        assert_eq!(
+            catalog
+                .label_page(document.id, None, 10)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "a retry writes no row"
+        );
 
-        // A base that lost the race writes nothing: it deletes no rows, so
-        // recording activity for them would count the same work twice.
-        let stale = catalog
-            .activate_collaboration_base(
-                document.id,
-                1,
-                0,
-                format!("documents/{}/collaboration/stale.loro.zst", document.id),
-                [9; 32],
-                128,
-                OffsetDateTime::now_utc() + Duration::days(1),
-            )
+        catalog.close().await;
+    }
+
+    /// Two labels naming the same projection name the same archive object,
+    /// and the storage counter that watches `document_labels.archive_key`
+    /// counts that object once no matter how many labels point at it (§8.2,
+    /// §8.5).
+    ///
+    /// The old test asserted this of a maintenance pass,
+    /// `share_duplicate_archives`, that repointed versions written under
+    /// distinct private names at one object after the fact. That pass is
+    /// gone and nothing replaces it: an archive is now named by the digest
+    /// of what it holds from the moment it is written (§8.5), so there is
+    /// nothing left to reclaim after the fact. What is worth testing instead
+    /// is the trigger that makes sharing free: `usage_bytes` must not double
+    /// count a key two labels hold, and must give the bytes back only when
+    /// the last label naming it is gone.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn two_labels_naming_the_same_archive_are_charged_once() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
             .await
             .unwrap();
-        assert!(stale.is_none(), "a stale base must not be activated");
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        let tag = new_id().simple().to_string();
+        let account = seed_account(&catalog, &format!("archive-{tag}")).await;
+        let document = seed_document(&catalog, account.id, &format!("archive-{tag}")).await;
+
+        let label = |sequence: i64| NewLabel {
+            id: new_id(),
+            document_id: document.id,
+            source_sequence: sequence,
+            vector: format!("vector-{sequence}").into_bytes(),
+            frontier: format!("frontier-{sequence}").into_bytes(),
+            tree_digest: None,
+            label: None,
+            reason: "restore".into(),
+            request_id: None,
+            author_account_id: Some(account.id),
+            author_label: "Owner".into(),
+        };
+        let (one, two) = {
+            let mut tx = catalog.pool().begin().await.unwrap();
+            let one = catalog.insert_label(&mut tx, &label(1)).await.unwrap();
+            let two = catalog.insert_label(&mut tx, &label(2)).await.unwrap();
+            tx.commit().await.unwrap();
+            (one, two)
+        };
+
+        let before = catalog.usage_bytes(Some(account.id)).await.unwrap();
+        let key = format!("documents/{}/labels/shared.tar.zst", document.id);
+        assert!(catalog
+            .request_label_archive(document.id, one.id)
+            .await
+            .unwrap());
+        assert!(catalog
+            .attach_label_archive(one.id, &key, 500)
+            .await
+            .unwrap());
         assert_eq!(
-            shape(&catalog.document_activity(document.id, None).await.unwrap()),
-            (3, largest, last_anchor),
-            "a base that deleted nothing still recorded activity"
+            catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
+            500,
+            "the first label to name an object is charged for it"
+        );
+        assert!(catalog
+            .request_label_archive(document.id, two.id)
+            .await
+            .unwrap());
+        assert!(catalog
+            .attach_label_archive(two.id, &key, 500)
+            .await
+            .unwrap());
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
+            500,
+            "a second label naming the same key adds no bytes"
+        );
+        assert_eq!(
+            catalog
+                .label_archive_keys(None, 100)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|k| **k == key)
+                .count(),
+            1,
+            "the archive key listing names a shared key once"
         );
 
-        // `since` bounds the scan, and a window after the work is empty
-        // rather than a total.
-        let later = catalog
-            .document_activity(
-                document.id,
-                Some(OffsetDateTime::now_utc() + Duration::days(1)),
-            )
+        // Removing the first label leaves the object charged, because the
+        // second still names it.
+        sqlx::query!("DELETE FROM document_labels WHERE id=$1", one.id)
+            .execute(catalog.pool())
             .await
             .unwrap();
-        assert!(later.is_empty(), "a window after the work reported some");
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap() - before,
+            500,
+            "the object is still named by the surviving label"
+        );
+
+        // And removing the last label naming it gives the bytes back.
+        sqlx::query!("DELETE FROM document_labels WHERE id=$1", two.id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog.usage_bytes(Some(account.id)).await.unwrap(),
+            before,
+            "nothing names the object any more"
+        );
 
         catalog.close().await;
     }
@@ -1755,9 +1039,10 @@ mod tests {
     /// `replace_share_links` revokes the live rows rather than deleting them
     /// -- a revoked link has to stay on record so a guest admitted through it
     /// can be recognised and pruned -- and then writes the wanted set. Every
-    /// save therefore rewrites links that did not change, with the tokens they
-    /// already have. Minting a second role's key is exactly that: the new role
-    /// carries a fresh token and every other role carries the one it had.
+    /// save therefore rewrites links that did not change, with the tokens
+    /// they already have. Minting a second role's key is exactly that: the
+    /// new role carries a fresh token and every other role carries the one
+    /// it had. Unrelated to the "server is a log" cutover; kept working.
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn a_link_kept_across_a_save_does_not_collide_with_its_own_revoked_row() {
@@ -1767,42 +1052,13 @@ mod tests {
             .await
             .unwrap();
         catalog.migrate().await.unwrap();
-        sqlx::query!(
-            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
-             document_versions,document_assets,replies,annotations,share_links,grants,documents,
-             accounts CASCADE",
-        )
-        .execute(catalog.pool())
-        .await
-        .unwrap();
-        let account = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some("one".into()),
-                handle: "owner".into(),
-                display_name: "Owner".into(),
-                email: None,
-            })
-            .await
-            .unwrap();
-        let document = catalog
-            .create_document(NewDocument {
-                slug: "shared".into(),
-                owner_id: account.id,
-                ownership_mode: "owned".into(),
-                title: "A Paper".into(),
-                source_format: "latex".into(),
-                main_path: "paper.tex".into(),
-                settings: json!({"version":1}),
-            })
-            .await
-            .unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        truncate(&catalog).await;
+        let account = seed_account(&catalog, "link-owner").await;
+        let document = seed_document(&catalog, account.id, "link-shared").await;
 
         let reader = [1u8; 32];
         let commenter = [2u8; 32];
-        // A sealed key per token, so the save writes the whole row the way the
-        // server does; what is in it is opaque here.
         let link = |role: &str, hash: [u8; 32]| {
             (
                 role.to_string(),
@@ -1819,8 +1075,6 @@ mod tests {
             .await
             .expect("the first save writes the reader's link");
 
-        // The owner shares with a commenter. The reader's link is untouched,
-        // so it is written again with the token it already has.
         catalog
             .replace_share_links(
                 document.id,
@@ -1839,8 +1093,6 @@ mod tests {
             "the kept link still answers to the token its holder has",
         );
 
-        // And the same set saved again -- a label edit, a revocation
-        // elsewhere, any owner change at all -- is still not a collision.
         catalog
             .replace_share_links(
                 document.id,
@@ -1850,15 +1102,12 @@ mod tests {
             .expect("saving an unchanged set of links must not collide either");
         let unchanged = catalog.share_links(document.id).await.unwrap();
         assert_eq!(unchanged.len(), 2);
-        // The rows are the same rows: a link nobody touched was not remade,
-        // so it still says when it was shared and how often it has rotated.
         let kept = unchanged
             .iter()
             .find(|row| row.token_hash == reader.to_vec())
             .expect("the reader's link");
         assert_eq!(kept.generation, 1, "an untouched link has not been rotated");
 
-        // Dropping a role still revokes it, and only it.
         catalog
             .replace_share_links(document.id, &[link("commenter", commenter)])
             .await
@@ -1873,8 +1122,6 @@ mod tests {
             "the role that was dropped is no longer live",
         );
 
-        // And rotating one is a new token in place of the old, which stops
-        // answering. The commenter beside it is untouched.
         let rotated = [3u8; 32];
         catalog
             .replace_share_links(
@@ -1895,279 +1142,16 @@ mod tests {
 
         catalog.close().await;
     }
-    /// A published page points at the figures the document already holds, and
-    /// cleaning the page up afterwards must leave them exactly where they are.
-    ///
-    /// This is the one way this design can lose somebody's work. A figure is
-    /// stored once, content-addressed, and shared between the live document
-    /// and every bundle that shows it. The cleanup that runs an hour
-    /// after a bundle is superseded deletes the blobs that bundle
-    /// named -- so it has to delete only the ones nothing else names, or it
-    /// takes the figure out of the paper its author is still writing.
-    #[tokio::test]
-    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-    async fn a_superseded_page_takes_its_rendering_and_leaves_the_figures() {
-        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
-            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
-        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
-            .await
-            .unwrap();
-        catalog.migrate().await.unwrap();
-        sqlx::query!(
-            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
-             document_versions,document_assets,replies,annotations,share_links,grants,documents,
-             accounts CASCADE",
-        )
-        .execute(catalog.pool())
-        .await
-        .unwrap();
-        let account = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some("shared-files".into()),
-                handle: "owner".into(),
-                display_name: "Owner".into(),
-                email: None,
-            })
-            .await
-            .unwrap();
-        let document = catalog
-            .create_document(NewDocument {
-                slug: "paper".into(),
-                owner_id: account.id,
-                ownership_mode: "owned".into(),
-                title: "Paper".into(),
-                source_format: "markdown".into(),
-                main_path: "paper.md".into(),
-                settings: serde_json::json!({}),
-            })
-            .await
-            .unwrap();
-
-        let object_root = tempfile::tempdir().unwrap();
-        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
-        let figure = b"PNG-BYTES".to_vec();
-        let figure_digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&figure).into();
-        let figure_key = format!("documents/{}/assets/plot", document.id);
-        blobs
-            .put_new(&figure_key, figure.clone(), "application/octet-stream")
-            .await
-            .unwrap();
-        catalog
-            .complete_asset(NewAsset {
-                document_id: document.id,
-                storage_key: figure_key.clone(),
-                digest: figure_digest,
-                byte_length: figure.len() as i64,
-                media_type: "application/octet-stream".into(),
-                original_name: Some("plot.png".into()),
-            })
-            .await
-            .unwrap();
-        let held_after_upload = catalog.usage_bytes(None).await.unwrap();
-
-        let bundles = BundleStorage::new(Arc::new(catalog.clone()), blobs.clone());
-        let page = |body: &'static [u8], key: &str| StoreBundle {
-            document_id: document.id,
-            source_version_id: None,
-            request_key: key.to_string(),
-            expected_current_id: None,
-            rendered_by_account_id: Some(account.id),
-            rendered_by_label: "Owner".into(),
-            files: vec![
-                BundleFile {
-                    path: "index.html".into(),
-                    media_type: "text/html".into(),
-                    source: crate::storage::bundle::BundleSource::Owned(body.to_vec()),
-                },
-                BundleFile {
-                    path: "figures/plot.png".into(),
-                    media_type: "image/png".into(),
-                    source: crate::storage::bundle::BundleSource::Shared {
-                        storage_key: figure_key.clone(),
-                        digest: figure_digest,
-                        byte_length: figure.len() as i64,
-                    },
-                },
-                // Not a figure anybody uploaded: the renderer emits it, it is
-                // the same every time, and no bundle before this one
-                // holds it. It is owned -- and named by its own digest, so
-                // the next bundle of the same stylesheet finds it
-                // already written instead of rewriting it.
-                BundleFile {
-                    path: "style.css".into(),
-                    media_type: "text/css".into(),
-                    source: crate::storage::bundle::BundleSource::Owned(
-                        b"body{font-family:serif}".to_vec(),
-                    ),
-                },
-            ],
-        };
-        let first = bundles.publish(page(b"<h1>One</h1>", "one")).await.unwrap();
-
-        // The figure was not copied: what went into the blob store for this
-        // bundle is the rendering and the manifest, and nothing else.
-        let written = blobs
-            .list(&format!("documents/{}/bundles/", document.id))
-            .await
-            .unwrap();
-        assert_eq!(
-            written.len(),
-            3,
-            "a bundle writes its rendering, its stylesheet and its manifest -- not the figures in it"
-        );
-
-        // And it was not charged for a second time. The quota counts
-        // `bundle_files`, so what this bundle added to it is its
-        // rendering alone -- not the figure, which is counted once where it
-        // lives, in `document_assets`.
-        assert_eq!(
-            catalog.usage_bytes(None).await.unwrap() - held_after_upload,
-            ("<h1>One</h1>".len() + "body{font-family:serif}".len()) as i64,
-            "a shared figure is counted where it lives and not again here"
-        );
-        // The reader still gets it: the row points at the document's own blob.
-        let files = catalog.bundle_files(first.id).await.unwrap();
-        let shown = files
-            .iter()
-            .find(|file| file.path == "figures/plot.png")
-            .unwrap();
-        assert_eq!(shown.storage_key, figure_key);
-        assert_eq!(shown.media_type, "image/png", "the page knows it is a PNG");
-        assert_eq!(blobs.get(&shown.storage_key).await.unwrap(), figure);
-
-        let mut second = page(b"<h1>Two</h1>", "two");
-        second.expected_current_id = Some(first.id);
-        let second = bundles.publish(second).await.unwrap();
-        assert_ne!(second.id, first.id);
-
-        // The second page differs only in its rendering, so that is all it
-        // wrote: one more HTML object and one more manifest. The stylesheet
-        // it names is the object the first page already wrote.
-        let after_second = blobs
-            .list(&format!("documents/{}/bundles/", document.id))
-            .await
-            .unwrap();
-        assert_eq!(
-            after_second.len(),
-            written.len() + 2,
-            "republishing rewrites the rendering, not the files that did not change"
-        );
-        let mut stylesheets = Vec::new();
-        for bundle in [first.id, second.id] {
-            stylesheets.push(
-                catalog
-                    .bundle_files(bundle)
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .find(|file| file.path == "style.css")
-                    .unwrap()
-                    .storage_key,
-            );
-        }
-        assert_eq!(
-            stylesheets[0], stylesheets[1],
-            "two bundles of the same stylesheet name one object"
-        );
-
-        // Superseding the first page schedules its cleanup. It must take the
-        // rendering it owned and leave the figure it only pointed at.
-        assert!(catalog.finish_bundle_cleanup(first.id).await.unwrap());
-        // Cleanup forgets rows. What the blobs are worth keeping is the
-        // sweeper's question, asked against every reference at the moment it
-        // deletes -- so the figure the document still holds and the
-        // stylesheet the current page still names are not candidates, while
-        // the rendering nothing names any more is.
-        assert_eq!(
-            Maintenance::new(Arc::new(catalog.clone()), blobs.clone())
-                .delete_orphans(500, Duration::days(7))
-                .await
-                .unwrap(),
-            0,
-            "nothing is old enough to sweep yet, however unreferenced it is",
-        );
-        assert!(blobs.exists(&figure_key).await.unwrap());
-        assert!(blobs.exists(&stylesheets[1]).await.unwrap());
-        assert!(
-            blobs.exists(&figure_key).await.unwrap(),
-            "the figure survived the retirement of a page that showed it",
-        );
-        assert!(
-            catalog.bundle_files(first.id).await.unwrap().is_empty(),
-            "a retired page keeps no files: nothing could reach them anyway",
-        );
-        // What it does keep is what it says. A reader who has not taken the
-        // newer version yet is still looking at this page, and commenting on
-        // it means finding their words in the source it was rendered from.
-        let retired = catalog.bundle(first.id).await.unwrap().unwrap();
-        assert_eq!(retired.document_id, document.id);
-        assert!(
-            retired.manifest_key.is_none(),
-            "and releases the manifest, which nothing reads once it is not current",
-        );
-
-        // A retired row is kept only while somebody could still be reading
-        // the page it describes. Nothing is old enough yet.
-        assert_eq!(
-            catalog.forget_retired_bundles(document.id).await.unwrap(),
-            0,
-            "a page retired a moment ago may still have a reader on it"
-        );
-        assert!(catalog.bundle(first.id).await.unwrap().is_some());
-
-        // Older than the frame a reader is signed into, and it goes.
-        sqlx::query!(
-            "UPDATE bundles SET created_at = now() - interval '3 days' WHERE id=$1",
-            first.id,
-        )
-        .execute(catalog.pool())
-        .await
-        .unwrap();
-        assert_eq!(
-            catalog.forget_retired_bundles(document.id).await.unwrap(),
-            1
-        );
-        assert!(catalog.bundle(first.id).await.unwrap().is_none());
-        // Never the page readers are on, however old it is.
-        sqlx::query!(
-            "UPDATE bundles SET created_at = now() - interval '30 days' WHERE id=$1",
-            second.id,
-        )
-        .execute(catalog.pool())
-        .await
-        .unwrap();
-        assert_eq!(
-            catalog.forget_retired_bundles(document.id).await.unwrap(),
-            0,
-            "the current page is not a retired one"
-        );
-        assert!(catalog.bundle(second.id).await.unwrap().is_some());
-        assert_eq!(
-            blobs.get(&figure_key).await.unwrap(),
-            figure,
-            "and is byte-for-byte what was uploaded"
-        );
-        // The page that is still current can still serve both of them.
-        let still = catalog.bundle_files(second.id).await.unwrap();
-        assert!(still
-            .iter()
-            .any(|file| file.storage_key == figure_key && file.path == "figures/plot.png"));
-        assert!(
-            blobs.exists(&stylesheets[1]).await.unwrap(),
-            "the stylesheet the current page names survived its predecessor's cleanup",
-        );
-
-        catalog.close().await;
-    }
 
     /// Marks are one person's, and the trash is a week long.
     ///
     /// The two are tested together because they meet: deleting a starred
     /// project and putting it back has to return it starred, which is the
     /// whole reason the mark survives the `deleting` status and dies only
-    /// with the row.
+    /// with the row. There is no queue row to cancel any more: the trash is
+    /// derived from `documents.deleted_at` plus `storage::maintenance::
+    /// DELETION_GRACE` (§8.6), so putting a project back is just clearing
+    /// the status.
     #[tokio::test]
     #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
     async fn marks_are_private_and_the_trash_is_recoverable() {
@@ -2177,51 +1161,13 @@ mod tests {
             .await
             .unwrap();
         catalog.migrate().await.unwrap();
-        sqlx::query!(
-            "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
-             document_versions,document_assets,replies,annotations,share_links,grants,document_marks,documents,
-             accounts CASCADE",
-        )
-        .execute(catalog.pool())
-        .await
-        .unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        truncate(&catalog).await;
 
-        let owner = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some("marks-owner".into()),
-                handle: "owner".into(),
-                display_name: "Owner".into(),
-                email: None,
-            })
-            .await
-            .unwrap();
-        let other = catalog
-            .create_account(NewAccount {
-                kind: "registered".into(),
-                provider: Some("test".into()),
-                provider_subject: Some("marks-other".into()),
-                handle: "other".into(),
-                display_name: "Other".into(),
-                email: None,
-            })
-            .await
-            .unwrap();
-        let paper = catalog
-            .create_document(NewDocument {
-                slug: "paper".into(),
-                owner_id: owner.id,
-                ownership_mode: "owned".into(),
-                title: "A paper".into(),
-                source_format: "typst".into(),
-                main_path: "main.typ".into(),
-                settings: json!({"version":1}),
-            })
-            .await
-            .unwrap();
+        let owner = seed_account(&catalog, "marks-owner").await;
+        let other = seed_account(&catalog, "marks-other").await;
+        let paper = seed_document(&catalog, owner.id, "marks-paper").await;
 
-        // A star is set, read back, and set again without doubling.
         assert!(catalog
             .set_favorite(owner.id, paper.id, true)
             .await
@@ -2240,9 +1186,6 @@ mod tests {
             mine[0].opened_at.is_none(),
             "starring is not opening: Recent must not fill up with things nobody read",
         );
-
-        // And it is nobody else's. This is the property that makes a mark
-        // safe to write for any document its holder can see.
         assert!(
             catalog
                 .marks_for_documents(other.id, &[paper.id])
@@ -2252,7 +1195,6 @@ mod tests {
             "one person's favourites are invisible to everybody else",
         );
 
-        // Opening joins the same row rather than making a second one.
         catalog.mark_opened(owner.id, paper.id).await.unwrap();
         let both = catalog
             .marks_for_documents(owner.id, &[paper.id])
@@ -2261,8 +1203,6 @@ mod tests {
         assert_eq!(both.len(), 1);
         assert!(both[0].favorited_at.is_some() && both[0].opened_at.is_some());
 
-        // Un-starring something that has been opened keeps the row, because
-        // Recent still needs it.
         assert!(!catalog
             .set_favorite(owner.id, paper.id, false)
             .await
@@ -2274,25 +1214,17 @@ mod tests {
         assert_eq!(after.len(), 1, "the visit outlives the star");
         assert!(after[0].favorited_at.is_none() && after[0].opened_at.is_some());
 
-        // Star it again: this is what has to survive the round trip through
-        // the trash below.
         catalog
             .set_favorite(owner.id, paper.id, true)
             .await
             .unwrap();
 
-        // The two numbers the listing prints, for a whole page at once. This
-        // is what replaced a request per project from the browser.
         let counts = catalog.listing_counts(&[paper.id]).await.unwrap();
-        assert_eq!(
-            counts.len(),
-            1,
-            "a document with no version still has a row"
-        );
+        assert_eq!(counts.len(), 1, "a document with no label still has a row");
         assert_eq!(counts[0].comments, 0);
         assert_eq!(
             counts[0].file_count, None,
-            "a project with no committed version does not claim to hold zero files",
+            "a project with no label does not claim to hold zero files",
         );
         assert!(
             catalog.listing_counts(&[]).await.unwrap().is_empty(),
@@ -2301,20 +1233,6 @@ mod tests {
 
         // Into the trash. The row is still here, and so is the mark.
         assert!(catalog.mark_document_deleting(paper.id).await.unwrap());
-        catalog
-            .enqueue_job(NewJob {
-                kind: "document_deletion".into(),
-                document_id: Some(paper.id),
-                account_id: Some(owner.id),
-                scope_key: format!("document:{}", paper.id),
-                dedupe_key: Some("delete".into()),
-                payload: json!({"document_id": paper.id}),
-                priority: 0,
-                max_attempts: 100,
-                run_after: OffsetDateTime::now_utc() + Duration::days(7),
-            })
-            .await
-            .unwrap();
         let trash = catalog.trashed_documents(owner.id, 50).await.unwrap();
         assert_eq!(trash.len(), 1, "a deleted project is in its owner's trash");
         assert_eq!(trash[0].id, paper.id);
@@ -2349,12 +1267,769 @@ mod tests {
             "a project comes back from the trash exactly as it went in",
         );
 
-        // Restoring what is not in the trash is a no, not a silent yes: this
-        // is the branch that refuses to race a purge that has already been
-        // claimed and is deleting blobs.
         assert!(
             !catalog.restore_document(paper.id).await.unwrap(),
-            "there is nothing to restore once the purge is no longer queued",
+            "there is nothing to restore once it is no longer in the trash",
+        );
+
+        catalog.close().await;
+    }
+
+    /// §5.1: a flush writes exactly one row, and the ambiguous-outcome check
+    /// it relies on -- re-reading `documents.update_sequence` and comparing
+    /// it with the sequence the flush attempted -- refuses a second write of
+    /// the same batch.
+    ///
+    /// This is the fence `Sequencer::resolve_ambiguous_flush` reads when the
+    /// database's response to a flush is lost: if the sequence has already
+    /// advanced past what this flush attempted, the flush committed and must
+    /// not be retried against the same `expected_update_sequence`. What this
+    /// test pins is that refusal, directly, at the row it guards.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_flush_writes_one_row_and_a_duplicate_attempt_writes_no_second_one() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        let tag = new_id().simple().to_string();
+        let account = seed_account(&catalog, &format!("flush-{tag}")).await;
+        let document = seed_document(&catalog, account.id, &format!("flush-{tag}")).await;
+
+        let sequence = catalog
+            .flush_log_row(
+                document.id,
+                FlushRow {
+                    expected_update_sequence: 0,
+                    update_bytes: b"batch-one",
+                    vector: b"vector-one",
+                    source_format: Some("markdown"),
+                    main_path: Some("paper.md"),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(sequence, 1);
+        assert_eq!(
+            catalog.log_sequence(document.id).await.unwrap(),
+            1,
+            "this is exactly what the ambiguous-outcome branch re-reads",
+        );
+
+        // A second attempt at the same flush -- the shape of a retry after a
+        // lost response, before the sequencer has re-read the sequence -- is
+        // refused rather than appended again.
+        let duplicate = catalog
+            .flush_log_row(
+                document.id,
+                FlushRow {
+                    expected_update_sequence: 0,
+                    update_bytes: b"batch-one",
+                    vector: b"vector-one",
+                    source_format: None,
+                    main_path: None,
+                },
+            )
+            .await;
+        assert!(
+            matches!(duplicate, Err(Error::Conflict(_))),
+            "a flush against a sequence that has already advanced must be refused",
+        );
+        assert_eq!(
+            catalog.log_coverage(document.id).await.unwrap().len(),
+            1,
+            "exactly one row was written"
+        );
+
+        // And a flush against the sequence the log is actually at proceeds,
+        // appending a second, distinct row.
+        let second = catalog
+            .flush_log_row(
+                document.id,
+                FlushRow {
+                    expected_update_sequence: 1,
+                    update_bytes: b"batch-two",
+                    vector: b"vector-two",
+                    source_format: None,
+                    main_path: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(second, 2);
+        assert_eq!(catalog.log_coverage(document.id).await.unwrap().len(), 2);
+
+        catalog.close().await;
+    }
+
+    /// §8.4 steps 2 and 4: compaction only ever acts on a cache entry whose
+    /// content actually equals the log vector it claims to cover, and when
+    /// no such entry can be produced, not one row is touched.
+    ///
+    /// `worker.rs::tests::coverage_rejects_*` already pins the pure half of
+    /// this -- a fabricated or truncated snapshot fails the header and
+    /// scratch-import checks. What was missing is the storage-side half:
+    /// that the production entry point for those checks,
+    /// `Sequencer::snapshot_at_log_vector`, refuses to use an entry that
+    /// does not match, and that refusal leaves the rows exactly where they
+    /// were. A genuine mismatch cannot be produced through the ordinary
+    /// ingest path -- gaps are refused at ingest, which is the whole point
+    /// -- so this test constructs a sequencer directly with a log vector
+    /// that does not match what the rows it was handed actually decode to,
+    /// the same way `Sequencer::from_parts` lets the ingest and flush tests
+    /// exercise the sequencer without a real admission.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_compaction_entry_that_does_not_cover_the_log_leaves_every_row_in_place() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        let tag = new_id().simple().to_string();
+        let account = seed_account(&catalog, &format!("coverage-{tag}")).await;
+        let document = seed_document(&catalog, account.id, &format!("coverage-{tag}")).await;
+
+        let doc = crate::document::session::new_doc();
+        doc.set_peer_id(1).unwrap();
+        doc.get_text("body").insert(0, "hello").unwrap();
+        doc.commit();
+        let real_vector = doc.oplog_vv().encode();
+        let update = doc.export(loro::ExportMode::Snapshot).unwrap();
+        let framed = crate::log::frame::encode(&[crate::log::Batch {
+            peer_key: "test-peer".into(),
+            client_seq: 1,
+            bytes: update,
+        }]);
+        catalog
+            .flush_log_row(
+                document.id,
+                FlushRow {
+                    expected_update_sequence: 0,
+                    update_bytes: &framed,
+                    vector: &real_vector,
+                    source_format: Some("markdown"),
+                    main_path: Some("paper.md"),
+                },
+            )
+            .await
+            .unwrap();
+
+        let object_root = tempfile::tempdir().unwrap();
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+        let config = Arc::new(crate::config::Configuration::default());
+        let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
+        let catalog_arc: Arc<dyn LogCatalog> = Arc::new(catalog.clone());
+        // A log vector that does not match the row the sequencer was just
+        // handed: `admit` would never produce this, because it reads the
+        // vector off the row itself, but a corrupted or mismatched entry is
+        // exactly what step 2 has to refuse to use.
+        let sequencer = Sequencer::from_parts(
+            document.id,
+            document.slug.clone(),
+            catalog_arc,
+            blobs,
+            config,
+            budget,
+            "deployment-test-peer".into(),
+            2,
+            loro::VersionVector::default(),
+            0,
+            0,
+            0,
+            loro::VersionVector::default(),
+            false,
+            Arc::new(std::sync::OnceLock::new()),
+        );
+
+        let outcome = sequencer.snapshot_at_log_vector().await.unwrap();
+        assert!(
+            outcome.is_none(),
+            "an entry built from the rows does not match the fabricated log vector, so it is not used",
+        );
+        assert_eq!(
+            catalog.log_rows(document.id, 0, None).await.unwrap().len(),
+            1,
+            "coverage could not be proved, so the row was never deleted",
+        );
+        assert!(
+            catalog.log_base(document.id).await.unwrap().is_none(),
+            "and no base was ever activated over it",
+        );
+
+        catalog.close().await;
+    }
+
+    /// §8.4 step 5 keeps the base a compaction replaced for seven days, so
+    /// a reader already downloading it is not cut off. Nothing looks at that
+    /// row again afterwards: no route reads it, the backup enumerator only
+    /// copies it, and the orphan sweeper treats it as referenced. So if the
+    /// worker never comes back for it, a deployment leaks one stale snapshot
+    /// per compaction and the object store grows without bound.
+    ///
+    /// Driven here the way production drives it (§8.6): the durable state is
+    /// the row, the startup scan finds it, and the worker does the rest. A
+    /// test that called the sweep directly would prove the sweep works and
+    /// leave the missing caller -- which was the actual defect -- untested.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_superseded_compaction_base_is_deleted_once_its_grace_has_passed() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        let tag = new_id().simple().to_string();
+        let account = seed_account(&catalog, &format!("sweep-{tag}")).await;
+        let document = seed_document(&catalog, account.id, &format!("sweep-{tag}")).await;
+
+        let doc = crate::document::session::new_doc();
+        doc.set_peer_id(1).unwrap();
+        doc.get_text("body").insert(0, "alpha").unwrap();
+        doc.commit();
+        let v1 = doc.oplog_vv();
+        let batch1 = doc.export(loro::ExportMode::Snapshot).unwrap();
+        let snapshot_through_one = batch1.clone();
+
+        doc.get_text("body").insert(5, " beta").unwrap();
+        doc.commit();
+        let v2 = doc.oplog_vv();
+        let batch2 = doc
+            .export(loro::ExportMode::Updates {
+                from: std::borrow::Cow::Owned(v1.clone()),
+            })
+            .unwrap();
+        let snapshot_through_two = doc.export(loro::ExportMode::Snapshot).unwrap();
+
+        doc.get_text("body").insert(10, " gamma").unwrap();
+        doc.commit();
+        let v3 = doc.oplog_vv();
+        let batch3 = doc
+            .export(loro::ExportMode::Updates {
+                from: std::borrow::Cow::Owned(v2.clone()),
+            })
+            .unwrap();
+        let snapshot_through_three = doc.export(loro::ExportMode::Snapshot).unwrap();
+
+        let frame_of = |batch: &[u8], seq: i64| {
+            crate::log::frame::encode(&[crate::log::Batch {
+                peer_key: "test-peer".into(),
+                client_seq: seq,
+                bytes: batch.to_vec(),
+            }])
+        };
+        for (expected, bytes, vector) in [
+            (0, frame_of(&batch1, 1), v1.encode()),
+            (1, frame_of(&batch2, 2), v2.encode()),
+            (2, frame_of(&batch3, 3), v3.encode()),
+        ] {
+            catalog
+                .flush_log_row(
+                    document.id,
+                    FlushRow {
+                        expected_update_sequence: expected,
+                        update_bytes: &bytes,
+                        vector: &vector,
+                        source_format: Some("markdown"),
+                        main_path: Some("paper.md"),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let object_root = tempfile::tempdir().unwrap();
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+        let catalog = Arc::new(catalog);
+        let storage = CollaborationStorage::new(catalog.clone(), blobs.clone());
+        // THREE compactions inside one grace window, which is what an
+        // actively edited document does in a day: every base but the last is
+        // superseded, and each one has to be remembered. A single
+        // predecessor column held only the newest of them and silently
+        // forgot the rest, which is the leak this test exists to catch.
+        compact_base(
+            &storage,
+            &catalog,
+            document.id,
+            1,
+            &v1.encode(),
+            &snapshot_through_one,
+        )
+        .await;
+        let first_key = catalog
+            .log_base(document.id)
+            .await
+            .unwrap()
+            .expect("the first base")
+            .snapshot_key;
+        compact_base(
+            &storage,
+            &catalog,
+            document.id,
+            2,
+            &v2.encode(),
+            &snapshot_through_two,
+        )
+        .await;
+        let second_key = catalog
+            .log_base(document.id)
+            .await
+            .unwrap()
+            .expect("the second base")
+            .snapshot_key;
+        compact_base(
+            &storage,
+            &catalog,
+            document.id,
+            3,
+            &v3.encode(),
+            &snapshot_through_three,
+        )
+        .await;
+        let base = catalog
+            .log_base(document.id)
+            .await
+            .unwrap()
+            .expect("the third base");
+
+        let mut scheduled = catalog
+            .superseded_base_keys(document.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>();
+        scheduled.sort();
+        let mut expected = vec![first_key.clone(), second_key.clone()];
+        expected.sort();
+        assert_eq!(
+            scheduled, expected,
+            "both replaced bases are scheduled, not just the newest",
+        );
+        assert!(blobs.exists(&first_key).await.unwrap());
+        assert!(blobs.exists(&second_key).await.unwrap());
+
+        // The grace is seven days and a test is not going to wait for it.
+        sqlx::query!(
+            "UPDATE superseded_bases SET delete_after=now()-interval '1 hour'
+             WHERE document_id=$1",
+            document.id,
+        )
+        .execute(catalog.pool())
+        .await
+        .unwrap();
+
+        let config = Arc::new(crate::config::Configuration::default());
+        let registry = crate::log::Registry::new(
+            catalog.clone(),
+            blobs.clone(),
+            config.clone(),
+            "sweep-test-peer".to_string(),
+        );
+        let (worker, _handle) = crate::storage::worker::Worker::new(
+            catalog.clone(),
+            blobs.clone(),
+            registry,
+            config.clone(),
+        );
+        let running = tokio::spawn(worker.run());
+
+        let mut swept = false;
+        for _ in 0..100 {
+            if !blobs.exists(&first_key).await.unwrap() && !blobs.exists(&second_key).await.unwrap()
+            {
+                swept = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        running.abort();
+        assert!(
+            swept,
+            "a superseded base is still in the object store: first={} second={}",
+            blobs.exists(&first_key).await.unwrap(),
+            blobs.exists(&second_key).await.unwrap(),
+        );
+        assert!(
+            catalog
+                .superseded_base_keys(document.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "no row still names bytes that are gone",
+        );
+        assert!(
+            blobs.exists(&base.snapshot_key).await.unwrap(),
+            "and the live base was not swept with it",
+        );
+
+        catalog.close().await;
+    }
+
+    /// §6.2: a join from a vector the log has entirely outrun, from one that
+    /// covers the compaction base and nothing after it, and from one that
+    /// covers everything but the newest row, each receive what step 3
+    /// through 5 says -- and none of the three builds a cache, because
+    /// `Sequencer::join` never touches one.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_join_receives_what_its_vector_does_not_cover_and_builds_no_cache() {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        let tag = new_id().simple().to_string();
+        let account = seed_account(&catalog, &format!("join-{tag}")).await;
+        let document = seed_document(&catalog, account.id, &format!("join-{tag}")).await;
+
+        let doc = crate::document::session::new_doc();
+        doc.set_peer_id(1).unwrap();
+        doc.get_text("body").insert(0, "alpha").unwrap();
+        doc.commit();
+        let v1 = doc.oplog_vv();
+        let batch1 = doc.export(loro::ExportMode::Snapshot).unwrap();
+
+        doc.get_text("body").insert(5, " beta").unwrap();
+        doc.commit();
+        let v2 = doc.oplog_vv();
+        let batch2 = doc
+            .export(loro::ExportMode::Updates {
+                from: std::borrow::Cow::Owned(v1.clone()),
+            })
+            .unwrap();
+        // Captured now, before the third edit: this is the full state
+        // through row 2, which is what the compaction base below claims to
+        // cover.
+        let snapshot_through_two = doc.export(loro::ExportMode::Snapshot).unwrap();
+
+        doc.get_text("body").insert(10, " gamma").unwrap();
+        doc.commit();
+        let v3 = doc.oplog_vv();
+        let batch3 = doc
+            .export(loro::ExportMode::Updates {
+                from: std::borrow::Cow::Owned(v2.clone()),
+            })
+            .unwrap();
+
+        let frame_of = |batch: &[u8], seq: i64| {
+            crate::log::frame::encode(&[crate::log::Batch {
+                peer_key: "test-peer".into(),
+                client_seq: seq,
+                bytes: batch.to_vec(),
+            }])
+        };
+        let row1 = frame_of(&batch1, 1);
+        let row2 = frame_of(&batch2, 2);
+        let row3 = frame_of(&batch3, 3);
+        catalog
+            .flush_log_row(
+                document.id,
+                FlushRow {
+                    expected_update_sequence: 0,
+                    update_bytes: &row1,
+                    vector: &v1.encode(),
+                    source_format: Some("markdown"),
+                    main_path: Some("paper.md"),
+                },
+            )
+            .await
+            .unwrap();
+        catalog
+            .flush_log_row(
+                document.id,
+                FlushRow {
+                    expected_update_sequence: 1,
+                    update_bytes: &row2,
+                    vector: &v2.encode(),
+                    source_format: None,
+                    main_path: None,
+                },
+            )
+            .await
+            .unwrap();
+        catalog
+            .flush_log_row(
+                document.id,
+                FlushRow {
+                    expected_update_sequence: 2,
+                    update_bytes: &row3,
+                    vector: &v3.encode(),
+                    source_format: None,
+                    main_path: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let object_root = tempfile::tempdir().unwrap();
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+        compact_base(
+            &CollaborationStorage::new(Arc::new(catalog.clone()), blobs.clone()),
+            &catalog,
+            document.id,
+            2,
+            &v2.encode(),
+            &snapshot_through_two,
+        )
+        .await;
+        // Only row 3 remains; rows 1 and 2 are folded into the base.
+        assert_eq!(
+            catalog.log_rows(document.id, 0, None).await.unwrap().len(),
+            1
+        );
+
+        let config = Arc::new(crate::config::Configuration::default());
+        let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
+        let sequencer = Sequencer::admit(
+            document.id,
+            document.slug.clone(),
+            Arc::new(catalog.clone()),
+            blobs,
+            config,
+            budget,
+            "deployment-test-peer".into(),
+            Arc::new(std::sync::OnceLock::new()),
+        )
+        .await
+        .unwrap();
+
+        let (sender, _receiver) = Sender::channel(16, 1 << 20, None, None);
+
+        // An empty vector: the client covers neither the base nor the row
+        // after it, so the reply carries the base by reference and every row
+        // behind it -- here, the single remaining row.
+        let from_empty = sequencer
+            .join(1, Role::Editor, "peer-empty", sender.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!(from_empty.vector, v3.encode());
+        assert_eq!(
+            from_empty.base.as_deref(),
+            Some(snapshot_through_two.as_slice())
+        );
+        assert_eq!(from_empty.batches, vec![batch3.clone()]);
+
+        // A vector covering exactly the base: the base is covered, so no
+        // base is sent, and the reply is the row after it -- `doc-rows`.
+        let base_vector = v2.encode();
+        let from_base = sequencer
+            .join(
+                2,
+                Role::Editor,
+                "peer-base",
+                sender.clone(),
+                Some(&base_vector),
+            )
+            .await
+            .unwrap();
+        assert!(from_base.base.is_none());
+        assert_eq!(from_base.batches, vec![batch3.clone()]);
+        assert!(
+            from_base.from_rows,
+            "some rows are uncovered while the base is: doc-rows"
+        );
+
+        // A vector covering everything: nothing is sent but the head vector,
+        // and the reply carries neither a base nor rows.
+        let head_vector = v3.encode();
+        let from_head = sequencer
+            .join(3, Role::Editor, "peer-head", sender, Some(&head_vector))
+            .await
+            .unwrap();
+        assert!(from_head.base.is_none());
+        assert!(from_head.batches.is_empty());
+        assert!(!from_head.from_rows);
+
+        // None of the three joins built a cache: `Sequencer::join` answers
+        // entirely from `log_coverage` and `log_rows`, never from a decoded
+        // document (§6.2's own text: "neither step needs a document").
+        assert!(!sequencer.is_warm().await, "a join must not build a cache");
+
+        catalog.close().await;
+    }
+
+    /// A command that implements a "restore to this text" kind of source
+    /// edit for the purpose of the test below: setting the document's body
+    /// to a target string, idempotently. Reapplying it once the body already
+    /// reads as `target` is a genuine no-op edit -- `Head::prepare` exports
+    /// nothing from an unchanged fork -- which is what makes the retry in
+    /// the test below a real retry rather than a second, different write.
+    struct SetBodyLabel {
+        document_id: uuid::Uuid,
+        catalog: Arc<PostgresCatalog>,
+        request_id: uuid::Uuid,
+        target: String,
+    }
+
+    impl Command for SetBodyLabel {
+        type Output = LabelRecord;
+
+        fn name(&self) -> &'static str {
+            "test-set-body-label"
+        }
+
+        fn replay(
+            &mut self,
+        ) -> BoxFuture<'_, std::result::Result<Option<Self::Output>, CommandError>> {
+            Box::pin(async move {
+                self.catalog
+                    .label_by_request(self.document_id, self.request_id)
+                    .await
+                    .map_err(CommandError::from)
+            })
+        }
+
+        fn evaluate(
+            &mut self,
+            head: &Head<'_>,
+        ) -> std::result::Result<Option<PreparedSource>, CommandError> {
+            let target = self.target.clone();
+            head.prepare(1, move |doc| {
+                let text = doc.get_text("body");
+                if text.to_string() != target {
+                    let existing_len = text.to_string().chars().count();
+                    if existing_len > 0 {
+                        text.delete(0, existing_len)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    text.insert(0, &target).map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            })
+            .map_err(CommandError::Conflict)
+        }
+
+        fn transact<'a>(
+            &'a mut self,
+            tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+            evidence: &'a Evidence,
+        ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
+            Box::pin(async move {
+                let frontier = evidence
+                    .after_frontier
+                    .clone()
+                    .unwrap_or_else(|| evidence.before_frontier.clone());
+                let new_label = NewLabel {
+                    id: new_id(),
+                    document_id: self.document_id,
+                    source_sequence: evidence.source_sequence,
+                    vector: evidence.vector.clone(),
+                    frontier,
+                    tree_digest: None,
+                    label: None,
+                    reason: "test-set-body-label".into(),
+                    request_id: Some(self.request_id),
+                    author_account_id: None,
+                    author_label: "Test".into(),
+                };
+                self.catalog
+                    .insert_label(tx, &new_label)
+                    .await
+                    .map_err(CommandError::from)
+            })
+        }
+    }
+
+    /// §7.2, §7.3: a source-producing command records before and after
+    /// evidence that match the bytes of the row its flush wrote, and a retry
+    /// carrying the same `request_id` returns the same label rather than
+    /// writing a second row.
+    ///
+    /// This exercises the real path -- `Sequencer::command`, the same
+    /// method a comment, a restore or an agent patch goes through -- rather
+    /// than calling `insert_label` on its own, because the claim is about
+    /// what the sequencer assembles around a command, not about the label
+    /// table in isolation.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn a_source_producing_command_records_matching_evidence_and_a_retry_returns_the_same_label(
+    ) {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL")
+            .expect("set LIBREPAPER_TEST_POSTGRES_URL to run the PostgreSQL contract");
+        let catalog = PostgresCatalog::connect(PostgresOptions::new(url))
+            .await
+            .unwrap();
+        catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
+        let tag = new_id().simple().to_string();
+        let account = seed_account(&catalog, &format!("command-{tag}")).await;
+        let document = seed_document(&catalog, account.id, &format!("command-{tag}")).await;
+
+        let object_root = tempfile::tempdir().unwrap();
+        let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
+        let config = Arc::new(crate::config::Configuration::default());
+        let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
+        let sequencer = Sequencer::admit(
+            document.id,
+            document.slug.clone(),
+            Arc::new(catalog.clone()),
+            blobs,
+            config,
+            budget,
+            "deployment-test-peer".into(),
+            Arc::new(std::sync::OnceLock::new()),
+        )
+        .await
+        .unwrap();
+
+        let authority = Authority {
+            principal_key: account.id.to_string(),
+            account_id: Some(account.id),
+            link_hash: None,
+        };
+        let request_id = uuid::Uuid::new_v4();
+        let mut command = SetBodyLabel {
+            document_id: document.id,
+            catalog: Arc::new(catalog.clone()),
+            request_id,
+            target: "hello world".into(),
+        };
+
+        let first = sequencer.command(&authority, &mut command).await.unwrap();
+        assert_eq!(first.request_id, Some(request_id));
+        assert_eq!(first.reason, "test-set-body-label");
+
+        let rows = catalog.log_coverage(document.id).await.unwrap();
+        assert_eq!(rows.len(), 1, "the command's edit flushed exactly one row");
+        assert_eq!(
+            rows[0].vector, first.vector,
+            "the label's evidence names the same state the row it was written beside covers",
+        );
+        let written = catalog.log_rows(document.id, 0, None).await.unwrap();
+        assert_eq!(written.len(), 1);
+        let check = loro::LoroDoc::new();
+        for batch in crate::log::frame::decode(&written[0].update_bytes).unwrap() {
+            check.import(&batch.bytes).unwrap();
+        }
+        assert_eq!(
+            check.get_text("body").to_string(),
+            "hello world",
+            "the row's bytes hold exactly the edit the command made",
+        );
+
+        // A retry with the same request_id and the same target text is a
+        // genuine no-op against the now-current head: the edit produces no
+        // delta, so no second row is written, and the label lookup by
+        // request_id returns the first answer.
+        let second = sequencer.command(&authority, &mut command).await.unwrap();
+        assert_eq!(
+            second.id, first.id,
+            "a retry by request_id returns the same label"
+        );
+        assert_eq!(second.sequence, first.sequence);
+        assert_eq!(
+            catalog.log_coverage(document.id).await.unwrap().len(),
+            1,
+            "an idempotent retry writes no second row",
         );
 
         catalog.close().await;
@@ -2365,7 +2040,7 @@ mod tests {
 mod benchmarks;
 pub use access::{AccessRole, GrantRecord, ShareLinkRecord};
 pub use annotations::{
-    attachment_from_record, original_anchor_from_record, presentation_from_record,
-    AnnotationBatchCommand, AnnotationBatchUpsert, AnnotationRecord, AnnotationRevisionAudit,
-    MutationAuthorization, NewAnnotation, NewReply, ReplyRecord,
+    original_anchor_from_record, presentation_from_record, AnnotationBatchCommand,
+    AnnotationBatchUpsert, AnnotationRecord, MutationAuthorization, NewAnnotation, NewReply,
+    ReplyRecord,
 };

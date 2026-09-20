@@ -421,7 +421,18 @@ async function run() {
   // must come back in the order the document puts them in. (They replaced the
   // three sentences of a fixture this suite no longer compiles, whose middle
   // sentence was the one that wrapped; the ordering here is the tutorial's.)
-  await tab.eval("window.paint([]); await new Promise(r => setTimeout(r, 80)); await window.sendPdf('/pdf/tutorial')");
+  //
+  // window.paint([]) mutates the still-showing document, which arms agent.js's
+  // own 250ms republish debounce (see the `pending = setTimeout(..., 250)` in
+  // watch()'s republish). Switching PDFs before that debounce fires races it:
+  // sendPdf empties window.seen.ready so window.text() can tell a fresh
+  // reading from a stale one, but the leftover timer from the paint() mutation
+  // still fires afterwards and force-publishes whatever the DOM showed at that
+  // moment into the now-empty array -- the *previous* PDF's text, stable
+  // enough for settle() to accept before the new PDF's own render ever lands.
+  // Outwaiting the debounce first removes that leftover publish instead of
+  // outrunning it.
+  await tab.eval("window.paint([]); await new Promise(r => setTimeout(r, 300)); await window.sendPdf('/pdf/tutorial')");
   await settle(tab);
   const positions = await tab.eval(`
     return [

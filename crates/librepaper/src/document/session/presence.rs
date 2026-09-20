@@ -3,7 +3,7 @@
 //! Each peer's presence is a LoroValue held in the store under a string key
 //! (the peer ID). Entries are considered expired 30 seconds after last update;
 //! call `remove_outdated` to purge them and notify subscribers. This is
-//! transient metadata — not stored with the document, not replayed to new
+//! transient metadata -- not stored with the document, not replayed to new
 //! arrivals, only broadcast to live peers.
 
 use loro::awareness::{EphemeralStore, EphemeralSubscriber, LocalEphemeralCallback};

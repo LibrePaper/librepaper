@@ -79,15 +79,15 @@ a build. Operators who do not want it can host a mirror.
 
 The page can reach the LibrePaper app on your own computer, over loopback, to
 build a document with the tools installed there. Asking is not free: a request
-to loopback is what makes a browser put up its local-network permission —
-Firefox's wording is that the site wants access to other apps and services —
+to loopback is what makes a browser put up its local-network permission --
+Firefox's wording is that the site wants access to other apps and services --
 and a prompt like that, arriving at the moment a document opens, reads as an
 accusation.
 
 So the page never looks on its own. Opening a document reaches nothing, even
 one this browser has already paired with the app. The first loopback request
 is made by a gesture that needs it: turning on local execution, choosing a
-local build tool, a Zotero lookup, or opening the Local app settings — the one
+local build tool, a Zotero lookup, or opening the Local app settings -- the one
 pane that exists to show the companion. The Build settings pane does not look
 when it opens: most of what it offers is a choice between engines in this
 browser, and asking which tools are installed on your computer is not the price

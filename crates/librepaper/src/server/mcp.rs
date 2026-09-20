@@ -551,7 +551,7 @@ impl Server {
         } else {
             let room = self
                 .rooms
-                .try_get(slug)
+                .get(slug)
                 .await
                 .map_err(|e| Failure::new("unavailable", e.to_string()))?;
             let author = self.mcp_author(headers, arrival, who, actor);
@@ -624,7 +624,7 @@ impl Server {
                 Some("source" | "context" | "section")
             ) && query["revision"]
                 .as_str()
-                .is_some_and(|revision| revision != view.snapshot.source_revision)
+                .is_some_and(|revision| revision != view.snapshot.tree_digest)
             {
                 return Err(Failure::new(
                     "conflict",
@@ -665,7 +665,7 @@ impl Server {
                 let receipt = self.load_render_receipt(slug, actor, who, id).await?;
                 if query["revision"]
                     .as_str()
-                    .is_some_and(|revision| revision != receipt.source_revision)
+                    .is_some_and(|revision| revision != receipt.tree_digest)
                 {
                     return Err(Failure::new(
                         "conflict",
@@ -673,7 +673,7 @@ impl Server {
                     ));
                 }
                 let items = if kind == "diagnostics" {
-                    receipt.diagnostics.as_array().into_iter().flatten().map(|d|json!({"diagnostic":d,"source_revision":receipt.source_revision,"candidate_id":id,"provenance":receipt.provenance})).collect::<Vec<_>>()
+                    receipt.diagnostics.as_array().into_iter().flatten().map(|d|json!({"diagnostic":d,"tree_digest":receipt.tree_digest,"candidate_id":id,"provenance":receipt.provenance})).collect::<Vec<_>>()
                 } else {
                     vec![json!(receipt)]
                 };
@@ -698,7 +698,7 @@ impl Server {
                     .keys()
                     .chain(current.keys())
                     .collect::<std::collections::BTreeSet<_>>();
-                let changes=paths.into_iter().filter(|path|old.get(*path)!=current.get(*path)).map(|path|json!({"path":path,"before":old.get(path),"after":current.get(path),"source_revision_before":before.snapshot.source_revision,"source_revision_after":view.snapshot.source_revision})).collect::<Vec<_>>();
+                let changes=paths.into_iter().filter(|path|old.get(*path)!=current.get(*path)).map(|path|json!({"path":path,"before":old.get(path),"after":current.get(path),"tree_digest_before":before.snapshot.tree_digest,"tree_digest_after":view.snapshot.tree_digest})).collect::<Vec<_>>();
                 view.snapshot.tree[format!("changes:{previous}")] = json!(changes);
             }
         }
@@ -763,8 +763,8 @@ fn decorate_ranges(value: &mut Value, snapshot: &QuerySnapshot, view_id: &str, k
             object.get("start").and_then(Value::as_u64),
             object.get("end").and_then(Value::as_u64),
         ) {
-            if object.get("source_revision").and_then(Value::as_str)
-                == Some(snapshot.source_revision.as_str())
+            if object.get("tree_digest").and_then(Value::as_str)
+                == Some(snapshot.tree_digest.as_str())
                 && snapshot
                     .texts
                     .get(path)
@@ -876,14 +876,29 @@ mod selection_tests {
 
     fn view_of(path: &str, text: &str) -> View {
         let mut snapshot = QuerySnapshot {
-            source_revision: "rev".into(),
+            tree_digest: "rev".into(),
             main: path.into(),
             ..QuerySnapshot::default()
         };
         snapshot.texts.insert(path.into(), text.into());
+        // A real `librepaper_document_core::Projection`, not the shape the
+        // deleted `history::Tree` had: `kind` is `text` or `asset`, the
+        // content digest is `digest` rather than `sha`, and the length is
+        // `bytes`. Written out rather than projected from a `LoroDoc`
+        // because what is under test is the anchoring, and a hand-made view
+        // keeps the failure about that.
         snapshot.tree = json!({
             "main": path,
-            "files": {path: {"kind":"file","id":"f1","sha":"sha","size":text.len()}}
+            "main_id": "f1",
+            "files": {
+                path: {
+                    "kind": "text",
+                    "id": "f1",
+                    "digest": hex::encode(<sha2::Sha256 as sha2::Digest>::digest(text.as_bytes())),
+                    "bytes": text.len(),
+                }
+            },
+            "diagnostics": [],
         });
         View {
             snapshot,

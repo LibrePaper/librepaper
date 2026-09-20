@@ -6,7 +6,7 @@
   // opens a version.
   let MergeEditor = $state(null);
   let mergeFailed = $state(false);
-  let { source, canEdit = false, onrestore } = $props();
+  let { source, canEdit = false, onrestore, ondownload, downloading = "", downloadProblem = "" } = $props();
   const result = $derived(source.result);
   const path = $derived(source.path);
   const oldText = $derived(result?.oldTree.texts?.[path]);
@@ -64,10 +64,24 @@
       <span class="history-source-actions">
         <button type="button" class="btn btn-sm" onclick={() => source.select()}>Refresh comparison</button>
         {#if canEdit && source.selected}
+          <!-- A version's archive is produced on request rather than kept
+               ready (§8.5), so the button says what it is waiting on rather
+               than sitting quiet or, worse, looking done before the file
+               exists. Editor-only, like the rest of this panel: a reader or
+               commenter link cannot reach the history routes this asks. -->
+          <button type="button" class="btn btn-sm" disabled={downloading === source.selected}
+                  onclick={() => ondownload?.(source.selected)}>
+            {downloading === source.selected ? "Preparing download…" : "Download this version"}
+          </button>
+        {/if}
+        {#if canEdit && source.selected}
           <button type="button" class="btn btn-sm preset-tonal-primary" onclick={() => onrestore?.(source.selected)}>Restore this version</button>
         {/if}
       </span>
     </div>
+    {#if downloadProblem}
+      <p class="text-error-500 text-sm" role="alert">{downloadProblem}</p>
+    {/if}
     {#if binary}
       <p role="status">{BINARY_NOTE[status]}</p>
     {:else if oldText === undefined && newText === undefined}

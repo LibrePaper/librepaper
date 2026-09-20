@@ -1,8 +1,15 @@
 // A month of the document's life, and the versions on one of its days.
 //
 // The version panel asks two questions. *Which day?* -- a month laid out as a
-// grid, each cell knowing how many versions landed on it and whether anybody
-// wrote on it at all. *Which version?* -- that day's versions, in order.
+// grid, each cell knowing how many versions landed on it. *Which version?* --
+// that day's versions, in order.
+//
+// A day used to answer a third thing: whether anybody wrote on it at all,
+// even when nothing was saved. That came from `/activity`, a row per minute
+// a write landed, which the server-is-a-log cutover deleted along with the
+// table behind it (SPEC-server-is-a-log.md §8.3). There is no longer a
+// signal for a day worked on and not saved from, so a day is now exactly
+// what its versions say it is -- something, or nothing.
 //
 // The second answer has to survive the volume. Nothing writes a version on a
 // timer any more, but the command line asks for one on every save, so a day
@@ -17,13 +24,14 @@
 //
 // A different person at the keyboard would be the third such boundary, and it
 // is deliberately not one, because nothing in the history can tell us. A
-// checkpoint's author is whoever sent the most recent update before it was
-// written -- `session.by` is overwritten by every edit -- so on a document two
-// people are writing at once it names whoever typed last, while the checkpoint
-// holds both their work. `document_activity.peer` is written as the empty
-// string on every path. Splitting on either would cut a collaborative
-// afternoon into runs that reflect typing order and credit each of them to one
-// person.
+// label does carry a real author (`document_labels.author_label`, the `by`
+// field on the wire): it is whoever asked for that label. What it is not is
+// the author of the work under it. The log below is opaque source bytes the
+// server never attributes -- it reads only their headers -- so on a document
+// two people are writing at once, one of them asking for a label credits its
+// whole span to that one person. Splitting runs on `by` would cut a
+// collaborative afternoon into runs that reflect who happened to press the
+// button.
 //
 // None of those is a time bucket, and the depth stops here on purpose. A tree
 // of finer and finer intervals answers "when" more precisely at every level,
@@ -37,8 +45,8 @@
 // minute a timestamp is at once the reader's own timezone is applied -- is
 // the part worth checking without a browser.
 
-import { level, minutesIn, withWork } from "./activity.js";
-import { checkpointOrder } from "./history.js";
+import { level, minutesIn } from "./activity.js";
+import { labelOrder } from "./history.js";
 import { day as isoDay } from "./dates.js";
 
 /// The month a day belongs to, which is what the grid is keyed by.
@@ -63,38 +71,29 @@ export function shiftDay(day, days) {
   return at.toISOString().slice(0, 10);
 }
 
-/// One entry per day the document has anything on: how many versions landed
-/// on it, whether any of them was given a name, the versions themselves
-/// oldest first, and whether anybody wrote on it at all.
+/// One entry per day the document has a version on: how many landed on it,
+/// whether any of them was given a name, and the versions themselves oldest
+/// first.
 ///
 /// The shading is the version count, because that is what a reader is looking
-/// for when they open a history. `worked` is the other thing a day can be --
-/// a day somebody wrote on and nothing was saved from -- and it is kept apart
-/// rather than added in, so a shaded cell always means versions.
+/// for when they open a history.
 ///
 /// A day is the reader's own day, because a history is read as "Tuesday" and
 /// Tuesday is where the reader is.
-export function versionDays(checkpoints, rows, timeZone) {
+export function versionDays(labels, timeZone) {
   const byDay = new Map();
   const at = (day) => {
-    const found = byDay.get(day) || { day, count: 0, named: false, worked: false, changes: 0, points: [] };
+    const found = byDay.get(day) || { day, count: 0, named: false, points: [] };
     byDay.set(day, found);
     return found;
   };
-  for (const point of [...(checkpoints || [])].sort(checkpointOrder)) {
+  for (const point of [...(labels || [])].sort(labelOrder)) {
     const day = isoDay(point.at, timeZone);
     if (!day) continue;
     const found = at(day);
     found.count += 1;
     found.named = found.named || Boolean(point.label);
     found.points.push(point);
-  }
-  for (const row of withWork(rows)) {
-    const day = isoDay(row.at, timeZone);
-    if (!day) continue;
-    const found = at(day);
-    found.worked = true;
-    found.changes += row.changes;
   }
   return byDay;
 }
@@ -129,8 +128,6 @@ export function monthGrid(month, byDay, { today = "" } = {}) {
       inMonth: monthOf(at) === month,
       count: found?.count || 0,
       named: Boolean(found?.named),
-      worked: Boolean(found?.worked),
-      changes: found?.changes || 0,
       level: level(found?.count || 0, most),
       today: at === today,
     });
@@ -152,9 +149,9 @@ export function monthSpan(byDay, today) {
 
 /// The versions saved on one day, oldest first, each placed on the day's own
 /// axis: `minute` is minutes from midnight, in the reader's own timezone.
-export function dayVersions(checkpoints, day, timeZone) {
-  return [...(checkpoints || [])]
-    .sort(checkpointOrder)
+export function dayVersions(labels, day, timeZone) {
+  return [...(labels || [])]
+    .sort(labelOrder)
     .filter((point) => isoDay(point.at, timeZone) === day)
     .map((point) => ({ point, minute: Math.max(0, minutesIn(point.at, timeZone)) }));
 }
@@ -171,7 +168,7 @@ export function dayVersions(checkpoints, day, timeZone) {
 const QUIET = new Set(["sync", "quiet", "left", "automatic"]);
 
 /// Whether a version is one somebody asked for. A name is enough on its own:
-/// giving a checkpoint a name is the most deliberate thing anybody does to
+/// giving a label a name is the most deliberate thing anybody does to
 /// one, whatever the document's own reason for taking it was.
 export const deliberate = (point) => Boolean(point?.label) || !QUIET.has(point?.why);
 
@@ -221,12 +218,12 @@ const MOST_IN_A_RUN = 25;
 /// versions one may stand for. All three are the caller's: they are claims
 /// about how people work, not facts about the data.
 export function dayEntries(
-  checkpoints,
+  labels,
   day,
   timeZone,
   { gathered = WORTH_GATHERING, pause = RUN_PAUSE_MINUTES, most = MOST_IN_A_RUN } = {},
 ) {
-  const versions = dayVersions(checkpoints, day, timeZone);
+  const versions = dayVersions(labels, day, timeZone);
   // A day that fits is a day that is listed. Coarsening exists to make a day
   // of three hundred versions readable; applied to a day of three it gathers
   // them into one entry that opens into three, which saves nobody a thing and

@@ -1,6 +1,6 @@
-// How a moment in a document's past is spelled, when it is not a checkpoint.
+// How a moment in a document's past is spelled, when it is not a label.
 //
-// There are two kinds and one string holds either. A checkpoint id names a
+// There are two kinds and one string holds either. A label id names a
 // version somebody asked for. A `frontier:` anchor names a position in the
 // editing history -- every state the document has ever been in, including the
 // ones nobody saved -- and it is what a comment made on the live draft is

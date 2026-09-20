@@ -117,17 +117,19 @@ impl PostgresCatalog {
     }
 
     /// What the listing says about each project besides its name: how many
-    /// comments it has collected, and how many files it holds.
+    /// comments it has collected, and how many versions it holds.
     ///
     /// One query per fact for a whole page of projects, rather than the
     /// request per project the landing page used to make. The comments are an
-    /// aggregate over `annotations`; the file count is read off whichever
-    /// version each document currently points at, where it was written down
-    /// when that version was committed.
+    /// aggregate over `annotations`, and so, now, is `file_count`: there is
+    /// no per-version row to read a stored count off any more (§8.3 dropped
+    /// `document_versions`), a named moment is a `document_labels` row
+    /// (`storage/postgres/labels.rs`), and this field is that count.
     ///
-    /// A document whose current version predates `file_count` yields `None`,
-    /// and one with no version yet yields no row at all. Both are "not known"
-    /// rather than zero, and the listing draws them the same way.
+    /// A document with no labels yields `None` rather than zero: the `LEFT
+    /// JOIN` produces no row for it, same as a document with no comments
+    /// produces no row in the comments aggregate, and the listing draws both
+    /// absences the same way.
     pub async fn listing_counts(&self, document_ids: &[Uuid]) -> Result<Vec<CountRecord>> {
         if document_ids.is_empty() {
             return Ok(Vec::new());
@@ -137,9 +139,14 @@ impl PostgresCatalog {
             r#"SELECT d.id AS "document_id!",
                       COALESCE(a.comments, 0) AS "comments!",
                       COALESCE(a.open, 0) AS "open!",
-                      v.file_count
+                      l.file_count
                FROM documents d
-               LEFT JOIN document_versions v ON v.id = d.current_version_id
+               LEFT JOIN (
+                   SELECT document_id, count(*)::int4 AS file_count
+                   FROM document_labels
+                   WHERE document_id = ANY($1)
+                   GROUP BY document_id
+               ) l ON l.document_id = d.id
                LEFT JOIN (
                    SELECT document_id,
                           count(*) AS comments,

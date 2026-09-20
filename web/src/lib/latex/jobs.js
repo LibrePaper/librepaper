@@ -19,7 +19,7 @@
 import { sha256HexOfText } from "../digest.js";
 
 /// Builds a Job from what the controller already knows: `inputs` is the
-/// source/asset digest (`tree-digest.js`'s `snapshotDigest`, computed by the
+/// source/asset digest (`projection-digest.js`'s `snapshotDigest`, computed by the
 /// caller so this module stays synchronous over its own concern), `engine`
 /// and `release` are already resolved to concrete values -- never `"auto"`
 /// or `null` -- because the snapshot identity must be the same for two

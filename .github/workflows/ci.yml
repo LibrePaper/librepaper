@@ -34,6 +34,72 @@ jobs:
           texlive-bibtex-extra texlive-xetex biber
       - run: make test
 
+  # `.sqlx/` is the compile-time SQL cache: it is what lets an offline build
+  # verify every query against `crates/librepaper/migrations/postgres/
+  # 0001_catalog.sql` without a live database, and it goes stale the moment a
+  # query or that migration changes. This job is the thing that would
+  # otherwise let a stale cache merge: none of the jobs above build with
+  # SQLX_OFFLINE=false, so none of them would notice.
+  sqlx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install sqlx-cli --locked --no-default-features --features postgres
+      # make sqlx-check starts its own disposable PostgreSQL with
+      # `postgres-dev` (Docker is preinstalled on this runner) and fails if
+      # `cargo sqlx prepare --check` finds a query the checked-in cache does
+      # not cover.
+      - run: make sqlx-check
+
+  # SPEC-server-is-a-log.md §14.2: the idempotency and recovery contracts
+  # (the single-writer lease, compaction coverage proof, the two
+  # deployment-shaped gates) live only in these PostgreSQL-gated cases, which
+  # `make test` excludes on purpose because they TRUNCATE whatever database
+  # they are pointed at. --test-threads=1 is mandatory: several of them count
+  # every commit PostgreSQL records, and a concurrent case would look like a
+  # regression.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: librepaper-local
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGPASSWORD: librepaper-local
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y --no-install-recommends postgresql-client
+      # Each test file truncates the tables it uses, so it wants a database
+      # nobody else is writing to at the same time; a throwaway database per
+      # invocation below keeps that true without serializing the whole job
+      # into one process.
+      - run: |
+          for db in lp_lib lp_gates; do
+            createdb -h 127.0.0.1 -U postgres "$db"
+          done
+      # The recovery spike of 14.1 lives in `src/log/recovery.rs`, inside the
+      # library, and not in `tests/`: every one of its items is a claim about
+      # `Sequencer`'s internals, and an external test file cannot build a
+      # `Sequencer` at all. So it runs here, with the rest of `--lib`.
+      - run: >-
+          LIBREPAPER_TEST_POSTGRES_URL=postgresql://postgres:librepaper-local@127.0.0.1:5432/lp_lib
+          cargo test -p librepaper --lib -- --ignored --test-threads=1
+      - run: >-
+          LIBREPAPER_TEST_POSTGRES_URL=postgresql://postgres:librepaper-local@127.0.0.1:5432/lp_gates
+          cargo test -p librepaper --test deployment_gates -- --ignored --test-threads=1
+
   quarto-toolchains:
     runs-on: ubuntu-latest
     steps:

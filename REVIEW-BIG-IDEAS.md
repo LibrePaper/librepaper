@@ -7,10 +7,13 @@ lose functionality and edge-case guarantees in exchange for large structural
 gains.*
 
 Starting point: 82K lines of Rust, 35K of browser code, 20K of browser tests,
-989 commits in fifteen days, unreleased. `SPEC-document-architecture.md` is
-partly implemented in the uncommitted diff: fenced single-writer transactions,
-receipts, a source-revision index, commit-before-relay for typing, a lease-based
-command owner per room.
+989 commits in fifteen days, unreleased. At the time of these reviews, the
+document-engine proposal was partly implemented in the uncommitted diff:
+fenced single-writer transactions, receipts, a source-revision index,
+commit-before-relay for typing, and a lease-based command owner per room.
+That proposal has since been retired; [the log architecture](SPEC-server-is-a-log.md)
+records the current design, surviving decisions, and outstanding work. The
+review below preserves its original context; later additions are dated.
 
 ## 1. Shared thesis
 
@@ -280,6 +283,56 @@ removes the CRDT, both Loro integrations, the sync stack, offline
 reconciliation and most of sections 2.1 through 2.5 in one move. It is the
 biggest reduction available and also the clearest change to what LibrePaper
 is. Named here so the decision is explicit, not recommended by either review.
+
+### 2.13 Make compaction affordable as history grows
+
+*Added 2026-09-20, following review of the server-as-log implementation.*
+
+Compaction currently exports a full-history Loro snapshot, imports it into a
+second document to verify coverage, compresses it with zstd, and uploads it.
+A cold cache also requires reconstructing the document first. This reduces
+the number of stored update rows but retains the operation history: a small
+new tail can trigger another rewrite of the document's entire past. The
+dominant cost has not yet been measured.
+
+Start with improvements that preserve the history and recovery contract:
+
+- Measure reconstruction, snapshot export, verification, compression, upload
+  and database activation separately, on representative long-lived documents
+  in release builds. Measure editing latency during compaction as well as
+  total compaction time.
+- Compact a fixed durable prefix in a separate document so export does not
+  hold the live sequencer lock. Budget the additional memory and CPU work;
+  a cloned Loro handle is not an independent document. Coordinate base
+  activation and deletion with readers so a join cannot miss covered rows.
+- Move verification and compression onto bounded blocking workers. This
+  protects request responsiveness; it does not itself reduce total CPU work.
+  Keep coverage verification before deleting any source rows.
+- Trigger compaction according to the new tail's size relative to the base,
+  with a recovery-time limit, instead of repeatedly rewriting a large history
+  after a small fixed number of rows. Ensure threshold-crossing writes and
+  startup recovery actually schedule the work.
+
+If repeated full-history rewrites still dominate, consider immutable history
+segments plus less frequent snapshots for fast loading. Preserve the segments
+needed for historical reads and offline reconciliation. This trades more
+involved recovery, indexing and garbage collection for fewer rewrites; it is
+an alternative to the simplicity of one base plus a tail.
+
+The larger option connects to 2.3: use Loro shallow snapshots to bound active
+history, with older history archived separately if it must remain readable.
+This requires an explicit retention boundary and recovery for offline peers
+older than that boundary, plus a policy for old proposals and comment anchors.
+It is not a transparent replacement for full snapshots. See
+[Loro's shallow snapshot documentation](https://loro.dev/docs/concepts/shallow_snapshots).
+
+Sacrifice: additional background memory and scheduling complexity for isolated
+compaction; more storage machinery for segmented history; or seamless merging
+across arbitrary absences if active history is truncated.
+
+Gain: responsive editing during compaction and less repeated work as a document
+ages. Start with measurements and lock isolation before changing history
+retention; no speedup estimate is justified yet.
 
 ## 3. What it adds up to
 

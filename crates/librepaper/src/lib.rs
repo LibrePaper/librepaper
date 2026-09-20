@@ -28,6 +28,7 @@ pub mod config;
 mod document;
 mod http;
 mod local;
+pub mod log;
 mod private_files;
 pub mod quarto;
 pub mod results;
@@ -50,10 +51,29 @@ pub use room::{annotation, locate};
 // The loopback service takes requests from any page in the browser, and a
 // request there becomes files on the author's own machine.
 pub use local::protocol;
-// The durable layer is reachable from outside so that what it exposes and
-// nothing yet calls -- restore and conversations -- is API in
-// progress rather than dead code to the lint. Drop this line to see the list.
-pub use storage::{bundle, collaboration, maintenance, postgres, source, source_archive};
+// Two pieces of the durable layer, and only the two something outside this
+// crate calls: `source_archive` is what `tools/fuzz/fuzz_targets/archive.rs`
+// encodes and decodes, and `postgres` is the catalogue the deployment tests
+// below stand a server on. Nothing is re-exported here to keep it out of the
+// dead-code lint: a module that was public for that reason once hid an
+// object-store leak for as long as it took somebody to drop the line.
+pub use storage::{postgres, source_archive};
+// What the deployment-shaped tests in `tests/` assemble: a whole server,
+// built from the same types `server::serve` builds it from. Those tests
+// (SPEC-server-is-a-log §14.2) are about the deployment rather than about a
+// document -- losing the writer lease mid-buffer, an idle deployment issuing
+// no queries, and authority revoked mid-buffer over a real socket -- so a
+// hand-made subset of the server would prove nothing about the server.
+// `postgres` and `log` are already public above and beside; these are the
+// rest of what it takes to stand one up and drive it the way a browser or
+// the sharing route actually does: a running `Server` behind a real socket,
+// authenticated the same way a signed-in owner and a share-link guest are.
+pub use auth::{sign_device, GithubApp, Identity, Policy, PROVIDER_GITHUB};
+pub use document::store::Store;
+pub use room::{Room, Rooms};
+pub use server::Server;
+pub use storage::blob::{BlobStore, FsStore};
+pub use storage::worker;
 
 #[cfg(test)]
 mod tests;

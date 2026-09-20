@@ -9,24 +9,24 @@ service on an operator's behalf and hold none of their data.
 
 This page describes what the software does, so that a person using a
 deployment knows what it holds and an operator can write their own notice
-without reading the source. An operator may keep more than this — a reverse
-proxy, a backup system and a hosting provider each have logs of their own —
+without reading the source. An operator may keep more than this -- a reverse
+proxy, a backup system and a hosting provider each have logs of their own --
 and only they can tell you about those.
 
 ## What a deployment stores
 
 | What | Where | Written when |
 | --- | --- | --- |
-| Provider, the provider's identifier for you, handle, display name, and — for a Google account — the verified email address | `accounts` | You sign in for the first time; refreshed on later sign-ins |
+| Provider, the provider's identifier for you, handle, display name, and -- for a Google account -- the verified email address | `accounts` | You sign in for the first time; refreshed on later sign-ins |
 | Preferences, the time the account was created, and the time it was last seen | `accounts` | Continuously |
 | Projects: title, format, owner, timestamps, and every file in them | `documents`, object storage | You upload or create a project |
 | Comments, highlights and suggestions, with their author and the passage they point at | `annotations`, `replies` | Somebody annotates |
-| Checkpoints and the collaborative editing state | `document_versions`, `document_updates` | Continuously while a document is open |
+| Checkpoints and the collaborative editing state | `document_labels`, `document_updates` | Continuously while a document is open |
 | Who a document has been shared with, and the hashed form of each share link | `grants`, `share_links` | The owner shares |
 
 The handle is the account's own to see. A GitHub handle is a login; a Google
 handle is the verified email address the account signed in with, and it is
-shown to nobody — other readers see the display name.
+shown to nobody -- other readers see the display name.
 
 What a deployment does **not** keep: there is no application access log, no
 analytics, no telemetry, and no record of IP addresses. Addresses are used in
@@ -37,11 +37,11 @@ memory to rate-limit requests and are not written down.
 Three cookies, all set by the deployment itself and none for advertising or
 measurement:
 
-- `librepaper_session` — proves who you are. Signed, thirty days, `HttpOnly`,
+- `librepaper_session` -- proves who you are. Signed, thirty days, `HttpOnly`,
   `SameSite`, and `Secure` with the `__Host-` prefix over HTTPS.
-- `librepaper_state` — ties an in-flight sign-in to the browser that started
+- `librepaper_state` -- ties an in-flight sign-in to the browser that started
   it. Lasts the length of the redirect.
-- `librepaper_visitor` — names the browser, so a document uploaded without
+- `librepaper_visitor` -- names the browser, so a document uploaded without
   signing in still belongs to whoever uploaded it.
 
 The browser also keeps, in its own local storage and never on the server:
@@ -79,12 +79,12 @@ what they store. Which ones those are, and where, is theirs to name.
 
 - **Projects** are kept until somebody deletes them, unless the operator set a
   lifetime with `--document-expire-after`. Expiry is measured from the most
-  recent bundle by default, or from creation with
+  recent update by default, or from creation with
   `--document-expire-from created`, and an hourly pass removes what has lapsed.
   See [Retention](./host.html#retention).
 - **Checkpoints** are kept until the project is deleted. Nothing prunes them:
-  one exists only because somebody named a moment, published, restored an
-  earlier version, or left a comment on a passage.
+  one exists only because somebody named a moment, restored an earlier
+  version, accepted a proposal, or committed from the CLI.
 - **Edit history** -- the operation log behind the checkpoints -- is kept whole
   for the life of the project. It is what the History panel reads to show the
   document at a moment nobody checkpointed.
@@ -105,14 +105,14 @@ are closed as part of the deletion rather than left running.
 your handle to confirm. What then happens:
 
 1. The session is invalidated immediately and the account can no longer sign
-   in — including to change its mind. There is no way back from the browser.
+   in -- including to change its mind. There is no way back from the browser.
 2. Every project the account owns is marked for deletion and removed after a
    recovery window, seven days on a default deployment.
-3. Comments, replies, checkpoints and bundles the account left on *other
-   people's* documents stay where they are, relabelled "Deleted user" and no
-   longer linked to any account. Those documents belong to somebody else, and
-   a conversation cannot be silently rewritten under them.
-4. The account record itself — provider, identifier, handle, name, email — is
+3. Comments, replies and checkpoints the account left on *other people's*
+   documents stay where they are, relabelled "Deleted user" and no longer
+   linked to any account. Those documents belong to somebody else, and a
+   conversation cannot be silently rewritten under them.
+4. The account record itself -- provider, identifier, handle, name, email -- is
    deleted once its documents are gone.
 
 Erasure does not reach into an operator's backups. A backup restored later
@@ -135,7 +135,7 @@ there and say what it is.
 
 **Re-run erasure after restoring a backup.** Restore does not know which
 accounts were erased since the backup was taken. Keep a note of erasure
-requests — the date and the account handle is enough — and replay them after
+requests -- the date and the account handle is enough -- and replay them after
 any restore.
 
 **Answering a request about a person.** `librepaper export` covers one
@@ -164,7 +164,7 @@ JOIN annotations a ON a.id = r.annotation_id
 JOIN documents d ON d.id = a.document_id
 WHERE r.author_account_id = $1 ORDER BY r.created_at;
 
-SELECT d.slug, v.created_at FROM document_versions v
+SELECT d.slug, v.created_at FROM document_labels v
 JOIN documents d ON d.id = v.document_id WHERE v.author_account_id = $1;
 
 SELECT document_id, role, created_at FROM grants WHERE account_id = $1;
