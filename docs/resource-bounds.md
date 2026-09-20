@@ -255,16 +255,39 @@ Verified by reading the code:
 
 2. **`config.max_comments` (default 500) and `config.max_replies` (default
    100) are defined but not enforced as creation-time caps.**
-   `storage/postgres/annotations.rs:646-652` defines
-   `PostgresCatalog::annotation_count`, and a comment at
-   `room/comments.rs:427-430` asserts "annotation counts are capped at
-   `config.max_comments` (500) deployment-wide", but `annotation_count` has
-   no caller anywhere in the crate outside its own definition. `max_replies`
-   is grepped nowhere at all except its definition and default
-   (`config.rs:139,503`). Both fields read as load-bearing limits from their
-   doc comments and are not load-bearing in the code. A document's
-   annotation and reply counts are unbounded in practice, aside from the
-   general request-rate and body-size bounds in sections 1 to 3.
+   `PostgresCatalog::annotation_count` has no caller anywhere in the crate
+   outside its own definition, and `max_replies` is grepped nowhere at all
+   except its definition and default (`config.rs:139,503`). Both fields read
+   as load-bearing limits from their doc comments and are not load-bearing in
+   the code. A document's annotation and reply counts are unbounded in
+   practice, aside from the general request-rate and body-size bounds in
+   sections 1 to 3.
+
+   **Reads no longer assume them.** They used to: `room/comments.rs::load`
+   read one 500-row page and called it the document, `find_annotation`
+   scanned that same page for one row, and the reply query refused any result
+   above 5,000 rows across the whole document. An accepted comment past those
+   figures was written and acknowledged and then unreadable and
+   unaddressable, and a document past the reply ceiling failed to load at
+   all. Both reads now walk the catalogue with the `(created_at, id)` cursor
+   the queries already take, in pages of `ANNOTATION_PAGE_MAX` (500) and
+   `REPLY_PAGE_MAX` (1,000), and the single-row lookup is an indexed
+   `(id, document_id)` read rather than a scan.
+
+   The full-snapshot loader additionally bounds the aggregate collection to
+   a 16 MiB memory estimate (twice serialized content plus struct overhead),
+   counting replies as they arrive rather than first collecting a whole
+   thread. Cache fills serialize with invalidation. Oversized or failed reads
+   produce an explicit HTTP/WebSocket/agent error rather than an empty list.
+   This is a per-snapshot guard, not a deployment-wide comment-cache budget.
+   End-to-end transport pagination and aggregate cache accounting remain
+   outstanding; SQL page sizes alone do not bound total residency across
+   rooms or the cost of cloning and serializing snapshots.
+
+   Admission is a separate product question: nothing limits how many comments
+   one document may accumulate. Enforcing the configured caps at the
+   transaction boundary would make new comments refusable; it would not
+   remove the need to read pre-existing larger collections.
 
 3. **`config.session.label_deployment_per_hour` (default 10,000) is defined
    but never wired to any enforcement.** Only `label_owner_per_hour` reaches

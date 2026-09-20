@@ -278,7 +278,10 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
     // this just wrote); do the same, then read it back as a fresh request
     // would with GET.
     room.forget_comments().await;
-    let reloaded = room.snapshot_for("account:not-the-author", false).await;
+    let reloaded = room
+        .snapshot_for("account:not-the-author", false)
+        .await
+        .unwrap();
     let found = reloaded
         .iter()
         .find(|c| c.comment.id == comment_id)
@@ -368,4 +371,198 @@ async fn a_whole_document_remark_from_a_commenter_lands_too() {
     );
     assert_eq!(result["type"], "comment");
     deployment.catalog.close().await;
+}
+
+/// The wire layer, past the page size.
+///
+/// `room::comment_paging_tests` covers the load and the commands directly;
+/// this is the consumer on top of them -- `apply_from`, which is what both an
+/// HTTP POST and a websocket frame become, and `snapshot_for`, which is what
+/// a socket `hello` and a document GET both serialize. A paged loader that
+/// only the storage tests saw would be no fix at all.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
+    let Some(deployment) = deployment("http-paging").await else {
+        return;
+    };
+    let room = deployment
+        .server
+        .documents
+        .rooms
+        .get(&deployment.slug)
+        .await
+        .unwrap();
+    let who = viewer(deployment.commenter_id, "commenter", Role::Commenter);
+    let author = format!("account:{}", deployment.commenter_id);
+
+    // One real comment through the wire, so the document's contents are not
+    // purely seeded, then the rest in bulk: a sequencer command per comment
+    // for five hundred of them is not what this test is measuring.
+    let (first, ok) = deployment
+        .server
+        .apply_from(&room, comment_body_typed(), "203.0.113.9", &who, &author)
+        .await;
+    assert!(ok, "{first}");
+    let through_the_wire = first["comment"]["id"].as_str().unwrap().to_string();
+
+    let page = crate::storage::postgres::ANNOTATION_PAGE_MAX as usize;
+    let actor = crate::storage::postgres::MutationAuthorization {
+        principal_key: deployment.commenter_id.to_string(),
+        account_id: Some(deployment.commenter_id),
+        session_generation: None,
+        token_hash: None,
+        policy_editor: false,
+    };
+    let mut seeded = Vec::new();
+    {
+        let mut tx = deployment.catalog.pool().begin().await.unwrap();
+        for index in 0..page {
+            let id = Uuid::new_v4();
+            deployment
+                .catalog
+                .put_annotation_authorized(
+                    &mut tx,
+                    id,
+                    crate::storage::postgres::NewAnnotation {
+                        document_id: room.document_id,
+                        kind: "comment".into(),
+                        body: format!("Seeded remark {index}"),
+                        author_account_id: Some(deployment.commenter_id),
+                        author_key: author.clone(),
+                        author_label: "Commenter".into(),
+                        color: None,
+                        proposal_id: None,
+                        original_anchor: crate::room::OriginalAnchor {
+                            source_sequence: 1,
+                            frontier: vec![1, 2, 3],
+                            target: crate::room::CommentTarget::Document,
+                        },
+                        presentation: Default::default(),
+                        render_digest: None,
+                        attachment: None,
+                    },
+                    &actor,
+                    false,
+                )
+                .await
+                .unwrap();
+            seeded.push(id);
+        }
+        tx.commit().await.unwrap();
+    }
+
+    room.forget_comments().await;
+    let snapshot = room.snapshot_for(&author, false).await.unwrap();
+    assert_eq!(
+        snapshot.len(),
+        page + 1,
+        "the snapshot a socket hello and a document GET are built from holds \
+         every accepted comment, not one page of them",
+    );
+    let visible: std::collections::HashSet<String> = snapshot
+        .iter()
+        .map(|view| view.comment.id.clone())
+        .collect();
+    assert!(visible.contains(&through_the_wire));
+    for id in &seeded {
+        assert!(visible.contains(&id.to_string()), "comment {id} is missing");
+    }
+
+    let response = get_comments(&deployment).await;
+    assert_eq!(response.status(), 200);
+    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        payload["comments"].as_array().unwrap().len(),
+        page + 1,
+        "the authenticated HTTP consumer receives every page"
+    );
+
+    // And a comment that sorts past the first page can still be acted on
+    // through the same wire message a browser sends.
+    let comments = room.comments().await.unwrap();
+    let last = comments.last().unwrap().id.clone();
+    let (result, ok) = deployment
+        .server
+        .apply_from(
+            &room,
+            serde_json::from_value(json!({
+                "type": "resolve",
+                "comment_id": last,
+                "resolved": true,
+                "request_id": Uuid::new_v4().to_string(),
+            }))
+            .unwrap(),
+            "203.0.113.9",
+            &who,
+            &author,
+        )
+        .await;
+    assert!(
+        ok,
+        "resolving a comment past the first page must not answer \
+         'unknown comment': {result}",
+    );
+    assert_eq!(result["resolved"], json!(true));
+
+    room.forget_comments().await;
+    assert!(
+        room.comments()
+            .await
+            .unwrap()
+            .iter()
+            .any(|comment| comment.id == last && comment.resolved),
+        "and the row is resolved on reload",
+    );
+    sqlx::query("UPDATE annotations SET body=repeat('x', $2) WHERE id=$1")
+        .bind(Uuid::parse_str(&last).unwrap())
+        .bind((crate::room::comments::COMMENT_SNAPSHOT_BYTES_MAX / 2 + 1) as i32)
+        .execute(deployment.catalog.pool())
+        .await
+        .unwrap();
+    room.forget_comments().await;
+    let response = get_comments(&deployment).await;
+    assert_eq!(
+        response.status(),
+        503,
+        "an oversized snapshot is not an empty success"
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(payload.get("comments").is_none());
+    assert!(payload["error"].as_str().unwrap().contains("memory budget"));
+    deployment.catalog.close().await;
+}
+
+fn comment_body_typed() -> RoomMessage {
+    serde_json::from_value(comment_body()).unwrap()
+}
+
+async fn get_comments(deployment: &Deployment) -> super::Reply {
+    let mut identity = viewer(deployment.commenter_id, "commenter", Role::Commenter).id;
+    identity.provider = "github".into();
+    identity.session_generation = "1".into();
+    let cookie = crate::auth::sign_session(&[0u8; 32], &identity, crate::util::now_unix() + 3600);
+    let request = axum::http::Request::builder()
+        .uri(format!("/api/documents/{}/comments", deployment.slug))
+        .header("cookie", format!("librepaper_session={cookie}"))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let arrival = super::origins::Origins::loopback_only()
+        .resolve("127.0.0.1:8080")
+        .unwrap();
+    deployment
+        .server
+        .handle_comments(
+            request,
+            "127.0.0.1:4321".parse().unwrap(),
+            &arrival,
+            &deployment.slug,
+        )
+        .await
 }

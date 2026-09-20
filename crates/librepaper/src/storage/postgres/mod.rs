@@ -656,7 +656,7 @@ mod tests {
             1
         );
         assert_eq!(
-            catalog.replies(&[first_write.id]).await.unwrap()[0].id,
+            catalog.replies(&[first_write.id], None, 100).await.unwrap()[0].id,
             reply.id
         );
 
@@ -730,6 +730,8 @@ mod tests {
         );
         assert!(catalog.mark_document_deleting(second.id).await.unwrap());
         assert!(catalog.hasten_deletion(second.id).await.unwrap());
+        assert!(!catalog.finish_document_deletion(second.id).await.unwrap());
+        assert!(catalog.claim_document_purge(second.id).await.unwrap());
         assert!(catalog.finish_document_deletion(second.id).await.unwrap());
         assert!(catalog.document(second.id).await.unwrap().is_none());
 
@@ -765,6 +767,11 @@ mod tests {
             "deleting"
         );
         assert!(catalog.finish_account_erasure(erased.id).await.is_err());
+        assert!(catalog.hasten_deletion(erased_document.id).await.unwrap());
+        assert!(catalog
+            .claim_document_purge(erased_document.id)
+            .await
+            .unwrap());
         assert!(catalog
             .finish_document_deletion(erased_document.id)
             .await
@@ -2043,5 +2050,5 @@ pub use access::{AccessRole, GrantRecord, ShareLinkRecord};
 pub use annotations::{
     original_anchor_from_record, presentation_from_record, AnnotationBatchCommand,
     AnnotationBatchUpsert, AnnotationRecord, MutationAuthorization, NewAnnotation, NewReply,
-    ReplyRecord,
+    ReplyRecord, ANNOTATION_PAGE_MAX, REPLY_PAGE_MAX,
 };

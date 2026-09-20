@@ -29,7 +29,7 @@
 //! narrower than what the catalogue checks and the catalogue has no way to
 //! express it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest;
 use sqlx::{Postgres, Transaction};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::config::Configuration;
@@ -47,7 +48,7 @@ use crate::log::sequencer::{
 };
 use crate::storage::postgres::{
     self, AnnotationRecord, MutationAuthorization, NewAnnotation, NewLabel, NewProposal, NewReply,
-    PostgresCatalog, ReplyRecord,
+    PostgresCatalog, ReplyRecord, ANNOTATION_PAGE_MAX, REPLY_PAGE_MAX,
 };
 use crate::util::clean;
 
@@ -402,40 +403,138 @@ pub(crate) fn comment_digest_of(comments: &[Comment]) -> i64 {
     i64::from_le_bytes(digest[..8].try_into().expect("8 bytes"))
 }
 
+/// Memory estimate ceiling for the existing whole-snapshot protocol. This
+/// is a read resource guard, not a limit on accepted comments. Larger
+/// collections need end-to-end transport pagination, not a larger SQL page.
+pub(crate) const COMMENT_SNAPSHOT_BYTES_MAX: usize = 16 * 1024 * 1024;
+
+struct ReadBudget(usize);
+
+impl ReadBudget {
+    fn charge<T: Serialize>(&mut self, value: &T) -> Result<(), WriteError> {
+        // Count without allocating another serialized copy. Account for Rust
+        // collection/string overhead as well as the encoded content.
+        struct Counter(usize);
+        impl std::io::Write for Counter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self.0.saturating_add(bytes.len());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut count = Counter(0);
+        serde_json::to_writer(&mut count, value)
+            .map_err(|error| WriteError::Storage(error.to_string()))?;
+        let cost = count
+            .0
+            .saturating_mul(2)
+            .saturating_add(std::mem::size_of::<T>() * 2);
+        self.0 = self.0.checked_sub(cost).ok_or_else(|| {
+            WriteError::Unreadable(
+                "comment snapshot exceeds the read memory budget; comments remain stored".into(),
+            )
+        })?;
+        Ok(())
+    }
+}
+
+/// Page through rows, with a bound on the aggregate resident result as well
+/// as each SQL response. A failed load is never cached as an empty list.
 pub async fn load(
     catalog: &PostgresCatalog,
     document_id: Uuid,
 ) -> Result<Vec<Comment>, WriteError> {
-    let rows = catalog.annotations(document_id, None, 500).await?;
-    let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
-    let reply_rows = catalog.replies(&ids).await?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let mine: Vec<Reply> = reply_rows
-            .iter()
-            .filter(|reply| reply.annotation_id == row.id)
-            .cloned()
-            .map(reply_row_to_reply)
-            .collect();
-        out.push(annotation_row_to_comment(row, mine)?);
+    load_with_budget(catalog, document_id, COMMENT_SNAPSHOT_BYTES_MAX).await
+}
+
+pub(crate) async fn load_with_budget(
+    catalog: &PostgresCatalog,
+    document_id: Uuid,
+    bytes: usize,
+) -> Result<Vec<Comment>, WriteError> {
+    let mut budget = ReadBudget(bytes);
+    let mut out = Vec::new();
+    let mut after: Option<(OffsetDateTime, Uuid)> = None;
+    loop {
+        let rows = catalog
+            .annotations(document_id, after, ANNOTATION_PAGE_MAX)
+            .await?;
+        let Some(last) = rows.last() else { break };
+        after = Some((last.created_at, last.id));
+        let reached_end = (rows.len() as i64) < ANNOTATION_PAGE_MAX;
+        let mut page = Vec::with_capacity(rows.len());
+        let mut indices = HashMap::new();
+        for row in &rows {
+            let comment = annotation_row_to_comment(row, Vec::new())?;
+            budget.charge(&comment)?;
+            // The private author key is deliberately not serialized.
+            budget.charge(&comment.author)?;
+            indices.insert(row.id, page.len());
+            page.push(comment);
+        }
+        let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+        let mut reply_after = None;
+        loop {
+            let replies = catalog.replies(&ids, reply_after, REPLY_PAGE_MAX).await?;
+            let Some(last) = replies.last() else { break };
+            reply_after = Some((last.created_at, last.id));
+            let replies_done = (replies.len() as i64) < REPLY_PAGE_MAX;
+            for row in replies {
+                let index = indices[&row.annotation_id];
+                let reply = reply_row_to_reply(row);
+                budget.charge(&reply)?;
+                page[index].replies.push(reply);
+            }
+            if replies_done {
+                break;
+            }
+        }
+        out.extend(page);
+        if reached_end {
+            break;
+        }
     }
     Ok(out)
 }
 
-/// A bounded scan for the one row a command needs to read back before it
-/// writes -- to resolve, delete or refine a comment against what it
-/// currently says. Annotation counts are capped at `config.max_comments`
-/// (500) deployment-wide, so this is the same cost `load` already pays and
-/// not a new one; there is no `annotation_by_id` exposed for a caller
-/// outside `storage::postgres::annotations` to use instead.
+/// The one row a command needs to read back before it writes -- to resolve,
+/// delete or refine a comment against what it currently says.
+///
+/// This is an indexed lookup by `(id, document_id)`, not a scan of the
+/// document's first page: the scan it replaces could not see a comment past
+/// the page size and refused it as unknown, and the document is in the
+/// predicate so an id from a request body can still only name a row of the
+/// document the caller was authorized for.
+///
+/// It reads through the command's own transaction. That is what makes a read
+/// *after* a write in the same `transact` correct -- `ResolveComment` writes
+/// `resolved_at` and then reports it, and on the pool it reported the value
+/// from before its own uncommitted update -- and it keeps a command holding
+/// a transaction from taking a second connection out of the pool.
 async fn find_annotation(
+    catalog: &PostgresCatalog,
+    tx: &mut Transaction<'static, Postgres>,
+    document_id: Uuid,
+    id: Uuid,
+) -> Result<AnnotationRecord, CommandError> {
+    catalog
+        .annotation_in_transaction(tx, document_id, id)
+        .await?
+        .ok_or_else(|| CommandError::Conflict("unknown comment".into()))
+}
+
+/// [`find_annotation`] for the one path that has no transaction open: §7.2's
+/// replay, which answers a retry before a transaction is begun.
+async fn find_annotation_committed(
     catalog: &PostgresCatalog,
     document_id: Uuid,
     id: Uuid,
 ) -> Result<AnnotationRecord, CommandError> {
-    let rows = catalog.annotations(document_id, None, 500).await?;
-    rows.into_iter()
-        .find(|row| row.id == id)
+    catalog
+        .annotation(document_id, id)
+        .await?
         .ok_or_else(|| CommandError::Conflict("unknown comment".into()))
 }
 
@@ -902,7 +1001,7 @@ impl SequencerCommand for ResolveComment {
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
             let existing =
-                find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
             let input = replay_of(&existing)?;
             self.catalog
                 .replace_annotation_authorized(
@@ -913,7 +1012,8 @@ impl SequencerCommand for ResolveComment {
                     &self.actor,
                 )
                 .await?;
-            let updated = find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            let updated =
+                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
             Ok(ResolveOutcome {
                 comment_id: self.comment_id,
                 resolved: updated.resolved_at.is_some(),
@@ -981,7 +1081,7 @@ impl SequencerCommand for DeleteComment {
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
             let existing =
-                find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
             if !(self.is_owner
                 || (!self.author_key.is_empty() && existing.author_key == self.author_key))
             {
@@ -1118,7 +1218,7 @@ impl SequencerCommand for RefineSuggestion {
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
             let existing =
-                find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
             if !(self.is_owner
                 || (!self.author_key.is_empty() && existing.author_key == self.author_key))
             {
@@ -1160,7 +1260,7 @@ impl SequencerCommand for RefineSuggestion {
             self.catalog
                 .replace_annotation_authorized(tx, self.comment_id, input, false, &self.actor)
                 .await?;
-            let row = find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            let row = find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
             annotation_row_to_comment(&row, Vec::new())
                 .map_err(|error| CommandError::Storage(postgres::Error::Invalid(error.to_string())))
         })
@@ -1252,7 +1352,8 @@ impl SequencerCommand for AcceptSuggestion {
             else {
                 return Ok(None);
             };
-            let row = find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            let row =
+                find_annotation_committed(&self.catalog, self.document_id, self.comment_id).await?;
             let comment = annotation_row_to_comment(&row, Vec::new()).map_err(|error| {
                 CommandError::Storage(postgres::Error::Invalid(error.to_string()))
             })?;
@@ -1317,7 +1418,7 @@ impl SequencerCommand for AcceptSuggestion {
                 .await
                 .map_err(CommandError::from)?;
             let existing =
-                find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
             let input = replay_of(&existing)?;
             self.catalog
                 .replace_annotation_authorized(tx, self.comment_id, input, true, &self.actor)
@@ -1346,7 +1447,7 @@ impl SequencerCommand for AcceptSuggestion {
                 )
                 .await
                 .map_err(CommandError::from)?;
-            let row = find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            let row = find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
             let comment = annotation_row_to_comment(&row, Vec::new()).map_err(|error| {
                 CommandError::Storage(postgres::Error::Invalid(error.to_string()))
             })?;
@@ -1433,12 +1534,12 @@ impl SequencerCommand for RejectSuggestion {
                 .await
                 .map_err(CommandError::from)?;
             let existing =
-                find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
             let input = replay_of(&existing)?;
             self.catalog
                 .replace_annotation_authorized(tx, self.comment_id, input, true, &self.actor)
                 .await?;
-            let row = find_annotation(&self.catalog, self.document_id, self.comment_id).await?;
+            let row = find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
             annotation_row_to_comment(&row, Vec::new())
                 .map_err(|error| CommandError::Storage(postgres::Error::Invalid(error.to_string())))
         })
@@ -1688,11 +1789,25 @@ impl Room {
     /// The whole list, for a change no single event describes: an agent's
     /// batch adds, edits and deletes in one act.
     pub async fn broadcast_comment_snapshot(&self, digest: i64) {
+        let editor_comments = match self.snapshot_for("", true).await {
+            Ok(comments) => comments,
+            Err(error) => {
+                self.broadcast(&json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})).await;
+                return;
+            }
+        };
         let editors = json!({"type": "comments", "comment_digest": digest,
-            "comments": self.snapshot_for("", true).await});
+            "comments": editor_comments});
         self.broadcast_editors_except(None, &editors).await;
+        let reader_comments = match self.snapshot_for("", false).await {
+            Ok(comments) => comments,
+            Err(error) => {
+                self.broadcast_readers_except(None, &json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})).await;
+                return;
+            }
+        };
         let readers = json!({"type": "comments", "comment_digest": digest,
-            "comments": self.snapshot_for("", false).await});
+            "comments": reader_comments});
         self.broadcast_readers_except(None, &readers).await;
     }
 }

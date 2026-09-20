@@ -801,7 +801,15 @@ pub(super) async fn dispatch(
                     return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
                 }
             };
-            let (total, open) = room.counts().await;
+            let (total, open) = match room.counts().await {
+                Ok(counts) => counts,
+                Err(error) => {
+                    return write_json(
+                        503,
+                        &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
+                    )
+                }
+            };
             // Every path in the directory, for the landing page's search: a
             // project is found by the files in it as well as by its title.
             // Paths only -- the digests are the timeline's business. An

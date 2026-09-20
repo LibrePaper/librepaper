@@ -109,10 +109,13 @@ impl Server {
         let may_edit = who.at_least(Role::Editor);
 
         match *request.method() {
-            Method::GET => write_json(
-                200,
-                &json!({"comments": room.snapshot_for(&author, may_edit).await}),
-            ),
+            Method::GET => match room.snapshot_for(&author, may_edit).await {
+                Ok(comments) => write_json(200, &json!({"comments": comments})),
+                Err(error) => write_json(
+                    503,
+                    &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
+                ),
+            },
             Method::POST => {
                 if cross_site_refused(&headers, arrival) {
                     return write_json(403, &cross_site_refusal());
@@ -1003,7 +1006,15 @@ impl Server {
             .get(&projected.projection.main)
             .cloned()
             .unwrap_or_default();
-        let comments = room.snapshot_for(&author, may_edit).await;
+        let comments = match room.snapshot_for(&author, may_edit).await {
+            Ok(comments) => comments,
+            Err(error) => {
+                return write_json(
+                    503,
+                    &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
+                )
+            }
+        };
         let tree_sha = projected.projection.digest();
         write_json(
             200,

@@ -25,7 +25,10 @@ impl Room {
             .projection()
             .await
             .map_err(|error| crate::room::agent::AgentError::Storage(error.to_string()))?;
-        let comments = self.comments().await.unwrap_or_default();
+        let comments = self
+            .comments()
+            .await
+            .map_err(|error| crate::room::agent::AgentError::Storage(error.to_string()))?;
         // There is no room-held sequence counter any more, so this reads the
         // annotation state itself: a hash of it changes exactly when the
         // state a cursor was issued against has, which is the one property

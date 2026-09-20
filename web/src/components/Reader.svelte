@@ -1242,9 +1242,13 @@
         fetch(`/api/documents/${SLUG}/comments`, {
           headers: authHeaders(KEY),
         })
-          .then((response) => response.json())
+          .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || "Comments could not be reloaded.");
+            return data;
+          })
           .then((data) => receive({ type: "hello", comments: data.comments }))
-          .catch(() => {});
+          .catch((error) => say(error.message || "Comments could not be reloaded.", { kind: "problem", id: "reader:comments-unavailable" }));
       }
       say(event.message || "The server refused that change. Nothing on screen has changed.", { kind: "problem", id: "reader:change-refused" });
       return;

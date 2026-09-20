@@ -31,6 +31,25 @@ use crate::room::annotation::{
 
 use super::{Error, PostgresCatalog, Result};
 
+/// The largest page [`PostgresCatalog::annotations`] returns, and so the most
+/// annotation ids [`PostgresCatalog::replies`] accepts in one call. A page
+/// size, not a document size: [`crate::room::comments::load`] walks as many
+/// pages as a document has.
+pub const ANNOTATION_PAGE_MAX: i64 = 500;
+
+/// The same for [`PostgresCatalog::replies`], which pages across a whole
+/// annotation page at once rather than per thread.
+pub const REPLY_PAGE_MAX: i64 = 1_000;
+
+/// Every column of `annotations`, written once so the by-id lookups and the
+/// paged scan cannot drift apart.
+const ANNOTATION_COLUMNS: &str =
+    "id,document_id,kind,body,author_account_id,author_key,author_label,\
+     color,proposal_id,source_sequence,frontier,render_digest,target_kind,file_id,\
+     start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,\
+     rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16,\
+     resolved_at,created_at";
+
 #[derive(Clone, Debug)]
 pub struct MutationAuthorization {
     pub principal_key: String,
@@ -112,7 +131,7 @@ pub struct NewReply {
     pub body: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, FromRow)]
 pub struct ReplyRecord {
     pub id: Uuid,
     pub annotation_id: Uuid,
@@ -653,16 +672,25 @@ impl PostgresCatalog {
         .unwrap_or(0))
     }
 
+    pub async fn annotation_counts(&self, document_id: Uuid) -> Result<(i64, i64)> {
+        Ok(sqlx::query_as(
+            "SELECT count(*), count(*) FILTER (WHERE resolved_at IS NULL) FROM annotations WHERE document_id=$1",
+        )
+        .bind(document_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn annotations(
         &self,
         document_id: Uuid,
         after: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
     ) -> Result<Vec<AnnotationRecord>> {
-        if !(1..=500).contains(&limit) {
-            return Err(Error::Invalid(
-                "annotation page limit must be 1..=500".into(),
-            ));
+        if !(1..=ANNOTATION_PAGE_MAX).contains(&limit) {
+            return Err(Error::Invalid(format!(
+                "annotation page limit must be 1..={ANNOTATION_PAGE_MAX}"
+            )));
         }
         // The cursor stays a single predicate. `-infinity` and the nil UUID sort
         // below every row, so an absent cursor starts the same index scan from
@@ -670,18 +698,14 @@ impl PostgresCatalog {
         // cannot use as a scan bound.
         let after_time = after.map(|v| v.0);
         let after_id = after.map(|v| v.1);
-        sqlx::query_as::<_, AnnotationRecord>(
-            r#"SELECT id,document_id,kind,body,author_account_id,author_key,author_label,
-                      color,proposal_id,source_sequence,frontier,render_digest,target_kind,file_id,
-                      start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,
-                      rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16,
-                      resolved_at,created_at
+        sqlx::query_as::<_, AnnotationRecord>(&format!(
+            r#"SELECT {ANNOTATION_COLUMNS}
                FROM annotations
                WHERE document_id=$1
                  AND (created_at,id) > (COALESCE($2::timestamptz,'-infinity'),
                                         COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'))
-               ORDER BY created_at,id LIMIT $4"#,
-        )
+               ORDER BY created_at,id LIMIT $4"#
+        ))
         .bind(document_id)
         .bind(after_time)
         .bind(after_id)
@@ -691,23 +715,93 @@ impl PostgresCatalog {
         .map_err(Error::from)
     }
 
-    pub async fn replies(&self, annotation_ids: &[Uuid]) -> Result<Vec<ReplyRecord>> {
-        if annotation_ids.len() > 500 {
+    /// One page of the replies belonging to `annotation_ids`, in the same
+    /// `(created_at, id)` order and with the same cursor shape as
+    /// [`Self::annotations`].
+    ///
+    /// This used to be a single unpaged read with `LIMIT 5001` and a refusal
+    /// above 5,000 rows, which made a document whose threads had grown past
+    /// that ceiling unloadable altogether rather than merely slow. The cursor
+    /// turns the ceiling into a page size that [`crate::room::comments::load`]
+    /// walks to the end.
+    pub async fn replies(
+        &self,
+        annotation_ids: &[Uuid],
+        after: Option<(OffsetDateTime, Uuid)>,
+        limit: i64,
+    ) -> Result<Vec<ReplyRecord>> {
+        if annotation_ids.len() > ANNOTATION_PAGE_MAX as usize {
             return Err(Error::Invalid(
                 "too many annotation replies requested".into(),
             ));
         }
-        let rows = sqlx::query_as!(
-            ReplyRecord,
-            "SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at FROM replies WHERE annotation_id=ANY($1) ORDER BY created_at,id LIMIT 5001",
-            annotation_ids
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        if rows.len() > 5_000 {
-            return Err(Error::Conflict("annotation reply limit exceeded".into()));
+        if !(1..=REPLY_PAGE_MAX).contains(&limit) {
+            return Err(Error::Invalid(format!(
+                "reply page limit must be 1..={REPLY_PAGE_MAX}"
+            )));
         }
-        Ok(rows)
+        // The same single-predicate cursor as `annotations`, for the same
+        // reason: the sentinels sort below every row, so an absent cursor is
+        // still one index scan rather than an OR the planner cannot use.
+        let after_time = after.map(|value| value.0);
+        let after_id = after.map(|value| value.1);
+        sqlx::query_as::<_, ReplyRecord>(
+            r#"SELECT id,annotation_id,author_account_id,author_key,author_label,body,
+                      created_at,updated_at
+               FROM replies
+               WHERE annotation_id=ANY($1)
+                 AND (created_at,id) > (COALESCE($2::timestamptz,'-infinity'),
+                                        COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'))
+               ORDER BY created_at,id LIMIT $4"#,
+        )
+        .bind(annotation_ids)
+        .bind(after_time)
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// One annotation of one document, by id.
+    ///
+    /// `document_id` is part of the predicate rather than a check made after
+    /// the fact: a caller holding only an id out of a request body must not
+    /// be able to read a row belonging to a document it was never authorized
+    /// for. Use this from a path with no transaction open (a §7.2 replay);
+    /// from inside a command's transaction use
+    /// [`Self::annotation_in_transaction`], which also sees what that
+    /// transaction has already written.
+    pub async fn annotation(
+        &self,
+        document_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<AnnotationRecord>> {
+        Ok(sqlx::query_as::<_, AnnotationRecord>(&format!(
+            "SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE id=$1 AND document_id=$2"
+        ))
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    /// [`Self::annotation`] inside a caller's transaction, so a command that
+    /// reads a row back after writing it sees its own uncommitted write, and
+    /// does not take a second pool connection while already holding one.
+    pub async fn annotation_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<AnnotationRecord>> {
+        Ok(sqlx::query_as::<_, AnnotationRecord>(&format!(
+            "SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE id=$1 AND document_id=$2"
+        ))
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?)
     }
 }
 
@@ -715,14 +809,9 @@ async fn annotation_by_id(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,
 ) -> Result<Option<AnnotationRecord>> {
-    Ok(sqlx::query_as::<_, AnnotationRecord>(
-        r#"SELECT id,document_id,kind,body,author_account_id,author_key,author_label,
-                  color,proposal_id,source_sequence,frontier,render_digest,target_kind,file_id,
-                  start_utf16,end_utf16,start_side,end_side,exact,prefix,suffix,
-                  rendered_exact,rendered_prefix,rendered_suffix,rendered_position_utf16,
-                  resolved_at,created_at
-           FROM annotations WHERE id=$1"#,
-    )
+    Ok(sqlx::query_as::<_, AnnotationRecord>(&format!(
+        "SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE id=$1"
+    ))
     .bind(id)
     .fetch_optional(&mut **tx)
     .await?)

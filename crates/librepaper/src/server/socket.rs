@@ -431,8 +431,12 @@ impl Server {
                 .map(|_| ())
         };
 
-        let hello =
-            json!({"type": "hello", "comments": room.snapshot_for(&author, may_edit).await});
+        let hello = match room.snapshot_for(&author, may_edit).await {
+            Ok(comments) => json!({"type": "hello", "comments": comments}),
+            Err(error) => {
+                json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})
+            }
+        };
         if joined.is_err()
             || send_outgoing(&tx, Outgoing::Text(hello.to_string()))
                 .await

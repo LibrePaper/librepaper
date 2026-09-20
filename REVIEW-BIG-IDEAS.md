@@ -14,8 +14,9 @@ the lines it deletes.
 
 | Priority by payoff | Idea | Why it matters | Recommended next step |
 |---|---|---|---|
-| 1 | Remaining admission and capacity questions | Some configured limits are unenforced, and contention still needs measurement | Decide which limits to enforce and verify database capacity under load |
-| 2 | Companion and assistant scope | Potentially large cuts, but some remove useful entry points | Confirm unused paths; decide which local and agent workflows to support |
+| 1 | Bounded comment transport and admission | SQL pagination fixes row ceilings, but the full-snapshot protocol still needs a read memory guard | Add end-to-end pagination for larger collections; decide admission limits separately |
+| 2 | Remaining admission and capacity questions | Label limits, MCP fairness and database contention remain unresolved | Address independently after the comment correctness gap |
+| 3 | Companion and assistant scope | Potentially large cuts, but some remove useful entry points | Remove proven unreachable remnants; decide which active workflows to support |
 
 History truncation, narrower offline support and new compaction architectures
 are conditional options, not prerequisites. Companion and assistant cuts need
@@ -29,24 +30,50 @@ this review remain understandable.
 ### 2.1 Admission and capacity gaps (remaining original 2.7)
 
 The [resource inventory](docs/resource-bounds.md) identifies these outstanding
-questions. Each needs a product decision rather than a quiet change to the
-supported limits:
+questions. The configured comment limits need an explicit enforcement policy;
+the other items should not be bundled into the same change:
 
 - `config.rate_per_hour` (comment rate, 20/hour) is defined but not enforced.
   Comments are bounded only by the general request bucket (6,000/minute), for
   both authenticated and commenter-link callers.
 - `config.max_comments` (500) and `config.max_replies` (100) are not enforced.
-  `PostgresCatalog::annotation_count` exists and has no caller; a comment in
-  `room/comments.rs` asserts the cap that is not applied. Annotation and
-  reply counts are unbounded in practice.
+  `PostgresCatalog::annotation_count` exists and has no caller. Annotation and
+  reply writes are unbounded in practice. SQL reads now page beyond the old
+  500-annotation and 5,000-reply ceilings, and command lookup is by document
+  and ID inside the transaction. However, browser snapshots, exports and agent
+  query captures still collect the result. The loader therefore refuses a
+  full snapshot above a 16 MiB memory estimate, with an explicit error rather
+  than an empty list. This is a read guard, not a new write-admission policy.
 - `config.session.label_deployment_per_hour` (10,000) reaches no check; only
   `label_owner_per_hour` does.
 - The MCP `Capacity` semaphores are one global instance, not per document or
   per principal, so one runaway agent loop can starve MCP traffic for the
   whole deployment.
-- The retention janitor, when an operator turns retention on, issues a
-  catalogue read every hour whether or not anything expired. Decide how to
-  reconcile this behavior with the idle-query rule or document its exception.
+
+**Still to implement: bounded transport pagination.** Carry cursors through
+HTTP, WebSocket refresh, browser rendering, export and agent query consumers
+so collections larger than the snapshot budget remain readable without
+building one complete vector. Preserve authorization, comment versions and
+concurrent refresh semantics. Paging only the SQL queries does not complete
+this work. The existing row-boundary and transaction-lookup regressions should
+continue to pass.
+
+**Still to decide: comment admission.** Applying the comment/reply limits
+inside the existing authorized document transaction, across browser and agent
+entry points, makes a comment refusable, which is a product decision rather
+than a correctness fix and is not implemented. Whoever takes it must settle:
+what a caller at the cap is told and whether the refusal is retryable; that a
+retry of an already-created UUID at the cap still succeeds; that concurrent
+requests cannot both consume the last slot; and that an over-limit document
+from before the change is not made unwritable in a way that strands work.
+Rate limiting (`config.rate_per_hour`) is a separate change again, once its
+principal, window and retry semantics are specified.
+
+**Lower-priority operator documentation:** retention is opt-in and performs an
+hourly catalogue read even when nothing expires. The resource inventory
+already records this; clarify the exception to the idle-query promise in the
+operator-facing retention documentation. A new scheduler is not justified by
+this observation alone.
 
 **Still unverified:** that 20 PostgreSQL connections suffice under 64
 concurrent HTTP work slots plus background work. Measure this under load.
@@ -63,11 +90,13 @@ product choices. The current simplification audit notes that companion
 presets, bindings and isolated workspaces still serve local builds and projects
 with unshared resources. Their removal needs a replacement contract.
 
-**Start with confirmed obsolete paths.** The original review identified
-protocol v1, LaTeX discovery flags/log parsing and non-Quarto builder paths as
-candidates. Verify their current callers before deleting them. Browser rendering
-is not automatically a substitute for a local build that uses private files,
-packages or execution.
+**Start with remaining legacy remnants.** LaTeX-specific discovery fields and
+diagnostic parsing branches remain candidates for removal after checking their
+callers and persisted configuration. Do not treat all non-Quarto builders as
+obsolete: Typst, Pandoc and Calepin still have executable builder paths, and
+the browser exposes the protocol-v2 build route. Removing them is a supported
+workflow decision. Browser rendering is not automatically a substitute for a
+local build that uses private files, packages or execution.
 
 **Choose the assistant entry point.** Remote MCP and the stdio bridge provide
 an agent path already. The sidebar additionally brings an ACP runner, task
@@ -141,9 +170,11 @@ editing latency under load before choosing a new architecture.
 
 **If measurements justify more work, proceed in this order:**
 
-1. Isolate export of a fixed durable prefix from live editing where lock
-   contention is demonstrated. Budget the independent document and bounded
-   blocking work; cloning a Loro handle does not isolate its state.
+1. Isolate export of a fixed durable prefix from live editing only where lock
+   contention is demonstrated. Export already uses bounded `spawn_blocking`
+   work, but holds the sequencer lock while exporting a cloned Loro handle.
+   Any independent document must fit the memory budget; cloning the handle
+   does not isolate its state.
 2. Tune compaction triggers to tail/base proportions and a recovery-time bound
    if small tails cause excessive full rewrites. Preserve startup scheduling
    and safe coordination between base activation, joining readers and deletion.
@@ -166,14 +197,6 @@ Keep it derived and disposable, keyed to the source identity so stale output is
 visible. Define supported formats, artifact isolation and authorization before
 serving it. This could improve reading without restoring a full publication or
 rendered-version subsystem, but adds artifact upload and freshness handling.
-
-### 3.5 One active editor, no CRDT (original 2.12)
-
-One active editor with revision-checked saves, everyone else submitting comments
-or patches, would remove the CRDT integrations, live merge stack and much offline
-reconciliation. It is the largest reduction and the largest change to what
-LibrePaper is. Neither original review recommended it. Revisit only if
-simultaneous editing itself stops being a product requirement.
 
 ## 4. Contracts to preserve throughout
 

@@ -43,6 +43,8 @@ mod catalog;
 mod command;
 #[cfg(test)]
 mod comment_anchor_tests;
+#[cfg(test)]
+mod comment_paging_tests;
 pub(crate) mod comments;
 pub(crate) mod error;
 mod figures;
@@ -328,8 +330,16 @@ impl Room {
         if let Some(cached) = self.comments.read().await.as_ref() {
             return Ok(cached.clone());
         }
+        // Serialize cache fill with invalidation. Otherwise a slow paged
+        // read can publish stale rows after a mutation already invalidated
+        // the cache, leaving that mutation invisible until the next write.
+        let mut cache = self.comments.write().await;
+        if let Some(cached) = cache.as_ref() {
+            return Ok(cached.clone());
+        }
         let loaded = comments::load(&self.catalog, self.document_id).await?;
-        *self.comments.write().await = Some(loaded.clone());
+        *cache = Some(loaded.clone());
+        drop(cache);
         let _ = self.reattach_comments().await;
         Ok(self.comments.read().await.clone().unwrap_or(loaded))
     }
@@ -340,16 +350,19 @@ impl Room {
         *self.comments.write().await = None;
     }
 
-    pub async fn snapshot_for(&self, author: &str, is_owner: bool) -> Vec<CommentView> {
-        let comments = self.comments().await.unwrap_or_default();
-        comment_views(&comments, author, is_owner)
+    pub async fn snapshot_for(
+        &self,
+        author: &str,
+        is_owner: bool,
+    ) -> Result<Vec<CommentView>, WriteError> {
+        let comments = self.comments().await?;
+        Ok(comment_views(&comments, author, is_owner))
     }
 
     /// (total, open)
-    pub async fn counts(&self) -> (usize, usize) {
-        let comments = self.comments().await.unwrap_or_default();
-        let open = comments.iter().filter(|item| !item.resolved).count();
-        (comments.len(), open)
+    pub async fn counts(&self) -> Result<(usize, usize), WriteError> {
+        let (total, open) = self.catalog.annotation_counts(self.document_id).await?;
+        Ok((total as usize, open as usize))
     }
 
     // -- assets -------------------------------------------------------------
