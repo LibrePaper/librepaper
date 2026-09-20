@@ -73,7 +73,7 @@ function free(taken, path) {
 /// Returns `{ main, mainId, files, diagnostics, texts }`, where `files` maps
 /// a path to `{ kind, id, digest, bytes }` in UTF-8 path order and `texts`
 /// maps a path to its body.
-export async function project(doc, rules) {
+export function projectDirectory(doc, rules) {
   const diagnostics = [];
   const candidates = [];
 
@@ -109,7 +109,7 @@ export async function project(doc, rules) {
       key: id,
       id,
       requested: named.get(id),
-      digest: await sha256HexOfText(body),
+      digest: "",
       bytes: encoder.encode(body).length,
       text: body,
     });
@@ -139,8 +139,12 @@ export async function project(doc, rules) {
   // 2. Validate paths.
   const valid = [];
   for (const candidate of candidates) {
-    const outcome = checkPath(rules, candidate.requested);
     const wanted = candidate.asset ? "asset" : "text";
+    // A session can receive its first state before `/api/config` resolves.
+    // It still needs deterministic collision handling in that interval; the
+    // configured projection applies the deployment's extension rules as soon
+    // as they arrive.
+    const outcome = rules === null ? { kind: wanted } : checkPath(rules, candidate.requested);
     if (outcome.error) {
       diagnostics.push({
         kind: "invalid-path",
@@ -211,12 +215,16 @@ export async function project(doc, rules) {
       texts.set(path, candidate.text);
       pathOfId.set(candidate.id, path);
     }
-    files.set(path, {
+    const entry = {
       kind: candidate.asset ? "asset" : "text",
       id: candidate.id,
       digest: candidate.digest,
       bytes: candidate.bytes,
-    });
+    };
+    // Kept outside the enumerable wire shape: the live editor needs the CRDT
+    // key when a canonical asset path was normalised or suffixed.
+    Object.defineProperty(entry, "source", { value: candidate.asset ? candidate.requested : candidate.id });
+    files.set(path, entry);
   }
 
   // 6. Main.
@@ -241,6 +249,18 @@ export async function project(doc, rules) {
   diagnostics.sort((left, right) => compareKeys(diagnosticSortKey(left), diagnosticSortKey(right)));
 
   return { main, mainId, files, diagnostics, texts };
+}
+
+/// The canonical projection, including the content digests used by snapshots.
+/// Directory and render-tree callers that do not need hashes use
+/// `projectDirectory`; both paths therefore share all validation, collision,
+/// ordering, and main-file decisions.
+export async function project(doc, rules) {
+  const projection = projectDirectory(doc, rules);
+  await Promise.all([...projection.texts.entries()].map(async ([path, body]) => {
+    projection.files.get(path).digest = await sha256HexOfText(body);
+  }));
+  return projection;
 }
 
 // 7. Digest. The canonical form lives in `projection-digest.js`; this is

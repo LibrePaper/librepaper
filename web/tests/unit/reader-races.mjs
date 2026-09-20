@@ -8,6 +8,7 @@ import { diagnosticContext } from "../../src/lib/assistant-review.js";
 import { createReaderBoot } from "../../src/lib/reader/boot.js";
 import { createPendingChat } from "../../src/lib/reader/chat.js";
 import { createReaderCollaboration } from "../../src/lib/reader/collaboration.js";
+import { createProjectSession } from "../../src/lib/project-session.js";
 import { createPreviewRenderer } from "../../src/lib/reader/preview-render.js";
 import { createRenderCoordinator } from "../../src/lib/reader/render-coordinator.js";
 import { loadRunes } from "../helpers/runes.mjs";
@@ -904,6 +905,72 @@ for (const latest of [
   collaboration.close();
   assert.equal(changed, 1, "changed metadata invalidates the old session");
   assert.equal(sent.filter((message) => message.type === "doc-open").length, 1);
+}
+
+// Late notifications cannot reach a disposed reader. Two halves: the session
+// used here is the real one, with a persistence adapter whose write lands
+// after teardown; and a deliberately unguarded fake, which is what makes this
+// a check of the collaboration owner rather than of the session's own guard.
+{
+  const states = [];
+  let handlers = null;
+  let roomOptions;
+  const collaboration = createReaderCollaboration({
+    slug: "example",
+    fetcher: async () => ({ ok: true, json: async () => ({ created_at: "first", role: "editor" }) }),
+    openRoom: (_slug, options) => {
+      roomOptions = options;
+      return { send: () => {}, sendLive: () => ({ ok: true }), close: () => {} };
+    },
+    collab: {
+      join: (options) => createProjectSession({
+        ...options,
+        presenceId: () => "late-write",
+        persistence: {
+          open(_doc, events) {
+            handlers = events;
+            return { close() {} };
+          },
+        },
+      }),
+    },
+    getCanEdit: () => true,
+    onState: (state) => states.push(state),
+  });
+  collaboration.start({ created_at: "first", role: "editor" });
+  handlers.hydrated();
+  assert.ok(states.length > 0, "a live session reports its persistence state");
+  const before = states.length;
+  collaboration.close();
+  // The adapter was closed, but a write it had already begun still completes.
+  handlers.writing(1);
+  handlers.persisted();
+  handlers.failed(new Error("quota full"));
+  assert.equal(states.length, before, "a closed collaboration delivers no persistence state");
+  assert.equal(roomOptions.onConnected !== undefined, true);
+}
+{
+  const events = [];
+  const fake = fakeCollaboration();
+  const collaboration = createReaderCollaboration({
+    slug: "example",
+    fetcher: async () => ({ ok: true, json: async () => ({ created_at: "first", role: "editor" }) }),
+    openRoom: () => ({ send: () => {}, sendLive: () => ({ ok: true }), close: () => {} }),
+    collab: fake.module,
+    getCanEdit: () => true,
+    onState: () => events.push("state"),
+    onPeers: () => events.push("peers"),
+    onAwareness: () => events.push("awareness"),
+  });
+  collaboration.start({ created_at: "first", role: "editor" });
+  const options = fake.session.joinOptions;
+  options.onState({ pending: 0 });
+  options.onPeers(2);
+  assert.deepEqual(events, ["state", "peers"]);
+  collaboration.close();
+  options.onState({ pending: 1 });
+  options.onPeers(3);
+  assert.deepEqual(events, ["state", "peers"], "a session that outlives its owner updates nothing");
 }
 
 // A metadata retry and a pending chat timeout are both cancelled by teardown.

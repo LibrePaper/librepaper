@@ -2,6 +2,26 @@
 // callbacks and rendering state; this module owns sockets, retries, metadata
 // checks, and all observers attached to the session.
 //
+// Who owns what, and in what order it is given up:
+//
+// - This module owns the room, the reconnect attempt, the metadata and
+//   capability check that gates a rejoin, and the identity of the *current*
+//   session. Nothing else decides which session Reader is looking at.
+// - `project-session.js` owns the CRDT, the presence store, local persistence
+//   status and durable coverage. It alone decides whether this browser's work
+//   is safe; an acknowledgement or an empty send queue never establishes that.
+// - `Editor.svelte` owns the editor instance and its subscriptions, and
+//   `reader/render-coordinator.js` owns preview work. Both outlive individual
+//   join frames and are torn down by their own mount/unmount.
+//
+// Teardown runs outwards. `disposeSession` cancels the session generation
+// first, so every callback below stops being delivered before anything is
+// actually released; then the retry timer, then the observers this module
+// registered, then `session.leave()`. `close()` does the same and adds the
+// room. A session that has been left still finishes an outstanding local
+// persistence write -- cancelling delivery to a disposed UI is not the same
+// as cancelling recoverable work -- but it reports nothing when it lands.
+//
 // `collab` is handed in rather than imported. It is the only door to
 // loro-crdt, and loro-crdt is three megabytes of wasm: importing it here would
 // put the CRDT on the critical path of every reader, including the ones who
@@ -49,6 +69,11 @@ export function createReaderCollaboration({
   let document_ = null;
   let disposed = false;
   const reconnects = createGeneration();
+  // Which session is the current one. A session that has been replaced or
+  // left can still have work in flight -- a persistence write completing, a
+  // join step that has not noticed yet -- and none of it may reach a UI that
+  // has moved on.
+  const sessions = createGeneration();
   let retryTimer = null;
   let filesCleanup = null;
   // EphemeralStore hands back an unsubscribe function rather than taking a
@@ -68,6 +93,7 @@ export function createReaderCollaboration({
   }
 
   function disposeSession() {
+    sessions.cancel();
     clearRetry();
     filesCleanup?.();
     filesCleanup = null;
@@ -82,10 +108,14 @@ export function createReaderCollaboration({
     document_ = nextDocument;
     if (!sourceSync) return null;
     const canEdit = Boolean(getCanEdit());
+    // Begun before `collab.join`, because the session reports its initial
+    // state from inside its own constructor.
+    const replaced = sessions.begin();
+    const live = () => !disposed && !replaced();
     session = collab.join({
       send,
-      onPeers: (count) => onPeers(count),
-      onState,
+      onPeers: (count) => { if (live()) onPeers(count); },
+      onState: (state) => { if (live()) onState(state); },
       // Empty rather than "Anonymous": the session names them that itself,
       // and a literal here would make every unnamed reader the same person
       // as far as the colour is concerned.
@@ -97,10 +127,10 @@ export function createReaderCollaboration({
       mayEdit: canEdit,
     });
     const active = session;
-    active.watchSource(() => onSource(active));
-    active.onSwap(() => onSwap(active));
-    filesCleanup = active.onFiles((events) => onFiles(events, active));
-    presenceCleanup = active.ephemeral.subscribe(() => onAwareness(active));
+    active.watchSource(() => { if (live()) onSource(active); });
+    active.onSwap(() => { if (live()) onSwap(active); });
+    filesCleanup = active.onFiles((events) => { if (live()) onFiles(events, active); });
+    presenceCleanup = active.ephemeral.subscribe(() => { if (live()) onAwareness(active); });
     onSession(active);
     // Reader/commenter sessions use this socket only for rendered
     // annotations. They receive the initial comment hello, but never send a
@@ -187,6 +217,7 @@ export function createReaderCollaboration({
     if (disposed) return;
     disposed = true;
     reconnects.cancel();
+    sessions.cancel();
     clearRetry();
     filesCleanup?.();
     filesCleanup = null;

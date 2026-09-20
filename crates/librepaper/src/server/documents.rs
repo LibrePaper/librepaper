@@ -1316,7 +1316,15 @@ impl Server {
             return write_json(401, &json!({"error": "sign in first"}));
         }
         let done = if purge {
-            self.store.purge_now(slug, &who.id).await
+            self.store.purge_now(slug, &who.id).await.map(|document| {
+                if let Some(document) = document {
+                    self.background
+                        .ask(crate::storage::worker::Task::Delete(document));
+                    true
+                } else {
+                    false
+                }
+            })
         } else {
             self.store.restore(slug, &who.id).await
         };

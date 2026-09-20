@@ -59,6 +59,7 @@ export function createWorkspace({
 
   let session = null;
   let arrivedOpened = false;
+  let rulesLoaded = false;
 
   /// The session whose directory this is. Called once the collaboration
   /// session exists, and again with `null` when it goes away. It does not
@@ -67,6 +68,14 @@ export function createWorkspace({
   /// moment for that in the joining sequence.
   function attach(active) {
     session = active;
+    if (session && rulesLoaded) session.setRules(state.rules);
+  }
+
+  function setRules(rules) {
+    rulesLoaded = true;
+    state.rules = rules || {};
+    session?.setRules(state.rules);
+    refresh();
   }
 
   /// Reading the directory into the list. Deliberately does not paint: the
@@ -234,6 +243,7 @@ export function createWorkspace({
   return {
     state,
     attach,
+    setRules,
     refresh,
     refreshPeers,
     show,

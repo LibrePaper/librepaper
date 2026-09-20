@@ -1149,14 +1149,14 @@ async fn compaction_cost_release_benchmark() {
             )
             .await
             .expect("activate the base");
-        let base = activated.expect("a base was activated");
-        let head = catalog.log_head(document_id).await.expect("the head");
+        let activated = activated.expect("a base was activated");
+        let base = activated.base;
         gate.note_compacted(
             through,
             &base.vector,
             base.snapshot_bytes.max(0) as u64,
-            head.uncompacted_bytes.max(0) as u64,
-            head.uncompacted_count.max(0),
+            activated.uncompacted_bytes.max(0) as u64,
+            activated.uncompacted_count.max(0),
         );
         drop(gate);
         let activation_us = micros(at);
@@ -1484,14 +1484,14 @@ async fn compact_seeded_document(
         )
         .await
         .expect("activate the base");
-    let base = activated.expect("a base was activated");
-    let head = catalog.log_head(document_id).await.expect("the head");
+    let activated = activated.expect("a base was activated");
+    let base = activated.base;
     gate.note_compacted(
         through,
         &base.vector,
         base.snapshot_bytes.max(0) as u64,
-        head.uncompacted_bytes.max(0) as u64,
-        head.uncompacted_count.max(0),
+        activated.uncompacted_bytes.max(0) as u64,
+        activated.uncompacted_count.max(0),
     );
     drop(gate);
     let activation_us = micros(at);
@@ -1625,8 +1625,7 @@ async fn concurrent_compaction_release_benchmark() {
         "benchmark".to_string(),
     );
 
-    let cores_available = std::thread::available_parallelism()
-        .map_or(1, |cores| cores.get());
+    let cores_available = std::thread::available_parallelism().map_or(1, |cores| cores.get());
     let admission_bound = crate::log::admission::concurrency();
 
     let mut cohorts = Vec::new();
@@ -1658,10 +1657,17 @@ async fn concurrent_compaction_release_benchmark() {
         // is what answers whether the server stays responsive to someone who
         // is not being compacted while it is busy compacting everyone else.
         let unrelated_slug = format!("concurrent-{n}-unrelated");
-        let (_unrelated_id, unrelated_sequencer, unrelated_seed_len) =
-            seed_concurrent_document(&catalog, &registry, &authority, unrelated_slug, SEED_KIB, 0, EDITS_PER_ROW)
-                .await
-                .expect("the unrelated document's opening upload");
+        let (_unrelated_id, unrelated_sequencer, unrelated_seed_len) = seed_concurrent_document(
+            &catalog,
+            &registry,
+            &authority,
+            unrelated_slug,
+            SEED_KIB,
+            0,
+            EDITS_PER_ROW,
+        )
+        .await
+        .expect("the unrelated document's opening upload");
         let unrelated_opening = unrelated_sequencer
             .with_head(session::encode_state)
             .await

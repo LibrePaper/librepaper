@@ -12,21 +12,29 @@
 //! | deletion | `documents.status = 'deleting'` |
 //! | superseded bases | a `superseded_bases.delete_after` in the past |
 //!
-//! At startup the worker scans those four once and enqueues what it finds.
+//! At startup the worker scans those four in bounded pages and enqueues what
+//! it finds.
 //! Afterwards it is woken by the events that create the state: an idle
 //! deployment issues no queries beyond the lease connection, which is the
-//! last test in §14.2. If the bounded queue is full a task is dropped, and
-//! the scan or the next trigger for that document finds it again -- the
-//! state is still there, which is the whole point of keeping it there and
-//! not in a queue.
+//! last test in §14.2. A full bounded queue sets one coalesced overflow bit;
+//! when the worker reaches it, the worker walks the durable state again in
+//! bounded pages. Wake-ups therefore remain recoverable without allocating a
+//! waiter per sender or polling an idle database.
 //!
-//! The one timer is the backoff on a task that FAILED, which schedules its
-//! own retry. That is not a periodic scan and it does not run on an idle
-//! deployment: nothing is failing on one. Without it a failed deletion or
-//! archive would wait for the next process start, because unlike compaction
-//! nothing else ever asks for them again.
+//! Wake-ups that need a future deadline instead of an immediate task (a
+//! failure's backoff, a deletion's grace period, a superseded base's grace)
+//! go through one bounded, deduplicating map, [`Deadlines`]. The
+//! worker's own `select!` sleeps on the earliest entry in that map; there is
+//! no timer anywhere else, and an idle deployment with nothing failing and
+//! nothing scheduled leaves the map empty, so the worker simply blocks on
+//! `recv()` and issues no query. A map that fills up does not grow past its
+//! bound: it refuses the new deadline, remembers the earliest time it
+//! refused, and wakes the worker to rescan durable state at that time
+//! instead, which finds the refused work again. That rescan, not the map, is
+//! what stays the source of truth for what work exists.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,7 +44,8 @@ use uuid::Uuid;
 
 use super::blob::BlobStore;
 use super::collaboration::CollaborationStorage;
-use super::postgres::PostgresCatalog;
+use super::postgres::{PendingWorkCursor, PostgresCatalog};
+use super::schedule::Deadlines;
 use crate::log::{FlushReason, Registry};
 
 /// How long a deleted document stays in the trash before it is purged.
@@ -46,39 +55,20 @@ pub use super::maintenance::DELETION_GRACE;
 /// this is not a queue, it is a scan that has not run yet.
 const QUEUE: usize = 256;
 
-/// How long a failed task waits before it is tried again, doubling per
-/// consecutive failure up to [`BACKOFF_CEILING`].
-///
-/// The retry is scheduled rather than left to chance. Compaction would be
-/// re-triggered by the next flush anyway, but a deletion and an archive are
-/// named only by durable state that nothing else looks at until the next
-/// startup, so a transient blob-store failure on either one used to park it
-/// until somebody restarted the process.
-const BACKOFF: Duration = Duration::from_secs(60);
-
-/// Where the doubling stops. A task failing for an hour is failing for a
-/// reason a faster retry will not fix, and the point of the ceiling is that
-/// it still retries at all: the state naming the task is durable, so the
-/// deployment should recover on its own once whatever broke is fixed,
-/// without an operator noticing.
-const BACKOFF_CEILING: Duration = Duration::from_secs(60 * 60);
-
-/// The wait after `failures` consecutive failures of one task.
-fn backoff(failures: u32) -> Duration {
-    BACKOFF
-        .saturating_mul(
-            1u32.checked_shl(failures.saturating_sub(1))
-                .unwrap_or(u32::MAX),
-        )
-        .min(BACKOFF_CEILING)
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Task {
+    /// One bounded page of durable work discovered during startup.
+    Scan(PendingWorkCursor),
     /// §8.4. The document's backlog is over the threshold.
     Compact(Uuid),
-    /// §8.5. Somebody asked for this label's plain-source archive.
-    Archive { document: Uuid, label: Uuid },
+    /// §8.5. Somebody asked for this label's plain-source archive, named by
+    /// the label alone. The startup scan and the HTTP path used to name this
+    /// task with the label's document id as well, and the scan only ever
+    /// knows `Uuid::nil()` for that half, so the same archive request came
+    /// out as two different `Task` values and no map could dedupe them.
+    /// `Worker::archive` looks the document up from the label row, so the
+    /// document id was never needed here.
+    Archive(Uuid),
     /// The document has been in the trash long enough.
     Delete(Uuid),
     /// §8.4 step 5. A compaction base that was replaced is out of the grace
@@ -86,8 +76,8 @@ pub enum Task {
     ///
     /// Alone among the four this names no document: one pass clears every
     /// row that is due, so a `Uuid` here would only make the queue hold the
-    /// same work several times over and defeat the `cooling` map, which
-    /// keys a backoff by the task itself.
+    /// same work several times over and defeat the deduplication that keys
+    /// a deadline by the task itself.
     SweepSupersededBases,
 }
 
@@ -96,20 +86,112 @@ pub enum Task {
 /// rather than raising the bound.
 const SWEEP_BATCH: i64 = 500;
 
+/// What an operator can see of the worker's own overload, for the aggregate
+/// cost snapshot. Counters only: a refusal here is never a lost task, so the
+/// question these answer is not "what broke" but "is this deployment asking
+/// for background work faster than it can run it".
+#[derive(Default)]
+struct Meter {
+    /// Wake-ups the bounded channel had no room for, each one folded into
+    /// the rescan bit instead.
+    refused_wake_ups: AtomicU64,
+    /// Entries in the worker's deadline map, published by the worker after
+    /// every task so a reader does not need the worker itself.
+    deadlines: AtomicUsize,
+    /// Deadlines the map had no room for, each one folded into its earliest
+    /// refusal time instead.
+    refused_deadlines: AtomicU64,
+}
+
 /// What the worker is driven by. Cloneable, so any part of the server can
 /// ask for work without holding the worker itself.
 #[derive(Clone)]
 pub struct Handle {
     tx: tokio::sync::mpsc::Sender<Task>,
+    /// A full queue does not justify allocating a waiter for every wake-up.
+    /// Durable state is the work list, so one bit is enough to ask the worker
+    /// to run its bounded startup scan again after the queue drains.
+    rescan: Arc<AtomicBool>,
+    meter: Arc<Meter>,
 }
 
 impl Handle {
-    /// Asks for a task. A full queue is not an error: the durable state that
-    /// named this task is still there, and the next scan finds it.
+    /// Asks for a task without ever waiting or allocating a sender task.
+    ///
+    /// A full queue sets one rescan bit. The worker consumes that bit after
+    /// the current task and walks durable state in bounded pages. Every
+    /// background task is named by that durable state, so retaining one bit
+    /// is sufficient and keeps overload memory bounded. In particular, this
+    /// method must remain non-blocking: the worker itself asks for follow-up
+    /// work while it is the only consumer of this channel.
     pub fn ask(&self, task: Task) {
-        if self.tx.try_send(task).is_err() {
-            ::log::debug!("background queue is full; {task:?} will be rediscovered");
+        match self.tx.try_send(task) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(task)) => {
+                self.meter.refused_wake_ups.fetch_add(1, Ordering::Relaxed);
+                if !self.rescan.swap(true, Ordering::AcqRel) {
+                    ::log::debug!(
+                        "background worker queue full; retaining durable wake-up for {task:?}"
+                    );
+                }
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(task)) => {
+                ::log::debug!("background worker stopped before accepting {task:?}");
+            }
         }
+    }
+
+    fn take_rescan(&self) -> bool {
+        self.rescan.swap(false, Ordering::AcqRel)
+    }
+
+    /// The operator-only view of background overload. Every number here is
+    /// against a stated bound, because a count on its own does not say
+    /// whether a deployment is near anything: `queued` against `queue`, and
+    /// `deadlines` against `deadline_capacity`. The two refusal counters
+    /// rise when a bound was reached and the work was handed back to the
+    /// durable rescan; they are not errors, but a deployment where they
+    /// climb steadily is one whose background work is behind.
+    pub fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "queued": QUEUE - self.tx.capacity(),
+            "queue": QUEUE,
+            "refused_wake_ups": self.meter.refused_wake_ups.load(Ordering::Relaxed),
+            "deadlines": self.meter.deadlines.load(Ordering::Relaxed),
+            "deadline_capacity": super::schedule::DEADLINES,
+            "refused_deadlines": self.meter.refused_deadlines.load(Ordering::Relaxed),
+            "rescan_pending": self.rescan.load(Ordering::Acquire),
+        })
+    }
+}
+
+struct ScanPage {
+    tasks: Vec<Task>,
+    next: Option<PendingWorkCursor>,
+    superseded_base_due: Option<OffsetDateTime>,
+}
+
+fn enqueue_overflow_scan(handle: &Handle, local: &mut VecDeque<Task>) {
+    // A cursor continuation already walks durable state through the end of
+    // this pass. Do not consume the bit yet: it may describe a newer row
+    // inserted behind an earlier cursor, which needs a fresh full pass.
+    if local.iter().any(|task| matches!(task, Task::Scan(_))) {
+        return;
+    }
+    if handle.take_rescan() {
+        local.push_back(Task::Scan(PendingWorkCursor::default()));
+    }
+}
+
+fn enqueue_due_rescan(handle: &Handle, local: &mut VecDeque<Task>, rescan: bool) {
+    if !rescan {
+        return;
+    }
+    if local.iter().any(|task| matches!(task, Task::Scan(_))) {
+        // A cursor continuation cannot stand in for a fresh full pass.
+        handle.rescan.store(true, Ordering::Release);
+    } else {
+        local.push_back(Task::Scan(PendingWorkCursor::default()));
     }
 }
 
@@ -120,9 +202,10 @@ pub struct Worker {
     config: Arc<crate::config::Configuration>,
     rx: tokio::sync::mpsc::Receiver<Task>,
     handle: Handle,
-    /// Tasks that failed recently: when the retry they already have
-    /// scheduled comes due, and how many times in a row they have failed.
-    cooling: std::collections::HashMap<Task, (tokio::time::Instant, u32)>,
+    /// The bounded map of future work: a failure's backoff, a deletion's
+    /// grace period, and a superseded base's grace, all in the one place
+    /// the worker's `select!` sleeps on.
+    deadlines: Deadlines,
 }
 
 impl Worker {
@@ -133,7 +216,11 @@ impl Worker {
         config: Arc<crate::config::Configuration>,
     ) -> (Self, Handle) {
         let (tx, rx) = tokio::sync::mpsc::channel(QUEUE);
-        let handle = Handle { tx };
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(false)),
+            meter: Arc::new(Meter::default()),
+        };
         (
             Self {
                 catalog,
@@ -142,81 +229,206 @@ impl Worker {
                 config,
                 rx,
                 handle: handle.clone(),
-                cooling: std::collections::HashMap::new(),
+                deadlines: Deadlines::new(),
             },
             handle,
         )
     }
 
-    /// The startup scan, then the queue. Runs until the process ends.
+    /// Start a bounded startup scan, then consume it, live wake-ups and
+    /// deadlines that have come due.
     pub async fn run(mut self) {
-        self.scan().await;
-        while let Some(task) = self.rx.recv().await {
-            // Something asked for this task again before its own retry came
-            // due. Dropping it is right: the retry below is already
-            // scheduled, and running now would defeat the backoff.
-            if let Some((due, _)) = self.cooling.get(&task) {
-                if tokio::time::Instant::now() < *due {
-                    continue;
+        self.handle.ask(Task::Scan(PendingWorkCursor::default()));
+        // Scan work stays local to the worker. A page is at most 3 * PAGE
+        // tasks, and its continuation is one more task, so startup cannot
+        // fill the channel or lose its cursor when live wake-ups saturate it.
+        let mut local = VecDeque::new();
+        loop {
+            self.fire_due(&mut local);
+            let Some(task) = (if let Some(task) = local.pop_front() {
+                Some(task)
+            } else {
+                match self.deadlines.next() {
+                    // A deadline is waiting: race it against the channel so
+                    // a live wake-up is not blocked behind a sleep, but a
+                    // sleep that wins loops back around to `fire_due` rather
+                    // than being handled here, since firing is what turns a
+                    // due deadline into a task in the first place.
+                    Some(at) => tokio::select! {
+                        received = self.rx.recv() => received,
+                        _ = tokio::time::sleep_until(at) => continue,
+                    },
+                    // Nothing is scheduled. This is the idle path: no
+                    // deadline, no timer, just a block on the channel.
+                    None => self.rx.recv().await,
                 }
+            }) else {
+                break;
+            };
+
+            if let Task::Scan(cursor) = task {
+                if !self.deadlines.waiting(&task, tokio::time::Instant::now()) {
+                    match self.scan(cursor).await {
+                        Ok(page) => {
+                            self.deadlines.clear(&task);
+                            if let Some(due) = page.superseded_base_due {
+                                self.schedule_sweep_at(due);
+                            }
+                            local.extend(page.tasks);
+                            if let Some(next) = page.next {
+                                local.push_back(Task::Scan(next));
+                            }
+                        }
+                        Err(error) => self.failed(task, error),
+                    }
+                }
+            } else {
+                self.process(task).await;
             }
-            match self.execute(task).await {
-                Ok(()) => {
-                    self.cooling.remove(&task);
-                }
-                Err(error) => {
-                    let failures = self.cooling.get(&task).map_or(0, |(_, n)| *n) + 1;
-                    let wait = backoff(failures);
-                    ::log::warn!(
-                        "background task {task:?} failed ({failures} in a row); \
-                         trying again in {}s: {error}",
-                        wait.as_secs()
-                    );
-                    self.cooling
-                        .insert(task, (tokio::time::Instant::now() + wait, failures));
-                    let handle = self.handle.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(wait).await;
-                        handle.ask(task);
-                    });
-                }
-            }
+
+            // A live wake-up that arrived while the queue was full may have
+            // been the only event naming a task. Restarting a scan is safe:
+            // this loop drains all of its pages before receiving more work,
+            // so early durable rows cannot starve later cursor pages.
+            enqueue_overflow_scan(&self.handle, &mut local);
+            self.publish();
         }
     }
 
-    /// The one scan there is. Everything it finds is already durable; nothing
-    /// it misses is lost, because the state that named it is still there.
-    pub async fn scan(&self) {
-        let pending = match self.catalog.pending_background_work().await {
-            Ok(pending) => pending,
-            Err(error) => {
-                ::log::warn!("could not scan for background work: {error}");
+    /// Publish what the deadline map holds, so the cost snapshot can read it
+    /// without reaching into the worker. Done once per task rather than on
+    /// every change: these are for an operator looking at a deployment, not
+    /// for anything that makes a decision.
+    fn publish(&self) {
+        self.handle
+            .meter
+            .deadlines
+            .store(self.deadlines.len(), Ordering::Relaxed);
+        self.handle
+            .meter
+            .refused_deadlines
+            .store(self.deadlines.refused(), Ordering::Relaxed);
+    }
+
+    /// Move everything whose deadline has come due into the local queue, and
+    /// ask for a durable scan when a deadline this worker could not hold has
+    /// come due.
+    fn fire_due(&mut self, local: &mut VecDeque<Task>) {
+        let due = self.deadlines.due(tokio::time::Instant::now());
+        for task in due.tasks {
+            if !local.contains(&task) {
+                local.push_back(task);
+            }
+        }
+        enqueue_due_rescan(&self.handle, local, due.rescan);
+    }
+
+    async fn process(&mut self, task: Task) {
+        // Something asked for this task again before its own retry or grace
+        // period came due. Dropping it is right: the deadline below is
+        // already scheduled, and running now would defeat the backoff or
+        // the grace period it represents.
+        if self.deadlines.waiting(&task, tokio::time::Instant::now()) {
+            // A plain Delete wake-up may have been queued before an owner
+            // chose "delete forever". Re-read durable state before honoring
+            // its old grace deadline. This preserves failure backoff while
+            // allowing a hastened `deleted_at` to override grace, including
+            // when the urgent wake-up was folded into a durable rescan.
+            let grace_overridden = match task {
+                Task::Delete(document) if self.deadlines.failures(&task) == 0 => {
+                    match self.deletion_is_due(document).await {
+                        Ok(due) => due,
+                        Err(error) => {
+                            self.failed(task, error);
+                            return;
+                        }
+                    }
+                }
+                _ => false,
+            };
+            if !grace_overridden {
                 return;
             }
+        }
+        match self.execute(task).await {
+            Ok(()) => {
+                self.deadlines.clear(&task);
+            }
+            Err(error) => self.failed(task, error),
+        }
+    }
+
+    fn failed(&mut self, task: Task, error: String) {
+        let before = self.deadlines.refused();
+        let wait = self.deadlines.failed(task, tokio::time::Instant::now());
+        if self.deadlines.refused() > before {
+            // The map is full and this failure's retry did not fit. The
+            // deadline is not lost: it is folded into the earliest refusal
+            // time, which is when the worker will rescan durable state and
+            // find this task again on its own.
+            ::log::warn!(
+                "background task {task:?} failed and the retry map is full \
+                 ({} deadlines); durable state will be rescanned: {error}",
+                self.deadlines.len()
+            );
+        } else {
+            ::log::warn!(
+                "background task {task:?} failed ({} in a row); \
+                 trying again in {}s: {error}",
+                self.deadlines.failures(&task),
+                wait.as_secs()
+            );
+        }
+    }
+
+    /// Read one bounded page. The continuation sits behind the work from this
+    /// page, so the queue stays bounded even with millions of durable tasks.
+    async fn scan(&self, cursor: PendingWorkCursor) -> Result<ScanPage, String> {
+        const PAGE: i64 = 64;
+        let pending = match self.catalog.pending_background_work(cursor, PAGE).await {
+            Ok(pending) => pending,
+            Err(error) => {
+                return Err(format!("could not scan for background work: {error}"));
+            }
         };
-        for document in pending.compaction {
-            self.handle.ask(Task::Compact(document));
+        let mut next = cursor;
+        if let Some(id) = pending.compaction.last() {
+            next.compaction = *id;
         }
-        for document in pending.deleting {
-            self.handle.ask(Task::Delete(document));
+        if let Some(id) = pending.deleting.last() {
+            next.deleting = *id;
         }
+        if let Some(id) = pending.archives.last() {
+            next.archives = *id;
+        }
+        next.compaction_done = cursor.compaction_done || (pending.compaction.len() as i64) < PAGE;
+        next.deleting_done = cursor.deleting_done || (pending.deleting.len() as i64) < PAGE;
+        next.archives_done = cursor.archives_done || (pending.archives.len() as i64) < PAGE;
+        let continues = !next.compaction_done || !next.deleting_done || !next.archives_done;
+        let mut tasks = Vec::with_capacity(
+            pending.compaction.len() + pending.deleting.len() + pending.archives.len(),
+        );
+        tasks.extend(pending.compaction.into_iter().map(Task::Compact));
+        tasks.extend(pending.deleting.into_iter().map(Task::Delete));
         for label in pending.archives {
             // The label's own row says which document it belongs to; the
             // scan returns ids only, so the task looks it up when it runs.
-            self.handle.ask(Task::Archive {
-                document: Uuid::nil(),
-                label,
-            });
+            tasks.push(Task::Archive(label));
         }
-        if pending.superseded_bases {
-            self.handle.ask(Task::SweepSupersededBases);
-        }
+        Ok(ScanPage {
+            tasks,
+            next: continues.then_some(next),
+            superseded_base_due: pending.superseded_base_due,
+        })
     }
 
-    async fn execute(&self, task: Task) -> Result<(), String> {
+    async fn execute(&mut self, task: Task) -> Result<(), String> {
         match task {
+            // Scans are expanded by `run` so their page work never has to
+            // compete with live tasks for the bounded channel.
+            Task::Scan(_) => Ok(()),
             Task::Compact(document) => self.compact(document).await,
-            Task::Archive { label, .. } => self.archive(label).await,
+            Task::Archive(label) => self.archive(label).await,
             Task::Delete(document) => self.delete(document).await,
             Task::SweepSupersededBases => self.sweep_superseded_bases().await,
         }
@@ -227,7 +439,7 @@ impl Worker {
     /// backup enumerates it, and the row that names it is the only record
     /// that it exists. Without this the object store grows by one stale base
     /// per compaction and never shrinks.
-    async fn sweep_superseded_bases(&self) -> Result<(), String> {
+    async fn sweep_superseded_bases(&mut self) -> Result<(), String> {
         let removed =
             super::maintenance::Maintenance::new(self.catalog.clone(), self.blobs.clone())
                 .delete_superseded_bases(SWEEP_BATCH)
@@ -236,12 +448,36 @@ impl Worker {
             // More were due than one batch takes. Asking again is progress,
             // not a timer: the pass that finds nothing left stops.
             self.handle.ask(Task::SweepSupersededBases);
+        } else if let Some(due) = sqlx::query_scalar::<_, Option<OffsetDateTime>>(
+            "SELECT min(delete_after) FROM superseded_bases",
+        )
+        .fetch_one(self.catalog.pool())
+        .await
+        .map_err(|error| error.to_string())?
+        {
+            self.schedule_sweep_at(due);
         }
         Ok(())
     }
 
+    fn schedule_sweep_at(&mut self, due: OffsetDateTime) {
+        // Re-scans can observe the same future deadline many times while a
+        // saturated queue drains. One timer per sweep deadline is now a
+        // property of the map: `Deadlines::at` dedupes by `Task`, and
+        // `Task::SweepSupersededBases` names no document, so every call
+        // here collapses onto the one entry keyed by that task.
+        self.schedule_at(due, Task::SweepSupersededBases);
+    }
+
+    fn schedule_at(&mut self, due: OffsetDateTime, task: Task) {
+        let wait: Duration = (due - OffsetDateTime::now_utc())
+            .try_into()
+            .unwrap_or(Duration::ZERO);
+        self.deadlines.at(task, tokio::time::Instant::now() + wait);
+    }
+
     /// §8.4, all five steps. Coverage is proved before a row is deleted.
-    async fn compact(&self, document_id: Uuid) -> Result<(), String> {
+    async fn compact(&mut self, document_id: Uuid) -> Result<(), String> {
         // Admitted if it is not already resident, rather than skipped.
         //
         // Skipping was wrong in the one case that matters most: the startup
@@ -329,7 +565,7 @@ impl Worker {
         //     `Sequencer::compaction_gate` for what each half would
         //     otherwise return.
         let mut gate = sequencer.compaction_gate().await;
-        let base = self
+        let activation = self
             .catalog
             .activate_log_base(
                 document_id,
@@ -338,27 +574,54 @@ impl Worker {
                 written,
                 super::collaboration::superseded_base_deadline(),
             )
-            .await
-            .map_err(|error| error.to_string())?;
-        if let Some(base) = base {
-            // `activate_log_base` deletes rows `<= through` and recomputes
-            // `documents.uncompacted_update_*` from what is left, in the
-            // same transaction. Typing continues while compaction runs, so
-            // rows can land above `through` between the flush in step 1 and
-            // this activation; reading the counters back is the only way to
-            // learn what survived compaction, rather than assuming zero
-            // (SPEC-server-is-a-log §8.4, §9.1, §9.2).
-            let head = self
-                .catalog
-                .log_head(document_id)
-                .await
-                .map_err(|error| error.to_string())?;
+            .await;
+        let activation = match activation {
+            Ok(activation) => activation,
+            Err(error) => {
+                // A commit error is ambiguous: PostgreSQL may have made the
+                // base durable before the connection failed. Reconcile while
+                // the compaction gate is still held. If durable state cannot
+                // be established, fence this sequencer so no join can observe
+                // stale base metadata after covered rows disappeared.
+                let recovered = async {
+                    let base = self.catalog.log_base(document_id).await?;
+                    let head = self.catalog.log_head(document_id).await?;
+                    Ok::<_, crate::storage::postgres::Error>((base, head))
+                }
+                .await;
+                match recovered {
+                    Ok((Some(base), head))
+                        if base.through_update_sequence == through && base.vector == log_vector =>
+                    {
+                        gate.note_compacted(
+                            through,
+                            &base.vector,
+                            base.snapshot_bytes.max(0) as u64,
+                            head.uncompacted_bytes.max(0) as u64,
+                            head.uncompacted_count.max(0),
+                        );
+                        drop(gate);
+                        self.handle.ask(Task::SweepSupersededBases);
+                        return Ok(());
+                    }
+                    Ok(_) => return Err(error.to_string()),
+                    Err(reconcile_error) => {
+                        gate.fence(format!(
+                            "compaction outcome is unknown after activation failed ({error}); durable state could not be reconciled ({reconcile_error})"
+                        ));
+                        return Err(error.to_string());
+                    }
+                }
+            }
+        };
+        if let Some(activation) = activation {
+            let base = activation.base;
             gate.note_compacted(
                 through,
                 &base.vector,
                 base.snapshot_bytes.max(0) as u64,
-                head.uncompacted_bytes.max(0) as u64,
-                head.uncompacted_count.max(0),
+                activation.uncompacted_bytes.max(0) as u64,
+                activation.uncompacted_count.max(0),
             );
             drop(gate);
             // This compaction just superseded a base and started its grace.
@@ -367,6 +630,35 @@ impl Worker {
             // has come due -- one indexed query, and only on a deployment
             // that is compacting, which is not an idle one (§14.2).
             self.handle.ask(Task::SweepSupersededBases);
+        } else {
+            // A retry after an activation whose reply was lost reaches the
+            // monotonic upsert as a no-op. Re-read under the still-held gate
+            // so that retry repairs memory instead of silently leaving the
+            // sequencer behind the durable base.
+            match (
+                self.catalog.log_base(document_id).await,
+                self.catalog.log_head(document_id).await,
+            ) {
+                (Ok(Some(base)), Ok(head)) if base.through_update_sequence >= through => {
+                    gate.note_compacted(
+                        base.through_update_sequence,
+                        &base.vector,
+                        base.snapshot_bytes.max(0) as u64,
+                        head.uncompacted_bytes.max(0) as u64,
+                        head.uncompacted_count.max(0),
+                    );
+                }
+                (Ok(_), Ok(_)) => {}
+                (base, head) => {
+                    let why = format!(
+                        "compaction retry could not reconcile durable state (base: {:?}; head: {:?})",
+                        base.err(),
+                        head.err()
+                    );
+                    gate.fence(why.clone());
+                    return Err(why);
+                }
+            }
         }
         Ok(())
     }
@@ -374,7 +666,7 @@ impl Worker {
     /// §8.5. An archive is produced on request from the projection at the
     /// label's frontier, keyed by its tree digest so two labels naming one
     /// document name one object.
-    async fn archive(&self, label_id: Uuid) -> Result<(), String> {
+    async fn archive(&mut self, label_id: Uuid) -> Result<(), String> {
         let Some(label) = self
             .catalog
             .label_by_id(label_id)
@@ -500,11 +792,28 @@ impl Worker {
         Ok(())
     }
 
+    /// Check whether a document is ready for purge.
+    async fn deletion_is_due(&self, document_id: Uuid) -> Result<bool, String> {
+        let Some(document) = self
+            .catalog
+            .document(document_id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(false);
+        };
+        Ok(document.status == "purging"
+            || (document.status == "deleting"
+                && document.deleted_at.is_some_and(|deleted_at| {
+                    OffsetDateTime::now_utc() >= deleted_at + DELETION_GRACE
+                })))
+    }
+
     /// The purge of a document whose grace period is up. Blobs first, then
     /// the row: an object left behind is found by the orphan sweeper, while
     /// a row left behind pointing at deleted bytes is a listing entry that
     /// cannot be opened.
-    async fn delete(&self, document_id: Uuid) -> Result<(), String> {
+    async fn delete(&mut self, document_id: Uuid) -> Result<(), String> {
         let Some(document) = self
             .catalog
             .document(document_id)
@@ -513,14 +822,27 @@ impl Worker {
         else {
             return Ok(());
         };
-        if document.status != "deleting" {
+        if document.status != "deleting" && document.status != "purging" {
             return Ok(());
         }
         let Some(deleted_at) = document.deleted_at else {
             return Ok(());
         };
-        if OffsetDateTime::now_utc() < deleted_at + DELETION_GRACE {
-            return Ok(());
+        if document.status == "deleting" {
+            let due = deleted_at + DELETION_GRACE;
+            if OffsetDateTime::now_utc() < due {
+                self.schedule_at(due, Task::Delete(document_id));
+                return Ok(());
+            }
+            if !self
+                .catalog
+                .claim_document_purge(document_id)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                // Restoration won the row update. No blob has been touched.
+                return Ok(());
+            }
         }
         let mut keys: HashSet<String> = HashSet::new();
         for asset in self
@@ -531,27 +853,39 @@ impl Worker {
         {
             keys.insert(asset);
         }
-        if let Ok(Some(base)) = self.catalog.log_base(document_id).await {
+        if let Some(base) = self
+            .catalog
+            .log_base(document_id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
             keys.insert(base.snapshot_key);
         }
         // Every base still inside its grace, not just the newest: the row
         // that names each one is about to cascade away with the document.
-        if let Ok(superseded) = self.catalog.superseded_base_keys(document_id).await {
-            keys.extend(superseded);
-        }
+        keys.extend(
+            self.catalog
+                .superseded_base_keys(document_id)
+                .await
+                .map_err(|error| error.to_string())?,
+        );
         if !keys.is_empty() {
             // `delete` takes the whole batch at once now, so one deleted
             // document is one call instead of one round trip per blob.
             let keys: Vec<String> = keys.into_iter().collect();
             let count = keys.len();
-            if let Err(error) = self.blobs.delete(&keys).await {
-                ::log::warn!("could not delete {count} blob(s) for {document_id}: {error}");
-            }
+            self.blobs.delete(&keys).await.map_err(|error| {
+                format!("could not delete {count} blob(s) for {document_id}: {error}")
+            })?;
         }
         self.catalog
             .finish_document_deletion(document_id)
             .await
             .map_err(|error| error.to_string())?;
+        // A hastened purge may complete before the old grace reminder fires.
+        // Remove that armed entry so it cannot wake the worker for a row that
+        // no longer exists; the normal `clear` call then has nothing to keep.
+        self.deadlines.remove(&Task::Delete(document_id));
         Ok(())
     }
 }
@@ -594,20 +928,139 @@ pub(crate) fn prove_coverage(
 mod tests {
     use super::*;
 
-    /// A task that keeps failing has to keep being retried, and has to stop
-    /// getting faster about it. The ceiling is the part worth pinning: an
-    /// unbounded doubling reaches days, which is indistinguishable from
-    /// giving up.
+    #[tokio::test]
+    async fn a_full_queue_keeps_one_rescan_bit_without_waiting_senders() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(false)),
+            meter: Arc::new(Meter::default()),
+        };
+        let first = Task::Compact(Uuid::new_v4());
+        let dropped = Task::Compact(Uuid::new_v4());
+
+        handle.ask(first);
+        for _ in 0..10_000 {
+            handle.ask(dropped);
+        }
+        assert_eq!(rx.try_recv(), Ok(first));
+
+        // The old implementation spawned one `send` waiter per overflow.
+        // Once the receiver made room, those waiters would refill it. A
+        // bounded wake-up leaves only the durable-rescan bit behind.
+        tokio::task::yield_now().await;
+        assert!(rx.try_recv().is_err());
+        assert!(handle.take_rescan());
+        assert!(!handle.take_rescan());
+    }
+
     #[test]
-    fn the_backoff_doubles_and_then_stops_doubling() {
-        assert_eq!(backoff(1), BACKOFF);
-        assert_eq!(backoff(2), BACKOFF * 2);
-        assert_eq!(backoff(3), BACKOFF * 4);
-        assert_eq!(backoff(7), BACKOFF_CEILING);
-        assert_eq!(backoff(1_000), BACKOFF_CEILING);
-        // Failure counts start at one; a zero would be a caller's bug, and
-        // it must not underflow into the ceiling.
-        assert_eq!(backoff(0), BACKOFF);
+    fn overflow_rescan_waits_for_all_cursor_pages() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(true)),
+            meter: Arc::new(Meter::default()),
+        };
+        let mut local = VecDeque::from([Task::Scan(PendingWorkCursor::default())]);
+
+        // A continuation means the current full scan still has pages to
+        // visit. The overflow bit must survive it, or a newer durable row
+        // could be missed after an earlier cursor page keeps returning work.
+        enqueue_overflow_scan(&handle, &mut local);
+        assert_eq!(local.len(), 1);
+        assert!(handle.rescan.load(Ordering::Acquire));
+
+        local.pop_front();
+        enqueue_overflow_scan(&handle, &mut local);
+        assert_eq!(
+            local,
+            VecDeque::from([Task::Scan(PendingWorkCursor::default())])
+        );
+        assert!(!handle.rescan.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn due_rescan_is_enqueued_now_or_retained_behind_a_cursor() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(false)),
+            meter: Arc::new(Meter::default()),
+        };
+        let mut local = VecDeque::new();
+        enqueue_due_rescan(&handle, &mut local, true);
+        assert_eq!(
+            local,
+            VecDeque::from([Task::Scan(PendingWorkCursor::default())])
+        );
+        assert!(!handle.rescan.load(Ordering::Acquire));
+
+        let handle = Handle {
+            tx: tokio::sync::mpsc::channel(1).0,
+            rescan: Arc::new(AtomicBool::new(false)),
+            meter: Arc::new(Meter::default()),
+        };
+        let cursor = PendingWorkCursor {
+            archives: Uuid::from_u128(42),
+            ..Default::default()
+        };
+        let mut local = VecDeque::from([Task::Scan(cursor)]);
+        let mut deadlines = Deadlines::new();
+        let now = tokio::time::Instant::now();
+        for _ in 0..super::super::schedule::DEADLINES {
+            deadlines.at(
+                Task::Delete(Uuid::new_v4()),
+                now + Duration::from_secs(86400),
+            );
+        }
+        deadlines.failed(Task::Archive(Uuid::new_v4()), now - Duration::from_secs(61));
+        enqueue_due_rescan(&handle, &mut local, deadlines.due(now).rescan);
+        assert_eq!(local.len(), 1);
+        assert!(handle.rescan.load(Ordering::Acquire));
+
+        enqueue_overflow_scan(&handle, &mut local);
+        assert_eq!(local.pop_front(), Some(Task::Scan(cursor)));
+        enqueue_overflow_scan(&handle, &mut local);
+        assert_eq!(
+            local.pop_front(),
+            Some(Task::Scan(PendingWorkCursor::default()))
+        );
+        assert!(!handle.rescan.load(Ordering::Acquire));
+        enqueue_due_rescan(&handle, &mut local, deadlines.due(now).rescan);
+        assert!(local.is_empty(), "a spent overflow must not rescan forever");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn delete_wakeups_preserve_failure_backoff_without_querying_storage() {
+        let catalog = Arc::new(
+            PostgresCatalog::connect(super::super::postgres::PostgresOptions::new(
+                std::env::var("LIBREPAPER_TEST_POSTGRES_URL").expect("test database URL"),
+            ))
+            .await
+            .unwrap(),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let blobs: Arc<dyn BlobStore> =
+            Arc::new(super::super::blob::FsStore::new(directory.path(), false));
+        let config = Arc::new(crate::config::Configuration::default());
+        let registry = Registry::new(
+            catalog.clone(),
+            blobs.clone(),
+            config.clone(),
+            "test".into(),
+        );
+        let (mut worker, _) = Worker::new(catalog.clone(), blobs, registry, config);
+        let task = Task::Delete(Uuid::new_v4());
+        worker.deadlines.failed(task, tokio::time::Instant::now());
+        let deadline = worker.deadlines.next();
+        // Any accidental storage query now fails and increments the failure
+        // streak. A duplicate wake-up must leave the pending retry untouched.
+        catalog.close().await;
+        worker.process(task).await;
+        assert_eq!(worker.deadlines.failures(&task), 1);
+        assert_eq!(worker.deadlines.next(), deadline);
     }
 
     fn document_with(text: &str) -> LoroDoc {

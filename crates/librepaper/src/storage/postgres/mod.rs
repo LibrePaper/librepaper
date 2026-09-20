@@ -23,8 +23,8 @@ mod repository;
 
 pub use commit::Authority;
 pub use document_log::{
-    FlushRow, LogBase, LogHead, LogRow, NewSnapshot, PendingWork, RowCoverage,
-    MAX_RECOVERABLE_LOG_BYTES,
+    ActivatedLogBase, FlushRow, LogBase, LogHead, LogRow, NewSnapshot, PendingWork,
+    PendingWorkCursor, RowCoverage, MAX_RECOVERABLE_LOG_BYTES,
 };
 pub use labels::{LabelRecord, NewLabel};
 pub use marks::{CountRecord, MarkRecord};
@@ -238,6 +238,7 @@ mod tests {
             )
             .await
             .unwrap()
+            .map(|activated| activated.base)
     }
 
     /// Every table the "server is a log" schema still has. Each test starts

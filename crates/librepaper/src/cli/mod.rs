@@ -9,7 +9,7 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
-use crate::config::{parse_budget_transfer, Configuration};
+use crate::config::Configuration;
 use crate::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use crate::storage::StorageFlags;
 use crate::util::{die, new_id};
@@ -183,10 +183,6 @@ pub(crate) struct ServiceFlags {
     /// Without it, such a document is set in the compiler's default faces.
     #[arg(long, env = "LIBREPAPER_TYPST_FONTS", value_name = "DIR")]
     typst_fonts: Option<String>,
-    /// Daily origin response allowance. Bare integers mean bytes; binary
-    /// suffixes such as 10GiB are accepted. Omit for unlimited transfer.
-    #[arg(long = "transfer-budget", value_parser = parse_budget_transfer, env = "LIBREPAPER_BUDGET_TRANSFER", value_name = "BYTES")]
-    budget_transfer: Option<u64>,
     /// Do not run the local app for this machine. By default `serve` also
     /// starts the loopback service that lets an editor whose browser is on
     /// this host render Quarto documents with the tools installed here, with
@@ -221,73 +217,11 @@ impl ServiceFlags {
                     path.display()
                 ))
             });
-            config.apply_cost_overrides(file.cost);
             if let Err(error) = config.apply_backup_overrides(file.backup) {
                 die(format!("invalid advanced backup policy: {error}"));
             }
             if let Some(proxies) = file.trusted_proxies {
                 config.cost.trusted_proxies = proxies;
-                config
-                    .policy_origins
-                    .insert("cost.trusted_proxies".into(), "configuration file".into());
-            }
-            for (name, value) in file.session {
-                let signed = i64::try_from(value)
-                    .unwrap_or_else(|_| die(format!("session.{name} is too large")));
-                match name.as_str() {
-                    "rooms_max" => config.session.rooms_max = value,
-                    "rooms_bytes_max" => config.session.rooms_bytes_max = value,
-                    "peer_queue" if value > 0 => config.session.peer_queue = value,
-                    "inline_state_max" => config.session.inline_state_max = value,
-                    "updates_per_minute" if value > 0 => config.session.updates_per_minute = signed,
-                    "label_owner_per_hour" => config.session.label_owner_per_hour = signed,
-                    "label_deployment_per_hour" => {
-                        config.session.label_deployment_per_hour = signed
-                    }
-                    "write_after_seconds" if value > 0 => {
-                        config.session.write_after_seconds = signed
-                    }
-                    _ => die(format!("unknown or invalid advanced session limit: {name}")),
-                }
-                config
-                    .policy_origins
-                    .insert(format!("session.{name}"), "configuration file".into());
-            }
-            for (name, value) in file.sockets {
-                if value == 0 {
-                    die(format!("sockets.{name} must be positive"));
-                }
-                let count = usize::try_from(value)
-                    .unwrap_or_else(|_| die(format!("sockets.{name} is too large")));
-                match name.as_str() {
-                    "deployment_max" => config.sockets.deployment_max = count,
-                    "network_max" => config.sockets.network_max = count,
-                    "principal_max" => config.sockets.principal_max = count,
-                    "document_max" => config.sockets.document_max = count,
-                    "document_readers_max" => config.sockets.document_readers_max = count,
-                    "document_commenters_max" => config.sockets.document_commenters_max = count,
-                    "document_editors_max" => config.sockets.document_editors_max = count,
-                    "queue_bytes_max" => config.sockets.queue_bytes_max = count,
-                    "state_network_bytes" => config.sockets.state_network_bytes = value,
-                    "state_deployment_bytes" => config.sockets.state_deployment_bytes = value,
-                    "idle_seconds" => config.sockets.idle_seconds = value,
-                    _ => die(format!("unknown advanced socket limit: {name}")),
-                }
-                config
-                    .policy_origins
-                    .insert(format!("sockets.{name}"), "configuration file".into());
-            }
-            for (name, value) in file.persistence {
-                match name.as_str() {
-                    "max_encoded_snapshot_bytes" => {
-                        config.persistence.max_encoded_snapshot_bytes = value
-                    }
-                    "max_staging_bytes" => config.persistence.max_staging_bytes = value,
-                    _ => die(format!("unknown advanced persistence limit: {name}")),
-                }
-                config
-                    .policy_origins
-                    .insert(format!("persistence.{name}"), "configuration file".into());
             }
         }
         if let Err(err) = config.set_budget_document_assets(self.budget_document_assets) {
@@ -302,9 +236,6 @@ impl ServiceFlags {
         if let Err(err) = config.set_counts(self.max_documents, self.uploads_per_hour) {
             die(err);
         }
-        if let Some(transfer) = self.budget_transfer {
-            config.cost.transfer_bytes = Some(transfer);
-        }
         if let Err(err) = config.cost.validate() {
             die(err);
         }
@@ -314,65 +245,6 @@ impl ServiceFlags {
         if let Err(err) = config.persistence().validate() {
             die(err);
         }
-        for (key, flag, environment, present) in [
-            (
-                "cost.transfer_bytes",
-                "transfer-budget",
-                "LIBREPAPER_BUDGET_TRANSFER",
-                self.budget_transfer.is_some(),
-            ),
-            (
-                "max_assets",
-                "document-assets-limit",
-                "LIBREPAPER_BUDGET_DOCUMENT_ASSETS",
-                self.budget_document_assets.is_some(),
-            ),
-            (
-                "max_document",
-                "document-size-limit",
-                "LIBREPAPER_MAX_SIZE",
-                self.max_size.is_some(),
-            ),
-            (
-                "storage.total",
-                "deployment-storage-limit",
-                "LIBREPAPER_STORAGE",
-                self.storage.is_some(),
-            ),
-            (
-                "storage.per_owner",
-                "publisher-storage-limit",
-                "LIBREPAPER_QUOTA",
-                self.quota.is_some(),
-            ),
-            (
-                "storage.documents_per_owner",
-                "publisher-document-limit",
-                "LIBREPAPER_MAX_DOCUMENTS",
-                self.max_documents.is_some(),
-            ),
-            (
-                "storage.uploads_per_hour",
-                "publisher-upload-limit",
-                "LIBREPAPER_UPLOADS_PER_HOUR",
-                self.uploads_per_hour.is_some(),
-            ),
-        ] {
-            if present {
-                let spelling = format!("--{flag}");
-                let cli = std::env::args()
-                    .take_while(|arg| arg != "--")
-                    .any(|arg| arg == spelling || arg.starts_with(&format!("{spelling}=")));
-                let source = if cli {
-                    "CLI"
-                } else if std::env::var_os(environment).is_some() {
-                    "environment"
-                } else {
-                    "CLI"
-                };
-                config.policy_origins.insert(key.into(), source.into());
-            }
-        }
         config
     }
 }
@@ -380,16 +252,8 @@ impl ServiceFlags {
 #[derive(serde::Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct AdvancedConfigFile {
-    #[serde(default)]
-    cost: crate::config::CostPolicyOverrides,
     /// The explicit peer trust boundary.
     trusted_proxies: Option<Vec<String>>,
-    #[serde(default)]
-    session: std::collections::BTreeMap<String, usize>,
-    #[serde(default)]
-    persistence: std::collections::BTreeMap<String, usize>,
-    #[serde(default)]
-    sockets: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
     backup: crate::config::BackupPolicyOverrides,
 }
@@ -945,30 +809,5 @@ mod socket_policy_tests {
             "copy",
         ]);
         assert!(project.is_ok());
-    }
-
-    #[test]
-    fn advanced_configuration_accepts_separate_document_role_caps() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), "sockets:\n  document_readers_max: 80\n  document_commenters_max: 12\n  document_editors_max: 5\n").unwrap();
-        let config = ServiceFlags {
-            advanced_config: Some(file.path().to_path_buf()),
-            ..Default::default()
-        }
-        .configuration();
-        assert_eq!(config.sockets.document_readers_max, 80);
-        assert_eq!(config.sockets.document_commenters_max, 12);
-        assert_eq!(config.sockets.document_editors_max, 5);
-        assert_eq!(config.sockets.document_max, 256);
-        for name in [
-            "document_readers_max",
-            "document_commenters_max",
-            "document_editors_max",
-        ] {
-            assert_eq!(
-                config.policy_origins[&format!("sockets.{name}")],
-                "configuration file"
-            );
-        }
     }
 }

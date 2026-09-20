@@ -98,19 +98,14 @@ pub struct Configuration {
     /// Sizes are bytes of stored HTML; every index entry records its own.
     pub storage: StorageLimit,
 
-    /// The deployment-wide cost envelope. Most of these are implementation
-    /// guardrails with documented defaults; the daily transfer allowance is
-    /// the one everyday cost control exposed by the CLI. Keeping this policy
-    /// beside the document and storage limits makes the effective policy a
-    /// single value for startup reporting and the server.
+    /// The deployment-wide cost envelope: implementation guardrails with
+    /// documented defaults.
     #[serde(skip)]
     pub cost: CostPolicy,
     #[serde(skip)]
     pub sockets: crate::server::socket_budget::SocketPolicy,
     /// Optional reporting metadata for operator-managed backups.
     pub backup: BackupPolicy,
-    #[serde(skip)]
-    pub policy_origins: std::collections::BTreeMap<String, String>,
 
     /// The only file types the reader can frame and anchor comments into. The
     /// upload page checks them before sending, and the server checks them
@@ -263,25 +258,13 @@ impl BackupPolicy {
     }
 }
 
-/// Versioned deployment cost policy. Values are deliberately expressed in
-/// bytes, counts, and rolling windows rather than currency so the policy is
+/// Deployment cost policy. Values are deliberately expressed in bytes,
+/// counts, and rolling windows rather than currency so the policy is
 /// portable between hosts and providers.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CostPolicy {
-    /// Schema version for status output and future advanced configuration.
-    pub version: u32,
-    /// Origin response bytes allowed in a rolling 24-hour window. `None`
-    /// retains the historical unlimited behavior; `Some(0)` refuses ordinary
-    /// transfer while leaving the emergency allowance available.
-    pub transfer_bytes: Option<u64>,
-    /// Internal reserve for health, authentication, deletion, export-control,
-    /// quota-status, and durability acknowledgements.
-    pub emergency_bytes: u64,
-    /// Deployment request guardrails, each measured over one rolling minute.
-    pub requests_per_minute: usize,
-    pub requests_per_network_minute: usize,
+    /// Deployment request guardrail, measured over one rolling minute.
     pub requests_per_principal_minute: usize,
-    pub requests_per_document_minute: usize,
     /// Maximum concurrent compiler/font/artifact transfers admitted by the
     /// origin.
     pub artifact_transfers: usize,
@@ -294,42 +277,16 @@ pub struct CostPolicy {
     pub trusted_proxies: Vec<String>,
 }
 
-pub const COST_POLICY_VERSION: u32 = 1;
-pub const DEFAULT_EMERGENCY_BYTES: u64 = 1 << 20;
-pub const DEFAULT_REQUESTS_PER_MINUTE: usize = 60_000;
-pub const DEFAULT_REQUESTS_PER_NETWORK_MINUTE: usize = 6_000;
 pub const DEFAULT_REQUESTS_PER_PRINCIPAL_MINUTE: usize = 6_000;
-pub const DEFAULT_REQUESTS_PER_DOCUMENT_MINUTE: usize = 12_000;
 pub const DEFAULT_ARTIFACT_TRANSFERS: usize = 64;
 /// Maximum decoded/request parsing memory reserved across concurrent HTTP
 /// handlers. Four times the incoming body estimate is admitted before reads.
 pub const DEFAULT_REQUEST_BODY_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 
-/// Optional advanced configuration-file values. Every member is optional so
-/// operators can override one guardrail without copying the policy defaults.
-#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CostPolicyOverrides {
-    pub transfer_bytes: Option<u64>,
-    pub requests_per_minute: Option<usize>,
-    pub requests_per_network_minute: Option<usize>,
-    pub requests_per_principal_minute: Option<usize>,
-    pub requests_per_document_minute: Option<usize>,
-    pub artifact_transfers: Option<usize>,
-    pub work_concurrency: Option<usize>,
-    pub request_body_memory_bytes: Option<usize>,
-}
-
 impl Default for CostPolicy {
     fn default() -> Self {
         Self {
-            version: COST_POLICY_VERSION,
-            transfer_bytes: None,
-            emergency_bytes: DEFAULT_EMERGENCY_BYTES,
-            requests_per_minute: DEFAULT_REQUESTS_PER_MINUTE,
-            requests_per_network_minute: DEFAULT_REQUESTS_PER_NETWORK_MINUTE,
             requests_per_principal_minute: DEFAULT_REQUESTS_PER_PRINCIPAL_MINUTE,
-            requests_per_document_minute: DEFAULT_REQUESTS_PER_DOCUMENT_MINUTE,
             artifact_transfers: DEFAULT_ARTIFACT_TRANSFERS,
             work_concurrency: 64,
             request_body_memory_bytes: DEFAULT_REQUEST_BODY_MEMORY_BYTES,
@@ -339,25 +296,6 @@ impl Default for CostPolicy {
 }
 
 impl CostPolicy {
-    /// The machine-readable policy used by operator status output. The
-    /// explicit field names keep an omitted advanced setting distinguishable
-    /// from an unlimited transfer budget.
-    pub fn effective_policy(&self) -> serde_json::Value {
-        serde_json::json!({
-            "version": self.version,
-            "transfer_bytes": self.transfer_bytes,
-            "emergency_bytes": self.emergency_bytes,
-            "requests_per_minute": self.requests_per_minute,
-            "requests_per_network_minute": self.requests_per_network_minute,
-            "requests_per_principal_minute": self.requests_per_principal_minute,
-            "requests_per_document_minute": self.requests_per_document_minute,
-            "artifact_transfers": self.artifact_transfers,
-            "work_concurrency": self.work_concurrency,
-            "request_body_memory_bytes": self.request_body_memory_bytes,
-            "trusted_proxies": self.trusted_proxies,
-        })
-    }
-
     pub fn validate(&self) -> Result<(), String> {
         if self.work_concurrency == 0 {
             return Err("cost.work_concurrency must be positive".into());
@@ -368,21 +306,7 @@ impl CostPolicy {
                 "cost.request_body_memory_bytes must be between 1 and 4294967295 bytes".into(),
             );
         }
-        if self.version != COST_POLICY_VERSION {
-            return Err(format!(
-                "unsupported cost policy version {}; this build supports {}",
-                self.version, COST_POLICY_VERSION
-            ));
-        }
-        if self.emergency_bytes == 0 {
-            return Err("the emergency transfer allowance must be positive".into());
-        }
-        if self.requests_per_minute == 0
-            || self.requests_per_network_minute == 0
-            || self.requests_per_principal_minute == 0
-            || self.requests_per_document_minute == 0
-            || self.artifact_transfers == 0
-        {
+        if self.requests_per_principal_minute == 0 || self.artifact_transfers == 0 {
             return Err("cost request and concurrency guardrails must be positive".into());
         }
         if self.trusted_proxies.len() > 128 {
@@ -429,47 +353,6 @@ fn validate_proxy_network(value: &str) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// Parse a daily transfer allowance. Binary units avoid ambiguity when an
-/// operator is budgeting storage and network together. A bare integer is
-/// bytes, as required by the CLI contract.
-pub fn parse_budget_transfer(value: &str) -> Result<u64, String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err("--transfer-budget needs a byte count (for example 10GiB)".into());
-    }
-    if value.starts_with('-') {
-        return Err(format!("--transfer-budget {value:?} cannot be negative"));
-    }
-    let split = value
-        .bytes()
-        .position(|byte| !byte.is_ascii_digit())
-        .unwrap_or(value.len());
-    let (digits, unit) = value.split_at(split);
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(format!(
-            "--transfer-budget {value:?} is not a byte count; use an integer with an optional B, KiB, MiB, GiB, or TiB suffix"
-        ));
-    }
-    let number = digits
-        .parse::<u64>()
-        .map_err(|_| format!("--transfer-budget {value:?} is too large"))?;
-    let multiplier = match unit.to_ascii_lowercase().as_str() {
-        "" | "b" => 1,
-        "kib" => 1 << 10,
-        "mib" => 1 << 20,
-        "gib" => 1 << 30,
-        "tib" => 1 << 40,
-        _ => {
-            return Err(format!(
-                "--transfer-budget {value:?} has an unknown unit; use B, KiB, MiB, GiB, or TiB"
-            ));
-        }
-    };
-    number
-        .checked_mul(multiplier)
-        .ok_or_else(|| format!("--transfer-budget {value:?} is too large"))
 }
 
 /// What the server-held document may cost: how often it is written, how big a
@@ -587,7 +470,6 @@ impl Default for Configuration {
             cost: CostPolicy::default(),
             sockets: crate::server::socket_budget::SocketPolicy::default(),
             backup: BackupPolicy::default(),
-            policy_origins: std::collections::BTreeMap::new(),
             // What the upload form takes. Every one of these is a source
             // format `document_format` names and `storable_source` allows, so
             // the list a person is shown and the list the publish route
@@ -639,366 +521,6 @@ impl Default for Configuration {
 }
 
 impl Configuration {
-    /// Return the complete effective operator policy for startup and the
-    /// loopback status surface. Callers should redact `trusted_proxies` when
-    /// exposing a public configuration response.
-    pub fn effective_policy(&self) -> serde_json::Value {
-        serde_json::json!({
-            "version": COST_POLICY_VERSION,
-            "cost": self.cost.effective_policy(),
-            "limits": self.policy_limits(),
-            "storage": self.storage,
-            "backup": self.backup,
-            "document": {
-                "max_source_bytes": self.max_document,
-                "max_input_assets_bytes": self.max_assets,
-                "max_asset_bytes": self.max_asset,
-            },
-            "session": self.session,
-        })
-    }
-
-    pub fn policy_limits(&self) -> Vec<serde_json::Value> {
-        use serde_json::json;
-        let mut limits = Vec::new();
-        let mut add = |name: &str,
-                       value: serde_json::Value,
-                       units: &str,
-                       scope: &str,
-                       window: Option<u64>| {
-            limits.push(json!({"name":name,"value":value,"units":units,"scope":scope,"window_seconds":window,"origin":self.policy_origins.get(name).map(String::as_str).unwrap_or("built-in default")}));
-        };
-        add(
-            "cost.transfer_bytes",
-            self.cost
-                .transfer_bytes
-                .map_or(json!("unlimited"), |n| json!(n)),
-            "bytes",
-            "deployment",
-            Some(86400),
-        );
-        add(
-            "cost.emergency_bytes",
-            json!(self.cost.emergency_bytes),
-            "bytes",
-            "deployment",
-            Some(86400),
-        );
-        for (name, value, scope) in [
-            (
-                "cost.requests_per_minute",
-                self.cost.requests_per_minute,
-                "deployment",
-            ),
-            (
-                "cost.requests_per_network_minute",
-                self.cost.requests_per_network_minute,
-                "network",
-            ),
-            (
-                "cost.requests_per_principal_minute",
-                self.cost.requests_per_principal_minute,
-                "principal",
-            ),
-            (
-                "cost.requests_per_document_minute",
-                self.cost.requests_per_document_minute,
-                "document",
-            ),
-        ] {
-            add(name, json!(value), "requests", scope, Some(60));
-        }
-        add(
-            "cost.work_concurrency",
-            json!(self.cost.work_concurrency),
-            "handlers",
-            "deployment",
-            None,
-        );
-        add(
-            "cost.request_body_memory_bytes",
-            json!(self.cost.request_body_memory_bytes),
-            "bytes",
-            "deployment",
-            None,
-        );
-        add(
-            "work.emergency_concurrency",
-            json!(16),
-            "handlers",
-            "deployment",
-            None,
-        );
-        add(
-            "cost.artifact_transfers",
-            json!(self.cost.artifact_transfers),
-            "concurrent transfers",
-            "deployment",
-            None,
-        );
-        add(
-            "storage.total",
-            json!(self.storage.total),
-            "bytes",
-            "deployment",
-            None,
-        );
-        add(
-            "storage.per_owner",
-            json!(self.storage.per_owner),
-            "bytes",
-            "owner",
-            None,
-        );
-        add(
-            "storage.documents_per_owner",
-            json!(self.storage.documents_per_owner),
-            "documents",
-            "owner",
-            None,
-        );
-        add(
-            "storage.uploads_per_hour",
-            json!(self.storage.uploads_per_hour),
-            "uploads",
-            "owner",
-            Some(3600),
-        );
-        add(
-            "max_document",
-            json!(self.max_document),
-            "bytes",
-            "document source",
-            None,
-        );
-        add(
-            "max_assets",
-            json!(self.max_assets),
-            "bytes",
-            "document inputs",
-            None,
-        );
-        add(
-            "max_asset",
-            json!(self.max_asset),
-            "bytes",
-            "input file",
-            None,
-        );
-        add(
-            "session.rooms_max",
-            json!(self.session.rooms_max),
-            "rooms",
-            "deployment",
-            None,
-        );
-        add(
-            "session.rooms_bytes_max",
-            json!(self.session.rooms_bytes_max),
-            "bytes",
-            "resident rooms",
-            None,
-        );
-        add(
-            "session.peer_queue",
-            json!(self.session.peer_queue),
-            "frames",
-            "peer",
-            None,
-        );
-        add(
-            "session.updates_per_minute",
-            json!(self.session.updates_per_minute),
-            "updates",
-            "peer",
-            Some(60),
-        );
-        add(
-            "session.label_owner_per_hour",
-            json!(self.session.label_owner_per_hour),
-            "labels",
-            "owner",
-            Some(3600),
-        );
-        add(
-            "session.label_deployment_per_hour",
-            json!(self.session.label_deployment_per_hour),
-            "labels",
-            "deployment",
-            Some(3600),
-        );
-        add(
-            "persistence.max_encoded_snapshot_bytes",
-            json!(self.persistence.max_encoded_snapshot_bytes),
-            "bytes",
-            "snapshot",
-            None,
-        );
-        add(
-            "persistence.max_staging_bytes",
-            json!(self.persistence.max_staging_bytes),
-            "bytes",
-            "persistence memory",
-            None,
-        );
-        add("oauth.requests", json!(16), "requests", "deployment", None);
-        add(
-            "oauth.lookup_requests",
-            json!(8),
-            "requests",
-            "deployment",
-            None,
-        );
-        add(
-            "oauth.connect_timeout",
-            json!(5),
-            "seconds",
-            "provider request",
-            None,
-        );
-        add(
-            "oauth.total_timeout",
-            json!(15),
-            "seconds",
-            "provider request",
-            None,
-        );
-        add("fonts.files", json!(4096), "files", "font library", None);
-        add(
-            "requests.emergency",
-            json!(300),
-            "requests",
-            "deployment",
-            Some(60),
-        );
-        add(
-            "requests.emergency_network",
-            json!(60),
-            "requests",
-            "network",
-            Some(60),
-        );
-        add(
-            "requests.identity_keys",
-            json!(4096),
-            "identities",
-            "deployment",
-            Some(60),
-        );
-        add(
-            "proxy.header_bytes",
-            json!(2048),
-            "bytes",
-            "forwarding chain",
-            None,
-        );
-        add(
-            "proxy.hops",
-            json!(32),
-            "addresses",
-            "forwarding chain",
-            None,
-        );
-        for (name, value) in serde_json::to_value(self.sockets)
-            .unwrap()
-            .as_object()
-            .unwrap()
-        {
-            let units = if name.contains("bytes") {
-                "bytes"
-            } else if name.ends_with("seconds") {
-                "seconds"
-            } else {
-                "connections"
-            };
-            add(
-                &format!("sockets.{name}"),
-                value.clone(),
-                units,
-                "live collaboration",
-                name.starts_with("state_").then_some(3600),
-            );
-        }
-        add(
-            "backup.warning_count",
-            json!(self.backup.warning_count),
-            "backups",
-            "deployment",
-            None,
-        );
-        if let Some(frequency) = self.backup.frequency {
-            add(
-                "backup.frequency",
-                json!(frequency),
-                "seconds",
-                "deployment",
-                None,
-            );
-        }
-        if let Some(retained_count) = self.backup.retained_count {
-            add(
-                "backup.retained_count",
-                json!(retained_count),
-                "backups",
-                "deployment",
-                None,
-            );
-        }
-        if let Some(destination_class) = &self.backup.destination_class {
-            add(
-                "backup.destination_class",
-                json!(destination_class),
-                "class",
-                "backup",
-                None,
-            );
-        }
-        if let Some(encrypted) = self.backup.encrypted {
-            add(
-                "backup.encrypted",
-                json!(encrypted),
-                "boolean",
-                "backup",
-                None,
-            );
-        }
-        // Include the remaining existing numeric guardrails without making
-        // operators copy defaults into their optional configuration file.
-        fn numeric_limits(
-            value: &serde_json::Value,
-            prefix: &str,
-            origins: &std::collections::BTreeMap<String, String>,
-            limits: &mut Vec<serde_json::Value>,
-        ) {
-            if let Some(fields) = value.as_object() {
-                for (name, value) in fields {
-                    let name = if prefix.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{prefix}.{name}")
-                    };
-                    numeric_limits(value, &name, origins, limits);
-                }
-            } else if value.is_number() && !limits.iter().any(|limit| limit["name"] == prefix) {
-                let units = if prefix.contains("bytes") {
-                    "bytes"
-                } else if prefix.ends_with("seconds") {
-                    "seconds"
-                } else {
-                    "count"
-                };
-                limits.push(serde_json::json!({"name":prefix,"value":value,"units":units,"scope":"deployment policy","window_seconds":null,"origin":origins.get(prefix).map(String::as_str).unwrap_or("built-in default")}));
-            }
-        }
-        numeric_limits(
-            &serde_json::to_value(self).unwrap_or_default(),
-            "",
-            &self.policy_origins,
-            &mut limits,
-        );
-        limits
-    }
-
     /// Keeps an unknown motivation out of storage, falling back to the default
     /// rather than rejecting the annotation.
     pub fn allowed_motivation(&self, value: &str) -> String {
@@ -1070,58 +592,11 @@ impl Configuration {
         Ok(())
     }
 
-    /// Apply advanced, file-backed policy overrides without requiring callers
-    /// to restate the complete policy. This is intentionally separate from the
-    /// everyday CLI flags.
-    pub fn apply_cost_overrides(&mut self, overrides: CostPolicyOverrides) {
-        if let Ok(serde_json::Value::Object(values)) = serde_json::to_value(&overrides) {
-            for (name, value) in values {
-                if !value.is_null() {
-                    self.policy_origins
-                        .insert(format!("cost.{name}"), "configuration file".into());
-                }
-            }
-        }
-        if let Some(value) = overrides.transfer_bytes {
-            self.cost.transfer_bytes = Some(value);
-        }
-        if let Some(value) = overrides.requests_per_minute {
-            self.cost.requests_per_minute = value;
-        }
-        if let Some(value) = overrides.requests_per_network_minute {
-            self.cost.requests_per_network_minute = value;
-        }
-        if let Some(value) = overrides.requests_per_principal_minute {
-            self.cost.requests_per_principal_minute = value;
-        }
-        if let Some(value) = overrides.requests_per_document_minute {
-            self.cost.requests_per_document_minute = value;
-        }
-        if let Some(value) = overrides.work_concurrency {
-            self.cost.work_concurrency = value;
-        }
-        if let Some(value) = overrides.artifact_transfers {
-            self.cost.artifact_transfers = value;
-        }
-        if let Some(value) = overrides.request_body_memory_bytes {
-            self.cost.request_body_memory_bytes = value;
-        }
-    }
-
-    /// Apply the optional operator-declared backup policy and record the
-    /// configuration origin for every declared member.
+    /// Apply the optional operator-declared backup policy.
     pub fn apply_backup_overrides(
         &mut self,
         overrides: BackupPolicyOverrides,
     ) -> Result<(), String> {
-        if let Ok(serde_json::Value::Object(values)) = serde_json::to_value(&overrides) {
-            for (name, value) in values {
-                if !value.is_null() {
-                    self.policy_origins
-                        .insert(format!("backup.{name}"), "configuration file".into());
-                }
-            }
-        }
         self.backup.apply(overrides)
     }
 
@@ -1322,12 +797,6 @@ mod tests {
     }
 
     #[test]
-    fn emergency_bytes_is_not_an_advanced_override() {
-        let parsed = serde_yaml::from_str::<CostPolicyOverrides>("emergency_bytes: 1");
-        assert!(parsed.is_err());
-    }
-
-    #[test]
     fn backup_policy_overrides_are_bounded_and_reported() {
         let overrides: BackupPolicyOverrides = serde_yaml::from_str(
             "destination_class: object-store\nfrequency: 86400\nretained_count: 30\nencrypted: true\nwarning_count: 20\n",
@@ -1336,14 +805,5 @@ mod tests {
         let mut config = Configuration::default();
         config.apply_backup_overrides(overrides).unwrap();
         assert_eq!(config.backup.warning_count, 20);
-        assert_eq!(
-            config.policy_origins["backup.warning_count"],
-            "configuration file"
-        );
-        assert!(config
-            .policy_limits()
-            .iter()
-            .any(|limit| limit["name"] == "backup.warning_count"
-                && limit["origin"] == "configuration file"));
     }
 }

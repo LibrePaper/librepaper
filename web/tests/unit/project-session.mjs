@@ -75,6 +75,55 @@ try {
   swapping.leave();
 }
 
+// The bound source must use the projection's canonical main selection. A raw
+// meta.main value can name a deleted file, or a file whose path is rejected
+// once deployment rules arrive; in either case the projection falls back to a
+// deterministic text and the editor must follow that same text.
+{
+  const rules = { text_extensions: [".md"], asset_extensions: [], derived_extensions: [], max_path: 200 };
+  const canonical = createProjectSession({ send: () => {}, onState: () => {} });
+  try {
+    const first = canonical.addText("first.md", "first");
+    canonical.addText("second.md", "second");
+    canonical.setMain(first);
+    canonical.doc.commit();
+    assert.equal(canonical.text.toString(), "first");
+
+    canonical.setMain("deleted-main");
+    canonical.doc.commit();
+    assert.equal(canonical.mainId(), canonical.list()[0].id, "missing declarations use the projected fallback");
+    assert.equal(canonical.text?.id, canonical.textOf(canonical.mainId()).id, "text follows the projected fallback id");
+    assert.equal(canonical.text.toString(), canonical.textOf(canonical.mainId()).toString());
+
+    const ruled = createProjectSession({ send: () => {}, onState: () => {} });
+    try {
+      ruled.addText("valid.md", "valid");
+      const invalid = ruled.addText("invalid.txt", "invalid");
+      ruled.setMain(invalid);
+      ruled.doc.commit();
+      let changes = 0;
+      ruled.watchSource(() => { changes += 1; });
+      ruled.setRules(rules);
+      assert.equal(ruled.mainPath(), "valid.md", "rules reject the declared non-text main path");
+      assert.notEqual(ruled.mainId(), invalid, "rules fallback does not bind the rejected file");
+      assert.equal(ruled.text.toString(), "valid", "rules fallback and bound text agree");
+
+      const beforeInvalidEdit = changes;
+      ruled.textOf(invalid).insert(0, "still-invalid");
+      ruled.doc.commit();
+      assert.equal(changes, beforeInvalidEdit, "edits to the rejected old main do not reach the source watcher");
+
+      ruled.textOf(ruled.mainId()).insert(0, "now-bound");
+      ruled.doc.commit();
+      assert.equal(changes, beforeInvalidEdit + 1, "edits to the projected fallback reach the source watcher");
+    } finally {
+      ruled.leave();
+    }
+  } finally {
+    canonical.leave();
+  }
+}
+
 const first = projectIdentity({ server: "https://paper.example/path", slug: "paper", createdAt: "one" });
 const same = projectIdentity({ server: "https://paper.example", slug: "paper", createdAt: "one" });
 const recreated = projectIdentity({ server: "https://paper.example", slug: "paper", createdAt: "two" });
@@ -570,4 +619,349 @@ function sourceLog() {
   }
 }
 
-console.log("project-session: persistence, identity, swap, directory changes, protocol join shapes, doc-gap and acknowledgement boundaries passed");
+
+// ---------------------------------------------------------------------------
+// Join work outliving the connection it was scheduled on.
+//
+// A join is several awaits long: local hydration, a base fetched over HTTP,
+// the digest that binds it. None of them stops the socket from dropping or
+// the tab from closing underneath. Each of the checks below suspends the join
+// at one of those awaits, ends the connection, and then releases the await
+// with a perfectly valid answer -- which is the case that used to revive a
+// session that had already been given up.
+// ---------------------------------------------------------------------------
+
+const digestOf = async (bytes) => {
+  const hashed = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(hashed)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+const gate = () => {
+  const held = {};
+  held.promise = new Promise((resolve, reject) => { held.resolve = resolve; held.reject = reject; });
+  return held;
+};
+
+// `leave()` while the referenced base is downloading. Releasing the fetch with
+// the right bytes and the right digest must not join, report or send.
+{
+  const { base, head } = sourceLog();
+  const held = gate();
+  const sentL = [];
+  const statesL = [];
+  const joiner = createProjectSession({
+    send: (message) => sentL.push(message),
+    onState: (state) => statesL.push(state),
+    presenceId: () => "leave-during-fetch",
+    fetchReference: async () => { await held.promise; return base; },
+  });
+  const digest = await digestOf(base);
+  const startPromise = joiner.start({
+    protocol: "librepaper.room.v3", vector: encode(head.encode()),
+    ref: "https://example.test/base", digest, updates: [],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  joiner.leave();
+  const reportsAtLeave = statesL.length;
+  held.resolve();
+  await startPromise;
+
+  assert.equal(joiner.joined, false, "a session that was left does not come back joined");
+  assert.equal(joiner.text_(), "", "the referenced base is not imported into a document nobody holds");
+  assert.equal(statesL.length, reportsAtLeave, "a left session reports no state");
+  assert.equal(sentL.filter((message) => message.type === "doc-update").length, 0,
+    "a left session sends no catch-up");
+  assert.equal(sentL.filter((message) => message.type === "doc-presence").length, 0,
+    "a left session announces no presence");
+}
+
+// The same, for `disconnected()`: the socket went, so the answer is for a
+// server this browser is no longer talking to.
+{
+  const { base, head } = sourceLog();
+  const held = gate();
+  const sentD = [];
+  const joiner = createProjectSession({
+    send: (message) => sentD.push(message),
+    onState: () => {},
+    presenceId: () => "disconnect-during-fetch",
+    fetchReference: async () => { await held.promise; return base; },
+  });
+  try {
+    const digest = await digestOf(base);
+    const startPromise = joiner.start({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      ref: "https://example.test/base", digest, updates: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    joiner.disconnected();
+    held.resolve();
+    await startPromise;
+
+    assert.equal(joiner.joined, false, "a dropped socket's join does not revive itself");
+    assert.equal(joiner.text_(), "", "the obsolete base is not imported");
+    assert.equal(sentD.filter((message) => message.type === "doc-update").length, 0);
+    assert.equal(sentD.filter((message) => message.type === "doc-presence").length, 0,
+      "presence is not announced on a socket that has gone");
+  } finally {
+    joiner.leave();
+  }
+}
+
+// A fresh join must not wait on the abandoned one. The first fetch is never
+// released at all: the reconnect that replaces it has to complete anyway.
+{
+  const { base, row1, row2, head, text } = sourceLog();
+  const never = gate();
+  const sentF = [];
+  let fetches = 0;
+  const joiner = createProjectSession({
+    send: (message) => sentF.push(message),
+    onState: () => {},
+    presenceId: () => "fresh-join-after-cancel",
+    fetchReference: async () => { fetches += 1; await never.promise; return base; },
+  });
+  try {
+    const digest = await digestOf(base);
+    const abandoned = joiner.start({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      ref: "https://example.test/base", digest, updates: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(fetches, 1);
+
+    joiner.disconnected();
+    // The new socket sends the base inline. Its rows follow as a second frame
+    // and must still be ordered behind it.
+    const startPromise = joiner.start({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      base: encode(base), updates: [],
+    });
+    const rowsPromise = joiner.rows({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      updates: [encode(row1), encode(row2)],
+    });
+    await startPromise;
+    await rowsPromise;
+
+    assert.equal(joiner.joined, true, "the reconnect joined without waiting for the abandoned fetch");
+    assert.equal(joiner.text_(), text, "the rows landed on the base they build on, in order");
+    assert.equal(fetches, 1, "the abandoned fetch was not retried, and is still in flight");
+    // Abandoning it now must not disturb the join that replaced it.
+    never.resolve();
+    await abandoned;
+    assert.equal(joiner.text_(), text);
+    assert.equal(joiner.joined, true);
+  } finally {
+    joiner.leave();
+  }
+}
+
+// A `doc-rows` frame queued behind a `doc-state` whose connection then drops
+// is obsolete too: it was sent by the same server on the same socket.
+{
+  const { base, row1, row2, head } = sourceLog();
+  const held = gate();
+  const sentQ = [];
+  const joiner = createProjectSession({
+    send: (message) => sentQ.push(message),
+    onState: () => {},
+    presenceId: () => "queued-rows-obsolete",
+    fetchReference: async () => { await held.promise; return base; },
+  });
+  try {
+    const digest = await digestOf(base);
+    const startPromise = joiner.start({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      ref: "https://example.test/base", digest, updates: [],
+    });
+    const rowsPromise = joiner.rows({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      updates: [encode(row1), encode(row2)],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    joiner.disconnected();
+    held.resolve();
+    await startPromise;
+    await rowsPromise;
+
+    assert.equal(joiner.joined, false, "queued rows from a dropped socket do not join");
+    assert.equal(joiner.text_(), "", "queued rows are not imported without the base they name");
+    assert.equal(sentQ.filter((message) => message.type === "doc-update").length, 0);
+  } finally {
+    joiner.leave();
+  }
+}
+
+// Failures are continuations too. A fetch that rejects after teardown must not
+// throw at whoever is joining now, and a `restartBaseline` refusal must not
+// re-open a document on a socket that has gone.
+{
+  const { head } = sourceLog();
+  const held = gate();
+  const sentE = [];
+  const joiner = createProjectSession({
+    send: (message) => sentE.push(message),
+    onState: () => {},
+    presenceId: () => "late-error",
+    fetchReference: async () => { await held.promise; throw new Error("the base went away"); },
+  });
+  const startPromise = joiner.start({
+    protocol: "librepaper.room.v3", vector: encode(head.encode()),
+    ref: "https://example.test/base", digest: "0".repeat(64), updates: [],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  joiner.leave();
+  held.resolve();
+  await startPromise;
+  assert.equal(sentE.filter((message) => message.type === "doc-open").length, 0);
+}
+{
+  const { head } = sourceLog();
+  const held = gate();
+  const sentR = [];
+  const joiner = createProjectSession({
+    send: (message) => sentR.push(message),
+    onState: () => {},
+    presenceId: () => "late-restart-baseline",
+    fetchReference: async () => {
+      await held.promise;
+      const error = new Error("that baseline is gone");
+      error.restartBaseline = true;
+      throw error;
+    },
+  });
+  try {
+    const startPromise = joiner.start({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      ref: "https://example.test/base", digest: "0".repeat(64), updates: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    joiner.disconnected();
+    held.resolve();
+    await startPromise;
+    assert.equal(sentR.filter((message) => message.type === "doc-open").length, 0,
+      "a refused baseline does not re-open the document on a socket that has gone");
+  } finally {
+    joiner.leave();
+  }
+}
+
+// A digest that does not match is still an integrity failure for whoever is
+// connected. On a connection that has gone it is nobody's failure: the check
+// is skipped rather than raised at the join that replaced it.
+{
+  const { base, head } = sourceLog();
+  const held = gate();
+  const joiner = createProjectSession({
+    send: () => {},
+    onState: () => {},
+    presenceId: () => "late-digest",
+    fetchReference: async () => { await held.promise; return base; },
+  });
+  try {
+    const startPromise = joiner.start({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      ref: "https://example.test/base", digest: "0".repeat(64), updates: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    joiner.disconnected();
+    held.resolve();
+    await startPromise;
+    assert.equal(joiner.text_(), "", "bytes that failed their digest are never imported");
+  } finally {
+    joiner.leave();
+  }
+
+  // The same frame on a live connection still rejects, so the check itself is
+  // intact rather than merely unreachable.
+  const live = gate();
+  const strict = createProjectSession({
+    send: () => {},
+    onState: () => {},
+    presenceId: () => "live-digest",
+    fetchReference: async () => { await live.promise; return base; },
+  });
+  try {
+    const startPromise = strict.start({
+      protocol: "librepaper.room.v3", vector: encode(head.encode()),
+      ref: "https://example.test/base", digest: "0".repeat(64), updates: [],
+    });
+    live.resolve();
+    await assert.rejects(startPromise, /integrity check/);
+  } finally {
+    strict.leave();
+  }
+}
+
+// Cancelling a join is not cancelling recoverable work. A disconnect during
+// hydration still captures the local baseline, so an edit made offline is
+// still waiting for durable coverage when the next socket arrives.
+{
+  const hydration = gate();
+  const statesH = [];
+  const sentH = [];
+  const editor = createProjectSession({
+    send: (message) => sentH.push(message),
+    onState: (state) => statesH.push(state),
+    presenceId: () => "offline-edit-survives-cancel",
+    persistence: { open() { return { hydration: hydration.promise, close() {} }; } },
+  });
+  try {
+    editor.addText("offline.md", "typed while the socket was down");
+    const startPromise = editor.start({ protocol: "librepaper.room.v3", vector: "", updates: [] });
+    editor.disconnected();
+    hydration.resolve();
+    await startPromise;
+    assert.equal(editor.joined, false);
+    assert.equal(statesH.at(-1).pending, 1, "the offline edit is still waiting for durable coverage");
+
+    sentH.length = 0;
+    await editor.start({ protocol: "librepaper.room.v3", vector: "", updates: [] });
+    assert.equal(editor.joined, true);
+    assert.equal(statesH.at(-1).pending, 1, "a join is not durability");
+    assert.equal(sentH.filter((message) => message.type === "doc-update").length, 1,
+      "the reconnect offered the offline edit exactly once");
+    editor.durable(encode(editor.doc.oplogVersion().encode()));
+    assert.equal(statesH.at(-1).pending, 0);
+  } finally {
+    editor.leave();
+  }
+}
+
+// An outstanding local write is allowed to finish after the session is left:
+// the bytes it puts on disk are what makes the next reload safe. What stops is
+// the delivery to a UI that is no longer there.
+{
+  const statesP = [];
+  let events;
+  let closes = 0;
+  const editor = createProjectSession({
+    send: () => {},
+    onState: (state) => statesP.push(state),
+    presenceId: () => "late-persistence",
+    persistence: { open(_doc, handlers) { events = handlers; return { close() { closes += 1; } }; } },
+  });
+  editor.addText("paper.md", "work");
+  editor.leave();
+  const reportsAtLeave = statesP.length;
+  assert.equal(closes, 1);
+  // The adapter is closed, but a write it had already started can still land.
+  events.persisted();
+  events.failed(new Error("quota full"));
+  assert.equal(statesP.length, reportsAtLeave, "a left session delivers no persistence state");
+}
+
+// Frames that arrive after teardown are dropped rather than applied to a
+// destroyed document.
+{
+  const { base } = sourceLog();
+  const editor = createProjectSession({ send: () => {}, onState: () => {}, presenceId: () => "late-frames" });
+  editor.leave();
+  editor.apply(encode(base));
+  editor.acknowledge(1);
+  editor.durable("");
+  assert.equal(editor.joined, false);
+}
+
+console.log("project-session: persistence, identity, swap, directory changes, protocol join shapes, doc-gap, acknowledgement boundaries and join cancellation passed");

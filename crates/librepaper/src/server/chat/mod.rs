@@ -21,14 +21,8 @@ use crate::assistant::protocol::{
 };
 pub type Error = (u16, &'static str);
 
-async fn send_chat_error(server: &Server, socket: &mut WebSocket, value: Value) -> bool {
+async fn send_chat_error(socket: &mut WebSocket, value: Value) -> bool {
     let text = value.to_string();
-    if !server
-        .cost
-        .socket_bytes(text.len().saturating_add(2), false)
-    {
-        return false;
-    }
     socket.send(WsMessage::Text(text.into())).await.is_ok()
 }
 
@@ -124,7 +118,6 @@ impl Server {
                     .is_some_and(valid_runner_binding))
         {
             let _ = send_chat_error(
-                self,
                 &mut socket,
                 json!({"type":"error","status":400,"message":"invalid join"}),
             )
@@ -145,7 +138,7 @@ impl Server {
         ) {
             Ok(permit) => permit,
             Err(reason) => {
-                let _ = send_chat_error(self, &mut socket, json!({"type":"error","status":429,"message":format!("live socket limit reached ({})", reason.scope())})).await;
+                let _ = send_chat_error(&mut socket, json!({"type":"error","status":429,"message":format!("live socket limit reached ({})", reason.scope())})).await;
                 return;
             }
         };
@@ -178,7 +171,6 @@ impl Server {
             Err((status, message)) => {
                 self.connections.lock().await.remove(&socket_id);
                 let _ = send_chat_error(
-                    self,
                     &mut socket,
                     json!({"type":"error","status":status,"message":message}),
                 )
@@ -216,9 +208,7 @@ impl Server {
                 outgoing = rx.recv() => {
                     if !self.chat.attached(&id, socket_id).await { break; }
                     let Some(queued) = outgoing else { break; };
-                    let durability = queued.durability();
                     let (outgoing, _queue_reservation) = queued.into_parts();
-                    if !self.cost.socket_bytes(outgoing.bytes(), durability) { break; }
                     let (frame, close) = match outgoing {
                         Outgoing::Text(text) => (WsMessage::Text(text.into()), false),
                         Outgoing::SharedText(text) => (WsMessage::Text(text), false),

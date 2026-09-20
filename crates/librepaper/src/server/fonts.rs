@@ -171,13 +171,7 @@ impl Library {
     }
 
     /// Answers `/api/fonts/<rest>`: the index, or one file.
-    pub async fn response(
-        &self,
-        rest: &str,
-        head: bool,
-        headers: &HeaderMap,
-        meter: &Arc<super::cost::CostMeter>,
-    ) -> Response<Body> {
+    pub async fn response(&self, rest: &str, head: bool, headers: &HeaderMap) -> Response<Body> {
         if rest == "index.json" {
             let mut response = super::write_json(200, &self.index());
             // The library changes when the deployment restarts with another
@@ -210,8 +204,7 @@ impl Library {
         };
         let blobs = Arc::new(crate::storage::blob::FsStore::new(&self.root, false));
         let mut response =
-            super::cost::blob_response(meter, blobs, file.name.clone(), &file.sha, headers, head)
-                .await;
+            super::cost::blob_response(blobs, file.name.clone(), &file.sha, headers, head).await;
         if !response.status().is_success() {
             return response;
         }

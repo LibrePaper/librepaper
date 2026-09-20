@@ -213,9 +213,6 @@ pub(super) fn set(response: &mut Reply, name: &'static str, value: &str) {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct RefusalReason(pub String);
-
 pub fn write_json(status: u16, payload: &Value) -> Reply {
     let mut payload = payload.clone();
     if status >= 400 {
@@ -249,11 +246,6 @@ pub fn write_json(status: u16, payload: &Value) -> Reply {
     );
     if status >= 400 {
         set(&mut response, "cache-control", "no-store");
-        if let Some(reason) = payload.get("reason").and_then(Value::as_str) {
-            response
-                .extensions_mut()
-                .insert(RefusalReason(reason.to_owned()));
-        }
     }
     response
 }

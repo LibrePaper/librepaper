@@ -652,12 +652,7 @@ pub(super) async fn dispatch(
             return plain(404, "not found");
         };
         return library
-            .response(
-                rest,
-                method == Method::HEAD,
-                request.headers(),
-                &server.cost,
-            )
+            .response(rest, method == Method::HEAD, request.headers())
             .await;
     }
 

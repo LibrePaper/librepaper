@@ -5,9 +5,14 @@ pub mod blob;
 pub mod collaboration;
 pub mod maintenance;
 pub mod postgres;
+pub mod schedule;
+#[cfg(test)]
+mod schedule_tests;
 pub mod source;
 pub mod source_archive;
 pub mod worker;
+#[cfg(test)]
+mod worker_recovery_tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;

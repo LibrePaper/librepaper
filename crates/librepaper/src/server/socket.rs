@@ -381,17 +381,9 @@ impl Server {
 
         // One task writes, so a broadcast from another connection never
         // interleaves with a reply to this one.
-        let meter = self.cost.clone();
         let mut writer = tokio::spawn(async move {
             while let Some(queued) = rx.recv().await {
-                let durability = queued.durability();
                 let (outgoing, _queue_reservation) = queued.into_parts();
-                // Charge at the transport boundary, after queue admission and
-                // immediately before the bytes leave the origin. A dropped
-                // or cancelled queued item therefore consumes no transfer.
-                if !meter.socket_bytes(outgoing.bytes(), durability) {
-                    break;
-                }
                 let result = match outgoing {
                     Outgoing::Text(text) => tokio::time::timeout(
                         SOCKET_WRITE_TIMEOUT,
@@ -658,11 +650,6 @@ impl Server {
                                     .await;
                                     break 'reader;
                                 }
-                                if !self.socket_budget.state_available(&client_network(&address)) {
-                                    self.cost.pressure(4);
-                                    let _ = send_outgoing(&tx, Outgoing::Close("state_sync_budget: retry after 60 seconds".into())).await;
-                                    break 'reader;
-                                }
                                 let vector =
                                     decode_update(incoming.vector()).filter(|raw| !raw.is_empty());
                                 let joined = match room
@@ -745,13 +732,6 @@ impl Server {
                                         "durableVector": encoded_durable_vector,
                                         "updates": joined.batches.iter().map(|batch| encode_update(batch)).collect::<Vec<_>>(),
                                     }));
-                                }
-                                let total_bytes: usize =
-                                    frames.iter().map(|frame| frame.to_string().len()).sum();
-                                if !self.socket_budget.charge_state(&client_network(&address), total_bytes) {
-                                    self.cost.pressure(4);
-                                    let _ = send_outgoing(&tx, Outgoing::Close("state_sync_budget: retry after 60 seconds".into())).await;
-                                    break 'reader;
                                 }
                                 for frame in frames {
                                     if send_outgoing(&tx, Outgoing::Text(frame.to_string())).await.is_err() {

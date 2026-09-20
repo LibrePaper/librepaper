@@ -3,13 +3,14 @@ import { join } from "../../src/lib/collab.js";
 import { checkPlacement, fileTree, folderPaths, droppedFiles } from "../../src/lib/file-manager.js";
 import { zip } from "../../src/lib/zip.js";
 const rules = { text_extensions: [".tex", ".bib", ".md"], asset_extensions: [".png"], max_path: 200 };
+const digest = "d".repeat(64);
 const session = join({ send() {}, mayEdit: true });
 const peer = join({ send() {}, mayEdit: true });
 try {
   const main = session.addText("main.tex", "main");
   session.setMain(main);
   const chapter = session.addText("chapters/one.tex", "original");
-  session.putAsset("chapters/fig/chart.png", "digest");
+  session.putAsset("chapters/fig/chart.png", digest);
   session.addFolder("chapters/empty", rules);
   session.addFolder("archive", rules);
   const folder = { kind: "folder", id: "chapters", path: "chapters" };
@@ -34,7 +35,7 @@ try {
   assert.equal(session.paths.get(chapter), "archive/chapters/one.tex");
   assert.deepEqual(peer.folders(), session.folders(), "empty directories synchronize");
   assert.ok(session.folders().includes("archive/chapters/empty"));
-  assert.equal(session.tree().digests["archive/chapters/fig/chart.png"], "digest");
+  assert.equal(session.tree().digests["archive/chapters/fig/chart.png"], digest);
   const tree = fileTree(session.list(), session.folders());
   assert.equal(tree.children[0].kind, "folder");
   assert.throws(() => session.addFolder("../escape", rules), /climb/);

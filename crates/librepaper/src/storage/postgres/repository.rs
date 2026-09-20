@@ -954,6 +954,31 @@ impl PostgresCatalog {
         Ok(true)
     }
 
+    /// Atomically closes the recovery window before the worker touches any
+    /// blob. Once this succeeds, restoration refuses the document even if
+    /// blob deletion or a process restart delays completion of the purge.
+    pub async fn claim_document_purge(&self, document_id: Uuid) -> Result<bool> {
+        let mut tx = self.begin_writer_transaction().await?;
+        let claimed = sqlx::query(
+            "UPDATE documents SET status='purging',updated_at=now()
+             WHERE id=$1 AND status='deleting'
+               AND deleted_at + $2::interval <= now()",
+        )
+        .bind(document_id)
+        .bind(
+            sqlx::postgres::types::PgInterval::try_from(
+                crate::storage::maintenance::DELETION_GRACE,
+            )
+            .expect("seven days fits in an interval"),
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+        tx.commit().await?;
+        Ok(claimed)
+    }
+
     /// Purge a deleted document now instead of when its seven days are up.
     /// "Delete forever" in the trash: backdating `deleted_at` past the grace
     /// period is what makes the next sweep pick it up.
@@ -985,13 +1010,11 @@ impl PostgresCatalog {
 
     pub async fn finish_document_deletion(&self, document_id: Uuid) -> Result<bool> {
         let mut tx = self.begin_writer_transaction().await?;
-        let changed = sqlx::query!(
-            "DELETE FROM documents WHERE id=$1 AND status='deleting'",
-            document_id,
-        )
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
+        let changed = sqlx::query("DELETE FROM documents WHERE id=$1 AND status='purging'")
+            .bind(document_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
             == 1;
         tx.commit().await?;
         Ok(changed)

@@ -297,6 +297,20 @@ impl Reservation {
     pub fn bytes(&self) -> u64 {
         self.bytes
     }
+
+    /// Extends an existing reservation atomically. The original reservation
+    /// remains unchanged when the budget cannot cover the requested size.
+    pub fn try_grow_to(&mut self, bytes: u64) -> Result<(), Busy> {
+        if bytes <= self.bytes {
+            return Ok(());
+        }
+        let mut growth = self.budget.clone().try_reserve_now(bytes - self.bytes)?;
+        self.bytes = bytes;
+        // Transfer the newly charged bytes into `self`; `growth` must not
+        // return them when its temporary guard drops.
+        growth.bytes = 0;
+        Ok(())
+    }
 }
 
 impl Drop for Reservation {

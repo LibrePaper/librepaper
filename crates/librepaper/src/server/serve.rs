@@ -483,32 +483,13 @@ pub async fn serve(options: ServeOptions) {
     println!("  commenting: {}", commenters.describe());
     super::host_metrics::warn(&config, &deployment_paths.deployment);
     if std::io::stdout().is_terminal() {
-        println!("  cost policy: v{}", config.cost.version);
         println!(
-            "    storage: {} total bytes; {} bytes per owner",
+            "  storage: {} total bytes; {} bytes per owner",
             config.storage.total, config.storage.per_owner
         );
         println!(
-            "    documents: {} source bytes; {} input-asset bytes; {} per owner",
+            "  documents: {} source bytes; {} input-asset bytes; {} per owner",
             config.max_document, config.max_assets, config.storage.documents_per_owner
-        );
-        println!(
-            "    transfer: {} per rolling 24 hours; GET /api/status over loopback for details",
-            config
-                .cost
-                .transfer_bytes
-                .map(|bytes| bytes.to_string())
-                .unwrap_or_else(|| "unlimited".to_string())
-        );
-    } else {
-        println!(
-            "{}",
-            serde_json::json!({"event":"cost_policy", "policy":config.effective_policy()})
-        );
-    }
-    if config.cost.transfer_bytes.is_none() {
-        eprintln!(
-            "warning: no daily origin transfer budget is configured; use --transfer-budget BYTES"
         );
     }
     if let Some(library) = &instance.fonts {

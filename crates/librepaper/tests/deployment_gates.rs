@@ -420,8 +420,9 @@ async fn lease_loss_during_buffered_typing_refuses_the_flush_and_the_log_is_cons
 // (§8.6, §12, §14.2)
 //
 // §8.6 and §12 delete the job queue, the room sweep, the per-socket tick and
-// the cost checkpoint specifically so that a deployment with nothing open
-// costs nothing. Searching this codebase for what is left running on a
+// the egress byte accounting (`CostMeter::socket_bytes` and the socket
+// budget's per-state charge) specifically so that a deployment with nothing
+// open costs nothing. Searching this codebase for what is left running on a
 // clock (`grep -n 'tokio::time::interval' crates/librepaper/src/server/serve.rs`)
 // finds exactly two tickers: an hourly retention janitor (not spawned unless
 // `--expire-after` is set, and irrelevant here since it is not spawned), and
@@ -432,8 +433,8 @@ async fn lease_loss_during_buffered_typing_refuses_the_flush_and_the_log_is_cons
 // queries beyond the lease connection". There is, in fact, no periodic
 // keepalive QUERY in this codebase at all: `WriterLease` holds one
 // PostgreSQL session open for the life of the process and never pings it on
-// a timer (`grep -rn keepalive crates/librepaper/src` finds nothing but this
-// comment and the one in `server/cost.rs`); `Server::verify_writer` runs the
+// a timer (`grep -rn keepalive crates/librepaper/src` finds nothing but the
+// two comments naming this test); `Server::verify_writer` runs the
 // lease's `SELECT 1` reactively, from the socket handler, only when a
 // `doc-update` frame arrives. So the number this bound is "worked out from"
 // is not an interval -- there is none to multiply by a window -- it is the
@@ -677,12 +678,17 @@ mod idle {
             .acquire()
             .await
             .expect("a dedicated monitoring connection");
+        // `server_now` is itself a statement, and `pg_stat_statements`
+        // counts it like any other, so it has to happen before the baseline
+        // sample rather than after it. Taken the other way round, this test
+        // measures its own monitoring and reports a call delta of exactly
+        // one on a deployment that issued nothing at all.
+        let since = server_now(&mut monitor).await;
         let before_calls = if has_statements {
             Some(statement_calls(catalog.pool()).await)
         } else {
             None
         };
-        let since = server_now(&mut monitor).await;
 
         let window = idle_window();
         tokio::time::sleep(window).await;

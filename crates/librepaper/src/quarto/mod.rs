@@ -1,9 +1,11 @@
 //! Quarto source parsing and freshness classification.
 //!
 //! Immutable result contracts are defined in crate::results. This module
-//! keeps the QMD parser and re-exports the old paths for compatibility.
+//! keeps the QMD parser.
 
-pub use crate::results::*;
+use crate::results::{
+    sha256, BundleManifest, Diagnostic, DiagnosticSeverity, OutputFormat, ProvenanceKind,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -473,6 +475,10 @@ pub fn classify_freshness(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::results::{
+        parameters_sha256, DocumentMetadata, DraftFormat, ExecutionEngine, BUNDLE_SCHEMA,
+        FINGERPRINT_VERSION,
+    };
     use std::collections::BTreeMap;
 
     #[test]

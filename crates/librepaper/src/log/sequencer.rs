@@ -86,15 +86,13 @@ pub const BUILD_DEADLINE: Duration = Duration::from_secs(10);
 /// How long a caller waits for memory before it answers `busy` (§9.2).
 pub const RESERVE_PATIENCE: Duration = Duration::from_millis(250);
 /// How often the housekeeping sweep may re-ask for a compaction that is
-/// still due. `Handle::ask` is a `try_send` that drops silently when the
-/// worker queue is full, so a document over threshold has to be re-asked or
-/// it stays over threshold until §9.1's quota refuses edits. But a large
-/// compaction takes far longer than a housekeeping tick, so re-asking every
-/// tick would push dozens of duplicate `Task::Compact` entries at a
-/// 256-slot queue and cause exactly the full-queue dropping this retry
-/// exists to recover from. A minute is long enough that a compaction in
-/// progress has normally finished or cleared the counters, and short enough
-/// that a dropped ask costs a minute rather than a restart.
+/// still due. `Handle::ask` coalesces full-queue wake-ups and the worker's
+/// durable rescan recovers any task that could not enter the queue. But a
+/// large compaction takes far longer than a housekeeping tick, so re-asking
+/// every tick would push dozens of duplicate `Task::Compact` entries at a
+/// 256-slot queue. A minute is long enough that a compaction in progress has
+/// normally finished or cleared the counters, and short enough that a missed
+/// wake-up costs a minute rather than a restart.
 pub const COMPACTION_RECHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// What a subscriber may do, which decides what it is sent.
@@ -126,7 +124,7 @@ struct Pending {
 /// releases the reservation, which is why the two live in one struct.
 struct Cache {
     doc: LoroDoc,
-    _reservation: Reservation,
+    reservation: Reservation,
 }
 
 /// Why a flush was asked for. Carried so a log line can say it.
@@ -766,7 +764,10 @@ impl Inner {
     }
 
     fn resident_estimate(&self, expansion: u64) -> u64 {
-        estimate(self.log_bytes(), expansion)
+        estimate(
+            self.log_bytes().saturating_add(self.buffer_bytes as u64),
+            expansion,
+        )
     }
 
     fn retire(&mut self, take: usize, written: i64, vector: VersionVector, row_bytes: usize) {
@@ -1085,6 +1086,26 @@ impl Sequencer {
             };
         }
 
+        // A warm document grows synchronously below. Extend its reservation
+        // before importing; if the budget cannot cover the growth, evict
+        // this cache and leave the accepted update in the buffer for a
+        // properly reserved cold build later.
+        let wanted = estimate(
+            inner
+                .log_bytes()
+                .saturating_add(inner.buffer_bytes as u64)
+                .saturating_add(bytes.len() as u64),
+            self.budget.expansion(),
+        );
+        let cache_growth_failed = inner
+            .cache
+            .as_mut()
+            .is_some_and(|cache| cache.reservation.try_grow_to(wanted).is_err());
+        if cache_growth_failed {
+            inner.cache = None;
+            inner.projection = None;
+        }
+
         inner.head_vector.merge(&header.partial_end_vv);
         let now = Instant::now();
         if inner.oldest_arrival.is_none() {
@@ -1142,13 +1163,11 @@ impl Sequencer {
     /// Re-ask for a compaction that is still due.
     ///
     /// `flush` and `command_reporting_replay` ask the moment the counters
-    /// cross, but `Handle::ask` is a `try_send` that drops silently when the
-    /// worker queue is full, and the worker's own backoff re-asks through
-    /// that same droppable call. A document that is resident but no longer
-    /// edited therefore has no event left to ask again from, and sits over
-    /// threshold until §9.1's quota refuses edits -- recoverable only by
-    /// another edit or a restart. This is the event that is left: the sweep
-    /// itself, rate limited by `COMPACTION_RECHECK_INTERVAL`.
+    /// cross. A full worker queue coalesces the wake-up into the worker's
+    /// durable rescan, so a document that is resident but no longer edited
+    /// still gets recovered without relying on another edit or a restart.
+    /// This is the event that is left: the sweep itself, rate limited by
+    /// `COMPACTION_RECHECK_INTERVAL`.
     ///
     /// One lock and an integer compare, no query, so §14.2's idle gate is
     /// untouched (`idle_deployment_issues_no_queries_beyond_the_lease_keepalive`).
@@ -1391,6 +1410,9 @@ impl Sequencer {
         }
 
         let mut inner = self.inner.lock().await;
+        if let Some(why) = &inner.fenced {
+            return Err(SequencerError::Fenced(why.clone()));
+        }
         inner.subscribers.insert(
             socket,
             Subscriber {
@@ -1724,7 +1746,7 @@ impl Sequencer {
     /// not have a cache built for it just to answer "did it change".
     pub async fn projection_if_warm(&self) -> Option<Arc<librepaper_document_core::Projected>> {
         let mut inner = self.inner.lock().await;
-        if inner.unreadable.is_some() || inner.cache.is_none() {
+        if inner.fenced.is_some() || inner.unreadable.is_some() || inner.cache.is_none() {
             return None;
         }
         if let Some(projection) = &inner.projection {
@@ -1744,6 +1766,9 @@ impl Sequencer {
     /// The projection at head, building a cache entry if there is not one.
     pub async fn projection(&self) -> Result<Arc<librepaper_document_core::Projected>> {
         let mut inner = self.inner.lock().await;
+        if let Some(why) = &inner.fenced {
+            return Err(SequencerError::Fenced(why.clone()));
+        }
         if let Some(why) = &inner.unreadable {
             return Err(SequencerError::Unreadable(why.clone()));
         }
@@ -1785,6 +1810,9 @@ impl Sequencer {
         read: impl FnOnce(&LoroDoc) -> T,
     ) -> Result<T> {
         let mut inner = self.inner.lock().await;
+        if let Some(why) = &inner.fenced {
+            return Err(SequencerError::Fenced(why.clone()));
+        }
         if let Some(why) = &inner.unreadable {
             return Err(SequencerError::Unreadable(why.clone()));
         }
@@ -1810,6 +1838,9 @@ impl Sequencer {
     /// projection and is not writing anything.
     pub async fn with_head<T>(&self, read: impl FnOnce(&LoroDoc) -> T) -> Result<T> {
         let mut inner = self.inner.lock().await;
+        if let Some(why) = &inner.fenced {
+            return Err(SequencerError::Fenced(why.clone()));
+        }
         if let Some(why) = &inner.unreadable {
             return Err(SequencerError::Unreadable(why.clone()));
         }
@@ -1842,7 +1873,7 @@ impl Sequencer {
         // is before the caller puts the entry in `inner.cache`. What
         // outlives `build` is the resident-only reservation above.
         let transient_estimate = super::budget::estimate(
-            inner.log_bytes(),
+            inner.log_bytes().saturating_add(inner.buffer_bytes as u64),
             super::budget::BUILD_TRANSIENT_EXPANSION,
         );
         let _transient_reservation = self
@@ -1916,10 +1947,7 @@ impl Sequencer {
             inner.unreadable = Some(why.clone());
             return Err(SequencerError::Unreadable(why));
         }
-        Ok(Cache {
-            doc,
-            _reservation: reservation,
-        })
+        Ok(Cache { doc, reservation })
     }
 
     /// Drops the decoded document and gives its memory back. Typing is
@@ -2028,6 +2056,9 @@ impl Sequencer {
     /// next opportunity.
     pub async fn snapshot_at_log_vector(&self) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize)>> {
         let mut inner = self.inner.lock().await;
+        if let Some(why) = &inner.fenced {
+            return Err(SequencerError::Fenced(why.clone()));
+        }
         if !inner.buffer.is_empty() {
             return Ok(None);
         }
@@ -2130,9 +2161,9 @@ impl CompactionGate<'_> {
     /// recomputes `documents.uncompacted_update_bytes` in SQL from what is
     /// left, which is the only place that count can be read correctly --
     /// this sequencer has no way to tell, from in here, which of the rows
-    /// landed after `through` was taken. So the caller (`storage::worker`)
-    /// reads both recomputed counters back and passes them; this method
-    /// trusts them rather than assuming zero. Getting this wrong would
+    /// landed after `through` was taken. The activation transaction returns
+    /// both recomputed counters to the caller, which passes them here rather
+    /// than doing a separate post-commit read or assuming zero. Getting this wrong would
     /// under-report `log_bytes()` from this moment on, compounding across
     /// compactions, which under-enforces the §9.1 log quota and reserves too
     /// little for a build under the §9.2 budget.
@@ -2152,6 +2183,16 @@ impl CompactionGate<'_> {
         self.inner.row_bytes = row_bytes;
         self.inner.uncompacted_count = uncompacted_count;
         ::log::debug!("{} compacted through {through}", self.slug);
+    }
+
+    /// Prevents this instance from serving state when an activation may
+    /// have committed but its durable result cannot be read back.
+    pub(crate) fn fence(&mut self, why: String) {
+        self.inner.fenced = Some(why.clone());
+        let payload = format!("fenced: {why}; reconnect");
+        for (_, subscriber) in self.inner.subscribers.drain() {
+            let _ = subscriber.tx.force_close(payload.clone());
+        }
     }
 }
 
@@ -2189,7 +2230,7 @@ impl Sequencer {
     /// semantic command gates it). It takes no reservation of its own on
     /// purpose. The `map` below only ever calls `project` on `cache.doc`,
     /// and a cache only exists holding the reservation `build` took for it
-    /// (`Cache::_reservation`); when there is no cache nothing is projected
+    /// (`Cache::reservation`); when there is no cache nothing is projected
     /// at all. So the buffer this allocates is a transient
     /// view derived from, and bounded above by, a document whose own
     /// resident cost the budget already charged -- there is no path here

@@ -268,7 +268,7 @@ mod tests {
             calepin: None,
             manifest: vec![ManifestEntry {
                 path: "paper.qmd".into(),
-                sha256: crate::quarto::sha256(source),
+                sha256: crate::results::sha256(source),
                 size: source.len() as u64,
             }],
             source: None,

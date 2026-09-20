@@ -52,6 +52,16 @@ pub struct LogBase {
     pub updated_at: OffsetDateTime,
 }
 
+/// The durable result of activating a compaction base. The backlog counters
+/// are read in the activation transaction, after covered rows are deleted,
+/// so the caller never has to reconstruct in-memory state with a second
+/// fallible read after commit.
+pub struct ActivatedLogBase {
+    pub base: LogBase,
+    pub uncompacted_count: i64,
+    pub uncompacted_bytes: i64,
+}
+
 /// The blob a compacted base was just written under, grouped so
 /// `activate_log_base` takes one argument for it rather than three.
 pub struct NewSnapshot {
@@ -425,7 +435,7 @@ impl PostgresCatalog {
         vector: &[u8],
         snapshot: NewSnapshot,
         predecessor_delete_after: OffsetDateTime,
-    ) -> Result<Option<LogBase>> {
+    ) -> Result<Option<ActivatedLogBase>> {
         use sqlx::Row as _;
         let NewSnapshot {
             key: snapshot_key,
@@ -493,7 +503,7 @@ impl PostgresCatalog {
         )
         .fetch_optional(&mut *tx)
         .await?;
-        if base.is_some() {
+        let counters = if base.is_some() {
             if let Some(outgoing) = outgoing {
                 // One row per base this document has left behind, in the
                 // same transaction that stopped anything reading it. The
@@ -517,57 +527,95 @@ impl PostgresCatalog {
             )
             .execute(&mut *tx)
             .await?;
-            sqlx::query!(
+            let counters = sqlx::query(
                 "UPDATE documents d SET
                    uncompacted_update_count=s.remaining_count,
                    uncompacted_update_bytes=s.remaining_bytes
                  FROM (SELECT count(*)::bigint remaining_count,
                               COALESCE(sum(octet_length(update_bytes)),0)::bigint remaining_bytes
                        FROM document_updates WHERE document_id=$1) s
-                 WHERE d.id=$1",
-                document_id,
+                 WHERE d.id=$1
+                 RETURNING d.uncompacted_update_count,d.uncompacted_update_bytes",
             )
-            .execute(&mut *tx)
+            .bind(document_id)
+            .fetch_one(&mut *tx)
             .await?;
-        }
+            Some((
+                counters.try_get::<i64, _>("uncompacted_update_count")?,
+                counters.try_get::<i64, _>("uncompacted_update_bytes")?,
+            ))
+        } else {
+            None
+        };
         tx.commit().await?;
-        Ok(base)
+        Ok(base
+            .zip(counters)
+            .map(
+                |(base, (uncompacted_count, uncompacted_bytes))| ActivatedLogBase {
+                    base,
+                    uncompacted_count,
+                    uncompacted_bytes,
+                },
+            ))
     }
 
-    /// Documents whose backlog is over the compaction threshold, or whose
-    /// deletion never finished, or whose archive was asked for and never
-    /// landed, plus whether any superseded compaction base is out of its
-    /// grace. The startup scan of §8.6 reads all four and enqueues; nothing
-    /// polls afterwards.
-    pub async fn pending_background_work(&self) -> Result<PendingWork> {
-        let compaction = sqlx::query_scalar!(
-            "SELECT id FROM documents WHERE status='active'
+    /// One keyset-paginated batch of documents whose backlog is over the
+    /// compaction threshold, whose deletion has not finished, or whose
+    /// archive was requested and never landed, plus whether a superseded
+    /// base is due.
+    pub async fn pending_background_work(
+        &self,
+        after: PendingWorkCursor,
+        limit: i64,
+    ) -> Result<PendingWork> {
+        let compaction = if after.compaction_done {
+            Vec::new()
+        } else {
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM documents WHERE status='active'
                AND (uncompacted_update_count >= $1 OR uncompacted_update_bytes >= $2)
-             ORDER BY uncompacted_update_bytes DESC LIMIT 1000",
-            self.policy.compaction_count_threshold(),
-            self.policy.compaction_byte_threshold(),
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        let deleting =
-            sqlx::query_scalar!("SELECT id FROM documents WHERE status='deleting' LIMIT 1000")
-                .fetch_all(&self.pool)
-                .await?;
-        let archives = sqlx::query_scalar!(
-            "SELECT id FROM document_labels
+               AND id > $3
+             ORDER BY id LIMIT $4",
+            )
+            .bind(self.policy.compaction_count_threshold())
+            .bind(self.policy.compaction_byte_threshold())
+            .bind(after.compaction)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        let deleting = if after.deleting_done {
+            Vec::new()
+        } else {
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM documents WHERE status IN ('deleting','purging') AND id > $1
+             ORDER BY id LIMIT $2",
+            )
+            .bind(after.deleting)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        let archives = if after.archives_done {
+            Vec::new()
+        } else {
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM document_labels
              WHERE archive_requested_at IS NOT NULL AND archive_key IS NULL
-             ORDER BY archive_requested_at LIMIT 1000",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+               AND id > $1
+             ORDER BY id LIMIT $2",
+            )
+            .bind(after.archives)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
         // Compaction leaves the base it replaced in the store for seven days
         // so a reader mid-download is not cut off (§8.4 step 5). Nothing
         // else ever looks at that row again, so without this the superseded
         // blob would stay for good: one per compaction, forever.
-        let superseded_bases = sqlx::query_scalar!(
-            r#"SELECT EXISTS(
-                 SELECT 1 FROM superseded_bases WHERE delete_after<=now()
-               ) AS "due!""#,
+        let superseded_base_due = sqlx::query_scalar::<_, Option<OffsetDateTime>>(
+            "SELECT min(delete_after) FROM superseded_bases",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -575,21 +623,40 @@ impl PostgresCatalog {
             compaction,
             deleting,
             archives,
-            superseded_bases,
+            superseded_base_due,
         })
     }
 }
 
-/// What the startup scan found. Durable state, not queued rows: a task the
-/// bounded queue cannot take is dropped and rediscovered at the next startup
-/// or the next trigger for that document (§8.6).
+/// What one bounded page of the startup scan found.
 #[derive(Clone, Debug, Default)]
 pub struct PendingWork {
     pub compaction: Vec<Uuid>,
     pub deleting: Vec<Uuid>,
     pub archives: Vec<Uuid>,
-    /// Whether any document's superseded compaction base is past its grace.
-    /// Deployment-wide rather than per-document: one sweep clears every row
-    /// that is due, so there is nothing to name here but "yes" or "no".
-    pub superseded_bases: bool,
+    /// The next superseded compaction base deadline, if one exists.
+    pub superseded_base_due: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PendingWorkCursor {
+    pub compaction: Uuid,
+    pub deleting: Uuid,
+    pub archives: Uuid,
+    pub compaction_done: bool,
+    pub deleting_done: bool,
+    pub archives_done: bool,
+}
+
+impl Default for PendingWorkCursor {
+    fn default() -> Self {
+        Self {
+            compaction: Uuid::nil(),
+            deleting: Uuid::nil(),
+            archives: Uuid::nil(),
+            compaction_done: false,
+            deleting_done: false,
+            archives_done: false,
+        }
+    }
 }

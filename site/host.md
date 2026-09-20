@@ -80,18 +80,6 @@ quotas, or uploads. On a deployment with many publishers,
 figures are where a paper's bytes actually are, and it is what stops a single
 document spending a publisher's whole allowance on images.
 
-Origin transfer has its own rolling 24-hour budget:
-
-```sh
-librepaper admin serve --transfer-budget 10GiB
-```
-
-The value is bytes (binary suffixes such as `KiB`, `MiB`, `GiB`, and `TiB` are
-accepted). An explicit `0` refuses ordinary transfer while retaining the small
-emergency allowance for control and durability responses. Omitting the flag
-keeps transfer unlimited and produces a startup warning. Compiler files come
-from the direct mirror and do not count against this origin budget.
-
 Publishing is always attributed to an authenticated Google or GitHub account
 and charged against that account's quota. Anonymous readers and commenters do
 not receive a publishing quota.
@@ -103,11 +91,11 @@ Service settings that support environment variables follow the same name:
 `librepaper admin serve --help` (and every other subcommand's `--help`) is the
 reference for the full list. Advanced guardrails may be overridden in an
 optional YAML file selected with `--config PATH` (or `LIBREPAPER_CONFIG`). The
-proxy list is the top-level `trusted_proxies` key; `cost.trusted_proxies` is
-not accepted. An optional `backup` map is reporting metadata for
-operator-managed backups (`destination_class`, `frequency` in seconds,
-`retained_count`, `encrypted`, and `warning_count`); it does not schedule or
-delete backups. Omitted keys retain their documented defaults.
+file accepts only two top-level keys: `trusted_proxies`, the proxy list, and
+`backup`, reporting metadata for operator-managed backups
+(`destination_class`, `frequency` in seconds, `retained_count`, `encrypted`,
+and `warning_count`); it does not schedule or delete backups. Omitted keys
+retain their documented defaults.
 
 These variables are useful in deployment files. Secrets are environment-only;
 service settings have corresponding CLI flags, and installer variables control
@@ -117,7 +105,6 @@ the installation script:
 | --- | --- |
 | `LIBREPAPER_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
 | `LIBREPAPER_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `LIBREPAPER_BUDGET_TRANSFER` | rolling 24-hour origin response budget; bare values are bytes |
 | `LIBREPAPER_BUDGET_DOCUMENT_ASSETS` | combined input assets per document, in MiB |
 | `LIBREPAPER_LATEX_MIRROR` | HTTPS static mirror URL fetched directly by browsers |
 | `LIBREPAPER_EXPIRE_AFTER` | delete documents after this duration, for example `24h` or `30d` (default: never) |

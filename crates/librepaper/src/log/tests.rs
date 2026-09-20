@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use futures_util::future::BoxFuture;
-use loro::{ExportMode, LoroDoc, VersionVector};
+use loro::{ExportMode, Frontiers, LoroDoc, VersionVector};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
@@ -1241,7 +1241,9 @@ async fn a_successful_flush_notifies_every_editor_but_not_readers_of_the_committ
         "durable log vectors are editor state, not reader notifications"
     );
     assert!(
-        writer_frames.iter().all(|frame| frame["type"] != "doc-durable"),
+        writer_frames
+            .iter()
+            .all(|frame| frame["type"] != "doc-durable"),
         "the old author socket is gone before the commit"
     );
     assert!(
@@ -1790,6 +1792,58 @@ async fn a_fenced_flush_stops_ingest_and_closes_every_open_socket() {
     );
 }
 
+/// Once compaction fencing is observed, every state-reading entry point must
+/// refuse the stale in-memory view. In particular, `join` must check before
+/// registering its subscriber; a reconnect must go to a new owner.
+#[tokio::test]
+async fn every_sequencer_read_refuses_after_compaction_fence() {
+    let (sequencer, catalog, _, _, _) = compaction_fixture(None);
+    {
+        let mut gate = sequencer.compaction_gate().await;
+        activate_base_in_storage(&catalog);
+        gate.fence("activation committed but reconciliation failed".into());
+    }
+
+    assert!(sequencer.projection_if_warm().await.is_none());
+    assert!(matches!(
+        sequencer.projection().await,
+        Err(SequencerError::Fenced(_))
+    ));
+    assert!(matches!(
+        sequencer.with_fork_at(&Frontiers::default(), |_| ()).await,
+        Err(SequencerError::Fenced(_))
+    ));
+    assert!(matches!(
+        sequencer.with_head(|_| ()).await,
+        Err(SequencerError::Fenced(_))
+    ));
+    assert!(matches!(
+        sequencer.snapshot_at_log_vector().await,
+        Err(SequencerError::Fenced(_))
+    ));
+    assert!(matches!(
+        sequencer
+            .join(999, Role::Editor, "fenced-reader", subscriber(), None)
+            .await,
+        Err(SequencerError::Fenced(_))
+    ));
+    assert_eq!(sequencer.log_state().await.subscribers, 0);
+
+    // `projection_if_warm` must also reject an actually warm cache; using a
+    // cold sequencer alone would make `None` ambiguous with its normal result.
+    let warm = bare_sequencer(Arc::new(FakeCatalog::empty()));
+    warm.projection().await.expect("empty fake document builds");
+    {
+        let mut gate = warm.compaction_gate().await;
+        gate.fence("warm cache is no longer authoritative".into());
+    }
+    assert!(warm.projection_if_warm().await.is_none());
+    assert!(matches!(
+        warm.projection().await,
+        Err(SequencerError::Fenced(_))
+    ));
+}
+
 /// §10, "subscriber too slow: closed; reconnects and reconciles", and §4.5,
 /// "a subscriber whose queue overflows is closed and reconnects".
 ///
@@ -2002,10 +2056,8 @@ async fn a_build_needs_more_than_the_resident_estimate_while_it_runs() {
 async fn the_transient_reservation_is_released_once_the_entry_is_cached() {
     let log_bytes = 1_000_000u64;
     let resident = crate::log::budget::estimate(log_bytes, DEFAULT_EXPANSION);
-    let transient = crate::log::budget::estimate(
-        log_bytes,
-        crate::log::budget::BUILD_TRANSIENT_EXPANSION,
-    );
+    let transient =
+        crate::log::budget::estimate(log_bytes, crate::log::budget::BUILD_TRANSIENT_EXPANSION);
     let budget = Budget::new(resident + transient, DEFAULT_EXPANSION);
     let sequencer = sequencer_with_logged_weight(log_bytes, budget.clone());
 

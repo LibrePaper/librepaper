@@ -548,10 +548,8 @@ impl Server {
                         &json!({"error": error.to_string(), "retryable": true}),
                     );
                 }
-                self.background.ask(crate::storage::worker::Task::Archive {
-                    document: room.document_id,
-                    label: label_id,
-                });
+                self.background
+                    .ask(crate::storage::worker::Task::Archive(label_id));
             }
             let mut response = write_json(
                 if label.archive_key.is_some() {
@@ -642,7 +640,6 @@ impl Server {
             return plain(404, "not found");
         };
         crate::server::cost::blob_response(
-            &self.cost,
             self.store.blobs.clone(),
             archive_key,
             &label_id.to_string(),

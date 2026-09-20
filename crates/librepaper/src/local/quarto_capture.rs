@@ -7,8 +7,10 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::quarto::{
-    self, CellCoverage, CellRecord, Diagnostic, DiagnosticSeverity, OutputKind, OutputRecord,
+use crate::quarto;
+use crate::results::{
+    sha256, CellCoverage, CellRecord, Diagnostic, DiagnosticSeverity, OutputKind, OutputRecord,
+    MAX_BLOB_BYTES, MAX_MANIFEST_BYTES,
 };
 
 pub fn filter() -> &'static str {
@@ -104,7 +106,7 @@ pub fn collect(
     output_root: &Path,
 ) -> Result<Capture, String> {
     let parsed = quarto::parse_qmd(source, source_path);
-    let raw = read_bounded(manifest_path, quarto::MAX_MANIFEST_BYTES)?;
+    let raw = read_bounded(manifest_path, MAX_MANIFEST_BYTES)?;
     let capture: CaptureFile =
         serde_json::from_slice(&raw).map_err(|error| format!("invalid Quarto capture: {error}"))?;
     if capture.schema != 1 {
@@ -357,11 +359,11 @@ fn normalize(output: &CapturedOutput, root: &Path) -> Result<Option<OutputRecord
         if !resolved.starts_with(root) || !resolved.is_file() {
             return Err("captured image escapes output directory".into());
         }
-        let bytes = read_bounded(&resolved, quarto::MAX_BLOB_BYTES)?;
-        (Some(path.to_string()), None, Some(quarto::sha256(&bytes)))
+        let bytes = read_bounded(&resolved, MAX_BLOB_BYTES)?;
+        (Some(path.to_string()), None, Some(sha256(&bytes)))
     } else {
         let value = output.text.clone().unwrap_or_default();
-        let hash = quarto::sha256(value.as_bytes());
+        let hash = sha256(value.as_bytes());
         (None, Some(value), Some(hash))
     };
     Ok(Some(OutputRecord {

@@ -24,6 +24,8 @@
 
 import { LoroDoc, LoroText, EphemeralStore, VersionVector } from "loro-crdt";
 import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries } from "./file-manager.js";
+import { projectDirectory } from "./projection.js";
+import { createGeneration } from "./reader/generation.js";
 
 // Keep each JSON WebSocket frame comfortably below the server's one-megabyte
 // receive limit. Base64 expands the binary update by a third, and the JSON
@@ -134,6 +136,7 @@ export function createProjectSession({
   // name somebody gave it and what is at that name.
   const assets = doc.getMap("assets");
   const meta = doc.getMap("meta");
+  let projectionRules = null;
   // The four maps that are the directory itself. A change to any of them is a
   // change to the file list; a change under one of them is not, because a
   // file's text sits inside `files`.
@@ -159,7 +162,12 @@ export function createProjectSession({
   const textSubs = new Map();
 
   function mainText() {
-    const id = meta.get("main");
+    // Follow the canonical projection rather than the raw declaration. A
+    // missing, invalid, or otherwise unprojectable declaration falls back to
+    // the same text selected by mainId()/mainPath(); binding the raw id here
+    // would leave the editor subscribed to no text while the tree rendered a
+    // different main file.
+    const id = projectDirectory(doc, projectionRules).mainId;
     const text = id ? files.get(id) : null;
     // Check if the value is a LoroText by checking its kind
     return text?.kind?.() === "Text" ? text : null;
@@ -197,14 +205,18 @@ export function createProjectSession({
 
   // Subscribe to document changes to detect when main file or files/paths change.
   // Each subscription will trigger rebind to update the bound text if needed.
-  doc.subscribe(() => {
-    rebind();
+  doc.subscribe((eventBatch) => {
+    // Text edits cannot change the projection's main id, and projecting all
+    // bodies on every keystroke is needlessly expensive. Directory commits
+    // target one of the root maps; imports and file-container replacement do
+    // too, while edits inside a LoroText target that text container instead.
+    if (eventBatch.events.some((event) => directory.has(event.target))) rebind();
   });
   rebind();
 
-  // Transport sends this browser has made and the server has not yet retired
-  // with a doc-ack, by the number they were sent under.
-  const unacknowledged = new Map();
+  // Sequence numbers the server has not yet retired with a doc-ack. Update
+  // bytes live in the CRDT itself and reconnect exports them from there.
+  const unacknowledged = new Set();
   // The newest local state this browser needs the server to durably cover.
   // Remote imports never move this target. Keep an owned copy of each vector:
   // Loro's WASM wrappers are mutable resources, and a later import must not
@@ -219,8 +231,19 @@ export function createProjectSession({
   let joined = false;
   let presenceTimer = null;
   const pendingPresence = new Set();
-  let presenceConnection = 0;
-  let announcedConnection = -1;
+  // Which socket this session is on. A join is several awaits long -- local
+  // hydration, a referenced base fetched over HTTP, the digest that binds it
+  // -- and none of them stops the socket underneath from dropping or the
+  // session from being left. Every join step captures the connection it was
+  // scheduled under and asks, after each of those awaits, whether it is still
+  // the current one. A step that is not imports nothing, sends nothing and
+  // reports nothing: the connection it was answering is gone, and what it
+  // would have done belongs to whatever replaced it.
+  const connection = createGeneration();
+  // Whether this browser has announced itself on the connection it is on.
+  // Cleared when the socket drops, because the server it announced to is no
+  // longer the server it is talking to.
+  let announced = false;
   let left = false;
 
   // A join can arrive as `doc-state` alone, `doc-rows` alone, or `doc-state`
@@ -236,6 +259,18 @@ export function createProjectSession({
   // assembling, and a `doc-rows` frame that turns out to be the first frame
   // of a join still gets hydration awaited, the same as `start` gets it.
   let joinGate = Promise.resolve();
+  // Ordering is owed only between steps that still speak for the same
+  // connection. Leaving an obsolete step in the chain would make a fresh join
+  // wait on a fetch nobody is waiting for any more: a base the server has
+  // stopped offering can take as long to fail as the request is given, and
+  // the join that replaced it would sit behind that for the whole of it. So
+  // cancelling the connection empties the chain as well. The abandoned steps
+  // still run their continuations, and still find themselves obsolete before
+  // they touch `doc`, `send` or `onState`.
+  function abandonQueuedJoins() {
+    connection.cancel();
+    joinGate = Promise.resolve();
+  }
   function sequenceJoin(step) {
     const ran = joinGate.then(step, step);
     // The gate itself must never reject, or every join step queued behind a
@@ -244,6 +279,10 @@ export function createProjectSession({
     joinGate = ran.then(() => {}, () => {});
     return ran;
   }
+
+  /// Whether join work that captured `stale` when it was scheduled still
+  /// speaks for this session and for the socket it was scheduled on.
+  const speaksForThisJoin = (stale) => !left && !stale();
 
   // Whether the document is in this client's own storage, which is what makes
   // a reload safe while the socket is down.
@@ -307,7 +346,11 @@ export function createProjectSession({
   // editor can still work when storage is unavailable, but `local` remains
   // false so its UI does not call those changes safe on this device.
   let persister = null;
-  const report = () => onState?.({
+  // A session that has been left has no UI to report to. The persistence
+  // adapter is not cancelled with it: an outstanding write still finishes,
+  // because the bytes it is putting on disk are what makes the next reload
+  // safe. What stops is the delivery, not the work.
+  const report = () => left ? undefined : onState?.({
     // Keep this numeric for the existing toolbar truthiness checks. It is a
     // save signal, not a count of transport batches.
     pending: Number(mayEdit && !coveredByDurable()),
@@ -390,7 +433,7 @@ export function createProjectSession({
   if (mayEdit) {
     doc.subscribeLocalUpdates((update) => {
       const mine = ++seq;
-      unacknowledged.set(mine, update);
+      unacknowledged.add(mine);
       // Capture the full vector, including dependencies visible at this edit.
       // Later remote imports do not call this subscription and therefore do
       // not move the save target.
@@ -439,7 +482,7 @@ export function createProjectSession({
   function sendPresence(bytes) {
     if (!bytes.byteLength || left) return;
     send({ type: "doc-presence", update: encode(bytes) });
-    announcedConnection = presenceConnection;
+    announced = true;
   }
 
   function flushPresence() {
@@ -485,7 +528,7 @@ export function createProjectSession({
     if (!mayEdit || left) return;
     clearPresenceTimer();
     flushPresence();
-    if (store.get(localKey) && announcedConnection !== presenceConnection) {
+    if (store.get(localKey) && !announced) {
       const bytes = store.encode(localKey) || new Uint8Array();
       sendPresence(bytes);
     }
@@ -515,7 +558,7 @@ export function createProjectSession({
     // Replace transmission bookkeeping with this export. The save target
     // survives independently, including work the head already covers.
     unacknowledged.clear();
-    unacknowledged.set(mine, whole);
+    unacknowledged.add(mine);
     report();
     sendUpdate(whole, mine);
   }
@@ -559,14 +602,18 @@ export function createProjectSession({
     /// The path the main file is known by, which is what its format is read
     /// from. Empty until the maps arrive.
     mainPath() {
-      const id = meta.get("main");
-      return (id && paths.get(id)) || "";
+      return projectDirectory(doc, projectionRules).main;
     },
 
     /// The main file's id, which is what the editor opens on and what a
     /// diagnostic with no file of its own belongs to.
     mainId() {
-      return meta.get("main") || "";
+      return projectDirectory(doc, projectionRules).mainId;
+    },
+
+    setRules(rules) {
+      projectionRules = rules || {};
+      rebind();
     },
 
     /// Follows the main file's text, across the text itself being swapped for
@@ -604,7 +651,7 @@ export function createProjectSession({
       if (!mayEdit) throw new Error("This project is read-only.");
       const plan = relocation(this.list(), this.folders(), entries, destination, rules, rename);
       // Remove asset keys first, so a batch move never overwrites a source.
-      for (const file of plan.files) if (file.kind === "asset") assets.delete(file.previousPath);
+      for (const file of plan.files) if (file.kind === "asset") assets.delete(file.id);
       for (const file of plan.files) {
         if (file.kind === "asset") assets.set(file.path, file.sha);
         else paths.set(file.id, file.path);
@@ -628,7 +675,7 @@ export function createProjectSession({
       const removed = current.filter((file) => selected(file.path));
       const removedMain = removed.some((file) => file.main);
       for (const file of removed) {
-        if (file.kind === "asset") assets.delete(file.path);
+        if (file.kind === "asset") assets.delete(file.id);
         else { files.delete(file.id); paths.delete(file.id); }
       }
       for (const path of this.folders()) if (selected(path)) meta.delete(`folder:${path}`);
@@ -662,21 +709,14 @@ export function createProjectSession({
     /// is the order the file list shows and the order a person reads a paper
     /// in.
     list() {
-      const id = meta.get("main");
-      const texts = [...paths.entries()]
-        .filter(([file]) => {
-          const val = files.get(file);
-          return val?.kind?.() === "Text";
-        })
-        .map(([file, path]) => ({ id: file, path, kind: "text", main: file === id }));
-      const figures = [...assets.entries()].map(([path, sha]) => ({
-        id: path,
+      const projection = projectDirectory(doc, projectionRules);
+      return [...projection.files.entries()].map(([path, file]) => ({
+        id: file.source,
         path,
-        sha,
-        kind: "asset",
-        main: false,
-      }));
-      return [...texts, ...figures].sort((a, b) => {
+        ...(file.kind === "asset" ? { sha: file.digest } : {}),
+        kind: file.kind,
+        main: file.kind === "text" && file.id === projection.mainId,
+      })).sort((a, b) => {
         if (a.main !== b.main) return a.main ? -1 : 1;
         return a.path.localeCompare(b.path);
       });
@@ -686,28 +726,26 @@ export function createProjectSession({
     /// only: their bytes are not in the shared document, and whoever renders
     /// fetches them.
     tree() {
+      const projection = projectDirectory(doc, projectionRules);
       const texts = Object.create(null);
       const entries = Object.create(null);
-      for (const [file, text] of files.entries()) {
-        const path = paths.get(file);
-        if (path && text?.kind?.() === "Text") {
-          texts[path] = text.toString();
-          entries[path] = { kind: "text", id: file };
+      const digests = Object.create(null);
+      for (const [path, file] of projection.files) {
+        if (file.kind === "text") {
+          texts[path] = projection.texts.get(path);
+          entries[path] = { kind: "text", id: file.id };
+        } else {
+          digests[path] = file.digest;
+          entries[path] = { kind: "asset", sha: file.digest };
         }
       }
-      const digests = Object.create(null);
-      for (const [path, sha] of assets.entries()) {
-        digests[path] = sha;
-        entries[path] = { kind: "asset", sha };
-      }
-      return { main: this.mainPath(), texts, digests, files: entries };
+      return { main: projection.main, texts, digests, files: entries };
     },
 
     /// The text at a path, for the caller that has a path and not an id --
     /// which is what a diagnostic carries.
     idOf(path) {
-      for (const [file, at] of paths.entries()) if (at === path) return file;
-      return "";
+      return projectDirectory(doc, projectionRules).files.get(path)?.id || "";
     },
 
     textOf(id) {
@@ -900,13 +938,22 @@ export function createProjectSession({
     /// `doc-rows` frame that lands mid-fetch waits for this to finish
     /// importing before it touches `doc` itself.
     start(state) {
+      const stale = connection.mark();
       return sequenceJoin(async () => {
+        // The frame may have waited behind another join step long enough for
+        // its own socket to go.
+        if (!speaksForThisJoin(stale)) return;
         // Disk recovery must win the race with the room handshake. Otherwise a
         // delayed import lands after catch-up and is never offered to the
         // server (hydration is intentionally not a local Loro update).
         await persister?.hydration;
         if (left) return;
+        // The local baseline is this browser's, not the socket's. Capture it
+        // even when the connection that prompted the join has since dropped,
+        // or an offline edit made during hydration would stop counting as
+        // work waiting for durable coverage.
         captureHydratedTarget();
+        if (!speaksForThisJoin(stale)) return;
         if (state.protocol !== "librepaper.room.v3") {
           throw new Error("This document requires a newer LibrePaper version.");
         }
@@ -926,13 +973,22 @@ export function createProjectSession({
           try {
             referenced = await fetchReference(state.ref);
           } catch (error) {
-            if (error?.restartBaseline && !left) {
+            // A failure belongs to the socket that asked. Asking again on a
+            // connection that has gone would open a document nobody is
+            // reading, and raising on one would hand the error to whoever is
+            // now joining instead.
+            if (!speaksForThisJoin(stale)) return;
+            if (error?.restartBaseline) {
               send(open());
               return;
             }
             throw error;
           }
-          if (!state.digest || await sha256Hex(referenced) !== state.digest) {
+          if (!speaksForThisJoin(stale)) return;
+          const verified = Boolean(state.digest) && await sha256Hex(referenced) === state.digest;
+          // Hashing is a turn of its own, and a long one for a large base.
+          if (!speaksForThisJoin(stale)) return;
+          if (!verified) {
             throw new Error("referenced document state failed its integrity check");
           }
           doc.import(referenced);
@@ -957,10 +1013,13 @@ export function createProjectSession({
     /// base, so the rows this frame carries are never caught up ahead of the
     /// base they build on.
     rows(frame) {
+      const stale = connection.mark();
       return sequenceJoin(async () => {
+        if (!speaksForThisJoin(stale)) return;
         await persister?.hydration;
         if (left) return;
         captureHydratedTarget();
+        if (!speaksForThisJoin(stale)) return;
         if (frame.protocol !== "librepaper.room.v3") {
           throw new Error("This document requires a newer LibrePaper version.");
         }
@@ -981,6 +1040,7 @@ export function createProjectSession({
     },
 
     apply(update) {
+      if (left) return;
       if (!hydrationCaptured) {
         remoteDuringHydration.push(update);
         return;
@@ -989,6 +1049,7 @@ export function createProjectSession({
     },
 
     applyPresence(update) {
+      if (left) return;
       store.apply(decode(update));
       // Somebody new may have arrived wearing this browser's colour.
       settleColour();
@@ -998,7 +1059,8 @@ export function createProjectSession({
     /// This does not change save pending: durability is reported separately
     /// by `doc-durable`.
     acknowledge(upTo) {
-      for (const mine of [...unacknowledged.keys()]) {
+      if (left) return;
+      for (const mine of unacknowledged) {
         if (mine <= upTo) unacknowledged.delete(mine);
       }
       report();
@@ -1013,11 +1075,15 @@ export function createProjectSession({
       report();
     },
 
-    /// The socket dropped. Nothing is thrown away -- what was not acknowledged
-    /// is still held, and goes again on the next join.
+    /// The socket dropped. Nothing is thrown away: the next join exports the
+    /// CRDT state beyond the server's vector and sends it again.
     disconnected() {
       joined = false;
-      presenceConnection++;
+      announced = false;
+      // Whatever the old socket's join was still waiting on -- hydration, a
+      // referenced base, its digest -- is no longer anybody's answer. The next
+      // join starts from an empty gate and catches up on its own.
+      abandonQueuedJoins();
       // Keep a pending local state for the next join, but do not leave a
       // timer running while the socket is unavailable.
       clearPresenceTimer();
@@ -1048,6 +1114,11 @@ export function createProjectSession({
       clearPresenceTimer();
       pendingPresence.clear();
       left = true;
+      // `left` alone would be enough for the checks, but the gate has to be
+      // released too: a caller that leaves one session and opens another on
+      // the same transport should not find the new one queued behind a fetch
+      // the old one abandoned.
+      abandonQueuedJoins();
       persister?.close?.();
       doc.destroy?.();
     },

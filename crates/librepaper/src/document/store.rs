@@ -755,7 +755,11 @@ impl Store {
     }
 
     /// Bring a deleted document's purge forward to now.
-    pub async fn purge_now(&self, slug: &str, account_id: &str) -> Result<bool, ModifyError> {
+    pub async fn purge_now(
+        &self,
+        slug: &str,
+        account_id: &str,
+    ) -> Result<Option<uuid::Uuid>, ModifyError> {
         let catalog = &self.catalog;
         let account_id = uuid::Uuid::parse_str(account_id)
             .map_err(|_| ModifyError::Refused("invalid account".into()))?;
@@ -767,10 +771,11 @@ impl Store {
         if document.owner_id != account_id {
             return Err(ModifyError::Refused("not yours to delete".into()));
         }
-        catalog
+        let changed = catalog
             .hasten_deletion(document.id)
             .await
-            .map_err(|error| ModifyError::Storage(error.to_string()))
+            .map_err(|error| ModifyError::Storage(error.to_string()))?;
+        Ok(changed.then_some(document.id))
     }
 
     /// Star a document for this account, or take the star off it.

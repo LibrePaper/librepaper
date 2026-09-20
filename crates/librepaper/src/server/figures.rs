@@ -168,7 +168,6 @@ impl Server {
             return plain(404, "not found");
         };
         crate::server::cost::blob_response(
-            &self.cost,
             self.store.blobs.clone(),
             asset.storage_key.clone(),
             sha,

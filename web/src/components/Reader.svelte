@@ -2779,7 +2779,7 @@
     file.id === openFile && file.kind === "text" && Boolean(renderers.formatOf(file.path))));
   loadConfig()
     .then((answer) => {
-      ws.rules = answer || {};
+      workspace.setRules(answer || {});
       if (typeof answer?.latexMirror === "string") latex.at(answer.latexMirror);
     })
     .catch(() => {
@@ -3000,8 +3000,11 @@
         // the way back up is where a reader asks whether they missed one.
         if (up && !mayEdit) void refreshCurrentProject();
       },
-      onPeers: (count) => (peers = Math.max(peers, count)),
+      onPeers: (count) => { if (!readerDisposed) peers = Math.max(peers, count); },
       onState: (state_) => {
+        // Teardown sets this before it closes the collaboration, so a local
+        // write landing in that window has a UI to miss.
+        if (readerDisposed) return;
         const newlyFailed = state_.localError && state_.localError !== persistence.localError;
         persistence = state_;
         if (newlyFailed) say(`${state_.localError}. This browser can no longer keep its own copy of the project, so a reload while the connection is down would lose what is not yet on the server. Download the project to have a copy that does not depend on either.`, { kind: "problem", id: "reader:local-storage-failed" });
@@ -3020,9 +3023,9 @@
         });
       },
       onSource: () => sourceChanged(),
-      onSwap: () => (sourceEpoch += 1),
+      onSwap: () => { if (!readerDisposed) sourceEpoch += 1; },
       onFiles: filesChanged,
-      onAwareness: refreshPeers,
+      onAwareness: () => { if (!readerDisposed) refreshPeers(); },
       onDocumentChanged: () => {
         passages.clearPassageCache();
         location.reload();
