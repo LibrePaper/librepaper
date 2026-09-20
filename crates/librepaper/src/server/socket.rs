@@ -88,28 +88,34 @@ impl UpdateAssembly {
         ceiling: usize,
     ) -> Result<Option<Vec<u8>>, &'static str> {
         const INVALID: &str = "invalid multipart document update";
-        match message.kind.as_str() {
+        match message.kind() {
             "doc-update-start" => {
                 if self.pending.is_some()
-                    || message.size == 0
-                    || message.size > ceiling
-                    || message.chunks == 0
-                    || message.chunks > 4096
-                    || message.chunks > message.size
+                    || message.size() == 0
+                    || message.size() > ceiling
+                    || message.chunks() == 0
+                    || message.chunks() > 4096
+                    || message.chunks() > message.size()
                 {
                     return Err(INVALID);
                 }
-                self.pending = Some((message.seq, message.size, message.chunks, 0, Vec::new()));
+                self.pending = Some((
+                    message.seq(),
+                    message.size(),
+                    message.chunks(),
+                    0,
+                    Vec::new(),
+                ));
                 Ok(None)
             }
             "doc-update-chunk" => {
                 let Some((seq, size, chunks, next, bytes)) = self.pending.as_mut() else {
                     return Err(INVALID);
                 };
-                if message.seq != *seq || message.index != *next || *next >= *chunks {
+                if message.seq() != *seq || message.index() != *next || *next >= *chunks {
                     return Err(INVALID);
                 }
-                let part = decode_update(&message.update).ok_or(INVALID)?;
+                let part = decode_update(message.update()).ok_or(INVALID)?;
                 if part.is_empty() || part.len() > size.saturating_sub(bytes.len()) {
                     return Err(INVALID);
                 }
@@ -121,7 +127,7 @@ impl UpdateAssembly {
                 let Some((seq, size, chunks, next, bytes)) = self.pending.take() else {
                     return Err(INVALID);
                 };
-                if message.seq != seq || bytes.len() != size || next != chunks {
+                if message.seq() != seq || bytes.len() != size || next != chunks {
                     return Err(INVALID);
                 }
                 Ok(Some(bytes))
@@ -261,7 +267,6 @@ impl Server {
                         query,
                         link_expires,
                         socket_permit,
-                        entry.source_format,
                     )
                     .await;
             })
@@ -272,7 +277,7 @@ impl Server {
     pub(super) async fn run_socket(
         &self,
         socket: WebSocket,
-        room: Arc<Room>,
+        room: RoomHandle,
         address: String,
         who: Viewer,
         author: String,
@@ -282,7 +287,6 @@ impl Server {
         query: Option<String>,
         link_expires: Option<i64>,
         _socket_permit: crate::server::socket_budget::SocketPermit,
-        source_format: String,
     ) {
         let socket_id = _socket_permit.id();
         let (mut sink, mut stream) = socket.split();
@@ -427,7 +431,7 @@ impl Server {
                     if !self.reauthorize_connection(&room.slug, socket_id).await {
                         break 'reader;
                     }
-                    if !room.state.lock().await.sockets.contains_key(&socket_id) {
+                    if !room.has_peer(socket_id).await {
                         break 'reader;
                     }
 
@@ -443,7 +447,7 @@ impl Server {
                     //
                     // It is deliberately below reauthorization: a revoked
                     // session is closed above rather than kept alive here.
-                    if incoming.kind == "ping" {
+                    if incoming.kind() == "ping" {
                         let _ = send_outgoing(
                             &tx,
                             Outgoing::Text(json!({"type": "pong"}).to_string()),
@@ -454,28 +458,28 @@ impl Server {
 
                     // Chat is live room traffic, never document state. It is
                     // deliberately absent from hello/reconnect and storage.
-                    if incoming.kind == "chat" {
+                    if incoming.kind() == "chat" {
                         if !who.at_least(Role::Commenter) {
-                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"comment access is required to chat","temp_id":incoming.temp_id}).to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"comment access is required to chat","temp_id":incoming.temp_id()}).to_string())).await;
                             continue 'reader;
                         }
-                        let text = incoming.body.trim();
-                        if text.is_empty() || text.len() > 4096 || incoming.temp_id.is_empty() || incoming.temp_id.len() > 128 {
-                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id}).to_string())).await;
+                        let text = incoming.body().trim();
+                        if text.is_empty() || text.len() > 4096 || incoming.temp_id().is_empty() || incoming.temp_id().len() > 128 {
+                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"chat messages must be between 1 and 4096 bytes","temp_id":incoming.temp_id()}).to_string())).await;
                             continue 'reader;
                         }
                         let digest = crate::document::store::digest_of(text);
-                        if let Some((_, previous)) = chat_requests.iter().find(|(id,_)| id == &incoming.temp_id) {
+                        if let Some((_, previous)) = chat_requests.iter().find(|(id,_)| id == incoming.temp_id()) {
                             let reply = if previous == &digest {
-                                json!({"type":"chat-ack","temp_id":incoming.temp_id})
+                                json!({"type":"chat-ack","temp_id":incoming.temp_id()})
                             } else {
-                                json!({"type":"error","message":"message id already used for different content","temp_id":incoming.temp_id})
+                                json!({"type":"error","message":"message id already used for different content","temp_id":incoming.temp_id()})
                             };
                             let _ = send_outgoing(&tx, Outgoing::Text(reply.to_string())).await;
                             continue 'reader;
                         }
                         if !room.chat_allowed(socket_id).await {
-                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"too many chat messages; try again shortly","temp_id":incoming.temp_id}).to_string())).await;
+                            let _ = send_outgoing(&tx, Outgoing::Text(json!({"type":"error","message":"too many chat messages; try again shortly","temp_id":incoming.temp_id()}).to_string())).await;
                             continue 'reader;
                         }
                         let creator = if who.id.is_signed_in() {
@@ -491,15 +495,15 @@ impl Server {
                             "created":crate::util::timestamp(),
                         });
                         room.broadcast_except(Some(socket_id),&message).await;
-                        message["temp_id"] = Value::String(incoming.temp_id.clone());
+                        message["temp_id"] = Value::String(incoming.temp_id().to_owned());
                         if send_outgoing(&tx, Outgoing::Text(message.to_string())).await.is_err() { break 'reader; }
-                        chat_requests.push_back((incoming.temp_id,digest));
+                        chat_requests.push_back((incoming.temp_id().to_owned(),digest));
                         if chat_requests.len() > 256 { chat_requests.pop_front(); }
                         continue 'reader;
                     }
 
                     if matches!(
-                        incoming.kind.as_str(),
+                        incoming.kind(),
                         "doc-update-start" | "doc-update-chunk" | "doc-update-end"
                     ) {
                         if !may_edit {
@@ -508,7 +512,7 @@ impl Server {
                                     json!({
                                         "type": "error",
                                         "message": "editing is not permitted",
-                                        "request_id": incoming.request_id,
+                                        "request_id": incoming.request_id(),
                                         "version": 1,
                                         "protocol": "librepaper.room.v1",
                                     })
@@ -520,8 +524,11 @@ impl Server {
                         match assembly.receive(&incoming, update_ceiling) {
                             Ok(None) => continue 'reader,
                             Ok(Some(update)) => {
-                                incoming.kind = "doc-update".to_string();
-                                incoming.update = encode_update(&update);
+                                incoming = RoomMessage::doc_update(
+                                    encode_update(&update),
+                                    incoming.seq(),
+                                    incoming.request_id().to_owned(),
+                                );
                             }
                             Err(reason) => {
                                 let _ = send_outgoing(&tx, Outgoing::Close(reason.into())).await;
@@ -536,8 +543,8 @@ impl Server {
                     // the document -- that is how a reader renders the
                     // current text -- and writing it is the editor rung, the
                     // same gate the source has always been under.
-                    if incoming.kind.starts_with("doc-") {
-                        match incoming.kind.as_str() {
+                    if incoming.kind().starts_with("doc-") {
+                        match incoming.kind() {
                             // What the socket already has, or nothing on a cold join.
                             "doc-open" | "doc-sync" => {
                                 if !may_edit {
@@ -545,12 +552,28 @@ impl Server {
                                         json!({
                                             "type": "error",
                                             "message": "source synchronization is restricted to editors",
-                                            "request_id": incoming.request_id,
+                                            "request_id": incoming.request_id(),
                                             "version": 1,
                                             "protocol": "librepaper.annotation.v1",
                                         }).to_string(),
                                     )).await;
                                     continue 'reader;
+                                }
+                                if (!incoming.protocol().is_empty()
+                                    && incoming.protocol() != "librepaper.room.v1")
+                                    || incoming.version() > 1
+                                    || incoming.schema_version()
+                                        > librepaper_document_core::SCHEMA_VERSION
+                                {
+                                    let _ = send_outgoing(
+                                        &tx,
+                                        Outgoing::Close(
+                                            "upgrade_required: unsupported collaboration or document schema"
+                                                .into(),
+                                        ),
+                                    )
+                                    .await;
+                                    break 'reader;
                                 }
                                 if !self.socket_budget.state_available(&client_network(&address)) {
                                     self.cost.pressure(4);
@@ -558,9 +581,9 @@ impl Server {
                                     break 'reader;
                                 }
                                 let vector =
-                                    decode_update(&incoming.vector).filter(|raw| !raw.is_empty());
-                                let (update, count, server_vector) =
-                                    room.open_state_with_vector(vector.as_deref()).await;
+                                    decode_update(incoming.vector()).filter(|raw| !raw.is_empty());
+                                let (update, count, server_vector, source_sequence, handshake) =
+                                    room.begin_open_state(vector.as_deref()).await;
                                 if room.agent_recovery_pending() {
                                     break 'reader;
                                 }
@@ -571,10 +594,24 @@ impl Server {
                                     // catches up on whatever arrived during
                                     // the fetch by sending its state vector
                                     // back as `doc-sync`.
+                                    let Some((reference, digest)) = self
+                                        .state_reference(&room.slug, update)
+                                        .await
+                                    else {
+                                        let _ = send_outgoing(&tx, Outgoing::Close(
+                                            "state_sync_capacity: reconnect for a newer baseline".into(),
+                                        )).await;
+                                        break 'reader;
+                                    };
                                     json!({
                                         "type": "doc-state",
-                                        "ref": self.state_reference(&room.slug),
+                                        "ref": reference,
+                                        "digest": digest,
                                         "vector": encode_update(&server_vector),
+                                        "source_sequence": source_sequence.to_string(),
+                                        "protocol": "librepaper.room.v1",
+                                        "version": 1,
+                                        "schema_version": librepaper_document_core::SCHEMA_VERSION,
                                         "count": count,
                                     })
                                 } else {
@@ -582,6 +619,10 @@ impl Server {
                                         "type": "doc-state",
                                         "update": encode_update(&update),
                                         "vector": encode_update(&server_vector),
+                                        "source_sequence": source_sequence.to_string(),
+                                        "protocol": "librepaper.room.v1",
+                                        "version": 1,
+                                        "schema_version": librepaper_document_core::SCHEMA_VERSION,
                                         "count": count,
                                     })
                                 };
@@ -594,6 +635,10 @@ impl Server {
                                 if send_outgoing(&tx, Outgoing::Text(payload_text)).await.is_err() {
                                     break 'reader;
                                 }
+                                if !room.activate_source(&handshake, socket_id).await {
+                                    break 'reader;
+                                }
+                                drop(handshake);
                                 room.broadcast(&json!({"type": "doc-peers", "count": room.editors().await}))
                                     .await;
                                 // Whoever has just joined needs to know what is
@@ -623,12 +668,12 @@ impl Server {
                             // now, so it is worth nothing to whoever arrives next, and
                             // a session that kept it would be keeping a list of ghosts.
                             "doc-presence" => {
-                                if !may_edit || incoming.update.is_empty() {
+                                if !may_edit || incoming.update().is_empty() {
                                     continue 'reader;
                                 }
                                 room.broadcast_editors_except(
                                     Some(socket_id),
-                                    &json!({"type": "doc-presence", "update": incoming.update}),
+                                    &json!({"type": "doc-presence", "update": incoming.update()}),
                                 )
                                 .await;
                             }
@@ -638,7 +683,7 @@ impl Server {
                                             json!({
                                                 "type": "error",
                                                 "message": "editing is not permitted",
-                                                "request_id": incoming.request_id,
+                                                "request_id": incoming.request_id(),
                                                 "version": 1,
                                                 "protocol": "librepaper.room.v1",
                                             })
@@ -646,28 +691,43 @@ impl Server {
                                         )).await;
                                     continue 'reader;
                                 }
-                                if incoming.update.is_empty() {
+                                if incoming.update().is_empty() {
                                     continue 'reader;
                                 }
-                                let Some(update) = decode_update(&incoming.update) else {
+                                let Some(update) = decode_update(incoming.update()) else {
                                     if who.automation {
                                         let _ = send_outgoing(&tx, Outgoing::Text(json!({
                                             "type": "error", "message": "invalid encoded update",
-                                            "request_id": incoming.request_id, "seq": incoming.seq,
+                                            "request_id": incoming.request_id(), "seq": incoming.seq(),
                                             "version": 1, "protocol": "librepaper.room.v1",
                                         }).to_string())).await;
                                     }
                                     continue 'reader;
                                 };
+                                if let Err(error) = self.verify_writer().await {
+                                    room.fence(crate::room::FenceReason::HeldElsewhere);
+                                    let _ = send_outgoing(
+                                        &tx,
+                                        Outgoing::Close(format!("writer ownership lost: {error}")),
+                                    )
+                                    .await;
+                                    break 'reader;
+                                }
                                 match room
-                                    .receive_update(socket_id, &update, incoming.seq, who.authorship(&author))
+                                    .receive_update(
+                                        socket_id,
+                                        &update,
+                                        incoming.seq(),
+                                        who.authorship(&author),
+                                        &who.document_authority(),
+                                    )
                                     .await
                                 {
                                     Applied::Ignored => {
                                         if who.automation {
                                             let _ = send_outgoing(&tx, Outgoing::Text(json!({
                                                 "type": "error", "message": "update was rejected",
-                                                "request_id": incoming.request_id, "seq": incoming.seq,
+                                                "request_id": incoming.request_id(), "seq": incoming.seq(),
                                                 "version": 1, "protocol": "librepaper.room.v1",
                                             }).to_string())).await;
                                         }
@@ -678,16 +738,17 @@ impl Server {
                                                 .await;
                                         break 'reader;
                                     }
-                                    Applied::Relay => {}
+                                    Applied::Relay(committed_update) => {
+                                        room.broadcast_editors_except(
+                                            Some(socket_id),
+                                            &json!({
+                                                "type": "doc-update",
+                                                "update": encode_update(&committed_update),
+                                            }),
+                                        )
+                                        .await;
+                                    }
                                 }
-                                // Straight on to everyone else, readers included. The
-                                // sender already has it, and is told separately, once
-                                // storage has it, that it is durable.
-                                room.broadcast_editors_except(
-                                    Some(socket_id),
-                                    &json!({"type": "doc-update", "update": incoming.update}),
-                                )
-                                .await;
                             }
                             // A deliberate act by the author, and so a mark in the
                             // timeline. The requester is told which checkpoint it
@@ -697,7 +758,7 @@ impl Server {
                                     let payload = json!({
                                         "type": "error",
                                         "message": "editing is not permitted",
-                                        "request_id": incoming.request_id,
+                                        "request_id": incoming.request_id(),
                                         "version": 1,
                                         "protocol": "librepaper.room.v1",
                                     });
@@ -706,8 +767,8 @@ impl Server {
                                     }
                                     continue 'reader;
                                 }
-                                let why = match incoming.why.as_str() {
-                                    "sync" | "restore" | "label" => incoming.why.clone(),
+                                let why = match incoming.why() {
+                                    "sync" | "restore" | "label" => incoming.why().to_owned(),
                                     _ => "cli".to_string(),
                                 };
                                 // Whether this caller is owed an answer. A
@@ -719,13 +780,28 @@ impl Server {
                                 // an immediate checkpoint and another for a
                                 // debounced one, and they became the same
                                 // call some time ago.
-                                let immediate = who.automation || !incoming.request_id.is_empty();
-                                let result =
-                                    room.checkpoint(&why, who.authorship(&author)).await;
+                                let immediate = who.automation || !incoming.request_id().is_empty();
+                                let result = match uuid::Uuid::parse_str(incoming.request_id()) {
+                                    Ok(request_id) => room
+                                        .checkpoint_idempotent(
+                                            &why,
+                                            who.authorship(&author),
+                                            &who.document_authority(),
+                                            request_id,
+                                        )
+                                        .await,
+                                    Err(_) => room
+                                        .checkpoint(
+                                            &why,
+                                            who.authorship(&author),
+                                            &who.document_authority(),
+                                        )
+                                        .await,
+                                };
                                 let payload = match result {
                                     Ok(Some(sha)) => json!({
                                         "type": "doc-checkpoint", "sha": sha,
-                                        "request_id": incoming.request_id,
+                                        "request_id": incoming.request_id(),
                                         "durable": true,
                                         "version": 1,
                                         "protocol": "librepaper.room.v1",
@@ -733,7 +809,7 @@ impl Server {
                                     Ok(None) if !immediate => continue 'reader,
                                     Ok(None) => json!({
                                         "type": "doc-checkpoint", "noop": true,
-                                        "request_id": incoming.request_id,
+                                        "request_id": incoming.request_id(),
                                         "durable": true,
                                         "version": 1,
                                         "protocol": "librepaper.room.v1",
@@ -745,7 +821,7 @@ impl Server {
                                                 room.slug
                                             );
                                         }
-                                        socket_refusal(&error, &incoming.request_id)
+                                        socket_refusal(&error, incoming.request_id())
                                     }
                                 };
                                 if send_outgoing(&tx, Outgoing::Text(payload.to_string())).await.is_err() {
@@ -762,13 +838,13 @@ impl Server {
                     // naming one of its hunks by index -- never a delta run and
                     // never an offset, because the server counts text in code
                     // points where the browser counts UTF-16 (§5.2).
-                    if incoming.kind.starts_with("proposal-") {
+                    if incoming.kind().starts_with("proposal-") {
                         if !may_edit {
                             let _ = send_outgoing(&tx, Outgoing::Text(
                                 json!({
                                     "type": "error",
                                     "message": "proposing and reviewing changes is restricted to editors",
-                                    "request_id": incoming.request_id,
+                                    "request_id": incoming.request_id(),
                                     "version": 1,
                                     "protocol": "librepaper.room.v1",
                                 }).to_string(),
@@ -786,20 +862,26 @@ impl Server {
                                 // updates have landed, unlike the other
                                 // refusals, which are final.
                                 "retry": matches!(error, crate::room::proposals::ProposalError::UnknownBase),
-                                "proposal_id": incoming.proposal_id,
-                                "request_id": incoming.request_id,
+                                "proposal_id": incoming.proposal_id(),
+                                "request_id": incoming.request_id(),
                                 "version": 1,
                                 "protocol": "librepaper.room.v1",
                             })
                         };
-                        let payload = match incoming.kind.as_str() {
+                        let payload = match incoming.kind() {
                             // Somebody proposes different words for a passage.
                             // The passage is named the way a comment names one
                             // -- by quoting it -- and what comes back is a
                             // proposal id, because a suggested change is a
                             // branch like any other from here on (§1.2).
                             "proposal-suggest" => {
-                                let proposed = incoming.proposed.clone().unwrap_or_default();
+                                let Ok(request_id) = uuid::Uuid::parse_str(incoming.request_id()) else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"a durable proposal requires a UUID request_id","request_id":incoming.request_id()}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                let proposed = incoming.proposed().unwrap_or_default();
                                 // Which passage, worked out the way a comment's
                                 // is: from the words and the words around them,
                                 // against the document as it stands. A passage
@@ -810,13 +892,21 @@ impl Server {
                                     Ok(found) => found,
                                     Err(reason) => {
                                         let _ = send_outgoing(&tx, Outgoing::Text(
-                                            json!({"type":"error","stale":true,"message":reason,"request_id":incoming.request_id}).to_string(),
+                                            json!({"type":"error","stale":true,"message":reason,"request_id":incoming.request_id()}).to_string(),
                                         )).await;
                                         continue 'reader;
                                     }
                                 };
                                 match room
-                                    .open_suggestion(&by, &path, at, &exact, &proposed)
+                                    .open_suggestion(
+                                        &by,
+                                        &path,
+                                        at,
+                                        &exact,
+                                        proposed,
+                                        &who.document_authority(),
+                                        request_id,
+                                    )
                                     .await
                                 {
                                     Ok(id) => {
@@ -824,7 +914,7 @@ impl Server {
                                         json!({
                                             "type": "proposal-opened", "proposal_id": id,
                                             "suggested": true,
-                                            "request_id": incoming.request_id,
+                                            "request_id": incoming.request_id(),
                                             "version": 1, "protocol": "librepaper.room.v1",
                                         })
                                     }
@@ -838,20 +928,29 @@ impl Server {
                             // own frontier, because that silently rebases it
                             // onto somebody else's words.
                             "proposal-open" => {
-                                let base = crate::room::decode_update(&incoming.base)
-                                    .and_then(|bytes| loro::Frontiers::decode(&bytes).ok());
-                                let Some(base) = base else {
+                                let Ok(request_id) = uuid::Uuid::parse_str(incoming.request_id()) else {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
-                                        json!({"type":"error","message":"a proposal must say which version it forked at","request_id":incoming.request_id}).to_string(),
+                                        json!({"type":"error","message":"a durable proposal requires a UUID request_id","request_id":incoming.request_id()}).to_string(),
                                     )).await;
                                     continue 'reader;
                                 };
-                                match room.open_proposal(&by, &base).await {
+                                let base = crate::room::decode_update(incoming.base())
+                                    .and_then(|bytes| loro::Frontiers::decode(&bytes).ok());
+                                let Some(base) = base else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"a proposal must say which version it forked at","request_id":incoming.request_id()}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                match room
+                                    .open_proposal(&by, &base, &who.document_authority(), request_id)
+                                    .await
+                                {
                                     Ok(id) => {
                                         announce_proposal(&room, &id).await;
                                         json!({
                                             "type": "proposal-opened", "proposal_id": id,
-                                            "request_id": incoming.request_id,
+                                            "request_id": incoming.request_id(),
                                             "version": 1, "protocol": "librepaper.room.v1",
                                         })
                                     }
@@ -859,22 +958,37 @@ impl Server {
                                 }
                             }
                             "proposal-update" => {
-                                let (Some(branch), Some(tip)) = (
-                                    crate::room::decode_update(&incoming.update),
-                                    crate::room::decode_update(&incoming.tip),
-                                ) else {
+                                let Ok(request_id) = uuid::Uuid::parse_str(incoming.request_id()) else {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
-                                        json!({"type":"error","message":"that proposal update could not be read","request_id":incoming.request_id}).to_string(),
+                                        json!({"type":"error","message":"a durable proposal update requires a UUID request_id","request_id":incoming.request_id()}).to_string(),
                                     )).await;
                                     continue 'reader;
                                 };
-                                match room.update_proposal(&incoming.proposal_id, &tip, &branch).await {
+                                let (Some(branch), Some(tip)) = (
+                                    crate::room::decode_update(incoming.update()),
+                                    crate::room::decode_update(incoming.tip()),
+                                ) else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"that proposal update could not be read","request_id":incoming.request_id()}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                match room
+                                    .update_proposal(
+                                        incoming.proposal_id(),
+                                        &tip,
+                                        &branch,
+                                        &who.document_authority(),
+                                        request_id,
+                                    )
+                                    .await
+                                {
                                     Ok(()) => {
-                                        announce_proposal(&room, &incoming.proposal_id).await;
+                                        announce_proposal(&room, incoming.proposal_id()).await;
                                         json!({
                                             "type": "proposal-updated",
-                                            "proposal_id": incoming.proposal_id,
-                                            "request_id": incoming.request_id,
+                                            "proposal_id": incoming.proposal_id(),
+                                            "request_id": incoming.request_id(),
                                             "version": 1, "protocol": "librepaper.room.v1",
                                         })
                                     }
@@ -882,23 +996,33 @@ impl Server {
                                 }
                             }
                             "proposal-decide" => {
-                                let Some(against) = crate::room::decode_update(&incoming.tip) else {
+                                let Some(against) = crate::room::decode_update(incoming.tip()) else {
                                     let _ = send_outgoing(&tx, Outgoing::Text(
-                                        json!({"type":"error","message":"a decision must say which version it was made against","request_id":incoming.request_id}).to_string(),
+                                        json!({"type":"error","message":"a decision must say which version it was made against","request_id":incoming.request_id()}).to_string(),
                                     )).await;
                                     continue 'reader;
                                 };
-                                let note = (!incoming.note.is_empty()).then(|| incoming.note.clone());
+                                let note = (!incoming.note().is_empty())
+                                    .then(|| incoming.note().to_owned());
+                                let Ok(request_id) = uuid::Uuid::parse_str(incoming.request_id()) else {
+                                    let _ = send_outgoing(&tx, Outgoing::Text(
+                                        json!({"type":"error","message":"a durable proposal decision requires a UUID request_id","request_id":incoming.request_id()}).to_string(),
+                                    )).await;
+                                    continue 'reader;
+                                };
+                                let authority = who.document_authority();
                                 match room
                                     .decide_hunk(
-                                        &incoming.proposal_id,
+                                        incoming.proposal_id(),
                                         crate::room::proposals::Decision {
-                                            hunk: incoming.hunk,
-                                            accepted: incoming.accepted,
+                                            hunk: incoming.hunk(),
+                                            accepted: incoming.accepted(),
                                             by: &by,
                                             against: &against,
                                             note,
                                             reviewer: socket_id,
+                                            request_id,
+                                            authority: &authority,
                                         },
                                     )
                                     .await
@@ -917,11 +1041,11 @@ impl Server {
                                         .await;
                                         json!({
                                             "type": "proposal-decided",
-                                            "proposal_id": incoming.proposal_id,
-                                            "hunk": incoming.hunk,
-                                            "accepted": incoming.accepted,
+                                            "proposal_id": incoming.proposal_id(),
+                                            "hunk": incoming.hunk(),
+                                            "accepted": incoming.accepted(),
                                             "resolved": true,
-                                            "request_id": incoming.request_id,
+                                            "request_id": incoming.request_id(),
                                             "version": 1, "protocol": "librepaper.room.v1",
                                         })
                                     }
@@ -930,11 +1054,11 @@ impl Server {
                                     // has not moved (§5.1a).
                                     Ok(None) => json!({
                                         "type": "proposal-decided",
-                                        "proposal_id": incoming.proposal_id,
-                                        "hunk": incoming.hunk,
-                                        "accepted": incoming.accepted,
+                                        "proposal_id": incoming.proposal_id(),
+                                        "hunk": incoming.hunk(),
+                                        "accepted": incoming.accepted(),
                                         "resolved": false,
-                                        "request_id": incoming.request_id,
+                                        "request_id": incoming.request_id(),
                                         "version": 1, "protocol": "librepaper.room.v1",
                                     }),
                                     Err(error) => refuse(error),
@@ -943,7 +1067,7 @@ impl Server {
                             "proposal-list" => match room.open_proposals().await {
                                 Ok(open) => json!({
                                     "type": "proposal-list", "proposals": open,
-                                    "request_id": incoming.request_id,
+                                    "request_id": incoming.request_id(),
                                     "version": 1, "protocol": "librepaper.room.v1",
                                 }),
                                 Err(error) => refuse(error),
@@ -964,38 +1088,22 @@ impl Server {
                     // Suggestions carry source anchors and proposed source
                     // text. Rendered commenters may submit annotations, but
                     // only editors may create editorial source suggestions.
-                    if incoming.motivation == "editing" && !may_edit {
+                    if incoming.motivation() == "editing" && !may_edit {
                         let _ = send_outgoing(&tx, Outgoing::Text(
-                            json!({"type":"error","message":"editor access is required for suggestions","temp_id":incoming.temp_id,"request_id":incoming.request_id}).to_string(),
+                            json!({"type":"error","message":"editor access is required for suggestions","temp_id":incoming.temp_id(),"request_id":incoming.request_id()}).to_string(),
                         )).await;
                         continue 'reader;
                     }
 
                     // A commenter can only create annotations against the
                     // exact current projection that produced their page.
-                    if incoming.kind == "comment" && !may_edit && incoming.bundle_id.is_empty() {
+                    if incoming.kind() == "comment" && !may_edit && incoming.bundle_id().is_empty() {
                         let _ = send_outgoing(&tx, Outgoing::Text(
-                            json!({"type":"error","message":"current project identity is required; refresh before annotating","temp_id":incoming.temp_id,"request_id":incoming.request_id}).to_string(),
+                            json!({"type":"error","message":"current project identity is required; refresh before annotating","temp_id":incoming.temp_id(),"request_id":incoming.request_id()}).to_string(),
                         )).await;
                         continue 'reader;
                     }
 
-                    // Keep validation and anchor capture in one source-write
-                    // critical section.
-                    let _bundle_guard = room.bundle_write.lock().await;
-                    if let Some(project_digest) = (incoming.kind == "comment"
-                        && !incoming.bundle_id.is_empty())
-                    .then_some(incoming.bundle_id.as_str())
-                    {
-                        let (_, _, _, current) = room.current_project(&source_format).await;
-                        if current != project_digest {
-                            let _ = send_outgoing(&tx, Outgoing::Text(
-                                json!({"type":"error","message":"source changed; refresh before annotating","stale_source":true,"request_id":incoming.request_id,"temp_id":incoming.temp_id}).to_string(),
-                            )).await;
-                            continue 'reader;
-                        }
-                        incoming.bundle_id.clear();
-                    }
                     let (result, ok) = self.apply_from(&room, incoming, &address, &who, &author).await;
                     if !ok {
                         if send_outgoing(&tx, Outgoing::Text(result.to_string())).await.is_err() {
@@ -1025,7 +1133,7 @@ impl Server {
                     if last_activity.elapsed() > Duration::from_secs(self.socket_budget.policy.idle_seconds) {
                         break 'reader;
                     }
-                    if !room.state.lock().await.sockets.contains_key(&socket_id) {
+                    if !room.has_peer(socket_id).await {
                         // The room already gave up on this peer as too slow
                         // to keep up. Its channel may already be full of
                         // frames nobody is draining, so the transport is cut
@@ -1041,19 +1149,8 @@ impl Server {
 
         self.connections.lock().await.remove(&socket_id);
         room.detach(socket_id).await;
-        // The last editor leaving is the rule that replaces `end_editing`'s
-        // forgetting: what they wrote is written out, rather than dropped
-        // when the last tab closes. No version is taken here. Leaving a room
-        // is not an act of naming a moment, and the operation log already
-        // holds every keystroke that led to this one.
-        if may_edit && room.editors_connected().await == 0 {
-            if let Err(err) = room.persist().await {
-                eprintln!(
-                    "warning: could not write the session for {}: {err}",
-                    room.slug
-                );
-            }
-        }
+        // Source updates are committed before they are installed or relayed;
+        // disconnect therefore has no write-behind work to flush.
         room.broadcast(&json!({"type": "doc-peers", "count": room.editors().await}))
             .await;
         if !writer_done {
@@ -1077,17 +1174,36 @@ impl Server {
         }
     }
 
-    /// A same-origin URL a socket can fetch a large document state from,
-    /// signed so it cannot be handed to somebody who may not read the
-    /// document, and short-lived so it cannot be kept.
-    pub(super) fn state_reference(&self, slug: &str) -> String {
-        let until = crate::util::now_unix() + 120;
-        let token = crate::auth::sign(
-            &self.key,
-            "socket-state-v1",
-            &format!("state:{slug}:{until}"),
-        );
-        format!("/api/documents/{slug}/state?until={until}&token={token}")
+    /// Store one exact, short-lived baseline. A fetch never consults the live
+    /// room, so a commit racing a slow transfer cannot change these bytes.
+    pub(super) async fn state_reference(
+        &self,
+        slug: &str,
+        update: Vec<u8>,
+    ) -> Option<(String, String)> {
+        let ceiling = self
+            .config
+            .persistence()
+            .max_encoded_snapshot_bytes
+            .saturating_mul(4);
+        if update.len() > ceiling {
+            return None;
+        }
+        let now = crate::util::now_unix();
+        let id = random_token();
+        let digest = format!("{:x}", Sha256::digest(&update));
+        let mut transfers = self.state_transfers.lock().await;
+        if !transfers.insert(
+            id.clone(),
+            slug.to_owned(),
+            Bytes::from(update),
+            digest.clone(),
+            now,
+            ceiling,
+        ) {
+            return None;
+        }
+        Some((format!("/api/documents/{slug}/state?transfer={id}"), digest))
     }
 
     /// Rechecks one live socket against the current catalogue entry.  Inbound
@@ -1170,7 +1286,7 @@ impl Server {
             .tx
             .try_send(Outgoing::Close("access changed; reconnect".into()));
         if let Ok(room) = self.rooms.try_get(slug).await {
-            room.state.lock().await.sockets.remove(&socket_id);
+            room.detach(socket_id).await;
         }
     }
 
@@ -1249,7 +1365,7 @@ impl Server {
             let Ok(room) = self.rooms.try_get(slug).await else {
                 continue;
             };
-            room.state.lock().await.sockets.remove(&socket_id);
+            room.detach(socket_id).await;
         }
     }
 

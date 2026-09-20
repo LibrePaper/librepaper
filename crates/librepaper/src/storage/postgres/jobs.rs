@@ -78,6 +78,7 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid job".into()));
         }
         let id = new_id();
+        let mut tx = self.begin_writer_transaction().await?;
         let inserted = sqlx::query_as!(
             Job,
             "INSERT INTO jobs
@@ -100,15 +101,16 @@ impl PostgresCatalog {
             input.max_attempts,
             input.run_after,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
         if let Some(job) = inserted {
+            tx.commit().await?;
             return Ok(job);
         }
         let dedupe_key = input.dedupe_key.ok_or_else(|| {
             Error::Conflict("job insertion conflicted without a dedupe key".into())
         })?;
-        sqlx::query_as!(
+        let job = sqlx::query_as!(
             Job,
             "SELECT id,kind,document_id,account_id,scope_key,dedupe_key,payload,status,
                     priority,attempts,max_attempts,run_after,locked_by,locked_at,claim_token,
@@ -119,9 +121,10 @@ impl PostgresCatalog {
             input.scope_key,
             dedupe_key,
         )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(Error::from)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(job)
     }
 
     pub async fn claim_jobs(&self, worker: &str, limit: i64) -> Result<Vec<JobClaim>> {
@@ -129,6 +132,7 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid job claim".into()));
         }
         let token = new_id();
+        let mut tx = self.begin_writer_transaction().await?;
         let jobs = sqlx::query_as!(
             Job,
             "WITH candidates AS (
@@ -147,8 +151,9 @@ impl PostgresCatalog {
             worker,
             token,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(jobs
             .into_iter()
             .map(|job| JobClaim {
@@ -192,6 +197,7 @@ impl PostgresCatalog {
         if !(1..=1000).contains(&limit) {
             return Err(Error::Invalid("invalid job recovery limit".into()));
         }
+        let mut tx = self.begin_writer_transaction().await?;
         let result = sqlx::query!(
             "WITH expired AS (
                SELECT id FROM jobs WHERE status='running' AND locked_at < $1
@@ -205,12 +211,14 @@ impl PostgresCatalog {
             older_than,
             limit,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(result.rows_affected())
     }
 
     pub async fn prune_jobs(&self, before: OffsetDateTime, limit: i64) -> Result<u64> {
+        let mut tx = self.begin_writer_transaction().await?;
         let result = sqlx::query!(
             "DELETE FROM jobs WHERE id IN (
                SELECT id FROM jobs WHERE status IN ('succeeded','failed','cancelled')
@@ -219,8 +227,9 @@ impl PostgresCatalog {
             before,
             limit,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(result.rows_affected())
     }
 }
@@ -233,7 +242,8 @@ async fn finish_claim(
     error: Option<&str>,
     run_after: Option<OffsetDateTime>,
 ) -> Result<Job> {
-    sqlx::query_as!(
+    let mut tx = catalog.begin_writer_transaction().await?;
+    let job = sqlx::query_as!(
         Job,
         "UPDATE jobs SET status=$4,result=$5,last_error=$6,run_after=COALESCE($7,run_after),
          locked_by=NULL,locked_at=NULL,claim_token=NULL,updated_at=now()
@@ -249,7 +259,9 @@ async fn finish_claim(
         error,
         run_after,
     )
-    .fetch_optional(&catalog.pool)
+    .fetch_optional(&mut *tx)
     .await?
-    .ok_or_else(|| Error::Conflict("job claim is no longer current".into()))
+    .ok_or_else(|| Error::Conflict("job claim is no longer current".into()))?;
+    tx.commit().await?;
+    Ok(job)
 }

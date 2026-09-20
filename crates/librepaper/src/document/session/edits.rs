@@ -210,6 +210,23 @@ pub fn put_text(doc: &LoroDoc, path: &str, body: &str) -> String {
     }
 }
 
+/// Creates a text under a caller-supplied stable id. Restore uses this only
+/// after proving that neither the id nor path exists in the live document.
+pub(super) fn put_text_with_id(doc: &LoroDoc, id: &str, path: &str, body: &str) -> bool {
+    let (files, path_map, _, _) = maps(doc);
+    if text_at(&files, id).is_some() || id_of_path(&path_map, path).is_some() {
+        return false;
+    }
+    let Ok(text) = files.insert_container(id, LoroText::new()) else {
+        return false;
+    };
+    path_map.insert(id, path).ok();
+    if !body.is_empty() {
+        text.insert_utf16(0, body).ok();
+    }
+    true
+}
+
 /// Removes the text currently named `path`, preserving every other file and
 /// clearing the main-file marker when that file was the entrypoint.
 pub fn remove_path(doc: &LoroDoc, path: &str) -> bool {

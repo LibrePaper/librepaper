@@ -1,0 +1,14 @@
+[package]
+name = "librepaper-document-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+doctest = false
+
+[dependencies]
+loro = "1.16.0"
+serde = { version = "1", features = ["derive"] }
+unicode-normalization = "0.1.25"

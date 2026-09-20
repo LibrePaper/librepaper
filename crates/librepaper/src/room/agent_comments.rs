@@ -44,15 +44,29 @@ impl Room {
         if live != revision {
             return Err("source tree changed".into());
         }
-        self.checkpoint("cli", Attribution::account(&authority.account_id, display))
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "checkpoint was not created".into())
+        let account_id = uuid::Uuid::parse_str(&authority.account_id).ok();
+        let document_authority = crate::storage::postgres::Authority {
+            principal_key: account_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| authority.owner_key.clone()),
+            account_id,
+            link_hash: (!authority.link_hash.is_empty())
+                .then(|| hex::decode(&authority.link_hash).ok())
+                .flatten(),
+        };
+        self.checkpoint(
+            "cli",
+            Attribution::account(&authority.account_id, display),
+            &document_authority,
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "checkpoint was not created".into())
     }
 
     pub(crate) async fn agent_comment(&self, id: &str) -> Option<Comment> {
-        self.state
-            .lock()
+        self.command_owner
+            .state()
             .await
             .comments
             .iter()
@@ -75,8 +89,7 @@ impl Room {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<(), String>>,
     {
-        let _restore = self.restore_write.lock().await;
-        let _comment = self.comment_write.lock().await;
+        let _command = self.command_owner.acquire().await;
         if !self.hold().await {
             return Err("room lease unavailable".into());
         }
@@ -98,7 +111,7 @@ impl Room {
             unowned_publisher: false,
         };
         {
-            let mut state = self.state.lock().await;
+            let mut state = self.command_owner.state().await;
             if let Some(revision) = &batch.base_revision {
                 if tree_of(&state.session.doc, &state.session.asset_sizes)
                     .0
@@ -139,57 +152,83 @@ impl Room {
             }
         }
 
-        for comment in &batch.upserts {
-            let row = catalog_comment_row(&self.slug, comment)?;
-            if self.agent_comment(&comment.id).await.is_some() {
-                update_comment_row(catalog, row, actor.clone()).await?;
-            } else if let Some(proposal) = batch.proposals.remove(&comment.id) {
-                insert_suggestion_request(catalog, row, proposal, actor.clone()).await?;
-            } else {
-                insert_comment_request(
-                    catalog,
-                    row,
-                    batch.request_id.clone(),
-                    batch.digest.clone(),
-                    now_unix(),
-                    actor.clone(),
-                    authority.require_editor,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            }
+        let document = catalog
+            .document_by_slug(&self.slug)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("document missing")?;
+        let mut upserts = Vec::with_capacity(batch.upserts.len());
+        for comment in batch.upserts {
+            let id = uuid::Uuid::parse_str(&comment.id).map_err(|_| "invalid annotation id")?;
+            let input = super::catalog::annotation_input(document.id, &comment)
+                .map_err(|error| error.to_string())?;
+            upserts.push(crate::storage::postgres::AnnotationBatchUpsert {
+                id,
+                input,
+                resolved: comment.resolved,
+                proposal: batch.proposals.remove(&comment.id),
+            });
         }
-        for id in &batch.deletes {
-            delete_comment_row(catalog, &self.slug, id, actor.clone()).await?;
+        if !batch.proposals.is_empty() {
+            return Err("proposal has no matching annotation".into());
         }
-        for (comment_id, reply) in &batch.replies {
-            insert_reply_request(
-                catalog,
-                ReplyRow {
-                    comment_id: comment_id.clone(),
-                    id: reply.id.clone(),
-                    body: reply.body.clone(),
-                    creator: reply.creator.clone(),
-                    author: reply.author.clone(),
+        let deletes = batch
+            .deletes
+            .into_iter()
+            .map(|id| uuid::Uuid::parse_str(&id).map_err(|_| "invalid annotation id".to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let replies = batch
+            .replies
+            .into_iter()
+            .map(|(comment_id, reply)| {
+                Ok(crate::storage::postgres::NewReply {
+                    id: uuid::Uuid::parse_str(&reply.id)
+                        .map_err(|_| "invalid reply id".to_string())?,
+                    annotation_id: uuid::Uuid::parse_str(&comment_id)
+                        .map_err(|_| "invalid annotation id".to_string())?,
+                    author_account_id: reply
+                        .author
+                        .strip_prefix("account:")
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+                    author_key: reply.author,
+                    author_label: reply.creator,
+                    body: reply.body,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let authorization =
+            super::catalog::mutation_authorization(&actor).map_err(|error| error.to_string())?;
+        let receipt = crate::storage::postgres::SemanticReceipt {
+            request_id: uuid::Uuid::parse_str(&batch.request_id)
+                .map_err(|_| "request_id must be a UUID")?,
+            canonical_command: serde_json::json!({"digest": batch.digest}),
+            stable_result: batch.receipt,
+            status: "committed".into(),
+        };
+        let result = catalog
+            .apply_annotation_batch(
+                crate::storage::postgres::AnnotationBatchCommand {
+                    document_id: document.id,
+                    upserts,
+                    deletes,
+                    replies,
+                    require_editor: authority.require_editor,
+                    receipt,
                 },
-                batch.request_id.clone(),
-                batch.digest.clone(),
-                now_unix(),
-                actor.clone(),
+                &authorization,
             )
             .await
-            .map_err(|e| e.to_string())?;
-        }
+            .map_err(|error| error.to_string())?;
         let (seq, mut comments) = load_catalog_comments(catalog, &self.slug).await?;
         self.hydrate_proposed_comments(&mut comments)
             .await
             .map_err(|error| error.to_string())?;
         {
-            let mut state = self.state.lock().await;
+            let mut state = self.command_owner.state().await;
             state.seq = seq;
             *state.comments = comments;
         }
         self.broadcast_comment_snapshot(seq).await;
-        Ok(batch.receipt)
+        Ok(result)
     }
 }

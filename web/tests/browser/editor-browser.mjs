@@ -49,7 +49,7 @@ import Editor from ${JSON.stringify(join(root, "web/src/components/Editor.svelte
 import Diagnostics from ${JSON.stringify(join(root, "web/src/components/reader/Diagnostics.svelte"))};
 import History from ${JSON.stringify(join(root, "web/src/components/reader/History.svelte"))};
 import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/collab.js"))};
-import { prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
+import { durableProjectPersistence, prepareOfflineProject, preparedProject } from ${JSON.stringify(join(root, "web/src/lib/offline-projects.js"))};
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 
 const session = joinSession({ send: () => {}, mayEdit: true });
@@ -246,10 +246,14 @@ window.collabCacheCheck = async () => {
     const update = value.doc.export({ mode: "update" });
     return { update: btoa(String.fromCharCode(...new Uint8Array(update))) };
   };
-  const cached = async (createdAt) => {
+  const cached = async (createdAt, documentId) => {
     let ready;
-    const local = new Promise((resolve) => { ready = resolve; });
-    const value = create({ slug, createdAt, onState: (state) => { if (state.local) ready(); } });
+    let failed;
+    const local = new Promise((resolve, reject) => { ready = resolve; failed = reject; });
+    const value = create({ slug, createdAt, documentId, onState: (state) => {
+      if (state.local) ready();
+      if (state.localError) failed(new Error(state.localError));
+    } });
     await local;
     return value;
   };
@@ -257,24 +261,25 @@ window.collabCacheCheck = async () => {
     const server = create();
     const main = server.addText("main.md", "server");
     server.setMain(main);
-    const opened = await cached("first-creation");
+    const opened = await cached("first-creation", "11111111-1111-4111-8111-111111111111");
     await opened.start(snapshot(server));
     opened.text.insert(0, "new offline ");
     await opened.persist();
     await prepareOfflineProject({
       server: location.origin, slug, created_at: "first-creation",
+      document_id: "11111111-1111-4111-8111-111111111111",
       title: "Cached paper", source_format: "markdown", role: "owner",
     });
     const manifest = await preparedProject({ server: location.origin, slug });
     opened.leave();
-    const reopened = await cached("first-creation");
+    const reopened = await cached("first-creation", "11111111-1111-4111-8111-111111111111");
     await reopened.start(snapshot(server));
     const recovered = reopened.text.toString();
 
     const replacement = create();
     const newMain = replacement.addText("main.md", "reseeded");
     replacement.setMain(newMain);
-    const recreated = await cached("second-creation");
+    const recreated = await cached("second-creation", "22222222-2222-4222-8222-222222222222");
     await recreated.start(snapshot(replacement));
     recreated.text.insert(0, "edited ");
     const result = {
@@ -500,6 +505,46 @@ window.vimCheck = async () => {
     undoKept: undoDepth(offView.state) === undo,
   };
 };
+window.multiTabPersistenceCheck = async () => {
+  const identity = { origin: location.origin, documentId: crypto.randomUUID(), slug: "multi-tab" };
+  const events = { writing() {}, persisted() {}, hydrated() {}, confirmed() {}, failed(error) { throw error; } };
+  const seed = joinSession({ send: () => {}, mayEdit: true });
+  const seedStore = durableProjectPersistence(identity).open(seed.doc, events);
+  await seedStore.hydration;
+  const file = seed.addText("paper.md", "base");
+  seed.setMain(file);
+  seed.doc.commit();
+  await seedStore.flush();
+  seedStore.close();
+  seed.leave();
+
+  const left = joinSession({ send: () => {}, mayEdit: true });
+  const right = joinSession({ send: () => {}, mayEdit: true });
+  const leftStore = durableProjectPersistence(identity).open(left.doc, events);
+  const rightStore = durableProjectPersistence(identity).open(right.doc, events);
+  await Promise.all([leftStore.hydration, rightStore.hydration]);
+  const leftId = left.list().find((item) => item.path === "paper.md").id;
+  const rightId = right.list().find((item) => item.path === "paper.md").id;
+  left.textOf(leftId).insert(left.textOf(leftId).length, " left");
+  right.textOf(rightId).insert(right.textOf(rightId).length, " right");
+  left.doc.commit();
+  right.doc.commit();
+  await Promise.all([leftStore.flush(), rightStore.flush()]);
+  leftStore.close();
+  rightStore.close();
+  left.leave();
+  right.leave();
+
+  const recovered = joinSession({ send: () => {}, mayEdit: true });
+  const recoveredStore = durableProjectPersistence(identity).open(recovered.doc, events);
+  await recoveredStore.hydration;
+  const recoveredId = recovered.list().find((item) => item.path === "paper.md").id;
+  const text = recovered.textOf(recoveredId).toString();
+  recoveredStore.close();
+  recovered.leave();
+  return text;
+};
+
 window.editorCheckReady = true;
 `;
 
@@ -675,6 +720,10 @@ try {
   assert.equal(cache.main, true);
   assert.equal(cache.preview, "edited reseeded");
   console.log("editor-browser: current cache preserves offline edits and isolates recreated documents");
+  const multiTab = await evaluate("multiTabPersistenceCheck()");
+  assert.match(multiTab, /left/);
+  assert.match(multiTab, /right/);
+  console.log("editor-browser: concurrent tabs append without overwriting each other");
   const vim = await evaluate("vimCheck()");
   assert.equal(vim.panelShown, true, "turning Vim on did not draw its status panel");
   assert.equal(vim.sameViewOn, true, "turning Vim on rebuilt the editor");

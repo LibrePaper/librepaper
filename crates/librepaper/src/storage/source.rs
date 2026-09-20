@@ -243,11 +243,15 @@ impl SourceStorage {
             return Err(Error::Invalid("document is being deleted".into()));
         }
         if input.archive.source_format != document.source_format
-            || input.archive.main_path != document.main_path
+            || (input.make_current && input.archive.main_path != document.main_path)
         {
-            return Err(Error::Invalid(
-                "source archive identity differs from the document".into(),
-            ));
+            return Err(Error::Invalid(format!(
+                "source archive identity differs from the document: format {:?}/{:?}, main {:?}/{:?}",
+                input.archive.source_format,
+                document.source_format,
+                input.archive.main_path,
+                document.main_path
+            )));
         }
         let parent_id = document.current_version_id;
         // Every version is named by what it holds, whether or not its writer

@@ -3,6 +3,8 @@
 //! This module owns connection pooling and migrations. Product operations are
 //! split into focused repository modules by domain.
 
+use std::sync::atomic::AtomicI64;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -11,16 +13,25 @@ use sqlx::{ConnectOptions, PgPool};
 mod access;
 mod annotations;
 mod bundles;
+mod checkpoints;
 mod collaboration;
+mod commit;
 mod jobs;
 mod marks;
+mod ownership;
 mod proposals;
 mod repository;
 
 pub use bundles::{BundleFileRecord, BundleRecord, NewBundle, NewBundleFile};
+pub use checkpoints::{CheckpointRecord, NewCheckpoint};
 pub use collaboration::{ActivityBucket, CollaborationBase, CollaborationState, PersistedUpdate};
+pub use commit::{
+    Authority, CommitResult, PreparedProposalDecision, PreparedSource, ProposalDecisionResult,
+    SemanticReceipt, SourceRevisionRecord,
+};
 pub use jobs::{Job, JobClaim, JobStatus, NewJob};
 pub use marks::{CountRecord, MarkRecord};
+pub use ownership::WriterLease;
 pub use proposals::{NewProposal, StoredDecision, StoredProposal};
 pub use repository::{
     AccountRecord, AssetRecord, DocumentRecord, NewAccount, NewAsset, NewDocument, NewVersion,
@@ -87,6 +98,7 @@ impl PostgresOptions {
 pub struct PostgresCatalog {
     pool: PgPool,
     policy: StoragePolicy,
+    writer_epoch: Arc<AtomicI64>,
 }
 
 impl PostgresCatalog {
@@ -105,6 +117,7 @@ impl PostgresCatalog {
         Ok(Self {
             pool,
             policy: options.policy,
+            writer_epoch: Arc::new(AtomicI64::new(0)),
         })
     }
 
@@ -147,13 +160,16 @@ pub enum Error {
     Invalid(String),
     Conflict(String),
     NotFound,
+    Ownership(String),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Database(error) => write!(formatter, "PostgreSQL: {error}"),
-            Self::Invalid(message) | Self::Conflict(message) => formatter.write_str(message),
+            Self::Invalid(message) | Self::Conflict(message) | Self::Ownership(message) => {
+                formatter.write_str(message)
+            }
             Self::NotFound => formatter.write_str("not found"),
         }
     }
@@ -228,6 +244,7 @@ mod tests {
             .await
             .unwrap();
         catalog.migrate().await.unwrap();
+        let _writer = catalog.claim_writer().await.unwrap();
         sqlx::query!(
             "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,bundles,
              document_versions,document_assets,replies,annotations,share_links,grants,documents,
@@ -495,6 +512,7 @@ mod tests {
             attachment: None,
         };
         let collaborator_actor = MutationAuthorization {
+            principal_key: collaborator.id.to_string(),
             account_id: Some(collaborator.id),
             session_generation: Some(collaborator.session_generation),
             token_hash: None,
@@ -522,48 +540,77 @@ mod tests {
             .unwrap();
 
         let owner_actor = MutationAuthorization {
+            principal_key: account.id.to_string(),
             account_id: Some(account.id),
             session_generation: Some(account.session_generation),
             token_hash: None,
             policy_editor: false,
         };
+        let annotation_id = new_id();
+        let annotation_input = NewAnnotation {
+            document_id: first.id,
+            kind: "comment".into(),
+            body: "Review this".into(),
+            author_account_id: Some(collaborator.id),
+            author_key: format!("account:{}", collaborator.id),
+            author_label: "Collaborator".into(),
+            original_anchor: crate::room::OriginalAnchor {
+                checkpoint_id: crate::room::annotation::CheckpointId("checkpoint".into()),
+                target: crate::room::CommentTarget::Document,
+            },
+            bundle_id: None,
+            color: None,
+            proposal_id: None,
+            presentation: Default::default(),
+            attachment: None,
+        };
+        let annotation_receipt = SemanticReceipt {
+            request_id: uuid::Uuid::new_v4(),
+            canonical_command: serde_json::json!({"type":"comment","body":"Review this"}),
+            stable_result: serde_json::Value::Null,
+            status: "committed".into(),
+        };
         let annotation = catalog
-            .put_annotation_authorized(
-                new_id(),
-                NewAnnotation {
-                    document_id: first.id,
-                    kind: "comment".into(),
-                    body: "Review this".into(),
-                    author_account_id: Some(collaborator.id),
-                    author_key: format!("account:{}", collaborator.id),
-                    author_label: "Collaborator".into(),
-                    original_anchor: crate::room::OriginalAnchor {
-                        checkpoint_id: crate::room::annotation::CheckpointId("checkpoint".into()),
-                        target: crate::room::CommentTarget::Document,
-                    },
-                    bundle_id: None,
-                    color: None,
-                    proposal_id: None,
-                    presentation: Default::default(),
-                    attachment: None,
-                },
+            .put_annotation_receipted(
+                annotation_id,
+                annotation_input.clone(),
                 &owner_actor,
                 false,
+                &annotation_receipt,
             )
             .await
             .unwrap();
-        let reply = catalog
-            .create_reply_authorized(
-                NewReply {
-                    id: new_id(),
-                    annotation_id: annotation.id,
-                    author_account_id: Some(account.id),
-                    author_key: format!("account:{}", account.id),
-                    author_label: "Owner".into(),
-                    body: "Done".into(),
-                },
+        catalog
+            .put_annotation_receipted(
+                annotation_id,
+                annotation_input,
                 &owner_actor,
+                false,
+                &annotation_receipt,
             )
+            .await
+            .unwrap();
+        let reply_id = new_id();
+        let reply_input = NewReply {
+            id: reply_id,
+            annotation_id: annotation.id,
+            author_account_id: Some(account.id),
+            author_key: format!("account:{}", account.id),
+            author_label: "Owner".into(),
+            body: "Done".into(),
+        };
+        let reply_receipt = SemanticReceipt {
+            request_id: uuid::Uuid::new_v4(),
+            canonical_command: serde_json::json!({"type":"reply","body":"Done"}),
+            stable_result: serde_json::Value::Null,
+            status: "committed".into(),
+        };
+        let reply = catalog
+            .create_reply_receipted(reply_input.clone(), &owner_actor, &reply_receipt)
+            .await
+            .unwrap();
+        catalog
+            .create_reply_receipted(reply_input, &owner_actor, &reply_receipt)
             .await
             .unwrap();
         assert_eq!(
@@ -578,6 +625,56 @@ mod tests {
             catalog.replies(&[annotation.id]).await.unwrap()[0].id,
             reply.id
         );
+        let semantic_head: (i64, i64, Option<i64>) = sqlx::query_as(
+            "SELECT d.commit_sequence,d.source_revision,a.source_revision \
+             FROM documents d JOIN annotations a ON a.document_id=d.id \
+             WHERE d.id=$1 AND a.id=$2",
+        )
+        .bind(first.id)
+        .bind(annotation.id)
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            semantic_head.0, 3,
+            "retried comment and reply identities do not create extra commits"
+        );
+        let receipt_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM document_command_receipts WHERE document_id=$1",
+        )
+        .bind(first.id)
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+        assert_eq!(receipt_count, 2, "comment and reply receipts are durable");
+        let changed_receipt = SemanticReceipt {
+            canonical_command: serde_json::json!({"type":"reply","body":"Changed"}),
+            ..reply_receipt
+        };
+        assert!(catalog
+            .create_reply_receipted(
+                NewReply {
+                    id: reply.id,
+                    annotation_id: annotation.id,
+                    author_account_id: Some(account.id),
+                    author_key: format!("account:{}", account.id),
+                    author_label: "Owner".into(),
+                    body: "Done".into(),
+                },
+                &owner_actor,
+                &changed_receipt,
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            semantic_head.1, 0,
+            "comment-only commits do not move source"
+        );
+        assert_eq!(
+            semantic_head.2,
+            Some(0),
+            "original comment evidence names the committed source revision"
+        );
         // One update on the log, so the cap below is already reached and the
         // next append has to refuse. This used to arrive as a side effect of
         // accepting a suggestion here; suggestions are proposals now and do not
@@ -591,6 +688,7 @@ mod tests {
         );
         let limited = PostgresCatalog {
             pool: catalog.pool.clone(),
+            writer_epoch: catalog.writer_epoch.clone(),
             policy: StoragePolicy {
                 max_uncompacted_updates: 1,
                 max_uncompacted_bytes: i64::MAX / 4,
@@ -617,6 +715,7 @@ mod tests {
         assert_eq!(durable.uncompacted_update_bytes, b"first".len() as i64);
         let byte_limited = PostgresCatalog {
             pool: catalog.pool.clone(),
+            writer_epoch: catalog.writer_epoch.clone(),
             policy: StoragePolicy {
                 max_uncompacted_updates: i64::MAX / 4,
                 max_uncompacted_bytes: durable.uncompacted_update_bytes,
@@ -2267,5 +2366,6 @@ mod benchmarks;
 pub use access::{AccessRole, GrantRecord, ShareLinkRecord};
 pub use annotations::{
     attachment_from_record, original_anchor_from_record, presentation_from_record,
-    AnnotationRecord, MutationAuthorization, NewAnnotation, NewReply, ReplyRecord,
+    AnnotationBatchCommand, AnnotationBatchUpsert, AnnotationRecord, AnnotationRevisionAudit,
+    MutationAuthorization, NewAnnotation, NewReply, ReplyRecord,
 };

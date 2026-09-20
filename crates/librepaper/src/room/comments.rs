@@ -7,6 +7,7 @@ use super::annotation::{
 use super::locate::{self, Quote};
 use super::resolve;
 use super::*;
+use serde::{Deserialize, Serialize};
 
 // Browser submissions carry a random UUID that remains stable across retries.
 // Keeping it as the record ID also lets a reconnect snapshot acknowledge a
@@ -221,6 +222,11 @@ impl CommentView {
         if !is_owner {
             comment.original_anchor = None;
             comment.attachment = None;
+            // An editor-only annotation quotes the draft, not a rendered page.
+            // A non-editor may receive the remark but never those source words.
+            if comment.bundle_id.is_empty() {
+                comment.presentation = PresentationContext::default();
+            }
             // Everything about a proposed source change: the id, and the two
             // projections of it. A reader sees the remark, not the edit.
             comment.proposal.clear();
@@ -228,8 +234,6 @@ impl CommentView {
             comment.outcome.clear();
             comment.resolved_in.clear();
         }
-        // The validated presentation quote is safe to show to readers who can
-        // already fetch the complete current source projection.
         CommentView {
             comment,
             mine,
@@ -453,7 +457,7 @@ impl Room {
         &self,
         message: &Message,
     ) -> Result<(String, usize, String), String> {
-        let state = self.state.lock().await;
+        let state = self.command_owner.state().await;
         let files = source_files(&state.session.doc);
         let candidates: Vec<locate::Candidate<'_>> = files
             .iter()
@@ -464,9 +468,9 @@ impl Room {
             })
             .collect();
         let quote = Quote {
-            exact: &message.exact,
-            prefix: &message.prefix,
-            suffix: &message.suffix,
+            exact: message.exact(),
+            prefix: message.prefix(),
+            suffix: message.suffix(),
         };
         let found = locate::locate(&candidates, &quote).map_err(|failure| failure.message())?;
         let path = files
@@ -477,32 +481,12 @@ impl Room {
         Ok((path, found.start_utf16 as usize, found.exact))
     }
 
-    /// Reattaches every comment and records what changed.
-    ///
-    /// The durable write is only of the cache: a failure here leaves the
-    /// comments right in memory and stale on disk, which the next pass fixes.
-    /// It is never allowed to fail the edit that prompted it.
+    /// Reattaches every comment in the disposable in-memory projection.
+    /// Original evidence is durable; attachment is recomputed and is never a
+    /// semantic database write.
     pub(crate) async fn reattach_comments(&self) {
-        let moved = {
-            let mut state = self.state.lock().await;
-            reattach(&mut state)
-        };
-        if moved.is_empty() {
-            return;
-        }
-        let Some(catalog) = self.catalog.as_ref().get() else {
-            return;
-        };
-        let rows: Vec<_> = moved
-            .into_iter()
-            .filter_map(|(id, attachment)| Some((uuid::Uuid::parse_str(&id).ok()?, attachment)))
-            .collect();
-        if let Err(error) = catalog.record_attachments(&rows).await {
-            eprintln!(
-                "warning: could not record where a comment's passage went in {}: {error}",
-                self.slug
-            );
-        }
+        let mut state = self.command_owner.state().await;
+        reattach(&mut state);
     }
 }
 
@@ -541,8 +525,7 @@ impl Room {
         if !valid_revision(revision) || revision.is_empty() {
             return Err(BatchRefusal("that revision is not valid".into()));
         }
-        let _restore_writer = self.restore_write.lock().await;
-        let _comment_writer = self.comment_write.lock().await;
+        let _command = self.command_owner.acquire().await;
         if !self.hold().await {
             return Err(BatchRefusal("this room is held by another server".into()));
         }
@@ -560,7 +543,7 @@ impl Room {
             ),
             None => None,
         };
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         // The caller read the source at a revision and is now proposing
         // changes to it. What has to be true is that the source still says
         // what it said then, which is the tree digest -- the same name
@@ -716,28 +699,39 @@ impl Room {
                 // The branch becomes a proposal, and the comment carries its id.
                 // A suggestion whose branch cannot be stored is refused rather
                 // than kept as a remark with nothing behind it.
-                match self
-                    .store_proposal(&added.creator, branch.3, &branch.0, &branch.1, branch.2)
-                    .await
-                {
-                    Ok(id) => added.proposal = id,
+                let proposal = match self.proposal_record(
+                    &added.creator,
+                    branch.3,
+                    &branch.0,
+                    &branch.1,
+                    branch.2,
+                ) {
+                    Ok((id, proposal)) => {
+                        added.proposal = id;
+                        proposal
+                    }
                     Err(error) => {
                         results[slot] = json!({"status":"refused","reason":error.to_string()});
                         continue;
                     }
-                }
+                };
                 let persisted = match catalog_comment_row(&self.slug, &added) {
                     Ok(row) => {
-                        let key = crate::util::new_request_key();
-                        let digest = request_digest(&json!({"comment": added}));
-                        insert_comment_request(
+                        let request_id = super::catalog::derived_request_id(
+                            &pass,
+                            "batch-suggestion",
+                            &added.id,
+                        );
+                        let digest = request_digest(&json!({
+                            "kind": "batch-suggestion", "comment": added,
+                        }));
+                        insert_suggestion_request(
                             catalog,
                             row,
-                            key,
-                            digest,
-                            now_unix(),
+                            proposal,
                             actor.clone(),
-                            true,
+                            &request_id,
+                            digest,
                         )
                         .await
                         .map(|(seq, _)| seq)
@@ -756,7 +750,7 @@ impl Room {
                     Err(error) => results[slot] = json!({"status":"refused","reason":error}),
                 }
             }
-            let mut state = self.state.lock().await;
+            let mut state = self.command_owner.state().await;
             for stored in stored_rows {
                 state.seq = state.seq.max(stored.seq);
                 state.comments.push(stored);
@@ -822,7 +816,7 @@ impl Room {
                 json!({"type": "annotation-redacted"})
             };
         };
-        let state = self.state.lock().await;
+        let state = self.command_owner.state().await;
         let Some(comment) = state.comments.iter().find(|comment| comment.id == id) else {
             // Another mutation can delete a comment after its event was
             // prepared. Never fall back to the unprojected source-bearing
@@ -905,13 +899,12 @@ impl Room {
         // Serialize comment decisions with acceptance so a resolve/delete
         // cannot race the CRDT edit and leave the catalogue outcome detached
         // from the checkpoint it describes.
-        let _restore_writer = self.restore_write.lock().await;
         // Every comment mutation below prepares its change under state,
         // persists it with state released, and installs it only once storage
         // has taken it. This gate is what makes the middle phase safe: it is
         // the only thing that keeps a second comment writer from preparing
         // against the list this one is about to replace.
-        let _comment_writer = self.comment_write.lock().await;
+        let _command = self.command_owner.acquire().await;
         if !self.hold().await {
             return (
                 json!({"type": "error", "message": "this room is held by another server", "temp_id": temp_id,
@@ -919,7 +912,7 @@ impl Room {
                 false,
             );
         }
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         let config = self.config.clone();
 
         let fail = |text: &str| -> (Value, bool) {
@@ -932,6 +925,25 @@ impl Room {
             (payload, false)
         };
         const UNSAVED: &str = "could not save that comment; try again";
+
+        if let Command::Comment { bundle_id, .. } = &command {
+            if !bundle_id.is_empty() {
+                let format = if state.session.format.is_empty() {
+                    "html"
+                } else {
+                    &state.session.format
+                };
+                let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
+                let current =
+                    crate::document::store::digest_of(&format!("{}:{}", format, tree.digest()));
+                if current != *bundle_id {
+                    return (
+                        json!({"type":"error","message":"source changed; refresh before annotating","stale_source":true,"temp_id":temp_id,"request_id":request_id}),
+                        false,
+                    );
+                }
+            }
+        }
 
         // Retry before counting or writing again. Identity comes from the
         // server, so choosing another person's record ID cannot take it over.
@@ -1082,25 +1094,36 @@ impl Room {
                     Ok(_) => return fail("suggestion changed; read it again before refining"),
                     Err(error) => return fail(&error.to_string()),
                 }
-                let refreshed = match self
-                    .store_proposal(&target.creator, peer, &base, &tip, bytes)
-                    .await
-                {
-                    Ok(id) => id,
-                    Err(error) => return fail(&error.to_string()),
-                };
+                let (refreshed, proposal) =
+                    match self.proposal_record(&target.creator, peer, &base, &tip, bytes) {
+                        Ok(prepared) => prepared,
+                        Err(error) => return fail(&error.to_string()),
+                    };
                 let mut refined = target;
                 refined.proposal = refreshed;
                 refined.body = body;
                 let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     match catalog_comment_row(&self.slug, &refined) {
-                        Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
+                        Ok(row) => {
+                            let digest = request_digest(&json!({
+                                "kind": "refine", "comment": refined,
+                            }));
+                            update_suggestion_row(
+                                catalog,
+                                row,
+                                proposal,
+                                mutation_actor.clone(),
+                                &request_id,
+                                digest,
+                            )
+                            .await
+                        }
                         Err(error) => Err(error),
                     }
                 } else {
                     Err("durable catalog required".into())
                 };
-                state = self.state.lock().await;
+                state = self.command_owner.state().await;
                 if persisted.is_err() {
                     return fail(UNSAVED);
                 }
@@ -1188,13 +1211,25 @@ impl Room {
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     match catalog_comment_row(&self.slug, &decided) {
-                        Ok(row) => update_comment_row(catalog, row, mutation_actor.clone()).await,
+                        Ok(row) => {
+                            let digest = request_digest(&json!({
+                                "kind": "resolve", "comment": decided,
+                            }));
+                            update_comment_row(
+                                catalog,
+                                row,
+                                mutation_actor.clone(),
+                                &request_id,
+                                digest,
+                            )
+                            .await
+                        }
                         Err(error) => Err(error),
                     }
                 } else {
                     Err("durable catalog required".into())
                 };
-                state = self.state.lock().await;
+                state = self.command_owner.state().await;
                 if persisted.is_err() {
                     return fail(UNSAVED);
                 }
@@ -1228,12 +1263,22 @@ impl Room {
                 // every other reader still has.
                 drop(state);
                 let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
-                    delete_comment_row(catalog, &self.slug, &comment_id, mutation_actor.clone())
-                        .await
+                    let digest = request_digest(&json!({
+                        "kind": "delete", "comment_id": comment_id,
+                    }));
+                    delete_comment_row(
+                        catalog,
+                        &self.slug,
+                        &comment_id,
+                        mutation_actor.clone(),
+                        &request_id,
+                        digest,
+                    )
+                    .await
                 } else {
                     Err("durable catalog required".into())
                 };
-                state = self.state.lock().await;
+                state = self.command_owner.state().await;
                 if persisted.is_err() {
                     return fail(UNSAVED);
                 }
@@ -1311,7 +1356,7 @@ impl Room {
                 } else {
                     Err(WriteError::Storage("durable catalog required".into()))
                 };
-                state = self.state.lock().await;
+                state = self.command_owner.state().await;
                 if let Err(error) = persisted {
                     let (mut response, _) = fail(&error.client_message());
                     response["status"] = json!(error.status());
@@ -1508,18 +1553,20 @@ impl Room {
                         Some((base, tip, bytes, peer))
                     });
                 drop(state);
-                if proposed.is_some() {
+                let suggestion = if proposed.is_some() {
                     let Some((base, tip, bytes, peer)) = offered else {
                         return fail("that passage is not where it was");
                     };
-                    match self
-                        .store_proposal(&added.creator, peer, &base, &tip, bytes)
-                        .await
-                    {
-                        Ok(id) => added.proposal = id,
+                    match self.proposal_record(&added.creator, peer, &base, &tip, bytes) {
+                        Ok((id, proposal)) => {
+                            added.proposal = id;
+                            Some(proposal)
+                        }
                         Err(error) => return fail(&error.to_string()),
                     }
-                }
+                } else {
+                    None
+                };
                 let persisted = if let Some(catalog) = self.catalog.as_ref().get() {
                     let digest = request_digest(&json!({
                         "kind": "comment",
@@ -1532,22 +1579,36 @@ impl Room {
                     // Pushed into room state only once the receipt is durable,
                     // so a cancelled caller leaves neither an unbroadcast
                     // comment here nor a row nobody was told about.
-                    match insert_comment_request(
-                        catalog,
-                        row,
-                        request_id.clone(),
-                        digest,
-                        now_unix(),
-                        mutation_actor.clone(),
-                        false,
-                    )
-                    .await
-                    {
+                    let saved = match suggestion {
+                        Some(proposal) => insert_suggestion_request(
+                            catalog,
+                            row,
+                            proposal,
+                            mutation_actor.clone(),
+                            &request_id,
+                            digest,
+                        )
+                        .await
+                        .map_err(WriteError::Storage),
+                        None => {
+                            insert_comment_request(
+                                catalog,
+                                row,
+                                request_id.clone(),
+                                digest,
+                                now_unix(),
+                                mutation_actor.clone(),
+                                false,
+                            )
+                            .await
+                        }
+                    };
+                    match saved {
                         Ok((seq, created)) => {
                             added.seq = seq;
                             added.created = created;
                             let stored = added.clone();
-                            let mut state = self.state.lock().await;
+                            let mut state = self.command_owner.state().await;
                             state.seq = state.seq.max(seq);
                             if !state.comments.iter().any(|comment| comment.id == stored.id) {
                                 state.comments.push(stored);

@@ -85,7 +85,7 @@ impl Room {
         // upload wait for the first one even when there is room for both.
         let mut upload = {
             let _assets_writer = self.assets_write.lock().await;
-            let state = self.state.lock().await;
+            let state = self.command_owner.state().await;
             let mut uploads = self
                 .asset_uploads
                 .lock()
@@ -112,8 +112,11 @@ impl Room {
                 active: !known,
             }
         };
+        // Hashing and immutable blob transfer deliberately happen outside the
+        // document queue. Attaching the verified object to this document and
+        // publishing its quota/cache effect are one admitted semantic command.
+        let _command = self.command_owner.acquire().await;
         {
-            let _ = actor;
             let catalog = self
                 .catalog
                 .get()
@@ -136,8 +139,9 @@ impl Room {
                     "asset failed immutable verification".into(),
                 ));
             }
+            let authorization = super::catalog::mutation_authorization(actor)?;
             catalog
-                .complete_asset_with_limit(
+                .complete_asset_authorized_with_limit(
                     crate::storage::postgres::NewAsset {
                         document_id,
                         storage_key: key,
@@ -147,13 +151,14 @@ impl Room {
                         original_name: None,
                     },
                     max_assets,
+                    &authorization,
                 )
                 .await
                 .map_err(WriteError::from)?;
         }
         {
             let _assets_writer = self.assets_write.lock().await;
-            let mut state = self.state.lock().await;
+            let mut state = self.command_owner.state().await;
             if let Some(known) = state.session.asset_sizes.get(&sha) {
                 upload.release();
                 return Ok((sha, *known));

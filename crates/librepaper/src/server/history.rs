@@ -333,6 +333,25 @@ impl Server {
             Ok(None) => return plain(404, "not found"),
             Err(error) => return write_json(503, &json!({"error": error})),
         };
+        if point.archive_status != "ready" {
+            let status = if point.archive_status == "failed" {
+                503
+            } else {
+                202
+            };
+            let mut response = write_json(
+                status,
+                &json!({
+                    "sha": point.sha,
+                    "tree_sha": point.content_sha(),
+                    "source_revision": point.source_revision.to_string(),
+                    "archive_status": point.archive_status,
+                    "retryable": status == 202,
+                }),
+            );
+            set(&mut response, "cache-control", "private, no-store");
+            return response;
+        }
         let (tree, bodies) = match room.checkpoint_texts(&point).await {
             Ok(found) => found,
             Err(err) => return write_json(500, &json!({"error": err})),
@@ -427,7 +446,10 @@ impl Server {
             Err(error) => return plain(503, &error.to_string()),
         };
         let sha = if current {
-            match room.checkpoint("label", who.attribution()).await {
+            match room
+                .checkpoint("label", who.attribution(), &who.document_authority())
+                .await
+            {
                 Ok(Some(sha)) => sha,
                 Ok(None) => return plain(404, "not found"),
                 Err(error) => {
@@ -441,7 +463,10 @@ impl Server {
         } else {
             sha.to_string()
         };
-        match room.label_version(&sha, &label).await {
+        match room
+            .label_version(&sha, &label, &who.document_authority())
+            .await
+        {
             Ok(true) => write_json(200, &json!({"sha": sha, "label": label})),
             Ok(false) => plain(404, "not found"),
             Err(error) => refused_with(
@@ -519,7 +544,10 @@ impl Server {
             _ => return write_json(409, &json!({"error": "checkpoint prefix is ambiguous"})),
         };
         let by = current_who.attribution();
-        let (update, sha) = match room.restore_and_checkpoint(&point, &by).await {
+        let (update, sha) = match room
+            .restore_and_checkpoint(&point, &by, &current_who.document_authority())
+            .await
+        {
             Ok(result) => result,
             Err(error) => {
                 return refused(&format!("could not restore {slug}"), &error);

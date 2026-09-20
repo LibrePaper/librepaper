@@ -1,5 +1,5 @@
 import { projectIdentity, projectIdentityKey } from "./project-identity.js";
-import { VersionVector } from "loro-crdt";
+import { LoroDoc, VersionVector } from "loro-crdt";
 
 // Named for the substrate, not only the schema: the v1 database holds Yjs
 // updates, and a Loro document cannot import those -- it rejects them as
@@ -7,9 +7,10 @@ import { VersionVector } from "loro-crdt";
 // The cutover left nothing worth translating, so the old database is
 // abandoned rather than migrated.
 const DATABASE = "librepaper-offline-v2";
-const VERSION = 1;
+const VERSION = 2;
 const PROJECTS = "projects";
 const STATES = "states";
+const UPDATES = "updates";
 const COMPACT_AFTER_UPDATES = 64;
 const COMPACT_AFTER_BYTES = 4 * 1024 * 1024;
 
@@ -37,12 +38,17 @@ function openOfflineDatabase(indexedDB_ = globalThis.indexedDB) {
       const database = request.result;
       if (!database.objectStoreNames.contains(PROJECTS)) database.createObjectStore(PROJECTS, { keyPath: "key" });
       if (!database.objectStoreNames.contains(STATES)) database.createObjectStore(STATES);
+      if (!database.objectStoreNames.contains(UPDATES)) {
+        const updates = database.createObjectStore(UPDATES, { keyPath: ["project", "id"] });
+        updates.createIndex("project", "project", { unique: false });
+      }
     };
     request.onsuccess = () => {
       if (blocked) {
         request.result.close();
         return;
       }
+      request.result.onversionchange = () => request.result.close();
       resolve(request.result);
     };
     request.onerror = () => reject(request.error || new Error("could not open offline storage"));
@@ -76,12 +82,14 @@ export async function preparedProjects(indexedDB_ = globalThis.indexedDB) {
 
 export async function preparedProject({ server, slug }, indexedDB_ = globalThis.indexedDB) {
   const origin = new URL(server || globalThis.location?.origin).origin;
-  return (await preparedProjects(indexedDB_)).find((record) => record.identity.origin === origin && record.identity.slug === slug) || null;
+  return (await preparedProjects(indexedDB_)).find((record) => record.identity.origin === origin
+    && (record.identity.slug === slug || record.document?.slug === slug)) || null;
 }
 
 export async function prepareOfflineProject(metadata, indexedDB_ = globalThis.indexedDB) {
   const identity = projectIdentity({
     server: metadata.server || globalThis.location?.origin,
+    documentId: metadata.document_id || metadata.documentId,
     slug: metadata.slug,
     createdAt: metadata.created_at || metadata.createdAt,
   });
@@ -95,7 +103,8 @@ export async function prepareOfflineProject(metadata, indexedDB_ = globalThis.in
     preparedAt: new Date().toISOString(),
     identity,
     document: {
-      slug: identity.slug,
+      slug: metadata.slug || identity.slug,
+      document_id: identity.documentId || metadata.document_id || "",
       created_at: identity.createdAt,
       title: metadata.title || identity.slug,
       source_format: metadata.source_format || "",
@@ -112,8 +121,9 @@ export async function prepareOfflineProject(metadata, indexedDB_ = globalThis.in
   return record;
 }
 
-export function durableProjectPersistence(identity, indexedDB_ = globalThis.indexedDB) {
+export function durableProjectPersistence(identity, indexedDB_ = globalThis.indexedDB, legacyIdentity = null) {
   const key = projectIdentityKey(identity);
+  const legacyKey = legacyIdentity ? projectIdentityKey(legacyIdentity) : null;
   return {
     open(doc, events) {
       let database;
@@ -126,6 +136,14 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       let pendingFlush = Promise.resolve();
       let unsubscribe;
       let hydrating = true;
+      const tab = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+      let batch = 0;
+
+      const updateId = () => `${tab}:${String(batch += 1).padStart(12, "0")}`;
+
+      function updatesFor(transaction, project = key) {
+        return requestResult(transaction.objectStore(UPDATES).index("project").getAll(project));
+      }
 
       async function putState() {
         if (closed || writing || !dirty) return pendingFlush;
@@ -140,20 +158,36 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
               mode: "update",
               ...(persistedVector ? { from: VersionVector.decode(persistedVector) } : {}),
             });
-            const previous = record?.version === 2 ? record : { version: 2, snapshot: null, updates: [], bytes: 0 };
-            let next = {
-              ...previous,
-              updates: [...previous.updates, update],
-              bytes: Number(previous.bytes || 0) + update.byteLength,
-              vector: version,
+            const transaction = database.transaction([STATES, UPDATES], "readwrite");
+            const done = transactionDone(transaction);
+            const states = transaction.objectStore(STATES);
+            const updates = transaction.objectStore(UPDATES);
+            const [current, pending] = await Promise.all([
+              requestResult(states.get(key)),
+              updatesFor(transaction),
+            ]);
+            const entry = { project: key, id: updateId(), update, vector: version, bytes: update.byteLength };
+            updates.add(entry);
+            const count = pending.length + 1;
+            const bytes = pending.reduce((sum, item) => sum + Number(item.bytes || item.update?.byteLength || 0), 0)
+              + update.byteLength;
+            let next = current?.version === 3 ? current : {
+              version: 3,
+              snapshot: current?.snapshot || (current instanceof Uint8Array ? current : null),
+              confirmedCoverage: current?.confirmedCoverage || "",
             };
-            if (!next.snapshot || next.updates.length >= COMPACT_AFTER_UPDATES || next.bytes >= COMPACT_AFTER_BYTES) {
-              const snapshot = doc.export({ mode: "update" });
-              next = { version: 2, snapshot, updates: [], bytes: snapshot.byteLength, vector: version };
+            if (!next.snapshot || count >= COMPACT_AFTER_UPDATES || bytes >= COMPACT_AFTER_BYTES) {
+              const merging = new LoroDoc();
+              if (next.snapshot) merging.import(new Uint8Array(next.snapshot));
+              for (const item of pending) merging.import(new Uint8Array(item.update));
+              merging.import(update);
+              const snapshot = merging.export({ mode: "update" });
+              next = { ...next, version: 3, snapshot, vector: merging.oplogVersion().encode() };
+              for (const item of pending) updates.delete([key, item.id]);
+              updates.delete([key, entry.id]);
             }
-            const transaction = database.transaction(STATES, "readwrite");
-            transaction.objectStore(STATES).put(next, key);
-            await transactionDone(transaction);
+            states.put(next, key);
+            await done;
             record = next;
             persistedVector = version;
             stored = true;
@@ -184,11 +218,20 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
       const hydration = (async () => {
         try {
           database = await openOfflineDatabase(indexedDB_);
-          const saved = await requestResult(database.transaction(STATES, "readonly").objectStore(STATES).get(key));
+          let saved = await requestResult(database.transaction(STATES, "readonly").objectStore(STATES).get(key));
+          if (!saved && legacyKey && legacyKey !== key) {
+            saved = await requestResult(database.transaction(STATES, "readonly").objectStore(STATES).get(legacyKey));
+            if (saved) {
+              const migration = database.transaction(STATES, "readwrite");
+              migration.objectStore(STATES).put(saved, key);
+              migration.objectStore(STATES).delete(legacyKey);
+              await transactionDone(migration);
+            }
+          }
           if (closed) return;
           if (saved) {
             stored = true;
-            if (saved.version === 2) {
+            if (saved.version === 2 || saved.version === 3) {
               record = saved;
               if (saved.snapshot) doc.import(new Uint8Array(saved.snapshot));
               for (const update of saved.updates || []) doc.import(new Uint8Array(update));
@@ -200,6 +243,11 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
               persistedVector = doc.oplogVersion().encode();
               record = { version: 2, snapshot: new Uint8Array(saved), updates: [], bytes: saved.byteLength, vector: persistedVector };
             }
+            const transaction = database.transaction(UPDATES, "readonly");
+            const pending = await updatesFor(transaction);
+            for (const item of pending) doc.import(new Uint8Array(item.update));
+            if (pending.length) persistedVector = doc.oplogVersion().encode();
+            events.confirmed?.(record?.confirmedCoverage || "");
           }
           hydrating = false;
           unsubscribe = doc.subscribe(changed);
@@ -225,6 +273,20 @@ export function durableProjectPersistence(identity, indexedDB_ = globalThis.inde
               || current.some((byte, index) => byte !== persistedVector[index])) dirty = true;
           if (dirty) await putState();
           await pendingFlush;
+        },
+        async confirm(coverage) {
+          await hydration;
+          await pendingFlush;
+          if (closed || !coverage) return;
+          database ||= await openOfflineDatabase(indexedDB_);
+          const transaction = database.transaction(STATES, "readwrite");
+          const done = transactionDone(transaction);
+          const store = transaction.objectStore(STATES);
+          const current = await requestResult(store.get(key));
+          record = { ...(current || record || { version: 3, snapshot: null }), confirmedCoverage: coverage };
+          store.put(record, key);
+          await done;
+          events.confirmed?.(coverage);
         },
         close() {
           closed = true;

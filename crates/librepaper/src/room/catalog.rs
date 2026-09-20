@@ -43,6 +43,10 @@ pub(super) fn mutation_authorization(
         )
     };
     Ok(MutationAuthorization {
+        principal_key: account_id
+            .map(|id| id.to_string())
+            .or_else(|| token_hash.map(|hash| format!("link:{}", hex::encode(hash))))
+            .unwrap_or_else(|| format!("visitor:{}", actor.owner_key)),
         account_id,
         session_generation,
         token_hash,
@@ -69,14 +73,14 @@ pub(super) async fn load_catalog_manifest(
         return Ok(Manifest::default());
     };
     let mut rows = catalog
-        .versions(document.id, 1000)
+        .checkpoint_page_records(document.id, None, 200)
         .await
         .map_err(|e| e.to_string())?;
     rows.reverse();
     Ok(Manifest {
         checkpoints: rows
             .iter()
-            .map(super::checkpoint::checkpoint_from_version)
+            .map(super::checkpoint::checkpoint_from_record)
             .collect(),
     })
 }
@@ -158,8 +162,8 @@ pub(super) fn catalog_comment_row(slug: &str, item: &Comment) -> Result<Annotati
 pub(super) async fn insert_comment_request(
     catalog: &Arc<PostgresCatalog>,
     row: AnnotationRow,
-    _request_id: String,
-    _digest: String,
+    request_id: String,
+    digest: String,
     _at: i64,
     actor: crate::document::store::MutationActor,
     require_editor: bool,
@@ -170,14 +174,24 @@ pub(super) async fn insert_comment_request(
         .ok_or(WriteError::NotFound)?;
     let id = Uuid::parse_str(&row.comment.id)
         .map_err(|_| WriteError::Invalid("annotation id must be a UUID".into()))?;
-    let record = catalog
-        .put_annotation_authorized(
-            id,
-            annotation_input(document.id, &row.comment)?,
-            &mutation_authorization(&actor)?,
-            require_editor,
-        )
-        .await?;
+    let input = annotation_input(document.id, &row.comment)?;
+    let authorization = mutation_authorization(&actor)?;
+    let record = if request_id.is_empty() {
+        catalog
+            .put_annotation_authorized(id, input, &authorization, require_editor)
+            .await?
+    } else {
+        let receipt = crate::storage::postgres::SemanticReceipt {
+            request_id: Uuid::parse_str(&request_id)
+                .map_err(|_| WriteError::Invalid("comment request_id must be a UUID".into()))?,
+            canonical_command: serde_json::json!({"digest": digest}),
+            stable_result: serde_json::Value::Null,
+            status: "committed".into(),
+        };
+        catalog
+            .put_annotation_receipted(id, input, &authorization, require_editor, &receipt)
+            .await?
+    };
     Ok((
         record.created_at.unix_timestamp_nanos() as i64,
         crate::util::format_unix(record.created_at.unix_timestamp()),
@@ -189,29 +203,43 @@ pub(super) async fn insert_suggestion_request(
     row: AnnotationRow,
     proposal: crate::storage::postgres::NewProposal,
     actor: crate::document::store::MutationActor,
-) -> Result<(), String> {
+    request_id: &str,
+    digest: String,
+) -> Result<(i64, String), String> {
     let document = catalog
         .document_by_slug(&row.slug)
         .await
         .map_err(|error| error.to_string())?
         .ok_or("document missing")?;
     let id = Uuid::parse_str(&row.comment.id).map_err(|_| "invalid annotation id")?;
-    catalog
-        .put_suggestion_authorized(
+    let receipt = crate::storage::postgres::SemanticReceipt {
+        request_id: Uuid::parse_str(request_id).map_err(|_| "request_id must be a UUID")?,
+        canonical_command: serde_json::json!({"digest": digest}),
+        stable_result: serde_json::Value::Null,
+        status: "committed".into(),
+    };
+    let record = catalog
+        .put_suggestion_receipted(
             id,
             annotation_input(document.id, &row.comment).map_err(|error| error.to_string())?,
             proposal,
             &mutation_authorization(&actor).map_err(|error| error.to_string())?,
+            &receipt,
         )
         .await
         .map_err(|error| error.to_string())?;
-    Ok(())
+    Ok((
+        record.created_at.unix_timestamp_nanos() as i64,
+        crate::util::format_unix(record.created_at.unix_timestamp()),
+    ))
 }
 
 pub(super) async fn update_comment_row(
     catalog: &Arc<PostgresCatalog>,
     row: AnnotationRow,
     actor: crate::document::store::MutationActor,
+    request_id: &str,
+    digest: String,
 ) -> Result<(), String> {
     let document = catalog
         .document_by_slug(&row.slug)
@@ -219,15 +247,51 @@ pub(super) async fn update_comment_row(
         .map_err(|e| e.to_string())?
         .ok_or("document missing")?;
     let id = Uuid::parse_str(&row.comment.id).map_err(|_| "invalid annotation id")?;
+    let input = annotation_input(document.id, &row.comment).map_err(|e| e.to_string())?;
+    let authorization = mutation_authorization(&actor).map_err(|e| e.to_string())?;
+    let receipt = crate::storage::postgres::SemanticReceipt {
+        request_id: Uuid::parse_str(request_id).map_err(|_| "request_id must be a UUID")?,
+        canonical_command: serde_json::json!({"digest": digest}),
+        stable_result: serde_json::Value::Null,
+        status: "committed".into(),
+    };
     catalog
-        .replace_annotation_authorized(
-            id,
-            annotation_input(document.id, &row.comment).map_err(|e| e.to_string())?,
-            row.comment.resolved,
-            &mutation_authorization(&actor).map_err(|e| e.to_string())?,
-        )
+        .replace_annotation_receipted(id, input, row.comment.resolved, &authorization, &receipt)
         .await
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(super) async fn update_suggestion_row(
+    catalog: &Arc<PostgresCatalog>,
+    row: AnnotationRow,
+    proposal: crate::storage::postgres::NewProposal,
+    actor: crate::document::store::MutationActor,
+    request_id: &str,
+    digest: String,
+) -> Result<(), String> {
+    let document = catalog
+        .document_by_slug(&row.slug)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or("document missing")?;
+    let id = Uuid::parse_str(&row.comment.id).map_err(|_| "invalid annotation id")?;
+    let receipt = crate::storage::postgres::SemanticReceipt {
+        request_id: Uuid::parse_str(request_id).map_err(|_| "request_id must be a UUID")?,
+        canonical_command: serde_json::json!({"digest": digest}),
+        stable_result: serde_json::Value::Null,
+        status: "committed".into(),
+    };
+    catalog
+        .replace_suggestion_receipted(
+            id,
+            annotation_input(document.id, &row.comment).map_err(|error| error.to_string())?,
+            proposal,
+            &mutation_authorization(&actor).map_err(|error| error.to_string())?,
+            &receipt,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -236,13 +300,19 @@ pub(super) async fn delete_comment_row(
     _slug: &str,
     id: &str,
     actor: crate::document::store::MutationActor,
+    request_id: &str,
+    digest: String,
 ) -> Result<(), String> {
     let id = Uuid::parse_str(id).map_err(|_| "invalid annotation id")?;
+    let authorization = mutation_authorization(&actor).map_err(|e| e.to_string())?;
+    let receipt = crate::storage::postgres::SemanticReceipt {
+        request_id: Uuid::parse_str(request_id).map_err(|_| "request_id must be a UUID")?,
+        canonical_command: serde_json::json!({"digest": digest}),
+        stable_result: serde_json::Value::Null,
+        status: "committed".into(),
+    };
     catalog
-        .delete_annotation_authorized(
-            id,
-            &mutation_authorization(&actor).map_err(|e| e.to_string())?,
-        )
+        .delete_annotation_receipted(id, &authorization, &receipt)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -251,8 +321,8 @@ pub(super) async fn delete_comment_row(
 pub(super) async fn insert_reply_request(
     catalog: &Arc<PostgresCatalog>,
     row: ReplyRow,
-    _request_id: String,
-    _digest: String,
+    request_id: String,
+    digest: String,
     _at: i64,
     actor: crate::document::store::MutationActor,
 ) -> Result<String, WriteError> {
@@ -262,20 +332,32 @@ pub(super) async fn insert_reply_request(
         .author
         .strip_prefix("account:")
         .and_then(|id| Uuid::parse_str(id).ok());
-    let reply = catalog
-        .create_reply_authorized(
-            NewReply {
-                id: Uuid::parse_str(&row.id)
-                    .map_err(|_| WriteError::Invalid("reply id is invalid".into()))?,
-                annotation_id,
-                author_account_id: account,
-                author_key: row.author,
-                author_label: row.creator,
-                body: row.body,
-            },
-            &mutation_authorization(&actor)?,
-        )
-        .await?;
+    let authorization = mutation_authorization(&actor)?;
+    let input = NewReply {
+        id: Uuid::parse_str(&row.id)
+            .map_err(|_| WriteError::Invalid("reply id is invalid".into()))?,
+        annotation_id,
+        author_account_id: account,
+        author_key: row.author,
+        author_label: row.creator,
+        body: row.body,
+    };
+    let reply = if request_id.is_empty() {
+        catalog
+            .create_reply_authorized(input, &authorization)
+            .await?
+    } else {
+        let receipt = crate::storage::postgres::SemanticReceipt {
+            request_id: Uuid::parse_str(&request_id)
+                .map_err(|_| WriteError::Invalid("reply request_id must be a UUID".into()))?,
+            canonical_command: serde_json::json!({"digest": digest}),
+            stable_result: serde_json::Value::Null,
+            status: "committed".into(),
+        };
+        catalog
+            .create_reply_receipted(input, &authorization, &receipt)
+            .await?
+    };
     Ok(crate::util::format_unix(reply.created_at.unix_timestamp()))
 }
 
@@ -315,6 +397,12 @@ pub(super) fn request_digest(value: &Value) -> String {
     let mut bytes = String::new();
     canonical(value, &mut bytes);
     hex::encode(Sha256::digest(bytes))
+}
+
+pub(super) fn derived_request_id(parent: &str, kind: &str, id: &str) -> String {
+    let digest = crate::document::store::digest_of(&format!("{parent}\0{kind}\0{id}"));
+    let bytes = hex::decode(&digest[..32]).expect("digest prefix is hexadecimal");
+    Uuid::from_bytes(bytes.try_into().expect("digest prefix is sixteen bytes")).to_string()
 }
 
 pub(super) fn annotation_input(

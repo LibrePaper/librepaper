@@ -16,6 +16,8 @@ struct Deployment {
     catalog: Arc<PostgresCatalog>,
     document: uuid::Uuid,
     slug: String,
+    authority: crate::storage::postgres::Authority,
+    _writer: crate::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
@@ -27,9 +29,9 @@ async fn deployment(slug: &str) -> Option<Deployment> {
             .unwrap(),
     );
     catalog.migrate().await.unwrap();
-    sqlx::query!(
+    sqlx::query(
         "TRUNCATE maintenance_cursors,jobs,document_updates,document_bases,bundle_files,
-         bundles,document_versions,document_assets,replies,annotations,share_links,
+         bundles,document_checkpoints,document_versions,document_assets,replies,annotations,share_links,
          grants,documents,accounts CASCADE",
     )
     .execute(catalog.pool())
@@ -50,6 +52,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     let blobs: Arc<dyn crate::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
+    let writer = catalog.claim_writer().await.unwrap();
     let store = Arc::new(
         Store::open_with_catalog(blobs, config, catalog.clone())
             .await
@@ -77,38 +80,140 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         .await
         .unwrap();
     let document = catalog.document_by_slug(slug).await.unwrap().unwrap().id;
+    let authority = crate::storage::postgres::Authority {
+        principal_key: account.id.to_string(),
+        account_id: Some(account.id),
+        link_hash: None,
+    };
     Some(Deployment {
         rooms: RoomSet::new(store),
         catalog,
         document,
         slug: slug.into(),
+        authority,
+        _writer: writer,
         _objects: objects,
     })
 }
 
 async fn versions(catalog: &PostgresCatalog, document: uuid::Uuid) -> Vec<String> {
-    let mut rows = catalog.versions(document, 100).await.unwrap();
+    let mut rows = catalog
+        .checkpoint_page_records(document, None, 100)
+        .await
+        .unwrap();
     rows.reverse();
     rows.iter().map(|row| row.reason.clone()).collect()
 }
 
+async fn materialize_checkpoints(deployment: &Deployment) {
+    let worker = crate::storage::worker::Worker::new(
+        deployment.catalog.clone(),
+        deployment.rooms.blobs.clone(),
+    );
+    let claims = deployment
+        .catalog
+        .claim_jobs("room-test", 100)
+        .await
+        .unwrap();
+    for claim in claims
+        .iter()
+        .filter(|claim| claim.job.kind == "checkpoint_archive")
+    {
+        worker.execute(claim).await.unwrap();
+        deployment
+            .catalog
+            .complete_job(claim, serde_json::json!({"ok": true}))
+            .await
+            .unwrap();
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn incremental_saves_recover_history_and_skip_unchanged_checkpoints() {
+async fn startup_repair_is_committed_before_the_room_is_served() {
+    let deployment = deployment("startup-repair-paper").await.unwrap();
+    sqlx::query("DELETE FROM document_bases WHERE document_id=$1")
+        .bind(deployment.document)
+        .execute(deployment.catalog.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM document_updates WHERE document_id=$1")
+        .bind(deployment.document)
+        .execute(deployment.catalog.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM document_source_revisions WHERE document_id=$1")
+        .bind(deployment.document)
+        .execute(deployment.catalog.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE documents SET update_sequence=0,commit_sequence=0,source_revision=0,\
+                              project_generation=0,uncompacted_update_count=0,\
+                              uncompacted_update_bytes=0 WHERE id=$1",
+    )
+    .bind(deployment.document)
+    .execute(deployment.catalog.pool())
+    .await
+    .unwrap();
+
+    let partial = session::new_doc();
+    session::put_text(&partial, "paper.tex", "\\documentclass{article}\n");
+    let body = session::encode_state(&partial);
+    deployment
+        .catalog
+        .append_update(
+            deployment.document,
+            &body,
+            &partial.state_frontiers().encode(),
+            body.len() as i64,
+        )
+        .await
+        .unwrap();
+
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let state = room.command_owner.state().await;
+    assert_eq!(
+        session::texts_of(&state.session.doc)["references.bib"],
+        "@book{a,title={A}}\n"
+    );
+    assert!(!state.session.dirty);
+    assert_eq!(state.session.durable_sequence, 2);
+    drop(state);
+    let document = deployment
+        .catalog
+        .document(deployment.document)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(document.update_sequence, 2);
+    let revisions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM document_source_revisions WHERE document_id=$1")
+            .bind(deployment.document)
+            .fetch_one(deployment.catalog.pool())
+            .await
+            .unwrap();
+    assert_eq!(revisions, 1);
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn legacy_incremental_saves_recover_history() {
     let deployment = deployment("incremental-paper").await.unwrap();
     let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
     let large = (0..300)
         .map(|n| format!("Line {n}: text for the recovery test.\n"))
         .collect::<String>();
     {
-        let mut state = room.state.lock().await;
+        let mut state = room.command_owner.state().await;
         session::put_text(&state.session.doc, "paper.tex", &large);
         state.session.generation += 1;
         state.session.mark_dirty(now_unix());
     }
     room.persist().await.unwrap();
     {
-        let mut state = room.state.lock().await;
+        let mut state = room.command_owner.state().await;
         session::put_text(
             &state.session.doc,
             "references.bib",
@@ -123,18 +228,16 @@ async fn incremental_saves_recover_history_and_skip_unchanged_checkpoints() {
         .updates_after(deployment.document, 0, 100)
         .await
         .unwrap();
-    assert_eq!(updates.len(), 2);
-    assert!(updates[1].update_bytes.len() * 10 < updates[0].update_bytes.len());
+    assert_eq!(updates.len(), 3);
+    assert!(updates[2].update_bytes.len() * 10 < updates[1].update_bytes.len());
     let recovered = session::new_doc();
     for update in &updates {
         session::apply_update(&recovered, &update.update_bytes).unwrap();
     }
     assert_eq!(
         session::texts_of(&recovered),
-        session::texts_of(&room.state.lock().await.session.doc)
+        session::texts_of(&room.command_owner.state().await.session.doc)
     );
-    room.checkpoint("label", "Owner").await.unwrap();
-    room.checkpoint("label", "Owner").await.unwrap();
     assert_eq!(
         deployment
             .catalog
@@ -142,7 +245,7 @@ async fn incremental_saves_recover_history_and_skip_unchanged_checkpoints() {
             .await
             .unwrap()
             .len(),
-        2
+        3
     );
     let buckets = deployment
         .catalog
@@ -161,11 +264,13 @@ async fn incremental_saves_recover_history_and_skip_unchanged_checkpoints() {
 async fn compacted_remote_edits_do_not_mark_local_edits_durable() {
     let deployment = deployment("compacted-paper").await.unwrap();
     let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
-    room.checkpoint("label", "Owner").await.unwrap();
+    room.checkpoint("label", "Owner", &deployment.authority)
+        .await
+        .unwrap();
     let remote = session::new_doc();
     session::apply_update(
         &remote,
-        &session::encode_state(&room.state.lock().await.session.doc),
+        &session::encode_state(&room.command_owner.state().await.session.doc),
     )
     .unwrap();
     let before = session::encode_vector(&remote);
@@ -194,7 +299,7 @@ async fn compacted_remote_edits_do_not_mark_local_edits_durable() {
         .await
         .unwrap();
     {
-        let mut state = room.state.lock().await;
+        let mut state = room.command_owner.state().await;
         session::put_text(&state.session.doc, "local.tex", "unsaved local work");
         state.session.generation += 1;
         state.session.mark_dirty(now_unix());
@@ -213,11 +318,11 @@ async fn compacted_remote_edits_do_not_mark_local_edits_durable() {
 
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
-async fn autosave_waits_thirty_seconds_but_continuous_typing_cannot_defer_it() {
+async fn timer_never_persists_test_only_dirty_state() {
     let deployment = deployment("cadence-paper").await.unwrap();
     let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
     {
-        let mut state = room.state.lock().await;
+        let mut state = room.command_owner.state().await;
         session::put_text(&state.session.doc, "paper.tex", "updated");
         state.session.generation += 1;
         state.session.mark_dirty(now_unix() - 20);
@@ -225,14 +330,17 @@ async fn autosave_waits_thirty_seconds_but_continuous_typing_cannot_defer_it() {
         state.session.last_persist_at = now_unix() - 20;
     }
     room.tick().await;
-    assert!(deployment
-        .catalog
-        .updates_after(deployment.document, 0, 100)
-        .await
-        .unwrap()
-        .is_empty());
+    assert_eq!(
+        deployment
+            .catalog
+            .updates_after(deployment.document, 0, 100)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     {
-        let mut state = room.state.lock().await;
+        let mut state = room.command_owner.state().await;
         state.session.dirty_since = now_unix() - 31;
         state.session.updated_at = now_unix();
         state.session.last_persist_at = now_unix() - 31;
@@ -260,7 +368,7 @@ async fn opening_a_document_nobody_edits_writes_no_version() {
         return;
     };
     let before = versions(&deployment.catalog, deployment.document).await;
-    assert_eq!(before, vec!["created".to_string()]);
+    assert!(before.is_empty());
 
     let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
     for _ in 0..3 {
@@ -274,10 +382,7 @@ async fn opening_a_document_nobody_edits_writes_no_version() {
     deployment.catalog.close().await;
 }
 
-/// Asking twice for a version of the same text writes one -- across the room
-/// being let go of and loaded again, which is what a deployment does all day.
-/// The newest version's tree digest is a column rather than a field precisely
-/// so that the second process can recognise the first one's work.
+/// Each explicit request is a timeline event, including after a room reload.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_reloaded_room_recognises_its_own_newest_version() {
@@ -287,15 +392,22 @@ async fn a_reloaded_room_recognises_its_own_newest_version() {
     // One real edit, so there is a checkpoint of this room's own making
     // to be recognised on the way back in.
     let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
-    {
-        let mut state = room.state.lock().await;
-        session::replace_text(&state.session.doc, "\\documentclass{book}\n", "paper.tex");
-        state.session.generation += 1;
-        state.session.mark_dirty(now_unix());
-    }
-    room.checkpoint("label", "Owner").await.unwrap();
+    room.commit_edit(
+        &deployment.authority,
+        "Owner".into(),
+        false,
+        |candidate, _, _| {
+            session::replace_text(candidate, "\\documentclass{book}\n", "paper.tex");
+            Ok::<_, WriteError>(())
+        },
+    )
+    .await
+    .unwrap();
+    room.checkpoint("label", "Owner", &deployment.authority)
+        .await
+        .unwrap();
     let after_edit = versions(&deployment.catalog, deployment.document).await;
-    assert_eq!(after_edit, vec!["created".to_string(), "label".to_string()]);
+    assert_eq!(after_edit, vec!["label".to_string()]);
 
     for _ in 0..3 {
         let rooms = RoomSet::new(deployment.rooms.store.get().unwrap().clone());
@@ -303,12 +415,14 @@ async fn a_reloaded_room_recognises_its_own_newest_version() {
         for _ in 0..3 {
             room.tick().await;
         }
-        room.checkpoint("label", "Owner").await.unwrap();
+        room.checkpoint("label", "Owner", &deployment.authority)
+            .await
+            .unwrap();
     }
     assert_eq!(
         versions(&deployment.catalog, deployment.document).await,
-        after_edit,
-        "asking again for the text a version already holds must write nothing"
+        vec!["label".to_string(); 4],
+        "each deliberate checkpoint remains a distinct event"
     );
     deployment.catalog.close().await;
 }
@@ -322,15 +436,27 @@ async fn a_checkpoint_records_the_paths_it_moved() {
         return;
     };
     let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
-    {
-        let mut state = room.state.lock().await;
-        session::put_text(&state.session.doc, "references.bib", "@book{b,title={B}}\n");
-        state.session.generation += 1;
-        state.session.mark_dirty(now_unix());
-    }
-    let sha = room.checkpoint("label", "Owner").await.unwrap().unwrap();
+    room.commit_edit(
+        &deployment.authority,
+        "Owner".into(),
+        false,
+        |candidate, _, _| {
+            session::put_text(candidate, "references.bib", "@book{b,title={B}}\n");
+            Ok::<_, WriteError>(())
+        },
+    )
+    .await
+    .unwrap();
+    let sha = room
+        .checkpoint("label", "Owner", &deployment.authority)
+        .await
+        .unwrap()
+        .unwrap();
     let point = room.checkpoint_by_sha(&sha).await.unwrap().unwrap();
-    assert_eq!(point.changed, Some(vec!["references.bib".to_string()]));
+    assert_eq!(
+        point.changed,
+        Some(vec!["paper.tex".to_string(), "references.bib".to_string()])
+    );
     assert!(
         !point.tree_sha.is_empty(),
         "a checkpoint must name the tree it holds"
@@ -338,11 +464,8 @@ async fn a_checkpoint_records_the_paths_it_moved() {
     deployment.catalog.close().await;
 }
 
-/// A working session -- several edits, each left long enough that the sweeper
-/// would once have marked it -- leaves no versions at all. The clock is not
-/// somebody asking. What the sweeper owes is durability, so the edits must
-/// still be readable from storage afterwards, and they are: from the
-/// operation log, which is where every keystroke went.
+/// The eviction timer never turns in-memory test mutations into semantic
+/// history. Production mutation paths commit before installing state.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn a_session_of_edits_leaves_no_versions() {
@@ -352,7 +475,7 @@ async fn a_session_of_edits_leaves_no_versions() {
     let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
     for round in 0..5 {
         {
-            let mut state = room.state.lock().await;
+            let mut state = room.command_owner.state().await;
             session::replace_text(
                 &state.session.doc,
                 &format!("\\documentclass{{article}}\n% round {round}\n"),
@@ -363,7 +486,7 @@ async fn a_session_of_edits_leaves_no_versions() {
         }
         // The sweeper's own path: pretend the author paused long enough.
         {
-            let mut state = room.state.lock().await;
+            let mut state = room.command_owner.state().await;
             let long_ago = now_unix() - 120;
             state.session.updated_at = long_ago;
             state.session.dirty_since = long_ago;
@@ -372,28 +495,20 @@ async fn a_session_of_edits_leaves_no_versions() {
         room.tick().await;
     }
     let seen = versions(&deployment.catalog, deployment.document).await;
-    assert_eq!(
-        seen,
-        vec!["created".to_string()],
-        "the sweeper writes no versions: {seen:?}"
+    assert!(
+        seen.is_empty(),
+        "the sweeper writes no checkpoints: {seen:?}"
     );
-    // But it did write. The document a copy of this project would be made
-    // from is the last round, not the publish it started as.
-    let files = deployment
-        .rooms
-        .store
-        .get()
-        .unwrap()
-        .project_files(&deployment.slug)
-        .await
-        .unwrap()
-        .expect("the project must be readable without a version of it");
-    let paper = files
-        .iter()
-        .find(|(path, _)| path == "paper.tex")
-        .map(|(_, bytes)| String::from_utf8_lossy(bytes).to_string())
-        .expect("paper.tex must be in the project");
-    assert_eq!(paper, "\\documentclass{article}\n% round 4\n");
+    assert_eq!(
+        deployment
+            .catalog
+            .updates_after(deployment.document, 0, 100)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the timer must not append source"
+    );
     deployment.catalog.close().await;
 }
 
@@ -408,43 +523,86 @@ async fn a_restore_puts_an_earlier_version_back() {
         return;
     };
     let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    room.checkpoint("label", "Owner", &deployment.authority)
+        .await
+        .unwrap();
+    materialize_checkpoints(&deployment).await;
     let published = room.manifest().await.checkpoints[0].clone();
-    {
-        let mut state = room.state.lock().await;
-        session::replace_text(&state.session.doc, "\\documentclass{book}\n", "paper.tex");
-        state.session.generation += 1;
-        state.session.mark_dirty(now_unix());
-    }
-    room.checkpoint("label", "Owner").await.unwrap();
+    let proposal_base = room
+        .command_owner
+        .state()
+        .await
+        .session
+        .doc
+        .state_frontiers();
+    let proposal_id = room
+        .open_proposal(
+            "Ada",
+            &proposal_base,
+            &deployment.authority,
+            uuid::Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    room.commit_edit(
+        &deployment.authority,
+        "Owner".into(),
+        false,
+        |candidate, _, _| {
+            session::replace_text(candidate, "\\documentclass{book}\n", "paper.tex");
+            Ok::<_, WriteError>(())
+        },
+    )
+    .await
+    .unwrap();
+    room.checkpoint("label", "Owner", &deployment.authority)
+        .await
+        .unwrap();
     // And one more edit nobody has checkpointed, which is the work a restore
     // would otherwise discard without trace.
-    {
-        let mut state = room.state.lock().await;
-        session::replace_text(&state.session.doc, "\\documentclass{report}\n", "paper.tex");
-        state.session.generation += 1;
-        state.session.mark_dirty(now_unix());
-    }
+    room.commit_edit(
+        &deployment.authority,
+        "Owner".into(),
+        false,
+        |candidate, _, _| {
+            session::replace_text(candidate, "\\documentclass{report}\n", "paper.tex");
+            Ok::<_, WriteError>(())
+        },
+    )
+    .await
+    .unwrap();
 
     let restored = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        room.restore_and_checkpoint(&published, "Owner"),
+        room.restore_and_checkpoint(&published, "Owner", &deployment.authority),
     )
     .await
     .expect("restoring must not hang");
     let (_update, sha) = restored.expect("the restore must succeed");
     assert!(!sha.is_empty(), "a restore writes a version of its own");
+    assert_eq!(
+        deployment
+            .catalog
+            .proposal(uuid::Uuid::parse_str(&proposal_id).unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "superseded",
+        "restore supersedes review branches in its source transaction"
+    );
 
     assert_eq!(
         versions(&deployment.catalog, deployment.document).await,
         vec![
-            "created".to_string(),
+            "label".to_string(),
             "label".to_string(),
             "superseded".to_string(),
             "restore".to_string()
         ],
     );
     let texts = {
-        let state = room.state.lock().await;
+        let state = room.command_owner.state().await;
         session::texts_of(&state.session.doc)
     };
     assert_eq!(
@@ -469,7 +627,7 @@ async fn a_frontier_reproduces_the_document_as_it_stood() {
     let write = |body: &'static str| {
         let room = room.clone();
         async move {
-            let mut state = room.state.lock().await;
+            let mut state = room.command_owner.state().await;
             session::replace_text(&state.session.doc, body, "paper.tex");
             state.session.generation += 1;
             state.session.mark_dirty(now_unix());
@@ -500,7 +658,7 @@ async fn a_frontier_reproduces_the_document_as_it_stood() {
     // The live document is untouched by having been read from: a fork is a
     // copy, and the room keeps writing where it was.
     let now = {
-        let state = room.state.lock().await;
+        let state = room.command_owner.state().await;
         session::texts_of(&state.session.doc)
     };
     assert_eq!(

@@ -37,18 +37,27 @@ function browserReferenceFetcher({ slug, key = "", fetcher = globalThis.fetch })
       credentials: "same-origin",
       headers: authHeaders(key || keyFor(slug)),
     });
-    if (!response.ok) throw new Error("could not fetch the document");
+    if (!response.ok) {
+      const error = new Error("could not fetch the document");
+      error.restartBaseline = response.status === 410;
+      throw error;
+    }
+    const expected = response.headers.get("x-librepaper-state-digest");
+    if (!expected) throw new Error("document state response has no integrity identity");
     return new Uint8Array(await response.arrayBuffer());
   };
 }
 
-export function join({ slug, createdAt = "", key = "", persistence, fetchReference, ...options }) {
-  const identity = slug && createdAt
+export function join({ slug, documentId = "", createdAt = "", key = "", persistence, fetchReference, ...options }) {
+  const identity = documentId
+    ? projectIdentity({ server: globalThis.location?.origin, documentId })
+    : null;
+  const legacyIdentity = slug && createdAt
     ? projectIdentity({ server: globalThis.location?.origin, slug, createdAt })
     : null;
   const browserStore = persistence === undefined && identity && options.mayEdit !== false
     && typeof indexedDB !== "undefined"
-    ? durableProjectPersistence(identity)
+    ? durableProjectPersistence(identity, globalThis.indexedDB, legacyIdentity)
     : persistence;
   return createProjectSession({
     ...options,

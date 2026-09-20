@@ -109,10 +109,10 @@ impl Server {
                 let Ok(body) = to_bytes(request.into_body(), 1 << 20).await else {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
-                let Ok(mut incoming) = serde_json::from_slice::<RoomMessage>(&body) else {
+                let Ok(incoming) = serde_json::from_slice::<RoomMessage>(&body) else {
                     return write_json(400, &json!({"error": "bad request"}));
                 };
-                if incoming.motivation == "editing" && !who.at_least(Role::Editor) {
+                if incoming.motivation() == "editing" && !who.at_least(Role::Editor) {
                     return write_json(
                         403,
                         &json!({"error": "editor access is required for suggestions"}),
@@ -149,9 +149,9 @@ impl Server {
                 }
                 // Readers and commenters annotate the exact current projection
                 // which produced their rendered page.
-                if incoming.kind == "comment"
+                if incoming.kind() == "comment"
                     && !current_who.at_least(Role::Editor)
-                    && incoming.bundle_id.is_empty()
+                    && incoming.bundle_id().is_empty()
                 {
                     return write_json(
                         409,
@@ -159,27 +159,7 @@ impl Server {
                     );
                 }
                 let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
-                // Hold the same gate from identity validation through anchor
-                // capture. An edit cannot land between the two observations.
-                let _bundle_guard = room.bundle_write.lock().await;
-                if let Some(project_digest) = (incoming.kind == "comment"
-                    && !incoming.bundle_id.is_empty())
-                .then_some(incoming.bundle_id.as_str())
-                {
-                    let (_, _, _, current) =
-                        room.current_project(&current_entry.source_format).await;
-                    if current != project_digest {
-                        return write_json(
-                            409,
-                            &json!({"error": "source changed; refresh before annotating", "stale_source": true}),
-                        );
-                    }
-                    // The digest is validation evidence, not durable bundle
-                    // provenance. The accepted anchor is captured from the
-                    // current CRDT state below and persisted in that form.
-                    incoming.bundle_id.clear();
-                }
-                if incoming.kind == "accept" || incoming.kind == "reject" {
+                if incoming.kind() == "accept" || incoming.kind() == "reject" {
                     return write_json(
                         410,
                         &json!({"error": "suggestion decisions are not supported"}),
@@ -382,19 +362,7 @@ impl Server {
         who: &Caller,
         existing: &IndexEntry,
     ) -> Result<IndexEntry, Reply> {
-        // Restore and suggestion acceptance use this gate already. Take it
-        // first so a bundle cannot mutate the live CRDT between their
-        // merge-base read and their checkpoint; ordinary socket edits remain
-        // free to proceed while either operation is in storage I/O.
-        let _restore_writer = room.restore_write.lock().await;
-        let _bundle_writer = room.bundle_write.lock().await;
-        let _bundle_checkpoint = room.bundle_checkpoint.write().await;
-        let (current, rollback_bodies, rollback_format) = {
-            let state = room.state.lock().await;
-            let (tree, bodies) =
-                crate::room::tree_of(&state.session.doc, &state.session.asset_sizes);
-            (tree, bodies, state.session.format.clone())
-        };
+        let (current, _) = room.current_tree_and_bodies().await;
         let main_path = if !parsed.main.is_empty() {
             parsed.main.clone()
         } else if !parsed.source_format.is_empty()
@@ -488,99 +456,104 @@ impl Server {
         // upload does not touch, landed in the time it took to validate and
         // store the assets above, is carried forward as it now stands rather
         // than overwritten with a stale copy of it.
-        let update = {
-            let mut state = room.state.lock().await;
-            let (mut tree, mut bodies) =
-                crate::room::tree_of(&state.session.doc, &state.session.asset_sizes);
-            let main_id = tree
-                .files
-                .get(&main_path)
-                .map(|entry| entry.id.clone())
-                .unwrap_or_default();
-            let main_sha = crate::document::store::digest_of(&parsed.source);
-            tree.files.insert(
-                main_path.clone(),
-                crate::document::history::TreeEntry {
-                    kind: "text".to_string(),
-                    id: main_id,
-                    sha: main_sha.clone(),
-                    size: parsed.source.len() as i64,
-                },
-            );
-            bodies.insert(main_sha, parsed.source.clone());
-            for (path, raw) in &parsed.files {
-                match crate::document::paths::check(&self.config.paths(), path) {
-                    Ok(crate::document::paths::Kind::Text) => {
-                        // `preflight_directory` already required this to decode.
-                        let Ok(body) = std::str::from_utf8(raw) else {
-                            return Err(write_json(
-                                400,
-                                &json!({"error": format!("{path} is not valid UTF-8")}),
-                            ));
-                        };
-                        let sha = crate::document::store::digest_of(body);
-                        let id = tree
-                            .files
-                            .get(path)
-                            .map(|entry| entry.id.clone())
-                            .unwrap_or_default();
-                        tree.files.insert(
-                            path.clone(),
-                            crate::document::history::TreeEntry {
-                                kind: "text".to_string(),
-                                id,
-                                sha: sha.clone(),
-                                size: body.len() as i64,
-                            },
-                        );
-                        bodies.insert(sha, body.to_string());
-                    }
-                    Ok(crate::document::paths::Kind::Asset) => {
-                        if let Some(entry) = new_assets.get(path) {
-                            tree.files.insert(path.clone(), entry.clone());
+        let document_authority = crate::storage::postgres::Authority {
+            principal_key: who.id.clone(),
+            account_id: uuid::Uuid::parse_str(&who.id).ok(),
+            link_hash: None,
+        };
+        let ((), update) = room
+            .commit_edit_with_identity(
+                &document_authority,
+                crate::room::Attribution::account(&who.id, &who.key),
+                true,
+                (!parsed.source_format.is_empty()).then_some(parsed.source_format.as_str()),
+                |candidate, mut tree, mut bodies| {
+                    let final_main_path = if !parsed.main.is_empty() {
+                        parsed.main.clone()
+                    } else if !parsed.source_format.is_empty()
+                        && crate::room::format_from_path(&tree.main) != parsed.source_format
+                    {
+                        crate::room::main_path_for("", &parsed.source_format)
+                    } else {
+                        tree.main.clone()
+                    };
+                    let main_id = tree
+                        .files
+                        .get(&final_main_path)
+                        .map(|entry| entry.id.clone())
+                        .unwrap_or_default();
+                    let main_sha = crate::document::store::digest_of(&parsed.source);
+                    tree.files.insert(
+                        final_main_path.clone(),
+                        crate::document::history::TreeEntry {
+                            kind: "text".to_string(),
+                            id: main_id,
+                            sha: main_sha.clone(),
+                            size: parsed.source.len() as i64,
+                        },
+                    );
+                    bodies.insert(main_sha, parsed.source.clone());
+                    for (path, raw) in &parsed.files {
+                        match crate::document::paths::check(&self.config.paths(), path) {
+                            Ok(crate::document::paths::Kind::Text) => {
+                                // `preflight_directory` already required this to decode.
+                                let body = std::str::from_utf8(raw).map_err(|_| {
+                                    crate::room::WriteError::Invalid(format!(
+                                        "{path} is not valid UTF-8"
+                                    ))
+                                })?;
+                                let sha = crate::document::store::digest_of(body);
+                                let id = tree
+                                    .files
+                                    .get(path)
+                                    .map(|entry| entry.id.clone())
+                                    .unwrap_or_default();
+                                tree.files.insert(
+                                    path.clone(),
+                                    crate::document::history::TreeEntry {
+                                        kind: "text".to_string(),
+                                        id,
+                                        sha: sha.clone(),
+                                        size: body.len() as i64,
+                                    },
+                                );
+                                bodies.insert(sha, body.to_string());
+                            }
+                            Ok(crate::document::paths::Kind::Asset) => {
+                                if let Some(entry) = new_assets.get(path) {
+                                    tree.files.insert(path.clone(), entry.clone());
+                                }
+                            }
+                            Err(why) => return Err(crate::room::WriteError::Invalid(why)),
                         }
                     }
-                    Err(why) => return Err(write_json(400, &json!({"error": why}))),
-                }
-            }
-            // Anything this upload does not name and the document did not
-            // already have under one of these paths is gone: an upload is the
-            // whole directory, so a chapter left out of it is a chapter
-            // removed. ...but only when a directory was uploaded. A one-file
-            // source upload -- the JSON body a browser upload sends,
-            // which names no main -- is a new version of the main file, not a
-            // claim that the document has no other files, and it has never
-            // emptied a directory it was published over.
-            if !parsed.main.is_empty() {
-                tree.files.retain(|path, _| wanted.contains(path));
-            }
-            tree.main = main_path.clone();
+                    // Anything this upload does not name and the document did not
+                    // already have under one of these paths is gone: an upload is the
+                    // whole directory, so a chapter left out of it is a chapter
+                    // removed. ...but only when a directory was uploaded. A one-file
+                    // source upload -- the JSON body a browser upload sends,
+                    // which names no main -- is a new version of the main file, not a
+                    // claim that the document has no other files, and it has never
+                    // emptied a directory it was published over.
+                    if !parsed.main.is_empty() {
+                        tree.files.retain(|path, _| wanted.contains(path));
+                    }
+                    tree.main = final_main_path;
 
-            let before = crate::document::session::encode_vector(&state.session.doc);
-            if let Err(error) = room.checked_edit(&state.session.doc, |candidate| {
-                crate::document::session::restore(candidate, &tree, &bodies);
-                Ok::<_, crate::room::WriteError>(())
-            }) {
-                drop(state);
-                return Err(write_json(
-                    error.status(),
-                    &json!({"error": error.client_message()}),
-                ));
-            }
-            if !parsed.source_format.is_empty() {
-                state.session.format = parsed.source_format.clone();
-            }
-            state.session.dirty = true;
-            // Every mutation of the document moves its generation; that is
-            // what lets a checkpoint tell an edit that landed after its
-            // snapshot from one it covered.
-            state.session.generation += 1;
-            state.session.updated_at = now_unix();
-            crate::document::session::encode_diff(&state.session.doc, &before)
-                .unwrap_or_else(|_| crate::document::session::encode_state(&state.session.doc))
-        };
+                    crate::document::session::restore(candidate, &tree, &bodies);
+                    Ok::<_, crate::room::WriteError>(())
+                },
+            )
+            .await
+            .map_err(|error| {
+                write_json(error.status(), &json!({"error": error.client_message()}))
+            })?;
         let sha = match room
-            .checkpoint("cli", crate::room::Attribution::account(&who.id, &who.key))
+            .checkpoint(
+                "cli",
+                crate::room::Attribution::account(&who.id, &who.key),
+                &document_authority,
+            )
             .await
         {
             Ok(Some(sha)) => sha,
@@ -588,16 +561,11 @@ impl Server {
             // write, and the checkpoint follows when the window passes.
             Ok(None) => existing.sha.clone(),
             Err(error) => {
-                if let Err(error) = room
-                    .rollback_bundle_inner(&current, &rollback_bodies, &rollback_format)
-                    .await
-                {
-                    eprintln!("warning: could not roll back {}: {error}", existing.slug);
-                }
-                return Err(write_json(
-                    error.status(),
-                    &json!({"error": error.client_message()}),
-                ));
+                eprintln!(
+                    "warning: source for {} committed but its archive checkpoint is pending: {error}",
+                    existing.slug
+                );
+                existing.sha.clone()
             }
         };
         room.broadcast_editors_except(
@@ -1052,8 +1020,8 @@ impl Server {
             Ok(result) => result,
             Err(response) => return response,
         };
-        // The signature says this link was minted here; it does not say who is
-        // holding it. Who may read is asked again, from the request itself,
+        // The opaque reference identifies immutable bytes; it does not say
+        // who is holding it. Who may read is asked again, from the request itself,
         // which is the same rule the socket answers `y-open` under.
         // Full document state is a source synchronization transport. Readers and
         // commenters receive the rendered bundle and annotation channel.
@@ -1067,37 +1035,28 @@ impl Server {
                     .collect()
             })
             .unwrap_or_default();
-        let until = fields
-            .get("until")
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0);
-        let token = fields.get("token").cloned().unwrap_or_default();
-        if until < crate::util::now_unix()
-            || !crate::auth::verifies(
-                &self.key,
-                "socket-state-v1",
-                &format!("state:{slug}:{until}"),
-                &token,
-            )
-        {
-            return plain(403, "that link has expired");
-        }
+        let transfer_id = fields.get("transfer").cloned().unwrap_or_default();
         // Cross-site fetches are refused here as everywhere else: a document's
         // source is not another site's to read out of a signed-in browser.
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let room = match self.rooms.try_get(slug).await {
-            Ok(room) => room,
-            Err(error) => return plain(503, &error.to_string()),
+        let transfer = {
+            let mut transfers = self.state_transfers.lock().await;
+            let Some(transfer) = transfers.entries.get(&transfer_id).cloned() else {
+                return plain(410, "that baseline has expired; reconnect for a newer one");
+            };
+            if transfer.slug != slug || transfer.expires_at < crate::util::now_unix() {
+                transfers.remove(&transfer_id);
+                transfers.order.retain(|id| id != &transfer_id);
+                return plain(410, "that baseline has expired; reconnect for a newer one");
+            }
+            transfer
         };
-        let (state, _) = room.open_state(None).await;
-        if room.agent_recovery_pending() {
-            return plain(503, "room state is awaiting recovery");
-        }
-        let mut response = Response::new(Body::from(state));
+        let mut response = Response::new(Body::from(transfer.bytes));
         set(&mut response, "content-type", "application/octet-stream");
         set(&mut response, "cache-control", "no-store");
+        set(&mut response, "x-librepaper-state-digest", &transfer.digest);
         privacy_headers(&mut response);
         response
     }

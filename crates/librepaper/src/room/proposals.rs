@@ -252,6 +252,8 @@ pub(crate) struct Decision<'a> {
     /// The peer the revert is written as, so that declining attributes the
     /// removal to whoever declined it.
     pub reviewer: PeerID,
+    pub request_id: uuid::Uuid,
+    pub authority: &'a crate::storage::postgres::Authority,
 }
 
 /// A peer id for a branch that nothing else will use.
@@ -328,11 +330,13 @@ impl super::Room {
         &self,
         author: &str,
         base: &Frontiers,
+        authority: &crate::storage::postgres::Authority,
+        request_id: uuid::Uuid,
     ) -> Result<String, ProposalError> {
         let peer = fresh_peer();
         let (catalog, document) = self.catalog_and_document()?;
         {
-            let state = self.state.lock().await;
+            let state = self.command_owner.state().await;
             state
                 .session
                 .doc
@@ -343,19 +347,31 @@ impl super::Room {
         let id = crate::storage::postgres::new_id();
         // A proposal opens empty. The author's first keystroke arrives as an
         // update, so there is nothing to store yet and the tip is the base.
-        catalog
-            .open_proposal(crate::storage::postgres::NewProposal {
-                document_id: document,
-                id,
-                author: author.to_string(),
-                author_peer: peer as i64,
-                base_frontiers: base.encode(),
-                tip_frontiers: base.encode(),
-                branch_bytes: Vec::new(),
-            })
+        let receipt = crate::storage::postgres::SemanticReceipt {
+            request_id,
+            canonical_command: serde_json::json!({
+                "type": "proposal-open", "author": author, "base": base.encode(),
+            }),
+            stable_result: serde_json::Value::Null,
+            status: "committed".into(),
+        };
+        let result = catalog
+            .open_proposal(
+                crate::storage::postgres::NewProposal {
+                    document_id: document,
+                    id,
+                    author: author.to_string(),
+                    author_peer: peer as i64,
+                    base_frontiers: base.encode(),
+                    tip_frontiers: base.encode(),
+                    branch_bytes: Vec::new(),
+                },
+                authority,
+                &receipt,
+            )
             .await
             .map_err(|error| ProposalError::Failed(error.to_string()))?;
-        Ok(id.to_string())
+        Ok(result.proposal_id.to_string())
     }
 
     /// Opens a proposal for a suggestion, and returns its id for the comment to
@@ -365,6 +381,7 @@ impl super::Room {
     /// place. That is a one-hunk branch, so this makes one: the comment ends up
     /// holding an id, and the change it offers is reviewed and decided like any
     /// other (§1.2).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn open_suggestion(
         &self,
         author: &str,
@@ -372,16 +389,27 @@ impl super::Room {
         at: usize,
         exact: &str,
         proposed: &str,
+        authority: &crate::storage::postgres::Authority,
+        request_id: uuid::Uuid,
     ) -> Result<String, ProposalError> {
-        let (id, proposal) = self
+        let (_id, proposal) = self
             .prepare_suggestion(author, path, at, exact, proposed)
             .await?;
         let (catalog, _) = self.catalog_and_document()?;
-        catalog
-            .open_proposal(proposal)
+        let receipt = crate::storage::postgres::SemanticReceipt {
+            request_id,
+            canonical_command: serde_json::json!({
+                "type": "proposal-suggest", "author": author, "path": path,
+                "at": at, "exact": exact, "proposed": proposed,
+            }),
+            stable_result: serde_json::Value::Null,
+            status: "committed".into(),
+        };
+        let result = catalog
+            .open_proposal(proposal, authority, &receipt)
             .await
             .map_err(|error| ProposalError::Failed(error.to_string()))?;
-        Ok(id)
+        Ok(result.proposal_id.to_string())
     }
 
     pub(crate) async fn prepare_suggestion(
@@ -394,7 +422,7 @@ impl super::Room {
     ) -> Result<(String, crate::storage::postgres::NewProposal), ProposalError> {
         let (_, document) = self.catalog_and_document()?;
         let (branch, base, tip, peer, bytes) = {
-            let state = self.state.lock().await;
+            let state = self.command_owner.state().await;
             let (branch, base, tip, peer) =
                 from_suggestion(&state.session.doc, path, at, exact, proposed)?;
             // The branch's own operations, which is all that is stored:
@@ -420,25 +448,20 @@ impl super::Room {
         ))
     }
 
-    /// Writes a branch down as a proposal, and returns its id.
-    ///
-    /// Split from [`Room::open_suggestion`] because the callers that make a
-    /// suggestion while holding the room state cannot take that lock again --
-    /// it is not reentrant, and asking for it twice is a deadlock rather than
-    /// an error. So they build the branch under the lock they already hold,
-    /// where the document is, and store it here after letting it go.
-    pub(crate) async fn store_proposal(
+    pub(crate) fn proposal_record(
         &self,
         author: &str,
         peer: PeerID,
         base: &Frontiers,
         tip: &Frontiers,
         branch: Vec<u8>,
-    ) -> Result<String, ProposalError> {
-        let (catalog, document) = self.catalog_and_document()?;
+    ) -> Result<(String, crate::storage::postgres::NewProposal), ProposalError> {
+        let document = uuid::Uuid::parse_str(&self.storage_id)
+            .map_err(|_| ProposalError::Failed("room has an invalid document id".into()))?;
         let id = crate::storage::postgres::new_id();
-        catalog
-            .open_proposal(crate::storage::postgres::NewProposal {
+        Ok((
+            id.to_string(),
+            crate::storage::postgres::NewProposal {
                 document_id: document,
                 id,
                 author: author.to_string(),
@@ -446,10 +469,8 @@ impl super::Room {
                 base_frontiers: base.encode(),
                 tip_frontiers: tip.encode(),
                 branch_bytes: branch,
-            })
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?;
-        Ok(id.to_string())
+            },
+        ))
     }
 
     /// Records what the author has added to their branch.
@@ -463,13 +484,31 @@ impl super::Room {
         id: &str,
         tip: &[u8],
         branch: &[u8],
+        authority: &crate::storage::postgres::Authority,
+        request_id: uuid::Uuid,
     ) -> Result<(), ProposalError> {
-        let (catalog, _) = self.catalog_and_document()?;
+        let (catalog, document) = self.catalog_and_document()?;
         let id = uuid::Uuid::parse_str(id)
             .map_err(|_| ProposalError::Failed("that is not a proposal".into()))?;
+        let receipt = crate::storage::postgres::SemanticReceipt {
+            request_id,
+            canonical_command: serde_json::json!({
+                "type": "proposal-update", "proposal_id": id, "tip": tip, "branch": branch,
+            }),
+            stable_result: serde_json::Value::Null,
+            status: "committed".into(),
+        };
         catalog
-            .update_proposal_branch(id, tip.to_vec(), branch.to_vec())
+            .update_proposal_branch(
+                document,
+                id,
+                tip.to_vec(),
+                branch.to_vec(),
+                authority,
+                &receipt,
+            )
             .await
+            .map(|_| ())
             .map_err(|error| ProposalError::Failed(error.to_string()))
     }
 
@@ -507,7 +546,7 @@ impl super::Room {
                 .map_err(|error| ProposalError::Failed(error.to_string()))?,
         };
         let found = {
-            let state = self.state.lock().await;
+            let state = self.command_owner.state().await;
             hunks(&state.session.doc, &proposal, &stored.branch_bytes)?
         };
         // A suggestion is one hunk by construction. More than one means the
@@ -584,7 +623,10 @@ impl super::Room {
             against,
             note,
             reviewer,
+            request_id,
+            authority,
         } = decision;
+        let _owner = self.command_owner.acquire().await;
         let (catalog, document) = self.catalog_and_document()?;
         let uuid = uuid::Uuid::parse_str(id)
             .map_err(|_| ProposalError::Failed("that is not a proposal".into()))?;
@@ -608,78 +650,140 @@ impl super::Room {
                 .map_err(|error| ProposalError::Failed(error.to_string()))?,
         };
 
-        catalog
-            .decide_hunk(
-                uuid,
-                hunk as i32,
-                accepted,
-                by.to_string(),
-                against.to_vec(),
-                note,
-            )
-            .await
-            .map_err(|error| ProposalError::Failed(error.to_string()))?;
-
-        let decided = catalog
+        let mut decided = catalog
             .decisions(uuid)
             .await
             .map_err(|error| ProposalError::Failed(error.to_string()))?;
+        if let Some(existing) = decided
+            .iter_mut()
+            .find(|item| item.hunk_index == hunk as i32)
+        {
+            existing.accepted = accepted;
+            existing.decided_by = by.to_string();
+            existing.note = note.clone();
+        } else {
+            decided.push(crate::storage::postgres::StoredDecision {
+                hunk_index: hunk as i32,
+                accepted,
+                decided_by: by.to_string(),
+                note: note.clone(),
+            });
+        }
 
         // Resolve on a fork, so that a Postgres failure below leaves the room's
         // own document exactly where it was. The shared document moves only
         // after the decision is durable.
         let (candidate, total) = {
-            let state = self.state.lock().await;
+            let state = self.command_owner.state().await;
             let candidate = state.session.doc.fork();
             let total = hunks(&candidate, &proposal, &stored.branch_bytes)?.len();
             (candidate, total)
         };
-        if decided.len() < total {
-            return Ok(None);
-        }
-
-        let declined: HashSet<usize> = decided
-            .iter()
-            .filter(|d| !d.accepted)
-            .map(|d| d.hunk_index as usize)
-            .collect();
-        let update = resolve(
-            &candidate,
-            &proposal,
-            &stored.branch_bytes,
-            &declined,
-            &proposal.tip,
-            reviewer,
-        )?;
-
-        let frontier = candidate.state_frontiers().encode();
-        let state_bytes = session::encode_state(&candidate).len() as i64;
-        let previous_sequence = self.state.lock().await.session.durable_sequence;
-
-        let durable_sequence = catalog
-            .resolve_with_update(
-                uuid,
-                by.to_string(),
+        let complete = decided.len() == total;
+        let (update, frontier, state_bytes, previous_sequence) = if complete {
+            let declined: HashSet<usize> = decided
+                .iter()
+                .filter(|d| !d.accepted)
+                .map(|d| d.hunk_index as usize)
+                .collect();
+            let update = resolve(
+                &candidate,
+                &proposal,
+                &stored.branch_bytes,
+                &declined,
+                &proposal.tip,
+                reviewer,
+            )?;
+            let measured = librepaper_document_core::validate(
+                &candidate,
+                librepaper_document_core::Limits {
+                    source_bytes: self.config.max_document,
+                    encoded_history_bytes: self.config.persistence().max_encoded_snapshot_bytes,
+                    files: self.config.max_files,
+                },
+            )
+            .map_err(|error| ProposalError::Failed(format!("{error:?}")))?;
+            let previous = self.command_owner.state().await.session.durable_sequence;
+            (
+                Some(update),
+                Some(candidate.state_frontiers().encode()),
+                measured.encoded_history_bytes as i64,
+                previous,
+            )
+        } else {
+            (
+                None,
+                None,
+                0,
+                self.command_owner.state().await.session.durable_sequence,
+            )
+        };
+        let canonical = serde_json::json!({
+            "type": "DecideProposal",
+            "proposal_id": id,
+            "hunk": hunk.to_string(),
+            "accepted": accepted,
+            "tip": super::encode_update(against),
+            "note": note.clone(),
+        });
+        let receipt = crate::storage::postgres::SemanticReceipt {
+            request_id,
+            canonical_command: canonical,
+            stable_result: serde_json::Value::Null,
+            status: "committed".into(),
+        };
+        let source = update
+            .as_ref()
+            .map(|bytes| crate::storage::postgres::PreparedSource {
+                expected_update_sequence: previous_sequence,
+                update: bytes,
+                frontier: frontier.as_deref().unwrap_or_default(),
+                encoded_history_bytes: state_bytes,
+                actor_key: by,
+                source_format: None,
+                main_path: None,
+                resolve_annotation_id: None,
+                supersede_proposals: false,
+            });
+        let committed = catalog
+            .commit_proposal_decision(
                 document,
-                &update,
-                &frontier,
-                state_bytes,
+                authority,
+                crate::storage::postgres::PreparedProposalDecision {
+                    proposal_id: uuid,
+                    hunk_index: hunk as i32,
+                    accepted,
+                    decided_by: by,
+                    decided_against: against,
+                    note: note.as_deref(),
+                    total_hunks: total as i64,
+                    source,
+                },
+                &receipt,
             )
             .await
             .map_err(|error| ProposalError::Failed(error.to_string()))?;
 
-        // Durable, so the room may have it.
-        {
-            let mut state = self.state.lock().await;
-            session::apply_update(&state.session.doc, &update).map_err(ProposalError::Failed)?;
-            let metadata = LoroDoc::decode_import_blob_meta(&update, true)
-                .map_err(|error| ProposalError::Failed(error.to_string()))?;
-            state.session.durable_vector.merge(&metadata.partial_end_vv);
-            if durable_sequence == previous_sequence + 1 {
-                state.session.durable_sequence = durable_sequence;
-            }
+        if committed.replayed {
+            return Ok(None);
         }
-        Ok(Some(update))
+        if committed.resolved {
+            let update = update.unwrap_or_default();
+            let mut state = self.command_owner.state().await;
+            if !update.is_empty() {
+                session::apply_update(&state.session.doc, &update)
+                    .map_err(ProposalError::Failed)?;
+                let metadata = LoroDoc::decode_import_blob_meta(&update, true)
+                    .map_err(|error| ProposalError::Failed(error.to_string()))?;
+                state.session.durable_vector.merge(&metadata.partial_end_vv);
+            }
+            state.session.durable_sequence = committed
+                .update_sequence
+                .parse()
+                .map_err(|_| ProposalError::Failed("invalid committed sequence".into()))?;
+            return Ok(Some(update));
+        }
+        Ok(None)
     }
 }
 #[cfg(test)]

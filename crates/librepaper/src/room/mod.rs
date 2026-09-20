@@ -16,10 +16,9 @@ use std::sync::Arc;
 
 use futures_util::{stream, StreamExt};
 use loro::LoroDoc;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Digest;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 use crate::config::Configuration;
 use crate::document::history::{Checkpoint, Manifest};
@@ -47,7 +46,9 @@ mod idle_room_tests;
 pub mod locate;
 #[cfg(test)]
 mod locate_corpus_tests;
+mod message;
 pub(crate) mod outgoing;
+mod owner;
 #[cfg(test)]
 mod proposal_round_trip_tests;
 pub(crate) mod proposals;
@@ -64,125 +65,9 @@ pub use checkpoint::Attribution;
 pub use command::Command;
 pub use comments::*;
 pub use error::{FenceReason, FigureLimit, WriteError};
+pub use message::Message;
 use resident::Measured;
 use text::*;
-
-const AUTOSAVE_SECONDS: i64 = 30;
-
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
-/// One client frame. Every field is optional; `apply` decides which ones a
-/// given type needs.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct Message {
-    #[serde(default, rename = "type")]
-    pub kind: String,
-    #[serde(default)]
-    pub motivation: String,
-    #[serde(default)]
-    pub body: String,
-    #[serde(default)]
-    pub creator: String,
-    /// What was selected, as the page had it, and the words on either side of
-    /// it. This is what a client can see and all it is asked for: the range in
-    /// the source that these words came from is worked out by the server,
-    /// which is what holds the checkpoint (see [`comments`] and [`locate`]).
-    #[serde(default)]
-    pub exact: String,
-    #[serde(default)]
-    pub prefix: String,
-    #[serde(default)]
-    pub suffix: String,
-    /// Where the selection was in the rendered text. Display evidence, and a
-    /// tie-breaker of last resort; never an offset into any file.
-    #[serde(default)]
-    pub position: Option<i64>,
-    /// A remark about the document as a whole rather than about any passage
-    /// of it. It has nothing to anchor and so can never be orphaned.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub document: bool,
-    /// Optional six digit RGB highlight color.
-    #[serde(default)]
-    pub color: Option<String>,
-    /// The replacement a suggestion (a `comment` whose motivation is
-    /// `editing`) proposes for the passage its source anchor names.
-    /// `Some("")` proposes deleting it.
-    #[serde(default)]
-    pub proposed: Option<String>,
-    /// Compare-and-swap guard when refining an existing proposal.
-    #[serde(default)]
-    pub expected_proposed: Option<String>,
-    #[serde(default)]
-    pub comment_id: String,
-    #[serde(default)]
-    pub resolved: bool,
-    #[serde(default)]
-    pub temp_id: String,
-    /// A document update, base64-encoded.
-    #[serde(default)]
-    pub update: String,
-    /// A version vector, base64-encoded: what the sender already has, so the
-    /// server can answer with the rest and nothing more.
-    #[serde(default)]
-    pub vector: String,
-    /// The proposal a message is about (§5.1).
-    #[serde(default)]
-    pub proposal_id: String,
-    /// Which hunk of it, numbered across the whole proposal as §5.2 numbers
-    /// them. An index rather than an offset, because the two sides count text
-    /// differently and an index is the one name that means the same to both.
-    #[serde(default)]
-    pub hunk: usize,
-    /// Whether the reviewer took that hunk.
-    #[serde(default)]
-    pub accepted: bool,
-    /// A branch frontier, base64-encoded. `tip` on a decision is the tip the
-    /// reviewer was looking at, so a decision about a diff that has since
-    /// changed can be refused rather than applied to text nobody reviewed.
-    #[serde(default)]
-    pub base: String,
-    #[serde(default)]
-    pub tip: String,
-    /// Why, which matters most when the answer is no.
-    #[serde(default)]
-    pub note: String,
-    /// The sender's own number for this update, counted up per socket and sent
-    /// back on `doc-ack` once the update it names is durable. A browser holds
-    /// everything above the last acknowledged number and resends it after a
-    /// reconnect.
-    #[serde(default)]
-    pub seq: i64,
-    /// Framing for a bounded multipart browser update.
-    #[serde(default)]
-    pub size: usize,
-    #[serde(default)]
-    pub chunks: usize,
-    #[serde(default)]
-    pub index: usize,
-    /// Why a checkpoint was asked for: `cli`, `restore`, `label`. Only
-    /// these four arrive from outside; the rest the server decides for itself.
-    #[serde(default)]
-    pub why: String,
-    /// A caller-supplied correlation id for automation requests. It is
-    /// echoed by every result, including errors and no-ops, so a reconnecting
-    /// client never has to infer which request a frame belongs to.
-    #[serde(default)]
-    pub request_id: String,
-    /// The revision the caller inspected, kept so a comment can say which
-    /// version of the text it was written against.
-    #[serde(default)]
-    pub revision: String,
-    /// DocumentInput the rendered selection came from. The server treats this
-    /// as a compare-and-swap guard before accepting a reader annotation.
-    #[serde(default)]
-    pub bundle_id: String,
-    #[serde(default)]
-    pub revision_id: String,
-    #[serde(default)]
-    pub action: String,
-}
 
 /// Bounded on purpose. A socket that cannot keep up is disconnected rather
 /// than queued for, because an unbounded queue is a way for one slow reader to
@@ -197,11 +82,14 @@ pub use outgoing::{Outgoing, Sender};
 /// (`server::socket`) and is not kept here: nothing in this module reads a
 /// peer's address back, and carrying it would just be a second, staler copy
 /// of what the rate limiter already has.
-pub struct Peer {
+pub(super) struct Peer {
     pub tx: Sender,
     /// Whether this socket may write the document. A reader receives updates
     /// and sends none.
     pub may_edit: bool,
+    /// Source broadcasts start only after this peer's captured baseline has
+    /// been queued. Earlier commits are already represented by that baseline.
+    pub source_ready: bool,
     /// The highest `seq` this socket has sent, and the highest that is durable.
     pub sent: i64,
     pub acked: i64,
@@ -218,7 +106,7 @@ pub struct Peer {
 /// The live document, as the server holds it. This is the document, not a
 /// draft of it: it is persisted, it outlives every socket, and it is seeded
 /// once from the source the document was created with.
-pub struct Session {
+pub(super) struct Session {
     pub doc: LoroDoc,
     /// Highest PostgreSQL collaboration sequence merged into this room.
     pub durable_sequence: i64,
@@ -266,6 +154,7 @@ pub struct Session {
 }
 
 impl Session {
+    #[cfg(test)]
     fn merge_durable(&mut self, bytes: &[u8]) -> Result<(), String> {
         let metadata = LoroDoc::decode_import_blob_meta(bytes, true).map_err(|e| e.to_string())?;
         let before = self.doc.oplog_vv();
@@ -277,6 +166,7 @@ impl Session {
         Ok(())
     }
 
+    #[cfg(test)]
     fn mark_dirty(&mut self, at: i64) {
         if !self.dirty {
             self.dirty_since = at;
@@ -311,13 +201,12 @@ pub struct HistoryDurability {
     pub live_save_pending: bool,
 }
 
-pub struct RoomState {
+pub(super) struct RoomState {
     pub seq: i64,
     /// Wrapped so the admission estimate can cache their serialized size:
     /// reading them is unchanged, and any mutable borrow drops the cached
     /// measurement. See `resident::Measured`.
     pub comments: Measured<Vec<Comment>>,
-    pending_attachments: std::collections::HashSet<String>,
     pub sockets: HashMap<u64, Peer>,
     /// "address:hour" to count.
     pub rate: HashMap<String, i64>,
@@ -347,6 +236,9 @@ pub struct Room {
     /// companion to that flag and never a substitute for the durable
     /// catalogue generation checks a write still makes.
     fence_reason: std::sync::atomic::AtomicU8,
+    /// Registry-issued handles currently executing or held by adapters.
+    /// Eviction uses this named lifecycle count rather than Arc ownership.
+    active_requests: std::sync::atomic::AtomicUsize,
     /// The index, for the half of a checkpoint that is bookkeeping: the size a
     /// document's history counts against its owner's quota, and the digest of
     /// the newest checkpoint. Set once, after the store exists, because the
@@ -354,49 +246,55 @@ pub struct Room {
     store: Arc<std::sync::OnceLock<Arc<crate::document::store::Store>>>,
     /// The authoritative local catalogue. Unattached rooms are read-only.
     catalog: Arc<std::sync::OnceLock<Arc<crate::storage::postgres::PostgresCatalog>>>,
-    /// Serializes session snapshots and conditional writes without blocking edits.
-    session_write: Mutex<()>,
-    /// Serializes mutations that must remain one bundle operation from
-    /// live CRDT apply through checkpoint/commit (or rollback).  Socket edits
-    /// and route-driven CRDT writes use the same gate, so a failed bundle
-    /// cannot restore over an editor update that arrived halfway through it.
-    pub(crate) bundle_write: Mutex<()>,
-    /// Prevents an ordinary checkpoint from snapshotting a bundle's
-    /// transient CRDT state. Ordinary checkpoints hold a read permit while
-    /// doing their normal storage work; a bundle holds the write permit
-    /// for its mutation and compensating rollback.
-    pub(crate) bundle_checkpoint: RwLock<()>,
+    /// The one bounded task that admits semantic document commands.
+    command_owner: owner::DocumentOwner,
     /// Serialize asset deletion with uploads and CRDT asset references.
     assets_write: Mutex<()>,
     /// Bytes reserved by uploads whose blob write has not registered its
     /// metadata yet. The count lets same-digest uploads share one quota claim
     /// while each cancelled future releases its own claim.
     asset_uploads: std::sync::Mutex<HashMap<String, (i64, usize)>>,
-    /// Keep checkpoint snapshots and their commits in the same order.
-    checkpoint_write: Mutex<()>,
-    /// A restore spans several storage reads and two checkpoints. Serializing
-    /// that whole operation keeps a later restore from choosing the first
-    /// restore's intermediate state as its merge base, while ordinary edits
-    /// continue to use the session lock independently.
-    pub(crate) restore_write: Mutex<()>,
-    /// Manifest writers serialize independently of edits and session persistence.
-    manifest_write: Mutex<()>,
-    /// Serializes writers of the room's comment list.
-    ///
-    /// Serializes preparation and installation around catalog writes.
-    ///
-    /// It is deliberately not `restore_write`: source edits and socket traffic
-    /// never take it, and a comment should not wait behind a whole restore.
-    /// It is also what `Room::save` needs and did not have -- the seeding
-    /// command wrote the same object with no gate at all.
-    comment_write: Mutex<()>,
-    pub state: Mutex<RoomState>,
+}
+
+pub struct RoomHandle {
+    room: Arc<Room>,
+}
+
+impl Clone for RoomHandle {
+    fn clone(&self) -> Self {
+        self.room.active_requests.fetch_add(1, Ordering::Relaxed);
+        Self {
+            room: self.room.clone(),
+        }
+    }
+}
+
+impl Drop for RoomHandle {
+    fn drop(&mut self) {
+        self.room.active_requests.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl std::ops::Deref for RoomHandle {
+    type Target = Room;
+
+    fn deref(&self) -> &Self::Target {
+        &self.room
+    }
+}
+
+impl RoomHandle {
+    fn new(room: Arc<Room>) -> Self {
+        room.active_requests.fetch_add(1, Ordering::Relaxed);
+        Self { room }
+    }
 }
 
 /// What a document update did, which is what the socket handler has to act on.
+#[derive(Debug)]
 pub enum Applied {
     /// Apply it and relay it to everyone else.
-    Relay,
+    Relay(Vec<u8>),
     /// The socket may not write here, or sent nothing worth relaying.
     Ignored,
     /// Close the socket, with this refusal. Either it wrote past one of the
@@ -472,7 +370,8 @@ impl RoomSet {
     pub async fn erase_author_from_caches(&self, account_id: &str) {
         let rooms: Vec<Arc<Room>> = self.rooms.lock().await.values().cloned().collect();
         for room in rooms {
-            let mut state = room.state.lock().await;
+            let _command = room.command_owner.acquire().await;
+            let mut state = room.command_owner.state().await;
             state
                 .comments
                 .retain(|comment| comment.author != account_id);
@@ -522,7 +421,7 @@ impl RoomSet {
     /// Explicit production admission. Unlike the compatibility `get` helper,
     /// this never constructs a room when either hard resident limit is full;
     /// callers can return a retryable response instead of evicting dirty work.
-    pub async fn try_get(&self, slug: &str) -> Result<Arc<Room>, RoomAdmissionError> {
+    pub async fn try_get(&self, slug: &str) -> Result<RoomHandle, RoomAdmissionError> {
         let cached = { self.rooms.lock().await.get(slug).cloned() };
         if let Some(existing) = cached {
             if existing.read_only()
@@ -531,7 +430,7 @@ impl RoomSet {
             {
                 return Err(RoomAdmissionError::UnreadableState);
             }
-            return Ok(existing);
+            return Ok(RoomHandle::new(existing));
         }
         // Serialize capacity decisions without retaining the registry during
         // estimates. Cached lookups do not take admission and remain available
@@ -546,7 +445,7 @@ impl RoomSet {
                 {
                     return Err(RoomAdmissionError::UnreadableState);
                 }
-                return Ok(existing);
+                return Ok(RoomHandle::new(existing));
             }
             let (existing, loading_count) = {
                 let mut loading = self.loading.lock().await;
@@ -587,7 +486,7 @@ impl RoomSet {
                 loading.entry(slug.to_string()).or_insert(slot).clone()
             }
         };
-        let room = self.get(slug).await;
+        let room = self.load(slug).await;
         if room.read_only()
             && room.fence_reason.load(Ordering::Relaxed) == FenceReason::AgentRecoveryPending as u8
         {
@@ -595,7 +494,7 @@ impl RoomSet {
         }
         drop(slot);
         if self.rooms.lock().await.contains_key(slug) {
-            return Ok(room);
+            return Ok(RoomHandle::new(room));
         }
         let count = self.rooms.lock().await.len();
         Err(RoomAdmissionError::AtCapacity {
@@ -604,7 +503,7 @@ impl RoomSet {
         })
     }
 
-    pub async fn get(&self, slug: &str) -> Arc<Room> {
+    async fn load(&self, slug: &str) -> Arc<Room> {
         if let Some(existing) = self.rooms.lock().await.get(slug) {
             return existing.clone();
         }
@@ -684,21 +583,12 @@ impl RoomSet {
             } else {
                 FenceReason::HeldElsewhere as u8
             }),
+            active_requests: std::sync::atomic::AtomicUsize::new(0),
             store: self.store.clone(),
             catalog: self.catalog.clone(),
-            session_write: Mutex::new(()),
-            bundle_write: Mutex::new(()),
-            bundle_checkpoint: RwLock::new(()),
-            assets_write: Mutex::new(()),
-            asset_uploads: std::sync::Mutex::new(HashMap::new()),
-            checkpoint_write: Mutex::new(()),
-            restore_write: Mutex::new(()),
-            manifest_write: Mutex::new(()),
-            comment_write: Mutex::new(()),
-            state: Mutex::new(RoomState {
+            command_owner: owner::DocumentOwner::spawn(RoomState {
                 seq: 0,
                 comments: Measured::new(Vec::new()),
-                pending_attachments: Default::default(),
                 sockets: HashMap::new(),
                 rate: HashMap::new(),
                 session: Session {
@@ -720,6 +610,8 @@ impl RoomSet {
                 manifest: Measured::new(Manifest::default()),
                 touched: now_unix(),
             }),
+            assets_write: Mutex::new(()),
+            asset_uploads: std::sync::Mutex::new(HashMap::new()),
         });
         room.load().await;
         let room_bytes = room.resident_bytes().await;
@@ -783,20 +675,14 @@ impl RoomSet {
         }
         let room = match existing {
             Some(room) => room,
-            None => self.get(slug).await,
+            None => self.load(slug).await,
         };
-        // Wait for session/checkpoint writers before deleting their objects.
-        // Fencing the retained room also prevents queued writers resurrecting it.
-        // Restore/accept paths take restore_write before checkpoint_write;
-        // acquire the same order here so fencing cannot deadlock with a
-        // restore that is already in flight.
+        // Fencing prevents queued work from resurrecting the room; acquiring
+        // its command owner waits for the one admitted mutation, if any.
         room.fence(FenceReason::Deleted);
-        let _restore_writer = room.restore_write.lock().await;
-        let _checkpoint_writer = room.checkpoint_write.lock().await;
-        let _manifest_writer = room.manifest_write.lock().await;
-        let _session_writer = room.session_write.lock().await;
+        let _command = room.command_owner.acquire().await;
         {
-            let mut state = room.state.lock().await;
+            let mut state = room.command_owner.state().await;
             state.comments.clear();
             state.seq = 0;
             for peer in state.sockets.values() {
@@ -819,16 +705,8 @@ impl RoomSet {
                 .map(|(slug, room)| (slug.clone(), room.clone()))
                 .collect()
         };
-        // Bound storage concurrency while letting other rooms save during a slow write.
         let idle: Vec<String> = stream::iter(open)
-            .map(|(slug, room)| async move {
-                if let Err(error) = room.merge_remote_updates().await {
-                    eprintln!(
-                        "warning: could not merge remote collaboration updates for {slug}: {error}"
-                    );
-                }
-                room.tick().await.then_some(slug)
-            })
+            .map(|(slug, room)| async move { room.tick().await.then_some(slug) })
             .buffer_unordered(4)
             .filter_map(|slug| async move { slug })
             .collect()
@@ -868,17 +746,17 @@ impl RoomSet {
 
     /// Revalidate under the registry before removal. A nonblocking state lock
     /// avoids a state-to-registry wait cycle; busy candidates can wait for the
-    /// next admission/sweep. Exactly two owners means the map and this scan's
-    /// candidate, with no active request or checkpoint retaining the instance.
+    /// next admission/sweep. Registry-issued handles explicitly account for
+    /// active requests, independent of incidental Arc clones used by scans.
     async fn remove_idle(&self, slug: &str, candidate: &Arc<Room>, stale_at: Option<i64>) -> bool {
         let mut rooms = self.rooms.lock().await;
         let Some(room) = rooms.get(slug) else {
             return false;
         };
-        if !Arc::ptr_eq(room, candidate) || Arc::strong_count(room) != 2 {
+        if !Arc::ptr_eq(room, candidate) || candidate.active_requests.load(Ordering::Acquire) != 0 {
             return false;
         }
-        let Ok(state) = candidate.state.try_lock() else {
+        let Some(state) = candidate.command_owner.try_state() else {
             return false;
         };
         if !state.sockets.is_empty()
@@ -907,7 +785,7 @@ impl RoomSet {
         for (slug, room) in snapshot {
             let size = room.resident_bytes().await;
             bytes = bytes.saturating_add(size);
-            let touched = room.state.lock().await.touched;
+            let touched = room.command_owner.state().await.touched;
             candidates.push((touched, slug, size, room));
         }
         candidates.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
@@ -921,59 +799,177 @@ impl RoomSet {
         }
     }
 
-    /// Writes out every open room, for a server on its way down.
-    pub async fn flush(&self) {
-        let open: Vec<Arc<Room>> = self.rooms.lock().await.values().cloned().collect();
-        for room in open {
-            if let Err(err) = room.persist().await {
-                eprintln!(
-                    "warning: could not write the session for {}: {err}",
-                    room.slug
-                );
-            }
-        }
-    }
+    /// Source commands are committed before installation, so shutdown has no
+    /// collaboration write-behind queue to drain.
+    pub async fn flush(&self) {}
 }
 
 impl Room {
-    /// Apply a server edit only when its complete CRDT state can be saved.
-    /// Callers hold room state throughout this synchronous operation. Reusing
-    /// the candidate's update (rather than running the edit twice) preserves
-    /// generated file IDs and makes the measured change the committed change.
-    pub(crate) fn checked_edit<T, E>(
+    /// Prepare a server-originated edit on a fork, durably commit the exact
+    /// resulting delta, and only then install it in the live document.
+    #[cfg(test)]
+    pub(crate) async fn commit_edit<T, E>(
         &self,
-        doc: &LoroDoc,
-        edit: impl FnOnce(&LoroDoc) -> Result<T, E>,
-    ) -> Result<T, E>
+        authority: &crate::storage::postgres::Authority,
+        by: Attribution,
+        supersede_proposals: bool,
+        edit: impl FnOnce(
+            &LoroDoc,
+            crate::document::history::Tree,
+            HashMap<String, String>,
+        ) -> Result<T, E>,
+    ) -> Result<(T, Vec<u8>), E>
     where
         E: From<WriteError>,
     {
+        self.commit_edit_with_identity(authority, by, supersede_proposals, None, edit)
+            .await
+    }
+
+    pub(crate) async fn commit_edit_with_identity<T, E>(
+        &self,
+        authority: &crate::storage::postgres::Authority,
+        by: Attribution,
+        supersede_proposals: bool,
+        source_format: Option<&str>,
+        edit: impl FnOnce(
+            &LoroDoc,
+            crate::document::history::Tree,
+            HashMap<String, String>,
+        ) -> Result<T, E>,
+    ) -> Result<(T, Vec<u8>), E>
+    where
+        E: From<WriteError>,
+    {
+        let command = self.command_owner.acquire().await;
+        self.commit_edit_owned(
+            &command,
+            authority,
+            by,
+            CommitEditOptions {
+                supersede_proposals,
+                source_format,
+                ..CommitEditOptions::default()
+            },
+            edit,
+        )
+        .await
+        .map(|(value, update, _)| (value, update))
+    }
+
+    pub(super) async fn commit_edit_owned<T, E>(
+        &self,
+        _command: &owner::CommandLease,
+        authority: &crate::storage::postgres::Authority,
+        by: Attribution,
+        options: CommitEditOptions<'_>,
+        edit: impl FnOnce(
+            &LoroDoc,
+            crate::document::history::Tree,
+            HashMap<String, String>,
+        ) -> Result<T, E>,
+    ) -> Result<(T, Vec<u8>, bool), E>
+    where
+        E: From<WriteError>,
+    {
+        let _writer = self.assets_write.lock().await;
         let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
-        // A fork already carries the document's history, so the edit is tried on
-        // one directly. What stood here encoded the whole document and imported
-        // it back into the fork -- a full-history encode on every edit, to
-        // arrive at the state the fork was already in. It also computed a
-        // staging bound and threw it away, which is what was left of the
-        // speculative sizing this no longer does (§9).
-        let candidate = doc.fork();
-        let value = edit(&candidate)?;
-        let bytes = session::encode_state(&candidate).len();
-        if bytes > ceiling {
-            return Err(E::from(WriteError::Size(
-                crate::config::SizeRefusal::Encoded { bytes, ceiling },
-            )));
+        let (value, update, frontier, bytes, expected_sequence, main_path) = {
+            let state = self.command_owner.state().await;
+            let candidate = state.session.doc.fork();
+            let (tree, bodies) = tree_of(&candidate, &state.session.asset_sizes);
+            let value = edit(&candidate, tree, bodies)?;
+            session::repair(&candidate, &self.config.paths()).map_err(|error| {
+                E::from(WriteError::Invalid(format!(
+                    "candidate paths cannot be normalized safely: {error:?}"
+                )))
+            })?;
+            let measured = librepaper_document_core::validate(
+                &candidate,
+                librepaper_document_core::Limits {
+                    source_bytes: self.config.max_document,
+                    encoded_history_bytes: ceiling,
+                    files: self.config.max_files,
+                },
+            )
+            .map_err(|error| E::from(validation_write_error(error)))?;
+            let update =
+                session::encode_diff(&candidate, &session::encode_vector(&state.session.doc))
+                    .map_err(|error| E::from(WriteError::Storage(error)))?;
+            if update.is_empty() {
+                return Ok((value, update, false));
+            }
+            (
+                value,
+                update,
+                candidate.state_frontiers().encode(),
+                measured.encoded_history_bytes as i64,
+                state.session.durable_sequence,
+                session::main_path(&candidate),
+            )
+        };
+        let catalog = self
+            .catalog
+            .get()
+            .ok_or_else(|| E::from(WriteError::Storage("PostgreSQL catalog required".into())))?;
+        let document_id = uuid::Uuid::parse_str(&self.storage_id).map_err(|_| {
+            E::from(WriteError::Storage(
+                "room has an invalid document id".into(),
+            ))
+        })?;
+        let committed = catalog
+            .commit_source(
+                document_id,
+                authority,
+                crate::storage::postgres::PreparedSource {
+                    expected_update_sequence: expected_sequence,
+                    update: &update,
+                    frontier: &frontier,
+                    encoded_history_bytes: bytes,
+                    actor_key: by.account_id().unwrap_or_else(|| by.display()),
+                    source_format: options.source_format,
+                    main_path: (!main_path.is_empty()).then_some(main_path.as_str()),
+                    resolve_annotation_id: options.resolve_annotation_id,
+                    supersede_proposals: options.supersede_proposals,
+                },
+                options.receipt,
+            )
+            .await
+            .map_err(|error| E::from(WriteError::from(error)))?;
+        let mut state = self.command_owner.state().await;
+        let committed_sequence = committed
+            .update_sequence
+            .parse::<i64>()
+            .unwrap_or(expected_sequence + 1);
+        if committed.replayed && state.session.durable_sequence >= committed_sequence {
+            return Ok((value, Vec::new(), true));
         }
-        let update = session::encode_diff(&candidate, &session::encode_vector(doc))
+        session::apply_update(&state.session.doc, &update)
             .map_err(|error| E::from(WriteError::Storage(error)))?;
-        session::apply_update(doc, &update).map_err(|error| E::from(WriteError::Storage(error)))?;
-        Ok(value)
+        let metadata = LoroDoc::decode_import_blob_meta(&update, true)
+            .map_err(|error| E::from(WriteError::Storage(error.to_string())))?;
+        state.session.durable_vector.merge(&metadata.partial_end_vv);
+        state.session.durable_sequence = committed_sequence;
+        state.session.durable_state_bytes = bytes;
+        if let Some(format) = options.source_format {
+            state.session.format = format.to_string();
+        }
+        state.session.dirty = false;
+        state.session.dirty_since = 0;
+        state.session.last_persist_at = now_unix();
+        state.session.generation += 1;
+        state.session.updated_at = now_unix();
+        state.session.by = by;
+        drop(state);
+        self.reattach_comments().await;
+        Ok((value, update, committed.replayed))
     }
 
     /// Whether this room's live text has reached durable storage. `dirty` is
     /// cleared only after the session snapshot has been accepted by storage,
     /// so this never reports an update sequence as proof of a write.
     pub async fn history_durability(&self) -> HistoryDurability {
-        let state = self.state.lock().await;
+        let state = self.command_owner.state().await;
         let reason = FenceReason::from_stored(self.fence_reason.load(Ordering::Relaxed));
         HistoryDurability {
             known: !self.read_only.load(Ordering::Relaxed)
@@ -986,7 +982,7 @@ impl Room {
         if let Some(catalog) = self.catalog.as_ref().get() {
             match load_catalog_comments(catalog, &self.slug).await {
                 Ok((seq, comments)) => {
-                    let mut state = self.state.lock().await;
+                    let mut state = self.command_owner.state().await;
                     state.seq = seq;
                     *state.comments = comments;
                 }
@@ -1003,7 +999,7 @@ impl Room {
         }
         self.load_session().await;
         let mut comments = {
-            let mut state = self.state.lock().await;
+            let mut state = self.command_owner.state().await;
             std::mem::take(&mut *state.comments)
         };
         if let Err(error) = self.hydrate_proposed_comments(&mut comments).await {
@@ -1014,7 +1010,7 @@ impl Room {
             self.fence(FenceReason::UnreadableState);
         }
         {
-            let mut state = self.state.lock().await;
+            let mut state = self.command_owner.state().await;
             *state.comments = comments;
         }
         // Comments come back from the catalogue with whatever attachment was
@@ -1103,7 +1099,7 @@ impl Room {
         } else {
             None
         };
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         *state.manifest = manifest;
         state.session.format = format;
         let candidate = session::new_doc();
@@ -1113,6 +1109,39 @@ impl Room {
         }
         for update in recovered.updates {
             applied |= session::apply_update(&candidate, &update.update_bytes).is_ok();
+        }
+        if applied {
+            match librepaper_document_core::schema_version(&candidate) {
+                Ok(_) => {}
+                Err(
+                    error @ librepaper_document_core::ValidationError::UnsupportedSchemaVersion {
+                        ..
+                    },
+                ) => {
+                    eprintln!(
+                        "warning: document {} requires an upgrade: {error:?}",
+                        self.slug
+                    );
+                    // Keep the exact graph available to read/export, but do
+                    // not run legacy startup repair against a future schema.
+                    state.session.durable_vector = candidate.oplog_vv();
+                    state.session.doc = candidate;
+                    state.session.durable_sequence = recovered.update_sequence;
+                    state.session.dirty = false;
+                    drop(state);
+                    self.fence(FenceReason::UnsupportedSchema);
+                    return;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: document {} has an invalid schema marker: {error:?}",
+                        self.slug
+                    );
+                    drop(state);
+                    self.fence(FenceReason::UnreadableState);
+                    return;
+                }
+            }
         }
         if applied {
             state.session.durable_vector = candidate.oplog_vv();
@@ -1159,10 +1188,112 @@ impl Room {
         } else if let Some((project, _)) = stored_seed.as_ref() {
             state.session.format = project.archive.source_format.clone();
             hydrate_project(&state.session.doc, &project.archive, false);
-            state.session.dirty = false;
+            // A creation archive predating collaboration history is seed
+            // input, not authoritative live state. Commit its exact Loro
+            // graph through the fenced source transaction before publishing
+            // this room, so the first checkpoint can name a real revision.
+            state.session.dirty = true;
         }
         state.session.last_persist_at = now_unix();
+        let repair = state.session.dirty.then(|| {
+            let update =
+                session::encode_diff(&state.session.doc, &state.session.durable_vector.encode());
+            let frontier = state.session.doc.state_frontiers().encode();
+            let encoded_bytes = session::encode_state(&state.session.doc).len() as i64;
+            (
+                update,
+                frontier,
+                encoded_bytes,
+                state.session.durable_sequence,
+            )
+        });
         drop(state);
+        if let Some((update, frontier, encoded_bytes, expected_sequence)) = repair {
+            let update = match update {
+                Ok(update) if !update.is_empty() => update,
+                Ok(_) => {
+                    self.fence(FenceReason::UnreadableState);
+                    return;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not encode startup repair for {}: {error}",
+                        self.slug
+                    );
+                    self.fence(FenceReason::UnreadableState);
+                    return;
+                }
+            };
+            let document = match catalog.document(document_id).await {
+                Ok(Some(document)) => document,
+                Ok(None) => {
+                    self.fence(FenceReason::Deleted);
+                    return;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not authorize startup repair for {}: {error}",
+                        self.slug
+                    );
+                    self.fence(FenceReason::UnreadableState);
+                    return;
+                }
+            };
+            let authority = crate::storage::postgres::Authority {
+                principal_key: format!("startup-repair:{}", document.owner_id),
+                account_id: Some(document.owner_id),
+                link_hash: None,
+            };
+            let committed = catalog
+                .commit_source(
+                    document_id,
+                    &authority,
+                    crate::storage::postgres::PreparedSource {
+                        expected_update_sequence: expected_sequence,
+                        update: &update,
+                        frontier: &frontier,
+                        encoded_history_bytes: encoded_bytes,
+                        actor_key: "system:startup-repair",
+                        source_format: None,
+                        main_path: None,
+                        resolve_annotation_id: None,
+                        supersede_proposals: false,
+                    },
+                    None,
+                )
+                .await;
+            let committed = match committed {
+                Ok(committed) => committed,
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not commit startup repair for {}: {error}",
+                        self.slug
+                    );
+                    self.fence(FenceReason::UnreadableState);
+                    return;
+                }
+            };
+            let metadata = match LoroDoc::decode_import_blob_meta(&update, true) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    eprintln!(
+                        "warning: committed startup repair is unreadable for {}: {error}",
+                        self.slug
+                    );
+                    self.fence(FenceReason::UnreadableState);
+                    return;
+                }
+            };
+            let mut state = self.command_owner.state().await;
+            state.session.durable_vector.merge(&metadata.partial_end_vv);
+            state.session.durable_sequence = committed
+                .update_sequence
+                .parse()
+                .unwrap_or(expected_sequence + 1);
+            state.session.durable_state_bytes = encoded_bytes;
+            state.session.dirty = false;
+            state.session.dirty_since = 0;
+        }
         self.load_asset_sizes().await;
     }
 
@@ -1178,7 +1309,7 @@ impl Room {
             return;
         };
         let digests = {
-            let state = self.state.lock().await;
+            let state = self.command_owner.state().await;
             session::assets_of(&state.session.doc)
                 .into_values()
                 .collect::<Vec<_>>()
@@ -1203,7 +1334,7 @@ impl Room {
             self.fence(FenceReason::UnreadableState);
             return;
         }
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         state.session.asset_sizes.extend(sizes);
     }
 
@@ -1278,7 +1409,7 @@ impl Room {
     /// wins: a room fenced because its state could not be read stays that way
     /// even if a later write also fails, because that is the reason an
     /// operator has to act on.
-    fn fence(&self, reason: FenceReason) {
+    pub(crate) fn fence(&self, reason: FenceReason) {
         // Deletion is the exception: it is final and outranks whatever
         // stopped writes first, because "this document is gone" is what its
         // caller has to be told.
@@ -1303,7 +1434,7 @@ impl Room {
     /// The per-caller view of the whole thread: the hello frame and the REST
     /// listing both need this, since deletable differs by who is asking.
     pub async fn snapshot_for(&self, author: &str, is_owner: bool) -> Vec<CommentView> {
-        let state = self.state.lock().await;
+        let state = self.command_owner.state().await;
         comment_views(&state.comments, author, is_owner)
     }
 
@@ -1321,8 +1452,8 @@ impl Room {
         std::collections::BTreeMap<String, String>,
         Vec<CommentView>,
     ) {
-        let _bundle_writer = self.bundle_write.lock().await;
-        let state = self.state.lock().await;
+        let _command = self.command_owner.acquire().await;
+        let state = self.command_owner.state().await;
         let source = session::text_of(&state.session.doc);
         let format = state.session.format.clone();
         let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
@@ -1343,7 +1474,7 @@ impl Room {
         std::collections::BTreeMap<String, String>,
         String,
     ) {
-        let state = self.state.lock().await;
+        let state = self.command_owner.state().await;
         let format = if state.session.format.is_empty() {
             if fallback_format.is_empty() {
                 "html"
@@ -1362,7 +1493,7 @@ impl Room {
 
     /// Whether an immutable asset digest is referenced by the current tree.
     pub async fn references_asset(&self, digest: &str) -> bool {
-        let state = self.state.lock().await;
+        let state = self.command_owner.state().await;
         session::assets_of(&state.session.doc)
             .values()
             .any(|sha| sha == digest)
@@ -1370,20 +1501,21 @@ impl Room {
 
     /// (total, open)
     pub async fn counts(&self) -> (usize, usize) {
-        let state = self.state.lock().await;
+        let state = self.command_owner.state().await;
         let open = state.comments.iter().filter(|item| !item.resolved).count();
         (state.comments.len(), open)
     }
 
     pub async fn attach<T: Into<Sender>>(&self, id: u64, tx: T, may_edit: bool) {
         let tx = tx.into();
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         state.touched = now_unix();
         state.sockets.insert(
             id,
             Peer {
                 tx,
                 may_edit,
+                source_ready: false,
                 sent: 0,
                 acked: 0,
                 minute: 0,
@@ -1395,21 +1527,23 @@ impl Room {
     }
 
     pub async fn detach(&self, id: u64) {
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         state.sockets.remove(&id);
         state.touched = now_unix();
     }
 
-    /// How many editors are still connected, which is what says whether the
-    /// last one has just left.
-    pub async fn editors_connected(&self) -> usize {
-        self.state
-            .lock()
-            .await
-            .sockets
-            .values()
-            .filter(|peer| peer.may_edit)
-            .count()
+    pub(crate) async fn has_peer(&self, id: u64) -> bool {
+        self.command_owner.state().await.sockets.contains_key(&id)
+    }
+
+    pub(crate) async fn current_tree_and_bodies(
+        &self,
+    ) -> (
+        crate::document::history::Tree,
+        std::collections::HashMap<String, String>,
+    ) {
+        let state = self.command_owner.state().await;
+        tree_of(&state.session.doc, &state.session.asset_sizes)
     }
 
     pub async fn broadcast(&self, payload: &Value) {
@@ -1419,7 +1553,7 @@ impl Room {
     /// A deliberately small per-socket ceiling for live, non-durable chat.
     pub async fn chat_allowed(&self, socket: u64) -> bool {
         let minute = now_unix() / 60;
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         let Some(peer) = state.sockets.get_mut(&socket) else {
             return false;
         };
@@ -1438,7 +1572,7 @@ impl Room {
     /// others, and the one that sent it already has it.
     pub async fn broadcast_except(&self, skip: Option<u64>, payload: &Value) {
         let message = payload.to_string();
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         send_to(&mut state, skip, Outgoing::shared_text(message), |_| true);
     }
 
@@ -1447,9 +1581,10 @@ impl Room {
     /// Document updates from the editable project.
     pub async fn broadcast_editors_except(&self, skip: Option<u64>, payload: &Value) {
         let message = payload.to_string();
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
+        let source = payload.get("type").and_then(Value::as_str) == Some("doc-update");
         send_to(&mut state, skip, Outgoing::shared_text(message), |peer| {
-            peer.may_edit
+            peer.may_edit && (!source || peer.source_ready)
         });
         if payload.get("type").and_then(Value::as_str) == Some("doc-update") {
             let changed =
@@ -1466,7 +1601,7 @@ impl Room {
     /// one has already gone out, so neither kind of peer is sent twice.
     pub async fn broadcast_readers_except(&self, skip: Option<u64>, payload: &Value) {
         let message = payload.to_string();
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         send_to(&mut state, skip, Outgoing::shared_text(message), |peer| {
             !peer.may_edit
         });
@@ -1489,29 +1624,24 @@ impl Room {
     /// The source as it stands, which is what a checkpoint is made of and what
     /// the command line reads.
     pub async fn source(&self) -> String {
-        let _bundle_writer = self.bundle_write.lock().await;
-        let state = self.state.lock().await;
+        let _command = self.command_owner.acquire().await;
+        let state = self.command_owner.state().await;
         session::text_of(&state.session.doc)
     }
 
     pub async fn format(&self) -> String {
-        let _bundle_writer = self.bundle_write.lock().await;
-        self.state.lock().await.session.format.clone()
-    }
-
-    /// What a socket is answered with on `y-open`: everything the document
-    /// holds, or -- when the socket says what it already has -- only the rest.
-    /// The second result is how many people are here.
-    pub async fn open_state(&self, vector: Option<&[u8]>) -> (Vec<u8>, usize) {
-        let (update, count, _) = self.open_state_with_vector(vector).await;
-        (update, count)
+        let _command = self.command_owner.acquire().await;
+        self.command_owner.state().await.session.format.clone()
     }
 
     /// The response and server vector describe the same locked snapshot.
     /// Browsers use this vector to upload only state the server is missing.
-    pub async fn open_state_with_vector(&self, vector: Option<&[u8]>) -> (Vec<u8>, usize, Vec<u8>) {
-        let _bundle_writer = self.bundle_write.lock().await;
-        let state = self.state.lock().await;
+    pub(crate) async fn begin_open_state(
+        &self,
+        vector: Option<&[u8]>,
+    ) -> (Vec<u8>, usize, Vec<u8>, i64, owner::CommandLease) {
+        let command = self.command_owner.acquire().await;
+        let state = self.command_owner.state().await;
         let update = match vector {
             Some(raw) => session::encode_diff(&state.session.doc, raw)
                 .unwrap_or_else(|_| session::encode_state(&state.session.doc)),
@@ -1521,7 +1651,25 @@ impl Room {
             update,
             state.sockets.len(),
             session::encode_vector(&state.session.doc),
+            state.session.durable_sequence,
+            command,
         )
+    }
+
+    /// Complete the source portion of a handshake while its command lease is
+    /// still held. The baseline was queued before this flag changes, and a
+    /// later source commit cannot enter the owner until the lease is dropped.
+    pub(crate) async fn activate_source(
+        &self,
+        _command: &owner::CommandLease,
+        socket: u64,
+    ) -> bool {
+        let mut state = self.command_owner.state().await;
+        let Some(peer) = state.sockets.get_mut(&socket) else {
+            return false;
+        };
+        peer.source_ready = true;
+        true
     }
 
     /// Applies one update from an editor. The document is the server's, so an
@@ -1543,9 +1691,10 @@ impl Room {
         update: &[u8],
         seq: i64,
         by: impl Into<Attribution>,
+        authority: &crate::storage::postgres::Authority,
     ) -> Applied {
         let by = by.into();
-        let _bundle_writer = self.bundle_write.lock().await;
+        let _command = self.command_owner.acquire().await;
         if self.read_only() {
             // A fenced room cannot persist changes. Applying and relaying
             // the update anyway would show every other peer a document this
@@ -1556,12 +1705,12 @@ impl Room {
             return Applied::Refuse(self.fenced());
         }
         let _assets_writer = self.assets_write.lock().await;
-        let mut state = self.state.lock().await;
-        if self.read_only() {
-            return Applied::Refuse(self.fenced());
-        }
         let now = now_unix();
-        {
+        let (candidate_update, frontier, encoded_size, expected_sequence, main_path, source_format) = {
+            let mut state = self.command_owner.state().await;
+            if self.read_only() {
+                return Applied::Refuse(self.fenced());
+            }
             let minute = now / 60;
             let Some(peer) = state.sockets.get_mut(&socket) else {
                 return Applied::Ignored;
@@ -1577,11 +1726,7 @@ impl Room {
             if peer.updates > self.config.session.updates_per_minute {
                 return Applied::Refuse(WriteError::RateLimited);
             }
-        }
-        // Validate the candidate while holding room state. Durable quota is
-        // charged when an immutable version or asset is committed; live CRDT
-        // updates do not reserve estimated physical bytes.
-        {
+
             let decoded = match session::decode_update(update) {
                 Ok(decoded) => decoded,
                 Err(_) => return Applied::Ignored,
@@ -1607,165 +1752,189 @@ impl Room {
                 session::DecodedAdmission::Fits(decoded) => decoded,
             };
             drop(decoded);
-        }
-        // Read before the update is applied, so a change to the shared
-        // main-file pointer can be told from a document that already opened
-        // with this main file.
-        let main_before = session::main_path(&state.session.doc);
-        // Repair may add paths or main-file metadata. Admit the repaired
-        // state too, and apply its exact update, so a correction cannot push
-        // an otherwise admissible browser edit over the persistence ceiling.
-        let applied = self.checked_edit(&state.session.doc, |candidate| {
-            session::apply_update(candidate, update).map_err(WriteError::Invalid)?;
-            let before = session::encode_vector(candidate);
-            let repaired = session::repair(candidate, &self.config.paths());
-            if repaired.is_empty() {
-                Ok(None)
-            } else {
-                session::encode_diff(candidate, &before)
-                    .map(Some)
-                    .map_err(WriteError::Invalid)
+
+            // Prepare on a fork. Neither validation nor a failed transaction
+            // can change the installed authoritative document (I3, I12).
+            let main_before = session::main_path(&state.session.doc);
+            let before = session::encode_vector(&state.session.doc);
+            let candidate = state.session.doc.fork();
+            if session::apply_update(&candidate, update).is_err() {
+                return Applied::Ignored;
             }
-        });
-        let correction = match applied {
-            Ok(correction) => correction,
-            Err(error) => {
-                return match error {
-                    WriteError::Invalid(_) => Applied::Ignored,
-                    WriteError::Size(_) => Applied::Refuse(WriteError::Document(
+            if let Err(error) = session::repair(&candidate, &self.config.paths()) {
+                return Applied::Refuse(WriteError::Invalid(format!(
+                    "candidate paths cannot be normalized safely: {error:?}"
+                )));
+            }
+            let ceiling = self.config.persistence().max_encoded_snapshot_bytes;
+            let measured = match librepaper_document_core::validate(
+                &candidate,
+                librepaper_document_core::Limits {
+                    source_bytes: self.config.max_document,
+                    encoded_history_bytes: ceiling,
+                    files: self.config.max_files,
+                },
+            ) {
+                Ok(measured) => measured,
+                Err(librepaper_document_core::ValidationError::TooManyFiles { .. }) => {
+                    return Applied::Refuse(WriteError::Document(
+                        crate::room::error::DocumentLimit::Files,
+                    ));
+                }
+                Err(librepaper_document_core::ValidationError::SourceTooLarge { .. }) => {
+                    return Applied::Refuse(WriteError::Document(
+                        crate::room::error::DocumentLimit::Size,
+                    ));
+                }
+                Err(librepaper_document_core::ValidationError::HistoryTooLarge { .. }) => {
+                    return Applied::Refuse(WriteError::Document(
                         crate::room::error::DocumentLimit::Encoded,
-                    )),
-                    error => Applied::Refuse(error),
-                };
+                    ));
+                }
+                Err(error) => return Applied::Refuse(validation_write_error(error)),
+            };
+            let encoded_size = measured.encoded_history_bytes;
+            let candidate_update = match session::encode_diff(&candidate, &before) {
+                Ok(bytes) if !bytes.is_empty() => bytes,
+                Ok(_) => return Applied::Ignored,
+                Err(error) => return Applied::Refuse(WriteError::Storage(error)),
+            };
+            let main_after = session::main_path(&candidate);
+            let derived_format = (main_after != main_before)
+                .then(|| format_from_path(&main_after))
+                .filter(|format| !format.is_empty());
+            (
+                candidate_update,
+                candidate.state_frontiers().encode(),
+                encoded_size as i64,
+                state.session.durable_sequence,
+                main_after,
+                derived_format,
+            )
+        };
+
+        let Some(catalog) = self.catalog.get() else {
+            return Applied::Refuse(WriteError::Storage("PostgreSQL catalog required".into()));
+        };
+        let Ok(document_id) = uuid::Uuid::parse_str(&self.storage_id) else {
+            return Applied::Refuse(WriteError::Storage(
+                "room has an invalid document id".into(),
+            ));
+        };
+        let committed = catalog
+            .commit_source(
+                document_id,
+                authority,
+                crate::storage::postgres::PreparedSource {
+                    expected_update_sequence: expected_sequence,
+                    update: &candidate_update,
+                    frontier: &frontier,
+                    encoded_history_bytes: encoded_size,
+                    actor_key: by.account_id().unwrap_or_else(|| by.display()),
+                    source_format: source_format.as_deref(),
+                    main_path: (!main_path.is_empty()).then_some(main_path.as_str()),
+                    resolve_annotation_id: None,
+                    supersede_proposals: false,
+                },
+                None,
+            )
+            .await;
+        let committed = match committed {
+            Ok(result) => result,
+            Err(error) => return Applied::Refuse(error.into()),
+        };
+
+        // Install only after PostgreSQL confirmed the transaction. If this
+        // import ever fails, fence the task; serving an older sequence would
+        // violate read-after-receipt consistency.
+        let mut state = self.command_owner.state().await;
+        if let Err(error) = session::apply_update(&state.session.doc, &candidate_update) {
+            self.fence(FenceReason::UnreadableState);
+            return Applied::Refuse(WriteError::Storage(format!(
+                "committed source could not be installed: {error}"
+            )));
+        }
+        let metadata = match LoroDoc::decode_import_blob_meta(&candidate_update, true) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.fence(FenceReason::UnreadableState);
+                return Applied::Refuse(WriteError::Storage(error.to_string()));
             }
         };
-        if let Some(correction) = correction {
-            let payload =
-                json!({"type": "doc-update", "update": encode_update(&correction)}).to_string();
-            send_to(&mut state, None, Outgoing::shared_text(payload), |peer| {
-                peer.may_edit
-            });
-        }
-        // Counted only once the update is one this document actually took. A
-        // refused update must not be acknowledged by the next write, and it
-        // would be if it had moved this socket's high-water mark.
-        if let Some(peer) = state.sockets.get_mut(&socket) {
-            if seq > peer.sent {
-                peer.sent = seq;
-            }
-        }
-        // An editor changing which file is the main one is a CRDT write like
-        // any other; the format that travels with every checkpoint has to
-        // follow it rather than keep whatever the document opened in, or a
-        // checkpoint ends up naming a new main path with a stale format
-        // (R27).
-        let main_after = session::main_path(&state.session.doc);
-        if main_after != main_before {
-            let derived = format_from_path(&main_after);
-            if !derived.is_empty() {
-                state.session.format = derived;
-            }
-        }
-        state.session.mark_dirty(now);
+        state.session.durable_vector.merge(&metadata.partial_end_vv);
+        state.session.durable_sequence = committed
+            .update_sequence
+            .parse()
+            .unwrap_or(expected_sequence + 1);
+        state.session.durable_state_bytes = encoded_size;
+        state.session.dirty = false;
+        state.session.dirty_since = 0;
+        state.session.last_persist_at = now;
         state.session.generation += 1;
         state.session.updated_at = now;
         state.session.by = by.clone();
-        // The text just moved, so where every comment points has moved with
-        // it. Worked out here, once, against the document this update just
-        // produced -- not by each reader against whatever it can see.
-        let moved = comments::reattach(&mut state);
-        state
-            .pending_attachments
-            .extend(moved.iter().map(|(id, _)| id.clone()));
-        if !moved.is_empty() {
-            // One message for the whole pass, not one per comment: a character
-            // typed above a comment moves every comment below it, and a
-            // document with five hundred of them would otherwise put five
-            // hundred frames on the wire between two keystrokes.
-            //
-            // Only editors: where a passage is in the source is source, and a
-            // reader of a published render is never told about the source.
+
+        if let Some(format) = source_format {
+            state.session.format = format;
+        }
+
+        let durable_vector = encode_update(&session::encode_vector(&state.session.doc));
+        if let Some(peer) = state.sockets.get_mut(&socket) {
+            peer.sent = peer.sent.max(seq);
+            peer.acked = peer.acked.max(seq);
             let payload = json!({
-                "type": "attachments",
-                "attachments": moved.iter().map(|(id, attachment)| {
-                    json!({"comment_id": id, "attachment": attachment})
-                }).collect::<Vec<_>>(),
+                "type": "doc-ack",
+                "seq": seq,
+                "commit_sequence": committed.commit_sequence,
+                "source_revision": committed.source_revision,
+                "vector": durable_vector,
             })
             .to_string();
-            send_to(&mut state, None, Outgoing::shared_text(payload), |peer| {
-                peer.may_edit
-            });
+            if peer.tx.try_send_durable(Outgoing::Text(payload)).is_err() {
+                state.sockets.remove(&socket);
+            }
         }
-        Applied::Relay
+        drop(state);
+        self.reattach_comments().await;
+        Applied::Relay(candidate_update)
     }
 
     /// Appends PostgreSQL collaboration state when the document has changed, and only then
     /// tells the sockets their updates are durable. Relaying an update is not
     /// an acknowledgment: nothing here says "saved" until storage has said so.
+    #[cfg(test)]
     pub async fn persist(&self) -> Result<bool, WriteError> {
-        let saved = self.write_session(true, true).await?.is_some();
-        self.flush_attachments().await;
-        Ok(saved)
-    }
-
-    async fn flush_attachments(&self) {
-        let _comments = self.comment_write.lock().await;
-        let (pending, rows) = {
-            let mut state = self.state.lock().await;
-            let pending = std::mem::take(&mut state.pending_attachments);
-            let rows: Vec<_> = state
-                .comments
-                .iter()
-                .filter(|comment| pending.contains(&comment.id))
-                .filter_map(|comment| {
-                    Some((
-                        uuid::Uuid::parse_str(&comment.id).ok()?,
-                        comment.attachment.clone()?,
-                    ))
-                })
-                .collect();
-            (pending, rows)
-        };
-        let Some(catalog) = self.catalog.get() else {
-            self.state.lock().await.pending_attachments.extend(pending);
-            return;
-        };
-        if let Err(error) = catalog.record_attachments(&rows).await {
-            self.state.lock().await.pending_attachments.extend(pending);
-            eprintln!(
-                "warning: could not persist comment positions for {}: {error}",
-                self.slug
-            );
-        }
+        Ok(self.write_session(true, true).await?.is_some())
     }
 
     /// Snapshot under the write gate: checkpoints and timer saves cannot write
     /// snapshots out of order or reuse an update sequence. Ordinary edits use only
     /// state, so they can proceed during storage I/O.
+    #[cfg(test)]
     async fn write_session(
         &self,
         only_dirty: bool,
         acknowledge: bool,
     ) -> Result<Option<(i64, i64)>, WriteError> {
-        let _bundle_checkpoint = self.bundle_checkpoint.read().await;
+        let _command = self.command_owner.acquire().await;
         self.write_session_inner(only_dirty, acknowledge).await
     }
 
     /// Session writer for checkpoint and rollback callers that already hold
     /// the bundle checkpoint read/write barrier.
+    #[cfg(test)]
     pub(crate) async fn write_session_inner(
         &self,
         only_dirty: bool,
         acknowledge: bool,
     ) -> Result<Option<(i64, i64)>, WriteError> {
-        let _writer = self.session_write.lock().await;
         if self.read_only() {
             return Err(self.fenced());
         }
         self.merge_remote_updates()
             .await
             .map_err(WriteError::Storage)?;
-        if only_dirty && !self.state.lock().await.session.dirty {
+        if only_dirty && !self.command_owner.state().await.session.dirty {
             return Ok(None);
         }
         let catalog = self
@@ -1775,7 +1944,7 @@ impl Room {
         let document_id = uuid::Uuid::parse_str(&self.storage_id)
             .map_err(|_| WriteError::Storage("room has an invalid document id".into()))?;
         let (body, size, vector, frontier, generation, durable) = {
-            let mut state = self.state.lock().await;
+            let mut state = self.command_owner.state().await;
             let vector = state.session.doc.oplog_vv();
             let body = if vector == state.session.durable_vector {
                 None
@@ -1788,10 +1957,11 @@ impl Room {
                     .map_err(WriteError::Storage)?,
                 )
             };
-            let size = state
-                .session
-                .durable_state_bytes
-                .saturating_add(body.as_ref().map_or(0, |bytes| bytes.len() as i64));
+            // This legacy writer is still used by checkpoint/restore callers.
+            // Its durable size must be an exact final-state measurement; CRDT
+            // delta byte lengths are not additive and may overcount shared
+            // encoding structure.
+            let size = session::encode_state(&state.session.doc).len() as i64;
             // Read under the same lock as the body: a frontier taken after it
             // would name a version the persisted bytes do not contain.
             let frontier = state.session.doc.state_frontiers().encode();
@@ -1816,15 +1986,15 @@ impl Room {
             catalog.clone(),
             self.blobs.clone(),
         );
-        let previous_sequence = self.state.lock().await.session.durable_sequence;
+        let previous_sequence = self.command_owner.state().await.session.durable_sequence;
         let durable_sequence = match body {
             Some(body) => collaboration
                 .append(document_id, &body, &frontier, size)
                 .await
                 .map_err(|error| WriteError::Storage(error.to_string()))?,
-            None => self.state.lock().await.session.durable_sequence,
+            None => self.command_owner.state().await.session.durable_sequence,
         };
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         // A concurrent recovery merge may have advanced durable knowledge
         // while this append was in flight. Never forget those operations.
         state.session.durable_vector.merge(&vector);
@@ -1859,6 +2029,7 @@ impl Room {
         Ok(Some((size, durable_sequence)))
     }
 
+    #[cfg(test)]
     async fn merge_remote_updates(&self) -> Result<(), String> {
         let catalog = self
             .catalog
@@ -1868,7 +2039,7 @@ impl Room {
         let document_id =
             uuid::Uuid::parse_str(&self.storage_id).map_err(|_| "invalid document id")?;
         loop {
-            let after = self.state.lock().await.session.durable_sequence;
+            let after = self.command_owner.state().await.session.durable_sequence;
             let updates = catalog
                 .updates_after(document_id, after, 256)
                 .await
@@ -1891,7 +2062,7 @@ impl Room {
                     .recover(document_id)
                     .await
                     .map_err(|e| e.to_string())?;
-                let mut state = self.state.lock().await;
+                let mut state = self.command_owner.state().await;
                 if let Some(base) = recovered.base {
                     state.session.merge_durable(&base)?;
                 }
@@ -1918,7 +2089,7 @@ impl Room {
                 .update_state_bytes(document_id, last_sequence)
                 .await
                 .map_err(|e| e.to_string())?;
-            let mut state = self.state.lock().await;
+            let mut state = self.command_owner.state().await;
             let mut conservative_size = state.session.durable_state_bytes;
             for update in updates {
                 conservative_size =
@@ -1935,57 +2106,17 @@ impl Room {
         }
     }
 
-    /// What the sweeper does to one room, once a second: write the document if
-    /// it has been quiet long enough to be worth writing.
-    ///
-    /// It takes no versions. Durability here is the operation log, which holds
-    /// every keystroke; a version is a name somebody put on a moment, and the
-    /// clock is not somebody.
-    ///
     /// Returns whether the room is idle and durable, which is what says it may
-    /// be let go of.
+    /// be let go of. Source commands are already durable when installed; the
+    /// sweeper never creates a competing persistence cadence.
     pub async fn tick(&self) -> bool {
-        let limits = self.config.session;
-        let now = now_unix();
-        let (dirty, quiet_for, dirty_for, last_persist_at, sockets) = {
-            let state = self.state.lock().await;
-            (
-                state.session.dirty,
-                now - state.session.updated_at,
-                now - state.session.dirty_since,
-                state.session.last_persist_at,
-                state.sockets.len(),
-            )
-        };
-        let floor_elapsed = if last_persist_at > 0 {
-            now >= last_persist_at.saturating_add(AUTOSAVE_SECONDS)
-        } else {
-            dirty_for >= AUTOSAVE_SECONDS
-        };
-        let quiet = quiet_for >= limits.write_after_seconds.max(0);
-        // Quiet periods may request an early save only after collaboration storage's
-        // flush floor. Continuous typing still reaches the dirty-age deadline;
-        // it must not reset that deadline or force a write on every brief pause.
-        let flush_due = floor_elapsed && (quiet || dirty_for >= AUTOSAVE_SECONDS);
-        if dirty && flush_due {
-            if let Err(err) = self.persist().await {
-                eprintln!(
-                    "warning: could not write the session for {}: {err}",
-                    self.slug
-                );
-                return false;
-            }
-        }
-        let attachments_pending = !self.state.lock().await.pending_attachments.is_empty();
-        if flush_due && !dirty && attachments_pending {
-            self.flush_attachments().await;
-        }
-        sockets == 0 && !dirty
+        let state = self.command_owner.state().await;
+        state.sockets.is_empty() && !state.session.dirty
     }
 
     /// How many people have this document open, which is worth showing them.
     pub async fn editors(&self) -> usize {
-        self.state.lock().await.sockets.len()
+        self.command_owner.state().await.sockets.len()
     }
 
     /// Conservative resident-memory estimate used by RoomSet admission.  It
@@ -1993,7 +2124,25 @@ impl Room {
     /// manifest metadata, so a room cannot bypass the deployment budget by
     /// keeping those structures outside the session byte count.
     async fn resident_bytes(&self) -> usize {
-        self.state.lock().await.resident_estimate()
+        self.command_owner.state().await.resident_estimate()
+    }
+}
+
+#[derive(Default)]
+pub(super) struct CommitEditOptions<'a> {
+    pub supersede_proposals: bool,
+    pub source_format: Option<&'a str>,
+    pub resolve_annotation_id: Option<uuid::Uuid>,
+    pub receipt: Option<&'a crate::storage::postgres::SemanticReceipt>,
+}
+
+fn validation_write_error(error: librepaper_document_core::ValidationError) -> WriteError {
+    match error {
+        librepaper_document_core::ValidationError::UnsupportedSchemaVersion {
+            found,
+            supported,
+        } => WriteError::UpgradeRequired { found, supported },
+        error => WriteError::Invalid(format!("{error:?}")),
     }
 }
 

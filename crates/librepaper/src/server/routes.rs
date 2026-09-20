@@ -871,7 +871,7 @@ pub(super) async fn dispatch(
                 let _ = server.store.mark_opened(slug, &who.id.id).await;
             }
             let mut body = json!({
-                "slug": entry.slug, "title": entry.title,
+                "slug": entry.slug, "document_id": entry.storage_id, "title": entry.title,
                 "created_at": entry.created_at, "updated_at": entry.updated_at,
                 "comment_count": total, "open_count": open,
                 // The highest role this caller holds, which is what the

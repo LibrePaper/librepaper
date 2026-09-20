@@ -91,6 +91,7 @@ export function createReaderCollaboration({
       // as far as the colour is concerned.
       name: getIdentity() || nextDocument.commenting_as || "",
       slug,
+      documentId: nextDocument.document_id,
       createdAt: nextDocument.created_at,
       key,
       mayEdit: canEdit,
@@ -131,15 +132,18 @@ export function createReaderCollaboration({
       if (!response.ok) return changed("document");
       const latest = await response.json();
       if (disposed || stale() || session !== active) return;
-      if (document_.created_at || latest.created_at) {
+      if (document_.document_id || latest.document_id) {
         try {
           assertSameProject(
-            projectIdentity({ server: globalThis.location?.origin, slug, createdAt: document_.created_at }),
-            projectIdentity({ server: globalThis.location?.origin, slug, createdAt: latest.created_at }),
+            projectIdentity({ server: globalThis.location?.origin, documentId: document_.document_id }),
+            projectIdentity({ server: globalThis.location?.origin, documentId: latest.document_id }),
           );
         } catch {
           return changed("document");
         }
+      } else if ((document_.created_at || latest.created_at)
+          && document_.created_at !== latest.created_at) {
+        return changed("document");
       }
       if (capability(latest) !== capability(document_)) return changed("capability");
       if (sourceSync) room?.send(active.open());

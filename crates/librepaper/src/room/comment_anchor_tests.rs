@@ -22,6 +22,7 @@ struct Deployment {
     catalog: Arc<PostgresCatalog>,
     slug: String,
     actor: MutationActor,
+    _writer: crate::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
@@ -41,6 +42,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     .execute(catalog.pool())
     .await
     .unwrap();
+    let writer = catalog.claim_writer().await.unwrap();
     let account = catalog
         .create_account(crate::storage::postgres::NewAccount {
             kind: "registered".into(),
@@ -88,6 +90,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         catalog,
         slug: slug.into(),
         actor,
+        _writer: writer,
         _objects: objects,
     })
 }
@@ -112,7 +115,7 @@ fn selection(exact: &str, prefix: &str, suffix: &str) -> Command {
     }
 }
 
-async fn send(room: &Arc<Room>, command: Command, actor: &MutationActor) -> Value {
+async fn send(room: &Room, command: Command, actor: &MutationActor) -> Value {
     let (response, _) = room
         .apply_command_with_actor(
             command,
@@ -269,7 +272,7 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
     // Somebody writes a paragraph above it. Nothing about the comment has
     // changed; everything about where it sits has.
     let update = {
-        let state = room.state.lock().await;
+        let state = room.command_owner.state().await;
         let edited = state.session.doc.fork();
         let vector = session::encode_vector(&edited);
         session::put_text(
@@ -282,13 +285,20 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
         );
         session::encode_diff(&edited, &vector).unwrap()
     };
-    assert!(matches!(
-        room.receive_update(999, &update, 1, "Owner").await,
-        Applied::Relay
-    ));
-    assert!(room.state.lock().await.pending_attachments.contains(&id));
-    room.persist().await.unwrap();
-    assert!(room.state.lock().await.pending_attachments.is_empty());
+    let applied = room
+        .receive_update(
+            999,
+            &update,
+            1,
+            "Owner",
+            &crate::storage::postgres::Authority {
+                principal_key: deployment.actor.account_id.clone(),
+                account_id: uuid::Uuid::parse_str(&deployment.actor.account_id).ok(),
+                link_hash: None,
+            },
+        )
+        .await;
+    assert!(matches!(applied, Applied::Relay(_)), "{applied:?}");
 
     let comment = room.agent_comment(&id).await.expect("comment");
     assert_eq!(
@@ -314,12 +324,12 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
         .annotations(document.id, None, None, 10)
         .await
         .unwrap();
-    let persisted = crate::storage::postgres::attachment_from_record(&stored[0])
-        .unwrap()
-        .unwrap()
-        .resolved_range_utf16
-        .unwrap();
-    assert_eq!(persisted.0, start);
+    assert!(
+        crate::storage::postgres::attachment_from_record(&stored[0])
+            .unwrap()
+            .is_none(),
+        "derived attachment is not persisted; cold rooms recompute it"
+    );
     deployment.catalog.close().await;
 }
 
@@ -342,7 +352,7 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
     .await;
     let id = response["comment"]["id"].as_str().unwrap().to_string();
     {
-        let state = room.state.lock().await;
+        let state = room.command_owner.state().await;
         session::put_text(
             &state.session.doc,
             "paper.md",

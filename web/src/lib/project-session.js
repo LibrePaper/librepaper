@@ -33,6 +33,13 @@ import { checkPlacement, folderPaths, inside, parentPath, relocation, topEntries
 // one document update.
 const UPDATE_CHUNK_BYTES = 600_000;
 
+async function sha256Hex(bytes) {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) throw new Error("this browser cannot verify referenced document state");
+  const digest = new Uint8Array(await subtle.digest("SHA-256", bytes));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 // The origin every change to the directory is committed under: a file added,
 // renamed, moved or removed, and the folders that hold them.
 //
@@ -213,12 +220,13 @@ export function createProjectSession({
   let local = !mayEdit;
   let localPending = 0;
   let localError = "";
+  let confirmedCoverage = "";
 
   // A read-only client keeps nothing: it has no local changes to lose. An
   // editor can still work when storage is unavailable, but `local` remains
   // false so its UI does not call those changes safe on this device.
   let persister = null;
-  const report = () => onState?.({ pending: unacknowledged.size, local, localPending, localError, joined });
+  const report = () => onState?.({ pending: unacknowledged.size, local, localPending, localError, joined, confirmedCoverage });
   try {
     persister = persistence?.open?.(doc, {
       hydrated() { local = true; report(); },
@@ -237,6 +245,10 @@ export function createProjectSession({
         local = false;
         localPending = 0;
         localError = error?.message || String(error || "local persistence failed");
+        report();
+      },
+      confirmed(coverage) {
+        confirmedCoverage = coverage || "";
         report();
       },
     }) || null;
@@ -500,7 +512,7 @@ export function createProjectSession({
       }
       const selected = (path) => roots.some((entry) => path === entry.path || (entry.kind === "folder" && inside(path, entry.path)));
       const removed = current.filter((file) => selected(file.path));
-      if (removed.some((file) => file.main)) throw new Error("Choose another main file before deleting this file or its folder.");
+      const removedMain = removed.some((file) => file.main);
       for (const file of removed) {
         if (file.kind === "asset") assets.delete(file.path);
         else { files.delete(file.id); paths.delete(file.id); }
@@ -509,6 +521,13 @@ export function createProjectSession({
       for (const entry of roots) {
         const parent = parentPath(entry.path);
         if (parent) meta.set(`folder:${parent}`, true);
+      }
+      if (removedMain) {
+        const remaining = [...paths.entries()]
+          .filter(([id]) => files.get(id)?.kind?.() === "Text")
+          .sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
+        if (remaining.length) meta.set("main", remaining[0][0]);
+        else meta.delete("main");
       }
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
@@ -585,6 +604,7 @@ export function createProjectSession({
     /// Makes a file. One transaction, so no peer ever sees a text without the
     /// name it is known by.
     addText(path, body = "") {
+      if (!mayEdit) throw new Error("This project is read-only.");
       const id = mintId();
       const text = new LoroText();
       if (body) {
@@ -592,6 +612,7 @@ export function createProjectSession({
       }
       files.setContainer(id, text);
       paths.set(id, path);
+      if (!meta.get("main")) meta.set("main", id);
       doc.commit({ origin: DIRECTORY_ORIGIN });
       return id;
     },
@@ -614,11 +635,21 @@ export function createProjectSession({
       }
     },
 
-    /// Removes a file, its name with it. The main file is never removed here;
-    /// the file list refuses it, because a document has to be something.
+    /// Removes a file, its name with it. Empty projects are valid; when the
+    /// selected main is removed, choose a remaining text deterministically or
+    /// leave main unset rather than fabricating content.
     removeFile(id) {
+      if (!mayEdit) throw new Error("This project is read-only.");
+      const wasMain = meta.get("main") === id;
       files.delete(id);
       paths.delete(id);
+      if (wasMain) {
+        const remaining = [...paths.entries()]
+          .filter(([file]) => files.get(file)?.kind?.() === "Text")
+          .sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
+        if (remaining.length) meta.set("main", remaining[0][0]);
+        else meta.delete("main");
+      }
       doc.commit({ origin: DIRECTORY_ORIGIN });
     },
 
@@ -738,7 +769,13 @@ export function createProjectSession({
       // it can be base64'd for the wire -- spreading it straight into the
       // encoder threw "not iterable", which is what made opening a document
       // fail before it had sent anything.
-      return { type: "doc-open", vector: encode(doc.oplogVersion().encode()) };
+      return {
+        type: "doc-open",
+        vector: encode(doc.oplogVersion().encode()),
+        protocol: "librepaper.room.v1",
+        version: 1,
+        schema_version: 1,
+      };
     },
 
     /// The server's answer to `doc-open`: the document, or -- when it is too
@@ -749,19 +786,37 @@ export function createProjectSession({
       // server (hydration is intentionally not a local Loro update).
       await persister?.hydration;
       if (left) return;
+      if ((state.protocol && state.protocol !== "librepaper.room.v1")
+        || Number(state.version || 1) > 1
+        || Number(state.schema_version || 1) > 1) {
+        throw new Error("This document requires a newer LibrePaper version.");
+      }
       if (state.ref) {
-        // Same origin, signed, and short-lived. Whatever arrives during the
+        // Same origin, immutable, digest-bound, and short-lived. Whatever arrives during the
         // fetch is caught up by the state sent below, which is why the fetch
         // does not have to be atomic with anything.
         //
-        // It carries what every other call to the API carries. The signature
-        // on the URL says the link was minted here; it does not say who is
-        // holding it, so the route asks again -- and asking means the
+        // It carries what every other call to the API carries. The opaque
+        // reference identifies bytes but does not authorize whoever holds
+        // it, so the route asks again -- and asking means the
         // same-origin marker rule A turns on, and the link key a reader
         // arrived with. Without them a document too large to send inline was
         // refused, which is what the notebook examples were doing.
         if (!fetchReference) throw new Error("this client cannot fetch referenced document state");
-        doc.import(await fetchReference(state.ref));
+        let referenced;
+        try {
+          referenced = await fetchReference(state.ref);
+        } catch (error) {
+          if (error?.restartBaseline && !left) {
+            send(open());
+            return;
+          }
+          throw error;
+        }
+        if (!state.digest || await sha256Hex(referenced) !== state.digest) {
+          throw new Error("referenced document state failed its integrity check");
+        }
+        doc.import(referenced);
       } else if (state.update) {
         doc.import(decode(state.update));
       }
@@ -786,10 +841,16 @@ export function createProjectSession({
 
     /// The server has written everything up to this number. Relaying was never
     /// this; storage is.
-    acknowledge(upTo) {
+    acknowledge(upTo, coverage = "") {
+      // A transport sequence alone is not durable evidence. New servers send
+      // the committed Loro coverage; old acknowledgements remain conservative
+      // and leave work pending for vector reconciliation.
+      if (!coverage) return;
       for (const mine of [...unacknowledged.keys()]) {
         if (mine <= upTo) unacknowledged.delete(mine);
       }
+      confirmedCoverage = coverage;
+      void persister?.confirm?.(coverage);
       report();
     },
 

@@ -472,7 +472,7 @@ impl From<WriteError> for AgentError {
 }
 
 async fn room_tree_locked(room: &Room) -> SourceTree {
-    let state = room.state.lock().await;
+    let state = room.command_owner.state().await;
     let (canonical, _) = super::tree_of(&state.session.doc, &state.session.asset_sizes);
     let files = session::texts_of(&state.session.doc)
         .into_iter()
@@ -536,9 +536,7 @@ impl Room {
         {
             return Err(AgentError::Conflict("edit access changed".into()));
         }
-        let _restore = self.restore_write.lock().await;
-        let _comment = self.comment_write.lock().await;
-        let _bundle = self.bundle_write.lock().await;
+        let command = self.command_owner.acquire().await;
         if !self.hold().await {
             return Err(AgentError::Storage(self.fenced().to_string()));
         }
@@ -576,78 +574,162 @@ impl Room {
             .authorize_document_mutation(document_id, &authorization, true)
             .await
             .map_err(|error| AgentError::Conflict(error.to_string()))?;
+        let document_authority = crate::storage::postgres::Authority {
+            principal_key: if authority.account_id.is_empty() {
+                authority.owner_key.clone()
+            } else {
+                authority.account_id.clone()
+            },
+            account_id: authorization.account_id,
+            link_hash: authorization.token_hash.map(Vec::from),
+        };
+        let request_id = {
+            let digest = Sha256::digest(
+                request
+                    .operation
+                    .scoped_request_id(&authority.operation_scope)
+                    .as_bytes(),
+            );
+            let mut bytes = [0_u8; 16];
+            bytes.copy_from_slice(&digest[..16]);
+            uuid::Uuid::from_bytes(bytes)
+        };
+        let canonical_command = serde_json::json!({
+            "kind": "agent-source-patch",
+            "operation": request.operation,
+            "base_tree": request.base_tree,
+            "consistency": request.consistency,
+            "dependencies": request.dependencies,
+            "patches": request.patches,
+            "acceptance": request.acceptance,
+            "request_digest": request.request_digest,
+            "operation_scope": authority.operation_scope,
+            "execution_epoch": authority.execution_epoch,
+        });
+        let receipt_probe = crate::storage::postgres::SemanticReceipt {
+            request_id,
+            canonical_command: canonical_command.clone(),
+            stable_result: serde_json::Value::Null,
+            status: "committed".into(),
+        };
+        if let Some(stable) = catalog
+            .semantic_receipt_result(
+                document_id,
+                &document_authority.principal_key,
+                &receipt_probe,
+            )
+            .await
+            .map_err(|error| AgentError::Conflict(error.to_string()))?
+        {
+            let mut replay: AgentReceipt = serde_json::from_value(stable)
+                .map_err(|error| AgentError::Storage(error.to_string()))?;
+            replay.replay = true;
+            return Ok(replay);
+        }
+        let resolve_annotation_id = if let Some(acceptance) = &request.acceptance {
+            let state = self.command_owner.state().await;
+            let comment = state
+                .comments
+                .iter()
+                .find(|comment| comment.id == acceptance.comment_id)
+                .ok_or_else(|| AgentError::Conflict("suggestion disappeared".into()))?;
+            if comment.resolved
+                || comment.seq != acceptance.expected_seq
+                || super::agent_comments::comment_version(comment) != acceptance.expected_version
+            {
+                return Err(AgentError::Conflict("suggestion changed".into()));
+            }
+            Some(
+                uuid::Uuid::parse_str(&acceptance.comment_id)
+                    .map_err(|_| AgentError::Conflict("suggestion identity is invalid".into()))?,
+            )
+        } else {
+            None
+        };
         let tree = room_tree_locked(self).await;
         let applied = apply_patches(&tree, &request)?;
         if source_size_after(&tree, &request)? > self.config.max_document {
             return Err(AgentError::Conflict("document size limit exceeded".into()));
         }
-        let before_vector = {
-            let mut state = self.state.lock().await;
-            let vector = session::encode_vector(&state.session.doc);
-            let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
-            for patch in &request.patches {
-                by_path.entry(&patch.path).or_default().push(patch);
-            }
-            self.checked_edit(&state.session.doc, |candidate| {
-                for (path, mut patches) in by_path {
-                    patches.sort_by_key(|patch| std::cmp::Reverse(patch.start));
-                    let original = tree
-                        .files
-                        .get(path)
-                        .ok_or_else(|| WriteError::Conflict(format!("file is absent: {path}")))?;
-                    let edits: Vec<_> = patches
-                        .into_iter()
-                        .map(|patch| wasm_helpers::text::Edit {
-                            at: byte_to_utf16(&original.text, patch.start),
-                            delete: byte_to_utf16(
-                                &original.text[patch.start..],
-                                patch.end - patch.start,
-                            ),
-                            insert: patch.replacement.clone(),
-                        })
-                        .collect();
-                    session::apply_path_edits(candidate, path, &edits);
-                }
-                Ok::<_, WriteError>(())
-            })
-            .map_err(AgentError::from)?;
-            state.session.generation += 1;
-            state.session.mark_dirty(crate::util::now_unix());
-            vector
+        let stable_receipt = AgentReceipt {
+            operation: request.operation.clone(),
+            status: "committed".into(),
+            source_revision_before: applied.before_tree.clone(),
+            source_revision_after: applied.after_tree.clone(),
+            replay: false,
+            accepted_comment_id: request
+                .acceptance
+                .as_ref()
+                .map(|acceptance| acceptance.comment_id.clone()),
         };
-        let update = {
-            let state = self.state.lock().await;
-            session::encode_diff(&state.session.doc, &before_vector).map_err(AgentError::Storage)?
+        let semantic_receipt = crate::storage::postgres::SemanticReceipt {
+            request_id,
+            canonical_command,
+            stable_result: serde_json::to_value(&stable_receipt)
+                .map_err(|error| AgentError::Storage(error.to_string()))?,
+            status: "committed".into(),
         };
-        self.write_session_inner(false, true)
+        let (_, update, replayed) = self
+            .commit_edit_owned(
+                &command,
+                &document_authority,
+                crate::room::Attribution::account(&authority.account_id, &authority.owner_key),
+                super::CommitEditOptions {
+                    resolve_annotation_id,
+                    receipt: Some(&semantic_receipt),
+                    ..super::CommitEditOptions::default()
+                },
+                |candidate, _, _| {
+                    let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
+                    for patch in &request.patches {
+                        by_path.entry(&patch.path).or_default().push(patch);
+                    }
+                    for (path, mut patches) in by_path {
+                        patches.sort_by_key(|patch| std::cmp::Reverse(patch.start));
+                        let original = tree.files.get(path).ok_or_else(|| {
+                            WriteError::Conflict(format!("file is absent: {path}"))
+                        })?;
+                        let edits: Vec<_> = patches
+                            .into_iter()
+                            .map(|patch| wasm_helpers::text::Edit {
+                                at: byte_to_utf16(&original.text, patch.start),
+                                delete: byte_to_utf16(
+                                    &original.text[patch.start..],
+                                    patch.end - patch.start,
+                                ),
+                                insert: patch.replacement.clone(),
+                            })
+                            .collect();
+                        session::apply_path_edits(candidate, path, &edits);
+                    }
+                    Ok::<_, WriteError>(())
+                },
+            )
             .await
             .map_err(AgentError::from)?;
+        if replayed && update.is_empty() {
+            let mut replay = stable_receipt;
+            replay.replay = true;
+            return Ok(replay);
+        }
         let signature = self
             .signed_by(&authority.account_id, &authority.owner_key)
             .await;
         let checkpoint = self
-            .checkpoint("cli", signature)
+            .commit_version_owned(&command, "cli", signature, &document_authority, None)
             .await
             .map_err(AgentError::from)?;
 
         let mut accepted_comment_id = None;
         if let Some(acceptance) = &request.acceptance {
-            let updated = {
-                let mut state = self.state.lock().await;
+            {
+                let mut state = self.command_owner.state().await;
                 let comment = state
                     .comments
                     .iter_mut()
                     .find(|comment| comment.id == acceptance.comment_id)
                     .ok_or_else(|| AgentError::Conflict("suggestion disappeared".into()))?;
                 comment.resolved_in = checkpoint.clone().unwrap_or_default();
-                comment.clone()
-            };
-            if let Some(catalog) = self.catalog.as_ref().get() {
-                let row = super::catalog::catalog_comment_row(&self.slug, &updated)
-                    .map_err(AgentError::Storage)?;
-                super::catalog::update_comment_row(catalog, row, actor)
-                    .await
-                    .map_err(AgentError::Storage)?;
             }
             accepted_comment_id = Some(acceptance.comment_id.clone());
         }
@@ -657,12 +739,8 @@ impl Room {
         )
         .await;
         Ok(AgentReceipt {
-            operation: request.operation,
-            status: "committed".into(),
-            source_revision_before: applied.before_tree,
-            source_revision_after: applied.after_tree,
-            replay: false,
             accepted_comment_id,
+            ..stable_receipt
         })
     }
 }

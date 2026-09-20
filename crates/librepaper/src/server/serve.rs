@@ -361,6 +361,10 @@ pub async fn serve(options: ServeOptions) {
         .migrate()
         .await
         .unwrap_or_else(|error| die(format!("could not migrate PostgreSQL: {error}")));
+    let writer = catalog
+        .claim_writer()
+        .await
+        .unwrap_or_else(|error| die(format!("could not claim deployment writer: {error}")));
     let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog)
         .await
         .unwrap_or_else(|err| die(err));
@@ -373,6 +377,7 @@ pub async fn serve(options: ServeOptions) {
         publishers.clone(),
         commenters.clone(),
     );
+    instance.install_writer(writer);
     instance.google = google;
     // An operator who wants no public front page at all: the examples stop
     // being listed to people who hold nothing on them.

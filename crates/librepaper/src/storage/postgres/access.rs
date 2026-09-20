@@ -57,6 +57,15 @@ pub struct ShareLinkRecord {
 }
 
 impl PostgresCatalog {
+    async fn begin_document_admin(
+        &self,
+        document_id: Uuid,
+    ) -> Result<sqlx::Transaction<'_, sqlx::Postgres>> {
+        let mut tx = self.begin_writer_transaction().await?;
+        Self::lock_active_document(&mut tx, document_id).await?;
+        Ok(tx)
+    }
+
     async fn lock_active_document(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
@@ -98,8 +107,7 @@ impl PostgresCatalog {
         )],
     ) -> Result<()> {
         let wanted: Vec<Vec<u8>> = links.iter().map(|(_, hash, ..)| hash.to_vec()).collect();
-        let mut tx = self.pool.begin().await?;
-        Self::lock_active_document(&mut tx, document_id).await?;
+        let mut tx = self.begin_document_admin(document_id).await?;
         // Whatever this save is not keeping. A revoked row is kept rather than
         // deleted so a guest admitted through it is still recognisable as
         // having come in that way.
@@ -163,8 +171,7 @@ impl PostgresCatalog {
         document_id: Uuid,
         live_hashes: &[Vec<u8>],
     ) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        Self::lock_active_document(&mut tx, document_id).await?;
+        let mut tx = self.begin_document_admin(document_id).await?;
         sqlx::query!(
             "DELETE FROM grants WHERE document_id=$1 AND source_link_hash IS NOT NULL
              AND NOT (source_link_hash=ANY($2))",
@@ -183,8 +190,7 @@ impl PostgresCatalog {
         role: AccessRole,
     ) -> Result<GrantRecord> {
         let role = role.persisted()?;
-        let mut tx = self.pool.begin().await?;
-        Self::lock_active_document(&mut tx, document_id).await?;
+        let mut tx = self.begin_document_admin(document_id).await?;
         let row = sqlx::query_as!(
             GrantRecord,
             "INSERT INTO grants(document_id,account_id,role,source_link_hash) VALUES($1,$2,$3,NULL)
@@ -208,8 +214,7 @@ impl PostgresCatalog {
         source_link_hash: [u8; 32],
     ) -> Result<()> {
         let role = role.persisted()?;
-        let mut tx = self.pool.begin().await?;
-        Self::lock_active_document(&mut tx, document_id).await?;
+        let mut tx = self.begin_document_admin(document_id).await?;
         sqlx::query!(
             "INSERT INTO grants(document_id,account_id,role,source_link_hash) VALUES($1,$2,$3,$4)
              ON CONFLICT(document_id,account_id) DO UPDATE SET
@@ -226,8 +231,7 @@ impl PostgresCatalog {
     }
 
     pub async fn remove_grant(&self, document_id: Uuid, account_id: Uuid) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
-        Self::lock_active_document(&mut tx, document_id).await?;
+        let mut tx = self.begin_document_admin(document_id).await?;
         let changed = sqlx::query!(
             "DELETE FROM grants WHERE document_id=$1 AND account_id=$2",
             document_id,
@@ -285,8 +289,7 @@ impl PostgresCatalog {
         if label.len() > 80 {
             return Err(Error::Invalid("share link label is too long".into()));
         }
-        let mut tx = self.pool.begin().await?;
-        Self::lock_active_document(&mut tx, document_id).await?;
+        let mut tx = self.begin_document_admin(document_id).await?;
         let row = sqlx::query_as!(
             ShareLinkRecord,
             "INSERT INTO share_links(id,document_id,role,token_hash,label,expires_at,comment_budget)
@@ -343,8 +346,7 @@ impl PostgresCatalog {
     }
 
     pub async fn revoke_share_link(&self, document_id: Uuid, id: Uuid) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
-        Self::lock_active_document(&mut tx, document_id).await?;
+        let mut tx = self.begin_document_admin(document_id).await?;
         let changed = sqlx::query!(
             "UPDATE share_links SET revoked_at=now(),generation=generation+1
              WHERE document_id=$1 AND id=$2 AND revoked_at IS NULL",

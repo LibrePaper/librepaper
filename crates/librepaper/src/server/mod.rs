@@ -1,13 +1,13 @@
 //! The service: the routes the shell and the command line talk to, the socket
 //! a room's readers hang on, and the document origin that serves the bytes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::{to_bytes, Body};
+use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::multipart::MultipartError;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
@@ -36,7 +36,8 @@ use crate::document::store::{
     Role, Store,
 };
 use crate::room::{
-    decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomSet, Sender,
+    decode_update, encode_update, Applied, Message as RoomMessage, Outgoing, Room, RoomHandle,
+    RoomSet, Sender,
 };
 use crate::server::origins::{
     cross_site_refusal, cross_site_refused, header as header_of, ws_origin_refused, Arrival,
@@ -120,6 +121,10 @@ impl DocumentService {
 
 pub struct Server {
     documents: DocumentService,
+    /// Dedicated PostgreSQL ownership session. Production installs this before
+    /// the router becomes reachable; test servers that never accept durable
+    /// source writes may leave it absent.
+    writer: Option<tokio::sync::Mutex<crate::storage::postgres::WriterLease>>,
     pub shell: HashMap<String, ShellFile>,
     pub app: GithubApp,
     /// The other way in. Configured from the environment alone, and set after
@@ -192,6 +197,72 @@ pub struct Server {
     /// with. Inserted when a socket attaches to a room and removed on every
     /// exit from `run_socket`, so a stale entry never outlives its socket.
     connections: tokio::sync::Mutex<HashMap<u64, Connection>>,
+    /// Exact large handshake baselines. References never re-read a live room:
+    /// commits after capture therefore cannot change the fetched bytes.
+    state_transfers: tokio::sync::Mutex<StateTransfers>,
+}
+
+#[derive(Clone)]
+struct StateTransfer {
+    slug: String,
+    bytes: Bytes,
+    digest: String,
+    expires_at: i64,
+}
+
+#[derive(Default)]
+struct StateTransfers {
+    entries: HashMap<String, StateTransfer>,
+    order: VecDeque<String>,
+    bytes: usize,
+}
+
+impl StateTransfers {
+    fn insert(
+        &mut self,
+        id: String,
+        slug: String,
+        bytes: Bytes,
+        digest: String,
+        now: i64,
+        ceiling: usize,
+    ) -> bool {
+        let expired: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, transfer)| transfer.expires_at < now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for expired_id in expired {
+            self.remove(&expired_id);
+        }
+        let retained: std::collections::HashSet<_> = self.entries.keys().cloned().collect();
+        self.order.retain(|queued| retained.contains(queued));
+        while self.entries.len() >= 64 || self.bytes.saturating_add(bytes.len()) > ceiling {
+            let Some(oldest) = self.order.pop_front() else {
+                return false;
+            };
+            self.remove(&oldest);
+        }
+        self.bytes = self.bytes.saturating_add(bytes.len());
+        self.order.push_back(id.clone());
+        self.entries.insert(
+            id,
+            StateTransfer {
+                slug,
+                bytes,
+                digest,
+                expires_at: now + 120,
+            },
+        );
+        true
+    }
+
+    fn remove(&mut self, id: &str) -> Option<StateTransfer> {
+        let removed = self.entries.remove(id)?;
+        self.bytes = self.bytes.saturating_sub(removed.bytes.len());
+        Some(removed)
+    }
 }
 
 impl std::ops::Deref for Server {
@@ -289,6 +360,24 @@ pub struct Viewer {
 impl Viewer {
     pub fn at_least(&self, wanted: Role) -> bool {
         self.role.at_least(wanted)
+    }
+
+    pub fn document_authority(&self) -> crate::storage::postgres::Authority {
+        let account_id = uuid::Uuid::parse_str(&self.id.id).ok();
+        let link_hash = if self.link.is_empty() {
+            None
+        } else {
+            hex::decode(&self.link).ok()
+        };
+        let principal_key = account_id
+            .map(|id| id.to_string())
+            .or_else(|| (!self.link.is_empty()).then(|| format!("link:{}", self.link)))
+            .unwrap_or_else(|| format!("visitor:{}", self.key));
+        crate::storage::postgres::Authority {
+            principal_key,
+            account_id,
+            link_hash,
+        }
     }
 
     /// What a write by this caller is attributed to. The display string is
@@ -468,6 +557,7 @@ impl Server {
         let mcp_capacity = mcp::Capacity::default();
         Server {
             documents,
+            writer: None,
             shell,
             app,
             google: GoogleApp::default(),
@@ -492,7 +582,21 @@ impl Server {
             sockets: AtomicU64::new(1),
             asset_uploads: tokio::sync::Mutex::new(HashMap::new()),
             connections: tokio::sync::Mutex::new(HashMap::new()),
+            state_transfers: tokio::sync::Mutex::new(StateTransfers::default()),
         }
+    }
+
+    pub fn install_writer(&mut self, lease: crate::storage::postgres::WriterLease) {
+        self.writer = Some(tokio::sync::Mutex::new(lease));
+    }
+
+    pub async fn verify_writer(&self) -> Result<i64, crate::storage::postgres::Error> {
+        let writer = self.writer.as_ref().ok_or_else(|| {
+            crate::storage::postgres::Error::Ownership("writer is not ready".into())
+        })?;
+        let mut writer = writer.lock().await;
+        writer.verify().await?;
+        Ok(writer.epoch())
     }
 
     pub fn router(self: Arc<Server>) -> Router {
@@ -1007,7 +1111,7 @@ impl Server {
         author: &str,
     ) -> (Value, bool) {
         let id = &who.id;
-        let request_id = incoming.request_id.clone();
+        let request_id = incoming.request_id().to_owned();
         // The rung, not the switch: a document may name a commenter on a
         // deployment whose switch names nobody, and may be closed to a caller
         // the switch would have allowed.
@@ -1025,7 +1129,7 @@ impl Server {
                 "Read-only access. Ask the owner for a Comment or Edit link.".to_string()
             };
             return (
-                json!({"type": "error", "message": reason, "temp_id": incoming.temp_id,
+                json!({"type": "error", "message": reason, "temp_id": incoming.temp_id(),
                     "request_id": request_id, "version": 1,
                     "protocol": "librepaper.room.v1"}),
                 false,
@@ -1116,6 +1220,41 @@ pub const DOCUMENTATION: &str = "https://librepaper.org";
 #[cfg(test)]
 mod automation_authority_tests {
     use super::*;
+
+    #[test]
+    fn large_state_references_keep_exact_bounded_baseline_bytes() {
+        let mut transfers = StateTransfers::default();
+        assert!(transfers.insert(
+            "first".into(),
+            "paper".into(),
+            Bytes::from_static(b"baseline-r1"),
+            "digest-r1".into(),
+            10,
+            64,
+        ));
+        assert!(transfers.insert(
+            "second".into(),
+            "paper".into(),
+            Bytes::from_static(b"baseline-r2"),
+            "digest-r2".into(),
+            11,
+            64,
+        ));
+        assert_eq!(transfers.entries["first"].bytes, "baseline-r1");
+        assert_eq!(transfers.entries["second"].bytes, "baseline-r2");
+
+        assert!(transfers.insert(
+            "large".into(),
+            "paper".into(),
+            Bytes::from_static(b"a baseline that forces bounded eviction"),
+            "digest-large".into(),
+            12,
+            48,
+        ));
+        assert!(transfers.bytes <= 48);
+        assert!(!transfers.entries.contains_key("first"));
+        assert_eq!(transfers.entries["large"].slug, "paper");
+    }
 
     fn ceiling() -> Ceiling {
         Ceiling {

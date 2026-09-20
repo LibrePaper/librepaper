@@ -37,6 +37,9 @@ pub enum FenceReason {
     /// A durable agent source operation is awaiting reconciliation. Until
     /// its marker and authority are resolved, this room must not be served.
     AgentRecoveryPending = 5,
+    /// The durable graph was written by a newer document schema. It remains
+    /// available for recovery/export but this binary must not repair it.
+    UnsupportedSchema = 6,
 }
 
 impl FenceReason {
@@ -49,6 +52,7 @@ impl FenceReason {
             3 => Self::NotAuthoritative,
             4 => Self::Oversized,
             5 => Self::AgentRecoveryPending,
+            6 => Self::UnsupportedSchema,
             _ => Self::HeldElsewhere,
         }
     }
@@ -74,6 +78,9 @@ impl FenceReason {
             }
             Self::AgentRecoveryPending => {
                 "this document has a pending agent operation and is awaiting recovery"
+            }
+            Self::UnsupportedSchema => {
+                "this document requires a newer LibrePaper version; upgrade before editing"
             }
         }
     }
@@ -151,6 +158,7 @@ pub enum WriteError {
     /// The caller's rights, or the session those rights were granted in,
     /// no longer admit this write.
     /// Past a configured ceiling. No retry helps (track 10's type).
+    #[allow(dead_code)]
     Size(SizeRefusal),
     /// Past one of the figure ceilings.
     Figure(FigureLimit),
@@ -166,6 +174,9 @@ pub enum WriteError {
     Conflict(String),
     /// The input is not something this document could ever take.
     Invalid(String),
+    /// The document was produced by a newer domain schema. Retrying these
+    /// bytes on this binary would risk corrupting data.
+    UpgradeRequired { found: u64, supported: u32 },
     /// Storage failed. The string is context for the log; clients are told
     /// only that storage is unavailable.
     Storage(String),
@@ -182,7 +193,7 @@ impl WriteError {
         match self {
             Self::ReadOnly(reason) if reason.temporary() => Retry::Later,
             Self::ReadOnly(_) => Retry::No,
-            Self::NotFound | Self::Invalid(_) => Retry::No,
+            Self::NotFound | Self::Invalid(_) | Self::UpgradeRequired { .. } => Retry::No,
             Self::Size(_) | Self::Figure(_) | Self::Document(_) => Retry::No,
             Self::RateLimited => Retry::Later,
             // A stale input has to be rebuilt against the current document
@@ -205,6 +216,7 @@ impl WriteError {
             Self::RateLimited => 429,
             Self::Conflict(_) => 409,
             Self::Invalid(_) => 400,
+            Self::UpgradeRequired { .. } => 426,
             Self::Storage(_) => 503,
         }
     }
@@ -220,6 +232,9 @@ impl WriteError {
             Self::RateLimited => "too many updates".into(),
             Self::NotFound => "not found".into(),
             Self::Conflict(why) | Self::Invalid(why) => why.clone(),
+            Self::UpgradeRequired { found, supported } => format!(
+                "document schema {found} requires a newer client or server (this version supports {supported})"
+            ),
             Self::Storage(_) => "storage temporarily unavailable".into(),
         }
     }
@@ -260,6 +275,7 @@ impl From<CatalogError> for WriteError {
             CatalogError::NotFound => Self::NotFound,
             CatalogError::Invalid(why) => Self::Invalid(why),
             CatalogError::Conflict(why) => Self::Conflict(why),
+            CatalogError::Ownership(why) => Self::Storage(why),
             CatalogError::Database(err) => Self::Storage(err.to_string()),
         }
     }

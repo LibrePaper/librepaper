@@ -160,7 +160,7 @@ impl PostgresCatalog {
         account_id: Uuid,
         recovery_grace: time::Duration,
     ) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_writer_transaction().await?;
         let status = sqlx::query_scalar!(
             "SELECT status FROM accounts WHERE id=$1 FOR UPDATE",
             account_id,
@@ -231,7 +231,7 @@ impl PostgresCatalog {
     }
 
     pub async fn finish_account_erasure(&self, account_id: Uuid) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_writer_transaction().await?;
         let remaining = sqlx::query_scalar!(
             r#"SELECT count(*) AS "count!" FROM documents WHERE owner_id=$1"#,
             account_id,
@@ -324,7 +324,8 @@ impl PostgresCatalog {
         if title.is_empty() || !matches!(ownership_mode, "owned" | "open" | "example") {
             return Err(Error::Invalid("invalid document metadata".into()));
         }
-        Ok(sqlx::query!(
+        let mut tx = self.begin_writer_transaction().await?;
+        let changed = sqlx::query!(
             "UPDATE documents SET title=$2,owner_id=$3,ownership_mode=$4,
              updated_at=now() WHERE id=$1 AND status='active'",
             id,
@@ -332,10 +333,12 @@ impl PostgresCatalog {
             owner_id,
             ownership_mode,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?
         .rows_affected()
-            == 1)
+            == 1;
+        tx.commit().await?;
+        Ok(changed)
     }
 
     pub async fn create_account(&self, input: NewAccount) -> Result<AccountRecord> {
@@ -655,6 +658,29 @@ impl PostgresCatalog {
         inputs: Vec<NewAsset>,
         retained_byte_limit: i64,
     ) -> Result<Vec<(AssetRecord, bool)>> {
+        self.complete_assets_with_limit_inner(inputs, retained_byte_limit, None)
+            .await
+    }
+
+    pub async fn complete_asset_authorized_with_limit(
+        &self,
+        input: NewAsset,
+        retained_byte_limit: i64,
+        actor: &super::MutationAuthorization,
+    ) -> Result<(AssetRecord, bool)> {
+        self.complete_assets_with_limit_inner(vec![input], retained_byte_limit, Some(actor))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Invalid("asset batch was empty".into()))
+    }
+
+    async fn complete_assets_with_limit_inner(
+        &self,
+        inputs: Vec<NewAsset>,
+        retained_byte_limit: i64,
+        actor: Option<&super::MutationAuthorization>,
+    ) -> Result<Vec<(AssetRecord, bool)>> {
         if inputs.is_empty() || inputs.len() > 4096 {
             return Err(Error::Invalid("invalid completed asset batch".into()));
         }
@@ -677,7 +703,11 @@ impl PostgresCatalog {
         if retained_byte_limit < 0 {
             return Err(Error::Invalid("invalid retained asset limit".into()));
         }
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_writer_transaction().await?;
+        if let Some(actor) = actor {
+            PostgresCatalog::authorize_annotation_mutation(&mut tx, document_id, actor, true)
+                .await?;
+        }
         // The owner is read under the same lock that guards the document's
         // status, so the quota below is measured against the owner this
         // document still has when the assets are written.
@@ -966,7 +996,7 @@ impl PostgresCatalog {
         if input.archive_bytes < 0 || input.logical_bytes < 0 || input.archive_key.is_empty() {
             return Err(Error::Invalid("invalid source version".into()));
         }
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_writer_transaction().await?;
         let document = sqlx::query!(
             "SELECT update_sequence,project_generation,status,owner_id FROM documents
              WHERE id=$1 FOR UPDATE",
@@ -1106,13 +1136,15 @@ impl PostgresCatalog {
     /// Nothing else writes `created_at`; a version records when it was made,
     /// and that is not a fact a caller gets to supply.
     pub async fn backdate_version(&self, id: Uuid, at: OffsetDateTime) -> Result<()> {
+        let mut tx = self.begin_writer_transaction().await?;
         sqlx::query!(
             "UPDATE document_versions SET created_at=$2 WHERE id=$1",
             id,
             at,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1209,28 +1241,34 @@ impl PostgresCatalog {
         id: Uuid,
         label: Option<&str>,
     ) -> Result<bool> {
-        Ok(sqlx::query!(
+        let mut tx = self.begin_writer_transaction().await?;
+        let changed = sqlx::query!(
             "UPDATE document_versions SET label=$3 WHERE document_id=$1 AND id=$2",
             document_id,
             id,
             label.filter(|v| !v.is_empty()),
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?
         .rows_affected()
-            == 1)
+            == 1;
+        tx.commit().await?;
+        Ok(changed)
     }
 
     pub async fn mark_document_deleting(&self, document_id: Uuid) -> Result<bool> {
-        Ok(sqlx::query!(
+        let mut tx = self.begin_writer_transaction().await?;
+        let changed = sqlx::query!(
             "UPDATE documents SET status='deleting',deleted_at=COALESCE(deleted_at,now()),
              updated_at=now() WHERE id=$1 AND status='active'",
             document_id,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?
         .rows_affected()
-            == 1)
+            == 1;
+        tx.commit().await?;
+        Ok(changed)
     }
 
     /// The documents this account has deleted and can still get back.
@@ -1293,7 +1331,7 @@ impl PostgresCatalog {
     /// listing pointing at files that are half gone. So a purge that is no
     /// longer 'queued' refuses the restore rather than racing it.
     pub async fn restore_document(&self, document_id: Uuid) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_writer_transaction().await?;
         let cancelled = sqlx::query!(
             "UPDATE jobs SET status='cancelled',updated_at=now()
              WHERE kind='document_deletion' AND document_id=$1 AND status='queued'",
@@ -1326,26 +1364,32 @@ impl PostgresCatalog {
     /// "Delete forever" in the trash: the job is already queued and already
     /// knows how to do it, so this only brings it forward.
     pub async fn hasten_deletion(&self, document_id: Uuid) -> Result<bool> {
-        Ok(sqlx::query!(
+        let mut tx = self.begin_writer_transaction().await?;
+        let changed = sqlx::query!(
             "UPDATE jobs SET run_after=now(),updated_at=now()
              WHERE kind='document_deletion' AND document_id=$1 AND status='queued'",
             document_id,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?
         .rows_affected()
-            > 0)
+            > 0;
+        tx.commit().await?;
+        Ok(changed)
     }
 
     pub async fn finish_document_deletion(&self, document_id: Uuid) -> Result<bool> {
-        Ok(sqlx::query!(
+        let mut tx = self.begin_writer_transaction().await?;
+        let changed = sqlx::query!(
             "DELETE FROM documents WHERE id=$1 AND status='deleting'",
             document_id,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?
         .rows_affected()
-            == 1)
+            == 1;
+        tx.commit().await?;
+        Ok(changed)
     }
 
     pub async fn usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {

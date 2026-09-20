@@ -1,6 +1,5 @@
 use super::*;
-use crate::storage::source::{CommitArchive, SourceStorage};
-use crate::storage::source_archive::{SourceArchive, SourceFile};
+use crate::storage::source::SourceStorage;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Attribution {
@@ -84,17 +83,44 @@ impl Room {
         &self,
         why: &str,
         by: impl Into<Attribution>,
+        authority: &crate::storage::postgres::Authority,
     ) -> Result<Option<String>, WriteError> {
-        self.commit_version(why, by.into(), false).await
+        self.commit_version(why, by.into(), authority, false, None)
+            .await
+    }
+
+    pub(crate) async fn checkpoint_idempotent(
+        &self,
+        why: &str,
+        by: impl Into<Attribution>,
+        authority: &crate::storage::postgres::Authority,
+        request_id: uuid::Uuid,
+    ) -> Result<Option<String>, WriteError> {
+        self.commit_version(why, by.into(), authority, false, Some(request_id))
+            .await
     }
 
     async fn commit_version(
         &self,
         why: &str,
         by: Attribution,
-        force: bool,
+        authority: &crate::storage::postgres::Authority,
+        _force: bool,
+        request_id: Option<uuid::Uuid>,
     ) -> Result<Option<String>, WriteError> {
-        let _guard = self.checkpoint_write.lock().await;
+        let command = self.command_owner.acquire().await;
+        self.commit_version_owned(&command, why, by, authority, request_id)
+            .await
+    }
+
+    pub(super) async fn commit_version_owned(
+        &self,
+        _command: &owner::CommandLease,
+        why: &str,
+        by: Attribution,
+        authority: &crate::storage::postgres::Authority,
+        request_id: Option<uuid::Uuid>,
+    ) -> Result<Option<String>, WriteError> {
         if self.read_only() {
             return Err(self.fenced());
         }
@@ -104,42 +130,43 @@ impl Room {
             .ok_or_else(|| WriteError::Storage("PostgreSQL catalog required".into()))?;
         let document_id = uuid::Uuid::parse_str(&self.storage_id)
             .map_err(|_| WriteError::Storage("invalid document id".into()))?;
-        self.write_session_inner(false, true).await?;
-        let document = catalog
-            .document(document_id)
+        let source_revision = catalog
+            .current_source_revision(document_id)
+            .await
+            .map_err(|e| WriteError::Storage(e.to_string()))?;
+        let (tree, _bodies, frontier) = {
+            let state = self.command_owner.state().await;
+            let (tree, bodies) = tree_of(&state.session.doc, &state.session.asset_sizes);
+            (tree, bodies, state.session.doc.state_frontiers().encode())
+        };
+        let revision = catalog
+            .source_revision_record(document_id, source_revision)
             .await
             .map_err(|e| WriteError::Storage(e.to_string()))?
-            .ok_or_else(|| WriteError::Storage("document missing".into()))?;
-        let (tree, bodies) = {
-            let state = self.state.lock().await;
-            tree_of(&state.session.doc, &state.session.asset_sizes)
-        };
-        let digest = tree.digest();
-        let last = self.state.lock().await.manifest.latest().cloned();
-        // Saying the same thing again is not an event. A checkpoint whose tree
-        // is the newest checkpoint's tree writes no version and no archive:
-        // what it would record is already recorded, under a name that is
-        // already the digest of these bytes.
-        //
-        // The comparison needs the newest checkpoint's own tree digest, which
-        // is why it is a column and not just an in-memory field. A checkpoint
-        // read back from a catalogue that predates that column cannot answer,
-        // and one duplicate is written -- once per such document, since the
-        // version it writes carries its digest.
-        if !force
-            && last
-                .as_ref()
-                .is_some_and(|point| !point.tree_sha.is_empty() && point.tree_sha == digest)
-        {
-            let mut state = self.state.lock().await;
-            state.session.cover_checkpoint(tree);
-            return Ok(last.map(|p| p.sha));
+            .ok_or_else(|| WriteError::Storage("checkpoint source revision missing".into()))?;
+        if revision.frontier != frontier {
+            return Err(WriteError::Conflict(
+                "checkpoint source is not the committed revision".into(),
+            ));
         }
+        let digest = tree.digest();
+        let last = self.command_owner.state().await.manifest.latest().cloned();
+        // Every explicit checkpoint is a distinct timeline event, even when
+        // it names the same canonical tree as its parent. Request-id replay,
+        // not content equality, is what suppresses accidental duplication;
+        // this lets independent labels and authorship coexist.
         // What this checkpoint moved, answered here because here is where both
         // trees are in hand: the one being written, and the one this room last
         // wrote. After a load the parent is read back once, from the version
         // that names it.
-        let parent = match self.state.lock().await.session.checkpoint_tree.clone() {
+        let parent = match self
+            .command_owner
+            .state()
+            .await
+            .session
+            .checkpoint_tree
+            .clone()
+        {
             Some(cached) => Some(cached),
             None => match last.as_ref() {
                 Some(point) => self
@@ -159,74 +186,42 @@ impl Room {
             .as_ref()
             .map(|parent| tree.changed_from(parent))
             .filter(|paths| paths.len() <= MAX_CHANGED_PATHS);
-        let digests: Vec<_> = tree
-            .files
-            .values()
-            .filter(|entry| entry.kind == "asset")
-            .map(|entry| entry.sha.clone())
-            .collect();
-        let assets = catalog
-            .assets_by_digests(document_id, &digests)
-            .await
-            .map_err(|e| WriteError::Storage(e.to_string()))?;
-        let by_digest: HashMap<_, _> = assets
-            .into_iter()
-            .map(|asset| (hex::encode(&asset.digest), asset))
-            .collect();
-        let mut files = Vec::with_capacity(tree.files.len());
-        for (path, entry) in &tree.files {
-            if entry.kind == "text" {
-                let body = bodies
-                    .get(&entry.sha)
-                    .ok_or_else(|| WriteError::Storage("checkpoint text missing".into()))?;
-                files.push(SourceFile::Inline {
-                    path: path.clone(),
-                    bytes: body.as_bytes().to_vec(),
-                });
-            } else {
-                let asset = by_digest
-                    .get(&entry.sha)
-                    .ok_or_else(|| WriteError::Storage("checkpoint asset missing".into()))?;
-                let digest: [u8; 32] = asset
-                    .digest
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| WriteError::Storage("invalid asset digest".into()))?;
-                files.push(SourceFile::Asset {
-                    path: path.clone(),
-                    asset_id: asset.id,
-                    digest,
-                    bytes: asset.byte_length as u64,
-                    media_type: asset.media_type.clone(),
-                });
-            }
-        }
         let account = by
             .account_id()
             .and_then(|id| uuid::Uuid::parse_str(id).ok());
-        let stored = SourceStorage::new(catalog.clone(), self.blobs.clone(), Default::default())
-            .commit_archive(CommitArchive {
-                document_id,
-                archive: SourceArchive {
-                    source_format: document.source_format,
-                    main_path: tree.main.clone(),
-                    files,
+        let receipt = request_id.map(|request_id| crate::storage::postgres::SemanticReceipt {
+            request_id,
+            canonical_command: serde_json::json!({
+                "kind": "checkpoint",
+                "reason": why,
+                "source_revision": source_revision.to_string(),
+                "tree_digest": digest,
+            }),
+            stable_result: serde_json::Value::Null,
+            status: "committed".into(),
+        });
+        let row = catalog
+            .create_checkpoint(
+                crate::storage::postgres::NewCheckpoint {
+                    id: uuid::Uuid::now_v7(),
+                    document_id,
+                    source_revision,
+                    tree_digest: tree.digest_bytes(),
+                    changed_paths: changed,
+                    file_count: tree.files.len() as i32,
+                    reason: why.into(),
+                    label: None,
+                    author_account_id: account,
+                    author_label: by.display().into(),
                 },
-                through_update_sequence: document.update_sequence,
-                project_generation: document.project_generation,
-                tree_digest: Some(tree.digest_bytes()),
-                changed_paths: changed,
-                reason: why.into(),
-                label: None,
-                author_account_id: account,
-                author_label: by.display().into(),
-                make_current: true,
-            })
+                authority,
+                receipt.as_ref(),
+            )
             .await
             .map_err(|e| WriteError::Storage(e.to_string()))?;
-        let point = checkpoint_from_version(&stored.version);
+        let point = checkpoint_from_record(&row);
         let sha = point.sha.clone();
-        let mut state = self.state.lock().await;
+        let mut state = self.command_owner.state().await;
         state.session.cover_checkpoint(tree);
         state.manifest.checkpoints.push(point);
         Ok(Some(sha))
@@ -255,7 +250,7 @@ impl Room {
     pub async fn project_at_frontier(&self, frontier: &[u8]) -> Result<ProjectAtFrontier, String> {
         let at = loro::Frontiers::decode(frontier)
             .map_err(|error| format!("invalid frontier: {error}"))?;
-        let state = self.state.lock().await;
+        let state = self.command_owner.state().await;
         let past = state
             .session
             .doc
@@ -279,10 +274,10 @@ impl Room {
         let document_id =
             uuid::Uuid::parse_str(&self.storage_id).map_err(|_| "invalid document id")?;
         Ok(catalog
-            .version(document_id, id)
+            .checkpoint(document_id, id)
             .await
             .map_err(|e| e.to_string())?
-            .map(|v| checkpoint_from_version(&v)))
+            .map(|v| checkpoint_from_record(&v)))
     }
     pub async fn checkpoints_prefix(&self, prefix: &str) -> Result<Vec<Checkpoint>, String> {
         Ok(self
@@ -306,15 +301,20 @@ impl Room {
             .ok_or("PostgreSQL catalog required")?;
         let id = uuid::Uuid::parse_str(&self.storage_id).map_err(|_| "invalid document id")?;
         let rows = catalog
-            .version_page(id, after, limit.clamp(1, 200) as i64)
+            .checkpoint_page_records(id, after, limit.clamp(1, 200) as i64)
             .await
             .map_err(|e| e.to_string())?;
         let next = (rows.len() == limit.clamp(1, 200) as usize)
             .then(|| rows.last().map(|v| v.sequence))
             .flatten();
-        Ok((rows.iter().map(checkpoint_from_version).collect(), next))
+        Ok((rows.iter().map(checkpoint_from_record).collect(), next))
     }
-    pub async fn label_version(&self, sha: &str, label: &str) -> Result<bool, WriteError> {
+    pub async fn label_version(
+        &self,
+        sha: &str,
+        label: &str,
+        authority: &crate::storage::postgres::Authority,
+    ) -> Result<bool, WriteError> {
         let catalog = self
             .catalog
             .get()
@@ -324,7 +324,7 @@ impl Room {
         let id = uuid::Uuid::parse_str(sha)
             .map_err(|_| WriteError::Storage("invalid version id".into()))?;
         catalog
-            .label_version(doc, id, Some(label))
+            .label_checkpoint(doc, id, Some(label), authority)
             .await
             .map_err(|e| WriteError::Storage(e.to_string()))
     }
@@ -337,77 +337,65 @@ impl Room {
         &self,
         point: &Checkpoint,
         by: impl Into<Attribution>,
+        authority: &crate::storage::postgres::Authority,
     ) -> Result<(Vec<u8>, String), WriteError> {
+        let command = self.command_owner.acquire().await;
         let by = by.into();
         let (tree, bodies) = self
             .checkpoint_texts(point)
             .await
             .map_err(WriteError::Storage)?;
-        self.commit_version("superseded", by.clone(), false).await?;
-        let before = {
-            let state = self.state.lock().await;
-            session::encode_vector(&state.session.doc)
-        };
+        self.commit_version_owned(&command, "superseded", by.clone(), authority, None)
+            .await?;
         // The format is read into a local first: passing the guard's value as
         // an argument keeps that guard alive for the whole call, and the call
         // takes the same lock.
         let format = {
-            let state = self.state.lock().await;
+            let state = self.command_owner.state().await;
             state.session.format.clone()
         };
-        self.rollback_bundle_memory(&tree, &bodies, &format).await?;
-        let update = {
-            let state = self.state.lock().await;
-            session::encode_diff(&state.session.doc, &before).map_err(WriteError::Storage)?
-        };
+        let (_, update, _) = self
+            .commit_edit_owned(
+                &command,
+                authority,
+                by.clone(),
+                CommitEditOptions {
+                    supersede_proposals: true,
+                    ..CommitEditOptions::default()
+                },
+                |candidate, _, _| {
+                    session::restore(candidate, &tree, &bodies);
+                    Ok::<_, WriteError>(())
+                },
+            )
+            .await?;
+        self.command_owner.state().await.session.format = format;
         let sha = self
-            .commit_version("restore", by, true)
+            .commit_version_owned(&command, "restore", by, authority, None)
             .await?
             .ok_or_else(|| WriteError::Storage("restore checkpoint missing".into()))?;
         Ok((update, sha))
     }
     pub async fn tree(&self) -> crate::document::history::Tree {
-        let _g = self.bundle_write.lock().await;
-        let state = self.state.lock().await;
+        let _g = self.command_owner.acquire().await;
+        let state = self.command_owner.state().await;
         tree_of(&state.session.doc, &state.session.asset_sizes).0
-    }
-    pub(crate) async fn rollback_bundle_inner(
-        &self,
-        tree: &crate::document::history::Tree,
-        bodies: &HashMap<String, String>,
-        format: &str,
-    ) -> Result<(), WriteError> {
-        self.rollback_bundle_memory(tree, bodies, format).await?;
-        self.write_session_inner(false, false).await.map(|_| ())
-    }
-    pub(crate) async fn rollback_bundle_memory(
-        &self,
-        tree: &crate::document::history::Tree,
-        bodies: &HashMap<String, String>,
-        format: &str,
-    ) -> Result<(), WriteError> {
-        let mut state = self.state.lock().await;
-        session::restore(&state.session.doc, tree, bodies);
-        state.session.format = format.into();
-        state.session.generation += 1;
-        state.session.mark_dirty(now_unix());
-        Ok(())
     }
     pub async fn manifest(&self) -> Manifest {
         let Some(catalog) = self.catalog.as_ref().get() else {
-            return self.state.lock().await.manifest.clone();
+            return self.command_owner.state().await.manifest.clone();
         };
         let Ok(id) = uuid::Uuid::parse_str(&self.storage_id) else {
             return Manifest::default();
         };
-        match catalog.versions(id, 1000).await {
+        match catalog.checkpoint_page_records(id, None, 200).await {
             Ok(mut rows) => {
                 rows.reverse();
                 Manifest {
-                    checkpoints: rows.iter().map(checkpoint_from_version).collect(),
+                    checkpoints: rows.iter().map(checkpoint_from_record).collect(),
                 }
             }
-            Err(_) => self.state.lock().await.manifest.clone(),
+            Err(_) => self.command_owner.state().await.manifest.clone(),
         }
     }
 
@@ -422,11 +410,19 @@ impl Room {
             .ok_or("PostgreSQL catalog required")?;
         let doc = uuid::Uuid::parse_str(&self.storage_id).map_err(|_| "invalid document id")?;
         let id = uuid::Uuid::parse_str(&point.sha).map_err(|_| "invalid version id")?;
-        let version = catalog
-            .version(doc, id)
+        let checkpoint = catalog
+            .checkpoint(doc, id)
             .await
             .map_err(|e| e.to_string())?
-            .ok_or("version missing")?;
+            .ok_or("checkpoint missing")?;
+        let version_id = checkpoint
+            .archive_version_id
+            .ok_or_else(|| format!("checkpoint archive is {}", checkpoint.archive_status))?;
+        let version = catalog
+            .version(doc, version_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("checkpoint archive missing")?;
         SourceStorage::new(catalog.clone(), self.blobs.clone(), Default::default())
             .read_version(version)
             .await
@@ -434,11 +430,9 @@ impl Room {
     }
 }
 
-pub(crate) fn checkpoint_from_version(v: &crate::storage::postgres::VersionRecord) -> Checkpoint {
+pub(crate) fn checkpoint_from_record(v: &crate::storage::postgres::CheckpointRecord) -> Checkpoint {
     Checkpoint {
         sha: v.id.to_string(),
-        // Absent on versions written before the catalogue recorded a tree
-        // digest; `content_sha` names what such a checkpoint falls back to.
         tree_sha: v
             .tree_digest
             .as_deref()
@@ -449,16 +443,13 @@ pub(crate) fn checkpoint_from_version(v: &crate::storage::postgres::VersionRecor
         by: v.author_label.clone(),
         by_account: v.author_account_id.map(|id| id.to_string()),
         why: v.reason.clone(),
-        source_format: String::new(),
-        size: v.logical_bytes,
-        // Carried through as it was stored. `None` is a row written before
-        // the column existed, or one whose change list was too long to be
-        // worth keeping; an empty list is a version that moved no file, which
-        // is a thing the timeline can say out loud.
         changed: v.changed_paths.clone(),
         label: v.label.clone().unwrap_or_default(),
         seq: v.sequence,
         tree: true,
+        size: v.file_count.unwrap_or_default() as i64,
+        source_revision: v.source_revision.unwrap_or_default(),
+        archive_status: v.archive_status.clone(),
         ..Default::default()
     }
 }

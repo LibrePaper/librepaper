@@ -153,7 +153,7 @@
   // whether the socket is up. `pending` counts the updates the server has not
   // yet said it has written; `local` says the document is in this browser's
   // own storage, which is what makes a reload safe while the socket is down.
-  let persistence = $state({ pending: 0, local: false, joined: false });
+  let persistence = $state({ pending: 0, local: false, localPending: 0, localError: "", joined: false, confirmedCoverage: "" });
 
   /* --------------------------------------------------------------- anchoring */
 
@@ -1249,7 +1249,7 @@
     if (event.type === "doc-ack") {
       // The server has written this far. Relaying was never durability; this
       // is, and it is what the badge is allowed to speak from.
-      session?.acknowledge(event.seq || 0);
+      session?.acknowledge(event.seq || 0, event.vector || "");
       return;
     }
     if (event.type === "doc-peers") {

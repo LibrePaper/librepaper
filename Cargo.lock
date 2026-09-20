@@ -2971,6 +2971,7 @@ dependencies = [
  "html-escape",
  "http-body-util",
  "include_dir",
+ "librepaper-document-core",
  "log",
  "loro",
  "object_store",
@@ -2999,6 +3000,15 @@ dependencies = [
  "wasm-markdown",
  "wasm-typst",
  "zstd",
+]
+
+[[package]]
+name = "librepaper-document-core"
+version = "0.1.0"
+dependencies = [
+ "loro",
+ "serde",
+ "unicode-normalization",
 ]
 
 [[package]]

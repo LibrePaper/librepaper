@@ -16,6 +16,7 @@ name = "librepaper"
 path = "src/main.rs"
 
 [dependencies]
+librepaper-document-core = { path = "../librepaper-document-core" }
 wasm-helpers = { git = "https://github.com/LibrePaper/wasm-helpers", tag = "v0.1.1" }
 wasm-markdown = { git = "https://github.com/LibrePaper/wasm-markdown", tag = "v0.1.1", default-features = false }
 wasm-typst = { git = "https://github.com/LibrePaper/wasm-typst", tag = "v0.3.1", default-features = false }

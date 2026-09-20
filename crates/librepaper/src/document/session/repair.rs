@@ -31,11 +31,16 @@ pub enum Repair {
     /// and a peer whose path silently changed underneath it would otherwise
     /// diverge from the copy the server now holds.
     Normalised { id: String, to: String },
-    /// An asset key the rules refuse. There is nothing to rename it to -- the
-    /// key *is* the name -- so the entry goes.
-    DroppedAsset { path: String },
     /// `meta.main` named nothing, or named a file that is not there.
     Remained { id: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RepairError {
+    /// Asset moves are explicit domain operations. A normalization pass may
+    /// neither invent a new asset name nor delete its reference to make a
+    /// malformed or colliding candidate appear valid.
+    UnsafeAssetPath { path: String },
 }
 
 /// Puts right whatever a peer wrote that the document cannot hold, in one
@@ -48,7 +53,7 @@ pub enum Repair {
 /// closing their socket would lose the rest of what they typed. Every key in
 /// the shared document is a string any editor can set, so this is the place
 /// that says what those strings may be.
-pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
+pub fn repair(doc: &LoroDoc, rules: &Rules) -> Result<Vec<Repair>, RepairError> {
     let mut done = Vec::new();
 
     // A file under the empty id is rehomed under a minted one, keeping its
@@ -123,14 +128,17 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
         named.retain(|(id, _)| !dangling.contains(id));
     }
 
-    let mut taken: HashSet<String> = HashSet::new();
+    // Compute every desired path before writing any correction. This reserves
+    // pre-existing suffixed destinations (for example `paper (2).md`) before
+    // allocating a suffix to a concurrent duplicate of `paper.md`.
+    let mut prepared = Vec::with_capacity(named.len());
     for (id, path) in named {
         // Whether this id has already had a `Renamed` or `Collided` pushed
         // for it below -- the two repairs that already say a path changed.
         // A `Normalised` at the end is only for a path that changed and had
         // neither said so yet.
         let mut reported = false;
-        let mut wanted = match paths::check(rules, &path) {
+        let wanted = match paths::check(rules, &path) {
             Ok(paths::Kind::Text) => paths::normalise(&path),
             // A text at an asset's name, or at no known name at all: the file
             // holds words, whatever it is called, so it is renamed rather than
@@ -145,6 +153,17 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
                 placeholder
             }
         };
+        prepared.push((id, path, wanted, reported));
+    }
+    prepared.sort_by(|left, right| {
+        (&paths::collision_key(&left.2), &left.0).cmp(&(&paths::collision_key(&right.2), &right.0))
+    });
+    let mut reserved: HashSet<String> = prepared
+        .iter()
+        .map(|(_, _, wanted, _)| paths::collision_key(wanted))
+        .collect();
+    let mut taken: HashSet<String> = HashSet::new();
+    for (id, path, mut wanted, mut reported) in prepared {
         if taken.contains(&paths::collision_key(&wanted)) {
             let mut base = wanted.clone();
             let mut nth = 2;
@@ -168,7 +187,8 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
                     candidate = paths::suffixed(&base, nth);
                     continue;
                 }
-                if !taken.contains(&paths::collision_key(&candidate)) {
+                let key = paths::collision_key(&candidate);
+                if !taken.contains(&key) && !reserved.contains(&key) {
                     break;
                 }
                 nth += 1;
@@ -179,11 +199,15 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
                 id: id.clone(),
                 to: wanted.clone(),
             });
+            reserved.insert(paths::collision_key(&wanted));
             reported = true;
         }
         taken.insert(paths::collision_key(&wanted));
         if wanted != path {
-            super::edits::rename_path(doc, &path, &wanted);
+            // The candidate snapshot was indexed by stable file id above.
+            // Write that exact id: reverse lookup by an ambiguous old path can
+            // move the wrong file when two concurrent creations share a name.
+            super::shape::put_path(doc, &id, &wanted);
             if !reported {
                 done.push(Repair::Normalised {
                     id: id.clone(),
@@ -242,8 +266,8 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
     }
 
     // An asset is named by its key, so a key the rules refuse has nothing to
-    // be renamed to: the bytes are still in the store, and setting the key
-    // again with a name that passes is what puts them back.
+    // be renamed to. Refuse the whole candidate: silently dropping the
+    // reference would turn a naming error into semantic data loss.
     // Sorted for the same reason `named` is above: two assets that collide
     // only once case is folded (`Fig.png` and `fig.png`) must move the same
     // one of the two aside on every server, and a hash map's iteration order
@@ -253,9 +277,7 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
     for path in asset_paths {
         let refused = !matches!(paths::check(rules, &path), Ok(paths::Kind::Asset));
         if refused || taken.contains(&paths::collision_key(&path)) {
-            super::edits::remove_asset(doc, &path);
-            done.push(Repair::DroppedAsset { path });
-            continue;
+            return Err(RepairError::UnsafeAssetPath { path });
         }
         taken.insert(paths::collision_key(&path));
     }
@@ -286,7 +308,7 @@ pub fn repair(doc: &LoroDoc, rules: &Rules) -> Vec<Repair> {
         }
     }
 
-    done
+    Ok(done)
 }
 
 /// Sets the document to a tree that was checkpointed, in one transaction.
@@ -406,13 +428,13 @@ fn restore_with(
             // The id the tree recorded, so that restoring twice does not
             // make two files. A missing id is from a malformed/legacy tree,
             // and gets a fresh one rather than colliding with a live file.
-            let id = if entry.id.is_empty() {
-                super::shape::mint_id()
-            } else {
+            if entry.id.is_empty() {
+                super::edits::put_text(doc, path, &body)
+            } else if super::edits::put_text_with_id(doc, &entry.id, path, &body) {
                 entry.id.clone()
-            };
-            super::edits::put_text(doc, path, &body);
-            id
+            } else {
+                super::edits::put_text(doc, path, &body)
+            }
         };
         if *path == tree.main {
             main = id.clone();
@@ -450,15 +472,18 @@ fn restore_with(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
     use crate::config::Configuration;
+    use crate::document::history::{Tree, TreeEntry};
     use crate::document::session;
     use loro::{LoroDoc, LoroText};
 
     fn repaired(doc: &LoroDoc) -> (Vec<super::Repair>, Vec<super::Repair>) {
         let config = Configuration::default();
         let rules = config.paths();
-        let first = super::repair(doc, &rules);
-        let second = super::repair(doc, &rules);
+        let first = super::repair(doc, &rules).unwrap();
+        let second = super::repair(doc, &rules).unwrap();
         (first, second)
     }
 
@@ -490,6 +515,56 @@ mod tests {
             );
         }
         assert_eq!(session::paths_of(&doc).len(), 1, "one file, one name");
+    }
+
+    #[test]
+    fn an_asset_collision_is_refused_without_deleting_the_reference() {
+        let doc = session::new_doc();
+        session::put_text(&doc, "résumé.md", "text");
+        session::put_asset(&doc, "RÉSUMÉ.MD", "asset-digest");
+        let config = Configuration::default();
+        let rules = config.paths();
+
+        assert_eq!(
+            super::repair(&doc, &rules),
+            Err(super::RepairError::UnsafeAssetPath {
+                path: "RÉSUMÉ.MD".into()
+            })
+        );
+        assert_eq!(
+            session::assets_of(&doc)
+                .get("RÉSUMÉ.MD")
+                .map(String::as_str),
+            Some("asset-digest"),
+            "normalization must not conceal the collision by deleting data"
+        );
+    }
+
+    #[test]
+    fn concurrent_duplicates_preserve_a_preexisting_suffix_and_every_identity() {
+        let doc = session::new_doc();
+        let files = doc.get_map(super::super::shape::FILES);
+        for (id, body) in [("a", "first"), ("b", "second"), ("c", "already suffixed")] {
+            let text = files.insert_container(id, LoroText::new()).unwrap();
+            text.insert(0, body).unwrap();
+        }
+        let paths = doc.get_map(super::super::shape::PATHS);
+        paths.insert("a", "paper.md").unwrap();
+        paths.insert("b", "PAPER.MD").unwrap();
+        paths.insert("c", "paper (2).md").unwrap();
+
+        let (first, second) = repaired(&doc);
+        assert!(!first.is_empty());
+        assert!(second.is_empty(), "normalization must be idempotent");
+        let assigned = session::paths_of(&doc);
+        assert_eq!(assigned.get("a").map(String::as_str), Some("paper.md"));
+        assert_eq!(
+            assigned.get("c").map(String::as_str),
+            Some("paper (2).md"),
+            "an existing suffix is reserved before collision allocation"
+        );
+        assert_eq!(assigned.get("b").map(String::as_str), Some("PAPER (3).MD"));
+        assert_eq!(session::texts_of(&doc).len(), 3);
     }
 
     /// A file under the empty id is rehomed and keeps its words.
@@ -558,6 +633,39 @@ mod tests {
                 .map(String::as_str),
             Some("words nobody can reach"),
             "and it is reachable, with its words"
+        );
+    }
+
+    #[test]
+    fn restoring_a_new_file_installs_the_recorded_identity_and_main() {
+        let doc = session::new_doc();
+        let tree = Tree {
+            main: "main.md".into(),
+            files: BTreeMap::from([(
+                "main.md".into(),
+                TreeEntry {
+                    kind: "text".into(),
+                    id: "stable-file-id".into(),
+                    sha: "body-digest".into(),
+                    size: 4,
+                },
+            )]),
+            settings: None,
+        };
+        super::restore(
+            &doc,
+            &tree,
+            &HashMap::from([("body-digest".into(), "body".into())]),
+        );
+
+        assert_eq!(session::main_path(&doc), "main.md");
+        assert_eq!(
+            session::paths_of(&doc).get("stable-file-id"),
+            Some(&"main.md".to_string())
+        );
+        assert_eq!(
+            session::texts_of(&doc).get("main.md"),
+            Some(&"body".to_string())
         );
     }
 }

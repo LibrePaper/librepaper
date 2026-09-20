@@ -19,11 +19,14 @@ use crate::room::proposals::{Decision, ProposalError};
 use crate::storage::blob::FsStore;
 use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
 use loro::Frontiers;
+use uuid::Uuid;
 
 struct Deployment {
     rooms: RoomSet,
     catalog: Arc<PostgresCatalog>,
     slug: String,
+    authority: crate::storage::postgres::Authority,
+    _writer: crate::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
 }
 
@@ -54,10 +57,16 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         })
         .await
         .unwrap();
+    let authority = crate::storage::postgres::Authority {
+        principal_key: account.id.to_string(),
+        account_id: Some(account.id),
+        link_hash: None,
+    };
     let objects = tempfile::tempdir().unwrap();
     let blobs: Arc<dyn crate::storage::blob::BlobStore> =
         Arc::new(FsStore::new(objects.path(), false));
     let config = Arc::new(Configuration::default());
+    let writer = catalog.claim_writer().await.unwrap();
     let store = Arc::new(
         Store::open_with_catalog(blobs, config, catalog.clone())
             .await
@@ -88,18 +97,20 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         rooms: RoomSet::new(store),
         catalog,
         slug: slug.into(),
+        authority,
+        _writer: writer,
         _objects: objects,
     })
 }
 
 /// The room's own frontier, and the text of the main file.
 async fn frontier(room: &Room) -> Frontiers {
-    let state = room.state.lock().await;
+    let state = room.command_owner.state().await;
     state.session.doc.state_frontiers()
 }
 
 async fn text(room: &Room, path: &str) -> String {
-    let state = room.state.lock().await;
+    let state = room.command_owner.state().await;
     session::texts_of(&state.session.doc)
         .get(path)
         .cloned()
@@ -108,7 +119,7 @@ async fn text(room: &Room, path: &str) -> String {
 
 /// Writes into the room as somebody who is not the proposal's author.
 async fn other_writer_types(room: &Room, path: &str, body: &str) {
-    let state = room.state.lock().await;
+    let state = room.command_owner.state().await;
     session::put_text(&state.session.doc, path, body);
     state.session.doc.commit();
 }
@@ -143,7 +154,7 @@ async fn a_proposal_opens_at_the_base_its_author_forked_at() {
     let Some(deployment) = deployment("base-is-the-authors").await else {
         return;
     };
-    let room = deployment.rooms.get(&deployment.slug).await;
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
 
     // Where the author forked.
     let base = frontier(&room).await;
@@ -156,7 +167,10 @@ async fn a_proposal_opens_at_the_base_its_author_forked_at() {
         "the room has to have moved, or this proves nothing"
     );
 
-    let id = room.open_proposal("Ada", &base).await.unwrap();
+    let id = room
+        .open_proposal("Ada", &base, &deployment.authority, Uuid::new_v4())
+        .await
+        .unwrap();
 
     let stored = deployment
         .catalog
@@ -173,6 +187,49 @@ async fn a_proposal_opens_at_the_base_its_author_forked_at() {
         stored.base_frontiers,
         moved.encode(),
         "and not at wherever the room had got to when the message arrived"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn proposal_open_receipt_replays_without_a_second_commit() {
+    let Some(deployment) = deployment("proposal-open-receipt").await else {
+        return;
+    };
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
+    let base = frontier(&room).await;
+    let request_id = Uuid::new_v4();
+
+    let first = room
+        .open_proposal("Ada", &base, &deployment.authority, request_id)
+        .await
+        .unwrap();
+    let replay = room
+        .open_proposal("Ada", &base, &deployment.authority, request_id)
+        .await
+        .unwrap();
+    assert_eq!(replay, first);
+
+    let document_id: Uuid = room.storage_id.parse().unwrap();
+    let (commits, proposals): (i64, i64) = sqlx::query_as(
+        "SELECT d.commit_sequence,count(p.id) FROM documents d \
+         LEFT JOIN document_proposals p ON p.document_id=d.id WHERE d.id=$1 \
+         GROUP BY d.commit_sequence",
+    )
+    .bind(document_id)
+    .fetch_one(deployment.catalog.pool())
+    .await
+    .unwrap();
+    // Creation commits the initial source revision; opening the proposal is
+    // the only additional semantic commit, and replay advances nothing.
+    assert_eq!((commits, proposals), (2, 1));
+
+    let changed = room
+        .open_proposal("Grace", &base, &deployment.authority, request_id)
+        .await;
+    assert!(
+        changed.is_err(),
+        "a request identity cannot change its command"
     );
 }
 
@@ -198,21 +255,30 @@ async fn declining_a_proposal_does_not_revert_a_concurrent_writer() {
     let Some(deployment) = deployment("decline-keeps-others").await else {
         return;
     };
-    let room = deployment.rooms.get(&deployment.slug).await;
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
     let path = "paper.md";
 
     let base = frontier(&room).await;
     let (branch_bytes, tip) = {
-        let state = room.state.lock().await;
+        let state = room.command_owner.state().await;
         let at = state.session.doc.fork_at(&base).unwrap();
         author_forks(&at, 4242, path, "The tabby sat.\n")
     };
     other_writer_types(&room, path, "The cat sat. It purred.\n").await;
 
-    let id = room.open_proposal("Ada", &base).await.unwrap();
-    room.update_proposal(&id, &tip.encode(), &branch_bytes)
+    let id = room
+        .open_proposal("Ada", &base, &deployment.authority, Uuid::new_v4())
         .await
         .unwrap();
+    room.update_proposal(
+        &id,
+        &tip.encode(),
+        &branch_bytes,
+        &deployment.authority,
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
 
     // One hunk, because the author made one change. Anything more is the
     // room's own history being counted as theirs.
@@ -227,7 +293,7 @@ async fn declining_a_proposal_does_not_revert_a_concurrent_writer() {
         tip: Frontiers::decode(&stored.tip_frontiers).unwrap(),
     };
     let found = {
-        let state = room.state.lock().await;
+        let state = room.command_owner.state().await;
         crate::room::proposals::hunks(&state.session.doc, &proposal, &stored.branch_bytes).unwrap()
     };
     assert_eq!(
@@ -245,6 +311,8 @@ async fn declining_a_proposal_does_not_revert_a_concurrent_writer() {
             against: &tip.encode(),
             note: Some("not this time".into()),
             reviewer: 7,
+            request_id: uuid::Uuid::now_v7(),
+            authority: &deployment.authority,
         },
     )
     .await
@@ -271,7 +339,7 @@ async fn a_base_the_room_has_never_seen_is_refused() {
     let Some(deployment) = deployment("base-unknown").await else {
         return;
     };
-    let room = deployment.rooms.get(&deployment.slug).await;
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
 
     // A frontier from a document this room shares no history with.
     let stranger = session::new_doc();
@@ -280,7 +348,9 @@ async fn a_base_the_room_has_never_seen_is_refused() {
     stranger.commit();
     let elsewhere = stranger.state_frontiers();
 
-    let refused = room.open_proposal("Ada", &elsewhere).await;
+    let refused = room
+        .open_proposal("Ada", &elsewhere, &deployment.authority, Uuid::new_v4())
+        .await;
     assert!(
         matches!(refused, Err(ProposalError::UnknownBase)),
         "got {refused:?}"
@@ -312,7 +382,7 @@ async fn a_proposal_goes_open_update_decide_resolve() {
     let Some(deployment) = deployment("round-trip").await else {
         return;
     };
-    let room = deployment.rooms.get(&deployment.slug).await;
+    let room = deployment.rooms.try_get(&deployment.slug).await.unwrap();
     let path = "paper.md";
 
     // Where the author forks. Somebody else then types before the open is
@@ -323,16 +393,25 @@ async fn a_proposal_goes_open_update_decide_resolve() {
     // it.
     let base = frontier(&room).await;
     let (branch_bytes, tip) = {
-        let state = room.state.lock().await;
+        let state = room.command_owner.state().await;
         let at = state.session.doc.fork_at(&base).unwrap();
         author_forks(&at, 4242, path, "The tabby sat.\n")
     };
     other_writer_types(&room, path, "The cat sat. It purred.\n").await;
 
-    let id = room.open_proposal("Ada", &base).await.unwrap();
-    room.update_proposal(&id, &tip.encode(), &branch_bytes)
+    let id = room
+        .open_proposal("Ada", &base, &deployment.authority, Uuid::new_v4())
         .await
         .unwrap();
+    room.update_proposal(
+        &id,
+        &tip.encode(),
+        &branch_bytes,
+        &deployment.authority,
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
 
     // A decision against a tip the proposal has moved past is refused (§5.1).
     let stale = room
@@ -345,6 +424,8 @@ async fn a_proposal_goes_open_update_decide_resolve() {
                 against: &base.encode(),
                 note: None,
                 reviewer: 7,
+                request_id: uuid::Uuid::now_v7(),
+                authority: &deployment.authority,
             },
         )
         .await;
@@ -364,6 +445,8 @@ async fn a_proposal_goes_open_update_decide_resolve() {
                 against: &tip.encode(),
                 note: None,
                 reviewer: 7,
+                request_id: uuid::Uuid::now_v7(),
+                authority: &deployment.authority,
             },
         )
         .await

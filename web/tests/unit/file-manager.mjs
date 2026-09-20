@@ -42,7 +42,8 @@ try {
   assert.throws(() => session.addFolder("main.tex/sub", rules), /cannot contain/);
   assert.throws(() => checkPlacement(rules, { kind: "text", path: "archive/chapters.tex" }, [{ kind: "text", path: "archive/chapters.tex/one.tex" }], []), /already/);
   assert.throws(() => session.relocate([session.list().find((file) => file.id === main)], "main.png", rules, true), /cannot change/);
-  assert.throws(() => session.removeEntries([session.list().find((file) => file.id === main)]), /main file/);
+  session.removeEntries([session.list().find((file) => file.id === main)]);
+  assert.equal(session.mainId(), chapter, "deleting main selects the remaining text deterministically");
   const copy = session.duplicateEntry(session.list().find((file) => file.id === chapter), "copied.tex", rules);
   session.textOf(copy).insert(0, "COPY ");
   assert.equal(session.textOf(chapter).toString(), "REMOTE original", "duplicate has independent text");

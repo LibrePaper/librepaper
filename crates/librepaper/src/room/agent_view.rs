@@ -7,7 +7,7 @@ impl Room {
         author: &str,
         editor: bool,
     ) -> Result<crate::agent_query::QuerySnapshot, crate::room::agent::AgentError> {
-        let _bundle = self.bundle_write.lock().await;
+        let _command = self.command_owner.acquire().await;
         if self.fence_reason.load(std::sync::atomic::Ordering::Relaxed)
             == super::FenceReason::AgentRecoveryPending as u8
         {
@@ -15,7 +15,7 @@ impl Room {
                 "room state is awaiting agent operation recovery".into(),
             ));
         }
-        let state = self.state.lock().await;
+        let state = self.command_owner.state().await;
         let (tree, _) = tree_of(&state.session.doc, &state.session.asset_sizes);
         let comments = state
             .comments

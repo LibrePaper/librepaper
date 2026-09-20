@@ -76,6 +76,18 @@ pub struct Checkpoint {
     /// longer an observed adjacent edit.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ancestry_gap: bool,
+    /// Durable source revision captured atomically with this event. Zero is a
+    /// legacy checkpoint whose source revision could not be reconstructed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub source_revision: i64,
+    /// `pending`, `ready`, or `failed`. The checkpoint exists independently
+    /// of its asynchronously materialized archive.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub archive_status: String,
+}
+
+fn is_zero(value: &i64) -> bool {
+    *value == 0
 }
 
 impl Checkpoint {

@@ -216,132 +216,132 @@ impl Command {
 }
 
 impl Message {
-    /// Converts the compatible wire representation before any operation
-    /// accounting or mutation. Raw digest fields remain unchanged.
+    /// Converts a tagged transport frame before operation accounting or mutation.
     pub fn into_command(self) -> Result<Command, CommandError> {
-        let kind = self.kind.clone();
-        let temp_id = self.temp_id.clone();
-        let request_id = self.request_id.clone();
+        let kind = self.kind().to_owned();
+        let temp_id = self.temp_id().to_owned();
+        let request_id = self.request_id().to_owned();
+        let comment_id = self.comment_id().to_owned();
         let missing = |operation: &'static str, field: &'static str| {
             Err(CommandError::Missing {
                 operation,
                 field,
-                comment_id: self.comment_id.clone(),
+                comment_id: comment_id.clone(),
                 temp_id: temp_id.clone(),
                 request_id: request_id.clone(),
             })
         };
         match kind.as_str() {
             "comment" => Ok(Command::Comment {
-                motivation: self.motivation,
-                bundle_id: self.bundle_id,
-                body: self.body,
-                creator: self.creator,
-                exact: self.exact,
-                prefix: self.prefix,
-                suffix: self.suffix,
-                position: self.position,
-                document: self.document,
-                color: self.color,
-                proposed: self.proposed,
-                temp_id: self.temp_id,
-                request_id: self.request_id,
+                motivation: self.motivation().to_owned(),
+                bundle_id: self.bundle_id().to_owned(),
+                body: self.body().to_owned(),
+                creator: self.creator().to_owned(),
+                exact: self.exact().to_owned(),
+                prefix: self.prefix().to_owned(),
+                suffix: self.suffix().to_owned(),
+                position: self.position(),
+                document: self.document(),
+                color: self.color().map(str::to_owned),
+                proposed: self.proposed().map(str::to_owned),
+                temp_id,
+                request_id,
             }),
             "reply" => {
-                if self.comment_id.trim().is_empty() {
+                if comment_id.trim().is_empty() {
                     return missing("reply", "comment_id");
                 }
                 Ok(Command::Reply {
-                    comment_id: self.comment_id,
-                    body: self.body,
-                    creator: self.creator,
-                    temp_id: self.temp_id,
-                    request_id: self.request_id,
+                    comment_id,
+                    body: self.body().to_owned(),
+                    creator: self.creator().to_owned(),
+                    temp_id,
+                    request_id,
                 })
             }
             "resolve" => {
-                if self.comment_id.trim().is_empty() {
+                if comment_id.trim().is_empty() {
                     return missing("resolve", "comment_id");
                 }
                 Ok(Command::Resolve {
-                    comment_id: self.comment_id,
-                    resolved: self.resolved,
-                    temp_id: self.temp_id,
-                    request_id: self.request_id,
+                    comment_id,
+                    resolved: self.resolved(),
+                    temp_id,
+                    request_id,
                 })
             }
             "delete" => {
-                if self.comment_id.trim().is_empty() {
+                if comment_id.trim().is_empty() {
                     return missing("delete", "comment_id");
                 }
                 Ok(Command::Delete {
-                    comment_id: self.comment_id,
-                    temp_id: self.temp_id,
-                    request_id: self.request_id,
+                    comment_id,
+                    temp_id,
+                    request_id,
                 })
             }
             "refine" => {
-                if self.comment_id.trim().is_empty() {
+                if comment_id.trim().is_empty() {
                     return missing("refine", "comment_id");
                 }
-                if self.revision.trim().is_empty() {
+                if self.revision().trim().is_empty() {
                     return missing("refine", "revision");
                 }
-                let Some(proposed) = self.proposed else {
+                let Some(proposed) = self.proposed().map(str::to_owned) else {
                     return missing("refine", "proposed");
                 };
-                let Some(expected_proposed) = self.expected_proposed else {
+                let Some(expected_proposed) = self.expected_proposed().map(str::to_owned) else {
                     return missing("refine", "expected_proposed");
                 };
                 Ok(Command::Refine {
-                    comment_id: self.comment_id,
+                    comment_id,
                     proposed,
                     expected_proposed,
-                    body: self.body,
-                    revision: self.revision,
-                    temp_id: self.temp_id,
-                    request_id: self.request_id,
+                    body: self.body().to_owned(),
+                    revision: self.revision().to_owned(),
+                    temp_id,
+                    request_id,
                 })
             }
             "accept" => {
-                if self.comment_id.trim().is_empty() {
+                if comment_id.trim().is_empty() {
                     return missing("accept", "comment_id");
                 }
                 Ok(Command::Accept {
-                    comment_id: self.comment_id,
-                    temp_id: self.temp_id,
-                    request_id: self.request_id,
+                    comment_id,
+                    temp_id,
+                    request_id,
                 })
             }
             "reject" => {
-                if self.comment_id.trim().is_empty() {
+                if comment_id.trim().is_empty() {
                     return missing("reject", "comment_id");
                 }
                 Ok(Command::Reject {
-                    comment_id: self.comment_id,
-                    temp_id: self.temp_id,
-                    request_id: self.request_id,
+                    comment_id,
+                    temp_id,
+                    request_id,
                 })
             }
             "revision-decide" => {
-                if self.revision_id.trim().is_empty() {
+                if self.revision_id().trim().is_empty() {
                     return missing("revision-decide", "revision_id");
                 }
-                if self.request_id.trim().is_empty() {
+                if request_id.trim().is_empty() {
                     return missing("revision-decide", "request_id");
                 }
-                if !matches!(self.action.as_str(), "accept" | "reject" | "undo") {
+                if !matches!(self.action(), "accept" | "reject" | "undo") {
                     return missing("revision-decide", "action");
                 }
                 Ok(Command::RevisionDecide {
-                    revision_id: self.revision_id,
-                    action: self.action,
-                    request_id: self.request_id,
+                    revision_id: self.revision_id().to_owned(),
+                    action: self.action().to_owned(),
+                    request_id,
                 })
             }
             _ => Err(CommandError::Unknown {
                 kind,
-                comment_id: self.comment_id,
+                comment_id,
                 temp_id,
                 request_id,
             }),
