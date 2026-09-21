@@ -1,7 +1,8 @@
 # Frugal scaling
 
-Exploratory architecture notes, 2026-09-20. These are proposals for investigation,
-not an approved implementation specification or measured capacity claims.
+Focused capacity investigation, pruned 2026-09-21. Retain measurements and
+concrete resource gaps; these are not measured capacity claims. Speculative
+architecture changes have been removed from the work list.
 
 ## Objective
 
@@ -74,18 +75,6 @@ instead of reconstructing the full catalogue entry, including guest display
 information. Preserve permission, session and expiry checks while reducing
 queries and materialization.
 
-Only if that is insufficient, consider an in-memory authorization record with:
-
-- Account/session and document permission generations.
-- Immediate invalidation when sharing, ownership, sessions or accounts change.
-- Local expiry checks for expiring links.
-- Transactional authorization retained for durable semantic commands.
-
-The single-writer architecture makes this more tractable. Correctness requires
-covering every revocation path and specifying how changes made outside the owning
-process become visible. A generation cache adds those obligations and is not
-automatically a simplification.
-
 ## 2. Budget unsaved bytes across the deployment
 
 `crates/librepaper/src/log/sequencer.rs` caps buffered updates at 4 MiB per
@@ -107,7 +96,7 @@ Account for ownership transitions and temporary copies during a flush so the
 budget remains meaningful while writes are in flight. Preserve honest durability
 acknowledgments and client recovery behavior.
 
-## 3. Make flush scheduling concurrent but tightly bounded
+## 3. Verify the existing flush concurrency bound
 
 Current flush triggers are five seconds of quiet, thirty seconds of accumulated
 age, or 1 MiB of buffered updates.
@@ -124,56 +113,17 @@ serializes its own flushes. Do not add another worker pool. Measure whether this
 bound leaves sufficient capacity for interactive operations during slow writes;
 consider age or memory-pressure prioritization only if starvation is observed.
 
-Cross-document transaction batching is a later option only if measurements
-justify the extra failure coupling. PostgreSQL already supports sharing WAL
-flush costs through group commit; application batching should not be assumed
-necessary to obtain that benefit. Keep durability guarantees intact.
-
-Reference: [PostgreSQL asynchronous commit and group commit documentation](https://www.postgresql.org/docs/17/wal-async-commit.html).
-
-## 4. Let readers choose how live they need to be
-
-Outside the current investigation, at the user's request.
-
-Readers receive source-change notices and fetch a projection. A popular paper
-being edited can cause repeated authorization, serialization, transfer and
-browser rendering across many viewers.
-
-Start with the existing machinery. `web/src/components/Reader.svelte` already
-uses ETags, coalesces in-flight project requests, and has a refresh scheduler
-that defers work while hidden. However, the source-change handler calls
-`refreshCurrentProject` directly, bypassing that scheduler for the initial
-request. Routing source-change notices through the scheduler is a small candidate
-change; verify refresh frequency and catch-up behavior before adding new modes.
-
-For a larger product simplification, consider one default reader policy: keep
-the displayed page stable and show “New version available” until the reader
-chooses to refresh. Editors retain immediate collaborative updates. Preserve
-stale-source checks when readers place comments, and define how refreshing
-interacts with selections and drafts. Add an automatic reviewer mode only if
-there is a demonstrated need for another freshness policy.
-
-Cache the serialized projection once per source digest and safe visibility
-context, and coalesce simultaneous requests for it. Authorize before delivery.
-Inspect existing projection caching to identify what work is already shared and
-what serialization or response work remains per request.
-
-This reduces repeated work without adding another service. It changes reader
-freshness, so the behavior should be explicit and selected as a product choice.
-
-## 5. Treat storage as a lifecycle problem
+## 4. Measure physical storage and recovery costs
 
 Content-addressed assets and on-demand source archives already help. Measure
 physical storage, including old bases awaiting deletion, PostgreSQL indexes and
 WAL, and backup copies, rather than relying only on charged document bytes.
 
-Investigate:
-
-- Incremental backups that reuse immutable blobs while preserving consistent,
-  verifiable recovery points.
-- Lazy creation of the five starter documents, copying one when first edited.
-- Separate accounting for source history, assets and generated artifacts.
-- Compaction thresholds informed by bytes rewritten and cold-open latency.
+Measure source history, assets, generated artifacts, retired bases and backup
+copies separately on a current-schema deployment. Verify complete recovery
+using the existing backup path and the encryption procedure to be established in the
+[security backlog](docs/specs/SPEC-security.md#3-backups-plaintext-recovery-points-remain-an-exposure).
+Do not build a new backup engine or change compaction before those measurements.
 
 The [read-only local inventory](tools/frugal-storage-inventory/REPORT.md) found
 five copies of the same 11,694-byte starter asset: global deduplication would
@@ -183,23 +133,10 @@ schema cannot establish deployment-wide savings or starter adoption. No local
 backup inventory was available. Obtain representative measurements before
 adding shared-object ownership and garbage-collection complexity.
 
-Defer history truncation. The compaction measurements recorded in
-`SPEC-server-is-a-log.md` do not currently justify sacrificing old-client merging
-or operation-level blame. Revisit only with representative concurrent workloads
-and long-lived documents that demonstrate a material cost.
-
-## 6. Scale out by document when one machine runs out
-
-The preferred eventual shape is one owning server per document, with routing by
-document ID. Keep sequencing, sockets, caches and persistence coordination
-together at that owner.
-
-This requires replacing the deployment-wide writer lease with ownership at an
-appropriate shard boundary, including safe fencing and ownership transfer. It is
-a real architectural change, not simply starting additional replicas.
-
-For now, retain one Rust process, PostgreSQL and blob storage as the baseline.
-Introduce distributed coordination only when measurements establish the need.
+Keep full collaboration history and the existing single-writer deployment.
+The recorded compaction costs and local storage sample do not justify history
+truncation, global asset deduplication, lazy starter creation, or document
+sharding. Those implementation proposals are removed from this work list.
 
 ## First experiments and priorities
 
@@ -230,15 +167,14 @@ Use [pg_stat_statements](https://www.postgresql.org/docs/16/pgstatstatements.htm
 to identify cumulative query cost. Extend the existing workload and benchmark
 harnesses where practical. The existing typing-throughput release benchmark
 drives the registry/sequencer directly and bypasses socket authorization and the
-socket's writer verification. It cannot establish their costs. Add a workload
-that exercises real WebSocket connections, and separate connection setup from
-steady-state traffic in the results.
+socket's writer verification. It cannot establish their costs. Extend the
+existing real-WebSocket harness to include sustained persistence and realistic
+document sizes; separate connection setup from steady-state traffic in the results.
 
-Reader refresh changes are excluded from the current investigation. A global
-pending-write budget addresses resilience during database slowdowns,
+A global pending-write budget addresses resilience during database slowdowns,
 rather than a demonstrated routine performance bottleneck. Authorization and
 writer-lease checks need measurement before redesign. Prefer a focused
 authorization lookup over generation caching if the measured cost warrants it.
-Bounded flush concurrency is already implemented. Defer
-cross-document batching, sharding and history truncation until evidence supports
-their additional complexity.
+Bounded flush concurrency is already implemented. Keep the existing
+authorization and writer-lease architecture; there is no implementation task
+for generation caching, cross-document batching, or a second flush worker pool.

@@ -2,7 +2,8 @@
 
 *Originally merged from two architecture reviews on 2026-09-19; reorganized
 and reassessed on 2026-09-20 after the server-as-log cutover. These are
-recommendations for decision, not an approved implementation specification.*
+recommendations for decision, not an approved implementation specification.
+Pruned on 2026-09-21 against the implementation and recorded measurements.*
 
 The brief is robustness, cost and simplicity, including selective loss of
 functionality where it buys a large structural improvement. Preserve live
@@ -16,10 +17,13 @@ the lines it deletes.
 |---|---|---|---|
 | 1 | Comment admission | Transport is now paged end to end; what one document may accumulate is still unbounded, and making a comment refusable is a product decision | Settle what a caller at the cap is told, and whether a retry of an already-created id still succeeds |
 | 2 | Remaining admission and capacity questions | Label limits and database contention remain unresolved | Address independently |
-| 3 | Companion and agent interface cleanup | Legacy remnants and oversized interfaces may offer bounded simplifications | Check callers and preserve supported workflows |
+| 3 | Unused companion and agent paths | Verified legacy remnants may offer bounded deletions | Check callers and persisted configuration; preserve supported workflows |
 
-History truncation, narrower offline support and new compaction architectures
-are conditional options, not prerequisites.
+The speculative architecture backlog has been removed: the recorded compaction
+costs do not justify history replacement, and no demonstrated deletion or
+reader-performance benefit justifies reducing offline support or introducing
+rendered-artifact uploads. New proposals need a concrete problem and evidence
+of a net reduction in cost or complexity.
 
 The original idea numbers are retained in parentheses below so references to
 this review remain understandable.
@@ -111,94 +115,18 @@ the browser exposes the protocol-v2 build route. Removing them is a supported
 workflow decision. Browser rendering is not automatically a substitute for a
 local build that uses private files, packages or execution.
 
-**Other bounded candidates:**
-
-- Compare the roughly 2,100-line `agent_query` module with a smaller source and
-  search interface. Retain it only if its specialized operations materially
-  improve real editing tasks.
-- Simplify presets and grants only after preserving the required local build
-  inputs and execution consent. Removing frozen-cache checks must not silently
-  authorize collaborator-supplied code.
+Keep the current agent query interface and local-build abstractions. Module
+length alone does not establish that a smaller interface would support editing
+as well, and the audit identifies live consumers of presets and workspaces.
+Limit this cleanup to verified unused paths; execution consent remains covered
+by the [security contract](docs/specs/SPEC-security.md).
 
 **Done when:** supported browser, local-build and agent workflows are named;
 retired paths and their dependencies are removed on both sides of the protocol;
 and the retained workflows still have a usable first-run experience. Avoid
 shipping a second implementation beside the one intended for removal.
 
-## 3. Conditional options to revisit with evidence
-
-### 3.1 Bounded collaboration history (original 2.3)
-
-Separate two promises: saved versions remain readable/restorable as plain
-project snapshots, while automatic CRDT merging works only within the current
-collaboration generation. At an explicit maintenance boundary, start a fresh
-generation from current source. Returning older clients retain their work and
-receive a recovery copy or reviewed patch. Comments retain their original
-quotation and snapshot reference, with an explicit unplaced state where an
-anchor cannot be recovered.
-
-**Revisit when:** representative long-lived documents hit unacceptable replay,
-memory or storage costs despite the current limits and compaction. Any history
-boundary must account for open proposal branches that still need old history.
-
-**Sacrifice:** seamless merging after arbitrarily long absences, perpetual
-operation-level blame and access to every intermediate keystroke. This is a
-retention and recovery product decision, not transparent storage maintenance.
-
-### 3.2 Narrower offline support (original 2.4)
-
-A smaller contract preserves unsynced typing locally and supports reconnect,
-but requires connectivity for file creation, deletion and renaming. Failed
-reconciliation offers recovery or export.
-
-**Revisit when:** an inventory shows substantial directory reconciliation or
-cache migration machinery can actually be deleted.
-Simply disabling controls while retaining all reconciliation paths does not
-justify the feature loss. Account separation and recovery of unsynced work
-remain necessary under either contract.
-
-**Sacrifice:** offline directory editing. Do not narrow the promise merely to
-make the interface look simpler.
-
-### 3.3 Compaction and history storage (original 2.13)
-
-Full-history snapshots can repeatedly rewrite a document's past as its tail
-grows. Revisit storage changes only if representative document shapes and
-concurrent workloads demonstrate unacceptable costs. Use the existing
-`storage::postgres::benchmarks` harnesses to investigate transient memory and
-editing latency under load before choosing a new architecture.
-
-**If measurements justify more work, proceed in this order:**
-
-1. Isolate export of a fixed durable prefix from live editing only where lock
-   contention is demonstrated. Export already uses bounded `spawn_blocking`
-   work, but holds the sequencer lock while exporting a cloned Loro handle.
-   Any independent document must fit the memory budget; cloning the handle
-   does not isolate its state.
-2. Tune compaction triggers to tail/base proportions and a recovery-time bound
-   if small tails cause excessive full rewrites. Preserve startup scheduling
-   and safe coordination between base activation, joining readers and deletion.
-3. Consider immutable history segments with less frequent loading snapshots
-   only if repeated rewrites still dominate. Segments introduce indexing,
-   recovery and garbage-collection machinery.
-
-Coverage must be verified before deleting source rows. Truncating active
-history, including using shallow snapshots, additionally requires the explicit
-generation/recovery policy in §3.1. It is not an interchangeable snapshot format.
-
-### 3.4 One rendered artifact per document (original 2.11)
-
-Reader-side rendering moves computation and renderer downloads to every reader;
-LaTeX rendering also depends on a third-party mirror. If measured reader startup
-or repeated rendering becomes a problem, consider one current rendered artifact
-uploaded by an editor and replaced after edits settle.
-
-Keep it derived and disposable, keyed to the source identity so stale output is
-visible. Define supported formats, artifact isolation and authorization before
-serving it. This could improve reading without restoring a full publication or
-rendered-version subsystem, but adds artifact upload and freshness handling.
-
-## 4. Contracts to preserve throughout
+## 3. Contracts to preserve throughout
 
 - Transactional source changes and review decisions, with authorization checked
   at the commit boundary.

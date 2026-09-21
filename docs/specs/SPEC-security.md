@@ -1,7 +1,8 @@
 # LibrePaper security and privacy
 
 *Reassessed 2026-09-20 against the current working tree after the server-as-log
-cutover. This is a security contract and decision backlog, not a fresh security
+cutover; speculative consent tracking and link-lifetime changes pruned on
+2026-09-21. This is a security contract and decision backlog, not a fresh security
 audit. Current behavior, proposed changes and unresolved choices are separated
 below; proposals are not implemented guarantees.*
 
@@ -96,12 +97,6 @@ and do not carry an expiry. Quarto folder bindings separately carry an
 `execution_granted` flag. Pairing credentials and execution permissions are
 therefore related but distinct mechanisms.
 
-**Unresolved.** The earlier proposal required reapproval for every source
-identity outside the approved one and every newly trusted editor. That would
-introduce substantial machinery and could make automatic preview impractical.
-It also needs a reliable account of authorship; a forwarded bearer link is not
-an authenticated individual.
-
 **Recommendation.** First name the supported execution modes and the meaning
 of consent. Options include explicit execution of a captured revision, or a
 clearly disclosed continuing trust grant for a project. A continuing grant
@@ -136,7 +131,7 @@ archive creation. Preserve snapshot consistency and object completeness when
 exploring incremental backups. Document separately that the operator can read
 live data and that restored backups can reintroduce previously deleted data.
 
-## 4. Sharing: lifetime is a product choice, renewal is already possible
+## 4. Sharing: retain the existing lifetime and renewal behavior
 
 **Current.** `LINK_DEFAULT_SECONDS` in `server/sharing.rs` remains 180 days.
 The sharing dialog offers 7 days, 30 days, 6 months and Never. Its settings path
@@ -144,10 +139,10 @@ can update an existing link's expiry without replacing the key; the dialog uses
 that path. Rotation is a separate action. The old statement that renewal must
 mint a replacement and drop guests is obsolete.
 
-**Decision.** A 30-day default could reduce accidental long-lived access, but
-it is not required by the architecture. Decide according to review workflows
-and the cost of unexpected expiry. If changed, update the server default and
-the dialog's initial selection together. Label non-expiring links explicitly.
+Keep the current default. No observed access problem or review-workflow evidence
+justifies shortening it; doing so would also increase unexpected expiry. The
+30-day-default proposal is removed from the backlog. Renewal needs no new
+backend operation.
 
 Preserve role scope, expiry checks and prompt revocation regardless of the
 default. Forwarding a valid link is an accepted property of bearer sharing,
@@ -286,8 +281,6 @@ path over a new general-purpose security framework.
 4. Establish encrypted backup recovery and authenticated release verification
    as independent, bounded operational improvements.
 5. Finish consistent agent attribution and the mirror/presence documentation.
-6. Revisit the link lifetime default as a separate product choice; renewal no
-   longer needs a new backend operation first.
 
 This ordering is a recommendation, not a new implementation mandate. The older
 review's broad “already sound” statements are not a current audit certificate;
