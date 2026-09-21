@@ -16,17 +16,13 @@ the lines it deletes.
 |---|---|---|---|
 | 1 | Comment admission | Transport is now paged end to end; what one document may accumulate is still unbounded, and making a comment refusable is a product decision | Settle what a caller at the cap is told, and whether a retry of an already-created id still succeeds |
 | 2 | Remaining admission and capacity questions | Label limits and database contention remain unresolved | Address independently |
-| 3 | Companion and assistant scope | Potentially large cuts, but some remove useful entry points | Remove proven unreachable remnants; decide which active workflows to support |
+| 3 | Companion and agent interface cleanup | Legacy remnants and oversized interfaces may offer bounded simplifications | Check callers and preserve supported workflows |
 
 History truncation, narrower offline support and new compaction architectures
-are conditional options, not prerequisites. Companion and assistant cuts need
-a clear product decision before removing supported workflows.
+are conditional options, not prerequisites.
 
 The original idea numbers are retained in parentheses below so references to
 this review remain understandable.
-
-Section 5 develops the larger structural changes proposed in the follow-up
-review, with a separate implementation order for architectural simplicity.
 
 ## 2. Highest-value remaining work
 
@@ -100,7 +96,7 @@ database connection, and discovery of work created behind the cursor during a
 real database scan. The existing map and queue tests do not establish those
 end-to-end behaviors.
 
-### 2.2 Companion and assistant scope (original 2.9)
+### 2.2 Companion and agent interface cleanup (original 2.9)
 
 This area offers substantial possible deletion, but mixes obsolete code with
 product choices. The current simplification audit notes that companion
@@ -115,26 +111,14 @@ the browser exposes the protocol-v2 build route. Removing them is a supported
 workflow decision. Browser rendering is not automatically a substitute for a
 local build that uses private files, packages or execution.
 
-**Choose the assistant entry point.** Remote MCP and the stdio bridge provide
-an agent path already. The sidebar additionally brings an ACP runner, task
-journal, lifecycle supervision and server chat relay. Options are to keep that
-integrated experience, make the sidebar a thin local client, or support
-external agents only. Removing it may save substantial maintenance, but also
-removes the easiest entry point for people without a separate coding agent.
-
 **Other bounded candidates:**
 
 - Compare the roughly 2,100-line `agent_query` module with a smaller source and
   search interface. Retain it only if its specialized operations materially
   improve real editing tasks.
-- Consider build-on-save through one job path instead of a separate watched
-  preview lifecycle. Specify the preview freshness users would lose.
 - Simplify presets and grants only after preserving the required local build
   inputs and execution consent. Removing frozen-cache checks must not silently
   authorize collaborator-supplied code.
-- A copied personal API token could replace device login, its cache and CLI
-  polling. This trades onboarding convenience for less code and is lower
-  priority than document and review work.
 
 **Done when:** supported browser, local-build and agent workflows are named;
 retired paths and their dependencies are removed on both sides of the protocol;
@@ -165,17 +149,16 @@ retention and recovery product decision, not transparent storage maintenance.
 
 A smaller contract preserves unsynced typing locally and supports reconnect,
 but requires connectivity for file creation, deletion and renaming. Failed
-reconciliation offers recovery or export. Restricting a project to one editing
-tab per browser profile is a separate, optional product restriction.
+reconciliation offers recovery or export.
 
-**Revisit when:** an inventory shows substantial directory reconciliation,
-cache migration or multi-tab coordination machinery can actually be deleted.
+**Revisit when:** an inventory shows substantial directory reconciliation or
+cache migration machinery can actually be deleted.
 Simply disabling controls while retaining all reconciliation paths does not
 justify the feature loss. Account separation and recovery of unsynced work
 remain necessary under either contract.
 
-**Sacrifice:** offline directory editing and, if chosen, simultaneous local
-tabs. Do not narrow the promise merely to make the interface look simpler.
+**Sacrifice:** offline directory editing. Do not narrow the promise merely to
+make the interface look simpler.
 
 ### 3.3 Compaction and history storage (original 2.13)
 
@@ -229,131 +212,3 @@ rendered-version subsystem, but adds artifact upload and freshness handling.
 For each proposed cut, name the user promise being relaxed, the machinery that
 will disappear and the evidence that the retained behavior works. A second path
 added beside the old one is unfinished simplification.
-
-## 5. Larger changes for architectural simplicity
-
-The server-as-log cutover already made the central architecture substantially
-simpler. The strongest remaining opportunities are to reduce the workflows
-LibrePaper owns around agents, rendering and browser state. These are proposals,
-including explicit product tradeoffs, rather than an implementation mandate.
-
-### 5.1 Stop owning an agent runtime; retain the document MCP interface
-
-The integrated assistant brings process supervision, permission requests, task
-queues, durable journals, reconnect reconciliation and a server relay. The
-[assistant runtime](crates/librepaper/src/assistant/runtime.rs) is effectively
-another application inside LibrePaper.
-
-Let external agent clients own conversations and execution. LibrePaper would
-own document access, edits, comments and proposal review through its existing
-MCP interface and stdio bridge.
-
-**Machinery removed:** most assistant lifecycle machinery, its journal, the
-server chat relay and sidebar integration. Retain shared document automation
-code where MCP still needs it; removing the runner does not imply removing the
-document peer or proposal machinery.
-
-**Tradeoff:** users need a separate agent client, losing the integrated first-run
-experience. This is probably the largest coherent deletion available.
-
-**Validation:** an external agent can connect, read source, propose changes and
-comment; users can still review and accept those changes in the browser.
-
-### 5.2 Replace watched local previews with one snapshot-build lifecycle
-
-Ordinary rendering and [local live previews](web/src/lib/reader/local-preview.svelte.js)
-have different lifecycles. Watched previews synchronize workspaces, supervise
-persistent processes, poll status and pages, and take ownership of the preview
-pane.
-
-Make every render follow one contract:
-
-`immutable input → build → artifact + diagnostics`
-
-Browser engines and local tools remain different executors. One coordinator
-schedules builds and decides which result the pane may display. Local builds
-retain private-resource bindings and execution consent. A build identity must
-account for relevant local inputs as well as shared source; the shared tree
-digest alone cannot establish that private resources are unchanged.
-
-**Machinery removed:** the separate watch-session protocol, page polling,
-log-based completion detection and preview ownership switching. Build status,
-cancellation and deadlines remain part of the single build lifecycle.
-
-**Tradeoff:** potentially slower Quarto/Calepin rebuilds and loss of automatic
-detection of external local-file changes. Measure that cost before committing
-to the cut, and provide an explicit rebuild operation for changed local inputs.
-
-**Validation:** compare representative local rebuild times; verify cancellation,
-failure diagnostics, stale-result rejection, private-resource access and
-execution consent through the retained build path.
-
-### 5.3 Choose a small set of supported rendering combinations
-
-The [builder catalog](web/src/lib/build-catalog.js) supports overlapping tools,
-backends and outputs. Those combinations multiply preferences, capability
-negotiation, fallback behavior and testing.
-
-A concrete narrower product could offer:
-
-| Source | Supported rendering path |
-|---|---|
-| HTML/Markdown | Browser HTML |
-| Typst | Browser PDF |
-| LaTeX | Browser PDF |
-| Quarto | Local build, with explicitly identified Markdown preview when unavailable |
-
-Retire alternative local Typst/Pandoc/Calepin paths and secondary outputs unless
-they serve workflows considered essential. This is a proposed reduction in
-supported behavior, not a claim that those paths are obsolete.
-
-**Machinery removed:** entire adapter paths and configuration branches, including
-their discovery, preference and capability handling where no retained workflow
-uses them. Putting every existing combination behind a common interface would
-not achieve the same reduction.
-
-**Tradeoff:** real functionality, including some private-resource builds and
-alternate outputs. Identify these losses before adopting the narrower matrix.
-Persisted selections for retired builders need a clear migration or explanatory
-error rather than a silent change in rendering semantics.
-
-**Validation:** retained formats render and export through their supported path;
-unavailable local execution is clearly identified; retired preferences cannot
-reactivate deleted paths or silently authorize execution.
-
-### 5.4 Give the browser one document controller and one preview owner
-
-[Reader.svelte](web/src/components/Reader.svelte) spans roughly 4,100 lines at
-the time of this review and coordinates collaboration, files, builds, history,
-annotations and agent state. Extracted helpers often reach back into it through
-callbacks and getters.
-
-Introduce a document controller that owns session lifetime and document
-operations. Give a separate preview controller exclusive ownership of rendering
-and publication to the preview pane. Components consume their state and invoke
-explicit operations. Keep specialized state inside its existing owner rather
-than copying every subsystem into a new global controller.
-
-**Machinery removed:** duplicated coordination state and chains of callbacks
-through the page component. Success means fewer owners and fewer possible state
-combinations, not just smaller files or another forwarding layer.
-
-**Tradeoff:** a substantial frontend refactor, but this is the strongest option
-here that can preserve existing features. Settle rendering scope first so the
-new ownership boundaries reflect the workflows that will remain.
-
-**Validation:** navigation during rendering, reconnect, file deletion or rename,
-history comparison and component teardown leave no stale result, duplicate
-session or orphaned background operation.
-
-### 5.5 Recommended order
-
-1. Unify rendering lifecycles, measuring the local rebuild tradeoff.
-2. Remove the integrated agent runtime if external clients are acceptable.
-3. Narrow rendering combinations around explicitly retained workflows.
-4. Simplify frontend ownership around those workflows.
-
-Preserve the current CRDT, log and recovery model. The inspected code gives
-stronger reasons to simplify the surrounding product than to replace that
-foundation. Admission and capacity work in section 2 remains independently
-relevant; this sequence ranks the larger architectural simplifications.
