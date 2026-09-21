@@ -13,7 +13,7 @@
 //! replacement cursors Loro hands back, which belong to the cache for the
 //! same reason. Under SPEC-server-is-a-log §8.3 `annotation_live_state` is
 //! gone: the cursor pair that used to live there now lives only in the
-//! room's in-memory comment cache (`Room::reattach_comments`, below), and a
+//! room's bounded attachment cache (`Room::attach`, below), and a
 //! process that starts cold recomputes it from scratch rather than reading it
 //! back from anywhere.
 //!
@@ -38,7 +38,7 @@ use super::annotation::{
     ResolutionDiagnostic, SourceTextTarget,
 };
 use super::text::slice16;
-use super::Room;
+use super::{Comment, Room};
 use crate::document::session::{self, CursorResolutionError};
 use crate::log::sequencer::SequencerError;
 
@@ -369,53 +369,60 @@ fn common_suffix(a: &[u16], b: &[u16]) -> usize {
 }
 
 impl Room {
-    /// Re-anchors every cached comment against the document at head, and says
-    /// which ones moved.
+    /// Fills in where each of these comments' passages is now, and
+    /// remembers the answer.
     ///
-    /// There is no `annotation_live_state` table any more (§8.3): the cursor
-    /// pair that lets a passage be tracked through edits lives only in this
-    /// room's in-memory comment cache, is never persisted, and is rebuilt from
-    /// nothing the first time a cold room needs it.
+    /// This replaces the pass that re-anchored the room's resident copy of
+    /// every comment on the document. It does the same work over the same
+    /// evidence, but over one page at a time, and what it keeps is bounded:
+    /// [`super::AttachmentCache`] holds the cursor pairs and the last
+    /// answer for at most `ATTACHMENT_CACHE_MAX` comments and
+    /// `ATTACHMENT_CACHE_BYTES` of quoted context.
     ///
-    /// Rebuilding it means forking the document at the state a comment names
-    /// (`anchor.frontier`, via `with_fork_at`, §4.3) and capturing cursors
-    /// there, because the anchor's own offsets are only valid at that state.
-    /// A cursor captured on a fork still resolves correctly against the head
-    /// document afterwards, because Loro cursors name an operation, not an
-    /// offset, and the fork shares the head document's history. Once a
-    /// comment has a cursor pair cached, every later pass resolves it
-    /// against head directly and never forks again for it.
-    pub(crate) async fn reattach_comments(
-        &self,
-    ) -> Result<Vec<(String, DerivedAttachment)>, SequencerError> {
-        // Which comments have no cached cursor pair yet, and the frontier to
-        // capture one at: the state the comment was written against, never
-        // head, because the anchor's offsets belong to that state alone.
-        let needing_capture: Vec<(String, Frontiers, SourceTextTarget)> = {
-            let guard = self.comments.read().await;
-            guard
-                .as_ref()
-                .map(|list| {
-                    list.iter()
-                        .filter_map(|comment| {
-                            let anchor = comment.original_anchor.as_ref()?;
-                            let source = anchor.target.source()?;
-                            let cached = comment
-                                .attachment
-                                .as_ref()
-                                .and_then(|found| found.live_source_range.as_ref());
-                            if cached.is_some() {
-                                return None;
-                            }
-                            let frontier = Frontiers::decode(&anchor.frontier).ok()?;
-                            Some((comment.id.clone(), frontier, source.clone()))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+    /// A comment with no remembered cursor pair is given one by forking the
+    /// document at the state the comment names (`anchor.frontier`, via
+    /// `with_fork_at`, §4.3) and capturing there, because the anchor's own
+    /// offsets are only valid at that state. A cursor captured on a fork
+    /// still resolves against head afterwards: Loro cursors name an
+    /// operation, not an offset, and the fork shares head's history. Once
+    /// cached, later passes resolve against head directly. An eviction
+    /// costs that fork again, which is the same cost a cold process
+    /// already paid.
+    ///
+    /// Failure is not an error here: a sequencer that cannot build a
+    /// projection leaves these comments with no attachment, which every
+    /// caller already reads as "not yet known".
+    pub(crate) async fn attach(&self, comments: &mut [Comment]) {
+        if comments.is_empty() {
+            return;
+        }
+        // What is already known, and what has to be captured first.
+        let mut needing: Vec<(String, Frontiers, SourceTextTarget)> = Vec::new();
+        {
+            let mut cache = self.attachments.lock().await;
+            for comment in comments.iter() {
+                let Some(anchor) = comment.original_anchor.as_ref() else {
+                    continue;
+                };
+                cache.remember(&comment.id, anchor);
+                let known = cache
+                    .attachment(&comment.id)
+                    .and_then(|found| found.live_source_range.as_ref())
+                    .is_some();
+                if known {
+                    continue;
+                }
+                let Some(source) = anchor.target.source() else {
+                    continue;
+                };
+                let Ok(frontier) = Frontiers::decode(&anchor.frontier) else {
+                    continue;
+                };
+                needing.push((comment.id.clone(), frontier, source.clone()));
+            }
+        }
         let mut captured: HashMap<String, LiveSourceRange> = HashMap::new();
-        for (id, frontier, source) in needing_capture {
+        for (id, frontier, source) in needing {
             if let Ok(Some(live)) = self
                 .log()
                 .with_fork_at(&frontier, move |doc| capture(doc, &source))
@@ -424,39 +431,110 @@ impl Room {
                 captured.insert(id, live);
             }
         }
-
-        let mut guard = self.comments.write().await;
-        let Some(list) = guard.as_mut() else {
-            return Ok(Vec::new());
+        let known: HashMap<String, Option<LiveSourceRange>> = {
+            let cache = self.attachments.lock().await;
+            comments
+                .iter()
+                .map(|comment| {
+                    let held = cache
+                        .attachment(&comment.id)
+                        .and_then(|found| found.live_source_range.clone())
+                        .or_else(|| captured.get(&comment.id).cloned());
+                    (comment.id.clone(), held)
+                })
+                .collect()
         };
-        if list.iter().all(|comment| comment.original_anchor.is_none()) {
+        let resolved = self
+            .log()
+            .with_head(|doc| {
+                let sources = Sources::of(doc);
+                let tree_digest = librepaper_document_core::project(doc, &self.config().paths())
+                    .projection
+                    .digest();
+                let mut found = Vec::with_capacity(comments.len());
+                for comment in comments.iter() {
+                    let Some(anchor) = comment.original_anchor.as_ref() else {
+                        continue;
+                    };
+                    let live = known.get(&comment.id).cloned().flatten();
+                    found.push((
+                        comment.id.clone(),
+                        resolve(doc, &sources, &tree_digest, anchor, live.as_ref()),
+                    ));
+                }
+                found
+            })
+            .await;
+        let Ok(resolved) = resolved else { return };
+        let mut cache = self.attachments.lock().await;
+        let mut by_id: HashMap<String, DerivedAttachment> = HashMap::new();
+        for (id, found) in resolved {
+            cache.set_attachment(&id, found.clone());
+            by_id.insert(id, found);
+        }
+        drop(cache);
+        for comment in comments.iter_mut() {
+            if let Some(found) = by_id.remove(&comment.id) {
+                comment.attachment = Some(found);
+            }
+        }
+    }
+
+    /// Re-anchors every comment this room still remembers an anchor for,
+    /// and says which ones moved.
+    ///
+    /// Bounded by the attachment cache rather than by the document's
+    /// comment count: a comment nobody has read on this process is not
+    /// remembered, so it is not re-resolved and nothing is broadcast about
+    /// it. Whoever pages it in next resolves it then.
+    pub(crate) async fn reattach_comments(
+        &self,
+    ) -> Result<Vec<(String, DerivedAttachment)>, SequencerError> {
+        let held: Vec<(
+            String,
+            OriginalAnchor,
+            Option<LiveSourceRange>,
+            Option<DerivedAttachment>,
+        )> = {
+            let cache = self.attachments.lock().await;
+            cache
+                .ids()
+                .into_iter()
+                .filter_map(|id| {
+                    let anchor = cache.anchor(&id)?.clone();
+                    let found = cache.attachment(&id).cloned();
+                    let live = found
+                        .as_ref()
+                        .and_then(|found| found.live_source_range.clone());
+                    Some((id, anchor, live, found))
+                })
+                .collect()
+        };
+        if held.is_empty() {
             return Ok(Vec::new());
         }
-        self.log()
+        let moved = self
+            .log()
             .with_head(|doc| {
                 let sources = Sources::of(doc);
                 let tree_digest = librepaper_document_core::project(doc, &self.config().paths())
                     .projection
                     .digest();
                 let mut moved = Vec::new();
-                for comment in list.iter_mut() {
-                    let Some(anchor) = comment.original_anchor.as_ref() else {
-                        continue;
-                    };
-                    let live = comment
-                        .attachment
-                        .as_ref()
-                        .and_then(|found| found.live_source_range.clone())
-                        .or_else(|| captured.get(&comment.id).cloned());
+                for (id, anchor, live, before) in &held {
                     let found = resolve(doc, &sources, &tree_digest, anchor, live.as_ref());
-                    if comment.attachment.as_ref() != Some(&found) {
-                        moved.push((comment.id.clone(), found.clone()));
-                        comment.attachment = Some(found);
+                    if before.as_ref() != Some(&found) {
+                        moved.push((id.clone(), found));
                     }
                 }
                 moved
             })
-            .await
+            .await?;
+        let mut cache = self.attachments.lock().await;
+        for (id, found) in &moved {
+            cache.set_attachment(id, found.clone());
+        }
+        Ok(moved)
     }
 
     /// §4.5's cadence, applied to comments instead of to a reader's digest:
@@ -469,12 +547,12 @@ impl Room {
     /// and a relay, full stop. So this is driven from `Rooms::housekeep`
     /// instead, coalesced by construction (it only ever acts once per
     /// digest, however many edits produced that digest) and free when
-    /// nothing is watching: a comments cache nobody has loaded is left
+    /// nothing is watching: a room whose attachment cache is empty is left
     /// alone, and a document cache that is not already warm is not built
     /// for this, the same restraint `Sequencer::projection_if_warm` gives a
     /// reader's `source-changed`.
     pub(crate) async fn reattach_comments_if_moved(&self) {
-        if self.comments.read().await.is_none() {
+        if self.attachments.lock().await.ids().is_empty() {
             return;
         }
         let Some(projection) = self.log().projection_if_warm().await else {
@@ -491,20 +569,23 @@ impl Room {
         let Ok(moved) = self.reattach_comments().await else {
             return;
         };
-        if moved.is_empty() {
-            return;
-        }
         // Only editors: where a passage is in the source is source, and a
-        // reader of a published render is never told about it.
-        let payload = json!({
-            "type": "attachments",
-            "attachments": moved.iter().map(|(id, attachment)| {
-                json!({"comment_id": id, "attachment": attachment})
-            }).collect::<Vec<_>>(),
-        });
-        self.broadcast_editors_except(None, &payload).await;
+        // reader of a published render is never told about it. Chunked, so
+        // one pass over a full attachment cache is still a bounded frame.
+        for chunk in moved.chunks(ATTACHMENT_FRAME_MAX) {
+            let payload = json!({
+                "type": "attachments",
+                "attachments": chunk.iter().map(|(id, attachment)| {
+                    json!({"comment_id": id, "attachment": attachment})
+                }).collect::<Vec<_>>(),
+            });
+            self.broadcast_editors_except(None, &payload).await;
+        }
     }
 }
+
+/// How many moved passages one `attachments` frame may name.
+pub(crate) const ATTACHMENT_FRAME_MAX: usize = 200;
 
 #[cfg(test)]
 pub(super) mod tests {

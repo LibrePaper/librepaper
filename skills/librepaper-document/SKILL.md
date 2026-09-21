@@ -20,6 +20,9 @@ effective permissions, an immutable `view_id`, an operation epoch, and source
 `range_id` handles. Reuse those handles for changes instead of reconstructing
 source positions or hashes. Follow `next_cursor` on the same view when a result
 is paginated; never describe partial coverage as a review of the whole document.
+A `thread` cursor additionally tracks the comments themselves, which the view
+does not capture: if it is refused because the collection changed, start that
+thread query again rather than reporting what you had as the whole of it.
 
 Use focused source, section, search, outline, thread, diagnostic, change, or
 rendered queries for large documents. Read a handle again after context

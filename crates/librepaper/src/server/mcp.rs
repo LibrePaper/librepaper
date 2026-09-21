@@ -13,6 +13,10 @@ mod schema;
 const PROTOCOL: &str = "2026-07-28";
 const MAX_MESSAGE: usize = 64 * 1024;
 const MAX_AGENT_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+/// How many comments or replies one `thread` query is handed. The same 24
+/// an agent query page has always been capped at, read from the catalogue
+/// per request rather than sliced out of a stored capture.
+const AGENT_THREAD_WINDOW: usize = 24;
 
 pub(super) fn runner_execution_epoch(headers: &HeaderMap) -> String {
     headers
@@ -554,9 +558,8 @@ impl Server {
                 .get(slug)
                 .await
                 .map_err(|e| Failure::new("unavailable", e.to_string()))?;
-            let author = self.mcp_author(headers, arrival, who, actor);
             let snapshot = room
-                .agent_query_snapshot(&author, who.at_least(Role::Editor))
+                .agent_query_snapshot()
                 .await
                 .map_err(crate::server::mcp::operations::failure)?;
             let bytes = serde_json::to_vec(&snapshot)
@@ -600,6 +603,84 @@ impl Server {
         };
         self.mcp_read_existing(slug, actor, who, headers, arrival, args, &view_id, view)
             .await
+    }
+
+    /// Reads one bounded comment window per `thread` query in this
+    /// request, and records the revision they were read at.
+    ///
+    /// The window is at most `AGENT_THREAD_WINDOW` rows however large the
+    /// collection is. Nothing accumulates: a window lives for this request
+    /// and is not written into the stored view, so an agent that walks a
+    /// hundred pages leaves the capture exactly as wide as it began.
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_thread_windows(
+        &self,
+        slug: &str,
+        actor: &str,
+        who: &Viewer,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        queries: &[Value],
+        view: &mut View,
+    ) -> Result<(), Failure> {
+        let wanted: Vec<&serde_json::Map<String, Value>> = queries
+            .iter()
+            .filter_map(Value::as_object)
+            .filter(|query| query.get("kind").and_then(Value::as_str) == Some("thread"))
+            .collect();
+        if wanted.is_empty() {
+            return Ok(());
+        }
+        let room = self
+            .rooms
+            .get(slug)
+            .await
+            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        let author = self.mcp_author(headers, arrival, who, actor);
+        let editor = who.at_least(Role::Editor);
+        for query in wanted {
+            let fingerprint = crate::agent_query::query_fingerprint(query);
+            // Where this query continues, if it is a continuation. The
+            // cursor is validated in full against the snapshot afterwards;
+            // this only decides which rows to read.
+            let at = query
+                .get("cursor")
+                .and_then(Value::as_str)
+                .and_then(crate::agent_query::peek_cursor)
+                .and_then(|peeked| peeked.at);
+            let thread = match query.get("id").and_then(Value::as_str) {
+                Some(id) => Some(comments::parse_uuid(id, "id")?),
+                None => None,
+            };
+            let after = match at.as_deref() {
+                Some(raw) => Some(
+                    crate::room::comments::decode_cursor(raw, room.document_id, thread, editor)
+                        .map_err(|error| Failure::new("invalid_params", error.to_string()))?,
+                ),
+                None => None,
+            };
+            let window = match thread {
+                Some(comment_id) => room
+                    .thread_reply_window(comment_id, &author, editor, after, AGENT_THREAD_WINDOW)
+                    .await
+                    .map_err(operations::failure)?,
+                None => room
+                    .thread_query_page(&author, editor, after, AGENT_THREAD_WINDOW)
+                    .await
+                    .map_err(operations::failure)?,
+            };
+            view.snapshot.threads.insert(fingerprint, window);
+        }
+        // Read after the windows, so a change that happened while they
+        // were being read is reflected here and refuses the next
+        // continuation rather than letting it interleave collections.
+        view.snapshot.comment_revision = crate::room::comments::comment_revision(
+            &room
+                .comment_state(editor)
+                .await
+                .map_err(|error| Failure::new("unavailable", error.to_string()))?,
+        );
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -702,6 +783,12 @@ impl Server {
                 view.snapshot.tree[format!("changes:{previous}")] = json!(changes);
             }
         }
+        // Comments are not in the capture, so each `thread` query is handed
+        // one bounded window read from the catalogue now. The revision
+        // those windows were read at goes on the snapshot, which is what a
+        // continuation cursor binds to.
+        self.prepare_thread_windows(slug, actor, who, headers, arrival, &queries, &mut view)
+            .await?;
         let budget = QueryBudget {
             max_bytes: args["budget"]["max_bytes"].as_u64().unwrap_or(12000) as usize,
             max_tokens: args["budget"]["max_tokens"].as_u64().unwrap_or(3000) as usize,

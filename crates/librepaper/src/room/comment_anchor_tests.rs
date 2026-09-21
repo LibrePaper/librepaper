@@ -325,15 +325,14 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
     let anchor_before = comment.original_anchor.clone().unwrap();
     let started_at = anchor_before.target.source().unwrap().start_utf16;
 
-    // `reattach_comments` only ever moves what is in the room's warm cache
-    // (`self.comments`): under §8.3 there is no `annotation_live_state` to
-    // fall back to, and a cache nobody has loaded is a cache nobody is
-    // watching, so it is deliberately left alone rather than rebuilt for no
-    // reader. `Room::comments` is what a real caller loads it through --
-    // and it also runs the first `reattach_comments` itself, right after
-    // the load, per its own doc comment -- so a caller of the direct
-    // method below expects that same priming.
-    let _ = room.comments().await.unwrap();
+    // `reattach_comments` only ever moves what is in the room's bounded
+    // attachment cache: under §8.3 there is no `annotation_live_state` to
+    // fall back to, and a comment nobody has read is one nobody is
+    // watching, so it is deliberately left alone rather than resolved for
+    // no reader. Paging a comment in is what fills that cache, and
+    // `Room::comment_page` resolves what it pages in, so a caller of the
+    // direct method below expects that same priming.
+    let _ = room.all_comments(true).await.unwrap();
 
     // Somebody writes a paragraph above it. Nothing about the comment has
     // changed; everything about where it sits has.
@@ -361,7 +360,7 @@ async fn editing_the_document_moves_where_a_comment_points_and_not_what_it_is_ab
 
     let moved = room.reattach_comments().await.unwrap();
     assert_eq!(moved.len(), 1, "the one comment on this document moved");
-    let comments = room.comments().await.unwrap();
+    let comments = room.all_comments(true).await.unwrap();
     let found = comments.iter().find(|item| item.id == comment.id).unwrap();
     assert_eq!(
         found.original_anchor.as_ref().unwrap(),
@@ -418,7 +417,7 @@ async fn a_passage_that_is_deleted_leaves_a_comment_that_says_so() {
     );
 
     room.reattach_comments().await.unwrap();
-    let comments = room.comments().await.unwrap();
+    let comments = room.all_comments(true).await.unwrap();
     let found = comments.iter().find(|item| item.id == comment.id).unwrap();
     assert!(found.source().is_some());
     assert_eq!(
@@ -544,24 +543,27 @@ async fn a_snapshot_states_the_list_each_peer_may_see() {
         .await
         .unwrap();
     room.forget_comments().await;
-    room.broadcast_comment_snapshot(7).await;
+    room.broadcast_comments_changed().await;
 
+    // The frame says the collection moved and how large it is. It carries
+    // no rows at all -- that is the whole point of it -- so what both
+    // peers get is a count and a revision, and each re-reads the pages it
+    // is actually holding.
     let editors = received(&mut editor_rx);
     assert_eq!(editors.len(), 1);
-    assert_eq!(editors[0]["comment_digest"], 7);
-    assert_eq!(
-        editors[0]["comments"]
-            .as_array()
-            .map(Vec::len)
-            .unwrap_or_default(),
-        1
-    );
+    assert_eq!(editors[0]["type"], "comments-changed");
+    assert!(editors[0].get("comments").is_none(), "no rows on the wire");
+    assert_eq!(editors[0]["state"]["total"], 1);
+    assert_eq!(editors[0]["state"]["open"], 1);
+    assert!(editors[0]["state"]["revision"]
+        .as_str()
+        .is_some_and(|r| !r.is_empty()));
 
     let readers = received(&mut reader_rx);
     assert_eq!(readers.len(), 1);
-    let public = readers[0]["comments"].as_array().expect("a list");
-    assert_eq!(public.len(), 1);
-    assert!(public[0]["original_anchor"].is_null());
+    assert_eq!(readers[0]["type"], "comments-changed");
+    assert!(readers[0].get("comments").is_none());
+    assert_eq!(readers[0]["state"]["total"], 1);
     deployment.catalog.close().await;
 }
 

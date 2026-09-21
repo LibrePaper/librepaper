@@ -11,6 +11,11 @@
     went = {}, replacements = {}, onreveal, onresolve, ondelete,
     ondeletemany, onreply, onaccept, onreject, onrejectconfirmed, pending,
     unreadChat = false, selected = "", tab = $bindable("comments"),
+    // The traversal, as `lib/reader/annotations.svelte.js` keeps it: the
+    // catalogue's own counts, whether there is another page, and whether
+    // the last request for one failed. The panel shows these rather than
+    // counting the rows it was handed, which are a prefix.
+    page = null, onloadmore, onloadreplies,
     // The draft being written, which belongs to the Comments tab whatever it
     // will become: a suggestion is a comment until it is sent.
     composing = null, needsLogin = false, signInHref = "", oncommentsend, oncommentcancel,
@@ -22,7 +27,8 @@
   ];
   const common = () => ({ identity, commentingAs, canModerate, canComment,
     went, replacements, onreveal, onresolve, ondelete, ondeletemany,
-    onreply, onaccept, onreject, onrejectconfirmed, pending, selected });
+    onreply, onaccept, onreject, onrejectconfirmed, pending, selected,
+    page, onloadmore, onloadreplies });
 </script>
 
 <!-- The strip, its ids and the layout of a pane are PanelTabs', shared with

@@ -36,7 +36,19 @@
     // The card the sidebar has singled out: its passage is ringed in the
     // document, and the card wears the same ring so the two read as one.
     selected = false,
+    // A thread is paged like the collection is: `comment.replies` is a
+    // prefix, `comment.reply_total` is how many there are, and this asks
+    // for the next page of them. Absent for a caller that mounts this over
+    // a fixed comment.
+    onloadreplies,
   } = $props();
+
+  // How many replies this card is not showing. `reply_total` is the
+  // catalogue's count, so this is true before any page of them is asked
+  // for and does not become true only once one arrives.
+  const unshownReplies = $derived(
+    Math.max(0, (comment.reply_total || 0) - (comment.replies?.length || 0)),
+  );
 
   // What this comment looked like where it was made. Display evidence: it
   // is what the card shows and what the highlight was drawn from, never what
@@ -295,6 +307,19 @@
             {/each}
           </div>
         {/each}
+        <!-- The rest of a long thread, asked for rather than drained: a
+             comment with ten thousand replies arrives with a preview and
+             this button, not with ten thousand replies. -->
+        {#if unshownReplies > 0}
+          {#if comment.repliesError}
+            <p class="reply-error" role="alert">{comment.repliesError}</p>
+          {/if}
+          <button type="button" class="more-replies btn btn-sm preset-outlined-surface-300-700"
+            disabled={comment.repliesBusy}
+            onclick={() => onloadreplies?.(comment)}>
+            {#if comment.repliesBusy}Loading…{:else if comment.repliesError}Try again{:else}Show {unshownReplies} more {unshownReplies === 1 ? "reply" : "replies"}{/if}
+          </button>
+        {/if}
       </div>
     </div>
   {/if}
@@ -372,6 +397,8 @@
      down the side and no avatar gutter -- a long reply in a sidebar this
      narrow needs the whole width. */
   .thread { display: flex; flex-direction: column; gap: calc(var(--spacing) * 3); }
+  .more-replies { align-self: flex-start; }
+  .reply-error { color: var(--color-error-500); }
   .run { display: flex; flex-direction: column; gap: calc(var(--spacing) * 0.75); }
   .run-head { display: flex; align-items: center; gap: var(--spacing); min-width: 0; }
   .run-author { min-width: 0; overflow: hidden; font-size: var(--panel-meta-size); line-height: var(--panel-line-height); text-overflow: ellipsis; white-space: nowrap; }

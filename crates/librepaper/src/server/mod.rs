@@ -1219,12 +1219,8 @@ impl Server {
                 may_edit,
             )
             .await;
-        // Every command above wrote straight to `annotations` (or the
-        // proposal tables beside it) through the sequencer rather than
-        // through the room's own comment-mutating methods, so nothing has
-        // invalidated the room's cached list yet; this is that invalidation
-        // (`comments()` on the next read rebuilds it from the catalogue).
-        room.forget_comments().await;
+        // Comment rows are read live. Their immutable anchors must stay
+        // cached so source edits keep updating comments already on screen.
         let (mut result, ok) = match outcome {
             Ok(value) => (value, true),
             Err(response) => (response, false),
@@ -1574,15 +1570,14 @@ impl Server {
         document_id: uuid::Uuid,
         comment_id: uuid::Uuid,
     ) -> Option<crate::room::Comment> {
-        // The catalogue-backed loader already used by `Room::comments`
-        // (`room::comments::load`) is document-wide; reuse it rather than
-        // hand-rolling a single-row query, since a suggestion decision is
-        // rare enough that the extra rows cost nothing.
-        crate::room::comments::load(catalog, document_id)
+        // An indexed `(id, document_id)` read. It used to walk the whole
+        // document's comments and pick one out of the result, which cost
+        // the collection to answer a question about one row and could not
+        // see a comment past the old read budget at all.
+        crate::room::comments::one(catalog, document_id, comment_id, true)
             .await
-            .ok()?
-            .into_iter()
-            .find(|comment| comment.id == comment_id.to_string())
+            .ok()
+            .flatten()
     }
 }
 /// Where the manual lives. It is a static site, deployed separately from this

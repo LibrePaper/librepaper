@@ -415,26 +415,6 @@ pub async fn export_document(
         .iter()
         .map(|(name, value)| (*name, value.as_str()))
         .collect();
-    let (status, raw) = send(
-        reqwest::Method::GET,
-        &format!("{server}/api/documents/{slug}/comments"),
-        &headers,
-        None,
-        Duration::from_secs(60),
-    )
-    .await
-    .unwrap_or_else(|err| die(err));
-    if status != 200 {
-        die(format!("could not read the comments ({status})"));
-    }
-    #[derive(serde::Deserialize)]
-    struct Listing {
-        #[serde(default)]
-        comments: Vec<Comment>,
-    }
-    let listing: Listing = serde_json::from_slice(&raw)
-        .unwrap_or_else(|err| die(format!("could not read the comments: {err}")));
-
     let source = format!("{server}/docs/{slug}");
     let config = Configuration::default();
 
@@ -445,112 +425,446 @@ pub async fn export_document(
     } else {
         Vec::new()
     };
-    let mut comments = listing.comments;
-    if !from.is_empty() {
-        let (_id, cut) =
-            super::history::find_label(&labels, &slug, &from).unwrap_or_else(|err| die(err));
-        comments = since(comments, cut);
-    }
-
-    let rendered = match format {
-        "jsonld" | "" => render_jsonld(&title, &comments, &source, &config),
-        "markdown" | "md" => render_markdown(&title, &comments, &source, &config),
-        "response" => render_response(&title, &comments, &source, &config),
-        other => die(format!(
-            "unknown format {other:?}; use jsonld, markdown or response"
-        )),
+    let cut = if from.is_empty() {
+        String::new()
+    } else {
+        super::history::find_label(&labels, &slug, &from)
+            .unwrap_or_else(|err| die(err))
+            .1
     };
-
-    if out.is_empty() || out == "-" {
-        print!("{rendered}");
-        return;
+    if !matches!(format, "jsonld" | "" | "markdown" | "md" | "response") {
+        die(format!(
+            "unknown format {format:?}; use jsonld, markdown or response"
+        ));
     }
-    super::tokens::write_private_file(std::path::Path::new(&out), rendered.as_bytes())
-        .unwrap_or_else(|err| die(err));
-    eprintln!("wrote {out} ({} annotation(s))", comments.len());
+
+    // Everything below is a traversal, not a download. One page of comments
+    // is held at a time, each thread's replies are walked on their own, and
+    // each rendered comment is written out before the next page is asked
+    // for -- so neither this process nor the server ever holds the
+    // collection, however large it is.
+    let mut sink = Sink::open(&out);
+    let mut walk = Walk::new(&server, &slug, &headers);
+    let first = walk.page(None).await.unwrap_or_else(|err| {
+        sink.abandon();
+        die(err)
+    });
+    let claimed = first.state.total;
+    sink.write(&match format {
+        "markdown" | "md" => markdown_header(&title, &source, claimed),
+        "response" => response_header(&title, &source),
+        _ => jsonld_header(&title, &source),
+    });
+
+    let mut written = 0usize;
+    // JSON-LD counts annotations and replies alike, since a reply is an
+    // annotation there; `written` counts comments, which is what the
+    // markdown header and the drift note are about.
+    let mut items = 0usize;
+    let mut page = Some(first);
+    while let Some(current) = page.take() {
+        for mut item in current.comments {
+            // "At or after a label" is a comparison of timestamps, not a
+            // position in a list. A label's `source_sequence` -- the
+            // `document_updates` row that made its state durable -- is
+            // server-side evidence a label's wire shape does not carry
+            // (see `crate::server::history::label_wire`), so the one thing
+            // both a label and a comment do carry is when each was made.
+            // Both are RFC 3339, which sorts lexicographically exactly as
+            // it sorts in time.
+            if !cut.is_empty() && item.created.as_str() < cut.as_str() {
+                continue;
+            }
+            // Render the preview now, then follow the thread cursor and
+            // render each subsequent reply page as it arrives. No whole
+            // thread is accumulated in the export process.
+            let replies = std::mem::take(&mut item.replies);
+            let mut reply_cursor = item.reply_cursor.take();
+            sink.write(&match format {
+                "markdown" | "md" => markdown_item(&item, &config),
+                "response" => response_item(&item, written + 1, &config),
+                _ => jsonld_item(&item, &source, &config, written == 0),
+            });
+            written += 1;
+            items += 1;
+            for reply in replies {
+                sink.write(&match format {
+                    "markdown" | "md" => markdown_reply(&reply),
+                    "response" => response_reply(&reply),
+                    _ => jsonld_reply(&reply, &item.id),
+                });
+                items += 1;
+            }
+            while let Some(cursor) = reply_cursor.take() {
+                let reply_page = walk
+                    .reply_page(&item.id, &cursor)
+                    .await
+                    .unwrap_or_else(|err| {
+                        sink.abandon();
+                        die(err)
+                    });
+                for reply in reply_page.replies {
+                    sink.write(&match format {
+                        "markdown" | "md" => markdown_reply(&reply),
+                        "response" => response_reply(&reply),
+                        _ => jsonld_reply(&reply, &item.id),
+                    });
+                    items += 1;
+                }
+                if let Some(next) = reply_page.next_cursor {
+                    reply_cursor = Some(next);
+                } else if !reply_page.complete {
+                    sink.abandon();
+                    die("the server ended a reply page without saying where to continue");
+                }
+            }
+        }
+        if let Some(cursor) = current.next_cursor {
+            page = Some(walk.page(Some(&cursor)).await.unwrap_or_else(|err| {
+                sink.abandon();
+                die(err)
+            }));
+        } else if !current.complete {
+            sink.abandon();
+            die("the server ended a comment page without saying where to continue");
+        }
+    }
+    if matches!(format, "jsonld" | "") {
+        sink.write(&jsonld_footer(items));
+    }
+    // A `--since` export is a subset by construction, and its header said
+    // how many the document has rather than how many that leaves. Saying
+    // so is the difference between a filtered export and a short one.
+    if !cut.is_empty() {
+        eprintln!("{written} of {claimed} comment(s) were made at or after that version");
+    }
+    sink.finish(&out, written);
+    // The traversal is not a snapshot (docs/protocol/comments-v1.md §3), so
+    // say when the collection moved while it ran rather than letting a
+    // count that no longer matches pass as the whole of it.
+    if cut.is_empty() && written as i64 != claimed {
+        eprintln!(
+            "note: the document had {claimed} comment(s) when this export began and \
+             {written} were written; comments were added or removed while it ran"
+        );
+    }
 }
 
-pub fn render_jsonld(
-    title: &str,
-    comments: &[Comment],
-    source: &str,
-    config: &Configuration,
-) -> String {
-    let mut items = Vec::new();
-    for item in comments {
-        let motivation = if item.motivation.is_empty() {
-            config.default_motivation.clone()
-        } else {
-            item.motivation.clone()
-        };
-        let mut annotation = Map::new();
-        annotation.insert("id".into(), json!(format!("urn:uuid:{}", item.id)));
-        annotation.insert("type".into(), json!("Annotation"));
-        annotation.insert("motivation".into(), json!(motivation));
-        annotation.insert("created".into(), json!(item.created));
-        annotation.insert(
-            "creator".into(),
-            json!({"type": "Person", "name": item.creator}),
-        );
-        if let Some(body) = bodies_for(item) {
-            annotation.insert("body".into(), body);
-        }
-        annotation.insert(
-            "target".into(),
-            json!({"source": source, "librepaper:original_target": original_target_for(item)}),
-        );
-        if let Some(attachment) = attachment_for(item) {
-            annotation.insert("librepaper:derived_attachment".into(), attachment);
-        }
+/// One page of `librepaper.comments.v1`, as this client reads it.
+#[derive(serde::Deserialize)]
+struct CommentPage {
+    #[serde(default)]
+    comments: Vec<Comment>,
+    #[serde(default)]
+    next_cursor: Option<String>,
+    #[serde(default)]
+    complete: bool,
+    #[serde(default)]
+    state: CollectionState,
+}
 
-        // Outside the spec, which has no notion of a thread being settled.
-        // Extra properties are permitted, and a reader that does not know
-        // them ignores them.
-        annotation.insert("librepaper:resolved".into(), json!(item.resolved));
-        if let Some(at) = &item.resolved_at {
-            annotation.insert("librepaper:resolved_at".into(), json!(at));
-        }
-        // Which text this was said about: the `source_sequence` durable
-        // alongside it (SPEC-server-is-a-log §7 step 4), stringified. The
-        // extra property that makes an exported annotation checkable against
-        // a document that has moved on -- a quotation with no version behind
-        // it is a quotation of nothing in particular. Absent on a comment
-        // made before that accounting existed.
-        if !item.revision().is_empty() {
-            annotation.insert("librepaper:revision".into(), json!(item.revision()));
-        }
-        // What an editor decided about a suggestion, beside the ordinary
-        // resolved bookkeeping every comment carries.
-        if !item.outcome.is_empty() {
-            annotation.insert("librepaper:outcome".into(), json!(item.outcome));
-        }
-        items.push(Value::Object(annotation));
-        // A reply is an annotation whose target is the annotation it answers.
-        for answer in &item.replies {
-            items.push(json!({
-                "id": format!("urn:uuid:{}", answer.id),
-                "type": "Annotation",
-                "motivation": "replying",
-                "created": answer.created,
-                "creator": {"type": "Person", "name": answer.creator},
-                "body": {"type": "TextualBody", "value": answer.body, "format": "text/plain"},
-                "target": {"source": format!("urn:uuid:{}", item.id)},
-                "librepaper:resolved": false,
-            }));
+#[derive(Default, serde::Deserialize)]
+struct CollectionState {
+    #[serde(default)]
+    total: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct ThreadPage {
+    #[serde(default)]
+    replies: Vec<crate::room::Reply>,
+    #[serde(default)]
+    next_cursor: Option<String>,
+    #[serde(default)]
+    complete: bool,
+}
+
+/// The traversal itself: one HTTP request per page, nothing retained
+/// between them.
+struct Walk<'a> {
+    server: &'a str,
+    slug: &'a str,
+    headers: &'a [(&'a str, &'a str)],
+}
+
+impl<'a> Walk<'a> {
+    fn new(server: &'a str, slug: &'a str, headers: &'a [(&'a str, &'a str)]) -> Walk<'a> {
+        Walk {
+            server,
+            slug,
+            headers,
         }
     }
-    let page = json!({
-        "@context": ANNOTATION_CONTEXT,
-        "type": "AnnotationPage",
-        "source": source,
-        "label": title,
-        "total": items.len(),
-        "items": items,
-    });
+
+    async fn get(&self, url: &str) -> Result<Vec<u8>, String> {
+        let (status, raw) = send(
+            reqwest::Method::GET,
+            url,
+            self.headers,
+            None,
+            Duration::from_secs(60),
+        )
+        .await?;
+        if status != 200 {
+            return Err(format!("could not read the comments ({status})"));
+        }
+        Ok(raw)
+    }
+
+    async fn page(&mut self, cursor: Option<&str>) -> Result<CommentPage, String> {
+        let query = match cursor {
+            Some(cursor) => format!("?cursor={}", urlencode(cursor)),
+            None => String::new(),
+        };
+        let raw = self
+            .get(&format!(
+                "{}/api/documents/{}/comments{query}",
+                self.server, self.slug
+            ))
+            .await?;
+        serde_json::from_slice(&raw).map_err(|err| format!("could not read the comments: {err}"))
+    }
+
+    async fn reply_page(&mut self, comment_id: &str, cursor: &str) -> Result<ThreadPage, String> {
+        let raw = self
+            .get(&format!(
+                "{}/api/documents/{}/comments/{}/replies?cursor={}",
+                self.server,
+                self.slug,
+                comment_id,
+                urlencode(cursor)
+            ))
+            .await?;
+        serde_json::from_slice(&raw)
+            .map_err(|err| format!("could not read a comment's replies: {err}"))
+    }
+}
+
+fn urlencode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+/// Where an export is written while it is being written.
+///
+/// A file export goes to a temporary beside its destination and is renamed
+/// into place only once the traversal has finished, so a failed page leaves
+/// no output at all rather than a prefix of one that reads as complete.
+enum Sink {
+    Stdout,
+    File {
+        temporary: std::path::PathBuf,
+        handle: std::fs::File,
+    },
+    Broken,
+}
+
+impl Sink {
+    fn open(out: &str) -> Sink {
+        if out.is_empty() || out == "-" {
+            return Sink::Stdout;
+        }
+        let destination = std::path::Path::new(out);
+        let parent = destination
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        let temporary = parent.join(format!(
+            ".{}.librepaper-partial-{}",
+            destination
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("export"),
+            crate::util::new_id()
+        ));
+        match super::tokens::create_private_file_exclusive(&temporary) {
+            Ok(handle) => Sink::File { temporary, handle },
+            Err(error) => die(error),
+        }
+    }
+
+    /// Writes one piece. Nothing is held between pieces on either branch:
+    /// a pipe gets the bytes as they are rendered, and a file gets them as
+    /// they are rendered into the temporary beside it.
+    fn write(&mut self, text: &str) {
+        use std::io::Write;
+        let outcome = match self {
+            Sink::Stdout => std::io::stdout().write_all(text.as_bytes()),
+            Sink::File { handle, .. } => handle.write_all(text.as_bytes()),
+            Sink::Broken => Ok(()),
+        };
+        if let Err(error) = outcome {
+            self.abandon();
+            die(format!("could not write the export: {error}"));
+        }
+    }
+
+    /// Throws away whatever was written. Called before every `die` on the
+    /// export path, so a refused file export is never a partial file.
+    ///
+    /// A pipe cannot be taken back: what has already gone down it has gone.
+    /// The caller's non-zero exit and the message on stderr are what say
+    /// the export is not complete, which is the most a pipe allows.
+    fn abandon(&mut self) {
+        if let Sink::File { temporary, .. } = self {
+            let _ = std::fs::remove_file(&*temporary);
+        }
+        *self = Sink::Broken;
+    }
+
+    fn finish(self, out: &str, written: usize) {
+        match self {
+            Sink::Stdout => {
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+            Sink::File { temporary, handle } => {
+                if let Err(error) = handle.sync_all() {
+                    let _ = std::fs::remove_file(&temporary);
+                    die(format!("could not sync export temporary file: {error}"));
+                }
+                drop(handle);
+                if let Err(error) = std::fs::rename(&temporary, out) {
+                    let _ = std::fs::remove_file(&temporary);
+                    die(format!("could not write {out}: {error}"));
+                }
+                let parent = std::path::Path::new(out)
+                    .parent()
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .unwrap_or(std::path::Path::new("."));
+                if let Err(error) =
+                    std::fs::File::open(parent).and_then(|directory| directory.sync_all())
+                {
+                    die(format!(
+                        "could not sync export directory {}: {error}",
+                        parent.display()
+                    ));
+                }
+                eprintln!("wrote {out} ({written} annotation(s))");
+            }
+            Sink::Broken => {}
+        }
+    }
+}
+
+/* --------------------------------------------------------- the renderers */
+//
+// Each format is a header, one piece per comment, and (for JSON-LD) a
+// footer. Split that way because an export is a traversal: a comment is
+// rendered and written the moment it arrives, so nothing ever holds a
+// `Vec<Comment>` of the document.
+
+const JSONLD_INDENT: &str = "    ";
+
+fn jsonld_header(title: &str, source: &str) -> String {
     format!(
-        "{}\n",
-        serde_json::to_string_pretty(&page).unwrap_or_default()
+        "{{\n  \"@context\": {},\n  \"type\": \"AnnotationPage\",\n  \
+         \"source\": {},\n  \"label\": {},\n  \"items\": [\n",
+        json!(ANNOTATION_CONTEXT),
+        json!(source),
+        json!(title),
     )
+}
+
+/// One comment as JSON-LD, plus one object per reply: a reply is an
+/// annotation whose target is the annotation it answers.
+///
+/// `total` is written by the footer rather than the header, because a
+/// streamed page cannot know it before the last comment has gone out and
+/// an object's keys are not ordered.
+fn jsonld_item(item: &Comment, source: &str, config: &Configuration, first: bool) -> String {
+    jsonld_value(
+        jsonld_values(item, source, config)
+            .into_iter()
+            .next()
+            .unwrap_or(Value::Null),
+        first,
+    )
+}
+
+fn jsonld_value(value: Value, first: bool) -> String {
+    let mut out = String::new();
+    if !first {
+        out.push_str(",\n");
+    }
+    let body = serde_json::to_string_pretty(&value).unwrap_or_default();
+    for (index, line) in body.lines().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(JSONLD_INDENT);
+        out.push_str(line);
+    }
+    out
+}
+
+fn jsonld_reply(reply: &crate::room::Reply, parent_id: &str) -> String {
+    jsonld_value(
+        json!({
+            "id": format!("urn:uuid:{}", reply.id),
+            "type": "Annotation",
+            "motivation": "replying",
+            "created": reply.created,
+            "creator": {"type": "Person", "name": reply.creator},
+            "body": {"type": "TextualBody", "value": reply.body, "format": "text/plain"},
+            "target": {"source": format!("urn:uuid:{}", parent_id)},
+            "librepaper:resolved": false,
+        }),
+        false,
+    )
+}
+
+fn jsonld_footer(total: usize) -> String {
+    format!("\n  ],\n  \"total\": {total}\n}}\n")
+}
+
+fn jsonld_values(item: &Comment, source: &str, config: &Configuration) -> Vec<Value> {
+    let motivation = if item.motivation.is_empty() {
+        config.default_motivation.clone()
+    } else {
+        item.motivation.clone()
+    };
+    let mut annotation = Map::new();
+    annotation.insert("id".into(), json!(format!("urn:uuid:{}", item.id)));
+    annotation.insert("type".into(), json!("Annotation"));
+    annotation.insert("motivation".into(), json!(motivation));
+    annotation.insert("created".into(), json!(item.created));
+    annotation.insert(
+        "creator".into(),
+        json!({"type": "Person", "name": item.creator}),
+    );
+    if let Some(body) = bodies_for(item) {
+        annotation.insert("body".into(), body);
+    }
+    annotation.insert(
+        "target".into(),
+        json!({"source": source, "librepaper:original_target": original_target_for(item)}),
+    );
+    if let Some(attachment) = attachment_for(item) {
+        annotation.insert("librepaper:derived_attachment".into(), attachment);
+    }
+
+    // Outside the spec, which has no notion of a thread being settled.
+    // Extra properties are permitted, and a reader that does not know
+    // them ignores them.
+    annotation.insert("librepaper:resolved".into(), json!(item.resolved));
+    if let Some(at) = &item.resolved_at {
+        annotation.insert("librepaper:resolved_at".into(), json!(at));
+    }
+    // Which text this was said about: the `source_sequence` durable
+    // alongside it (SPEC-server-is-a-log §7 step 4), stringified. The
+    // extra property that makes an exported annotation checkable against
+    // a document that has moved on -- a quotation with no version behind
+    // it is a quotation of nothing in particular. Absent on a comment
+    // made before that accounting existed.
+    if !item.revision().is_empty() {
+        annotation.insert("librepaper:revision".into(), json!(item.revision()));
+    }
+    // What an editor decided about a suggestion, beside the ordinary
+    // resolved bookkeeping every comment carries.
+    if !item.outcome.is_empty() {
+        annotation.insert("librepaper:outcome".into(), json!(item.outcome));
+    }
+    vec![Value::Object(annotation)]
 }
 
 fn target_quote(item: &Comment) -> Option<&str> {
@@ -565,54 +879,51 @@ fn target_description(item: &Comment) -> String {
     }
 }
 
-pub fn render_markdown(
-    title: &str,
-    comments: &[Comment],
-    source: &str,
-    config: &Configuration,
-) -> String {
+/// `total` is the document's authoritative comment count, from the first
+/// page rather than from a list this process holds.
+fn markdown_header(title: &str, source: &str, total: i64) -> String {
+    format!("# {title}\n\n{source}\n\n{total} annotation(s)\n")
+}
+
+fn markdown_item(item: &Comment, config: &Configuration) -> String {
     use std::fmt::Write;
-    let mut out = format!(
-        "# {title}\n\n{source}\n\n{} annotation(s)\n",
-        comments.len()
+    let mut out = String::new();
+    let motivation = if item.motivation.is_empty() {
+        config.default_motivation.as_str()
+    } else {
+        &item.motivation
+    };
+    let state = if item.resolved { " (resolved)" } else { "" };
+    let _ = write!(
+        out,
+        "\n---\n\n## {motivation} by {}{state}\n\n",
+        item.creator
     );
-    for item in comments {
-        let motivation = if item.motivation.is_empty() {
-            config.default_motivation.as_str()
+    if let Some(exact) = target_quote(item) {
+        let _ = write!(out, "> {}\n\n", exact.replace('\n', "\n> "));
+    } else {
+        let _ = write!(out, "**On:** {}.\n\n", target_description(item));
+    }
+    if let Some(proposed) = item
+        .proposed
+        .as_ref()
+        .filter(|_| item.motivation == "editing")
+    {
+        let shown = if proposed.is_empty() {
+            "(delete)"
         } else {
-            &item.motivation
+            proposed
         };
-        let state = if item.resolved { " (resolved)" } else { "" };
-        let _ = write!(
-            out,
-            "\n---\n\n## {motivation} by {}{state}\n\n",
-            item.creator
-        );
-        if let Some(exact) = target_quote(item) {
-            let _ = write!(out, "> {}\n\n", exact.replace('\n', "\n> "));
-        } else {
-            let _ = write!(out, "**On:** {}.\n\n", target_description(item));
-        }
-        if let Some(proposed) = item
-            .proposed
-            .as_ref()
-            .filter(|_| item.motivation == "editing")
-        {
-            let shown = if proposed.is_empty() {
-                "(delete)"
-            } else {
-                proposed
-            };
-            let _ = write!(out, "**Suggested:** “{shown}”\n\n");
-        }
-        if !item.body.is_empty() {
-            let _ = write!(out, "{}\n\n", item.body);
-        }
-        for reply in &item.replies {
-            let _ = writeln!(out, "- **{}**: {}", reply.creator, reply.body);
-        }
+        let _ = write!(out, "**Suggested:** \u{201c}{shown}\u{201d}\n\n");
+    }
+    if !item.body.is_empty() {
+        let _ = write!(out, "{}\n\n", item.body);
     }
     out
+}
+
+fn markdown_reply(reply: &crate::room::Reply) -> String {
+    format!("- **{}**: {}\n", reply.creator, reply.body)
 }
 
 /* ------------------------------------------------------- the response export */
@@ -626,52 +937,42 @@ pub fn render_markdown(
 /// reader was actually shown -- which is what `revision` records and what
 /// makes **Then** a quotation rather than a recollection.
 ///
-/// Grouped by reviewer, because that is how a response is organised, and in
-/// the markdown the `export` command already writes, so it goes into a Quarto
-/// document as it is.
-///
-/// `now` is the document as it stands, rendered and with the markup taken out;
-/// empty when this machine could not render it, in which case the **Now** line
-/// is left off rather than guessed at.
-/// Response export with the inserted side of a replacement for comments whose
-/// quoted passage disappeared. The public `render_response` remains useful to
-/// callers that already have only current text; the command line supplies this
-/// extra map after reading the relevant historical labels.
-pub fn render_response(
-    title: &str,
-    comments: &[Comment],
-    source: &str,
-    config: &Configuration,
-) -> String {
+/// Grouped in the order the comments were made, and in the markdown the
+/// `export` command already writes, so it goes into a Quarto document as it
+/// is.
+fn response_header(title: &str, source: &str) -> String {
+    format!("# Response to reviewers: {title}\n\n{source}\n")
+}
+
+fn response_item(item: &Comment, number: usize, config: &Configuration) -> String {
     use std::fmt::Write;
-    let mut out = format!("# Response to reviewers: {title}\n\n{source}\n");
-    for (index, item) in comments.iter().enumerate() {
-        let motivation = if item.motivation.is_empty() {
-            config.default_motivation.as_str()
-        } else {
-            &item.motivation
-        };
-        let _ = write!(out, "\n## {}. {motivation}\n\n", index + 1);
-        if let Some(exact) = target_quote(item) {
-            let _ = write!(out, "**Then:** “{}”\n\n", one_line(exact));
-        } else {
-            let _ = write!(out, "**On:** {}.\n\n", target_description(item));
-        }
-        // What became of that passage, from the attachment the server
-        // resolved -- not from re-rendering the document as it was, which is
-        // what this used to do and what made a quotation the thing a comment
-        // was about.
-        if let Some(became) = became_of(item) {
-            let _ = write!(out, "**Now:** {became}\n\n");
-        }
-        if !item.body.is_empty() {
-            let _ = write!(out, "> {}\n\n", item.body.replace('\n', "\n> "));
-        }
-        for reply in &item.replies {
-            let _ = write!(out, "**{}:** {}\n\n", reply.creator, reply.body);
-        }
+    let mut out = String::new();
+    let motivation = if item.motivation.is_empty() {
+        config.default_motivation.as_str()
+    } else {
+        &item.motivation
+    };
+    let _ = write!(out, "\n## {number}. {motivation}\n\n");
+    if let Some(exact) = target_quote(item) {
+        let _ = write!(out, "**Then:** \u{201c}{}\u{201d}\n\n", one_line(exact));
+    } else {
+        let _ = write!(out, "**On:** {}.\n\n", target_description(item));
+    }
+    // What became of that passage, from the attachment the server
+    // resolved -- not from re-rendering the document as it was, which is
+    // what this used to do and what made a quotation the thing a comment
+    // was about.
+    if let Some(became) = became_of(item) {
+        let _ = write!(out, "**Now:** {became}\n\n");
+    }
+    if !item.body.is_empty() {
+        let _ = write!(out, "> {}\n\n", item.body.replace('\n', "\n> "));
     }
     out
+}
+
+fn response_reply(reply: &crate::room::Reply) -> String {
+    format!("**{}:** {}\n\n", reply.creator, reply.body)
 }
 
 /// What happened to the passage a comment was about, in words, or nothing
@@ -696,23 +997,4 @@ fn became_of(item: &Comment) -> Option<String> {
 /// wrapped in the source reads as several.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The comments made at or after one label.
-///
-/// "At or after" used to be a question about position on a fetched
-/// checkpoint list, kept off the clock on purpose. That position no longer
-/// exists to ask about: a label's `source_sequence` -- the `document_updates`
-/// row that made its state durable (SPEC-server-is-a-log §7 step 4, §8.2) --
-/// is server-side evidence a label's own wire shape does not carry (see
-/// `crate::server::history::label_wire`), so there is nothing here to place
-/// a comment against except the one thing both a label and a comment do
-/// carry: when each was made. `cut` and `item.created` are both RFC 3339
-/// timestamps, which sort lexicographically exactly as they sort in time, so
-/// this is a plain string comparison.
-pub fn since(comments: Vec<Comment>, cut: String) -> Vec<Comment> {
-    comments
-        .into_iter()
-        .filter(|item| item.created.as_str() >= cut.as_str())
-        .collect()
 }

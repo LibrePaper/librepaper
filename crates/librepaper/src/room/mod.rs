@@ -12,9 +12,9 @@
 //! state whose meaning depends on the source. A comment is a place in the
 //! text, a proposal is a branch with a decision, and both have to be written
 //! in the same transaction as the source they depend on (§7). So a room is
-//! now a façade: it holds the sequencer for its document, a resident cache of
-//! that document's comments, and the asset bookkeeping that has nowhere else
-//! to live.
+//! now a façade: it holds the sequencer for its document, a bounded cache of
+//! where its comments are anchored, and the asset bookkeeping that has
+//! nowhere else to live.
 //!
 //! Field names follow the W3C Web Annotation Data Model, so exporting is a
 //! reshaping rather than a translation: exact, prefix and suffix are a
@@ -84,6 +84,111 @@ pub(super) struct Peer {
     pub chat_messages: i64,
 }
 
+/// How many comments' anchors one room remembers where to draw.
+pub(crate) const ATTACHMENT_CACHE_MAX: usize = 1024;
+/// And how many bytes of quoted context those entries may hold between
+/// them. A comment stored before anything cleaned its quoted passage can be
+/// arbitrarily wide, so an entry count alone does not bound this.
+pub(crate) const ATTACHMENT_CACHE_BYTES: usize = 4 * 1024 * 1024;
+
+/// One remembered anchor: the immutable evidence a re-resolution needs, and
+/// the answer it last produced.
+pub(crate) struct Anchored {
+    pub(crate) anchor: OriginalAnchor,
+    pub(crate) attachment: Option<annotation::DerivedAttachment>,
+    bytes: usize,
+}
+
+/// A map of them, bounded twice and evicted oldest first.
+///
+/// Insertion order, not recency: a comment that is paged in again is
+/// already here and is not re-queued, which keeps `remember` O(1) without
+/// a linked list. What that costs is a long-lived comment being evicted
+/// ahead of one nobody has looked at since, and what that costs in turn is
+/// one fork the next time it is read.
+#[derive(Default)]
+pub(crate) struct AttachmentCache {
+    entries: HashMap<String, Anchored>,
+    /// Oldest first, each id exactly once.
+    order: std::collections::VecDeque<String>,
+    bytes: usize,
+}
+
+impl AttachmentCache {
+    fn weight(anchor: &OriginalAnchor) -> usize {
+        let quoted = anchor
+            .target
+            .source()
+            .map(|target| target.exact.len() + target.prefix.len() + target.suffix.len())
+            .unwrap_or(0);
+        quoted + anchor.frontier.len() + 256
+    }
+
+    /// Remembers this comment's anchor, keeping whatever attachment was
+    /// already worked out for it.
+    pub(crate) fn remember(&mut self, id: &str, anchor: &OriginalAnchor) {
+        if self.entries.contains_key(id) {
+            return;
+        }
+        let bytes = Self::weight(anchor);
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.insert(
+            id.to_string(),
+            Anchored {
+                anchor: anchor.clone(),
+                attachment: None,
+                bytes,
+            },
+        );
+        self.order.push_back(id.to_string());
+        self.evict();
+    }
+
+    pub(crate) fn attachment(&self, id: &str) -> Option<&annotation::DerivedAttachment> {
+        self.entries
+            .get(id)
+            .and_then(|held| held.attachment.as_ref())
+    }
+
+    pub(crate) fn set_attachment(&mut self, id: &str, found: annotation::DerivedAttachment) {
+        if let Some(held) = self.entries.get_mut(id) {
+            held.attachment = Some(found);
+        }
+    }
+
+    pub(crate) fn ids(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
+
+    pub(crate) fn anchor(&self, id: &str) -> Option<&OriginalAnchor> {
+        self.entries.get(id).map(|held| &held.anchor)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+        self.bytes = 0;
+    }
+
+    pub(crate) fn remove(&mut self, id: &str) {
+        if let Some(gone) = self.entries.remove(id) {
+            self.bytes = self.bytes.saturating_sub(gone.bytes);
+            self.order.retain(|held| held != id);
+        }
+    }
+
+    fn evict(&mut self) {
+        while self.entries.len() > ATTACHMENT_CACHE_MAX || self.bytes > ATTACHMENT_CACHE_BYTES {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(gone) = self.entries.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(gone.bytes);
+            }
+        }
+    }
+}
+
 /// The live document, as a caller sees it.
 ///
 /// Every method here is a delegation or a database read. The room holds no
@@ -98,11 +203,18 @@ pub struct Room {
     catalog: Arc<PostgresCatalog>,
     blobs: Arc<dyn BlobStore>,
     config: Arc<Configuration>,
-    /// This document's comments as the catalogue holds them, kept resident so
-    /// that drawing a thread does not cost a query per frame. It is a cache
-    /// in the strict sense: `None` means "ask the catalogue", and dropping it
-    /// loses nothing.
-    comments: tokio::sync::RwLock<Option<Vec<Comment>>>,
+    /// Where the passages of recently-served comments are now, and the
+    /// Loro cursor pairs that track them through later edits.
+    ///
+    /// This is what is left of the room's old resident copy of every
+    /// comment on the document. That copy existed so a page could be drawn
+    /// without a query and so `reattach_comments` had something to
+    /// re-anchor; it also meant one process held an unbounded collection.
+    /// What genuinely has to be remembered is the derived half -- an
+    /// attachment and its cursors are recomputed from a fork otherwise --
+    /// and that is bounded here, by entries and by bytes, oldest first.
+    /// Dropping an entry loses nothing but the fork it saved.
+    attachments: tokio::sync::Mutex<AttachmentCache>,
     /// The projection digest `reattach_comments_if_moved` last ran against,
     /// so the periodic pass costs nothing on a tick where nothing changed.
     /// `None` before the comments cache has ever been warm, which is also
@@ -316,52 +428,133 @@ impl Room {
 
     // -- comments ----------------------------------------------------------
 
-    /// This document's comments, from the cache or from the catalogue.
+    /// One page of this document's comments, as the caller may see them.
     ///
-    /// A cold load has no cursor pairs and no live attachment yet, so it is
-    /// immediately followed by `reattach_comments` (`resolve.rs`): every
-    /// comment's passage is resolved against head once, right after the
-    /// cache fills, exactly as that module's own doc says a process that
-    /// starts cold must. A resolve failure (the sequencer could not build a
-    /// projection) leaves the rows with no attachment rather than failing
-    /// this read outright -- the caller already coped with that before this
-    /// existed, by treating a missing attachment as "not yet known".
-    pub async fn comments(&self) -> Result<Vec<Comment>, WriteError> {
-        if let Some(cached) = self.comments.read().await.as_ref() {
-            return Ok(cached.clone());
-        }
-        // Serialize cache fill with invalidation. Otherwise a slow paged
-        // read can publish stale rows after a mutation already invalidated
-        // the cache, leaving that mutation invisible until the next write.
-        let mut cache = self.comments.write().await;
-        if let Some(cached) = cache.as_ref() {
-            return Ok(cached.clone());
-        }
-        let loaded = comments::load(&self.catalog, self.document_id).await?;
-        *cache = Some(loaded.clone());
-        drop(cache);
-        let _ = self.reattach_comments().await;
-        Ok(self.comments.read().await.clone().unwrap_or(loaded))
-    }
-
-    /// Throws the comment cache away. Cheap, and correct at any moment: the
-    /// catalogue is the record and this is only a copy of it.
-    pub async fn forget_comments(&self) {
-        *self.comments.write().await = None;
-    }
-
-    pub async fn snapshot_for(
+    /// There is no resident list to read from and no whole-document load
+    /// behind this: it is three bounded statements (see
+    /// `room::comments::page`) plus one pass over the room's attachment
+    /// cache. `suggestions` is the caller's editor right, and it does two
+    /// things at once because both follow from it: it is pushed into the
+    /// query as "may see a `kind='suggestion'` row", so a reader's page is
+    /// a page rather than whatever is left of one after filtering; and it
+    /// is `CommentView::for_viewer`'s `is_owner`, which is what takes the
+    /// source anchors out of a reader's copy.
+    ///
+    /// Anchors that this room has not resolved yet are resolved here, which
+    /// is what the cold-cache pass in `resolve.rs` used to do for the whole
+    /// document at once. A resolve failure (the sequencer could not build a
+    /// projection) leaves those comments with no attachment rather than
+    /// failing the read: a caller already reads a missing attachment as
+    /// "not yet known".
+    pub async fn comment_page(
         &self,
+        after: Option<comments::Position>,
+        limit: usize,
         author: &str,
-        is_owner: bool,
-    ) -> Result<Vec<CommentView>, WriteError> {
-        let comments = self.comments().await?;
-        Ok(comment_views(&comments, author, is_owner))
+        suggestions: bool,
+    ) -> Result<(Vec<CommentView>, comments::CommentPage), WriteError> {
+        let mut page =
+            comments::page(&self.catalog, self.document_id, after, limit, suggestions).await?;
+        self.attach(&mut page.comments).await;
+        let views = page
+            .comments
+            .iter()
+            .map(|item| CommentView::for_viewer(item, author, suggestions))
+            .collect();
+        Ok((views, page))
     }
 
-    /// (total, open)
+    /// One page of one thread's replies. The comment is named by
+    /// `(document_id, id)`, so an id out of a request body can only reach a
+    /// thread of the document the caller was authorized for.
+    pub async fn reply_page(
+        &self,
+        comment_id: Uuid,
+        after: Option<comments::Position>,
+        limit: usize,
+        suggestions: bool,
+    ) -> Result<Option<comments::ReplyPage>, WriteError> {
+        let Some(comment) = self
+            .catalog
+            .annotation(self.document_id, comment_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if !suggestions && comment.kind == "suggestion" {
+            return Ok(None);
+        }
+        Ok(Some(
+            comments::thread_page(&self.catalog, comment_id, after, limit).await?,
+        ))
+    }
+
+    /// One comment by id, with the bounded reply preview a page gives it
+    /// and whatever this room already knows about where its passage went.
+    /// `Ok(None)` means the catalogue does not have it; an `Err` means the
+    /// catalogue could not be asked. They are different answers and every
+    /// caller has to be able to tell them apart -- "the comment is gone"
+    /// and "the database is unavailable" send an agent in opposite
+    /// directions.
+    pub async fn comment_by_id(
+        &self,
+        id: &str,
+        suggestions: bool,
+    ) -> Result<Option<Comment>, WriteError> {
+        let Ok(id) = Uuid::parse_str(id) else {
+            return Ok(None);
+        };
+        let Some(comment) = comments::one(&self.catalog, self.document_id, id, suggestions).await?
+        else {
+            return Ok(None);
+        };
+        let mut one = [comment];
+        self.attach(&mut one).await;
+        Ok(Some(one.into_iter().next().expect("one comment")))
+    }
+
+    /// The collection's authoritative shape: how many comments this caller
+    /// may see, how many are open, how many replies there are, and a token
+    /// that changes whenever any of it does.
+    pub async fn comment_state(
+        &self,
+        suggestions: bool,
+    ) -> Result<crate::storage::postgres::AnnotationState, WriteError> {
+        Ok(self
+            .catalog
+            .annotation_state(self.document_id, suggestions)
+            .await?)
+    }
+
+    /// Throws the room's cached anchors away. Cheap, and correct at any
+    /// moment: the catalogue is the record and this is only derived from
+    /// it.
+    pub async fn forget_comments(&self) {
+        self.attachments.lock().await.clear();
+    }
+
+    /// How many anchors this room is currently remembering, for the test
+    /// that checks the cache does not grow with the document.
+    #[cfg(test)]
+    pub(crate) async fn attachment_cache_len(&self) -> usize {
+        self.attachments.lock().await.ids().len()
+    }
+
+    /// Every comment, by walking every page. Test-only: see
+    /// [`comments::walk_all`].
+    #[cfg(test)]
+    pub(crate) async fn all_comments(&self, editor: bool) -> Result<Vec<Comment>, WriteError> {
+        let mut comments = comments::walk_all(&self.catalog, self.document_id, editor).await?;
+        self.attach(&mut comments).await;
+        Ok(comments)
+    }
+
+    /// (total, open), for an owner's own listing.
     pub async fn counts(&self) -> Result<(usize, usize), WriteError> {
-        let (total, open) = self.catalog.annotation_counts(self.document_id).await?;
+        let (total, open) = self
+            .catalog
+            .annotation_counts(self.document_id, true)
+            .await?;
         Ok((total as usize, open as usize))
     }
 
@@ -438,7 +631,7 @@ impl Rooms {
             catalog: self.catalog.clone(),
             blobs: self.blobs.clone(),
             config: self.config.clone(),
-            comments: tokio::sync::RwLock::new(None),
+            attachments: tokio::sync::Mutex::new(AttachmentCache::default()),
             reattached_digest: tokio::sync::Mutex::new(None),
             peers: Mutex::new(HashMap::new()),
             asset_uploads: std::sync::Mutex::new(HashMap::new()),
@@ -552,14 +745,6 @@ pub fn encode_update(bytes: &[u8]) -> String {
 pub fn decode_update(text: &str) -> Option<Vec<u8>> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.decode(text).ok()
-}
-
-fn comment_views(comments: &[Comment], author: &str, is_owner: bool) -> Vec<CommentView> {
-    comments
-        .iter()
-        .filter(|item| is_owner || crate::room::comments::visible_to_reader(item))
-        .map(|item| CommentView::for_viewer(item, author, is_owner))
-        .collect()
 }
 
 /// The key one address is rate limited under. An hour rather than a minute,

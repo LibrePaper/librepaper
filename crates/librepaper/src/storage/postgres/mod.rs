@@ -732,7 +732,7 @@ mod tests {
         assert_eq!(reply.id, reply_retried.id);
         assert_eq!(
             catalog
-                .annotations(first.id, None, 500)
+                .annotations(first.id, None, 500, true)
                 .await
                 .unwrap()
                 .len(),
@@ -2132,6 +2132,7 @@ mod benchmarks;
 pub use access::{AccessRole, GrantRecord, ShareLinkRecord};
 pub use annotations::{
     original_anchor_from_record, presentation_from_record, AnnotationBatchCommand,
-    AnnotationBatchUpsert, AnnotationRecord, MutationAuthorization, NewAnnotation, NewReply,
-    ReplyRecord, ANNOTATION_PAGE_MAX, REPLY_PAGE_MAX,
+    AnnotationBatchUpsert, AnnotationRecord, AnnotationState, MutationAuthorization, NewAnnotation,
+    NewReply, ReplyRecord, ReplySummary, SizedReply, SizedRow, ANNOTATION_PAGE_MAX,
+    REPLY_LOOKUP_MAX, REPLY_PAGE_MAX,
 };

@@ -14,7 +14,7 @@ the lines it deletes.
 
 | Priority by payoff | Idea | Why it matters | Recommended next step |
 |---|---|---|---|
-| 1 | Bounded comment transport and admission | SQL pagination fixes row ceilings, but the full-snapshot protocol still needs a read memory guard | Add end-to-end pagination for larger collections; decide admission limits separately |
+| 1 | Comment admission | Transport is now paged end to end; what one document may accumulate is still unbounded, and making a comment refusable is a product decision | Settle what a caller at the cap is told, and whether a retry of an already-created id still succeeds |
 | 2 | Remaining admission and capacity questions | Label limits, MCP fairness and database contention remain unresolved | Address independently after the comment correctness gap |
 | 3 | Companion and assistant scope | Potentially large cuts, but some remove useful entry points | Remove proven unreachable remnants; decide which active workflows to support |
 
@@ -37,26 +37,23 @@ the other items should not be bundled into the same change:
   Comments are bounded only by the general request bucket (6,000/minute), for
   both authenticated and commenter-link callers.
 - `config.max_comments` (500) and `config.max_replies` (100) are not enforced.
-  `PostgresCatalog::annotation_count` exists and has no caller. Annotation and
-  reply writes are unbounded in practice. SQL reads now page beyond the old
-  500-annotation and 5,000-reply ceilings, and command lookup is by document
-  and ID inside the transaction. However, browser snapshots, exports and agent
-  query captures still collect the result. The loader therefore refuses a
-  full snapshot above a 16 MiB memory estimate, with an explicit error rather
-  than an empty list. This is a read guard, not a new write-admission policy.
+  Annotation and reply writes are unbounded in practice. Reads no longer
+  assume otherwise at any layer: see below.
 - `config.session.label_deployment_per_hour` (10,000) reaches no check; only
   `label_owner_per_hour` does.
 - The MCP `Capacity` semaphores are one global instance, not per document or
   per principal, so one runaway agent loop can starve MCP traffic for the
   whole deployment.
 
-**Still to implement: bounded transport pagination.** Carry cursors through
-HTTP, WebSocket refresh, browser rendering, export and agent query consumers
-so collections larger than the snapshot budget remain readable without
-building one complete vector. Preserve authorization, comment versions and
-concurrent refresh semantics. Paging only the SQL queries does not complete
-this work. The existing row-boundary and transaction-lookup regressions should
-continue to pass.
+**Done: bounded transport pagination.** Every consumer walks a keyset
+traversal a page at a time: HTTP, the socket `hello` and its invalidation
+frame, the browser panel, `librepaper export` and the agent `thread` query.
+The whole-snapshot protocol and its 16 MiB read guard are gone, along with
+the room's resident copy of every comment; what a room keeps is a bounded
+cache of where anchors resolved to. Page sizes, cursors, the consistency
+contract during concurrent change and the remaining aggregate limits are in
+[docs/protocol/comments-v1.md](docs/protocol/comments-v1.md) and section 9.2
+of the [resource inventory](docs/resource-bounds.md).
 
 **Still to decide: comment admission.** Applying the comment/reply limits
 inside the existing authorized document transaction, across browser and agent

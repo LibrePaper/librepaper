@@ -170,11 +170,29 @@ pub async fn login(server: Option<String>) {
     eprintln!("  token stored in {}", tokens_path(&base).display());
 }
 
-/// Writes bytes to a path only its owner can read, from the moment the file
-/// is created -- there is no window where a broader mode briefly applies --
-/// and fixes the permissions of a file that already existed under a looser
-/// one. A bearer token's file permissions are the whole of its protection at
-/// rest, so a failure to set them is reported rather than swallowed.
+/// Creates a private file without ever opening an existing path.  Export
+/// staging files use this instead of truncating a predictable sibling: two
+/// concurrent exports must not share a temporary file, and an interrupted
+/// export must not destroy an unrelated file with the same name.
+pub(super) fn create_private_file_exclusive(path: &Path) -> Result<std::fs::File, String> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map_err(|err| format!("could not create {}: {err}", path.display()))
+}
+
 pub(super) fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()

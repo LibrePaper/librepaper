@@ -15,8 +15,6 @@ use super::*;
 impl Room {
     pub(crate) async fn agent_query_snapshot(
         &self,
-        author: &str,
-        editor: bool,
     ) -> Result<crate::agent_query::QuerySnapshot, crate::room::agent::AgentError> {
         if let Some(why) = self.unreadable().await {
             return Err(crate::room::agent::AgentError::Storage(why));
@@ -25,31 +23,124 @@ impl Room {
             .projection()
             .await
             .map_err(|error| crate::room::agent::AgentError::Storage(error.to_string()))?;
-        let comments = self
-            .comments()
+        Ok(crate::agent_query::QuerySnapshot {
+            tree_digest: projected.projection.digest(),
+            main: projected.projection.main.clone(),
+            tree: json!(projected.projection),
+            texts: projected.texts.clone(),
+            // A capture is of the source. Comments are read live, a page at
+            // a time, by whichever query asks for them: see
+            // `Room::thread_query_page`. Storing them here made the stored
+            // view grow with the collection, and nothing that depends on a
+            // capture being immutable ever depended on them -- every
+            // edit-safety check reads the comment it is about from the
+            // catalogue.
+            threads: Default::default(),
+            comment_revision: String::new(),
+        })
+    }
+
+    /// One page of comments, shaped the way `agent_query`'s `thread` query
+    /// reads them, plus the revision that page was read at.
+    ///
+    /// `after` is the position a continuation cursor decoded to. The
+    /// revision is what a cursor binds to, exactly as it bound to the old
+    /// whole-collection digest: an agent that keeps paging across a change
+    /// is told its cursor no longer matches rather than being handed two
+    /// different collections interleaved.
+    pub(crate) async fn thread_query_page(
+        &self,
+        author: &str,
+        editor: bool,
+        after: Option<comments::Position>,
+        limit: usize,
+    ) -> Result<crate::agent_query::ThreadWindow, crate::room::agent::AgentError> {
+        let storage =
+            |error: WriteError| crate::room::agent::AgentError::Storage(error.to_string());
+        let (_, page) = self
+            .comment_page(after, limit, author, editor)
             .await
-            .map_err(|error| crate::room::agent::AgentError::Storage(error.to_string()))?;
-        // There is no room-held sequence counter any more, so this reads the
-        // annotation state itself: a hash of it changes exactly when the
-        // state a cursor was issued against has, which is the one property
-        // `agent_query`'s pagination cursors need from a "digest".
-        let comment_digest = super::comments::comment_digest_of(&comments) as u64;
-        let views = comments
+            .map_err(storage)?;
+        let items = page
+            .comments
             .iter()
             .map(|c| {
                 let mut view = serde_json::to_value(CommentView::for_viewer(c, author, editor))
                     .unwrap_or(Value::Null);
                 view["comment_version"] = json!(super::agent_comments::comment_version(c));
+                if let Some(at) = c.at {
+                    view["cursor"] =
+                        json!(comments::encode_cursor(self.document_id, None, editor, at));
+                }
                 view
             })
             .collect();
-        Ok(crate::agent_query::QuerySnapshot {
-            tree_digest: projected.projection.digest(),
-            comment_digest,
-            main: projected.projection.main.clone(),
-            tree: json!(projected.projection),
-            texts: projected.texts.clone(),
-            comments: views,
+        Ok(crate::agent_query::ThreadWindow {
+            items,
+            thread: None,
+            complete: page.complete,
+            missing: false,
+        })
+    }
+
+    /// One comment and a bounded window of its replies, shaped as the
+    /// `thread` query's `id` form returns them.
+    pub(crate) async fn thread_reply_window(
+        &self,
+        comment_id: Uuid,
+        author: &str,
+        editor: bool,
+        after: Option<comments::Position>,
+        limit: usize,
+    ) -> Result<crate::agent_query::ThreadWindow, crate::room::agent::AgentError> {
+        let storage =
+            |error: WriteError| crate::room::agent::AgentError::Storage(error.to_string());
+        let missing = crate::agent_query::ThreadWindow {
+            missing: true,
+            complete: true,
+            ..Default::default()
+        };
+        let Some(comment) = self
+            .comment_by_id(&comment_id.to_string(), editor)
+            .await
+            .map_err(storage)?
+        else {
+            return Ok(missing);
+        };
+        if !editor && !comments::visible_to_reader(&comment) {
+            return Ok(missing);
+        }
+        let Some(page) = self
+            .reply_page(comment_id, after, limit, editor)
+            .await
+            .map_err(storage)?
+        else {
+            return Ok(missing);
+        };
+        let mut thread = serde_json::to_value(CommentView::for_viewer(&comment, author, editor))
+            .unwrap_or(Value::Null);
+        thread["comment_version"] = json!(super::agent_comments::comment_version(&comment));
+        let items = page
+            .replies
+            .iter()
+            .map(|reply| {
+                let mut value = serde_json::to_value(reply).unwrap_or(Value::Null);
+                if let Some(at) = reply.at {
+                    value["cursor"] = json!(comments::encode_cursor(
+                        self.document_id,
+                        Some(comment_id),
+                        editor,
+                        at
+                    ));
+                }
+                value
+            })
+            .collect();
+        Ok(crate::agent_query::ThreadWindow {
+            items,
+            thread: Some(thread),
+            complete: page.complete,
+            missing: false,
         })
     }
 }

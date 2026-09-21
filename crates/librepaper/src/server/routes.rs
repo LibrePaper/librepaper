@@ -57,6 +57,10 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
         .route("/api/documents/{slug}/snapshot", get(snapshot))
         .route("/api/documents/{slug}/comments", any(comments))
         .route(
+            "/api/documents/{slug}/comments/{comment}/replies",
+            get(replies),
+        )
+        .route(
             "/api/documents/{slug}/agent/candidates/{candidate}",
             any(candidate),
         )
@@ -449,6 +453,19 @@ async fn comments(
 ) -> Reply {
     server
         .handle_comments(request, ctx.peer, &ctx.arrival, &slug)
+        .await
+}
+
+/// One thread's replies, paged on their own so a comment with very many
+/// of them cannot defeat the comment page limit.
+async fn replies(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path((slug, comment)): Path<(String, String)>,
+    request: Request<Body>,
+) -> Reply {
+    server
+        .handle_replies(request, &ctx.arrival, &slug, &comment)
         .await
 }
 

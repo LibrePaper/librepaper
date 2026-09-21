@@ -20,7 +20,7 @@
 //! inserted with `ON CONFLICT DO NOTHING`, then the row is read back and
 //! compared with what the caller asked for.
 
-use sqlx::{FromRow, Row};
+use sqlx::{FromRow, PgConnection, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -33,13 +33,87 @@ use super::{Error, PostgresCatalog, Result};
 
 /// The largest page [`PostgresCatalog::annotations`] returns, and so the most
 /// annotation ids [`PostgresCatalog::replies`] accepts in one call. A page
-/// size, not a document size: [`crate::room::comments::load`] walks as many
-/// pages as a document has.
+/// size, not a document size: [`crate::room::comments`] walks as many pages
+/// as a document has, and the transport's own page ceiling
+/// (`COMMENT_PAGE_MAX`) sits below this one.
 pub const ANNOTATION_PAGE_MAX: i64 = 500;
 
 /// The same for [`PostgresCatalog::replies`], which pages across a whole
 /// annotation page at once rather than per thread.
 pub const REPLY_PAGE_MAX: i64 = 1_000;
+
+/// Maximum ids a bounded annotation page can ask the catalogue to hydrate:
+/// the transport admits at most 200 comments and ten preview replies each.
+/// This remains a guard against accidental unbounded callers.
+pub const REPLY_LOOKUP_MAX: usize = 2_000;
+
+/// How wide a row is, before any of its content is read.
+///
+/// The transport has a byte budget as well as a row count, and a page that
+/// first read `limit` whole rows and only then discovered they were too
+/// large would have spent exactly the memory the budget exists to bound.
+/// So a page is chosen from this instead: three fixed-width values per
+/// candidate row, whatever the row actually holds.
+#[derive(Clone, Copy, Debug, FromRow)]
+pub struct SizedRow {
+    pub created_at: OffsetDateTime,
+    pub id: Uuid,
+    pub bytes: i64,
+}
+
+/// [`SizedRow`] for a reply, which also has to say which thread it is in.
+#[derive(Clone, Copy, Debug, FromRow)]
+pub struct SizedReply {
+    pub created_at: OffsetDateTime,
+    pub id: Uuid,
+    pub annotation_id: Uuid,
+    pub bytes: i64,
+}
+
+/// How many replies a thread has and when it last changed. Read for a whole
+/// annotation page at once, so a comment can report an authoritative
+/// `reply_total` without its replies being loaded.
+#[derive(Clone, Copy, Debug, FromRow)]
+pub struct ReplySummary {
+    pub annotation_id: Uuid,
+    pub replies: i64,
+    pub changed_micros: i64,
+}
+
+/// The shape of a document's whole annotation collection, as three counts
+/// and the newest `updated_at` across annotations and replies.
+///
+/// This is what makes a paged client's counts authoritative rather than
+/// derived from whatever it has loaded, and what a continuation cursor
+/// binds to so a traversal that spans a change is told so.
+#[derive(Clone, Copy, Debug, Default, FromRow)]
+pub struct AnnotationState {
+    pub total: i64,
+    pub open: i64,
+    pub replies: i64,
+    pub changed_micros: i64,
+}
+
+/// The eligibility predicate shared by every read below. A suggestion is an
+/// edit, so only an editor may see one; pushing that into SQL rather than
+/// filtering after the fact is what keeps a reader's page a page rather
+/// than whatever is left of one.
+const VISIBLE: &str = "($2 OR kind <> 'suggestion')";
+
+/// The columns whose stored length has no server-side ceiling, summed. A
+/// comment written today is cleaned against the deployment's caps, but
+/// nothing ever shortened one already stored, so these are what a byte
+/// budget has to be spent against.
+const ANNOTATION_BYTES: &str = "(octet_length(body) \
+     + coalesce(octet_length(exact),0) + coalesce(octet_length(prefix),0) \
+     + coalesce(octet_length(suffix),0) \
+     + octet_length(rendered_exact) + octet_length(rendered_prefix) \
+     + octet_length(rendered_suffix) \
+     + coalesce(octet_length(frontier),0) + coalesce(octet_length(color),0) \
+     + octet_length(author_key) + octet_length(author_label))::bigint AS bytes";
+
+const REPLY_BYTES: &str =
+    "(octet_length(body) + octet_length(author_key) + octet_length(author_label))::bigint AS bytes";
 
 /// Every column of `annotations`, written once so the by-id lookups and the
 /// paged scan cannot drift apart.
@@ -672,13 +746,87 @@ impl PostgresCatalog {
         .unwrap_or(0))
     }
 
-    pub async fn annotation_counts(&self, document_id: Uuid) -> Result<(i64, i64)> {
-        Ok(sqlx::query_as(
-            "SELECT count(*), count(*) FILTER (WHERE resolved_at IS NULL) FROM annotations WHERE document_id=$1",
-        )
+    /// How many annotations this caller may see, and how many of those are
+    /// open. Authoritative: a paged client shows these rather than counting
+    /// the rows it happens to be holding.
+    pub async fn annotation_counts(
+        &self,
+        document_id: Uuid,
+        suggestions: bool,
+    ) -> Result<(i64, i64)> {
+        Ok(sqlx::query_as(&format!(
+            "SELECT count(*), count(*) FILTER (WHERE resolved_at IS NULL) \
+             FROM annotations WHERE document_id=$1 AND {VISIBLE}",
+        ))
         .bind(document_id)
+        .bind(suggestions)
         .fetch_one(&self.pool)
         .await?)
+    }
+
+    /// [`Self::annotation_counts`] plus the reply count and the newest
+    /// `updated_at` across both tables, which together are what a cursor
+    /// binds to and what tells a client the collection moved under it.
+    ///
+    /// `updated_at` is maintained by every mutating path here -- create,
+    /// replace, resolve, reply -- so this changes on an in-place body edit
+    /// that leaves the counts alone, which a count pair on its own cannot
+    /// see.
+    pub async fn annotation_state(
+        &self,
+        document_id: Uuid,
+        suggestions: bool,
+    ) -> Result<AnnotationState> {
+        Ok(sqlx::query_as(&format!(
+            r#"SELECT
+                 count(*)::bigint AS total,
+                 count(*) FILTER (WHERE resolved_at IS NULL)::bigint AS open,
+                 coalesce((SELECT count(*) FROM replies r
+                            WHERE r.annotation_id IN (SELECT id FROM annotations a2
+                                                       WHERE a2.document_id=$1
+                                                         AND ($2 OR a2.kind <> 'suggestion'))
+                          ),0)::bigint AS replies,
+                 greatest(
+                   coalesce(max((extract(epoch FROM updated_at)*1000000)::bigint),0),
+                   coalesce((SELECT max((extract(epoch FROM r.updated_at)*1000000)::bigint)
+                               FROM replies r
+                              WHERE r.annotation_id IN (SELECT id FROM annotations a3
+                                                         WHERE a3.document_id=$1
+                                                           AND ($2 OR a3.kind <> 'suggestion'))
+                            ),0)
+                 )::bigint AS changed_micros
+               FROM annotations WHERE document_id=$1 AND {VISIBLE}"#
+        ))
+        .bind(document_id)
+        .bind(suggestions)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    /// Transaction variants used by a bounded page. Keeping sizing and row
+    /// reads on one repeatable-read connection makes the byte admission pass
+    /// describe the rows that are subsequently fetched.
+    pub async fn annotation_sizes_in_transaction(
+        &self,
+        tx: &mut PgConnection,
+        document_id: Uuid,
+        after: Option<(OffsetDateTime, Uuid)>,
+        limit: i64,
+        suggestions: bool,
+    ) -> Result<Vec<SizedRow>> {
+        if !(1..=ANNOTATION_PAGE_MAX).contains(&limit) {
+            return Err(Error::Invalid(format!(
+                "annotation page limit must be 1..={ANNOTATION_PAGE_MAX}"
+            )));
+        }
+        sqlx::query_as::<_, SizedRow>(&format!(
+            r#"SELECT created_at, id, {ANNOTATION_BYTES} FROM annotations
+               WHERE document_id=$1 AND {VISIBLE}
+                 AND (created_at,id) > (COALESCE($3::timestamptz,'-infinity'), COALESCE($4::uuid,'00000000-0000-0000-0000-000000000000'))
+               ORDER BY created_at,id LIMIT $5"#
+        ))
+        .bind(document_id).bind(suggestions).bind(after.map(|v| v.0)).bind(after.map(|v| v.1)).bind(limit)
+        .fetch_all(tx).await.map_err(Error::from)
     }
 
     pub async fn annotations(
@@ -686,6 +834,7 @@ impl PostgresCatalog {
         document_id: Uuid,
         after: Option<(OffsetDateTime, Uuid)>,
         limit: i64,
+        suggestions: bool,
     ) -> Result<Vec<AnnotationRecord>> {
         if !(1..=ANNOTATION_PAGE_MAX).contains(&limit) {
             return Err(Error::Invalid(format!(
@@ -701,18 +850,150 @@ impl PostgresCatalog {
         sqlx::query_as::<_, AnnotationRecord>(&format!(
             r#"SELECT {ANNOTATION_COLUMNS}
                FROM annotations
-               WHERE document_id=$1
-                 AND (created_at,id) > (COALESCE($2::timestamptz,'-infinity'),
-                                        COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'))
-               ORDER BY created_at,id LIMIT $4"#
+               WHERE document_id=$1 AND {VISIBLE}
+                 AND (created_at,id) > (COALESCE($3::timestamptz,'-infinity'),
+                                        COALESCE($4::uuid,'00000000-0000-0000-0000-000000000000'))
+               ORDER BY created_at,id LIMIT $5"#
         ))
         .bind(document_id)
+        .bind(suggestions)
         .bind(after_time)
         .bind(after_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
+    }
+
+    pub async fn annotations_in_transaction(
+        &self,
+        tx: &mut PgConnection,
+        document_id: Uuid,
+        ids: &[Uuid],
+        suggestions: bool,
+    ) -> Result<Vec<AnnotationRecord>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if ids.len() > ANNOTATION_PAGE_MAX as usize {
+            return Err(Error::Invalid("too many annotations requested".into()));
+        }
+        sqlx::query_as::<_, AnnotationRecord>(&format!(
+            r#"SELECT {ANNOTATION_COLUMNS} FROM annotations
+               WHERE document_id=$1 AND {VISIBLE} AND id=ANY($3)
+               ORDER BY created_at,id"#
+        ))
+        .bind(document_id)
+        .bind(suggestions)
+        .bind(ids)
+        .fetch_all(tx)
+        .await
+        .map_err(Error::from)
+    }
+
+    /// How many replies each of these threads has, and when each last
+    /// changed. One query for a whole annotation page.
+    pub async fn reply_summaries(&self, annotation_ids: &[Uuid]) -> Result<Vec<ReplySummary>> {
+        if annotation_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if annotation_ids.len() > ANNOTATION_PAGE_MAX as usize {
+            return Err(Error::Invalid("too many threads requested".into()));
+        }
+        sqlx::query_as::<_, ReplySummary>(
+            r#"SELECT annotation_id,
+                      count(*)::bigint AS replies,
+                      coalesce(max((extract(epoch FROM updated_at)*1000000)::bigint),0)::bigint
+                        AS changed_micros
+               FROM replies WHERE annotation_id=ANY($1) GROUP BY annotation_id"#,
+        )
+        .bind(annotation_ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    pub async fn reply_summaries_in_transaction(
+        &self,
+        tx: &mut PgConnection,
+        annotation_ids: &[Uuid],
+    ) -> Result<Vec<ReplySummary>> {
+        if annotation_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if annotation_ids.len() > ANNOTATION_PAGE_MAX as usize {
+            return Err(Error::Invalid("too many threads requested".into()));
+        }
+        sqlx::query_as::<_, ReplySummary>(
+            r#"SELECT annotation_id, count(*)::bigint AS replies,
+                      coalesce(max((extract(epoch FROM updated_at)*1000000)::bigint),0)::bigint AS changed_micros
+               FROM replies WHERE annotation_id=ANY($1) GROUP BY annotation_id"#,
+        ).bind(annotation_ids).fetch_all(tx).await.map_err(Error::from)
+    }
+
+    pub async fn reply_preview_sizes_in_transaction(
+        &self,
+        tx: &mut PgConnection,
+        annotation_ids: &[Uuid],
+        per_thread: i64,
+    ) -> Result<Vec<SizedReply>> {
+        if annotation_ids.is_empty() || per_thread == 0 {
+            return Ok(Vec::new());
+        }
+        if annotation_ids.len() > ANNOTATION_PAGE_MAX as usize
+            || !(1..=REPLY_PAGE_MAX).contains(&per_thread)
+        {
+            return Err(Error::Invalid("invalid reply preview size".into()));
+        }
+        sqlx::query_as::<_, SizedReply>(&format!(
+            r#"SELECT preview.created_at, preview.id, preview.annotation_id, preview.bytes
+               FROM unnest($1::uuid[]) AS thread(id) JOIN LATERAL (
+                 SELECT created_at, id, annotation_id, {REPLY_BYTES} FROM replies
+                 WHERE annotation_id=thread.id ORDER BY created_at,id LIMIT $2
+               ) AS preview ON true"#
+        ))
+        .bind(annotation_ids)
+        .bind(per_thread)
+        .fetch_all(tx)
+        .await
+        .map_err(Error::from)
+    }
+
+    pub async fn thread_reply_sizes_in_transaction(
+        &self,
+        tx: &mut PgConnection,
+        annotation_id: Uuid,
+        after: Option<(OffsetDateTime, Uuid)>,
+        limit: i64,
+    ) -> Result<Vec<SizedReply>> {
+        if !(1..=REPLY_PAGE_MAX).contains(&limit) {
+            return Err(Error::Invalid(format!(
+                "reply page limit must be 1..={REPLY_PAGE_MAX}"
+            )));
+        }
+        sqlx::query_as::<_, SizedReply>(&format!(
+            r#"SELECT created_at,id,annotation_id,{REPLY_BYTES} FROM replies
+               WHERE annotation_id=$1 AND (created_at,id) > (COALESCE($2::timestamptz,'-infinity'), COALESCE($3::uuid,'00000000-0000-0000-0000-000000000000'))
+               ORDER BY created_at,id LIMIT $4"#
+        )).bind(annotation_id).bind(after.map(|v| v.0)).bind(after.map(|v| v.1)).bind(limit)
+        .fetch_all(tx).await.map_err(Error::from)
+    }
+
+    pub async fn replies_by_id_in_transaction(
+        &self,
+        tx: &mut PgConnection,
+        ids: &[Uuid],
+    ) -> Result<Vec<ReplyRecord>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if ids.len() > REPLY_LOOKUP_MAX {
+            return Err(Error::Invalid("too many replies requested".into()));
+        }
+        sqlx::query_as::<_, ReplyRecord>(
+            r#"SELECT id,annotation_id,author_account_id,author_key,author_label,body,created_at,updated_at
+               FROM replies WHERE id=ANY($1) ORDER BY created_at,id"#,
+        ).bind(ids).fetch_all(tx).await.map_err(Error::from)
     }
 
     /// One page of the replies belonging to `annotation_ids`, in the same

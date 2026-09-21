@@ -431,8 +431,34 @@ impl Server {
                 .map(|_| ())
         };
 
-        let hello = match room.snapshot_for(&author, may_edit).await {
-            Ok(comments) => json!({"type": "hello", "comments": comments}),
+        // The first page, and how much more there is: never the collection.
+        // This is sent after the socket is already a subscriber, which is
+        // what makes the handover from paging to live events lossless --
+        // every mutation committed from that moment arrives as its own
+        // bounded event, and the client keys on comment id, so a create
+        // that races page one is applied once whichever way it arrives.
+        let hello = match room.comment_state(may_edit).await {
+            Ok(state) => match room
+                .comment_page(
+                    None,
+                    crate::room::comments::COMMENT_PAGE_DEFAULT,
+                    &author,
+                    may_edit,
+                )
+                .await
+            {
+                Ok((comments, page)) => {
+                    let mut state = crate::room::comments::comment_state_json(&state);
+                    state["complete"] = json!(page.complete);
+                    state["next_cursor"] = json!(page.next.map(|at| {
+                        crate::room::comments::encode_cursor(room.document_id, None, may_edit, at)
+                    }));
+                    json!({"type": "hello", "comments": comments, "state": state})
+                }
+                Err(error) => {
+                    json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})
+                }
+            },
             Err(error) => {
                 json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})
             }

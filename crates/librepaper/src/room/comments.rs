@@ -47,8 +47,8 @@ use crate::log::sequencer::{
     Command as SequencerCommand, CommandError, Evidence, Head, PreparedSource, Rung,
 };
 use crate::storage::postgres::{
-    self, AnnotationRecord, MutationAuthorization, NewAnnotation, NewLabel, NewProposal, NewReply,
-    PostgresCatalog, ReplyRecord, ANNOTATION_PAGE_MAX, REPLY_PAGE_MAX,
+    self, AnnotationRecord, AnnotationState, MutationAuthorization, NewAnnotation, NewLabel,
+    NewProposal, NewReply, PostgresCatalog, ReplyRecord,
 };
 use crate::util::clean;
 
@@ -66,6 +66,12 @@ pub struct Reply {
     pub body: String,
     pub creator: String,
     pub created: String,
+    /// This row's own place in its thread's traversal, so a consumer
+    /// that stops part-way through a page can continue from exactly the
+    /// row it stopped at. Never on the wire: a cursor is, and this is what
+    /// one is built from.
+    #[serde(skip)]
+    pub at: Option<Position>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -125,8 +131,30 @@ pub struct Comment {
     pub resolved: bool,
     #[serde(default)]
     pub resolved_at: Option<String>,
+    /// A bounded prefix of this thread, never the whole of it: at most
+    /// [`REPLY_PREVIEW`] on an annotation page, and whatever the byte
+    /// budget of that page afforded. The rest is its own traversal.
     #[serde(default)]
     pub replies: Vec<Reply>,
+    /// This comment's own place in the document's traversal, for the
+    /// same reason as [`Reply::at`].
+    #[serde(skip)]
+    pub at: Option<Position>,
+    /// How many replies this thread actually has, from the catalogue. The
+    /// authoritative figure: a client shows this rather than counting
+    /// `replies`.
+    #[serde(default)]
+    pub reply_total: i64,
+    /// Where to continue this thread, present exactly when `replies` is a
+    /// proper prefix of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_cursor: Option<String>,
+    /// The newest reply `updated_at` in this thread, in microseconds. Kept
+    /// off the wire and used only by
+    /// [`super::agent_comments::comment_version`], so that token describes
+    /// the thread rather than however much of it one page carried.
+    #[serde(default, skip_serializing)]
+    pub thread_changed_micros: i64,
     /// Who actually posted this comment: "github:<login>" for a signed-in
     /// caller, "visitor:<sha256 of the visitor token>" for a verified
     /// anonymous browser, or "" for neither. Kept out of every client-bound
@@ -377,6 +405,13 @@ fn annotation_row_to_comment(
         resolved: row.resolved_at.is_some(),
         resolved_at: row.resolved_at.map(format_time),
         replies,
+        at: Some(Position {
+            created: row.created_at,
+            id: row.id,
+        }),
+        reply_total: 0,
+        reply_cursor: None,
+        thread_changed_micros: 0,
         author: row.author_key.clone(),
     })
 }
@@ -387,116 +422,494 @@ fn reply_row_to_reply(row: ReplyRecord) -> Reply {
         body: row.body,
         creator: row.author_label,
         created: format_time(row.created_at),
+        at: Some(Position {
+            created: row.created_at,
+            id: row.id,
+        }),
     }
 }
 
-/// This document's comments, from the catalogue. `room/mod.rs` calls this to
-/// fill its resident comment cache.
-/// A digest for "the annotation state changed": a hash of the current
-/// comment list, since there is no room-held sequence counter any more.
-/// Shared by `agent_query_snapshot`'s pagination cursors and
-/// `broadcast_comment_snapshot`'s wire payload, so both agree on what
-/// "changed" means.
-pub(crate) fn comment_digest_of(comments: &[Comment]) -> i64 {
-    let bytes = serde_json::to_vec(comments).unwrap_or_default();
-    let digest = sha2::Sha256::digest(&bytes);
-    i64::from_le_bytes(digest[..8].try_into().expect("8 bytes"))
+// -- bounded paging ------------------------------------------------------
+//
+// There is no whole-document read here any more, and no room-held list for
+// one to fill. Every consumer -- a browser, a socket `hello`, an export, an
+// agent -- walks the same keyset traversal a page at a time. See
+// `docs/protocol/comments-v1.md` for the contract this implements.
+
+/// How many comments one page carries when a caller does not say, and the
+/// most it may ask for. These are transport page sizes, not admission
+/// caps: nothing here limits how many comments a document may hold.
+pub const COMMENT_PAGE_DEFAULT: usize = 50;
+pub const COMMENT_PAGE_MAX: usize = 200;
+
+/// How many replies of each thread an annotation page carries. The rest of
+/// a thread is its own traversal, so one comment with a hundred thousand
+/// replies cannot defeat the annotation page limit.
+pub const REPLY_PREVIEW: usize = 10;
+
+/// The same pair for one thread's own reply traversal.
+pub const THREAD_PAGE_DEFAULT: usize = 50;
+pub const THREAD_PAGE_MAX: usize = 200;
+
+/// The encoded content one page may carry, spent over the annotations first
+/// and then over their reply previews.
+///
+/// Rows are never read and then measured against this: a sizing query
+/// reports each candidate row's stored width first (`SizedRow`), and only
+/// the prefix that fits is read in full. A page that cannot fit even its
+/// first row returns that row anyway and says `oversize`, because nothing
+/// ever refused an oversized comment at write time and a page that returned
+/// nothing would strand everything behind it.
+pub const PAGE_BYTES_MAX: usize = 512 * 1024;
+
+/// What a row costs beyond its stored bytes: the JSON field names, the
+/// formatted timestamps, the UUID spellings and the `Comment`/`Reply`
+/// structs themselves. A flat estimate, deliberately generous.
+const ROW_OVERHEAD_BYTES: usize = 1024;
+const REPLY_OVERHEAD_BYTES: usize = 256;
+
+/// A place in a `(created_at, id)` traversal.
+///
+/// Both columns are written once and never rewritten, so a row cannot move
+/// within this order: that is what makes "strictly after" a traversal that
+/// neither repeats nor skips. `id` is the tie-breaker and it is
+/// load-bearing -- comments written in one transaction share `now()` to the
+/// microsecond.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Position {
+    pub created: OffsetDateTime,
+    pub id: Uuid,
 }
 
-/// Memory estimate ceiling for the existing whole-snapshot protocol. This
-/// is a read resource guard, not a limit on accepted comments. Larger
-/// collections need end-to-end transport pagination, not a larger SQL page.
-pub(crate) const COMMENT_SNAPSHOT_BYTES_MAX: usize = 16 * 1024 * 1024;
-
-struct ReadBudget(usize);
-
-impl ReadBudget {
-    fn charge<T: Serialize>(&mut self, value: &T) -> Result<(), WriteError> {
-        // Count without allocating another serialized copy. Account for Rust
-        // collection/string overhead as well as the encoded content.
-        struct Counter(usize);
-        impl std::io::Write for Counter {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0 = self.0.saturating_add(bytes.len());
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
+impl Position {
+    /// Before every real row, which is what "start at the beginning"
+    /// encodes to when a thread's replies have to be asked for from the
+    /// front.
+    pub fn start() -> Position {
+        Position {
+            created: OffsetDateTime::UNIX_EPOCH,
+            id: Uuid::nil(),
         }
-        let mut count = Counter(0);
-        serde_json::to_writer(&mut count, value)
-            .map_err(|error| WriteError::Storage(error.to_string()))?;
-        let cost = count
-            .0
-            .saturating_mul(2)
-            .saturating_add(std::mem::size_of::<T>() * 2);
-        self.0 = self.0.checked_sub(cost).ok_or_else(|| {
-            WriteError::Unreadable(
-                "comment snapshot exceeds the read memory budget; comments remain stored".into(),
-            )
-        })?;
-        Ok(())
+    }
+
+    fn pair(self) -> (OffsetDateTime, Uuid) {
+        (self.created, self.id)
+    }
+
+    fn micros(self) -> i64 {
+        (self.created.unix_timestamp_nanos() / 1_000) as i64
+    }
+
+    fn from_micros(micros: i64, id: Uuid) -> Option<Position> {
+        OffsetDateTime::from_unix_timestamp_nanos(micros as i128 * 1_000)
+            .ok()
+            .map(|created| Position { created, id })
     }
 }
 
-/// Page through rows, with a bound on the aggregate resident result as well
-/// as each SQL response. A failed load is never cached as an empty list.
-pub async fn load(
-    catalog: &PostgresCatalog,
-    document_id: Uuid,
-) -> Result<Vec<Comment>, WriteError> {
-    load_with_budget(catalog, document_id, COMMENT_SNAPSHOT_BYTES_MAX).await
+/// A cursor on the wire. Every field but `at`/`id` is a binding rather than
+/// a position: a cursor presented to a different document, a different
+/// thread or a different set of query options is refused outright.
+///
+/// It is not a capability. Authorization runs in full on every page
+/// request, before this is even decoded, so holding one buys no access.
+#[derive(Serialize, Deserialize)]
+struct WireCursor {
+    v: u8,
+    d: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    t: Option<Uuid>,
+    o: String,
+    at: i64,
+    id: Uuid,
 }
 
-pub(crate) async fn load_with_budget(
+/// The query options a cursor is bound to. Only one thing changes which
+/// rows are eligible today: whether the caller may see suggestions.
+pub fn options_key(suggestions: bool) -> &'static str {
+    if suggestions {
+        "editor"
+    } else {
+        "reader"
+    }
+}
+
+pub fn encode_cursor(
+    document_id: Uuid,
+    thread: Option<Uuid>,
+    suggestions: bool,
+    at: Position,
+) -> String {
+    use base64::Engine;
+    let wire = WireCursor {
+        v: 1,
+        d: document_id,
+        t: thread,
+        o: options_key(suggestions).to_string(),
+        at: at.micros(),
+        id: at.id,
+    };
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&wire).unwrap_or_default())
+}
+
+/// Decodes a cursor, or says why it does not belong to this request.
+pub fn decode_cursor(
+    raw: &str,
+    document_id: Uuid,
+    thread: Option<Uuid>,
+    suggestions: bool,
+) -> Result<Position, WriteError> {
+    use base64::Engine;
+    let refuse = || WriteError::Invalid("that pagination cursor is not for this request".into());
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(raw)
+        .map_err(|_| refuse())?;
+    let wire: WireCursor = serde_json::from_slice(&bytes).map_err(|_| refuse())?;
+    if wire.v != 1
+        || wire.d != document_id
+        || wire.t != thread
+        || wire.o != options_key(suggestions)
+    {
+        return Err(refuse());
+    }
+    Position::from_micros(wire.at, wire.id).ok_or_else(refuse)
+}
+
+/// One page of a document's comments.
+pub struct CommentPage {
+    pub comments: Vec<Comment>,
+    /// Where the next page starts, and `None` when this one ended the
+    /// traversal. Never inferred from a short page: the sizing query is
+    /// asked for one row more than the page, so `complete` is proof.
+    pub next: Option<Position>,
+    pub complete: bool,
+    /// This page held one row that did not fit the byte budget on its own
+    /// and was served regardless, so the collection stays traversable.
+    pub oversize: bool,
+}
+
+/// One thread's replies, past whatever the annotation page previewed.
+pub struct ReplyPage {
+    pub replies: Vec<Reply>,
+    pub next: Option<Position>,
+    pub complete: bool,
+    pub total: i64,
+    pub oversize: bool,
+}
+
+/// Spends a byte budget over sized rows, always admitting at least one.
+///
+/// Returns how many rows fit and whether the first one had to be admitted
+/// over budget.
+fn admit(sizes: &[i64], overhead: usize, budget: usize) -> (usize, bool) {
+    let mut left = budget;
+    let mut taken = 0usize;
+    let mut oversize = false;
+    for size in sizes {
+        let cost = (*size).max(0) as usize + overhead;
+        if cost > left {
+            if taken == 0 {
+                // Nothing ever refused a comment this wide at write time,
+                // and a page of nothing would make every row behind it
+                // unreachable. So it goes, and the page says so.
+                oversize = true;
+                taken = 1;
+            }
+            break;
+        }
+        left -= cost;
+        taken += 1;
+    }
+    (taken, oversize)
+}
+
+/// One page of comments, from `after` forward.
+///
+/// Three bounded statements: the annotations' widths, the annotations that
+/// fit, and their reply previews. They share one short repeatable-read
+/// transaction, which ends before the page is returned.
+pub async fn page(
     catalog: &PostgresCatalog,
     document_id: Uuid,
-    bytes: usize,
-) -> Result<Vec<Comment>, WriteError> {
-    let mut budget = ReadBudget(bytes);
-    let mut out = Vec::new();
-    let mut after: Option<(OffsetDateTime, Uuid)> = None;
-    loop {
-        let rows = catalog
-            .annotations(document_id, after, ANNOTATION_PAGE_MAX)
-            .await?;
-        let Some(last) = rows.last() else { break };
-        after = Some((last.created_at, last.id));
-        let reached_end = (rows.len() as i64) < ANNOTATION_PAGE_MAX;
-        let mut page = Vec::with_capacity(rows.len());
-        let mut indices = HashMap::new();
-        for row in &rows {
-            let comment = annotation_row_to_comment(row, Vec::new())?;
-            budget.charge(&comment)?;
-            // The private author key is deliberately not serialized.
-            budget.charge(&comment.author)?;
-            indices.insert(row.id, page.len());
-            page.push(comment);
-        }
-        let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
-        let mut reply_after = None;
-        loop {
-            let replies = catalog.replies(&ids, reply_after, REPLY_PAGE_MAX).await?;
-            let Some(last) = replies.last() else { break };
-            reply_after = Some((last.created_at, last.id));
-            let replies_done = (replies.len() as i64) < REPLY_PAGE_MAX;
-            for row in replies {
-                let index = indices[&row.annotation_id];
-                let reply = reply_row_to_reply(row);
-                budget.charge(&reply)?;
-                page[index].replies.push(reply);
-            }
-            if replies_done {
+    after: Option<Position>,
+    limit: usize,
+    suggestions: bool,
+) -> Result<CommentPage, WriteError> {
+    let limit = limit.clamp(1, COMMENT_PAGE_MAX);
+    let cursor = after.map(Position::pair);
+    let mut tx = catalog
+        .pool()
+        .begin()
+        .await
+        .map_err(|e| WriteError::Storage(e.to_string()))?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| WriteError::Storage(e.to_string()))?;
+    // One more than the page, so "there is nothing after this" is something
+    // the traversal proved rather than inferred from a short read.
+    let sizes = catalog
+        .annotation_sizes_in_transaction(
+            &mut tx,
+            document_id,
+            cursor,
+            limit as i64 + 1,
+            suggestions,
+        )
+        .await?;
+    let more_rows = sizes.len() > limit;
+    let sizes = &sizes[..sizes.len().min(limit)];
+    if sizes.is_empty() {
+        return Ok(CommentPage {
+            comments: Vec::new(),
+            next: None,
+            complete: true,
+            oversize: false,
+        });
+    }
+    let widths: Vec<i64> = sizes.iter().map(|row| row.bytes).collect();
+    let (take, oversize) = admit(&widths, ROW_OVERHEAD_BYTES, PAGE_BYTES_MAX);
+    let spent: usize = widths[..take]
+        .iter()
+        .map(|bytes| (*bytes).max(0) as usize + ROW_OVERHEAD_BYTES)
+        .sum();
+    let left = PAGE_BYTES_MAX.saturating_sub(spent);
+
+    let ids: Vec<Uuid> = sizes[..take].iter().map(|row| row.id).collect();
+    let rows = catalog
+        .annotations_in_transaction(&mut tx, document_id, &ids, suggestions)
+        .await?;
+    let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+    let summaries: HashMap<Uuid, (i64, i64)> = catalog
+        .reply_summaries_in_transaction(&mut tx, &ids)
+        .await?
+        .into_iter()
+        .map(|row| (row.annotation_id, (row.replies, row.changed_micros)))
+        .collect();
+
+    // The reply previews are chosen the same way the comments were: widths
+    // first, then whatever the remaining budget affords, in page order.
+    let mut previews = catalog
+        .reply_preview_sizes_in_transaction(&mut tx, &ids, REPLY_PREVIEW as i64)
+        .await?;
+    previews.sort_by_key(|row| (row.created_at, row.id));
+    let mut by_thread: HashMap<Uuid, Vec<&postgres::SizedReply>> = HashMap::new();
+    for row in &previews {
+        by_thread.entry(row.annotation_id).or_default().push(row);
+    }
+    let mut wanted: Vec<Uuid> = Vec::new();
+    let mut reply_budget = left;
+    for id in &ids {
+        for row in by_thread.get(id).into_iter().flatten() {
+            let cost = row.bytes.max(0) as usize + REPLY_OVERHEAD_BYTES;
+            if cost > reply_budget {
+                reply_budget = 0;
                 break;
             }
+            reply_budget -= cost;
+            wanted.push(row.id);
         }
-        out.extend(page);
-        if reached_end {
+        if reply_budget == 0 {
             break;
         }
     }
+    let mut loaded: HashMap<Uuid, Vec<Reply>> = HashMap::new();
+    let mut positions: HashMap<Uuid, Position> = HashMap::new();
+    for row in catalog
+        .replies_by_id_in_transaction(&mut tx, &wanted)
+        .await?
+    {
+        positions.insert(
+            row.annotation_id,
+            Position {
+                created: row.created_at,
+                id: row.id,
+            },
+        );
+        let thread = row.annotation_id;
+        loaded
+            .entry(thread)
+            .or_default()
+            .push(reply_row_to_reply(row));
+    }
+
+    let mut comments = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let replies = loaded.remove(&row.id).unwrap_or_default();
+        let (total, changed) = summaries.get(&row.id).copied().unwrap_or((0, 0));
+        let mut comment = annotation_row_to_comment(row, replies)?;
+        comment.reply_total = total;
+        comment.thread_changed_micros = changed;
+        comment.reply_cursor = ((comment.replies.len() as i64) < total).then(|| {
+            let at = positions
+                .get(&row.id)
+                .copied()
+                .unwrap_or_else(Position::start);
+            encode_cursor(document_id, Some(row.id), suggestions, at)
+        });
+        comments.push(comment);
+    }
+
+    // Where to continue: after the last row actually returned. When every
+    // row the sizing pass chose was deleted between the two statements
+    // there is no such row, and the sizing pass's own last position stands
+    // in -- an incomplete page must always say where to continue, or the
+    // rows behind it are unreachable.
+    let last = rows
+        .last()
+        .map(|row| Position {
+            created: row.created_at,
+            id: row.id,
+        })
+        .or_else(|| {
+            sizes[..take].last().map(|row| Position {
+                created: row.created_at,
+                id: row.id,
+            })
+        });
+    // A page cut short by the byte budget has more to give even when the
+    // sizing query saw the end of the collection.
+    let complete = !more_rows && take == sizes.len();
+    Ok(CommentPage {
+        comments,
+        next: (!complete).then_some(last).flatten(),
+        complete,
+        oversize,
+    })
+}
+
+/// One page of one thread's replies, from `after` forward.
+pub async fn thread_page(
+    catalog: &PostgresCatalog,
+    comment_id: Uuid,
+    after: Option<Position>,
+    limit: usize,
+) -> Result<ReplyPage, WriteError> {
+    let limit = limit.clamp(1, THREAD_PAGE_MAX);
+    let cursor = after.map(Position::pair);
+    let mut tx = catalog
+        .pool()
+        .begin()
+        .await
+        .map_err(|e| WriteError::Storage(e.to_string()))?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| WriteError::Storage(e.to_string()))?;
+    let total = catalog
+        .reply_summaries_in_transaction(&mut tx, &[comment_id])
+        .await?
+        .first()
+        .map(|row| row.replies)
+        .unwrap_or(0);
+    let sizes = catalog
+        .thread_reply_sizes_in_transaction(&mut tx, comment_id, cursor, limit as i64 + 1)
+        .await?;
+    let more_rows = sizes.len() > limit;
+    let sizes = &sizes[..sizes.len().min(limit)];
+    if sizes.is_empty() {
+        return Ok(ReplyPage {
+            replies: Vec::new(),
+            next: None,
+            complete: true,
+            total,
+            oversize: false,
+        });
+    }
+    let widths: Vec<i64> = sizes.iter().map(|row| row.bytes).collect();
+    let (take, oversize) = admit(&widths, REPLY_OVERHEAD_BYTES, PAGE_BYTES_MAX);
+    let wanted: Vec<Uuid> = sizes[..take].iter().map(|row| row.id).collect();
+    let rows = catalog
+        .replies_by_id_in_transaction(&mut tx, &wanted)
+        .await?;
+    let last = sizes[take - 1];
+    let complete = !more_rows && take == sizes.len();
+    Ok(ReplyPage {
+        replies: rows.into_iter().map(reply_row_to_reply).collect(),
+        next: (!complete).then_some(Position {
+            created: last.created_at,
+            id: last.id,
+        }),
+        complete,
+        total,
+        oversize,
+    })
+}
+
+/// Every comment of a document, by walking every page and every thread.
+///
+/// Test-only, deliberately: this is the shape that was removed from the
+/// server, and a helper that collects would be exactly that shape again if
+/// production code could reach it. What it is for is checking that the
+/// traversal loses nothing and repeats nothing.
+#[cfg(test)]
+pub(crate) async fn walk_all(
+    catalog: &PostgresCatalog,
+    document_id: Uuid,
+    suggestions: bool,
+) -> Result<Vec<Comment>, WriteError> {
+    let mut out: Vec<Comment> = Vec::new();
+    let mut after: Option<Position> = None;
+    loop {
+        let page = page(catalog, document_id, after, COMMENT_PAGE_MAX, suggestions).await?;
+        let complete = page.complete;
+        let next = page.next;
+        for mut comment in page.comments {
+            let id = Uuid::parse_str(&comment.id).expect("comment id is a uuid");
+            let mut cursor = comment.replies.last().and_then(|reply| reply.at);
+            while (comment.replies.len() as i64) < comment.reply_total {
+                let more = thread_page(catalog, id, cursor, THREAD_PAGE_MAX).await?;
+                if more.replies.is_empty() {
+                    break;
+                }
+                cursor = more.replies.last().and_then(|reply| reply.at);
+                comment.replies.extend(more.replies);
+            }
+            out.push(comment);
+        }
+        if complete {
+            break;
+        }
+        match next {
+            Some(position) => after = Some(position),
+            None => break,
+        }
+    }
     Ok(out)
+}
+
+/// One comment by id, with the same bounded reply preview a page gives it.
+///
+/// This is what every single-comment consumer reads: the event a mutation
+/// broadcasts, an agent's version check, a suggestion decision looking up
+/// its proposal. None of them ever needed the document's other comments,
+/// and the read that used to give them all of it is gone.
+pub async fn one(
+    catalog: &PostgresCatalog,
+    document_id: Uuid,
+    id: Uuid,
+    suggestions: bool,
+) -> Result<Option<Comment>, WriteError> {
+    let Some(row) = catalog.annotation(document_id, id).await? else {
+        return Ok(None);
+    };
+    let (total, changed) = catalog
+        .reply_summaries(&[id])
+        .await?
+        .first()
+        .map(|row| (row.replies, row.changed_micros))
+        .unwrap_or((0, 0));
+    let preview = thread_page(catalog, id, None, REPLY_PREVIEW).await?;
+    let mut comment = annotation_row_to_comment(&row, preview.replies)?;
+    comment.reply_total = total;
+    comment.thread_changed_micros = changed;
+    // Bound to the caller's own options, like every other cursor: one
+    // issued to a reader has to decode on a reader's next request.
+    comment.reply_cursor = preview
+        .next
+        .map(|at| encode_cursor(document_id, Some(id), suggestions, at));
+    Ok(Some(comment))
 }
 
 /// The one row a command needs to read back before it writes -- to resolve,
@@ -1735,8 +2148,37 @@ fn fresh_peer() -> loro::PeerID {
 
 impl Room {
     /// Adds the same caller-specific controls to a newly-created comment
-    /// event that a hello or REST snapshot carries.
+    /// event that a page carries.
+    ///
+    /// The one comment this event is about is read by id. It used to be
+    /// found by scanning the room's resident copy of every comment on the
+    /// document, which is the whole-collection dependency this path had no
+    /// need of: a `reply` event names its thread and a `comment` event
+    /// names itself.
     pub async fn comment_event_for(&self, payload: &Value, author: &str, is_owner: bool) -> Value {
+        let kind = payload.get("type").and_then(Value::as_str);
+        if !matches!(
+            kind,
+            Some("comment" | "refine" | "reply" | "delete" | "resolve" | "accept" | "reject")
+        ) {
+            return payload.clone();
+        }
+        if kind == Some("delete") {
+            if let Some(id) = payload.get("comment_id").and_then(Value::as_str) {
+                self.attachments.lock().await.remove(id);
+            }
+        }
+        let mut event = self.comment_event_view(payload, author, is_owner).await;
+        // Counts describe the viewer's entire collection, including rows
+        // outside their loaded prefix. Never derive them from a client delta.
+        match self.comment_state(is_owner).await {
+            Ok(state) => event["state"] = comment_state_json(&state),
+            Err(error) => log::warn!("could not read comment counts for {}: {error}", self.slug),
+        }
+        event
+    }
+
+    async fn comment_event_view(&self, payload: &Value, author: &str, is_owner: bool) -> Value {
         let kind = payload.get("type").and_then(Value::as_str);
         if !matches!(kind, Some("comment" | "refine" | "reply")) {
             return payload.clone();
@@ -1749,25 +2191,31 @@ impl Room {
             Some("reply") => payload.get("comment_id").and_then(Value::as_str),
             _ => None,
         };
-        let Some(id) = id else {
-            return if is_owner {
+        let redacted = || {
+            if is_owner {
                 payload.clone()
             } else {
                 json!({"type": "annotation-redacted"})
-            };
+            }
         };
-        let comments = self.comments().await.unwrap_or_default();
-        let Some(comment) = comments.iter().find(|comment| comment.id == id) else {
-            return if is_owner {
-                payload.clone()
-            } else {
-                json!({"type": "annotation-redacted"})
-            };
+        let comment = match self.comment_by_id(id.unwrap_or_default(), is_owner).await {
+            Ok(Some(comment)) => comment,
+            Ok(None) => return redacted(),
+            Err(error) => {
+                // A read failure is not "there is no such comment". A
+                // broadcast has nowhere to put a reason, so the peer gets
+                // what it always got and the reason goes to the log.
+                log::warn!(
+                    "could not read a comment of {} for its event: {error}",
+                    self.slug
+                );
+                return redacted();
+            }
         };
-        if !is_owner && !visible_to_reader(comment) {
+        if !is_owner && !visible_to_reader(&comment) {
             return json!({"type": "annotation-redacted"});
         }
-        let view = CommentView::for_viewer(comment, author, is_owner);
+        let view = CommentView::for_viewer(&comment, author, is_owner);
         let mut event = payload.clone();
         if let Ok(value) = serde_json::to_value(view) {
             event["comment"] = value;
@@ -1786,28 +2234,57 @@ impl Room {
         self.broadcast_readers_except(skip, &readers).await;
     }
 
-    /// The whole list, for a change no single event describes: an agent's
-    /// batch adds, edits and deletes in one act.
-    pub async fn broadcast_comment_snapshot(&self, digest: i64) {
-        let editor_comments = match self.snapshot_for("", true).await {
-            Ok(comments) => comments,
-            Err(error) => {
-                self.broadcast(&json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})).await;
-                return;
+    /// Says the collection moved in a way no single event describes -- an
+    /// agent's batch adds, edits and deletes in one act -- and how large it
+    /// now is.
+    ///
+    /// It carries no rows. What used to go out here was every comment on
+    /// the document, twice (once redacted for readers); a client now
+    /// re-reads the pages it is actually holding.
+    pub async fn broadcast_comments_changed(&self) {
+        for (editors, suggestions) in [(true, true), (false, false)] {
+            let state = match self.comment_state(suggestions).await {
+                Ok(state) => state,
+                Err(error) => {
+                    let payload = json!({"type": "error", "message": error.to_string(),
+                        "retryable": error.is_temporary()});
+                    if editors {
+                        self.broadcast_editors_except(None, &payload).await;
+                    } else {
+                        self.broadcast_readers_except(None, &payload).await;
+                    }
+                    continue;
+                }
+            };
+            let payload = json!({"type": "comments-changed", "state": comment_state_json(&state)});
+            if editors {
+                self.broadcast_editors_except(None, &payload).await;
+            } else {
+                self.broadcast_readers_except(None, &payload).await;
             }
-        };
-        let editors = json!({"type": "comments", "comment_digest": digest,
-            "comments": editor_comments});
-        self.broadcast_editors_except(None, &editors).await;
-        let reader_comments = match self.snapshot_for("", false).await {
-            Ok(comments) => comments,
-            Err(error) => {
-                self.broadcast_readers_except(None, &json!({"type": "error", "message": error.to_string(), "retryable": error.is_temporary()})).await;
-                return;
-            }
-        };
-        let readers = json!({"type": "comments", "comment_digest": digest,
-            "comments": reader_comments});
-        self.broadcast_readers_except(None, &readers).await;
+        }
     }
+}
+
+/// The `state` block every paged answer carries: authoritative counts, and
+/// a token that changes whenever the collection does.
+pub fn comment_state_json(state: &AnnotationState) -> Value {
+    json!({
+        "total": state.total,
+        "open": state.open,
+        "replies": state.replies,
+        "revision": comment_revision(state),
+    })
+}
+
+/// A short opaque token over the collection's shape and its newest
+/// `updated_at`. Two reads that produce the same token saw the same
+/// collection; a different token means something was created, deleted,
+/// resolved, replied to or edited in between.
+pub fn comment_revision(state: &AnnotationState) -> String {
+    let mut hash = sha2::Sha256::new();
+    for value in [state.total, state.open, state.replies, state.changed_micros] {
+        hash.update(value.to_le_bytes());
+    }
+    hex::encode(&hash.finalize()[..8])
 }

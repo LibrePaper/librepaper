@@ -263,26 +263,75 @@ Verified by reading the code:
    practice, aside from the general request-rate and body-size bounds in
    sections 1 to 3.
 
-   **Reads no longer assume them.** They used to: `room/comments.rs::load`
-   read one 500-row page and called it the document, `find_annotation`
-   scanned that same page for one row, and the reply query refused any result
-   above 5,000 rows across the whole document. An accepted comment past those
-   figures was written and acknowledged and then unreadable and
-   unaddressable, and a document past the reply ceiling failed to load at
-   all. Both reads now walk the catalogue with the `(created_at, id)` cursor
-   the queries already take, in pages of `ANNOTATION_PAGE_MAX` (500) and
-   `REPLY_PAGE_MAX` (1,000), and the single-row lookup is an indexed
-   `(id, document_id)` read rather than a scan.
+   **Reads no longer assume them, at any layer.** They used to: a load read
+   one 500-row page and called it the document, `find_annotation` scanned
+   that same page for one row, and the reply query refused any result above
+   5,000 rows across the whole document. Paging the SQL fixed the row
+   ceilings but not the shape above them: every consumer then collected the
+   result, so the loader refused a snapshot whose memory estimate passed
+   16 MiB and a larger collection was unreadable by every view.
 
-   The full-snapshot loader additionally bounds the aggregate collection to
-   a 16 MiB memory estimate (twice serialized content plus struct overhead),
-   counting replies as they arrive rather than first collecting a whole
-   thread. Cache fills serialize with invalidation. Oversized or failed reads
-   produce an explicit HTTP/WebSocket/agent error rather than an empty list.
-   This is a per-snapshot guard, not a deployment-wide comment-cache budget.
-   End-to-end transport pagination and aggregate cache accounting remain
-   outstanding; SQL page sizes alone do not bound total residency across
-   rooms or the cost of cloning and serializing snapshots.
+   Both are gone. There is one bounded keyset traversal, specified in
+   [the comment transport protocol](protocol/comments-v1.md), and every
+   consumer walks it a page at a time: `GET /api/documents/{slug}/comments`,
+   `GET .../comments/{id}/replies`, the socket `hello` frame, the browser
+   panel's *Load more*, `librepaper export`, and the agent `thread` query.
+   Nothing assembles the collection anywhere, and there is no aggregate read
+   budget to refuse one.
+
+   | Bound | Value | Where |
+   |---|---|---|
+   | `COMMENT_PAGE_DEFAULT` / `COMMENT_PAGE_MAX` | 50 / 200 comments | `room/comments.rs` |
+   | `REPLY_PREVIEW` | 10 replies per comment in a comment page | `room/comments.rs` |
+   | `THREAD_PAGE_DEFAULT` / `THREAD_PAGE_MAX` | 50 / 200 replies | `room/comments.rs` |
+   | `PAGE_BYTES_MAX` | 512 KiB of encoded content per page | `room/comments.rs` |
+   | `AGENT_THREAD_WINDOW` | 24 rows per `thread` query | `server/mcp.rs` |
+   | `ATTACHMENT_CACHE_MAX` / `ATTACHMENT_CACHE_BYTES` | 1024 entries / 4 MiB, per room | `room/mod.rs` |
+   | `ATTACHMENT_FRAME_MAX` | 200 moved passages per `attachments` frame | `room/resolve.rs` |
+   | `REFRESH_PAGES_MAX` | 8 pages re-read on an invalidation | `web/src/lib/reader/annotations.svelte.js` |
+   | `ANNOTATION_PAGE_MAX` / `REPLY_PAGE_MAX` | 500 / 1,000 rows, the catalogue's own page ceilings | `storage/postgres/annotations.rs` |
+
+   The byte budget is spent against a *sizing* query
+   (`annotation_sizes`, `reply_preview_sizes`, `thread_reply_sizes`) that
+   reports each candidate row's stored width before any row is read, so a
+   page never materializes rows it would have to discard. The columns it
+   sums are the ones with no server-side ceiling on already-stored data:
+   `body`, `exact`, `prefix`, `suffix` and the three `rendered_*` columns.
+
+   **Cache behaviour.** A room holds no comment list. What it keeps is
+   `AttachmentCache`: the immutable anchor and the last resolved attachment
+   for at most 1024 comments and 4 MiB of quoted context, oldest evicted
+   first. Comment mutations preserve existing immutable anchors; deletion
+   removes only the deleted entry. Re-anchoring on the housekeeping pass walks that
+   cache, so it costs what the cache holds rather than what the document
+   holds. An evicted entry costs one fork at the comment's frontier the
+   next time that comment is paged in, which is the cost a cold process
+   already paid.
+
+   **Concurrency assumptions.** The traversal is not a point-in-time
+   snapshot and does not claim to be: no transaction, connection or
+   Postgres snapshot spans a page. A row that existed when a traversal
+   began and still exists when it ends is returned exactly once; a row
+   created during it sorts after every page already emitted and is returned
+   later in the same traversal; a deleted row stops appearing; an edited
+   row is returned in whatever state the page that reaches it read. Every
+   page carries the collection's authoritative counts and a `revision`
+   token over them plus `max(updated_at)` across annotations and replies,
+   so a client that sees the token change knows the collection moved under
+   it. Agent continuation cursors bind to that token and are refused when
+   it changes, which is what the old whole-collection digest did.
+
+   **Remaining limitations, stated plainly.** The attachment cache is per
+   room with no deployment-wide ceiling across rooms, so N resident rooms
+   can hold N x 4 MiB of cached anchors; rooms are dropped once nothing
+   holds them (`Rooms::housekeep`), so this is bounded by concurrent
+   activity rather than by the catalogue. A single stored row wider than
+   the page byte budget is served on a page of its own rather than refused,
+   because nothing ever refused one at write time and a page of nothing
+   would strand every row behind it; peak per-page memory is therefore the
+   budget plus one row, and there is no upper bound on one row. The
+   `state` block counts every annotation and reply of the document, which
+   is an index scan per `hello` and per invalidation, not per frame.
 
    Admission is a separate product question: nothing limits how many comments
    one document may accumulate. Enforcing the configured caps at the
@@ -309,13 +358,10 @@ Verified by reading the code:
    identity, holding at most `DEADLINES` (1024) entries, with no spawned
    timer anywhere in the worker.
 
-5. **The MCP `Capacity` semaphores (section 6) are global, not scoped per
-   document or per principal.** One document or one runaway agent loop can
-   exhaust all 8 `reads` or `effects` slots for the whole deployment, and
-   every other document's MCP traffic is refused with `rate_limited` until
-   a slot frees. This is read directly from `server/mod.rs:174,597` (one
-   `Capacity` on `Server`) and `mcp.rs:283-299` (the slots looked up by tool
-   name only, not scoped by `slug` or by caller).
+5. **MCP per-principal concurrency isolation is implemented** (section 6).
+   One principal cannot occupy every slot in any tool lane. Multiple
+   principals can still exhaust global capacity; this is not a fair queue
+   or a per-document reservation.
 
 6. **Anonymous admission relies entirely on network identity once past
    sign-in gates**, which is a design choice stated by the review and

@@ -212,13 +212,17 @@ impl Server {
             pseudonym_for(&author, slug)
         };
         let comment_id = args["comment_id"].as_str().unwrap_or_default();
-        let comments = room
-            .comments()
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        let existing = (!comment_id.is_empty())
-            .then(|| comments.iter().find(|c| c.id == comment_id).cloned())
-            .flatten();
+        // One indexed read, not the document's comments. `comment_by_id`
+        // scopes the lookup to this room's document, so an id out of a
+        // request body still cannot name another document's row, and it
+        // sees a comment however far past the first page it sits.
+        let existing = if comment_id.is_empty() {
+            None
+        } else {
+            room.comment_by_id(comment_id, who.at_least(Role::Editor))
+                .await
+                .map_err(|error| Failure::new("unavailable", error.to_string()))?
+        };
         if !comment_id.is_empty() && existing.is_none() {
             return Err(Failure::new("not_found", "comment does not exist"));
         }

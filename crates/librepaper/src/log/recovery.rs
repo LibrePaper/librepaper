@@ -1177,7 +1177,7 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         "the doomed row was never written"
     );
     let annotations = verify
-        .annotations(deployment.document_id, None, 10)
+        .annotations(deployment.document_id, None, 10, true)
         .await
         .unwrap();
     assert_eq!(

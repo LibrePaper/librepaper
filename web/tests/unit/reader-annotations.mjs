@@ -171,52 +171,170 @@ assert.equal(sent.at(-1).color, undefined, "suggestions keep their own review st
   assert.equal(paints, quiet);
 }
 
-// An agent edits annotations in batches: several added, one deleted, one
-// reworded, all in one act. There is no per-comment event for that, so the
-// room states the whole list -- and a draft this browser is still holding must
-// survive being told where everyone else ended up.
+// The comments are paged: what arrives is a prefix, and everything the panel
+// says about the collection as a whole comes from the server's own counts.
+//
+// A stub for the page route. Each entry is one page; `pages[n]` answers the
+// nth request of the current script, so a traversal and a refresh can be
+// scripted independently of how the controller decides to make them.
+let served = [];
+let requests = [];
+let failNext = 0;
+globalThis.fetch = async (url) => {
+  requests.push(String(url));
+  if (failNext > 0) {
+    failNext -= 1;
+    return { ok: false, status: 503, json: async () => ({ error: "the catalogue is unavailable" }) };
+  }
+  const body = served.shift();
+  if (!body) throw new Error(`no page scripted for ${url}`);
+  return { ok: true, status: 200, json: async () => body };
+};
+const page = (comments, { next = null, complete = !next, total, open = total, replies = 0 } = {}) => ({
+  comments,
+  next_cursor: next,
+  complete,
+  state: { total, open, replies, revision: `r${total}.${comments.length}` },
+});
+
 {
-  annotations.comment({ exact: "still mine" }, { motivation: "commenting", body: "Not sent yet" }, "Local name");
-  const draft = view.comments.at(-1);
-  assert.equal(draft.pending, true);
-  // Earlier checks left drafts of their own behind; every one of them is
-  // this browser's and must come through.
-  const held = view.comments.filter((item) => item.pending).map((item) => item.id);
-  assert.ok(held.includes(draft.id));
-  const before = anchored.length;
-  const repaints = paints;
+  // A fresh controller, so the drafts left behind above do not have to be
+  // reasoned about alongside the traversal.
+  const seen = [];
+  let painted = 0;
+  const paged = createAnnotations({
+    slug: "paged-check",
+    anchor: (items) => seen.push(...items),
+    repaint: () => painted++,
+    send: () => {},
+  });
+  const held = paged.state;
+  assert.equal(held.page.loading, true, "nothing has arrived yet");
+
+  // `hello` seeds the first page and what is behind it.
+  paged.seed(
+    [{ id: "a", body: "first", replies: [], reply_total: 0 }],
+    { total: 3, open: 2, replies: 0, revision: "r1", complete: false, next_cursor: "cursor-1" },
+  );
+  assert.equal(held.page.loading, false);
+  assert.equal(held.page.total, 3, "the count is the catalogue's, not the list's");
+  assert.equal(held.page.open, 2);
+  assert.equal(held.page.complete, false);
+  assert.equal(held.comments.length, 1);
+
+  // A failed "load more" leaves every comment on screen and offers a reason.
+  failNext = 1;
+  await paged.loadMore();
+  assert.equal(held.comments.length, 1, "a failed page changes nothing on screen");
+  assert.match(held.page.error, /unavailable/);
+  assert.equal(held.page.busy, false);
+  assert.equal(held.page.cursor, "cursor-1", "and the traversal has not advanced");
+
+  // Retrying appends.
+  served = [page([{ id: "b", body: "second", replies: [], reply_total: 0 }], { total: 3, open: 2 })];
+  await paged.loadMore();
+  assert.deepEqual(held.comments.map((item) => item.id), ["a", "b"]);
+  assert.equal(held.page.error, "");
+  assert.equal(held.page.complete, true, "the server said so; it was not inferred");
+  assert.equal(held.page.pages, 2);
+
+  // An agent's batch: no rows on the wire, just the new shape of the
+  // collection and a re-read of the pages this browser is holding.
+  served = [
+    page([{ id: "x", body: "agent one", replies: [], reply_total: 0 }], { total: 2, next: "c", complete: false }),
+    page([{ id: "y", body: "agent two", replies: [], reply_total: 0 }], { total: 2 }),
+  ];
   assert.equal(
-    annotations.receive({
-      type: "comments",
-      comment_digest: 42,
-      comments: [
-        { id: "from-the-agent", body: "One the agent wrote", replies: [] },
-        { id: "another", body: "And another", replies: [] },
-      ],
-    }),
+    paged.receive({ type: "comments-changed", state: { total: 2, open: 2, replies: 0, revision: "r9" } }),
     true,
   );
-  assert.deepEqual(
-    view.comments.map((item) => item.id),
-    ["from-the-agent", "another", ...held],
-    "the room's list, with this browser's unconfirmed drafts still on the end",
+  assert.equal(held.page.total, 2, "the frame's counts apply at once");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(held.comments.map((item) => item.id), ["x", "y"], "the held prefix was re-read");
+
+  // A response from a superseded request is dropped rather than applied over
+  // newer state: a refresh issued while a "load more" is in flight wins.
+  served = [
+    page([{ id: "fresh", body: "after", replies: [], reply_total: 0 }], { total: 1 }),
+  ];
+  const stale = paged.loadMore();
+  await paged.refresh();
+  await stale;
+  assert.deepEqual(held.comments.map((item) => item.id), ["fresh"], "the older response did not land");
+
+  // One thread's replies are their own traversal, and a repeated page cannot
+  // duplicate a reply.
+  // The controller has two pages held from the refresh check above; reset
+  // that fixture's held-page count so this direct seed is synchronous.
+  held.page.pages = 1;
+  paged.seed(
+    [{ id: "deep", body: "a thread", replies: [{ id: "r1", body: "one" }], reply_total: 3 }],
+    { total: 1, open: 1, replies: 3, revision: "r1", complete: true },
   );
-  assert.ok(anchored.length > before, "the stated list is placed in the document");
-  assert.ok(paints > repaints);
-  // And once the agent's list does name it, the draft stops being a draft
-  // rather than appearing twice.
-  annotations.receive({
-    type: "comments",
-    comment_digest: 43,
-    comments: [{ id: draft.id, body: "Not sent yet", replies: [] }],
+  const thread = held.comments[0];
+  thread.reply_cursor = "reply-cursor";
+  served = [
+    { replies: [{ id: "r2", body: "two" }], next_cursor: "reply-2", complete: false, total: 3 },
+    { replies: [{ id: "r2", body: "two" }, { id: "r3", body: "three" }], next_cursor: null, complete: true, total: 3 },
+  ];
+  await paged.loadReplies(thread);
+  assert.deepEqual(thread.replies.map((reply) => reply.id), ["r1", "r2"]);
+  await paged.loadReplies(thread);
+  assert.deepEqual(
+    thread.replies.map((reply) => reply.id),
+    ["r1", "r2", "r3"],
+    "a reply already held is not added twice",
+  );
+  assert.equal(thread.reply_cursor, null, "and the thread says it is whole");
+
+  // Events move the authoritative counts rather than recounting the rows.
+  const before = held.page.total;
+  paged.receive({
+    type: "comment",
+    comment: { id: "new-one", body: "arrived live", replies: [], resolved: false },
   });
-  assert.deepEqual(
-    view.comments.map((item) => item.id),
-    [draft.id, ...held.filter((id) => id !== draft.id)],
-    "the one the agent now names is stated once, not twice",
+  assert.equal(held.page.total, before + 1);
+  paged.receive({ type: "delete", comment_id: "new-one",
+    state: { total: before, open: 1, replies: 0, revision: "after-delete" } });
+  assert.equal(held.page.total, before, "delete uses the catalogue count even after an optimistic removal");
+  // A mutation for a row outside the loaded prefix still updates the totals.
+  paged.receive({ type: "resolve", comment_id: "unloaded", resolved: true,
+    state: { total: before, open: 0, replies: 0, revision: "after-resolve" } });
+  assert.equal(held.page.open, 0, "unloaded mutations carry authoritative counts");
+
+  // Re-seeding while a reply request is in flight invalidates the request,
+  // but leaves the stable comment usable for another attempt.
+  let releaseReplies;
+  const reconnect = createAnnotations({
+    slug: "reconnect-check", anchor: () => {}, repaint: () => {}, send: () => {},
+  });
+  reconnect.seed(
+    [{ id: "thread", replies: [], reply_cursor: "old" }],
+    { total: 1, open: 1, replies: 1, revision: "r1", complete: true },
   );
-  assert.equal(view.comments[0].pending, undefined);
+  const reconnectThread = reconnect.state.comments[0];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/replies?")) {
+      await new Promise((resolve) => { releaseReplies = resolve; });
+      return { ok: true, status: 200, json: async () => ({ replies: [], complete: false, next_cursor: "new" }) };
+    }
+    return previousFetch(url);
+  };
+  const inFlight = reconnect.loadReplies(reconnectThread);
+  while (!releaseReplies) await new Promise((resolve) => setTimeout(resolve, 0));
+  reconnect.seed(
+    [{ id: "thread", replies: [], reply_cursor: "old" }],
+    { total: 1, open: 1, replies: 1, revision: "r2", complete: true },
+  );
+  assert.equal(reconnectThread.repliesBusy, false, "reconnect releases the old reply request state");
+  releaseReplies();
+  await inFlight;
+  globalThis.fetch = previousFetch;
+  assert.equal(reconnectThread.repliesBusy, false);
+  assert.ok(requests.every((url) => url.startsWith("/api/documents/paged-check/")));
 }
 
+
 assert.ok(paints > 0);
-console.log("reader-annotations: optimistic writes, authoritative reconciliation, retries and decisions passed");
+console.log("reader-annotations: optimistic writes, authoritative reconciliation, bounded paging, retries and decisions passed");

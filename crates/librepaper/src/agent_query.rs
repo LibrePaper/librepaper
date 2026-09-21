@@ -12,13 +12,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-/// The immutable source and annotation state used by one query group.
+/// The immutable source capture one query group reads, and the bounded
+/// comment windows prepared for whichever of its queries asked for one.
+///
+/// The source half is what a stored view holds and what `view_id` and
+/// `range_id` safety rest on. The comment half is not stored anywhere: it
+/// is read live, a page at a time, for the request that needs it, because
+/// the collection has no bound and a capture that held it would have none
+/// either. Nothing that promises consistency ever depended on it --
+/// every edit-safety check reads its comment from the catalogue.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct QuerySnapshot {
     #[serde(default)]
     pub tree_digest: String,
+    /// The token the comment collection had when this request's windows
+    /// were read. Cursors bind to it, so a traversal that spans a change is
+    /// refused rather than silently interleaving two collections.
     #[serde(default)]
-    pub comment_digest: u64,
+    pub comment_revision: String,
     #[serde(default)]
     pub main: String,
     /// Canonical tree metadata. It is never returned whole.
@@ -26,8 +37,29 @@ pub struct QuerySnapshot {
     pub tree: Value,
     #[serde(default)]
     pub texts: BTreeMap<String, String>,
+    /// One bounded window per `thread` query in this request, keyed by
+    /// [`query_fingerprint`]. Never serialized into a stored view: a view
+    /// round-trips without it and the next request reads a fresh one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub threads: BTreeMap<String, ThreadWindow>,
+}
+
+/// What one `thread` query was handed: either a window of comments (the
+/// listing form) or one comment and a window of its replies (the `id`
+/// form). Each item carries the cursor that continues from it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ThreadWindow {
     #[serde(default)]
-    pub comments: Vec<Value>,
+    pub items: Vec<Value>,
+    #[serde(default)]
+    pub thread: Option<Value>,
+    /// Whether the catalogue proved there is nothing after this window.
+    #[serde(default)]
+    pub complete: bool,
+    /// Set when the `id` form named a comment that is not there, or that
+    /// this caller may not see.
+    #[serde(default)]
+    pub missing: bool,
 }
 
 /// Limits applying to one query result.
@@ -62,6 +94,11 @@ struct Cursor {
     kind: String,
     query: String,
     offset: usize,
+    /// A `librepaper.comments.v1` cursor, for the one kind whose items
+    /// are not an array this module holds: a `thread` query continues in
+    /// the catalogue, not at an offset into a captured list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at: Option<String>,
 }
 
 #[derive(Clone)]
@@ -130,7 +167,7 @@ fn snapshot_index_key(snapshot: &QuerySnapshot) -> String {
     let mut hash = Sha256::new();
     hash.update(snapshot.tree_digest.as_bytes());
     hash.update([0]);
-    hash.update(snapshot.comment_digest.to_le_bytes());
+    hash.update(snapshot.comment_revision.as_bytes());
     for (path, source) in &snapshot.texts {
         hash.update(path.as_bytes());
         hash.update([0]);
@@ -543,7 +580,7 @@ fn execute(
         "outline" | "headings" => outline_query(snapshot, query, offset, &fingerprint),
         "manifest" | "files" => manifest_query(snapshot, query, offset, &fingerprint),
         "bibliography" => bibliography_query(snapshot, query, offset, &fingerprint),
-        "thread" => thread_query(snapshot, query, offset, &fingerprint),
+        "thread" => thread_query(snapshot, query, &fingerprint),
         "diagnostics" | "changes" | "rendered" => {
             optional_projection(snapshot, query, kind, offset, &fingerprint)
         }
@@ -1500,22 +1537,64 @@ fn duplicate_keys(entries: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// A `thread` query, answered from the bounded window the caller read out
+/// of the catalogue for it.
+///
+/// The window is at most one page wide whatever the document holds, and
+/// continuation is a catalogue cursor carried inside this module's own
+/// cursor rather than an offset into a captured list: there is no captured
+/// list any more. Truncating the window further to fit a byte budget is
+/// still local, and the cursor then names the last item that was actually
+/// returned, so nothing is skipped.
 fn thread_query(
     snapshot: &QuerySnapshot,
     query: &Map<String, Value>,
-    offset: usize,
     fingerprint: &str,
 ) -> Result<(Value, bool, Option<String>), String> {
-    if query.get("id").and_then(Value::as_str).is_none() {
-        let comments = snapshot
-            .comments
-            .iter()
-            .filter(|c| {
-                query.get("include").and_then(Value::as_str) != Some("unresolved")
-                    || c["resolved"] != true
-            })
+    let window = snapshot
+        .threads
+        .get(fingerprint)
+        .ok_or("thread window was not prepared for this query")?;
+    let limit = query
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(24)
+        .clamp(1, 24) as usize;
+    let id = query.get("id").and_then(Value::as_str);
+
+    // How far into the window this answer reaches, and the cursor that
+    // continues from there.
+    let shown = window.items.len().min(limit);
+    let trimmed = shown < window.items.len();
+    let complete = window.complete && !trimmed;
+    let next_cursor = (!complete)
+        .then(|| {
+            window.items[..shown]
+                .last()
+                .and_then(|item| item.get("cursor").and_then(Value::as_str))
+                .map(|at| {
+                    encode_cursor_at(snapshot, "thread", fingerprint, 0, Some(at.to_string()))
+                })
+        })
+        .flatten();
+    let items: Vec<Value> = window.items[..shown]
+        .iter()
+        .map(|item| {
+            let mut copy = item.clone();
+            if let Some(object) = copy.as_object_mut() {
+                object.remove("cursor");
+            }
+            copy
+        })
+        .collect();
+
+    let Some(id) = id else {
+        let unresolved_only = query.get("include").and_then(Value::as_str) == Some("unresolved");
+        let threads: Vec<Value> = items
+            .into_iter()
+            .filter(|c| !unresolved_only || c["resolved"] != true)
             .map(|c| {
-                let mut summary = c.clone();
+                let mut summary = c;
                 if let Some(object) = summary.as_object_mut() {
                     object.remove("replies");
                     object.remove("source");
@@ -1527,28 +1606,19 @@ fn thread_query(
                 summary
             })
             .collect();
-        let page = paginate_array(
-            "thread",
-            snapshot,
-            fingerprint,
-            comments,
-            offset,
-            query.get("limit"),
-        );
         return Ok((
-            json!({"kind":"thread","threads":page.0["items"],"complete":page.0["complete"],"next_cursor":page.0["next_cursor"]}),
-            page.1,
-            page.2,
+            json!({"kind":"thread","threads":threads,"complete":complete,
+                   "next_cursor":next_cursor}),
+            complete,
+            next_cursor,
         ));
+    };
+    if window.missing {
+        return Err(format!("unknown comment {id:?}"));
     }
-    let id = query
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or("thread requires string id")?;
-    let thread = snapshot
-        .comments
-        .iter()
-        .find(|comment| comment.get("id").and_then(Value::as_str) == Some(id))
+    let thread = window
+        .thread
+        .clone()
         .ok_or_else(|| format!("unknown comment {id:?}"))?;
     let include = query
         .get("include")
@@ -1561,27 +1631,15 @@ fn thread_query(
             None,
         ));
     }
-    let replies = thread
-        .get("replies")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let page = paginate_array(
-        "thread",
-        snapshot,
-        fingerprint,
-        replies,
-        offset,
-        query.get("limit"),
-    );
-    let mut value = thread.clone();
+    let mut value = thread;
     if let Value::Object(object) = &mut value {
-        object.insert("replies".into(), page.0["items"].clone());
+        object.insert("replies".into(), json!(items));
     }
     Ok((
-        json!({"kind":"thread","id":id,"thread":value,"complete":page.0["complete"],"next_cursor":page.0["next_cursor"]}),
-        page.1,
-        page.2,
+        json!({"kind":"thread","id":id,"thread":value,"complete":complete,
+               "next_cursor":next_cursor}),
+        complete,
+        next_cursor,
     ))
 }
 
@@ -1655,14 +1713,52 @@ fn paginate_array(
 }
 
 fn encode_cursor(snapshot: &QuerySnapshot, kind: &str, query: &str, offset: usize) -> String {
+    encode_cursor_at(snapshot, kind, query, offset, None)
+}
+
+fn encode_cursor_at(
+    snapshot: &QuerySnapshot,
+    kind: &str,
+    query: &str,
+    offset: usize,
+    at: Option<String>,
+) -> String {
     let cursor = Cursor {
         version: 1,
-        revision: format!("{}.{}", snapshot.tree_digest, snapshot.comment_digest),
+        revision: revision_of(snapshot),
         kind: kind.to_string(),
         query: query.to_string(),
         offset,
+        at,
     };
     URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).unwrap_or_default())
+}
+
+fn revision_of(snapshot: &QuerySnapshot) -> String {
+    format!("{}.{}", snapshot.tree_digest, snapshot.comment_revision)
+}
+
+/// What a caller can read out of a cursor before it has a snapshot to
+/// validate it against: which query it belongs to, and where in the
+/// catalogue a `thread` query continues.
+///
+/// This is not validation. `read` still checks every field against the
+/// snapshot it is actually given and refuses a mismatch; this only lets
+/// the caller fetch the right window first.
+pub struct PeekedCursor {
+    pub at: Option<String>,
+}
+
+pub fn peek_cursor(raw: &str) -> Option<PeekedCursor> {
+    let bytes = URL_SAFE_NO_PAD.decode(raw).ok()?;
+    let cursor: Cursor = serde_json::from_slice(&bytes).ok()?;
+    (cursor.version == 1).then_some(PeekedCursor { at: cursor.at })
+}
+
+/// The key a `thread` query's window is filed under. Stable across the
+/// `limit` a budget retry narrows to, exactly as the cursor is.
+pub fn query_fingerprint(query: &Map<String, Value>) -> String {
+    fingerprint(query)
 }
 
 fn decode_cursor(
@@ -1679,7 +1775,7 @@ fn decode_cursor(
     let cursor: Cursor =
         serde_json::from_slice(&bytes).map_err(|_| "invalid pagination cursor".to_string())?;
     if cursor.version != 1
-        || cursor.revision != format!("{}.{}", snapshot.tree_digest, snapshot.comment_digest)
+        || cursor.revision != revision_of(snapshot)
         || cursor.kind != kind
         || cursor.query != fingerprint(query)
     {
@@ -1711,7 +1807,7 @@ fn envelope(
 ) -> Value {
     let mut value = json!({
         "tree_digest":snapshot.tree_digest,
-        "comment_digest":snapshot.comment_digest,
+        "comment_revision":snapshot.comment_revision,
         "results":results, "complete":complete,
         "truncation_reason":reason, "next_cursor":next_cursor,
         "returned_bytes":0, "returned_tokens":0
@@ -1774,7 +1870,7 @@ mod tests {
     fn snapshot() -> QuerySnapshot {
         QuerySnapshot {
             tree_digest: "rev-a".into(),
-            comment_digest: 7,
+            comment_revision: "rev-c".into(),
             main: "main.md".into(),
             tree: json!({"files":{"main.md":{"id":"file-1","sha":"sha-1"}}}),
             texts: [
@@ -1789,7 +1885,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
-            comments: vec![json!({"id":"thread","body":"why","replies":[{"id":"r1"},{"id":"r2"}]})],
+            threads: Default::default(),
         }
     }
 
@@ -2003,7 +2099,7 @@ mod tests {
             .collect::<String>();
         let captured = QuerySnapshot {
             tree_digest: "structural-pagination".into(),
-            comment_digest: 1,
+            comment_revision: "rev-c".into(),
             main: "main.md".into(),
             tree: Value::Null,
             texts: [
@@ -2012,7 +2108,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
-            comments: Vec::new(),
+            threads: Default::default(),
         };
         let budget = QueryBudget {
             max_bytes: 100_000,
@@ -2058,11 +2154,11 @@ mod tests {
         let source = format!("# Intro\nneedle\n{filler}\nneedle\n");
         let captured = QuerySnapshot {
             tree_digest: "index-benchmark-revision".into(),
-            comment_digest: 1,
+            comment_revision: "rev-c".into(),
             main: "main.md".into(),
             tree: Value::Null,
             texts: [("main.md".into(), source)].into_iter().collect(),
-            comments: Vec::new(),
+            threads: Default::default(),
         };
         let query = [json!({"kind":"search","path":"main.md","query":"needle"})];
         let started = std::time::Instant::now();
@@ -2081,5 +2177,197 @@ mod tests {
             first_micros, repeated_micros
         );
         assert_eq!(first["results"][0]["matches"].as_array().unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod thread_pagination_tests {
+    use super::*;
+
+    fn comment(id: &str, cursor: &str) -> Value {
+        json!({"id": id, "body": format!("about {id}"), "resolved": false,
+               "replies": [], "cursor": cursor})
+    }
+
+    fn windowed(window: ThreadWindow, revision: &str) -> QuerySnapshot {
+        let fingerprint =
+            query_fingerprint(json!({"kind":"thread"}).as_object().expect("an object"));
+        QuerySnapshot {
+            tree_digest: "rev-a".into(),
+            comment_revision: revision.into(),
+            main: "main.md".into(),
+            tree: Value::Null,
+            texts: [("main.md".into(), "body\n".into())].into_iter().collect(),
+            threads: [(fingerprint, window)].into_iter().collect(),
+        }
+    }
+
+    /// A listing is answered from the window the caller read out of the
+    /// catalogue, and says explicitly whether there is more. The cursor it
+    /// hands back carries the catalogue's own position, not an offset into
+    /// anything this module is holding.
+    #[test]
+    fn a_thread_listing_continues_in_the_catalogue() {
+        let snapshot = windowed(
+            ThreadWindow {
+                items: vec![comment("a", "cat-a"), comment("b", "cat-b")],
+                thread: None,
+                complete: false,
+                missing: false,
+            },
+            "rev-1",
+        );
+        let result = read(
+            &snapshot,
+            &[json!({"kind":"thread"})],
+            QueryBudget::default(),
+        )
+        .expect("thread query");
+        let first = &result["results"][0];
+        assert_eq!(first["threads"].as_array().unwrap().len(), 2);
+        assert_eq!(first["complete"], json!(false));
+        assert!(
+            first["threads"][0].get("cursor").is_none(),
+            "the per-row cursor is plumbing, not part of the answer",
+        );
+        let cursor = first["next_cursor"].as_str().expect("a continuation");
+        assert_eq!(
+            peek_cursor(cursor).expect("decodes").at.as_deref(),
+            Some("cat-b"),
+            "and it continues after the last row actually returned",
+        );
+    }
+
+    /// A budget that trims the window still continues exactly where it
+    /// stopped, not where the window did.
+    #[test]
+    fn a_trimmed_window_continues_at_the_last_row_returned() {
+        let snapshot = windowed(
+            ThreadWindow {
+                items: vec![comment("a", "cat-a"), comment("b", "cat-b")],
+                thread: None,
+                complete: true,
+                missing: false,
+            },
+            "rev-1",
+        );
+        let result = read(
+            &snapshot,
+            &[json!({"kind":"thread","limit":1})],
+            QueryBudget::default(),
+        )
+        .expect("thread query");
+        let first = &result["results"][0];
+        assert_eq!(first["threads"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            first["complete"],
+            json!(false),
+            "a window the caller could not show whole is not complete",
+        );
+        assert_eq!(
+            peek_cursor(first["next_cursor"].as_str().unwrap())
+                .unwrap()
+                .at
+                .as_deref(),
+            Some("cat-a"),
+        );
+    }
+
+    /// A cursor is bound to the collection it was issued against. When the
+    /// comments change under an agent, its continuation is refused rather
+    /// than answered from a different collection.
+    #[test]
+    fn a_cursor_is_refused_once_the_collection_has_changed() {
+        let before = windowed(
+            ThreadWindow {
+                items: vec![comment("a", "cat-a")],
+                thread: None,
+                complete: false,
+                missing: false,
+            },
+            "rev-1",
+        );
+        let cursor = read(&before, &[json!({"kind":"thread"})], QueryBudget::default()).unwrap()
+            ["results"][0]["next_cursor"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // The same query, against a collection that has moved.
+        let after = windowed(
+            ThreadWindow {
+                items: vec![comment("b", "cat-b")],
+                thread: None,
+                complete: true,
+                missing: false,
+            },
+            "rev-2",
+        );
+        let error = read(
+            &after,
+            &[json!({"kind":"thread","cursor":cursor})],
+            QueryBudget::default(),
+        )
+        .expect_err("a stale cursor is refused");
+        assert!(error.contains("source revision"), "{error}");
+    }
+
+    /// The `id` form pages one thread's replies and says when the comment
+    /// itself is not there, rather than answering from a stale capture.
+    #[test]
+    fn one_thread_pages_its_replies_and_reports_a_missing_comment() {
+        let fingerprint = |query: Value| query_fingerprint(query.as_object().unwrap());
+        let mut threads = BTreeMap::new();
+        threads.insert(
+            fingerprint(json!({"kind":"thread","id":"deep"})),
+            ThreadWindow {
+                items: vec![
+                    json!({"id":"r1","body":"one","cursor":"rep-1"}),
+                    json!({"id":"r2","body":"two","cursor":"rep-2"}),
+                ],
+                thread: Some(json!({"id":"deep","body":"a thread","resolved":false})),
+                complete: false,
+                missing: false,
+            },
+        );
+        threads.insert(
+            fingerprint(json!({"kind":"thread","id":"gone"})),
+            ThreadWindow {
+                missing: true,
+                complete: true,
+                ..Default::default()
+            },
+        );
+        let snapshot = QuerySnapshot {
+            tree_digest: "rev-a".into(),
+            comment_revision: "rev-1".into(),
+            main: "main.md".into(),
+            tree: Value::Null,
+            texts: [("main.md".into(), "body\n".into())].into_iter().collect(),
+            threads,
+        };
+        let result = read(
+            &snapshot,
+            &[json!({"kind":"thread","id":"deep"})],
+            QueryBudget::default(),
+        )
+        .expect("thread query");
+        let first = &result["results"][0];
+        assert_eq!(first["thread"]["replies"].as_array().unwrap().len(), 2);
+        assert_eq!(first["complete"], json!(false));
+        assert_eq!(
+            peek_cursor(first["next_cursor"].as_str().unwrap())
+                .unwrap()
+                .at
+                .as_deref(),
+            Some("rep-2"),
+        );
+
+        let error = read(
+            &snapshot,
+            &[json!({"kind":"thread","id":"gone"})],
+            QueryBudget::default(),
+        )
+        .expect_err("a comment that is not there is not there");
+        assert!(error.contains("unknown comment"), "{error}");
     }
 }

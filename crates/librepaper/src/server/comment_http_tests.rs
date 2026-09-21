@@ -272,14 +272,10 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
         "a comment on source text has an anchor"
     );
 
-    // Survives a reload: `apply_from` never writes to the room's own cache
-    // directly (documents.rs's `handle_comments` calls `room.forget_comments()`
-    // right after, which is what makes the next read rebuild from the row
-    // this just wrote); do the same, then read it back as a fresh request
-    // would with GET.
+    // A cold read reconstructs the attachment from its stored anchor.
     room.forget_comments().await;
-    let reloaded = room
-        .snapshot_for("account:not-the-author", false)
+    let (reloaded, _) = room
+        .comment_page(None, 50, "account:not-the-author", false)
         .await
         .unwrap();
     let found = reloaded
@@ -287,6 +283,28 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
         .find(|c| c.comment.id == comment_id)
         .expect("the comment survived a reload");
     assert_eq!(found.comment.body, "A remark, from the wire.");
+
+    // A mutation after loading must not discard the anchor subscription.
+    // No page read between this command and the source edit can refill it.
+    let resolve = serde_json::from_value(json!({
+        "type": "resolve", "comment_id": comment_id, "resolved": true,
+    }))
+    .unwrap();
+    let (resolved, ok) = deployment
+        .server
+        .apply_from(
+            &room,
+            resolve,
+            "203.0.113.9",
+            &who,
+            &format!("account:{}", deployment.commenter_id),
+        )
+        .await;
+    assert!(ok, "{resolved}");
+    let event = room.comment_event_for(&resolved, "", false).await;
+    assert_eq!(event["state"]["total"], 1);
+    assert_eq!(event["state"]["open"], 0);
+    assert_eq!(room.attachment_cache_len().await, 1);
 
     // Still points at its passage after the text around it moves: an editor
     // (the owner, since the grant above never made the commenter one)
@@ -318,7 +336,7 @@ async fn a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_rea
         1,
         "the comment made through the wire moved with its words"
     );
-    let comments = room.comments().await.unwrap();
+    let comments = room.all_comments(true).await.unwrap();
     let after = comments
         .iter()
         .find(|c| c.id == comment_id)
@@ -453,38 +471,64 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
     }
 
     room.forget_comments().await;
-    let snapshot = room.snapshot_for(&author, false).await.unwrap();
-    assert_eq!(
-        snapshot.len(),
-        page + 1,
-        "the snapshot a socket hello and a document GET are built from holds \
-         every accepted comment, not one page of them",
-    );
-    let visible: std::collections::HashSet<String> = snapshot
-        .iter()
-        .map(|view| view.comment.id.clone())
-        .collect();
+
+    // The authoritative count comes from the catalogue, not from a list: a
+    // reader of the first page is told how many there are behind it.
+    let state = room.comment_state(false).await.unwrap();
+    assert_eq!(state.total as usize, page + 1);
+
+    // A real HTTP traversal, page by page, exactly as a browser and the
+    // export client walk it. Neither side ever holds the collection.
+    let mut seen: Vec<String> = Vec::new();
+    let mut query = String::new();
+    let mut requests = 0;
+    loop {
+        let response = get_comment_page(&deployment, &query).await;
+        assert_eq!(response.status(), 200);
+        let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["protocol"], "librepaper.comments.v1");
+        assert_eq!(payload["state"]["total"], json!(page as i64 + 1));
+        let rows = payload["comments"].as_array().unwrap();
+        assert!(
+            rows.len() <= crate::room::comments::COMMENT_PAGE_MAX,
+            "a page is a page",
+        );
+        for row in rows {
+            seen.push(row["id"].as_str().unwrap().to_string());
+        }
+        requests += 1;
+        assert!(requests < 100, "the traversal must terminate");
+        if payload["complete"] == json!(true) {
+            assert!(payload["next_cursor"].is_null());
+            break;
+        }
+        let cursor = payload["next_cursor"].as_str().expect("a continuation");
+        query = format!("?cursor={}", urlencode(cursor));
+    }
+    assert!(requests > 1, "{} comments cannot be one page", page + 1);
+    let visible: std::collections::HashSet<&String> = seen.iter().collect();
+    assert_eq!(visible.len(), seen.len(), "no row was returned twice");
+    assert_eq!(visible.len(), page + 1, "and none was skipped");
     assert!(visible.contains(&through_the_wire));
     for id in &seeded {
         assert!(visible.contains(&id.to_string()), "comment {id} is missing");
     }
 
-    let response = get_comments(&deployment).await;
-    assert_eq!(response.status(), 200);
-    let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+    // A malformed cursor is a refusal, not an empty success.
+    let response = get_comment_page(&deployment, "?cursor=not-a-cursor").await;
+    assert_eq!(response.status(), 400);
+    let bytes = axum::body::to_bytes(response.into_body(), 4096)
         .await
         .unwrap();
     let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        payload["comments"].as_array().unwrap().len(),
-        page + 1,
-        "the authenticated HTTP consumer receives every page"
-    );
+    assert!(payload.get("comments").is_none());
 
     // And a comment that sorts past the first page can still be acted on
     // through the same wire message a browser sends.
-    let comments = room.comments().await.unwrap();
-    let last = comments.last().unwrap().id.clone();
+    let last = seen.last().unwrap().clone();
     let (result, ok) = deployment
         .server
         .apply_from(
@@ -510,33 +554,37 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
 
     room.forget_comments().await;
     assert!(
-        room.comments()
+        room.comment_by_id(&last, true)
             .await
-            .unwrap()
-            .iter()
-            .any(|comment| comment.id == last && comment.resolved),
+            .expect("the catalogue answers")
+            .expect("still there")
+            .resolved,
         "and the row is resolved on reload",
     );
+
+    // A stored comment wider than a whole page's byte budget used to make
+    // the document unreadable: the snapshot loader refused it and every
+    // comment behind it went with it. It is now one page of one row.
     sqlx::query("UPDATE annotations SET body=repeat('x', $2) WHERE id=$1")
         .bind(Uuid::parse_str(&last).unwrap())
-        .bind((crate::room::comments::COMMENT_SNAPSHOT_BYTES_MAX / 2 + 1) as i32)
+        .bind((crate::room::comments::PAGE_BYTES_MAX * 2) as i32)
         .execute(deployment.catalog.pool())
         .await
         .unwrap();
     room.forget_comments().await;
     let response = get_comments(&deployment).await;
-    assert_eq!(
-        response.status(),
-        503,
-        "an oversized snapshot is not an empty success"
-    );
-    let bytes = axum::body::to_bytes(response.into_body(), 4096)
+    assert_eq!(response.status(), 200, "an oversized row is not a refusal");
+    let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
         .await
         .unwrap();
     let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(payload.get("comments").is_none());
-    assert!(payload["error"].as_str().unwrap().contains("memory budget"));
+    assert_eq!(payload["state"]["total"], json!(page as i64 + 1));
+    assert!(!payload["comments"].as_array().unwrap().is_empty());
     deployment.catalog.close().await;
+}
+
+fn urlencode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
 fn comment_body_typed() -> RoomMessage {
@@ -544,12 +592,21 @@ fn comment_body_typed() -> RoomMessage {
 }
 
 async fn get_comments(deployment: &Deployment) -> super::Reply {
+    get_comment_page(deployment, "").await
+}
+
+/// A real request through the HTTP handler, with whatever query string a
+/// traversal has reached.
+async fn get_comment_page(deployment: &Deployment, query: &str) -> super::Reply {
     let mut identity = viewer(deployment.commenter_id, "commenter", Role::Commenter).id;
     identity.provider = "github".into();
     identity.session_generation = "1".into();
     let cookie = crate::auth::sign_session(&[0u8; 32], &identity, crate::util::now_unix() + 3600);
     let request = axum::http::Request::builder()
-        .uri(format!("/api/documents/{}/comments", deployment.slug))
+        .uri(format!(
+            "/api/documents/{}/comments{query}",
+            deployment.slug
+        ))
         .header("cookie", format!("librepaper_session={cookie}"))
         .body(axum::body::Body::empty())
         .unwrap();

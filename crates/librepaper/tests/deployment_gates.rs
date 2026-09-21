@@ -1,4 +1,5 @@
-//! SPEC-server-is-a-log §14.2's three deployment-shaped tests: the items
+//! SPEC-server-is-a-log §14.2's three deployment-shaped tests, plus the
+//! comment traversal over the same real router: the items
 //! that are about the DEPLOYMENT rather than about one document, and so
 //! cannot be answered by a fake `LogCatalog` (see the header of
 //! `src/log/tests.rs`, which explains why they live here instead). The
@@ -1208,5 +1209,377 @@ mod revocation {
             "a revoked socket must not be able to add a second row: its edit must be refused \
              before `room.ingest`, not merely left unflushed"
         );
+    }
+}
+
+/// The comment traversal over the real router and the real socket.
+///
+/// Everything else about paging is checked inside the crate against a real
+/// catalogue; what only this file can reach is the whole path -- an
+/// `axum::serve` on a loopback port, a websocket handshake, a signed
+/// bearer, `Server::router`'s own dispatch -- which is where a wrong route,
+/// a lost query string or a `hello` that quietly carried the collection
+/// would show up and nowhere else.
+mod comment_traversal {
+    use super::*;
+    use futures_util::StreamExt;
+    use librepaper::annotation::{CommentTarget, OriginalAnchor};
+    use librepaper::postgres::{MutationAuthorization, NewAnnotation, NewReply};
+    use serde_json::Value;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    fn bearer_token(key: &[u8], account_id: Uuid, handle: &str, session_generation: i64) -> String {
+        let identity = Identity {
+            provider: PROVIDER_GITHUB.into(),
+            id: account_id.to_string(),
+            handle: handle.into(),
+            name: handle.into(),
+            picture: String::new(),
+            session_generation: session_generation.to_string(),
+        };
+        sign_device(
+            key,
+            &identity,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the system clock is after 1970")
+                .as_secs() as i64
+                + 3600,
+        )
+    }
+
+    /// How many comments to seed. Comfortably more than one default page
+    /// (50) so the traversal is several requests, and few enough that a
+    /// gated test stays quick.
+    const SEEDED: usize = 137;
+    /// And how many replies on the first of them, so one thread also has to
+    /// be walked on its own cursor.
+    const REPLIES: usize = 120;
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn every_comment_is_reachable_over_http_and_hello_carries_only_a_page() {
+        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let catalog = Arc::new(connected(&url).await);
+        truncate(&catalog).await;
+        let owner_id = seed_account(&catalog, "traversal-owner").await;
+        let owner = catalog
+            .account(owner_id)
+            .await
+            .expect("read the account back")
+            .expect("it exists");
+        let slug = "traversal";
+        seed_document(&catalog, owner_id, slug).await;
+        let document = catalog
+            .document_by_slug(slug)
+            .await
+            .expect("read the document")
+            .expect("it exists");
+        let writer = catalog
+            .claim_writer()
+            .await
+            .expect("claim the writer lease");
+
+        // Seeded straight through the catalogue: a sequencer command per
+        // comment for a hundred and thirty-seven of them is not what this
+        // test is measuring.
+        let actor = MutationAuthorization {
+            principal_key: owner_id.to_string(),
+            account_id: Some(owner_id),
+            session_generation: None,
+            token_hash: None,
+            policy_editor: true,
+        };
+        let mut written: Vec<Uuid> = Vec::new();
+        {
+            let mut tx = catalog.pool().begin().await.expect("begin");
+            for index in 0..SEEDED {
+                let id = Uuid::new_v4();
+                catalog
+                    .put_annotation_authorized(
+                        &mut tx,
+                        id,
+                        NewAnnotation {
+                            document_id: document.id,
+                            kind: "comment".into(),
+                            body: format!("Remark {index}"),
+                            author_account_id: Some(owner_id),
+                            author_key: format!("account:{owner_id}"),
+                            author_label: "Owner".into(),
+                            color: None,
+                            proposal_id: None,
+                            original_anchor: OriginalAnchor {
+                                source_sequence: 1,
+                                frontier: vec![1, 2, 3],
+                                target: CommentTarget::Document,
+                            },
+                            presentation: Default::default(),
+                            render_digest: None,
+                            attachment: None,
+                        },
+                        &actor,
+                        false,
+                    )
+                    .await
+                    .expect("seed a comment");
+                written.push(id);
+            }
+            for index in 0..REPLIES {
+                catalog
+                    .create_reply_authorized(
+                        &mut tx,
+                        document.id,
+                        NewReply {
+                            id: Uuid::new_v4(),
+                            annotation_id: written[0],
+                            author_account_id: Some(owner_id),
+                            author_key: format!("account:{owner_id}"),
+                            author_label: "Owner".into(),
+                            body: format!("Reply {index}"),
+                        },
+                        &actor,
+                    )
+                    .await
+                    .expect("seed a reply");
+            }
+            tx.commit().await.expect("commit the seed");
+        }
+
+        let config = Arc::new(Configuration::default());
+        let blobs = blobs();
+        let registry = Registry::new(
+            catalog.clone(),
+            blobs.clone(),
+            config.clone(),
+            "deployment".into(),
+        );
+        let rooms = Rooms::new(
+            catalog.clone(),
+            blobs.clone(),
+            config.clone(),
+            registry.clone(),
+        );
+        let (worker, background) = Worker::new(
+            catalog.clone(),
+            blobs.clone(),
+            registry.clone(),
+            config.clone(),
+        );
+        tokio::spawn(worker.run());
+        let store = Store::open_with_catalog(
+            blobs.clone(),
+            config.clone(),
+            catalog.clone(),
+            registry.clone(),
+        )
+        .await
+        .expect("open the store");
+        let key = vec![9u8; 32];
+        let mut server = Server::new(
+            store,
+            rooms,
+            background,
+            std::collections::HashMap::new(),
+            GithubApp {
+                client_id: "test-client".into(),
+                ..GithubApp::default()
+            },
+            key.clone(),
+            config.clone(),
+            Policy::parse_publishers("handle-traversal-owner").expect("publisher policy"),
+            Policy::parse(""),
+        );
+        server.install_writer(writer);
+        let server = Arc::new(server);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let addr = listener.local_addr().expect("the bound port");
+        let make_service = server
+            .clone()
+            .router()
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, make_service).await;
+        });
+        let base = format!("http://{addr}");
+        let http = reqwest::Client::new();
+        let bearer = bearer_token(
+            &key,
+            owner_id,
+            "handle-traversal-owner",
+            owner.session_generation,
+        );
+
+        // -- the socket: one page, and the counts behind it -----------------
+        let mut request = format!("ws://{addr}/ws/{slug}")
+            .into_client_request()
+            .expect("build the handshake");
+        request.headers_mut().insert(
+            "authorization",
+            format!("Bearer {bearer}").parse().expect("a bearer header"),
+        );
+        let (mut socket, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("the socket is admitted");
+        let hello = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let Some(Ok(frame)) = socket.next().await else {
+                    panic!("the socket closed before hello");
+                };
+                let tokio_tungstenite::tungstenite::Message::Text(text) = frame else {
+                    continue;
+                };
+                let value: Value = serde_json::from_str(&text).expect("a JSON frame");
+                if value["type"] == "hello" {
+                    break value;
+                }
+            }
+        })
+        .await
+        .expect("hello arrives");
+        let on_hello = hello["comments"].as_array().expect("a page").len();
+        assert!(
+            on_hello < SEEDED,
+            "hello carried {on_hello} of {SEEDED} comments, which is the \
+             whole collection it is not allowed to serialize",
+        );
+        assert_eq!(hello["state"]["total"], json!(SEEDED as i64));
+        assert_eq!(hello["state"]["complete"], json!(false));
+        assert!(hello["state"]["next_cursor"].as_str().is_some());
+        let _ = socket.close(None).await;
+
+        // -- the HTTP traversal, from the cursor hello handed over ---------
+        let mut seen: Vec<String> = hello["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap_or_default().to_string())
+            .collect();
+        let mut cursor = hello["state"]["next_cursor"].as_str().map(str::to_string);
+        let mut requests = 0;
+        while let Some(at) = cursor.take() {
+            let response = http
+                .get(format!("{base}/api/documents/{slug}/comments"))
+                .query(&[("cursor", at.as_str())])
+                .header("authorization", format!("Bearer {bearer}"))
+                .send()
+                .await
+                .expect("GET a comment page");
+            assert_eq!(response.status(), 200);
+            let page: Value = response.json().await.expect("JSON");
+            assert_eq!(page["protocol"], "librepaper.comments.v1");
+            assert_eq!(page["state"]["total"], json!(SEEDED as i64));
+            for row in page["comments"].as_array().expect("rows") {
+                seen.push(row["id"].as_str().unwrap_or_default().to_string());
+            }
+            requests += 1;
+            assert!(requests < 50, "the traversal must terminate");
+            if page["complete"] != json!(true) {
+                cursor = page["next_cursor"].as_str().map(str::to_string);
+                assert!(
+                    cursor.is_some(),
+                    "an incomplete page says where to continue"
+                );
+            }
+        }
+        let unique: std::collections::HashSet<&String> = seen.iter().collect();
+        assert_eq!(unique.len(), seen.len(), "no comment was served twice");
+        assert_eq!(unique.len(), SEEDED, "and none was skipped");
+        for id in &written {
+            assert!(unique.contains(&id.to_string()), "comment {id} is missing");
+        }
+
+        // -- the thread route, on its own cursor ---------------------------
+        // Every seeded comment shares one transaction timestamp, so which
+        // of them sorts first is decided by uuid and cannot be assumed.
+        // One page of 200 holds all 137 of them.
+        let first = http
+            .get(format!("{base}/api/documents/{slug}/comments"))
+            .query(&[("limit", "200")])
+            .header("authorization", format!("Bearer {bearer}"))
+            .send()
+            .await
+            .expect("GET the whole collection in one page")
+            .json::<Value>()
+            .await
+            .expect("JSON");
+        assert_eq!(first["complete"], json!(true), "200 holds all of them");
+        let deep = first["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == json!(written[0].to_string()))
+            .expect("the deep thread is in the collection");
+        assert_eq!(deep["reply_total"], json!(REPLIES as i64));
+        let loaded = deep["replies"].as_array().unwrap().len();
+        assert!(
+            loaded < REPLIES,
+            "a comment page carried {loaded} of {REPLIES} replies",
+        );
+        let mut replies = loaded;
+        let mut reply_cursor = deep["reply_cursor"].as_str().map(str::to_string);
+        assert!(reply_cursor.is_some(), "and says where the rest is");
+        while let Some(at) = reply_cursor.take() {
+            let page: Value = http
+                .get(format!(
+                    "{base}/api/documents/{slug}/comments/{}/replies",
+                    written[0]
+                ))
+                .query(&[("cursor", at.as_str())])
+                .header("authorization", format!("Bearer {bearer}"))
+                .send()
+                .await
+                .expect("GET a reply page")
+                .json()
+                .await
+                .expect("JSON");
+            assert_eq!(page["total"], json!(REPLIES as i64));
+            replies += page["replies"].as_array().expect("rows").len();
+            if page["complete"] != json!(true) {
+                reply_cursor = page["next_cursor"].as_str().map(str::to_string);
+                assert!(reply_cursor.is_some());
+            }
+        }
+        assert_eq!(replies, REPLIES, "every reply is reachable");
+
+        // -- a malformed cursor is a refusal, not an empty success ---------
+        let refused = http
+            .get(format!("{base}/api/documents/{slug}/comments"))
+            .query(&[("cursor", "not-a-cursor")])
+            .header("authorization", format!("Bearer {bearer}"))
+            .send()
+            .await
+            .expect("GET with a bad cursor");
+        assert_eq!(refused.status(), 400);
+        let body: Value = refused.json().await.expect("JSON");
+        assert!(body.get("comments").is_none(), "{body}");
+
+        // -- and a cursor is not a capability ------------------------------
+        let narrow: Value = http
+            .get(format!("{base}/api/documents/{slug}/comments"))
+            .query(&[("limit", "1")])
+            .header("authorization", format!("Bearer {bearer}"))
+            .send()
+            .await
+            .expect("GET one row")
+            .json()
+            .await
+            .expect("JSON");
+        let good = narrow["next_cursor"].as_str().expect("a continuation");
+        let anonymous = http
+            .get(format!("{base}/api/documents/{slug}/comments"))
+            .query(&[("cursor", good)])
+            .send()
+            .await
+            .expect("GET with no credentials at all");
+        assert_eq!(
+            anonymous.status(),
+            404,
+            "holding a cursor grants no access to the document it names",
+        );
+
+        catalog.close().await;
     }
 }

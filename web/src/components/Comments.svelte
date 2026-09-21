@@ -54,6 +54,12 @@
     cardIdPrefix = "comment",
     // The id of the annotation the page has singled out, if any.
     selected = "",
+    // The traversal behind `comments`, which is a prefix of the document's
+    // comments rather than all of them (docs/protocol/comments-v1.md).
+    // `null` for a caller that mounts this over a fixed list.
+    page = null,
+    onloadmore,
+    onloadreplies,
   } = $props();
 
   function place(comment) {
@@ -102,6 +108,31 @@
 
   const open = $derived(filtered.filter((comment) => !comment.resolved).length);
 
+  // What the header says. The totals are the catalogue's, never
+  // `comments.length`: a reader holding fifty of four hundred has to be told
+  // four hundred, or every count on the panel is a claim about the page
+  // dressed up as a claim about the document.
+  //
+  // A filtered tab is the exception and says so. The server counts comments,
+  // not comments-of-this-kind, so "12 of the 50 loaded so far" is the honest
+  // wording there rather than a document-wide figure this cannot know.
+  const partial = $derived(Boolean(page) && !page.complete);
+  const meta = $derived.by(() => {
+    if (!page) return filtered.length ? `${open} open · ${filtered.length} total` : undefined;
+    if (page.loading) return "Loading…";
+    if (filter === "all") {
+      return partial
+        ? `${page.open} open · ${page.total} total · ${comments.length} loaded`
+        : `${page.open} open · ${page.total} total`;
+    }
+    return partial
+      ? `${open} open · ${filtered.length} of the ${comments.length} loaded so far`
+      : `${open} open · ${filtered.length} total`;
+  });
+  // Against everything loaded, not against this tab's share of it: what
+  // "Load more" fetches is comments, not comments of one kind.
+  const remaining = $derived(page ? Math.max(0, page.total - comments.length) : 0);
+
   // The bulk verbs act only on what the cards would let this caller do one at
   // a time: resolve is not a suggestion's verb (accept and reject are), and
   // delete is real only for a comment the server said so about, or an owner.
@@ -131,7 +162,7 @@
 <div class="comments-panel">
   <PanelHeader
     title={title}
-    meta={filtered.length ? `${open} open · ${filtered.length} total` : undefined}
+    meta={meta}
   >
     {#snippet actions()}
       <div class="flex flex-wrap items-center gap-1">
@@ -139,23 +170,23 @@
           <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={onhistory}>Show changes since…</button>
         {/if}
         {#if canComment && (resolvable.length || clearable.length || (canModerate && deletable.length))}
-          <div class="bulk flex gap-1" role="group" aria-label="All comments">
+          <div class="bulk flex gap-1" role="group" aria-label={partial ? "Loaded comments" : "All comments"}>
             {#if resolvable.length}
               <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
-                title="Resolve every open comment"
-                onclick={resolveAll}>Resolve all</button>
+                title={partial ? "Resolve every open comment that is loaded" : "Resolve every open comment"}
+                onclick={resolveAll}>{partial ? "Resolve loaded" : "Resolve all"}</button>
             {/if}
             {#if clearable.length}
               <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
-                title="Delete every resolved comment"
+                title={partial ? "Delete every resolved comment that is loaded" : "Delete every resolved comment"}
                 disabled={!ondeletemany}
                 onclick={() => ondeletemany?.(clearable)}>Clear resolved</button>
             {/if}
             {#if canModerate && deletable.length}
               <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
-                title="Delete every comment"
+                title={partial ? "Delete every comment that is loaded" : "Delete every comment"}
                 disabled={!ondeletemany}
-                onclick={() => ondeletemany?.(deletable)}>Delete all</button>
+                onclick={() => ondeletemany?.(deletable)}>{partial ? "Delete loaded" : "Delete all"}</button>
             {/if}
           </div>
         {/if}
@@ -220,11 +251,40 @@
         {onreply}
         {onaccept}
         {onreject}
+        {onloadreplies}
       />
       {/each}
       </div>
     {/each}
     {#if composerKey === ""}{@render composer()}{/if}
+
+    <!-- What lies past the cards. Four states, and they are not the same
+         thing: still arriving, arrived and empty, holding a prefix, and
+         holding the lot. A failed request keeps every card above it
+         exactly where it is and offers the request again. -->
+    {#if page}
+      {#if page.error}
+        <p class="page-error" role="alert">
+          <span>{page.error}</span>
+          <button type="button" class="btn btn-sm preset-outlined-surface-300-700"
+            disabled={page.busy}
+            onclick={() => onloadmore?.()}>Try again</button>
+        </p>
+      {/if}
+      {#if page.loading}
+        <p class="panel-muted" role="status">Loading comments…</p>
+      {:else if !page.total}
+        <p class="panel-muted" role="status">No comments yet.</p>
+      {:else if partial}
+        <button type="button" class="load-more btn btn-sm preset-outlined-surface-300-700"
+          disabled={page.busy}
+          onclick={() => onloadmore?.()}>
+          {page.busy ? "Loading…" : `Load more (${remaining} not loaded)`}
+        </button>
+      {:else}
+        <p class="panel-muted" role="status">All {page.total} comments loaded.</p>
+      {/if}
+    {/if}
   </div>
 </div>
 
@@ -233,6 +293,8 @@
   .comments-panel { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; overflow: hidden; }
   .comments-panel > :global(*) { flex-shrink: 0; }
   .comments-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .load-more { align-self: center; margin: calc(var(--spacing) * 2) 0; }
+  .page-error { padding: calc(var(--spacing) * 2); display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); align-items: flex-start; }
   .pass-header { padding: calc(var(--spacing) * 2); border-left: 3px solid var(--color-primary-500); }
   .bulk { margin-left: auto; }
 </style>

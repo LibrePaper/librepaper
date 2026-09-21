@@ -198,6 +198,7 @@
   // cannot see.
   const annotations = createAnnotations({
     slug: SLUG,
+    key: KEY,
     anchor: anchorComments,
     repaint: applyHighlights,
     send: (message) => collaboration?.send(message),
@@ -1176,8 +1177,10 @@
       return;
     }
     if (event.type === "hello") {
-      outbox.reconcile(event.comments);
-      annotations.replace(event.comments);
+      // The first page of the comments, and what the server says is behind
+      // it. Never the collection: "Load more" walks the rest, and the
+      // counts in the panel come from `state` rather than from this list.
+      annotations.seed(event.comments, event.state);
       commentsReady = true;
       reanchor();
       if (panel === "history" && !labels.length) void loadHistory();
@@ -1235,20 +1238,11 @@
       // server had a say; the list is re-fetched so the optimistic change goes
       // back out.
       if (event.comment_id) {
-        // The same headers every other call carries. Reading comments does not
-        // ask for the marker, but it does ask who is reading: without the link
-        // key a reader who arrived by one is a stranger here, and the catch
-        // below would swallow the 404 and leave the list uncorrected.
-        fetch(`/api/documents/${SLUG}/comments`, {
-          headers: authHeaders(KEY),
-        })
-          .then(async (response) => {
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || "Comments could not be reloaded.");
-            return data;
-          })
-          .then((data) => receive({ type: "hello", comments: data.comments }))
-          .catch((error) => say(error.message || "Comments could not be reloaded.", { kind: "problem", id: "reader:comments-unavailable" }));
+        // Re-read the pages this browser is holding, from the first
+        // forward. The controller owns the request -- it carries the link
+        // key, drops a response an even newer refresh has overtaken, and
+        // leaves the comments on screen alone if it fails.
+        void annotations.refresh();
       }
       say(event.message || "The server refused that change. Nothing on screen has changed.", { kind: "problem", id: "reader:change-refused" });
       return;
@@ -3708,6 +3702,9 @@
       onreveal={revealAnnotation} selected={selectedAnnotation} onresolve={resolve}
       ondelete={askDelete} ondeletemany={askDeleteMany} onreply={reply}
       {composing} {needsLogin} signInHref={signInHref()}
+      page={annotations.state.page}
+      onloadmore={() => void annotations.loadMore()}
+      onloadreplies={(comment) => void annotations.loadReplies(comment)}
       oncommentsend={sendDraft} oncommentcancel={cancelDraft} />
     {@render pendingRecovery("collaboration")}
   {/snippet}

@@ -528,14 +528,10 @@ impl Server {
         let expected = args["expected_version"]
             .as_str()
             .ok_or_else(|| Failure::new("invalid_params", "accept requires expected_version"))?;
-        let comments = room
-            .comments()
+        let comment = room
+            .comment_by_id(id, true)
             .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
-        let comment = comments
-            .iter()
-            .find(|c| c.id == id)
-            .cloned()
+            .map_err(|error| Failure::new("unavailable", error.to_string()))?
             .ok_or_else(|| Failure::new("not_found", "suggestion unavailable"))?;
         if crate::room::agent_comments::comment_version(&comment) != expected
             || comment.motivation != "editing"
@@ -968,16 +964,9 @@ impl Server {
             if let Some(reason) = refusal {
                 return Err(Failure::new("conflict", reason));
             }
-            // The batch wrote straight through the sequencer, not through
-            // any of the room's own cache-invalidating comment methods, and
-            // it is a change no single comment event describes -- so this is
-            // `broadcast_comment_snapshot`, not `broadcast_comment_event`,
-            // and the room's cached list is dropped first so the snapshot it
-            // sends is the one it just wrote.
-            room.forget_comments().await;
-            let comment_digest =
-                room::comments::comment_digest_of(&room.comments().await.unwrap_or_default());
-            room.broadcast_comment_snapshot(comment_digest).await;
+            // Rows are read live; existing immutable anchors stay cached
+            // so their subscribers continue receiving source movements.
+            room.broadcast_comments_changed().await;
             result["effects"] = json!(outcomes
                 .iter()
                 .filter_map(|outcome| match outcome {

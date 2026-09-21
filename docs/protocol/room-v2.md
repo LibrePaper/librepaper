@@ -32,11 +32,21 @@ one room-locked read:
       "files": {},
       "texts": {"main.md": "# Paper\n"},
       "comments": [],
+      "comment_state": {
+        "total": 0, "open": 0, "replies": 0, "revision": "9f1c...",
+        "complete": true, "next_cursor": null
+      },
       "role": "editor",
       "capabilities": {"read": true, "comment": true, "edit": true}
     }
 
-source, tree, files, texts, and comments come from the same room-locked
+`comments` is the **first page** of the document's comments, not all of
+them, and `comment_state` says how many there are and where to continue.
+Walk `GET /api/documents/{slug}/comments?cursor=` for the rest. See
+[comments-v1.md](comments-v1.md) for the traversal, its cursors and what it
+does and does not promise while the collection is changing.
+
+source, tree, files and texts come from the same room-locked
 projection: the tree of `(path, file_id | asset_digest)` produced by the
 projection algorithm at the current head, which may include text not yet
 flushed to PostgreSQL. source_sha is the SHA-256 digest of the returned
@@ -45,6 +55,32 @@ not use a stale main path from an older document metadata response. Reader
 and commenter links cannot fetch source snapshots or join source
 synchronization. They read the current projection and receive rendered
 annotations without private source anchors.
+
+## Reading annotations
+
+GET /api/documents/{slug}/comments returns one page of
+`librepaper.comments.v1`, and GET
+/api/documents/{slug}/comments/{comment_id}/replies returns one page of one
+thread's replies. Both take `?cursor=` and `?limit=`. Neither ever returns
+the whole collection, and there is no route that does.
+
+    {
+      "version": 1,
+      "protocol": "librepaper.comments.v1",
+      "comments": [],
+      "next_cursor": "eyJ2IjoxLCJk...",
+      "complete": false,
+      "oversize": false,
+      "state": {"total": 412, "open": 7, "replies": 91, "revision": "9f1c..."}
+    }
+
+Each comment carries a bounded prefix of its own thread in `replies`, with
+`reply_total` and a `reply_cursor` for the rest. `complete` is proof, not an
+inference from a short page. A cursor is refused unless it was issued for
+this document, this thread and the same query options, and authorization
+runs in full on every request: holding one grants nothing.
+[comments-v1.md](comments-v1.md) is the whole contract, including what is
+guaranteed while the collection changes under a traversal.
 
 ## Annotation HTTP results
 
@@ -231,6 +267,25 @@ Automation peers connect to /ws/{slug} with the same key header and automation
 marker. The document messages carry the synchronization transport described
 in `SPEC-server-is-a-log.md` §6.
 
+The two annotation frames a socket receives before any document message:
+
+- `hello {comments, state}` is sent once, as soon as the socket is a
+  subscriber. `comments` is the first page in the caller's own view and
+  `state` is the block above plus `complete` and `next_cursor`. It is never
+  the whole collection. Because the socket is subscribed before this is
+  sent, every mutation committed from that moment arrives as its own
+  bounded event, so a client that pages while live events arrive sees each
+  row once when it keys on comment id.
+- `comments-changed {state}` replaces the old `comments` frame, which
+  restated every comment on the document. It says the collection moved in a
+  way no single event describes -- an agent's batch adds, edits and deletes
+  in one act -- and how large it now is. It carries no rows; a client
+  re-reads the pages it is holding.
+
+Successful annotation mutation events also carry viewer-specific `state`
+counts. Clients apply those totals even if the affected comment is outside
+their loaded prefix or was already changed optimistically.
+
 - `doc-open {protocol: "librepaper.room.v3", vector}` sends a base64-encoded
   Loro version vector. The protocol string is required and checked before any
   update is accepted; there is no `after` field, and there is no `doc-sync`
@@ -389,6 +444,13 @@ Unknown response fields must be ignored. Source synchronization requires
 `librepaper.room.v3`; older clients receive upgrade-required and retain their
 local document. The version changes because a v2 client can interpret an
 empty catch-up acknowledgement as proof of saving buffered work. The snapshot
-protocol remains `librepaper.snapshot.v1`. There is no compatibility path for
+protocol remains `librepaper.snapshot.v1`; its `comments` field is now the
+first page rather than the collection, and `comment_state` beside it says
+so. Reading annotations is `librepaper.comments.v1` and has no
+compatibility path with the whole-snapshot shape it replaces: `hello` no
+longer carries every comment, the `comments` broadcast frame is gone in
+favour of `comments-changed`, and there is no route that returns an
+unpaged collection. Every consumer in this repository was moved with it.
+There is no compatibility path for
 `doc-sync` or a `doc-open` without the required protocol. Messages without
 `request_id` remain accepted when the caller does not need correlation.

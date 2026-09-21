@@ -70,6 +70,161 @@ impl Server {
         removed
     }
 
+    /// One page of a document's comments, as `librepaper.comments.v1`.
+    ///
+    /// The whole collection is never assembled: `?cursor=` continues the
+    /// traversal and `?limit=` narrows the page. Authorization has already
+    /// run at the call site and runs again on the next request -- holding a
+    /// cursor is a position, not a permission.
+    async fn comment_page_reply(
+        &self,
+        room: &Arc<crate::room::Room>,
+        query: Option<&str>,
+        author: &str,
+        may_edit: bool,
+    ) -> Reply {
+        let values: HashMap<String, String> = query
+            .map(|raw| {
+                url::form_urlencoded::parse(raw.as_bytes())
+                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let limit = values
+            .get("limit")
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(crate::room::comments::COMMENT_PAGE_DEFAULT);
+        let after = match values.get("cursor") {
+            Some(raw) => {
+                match crate::room::comments::decode_cursor(raw, room.document_id, None, may_edit) {
+                    Ok(position) => Some(position),
+                    Err(error) => return write_json(400, &json!({"error": error.to_string()})),
+                }
+            }
+            None => None,
+        };
+        // The counts come first so a page and the totals beside it are read
+        // in the same order every time; both are their own statement, and
+        // neither holds a connection past its own answer.
+        let state = match room.comment_state(may_edit).await {
+            Ok(state) => state,
+            Err(error) => {
+                return write_json(
+                    503,
+                    &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
+                )
+            }
+        };
+        match room.comment_page(after, limit, author, may_edit).await {
+            Ok((views, page)) => write_json(
+                200,
+                &json!({
+                    "version": 1,
+                    "protocol": "librepaper.comments.v1",
+                    "comments": views,
+                    "next_cursor": page.next.map(|at| crate::room::comments::encode_cursor(
+                        room.document_id, None, may_edit, at)),
+                    "complete": page.complete,
+                    "oversize": page.oversize,
+                    "state": crate::room::comments::comment_state_json(&state),
+                }),
+            ),
+            Err(error) => write_json(
+                error.status(),
+                &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
+            ),
+        }
+    }
+
+    /// One page of one thread's replies.
+    pub(super) async fn handle_replies(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+        comment: &str,
+    ) -> Reply {
+        if !self.valid_slug(slug) {
+            return write_json(400, &json!({"error": "bad slug"}));
+        }
+        let Ok(comment_id) = uuid::Uuid::parse_str(comment) else {
+            return write_json(400, &json!({"error": "bad comment id"}));
+        };
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
+        };
+        let headers = request.headers().clone();
+        let query = request.uri().query().map(str::to_string);
+        let who = self
+            .viewer(&entry, &headers, arrival, query.as_deref())
+            .await;
+        if who.auth_failed {
+            return write_json(
+                401,
+                &json!({"error": "authentication expired or was revoked"}),
+            );
+        }
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        let may_edit = who.at_least(Role::Editor);
+        let room = match self.rooms.get(slug).await {
+            Ok(room) => room,
+            Err(error) => {
+                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+            }
+        };
+        let values: HashMap<String, String> = query
+            .as_deref()
+            .map(|raw| {
+                url::form_urlencoded::parse(raw.as_bytes())
+                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let limit = values
+            .get("limit")
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .unwrap_or(crate::room::comments::THREAD_PAGE_DEFAULT);
+        let after = match values.get("cursor") {
+            Some(raw) => match crate::room::comments::decode_cursor(
+                raw,
+                room.document_id,
+                Some(comment_id),
+                may_edit,
+            ) {
+                Ok(position) => Some(position),
+                Err(error) => return write_json(400, &json!({"error": error.to_string()})),
+            },
+            None => None,
+        };
+        match room.reply_page(comment_id, after, limit, may_edit).await {
+            // A thread of a document this caller cannot see a suggestion of
+            // answers exactly as a missing one does.
+            Ok(None) => write_json(404, &json!({"error": "not found"})),
+            Ok(Some(page)) => write_json(
+                200,
+                &json!({
+                    "version": 1,
+                    "protocol": "librepaper.comments.v1",
+                    "comment_id": comment,
+                    "replies": page.replies,
+                    "next_cursor": page.next.map(|at| crate::room::comments::encode_cursor(
+                        room.document_id, Some(comment_id), may_edit, at)),
+                    "complete": page.complete,
+                    "oversize": page.oversize,
+                    "total": page.total,
+                }),
+            ),
+            Err(error) => write_json(
+                error.status(),
+                &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
+            ),
+        }
+    }
+
     pub(super) async fn handle_comments(
         &self,
         request: Request<Body>,
@@ -109,13 +264,10 @@ impl Server {
         let may_edit = who.at_least(Role::Editor);
 
         match *request.method() {
-            Method::GET => match room.snapshot_for(&author, may_edit).await {
-                Ok(comments) => write_json(200, &json!({"comments": comments})),
-                Err(error) => write_json(
-                    503,
-                    &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
-                ),
-            },
+            Method::GET => {
+                self.comment_page_reply(&room, query.as_deref(), &author, may_edit)
+                    .await
+            }
             Method::POST => {
                 if cross_site_refused(&headers, arrival) {
                     return write_json(403, &cross_site_refusal());
@@ -1006,8 +1158,13 @@ impl Server {
             .get(&projected.projection.main)
             .cloned()
             .unwrap_or_default();
-        let comments = match room.snapshot_for(&author, may_edit).await {
-            Ok(comments) => comments,
+        // The first page, not the collection. `librepaper.snapshot.v1`
+        // always carried a `comments` array and still does; what changed is
+        // that it is a bounded page with `comment_state` beside it saying
+        // how much more there is and where to continue. A caller that
+        // wants the rest walks `GET .../comments?cursor=`.
+        let state = match room.comment_state(may_edit).await {
+            Ok(state) => state,
             Err(error) => {
                 return write_json(
                     503,
@@ -1015,6 +1172,28 @@ impl Server {
                 )
             }
         };
+        let (comments, page) = match room
+            .comment_page(
+                None,
+                crate::room::comments::COMMENT_PAGE_DEFAULT,
+                &author,
+                may_edit,
+            )
+            .await
+        {
+            Ok(both) => both,
+            Err(error) => {
+                return write_json(
+                    error.status(),
+                    &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
+                )
+            }
+        };
+        let mut comment_state = crate::room::comments::comment_state_json(&state);
+        comment_state["complete"] = json!(page.complete);
+        comment_state["next_cursor"] = json!(page
+            .next
+            .map(|at| crate::room::comments::encode_cursor(room.document_id, None, may_edit, at)));
         let tree_sha = projected.projection.digest();
         write_json(
             200,
@@ -1034,6 +1213,7 @@ impl Server {
                 "sha": tree_sha,
                 "source_sha": crate::document::store::digest_of(&source),
                 "comments": comments,
+                "comment_state": comment_state,
                 "role": who.role.as_str(),
                 "capabilities": {
                     "read": true,
