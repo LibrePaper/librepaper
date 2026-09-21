@@ -52,9 +52,14 @@ Fix these before or alongside the refactors; each is small.
 - **Socket reauthorization has two copies that disagree.** Only the bulk
   `reauthorize` (socket.rs:1461) flushes `AuthorityRevoked`; the per-frame
   `reauthorize_connection` (socket.rs:1370) does not.
-- **Two full manifest inventories computed and discarded.** local/quarto.rs:954
-  `_execution_inventory_before` and :1570 `_tracked_file_count` read and hash
-  every manifest file, up to 64 MiB, for nothing.
+- **Unused inventory results need a validation-preserving cleanup.**
+  local/quarto.rs:954 discards `_execution_inventory_before`, but the call
+  reads the effective manifest through `read_verified_manifest()` and
+  propagates validation failures before execution. Remove its digest work
+  only after identifying an equivalent remaining check over the same inputs
+  at the same execution stage, or retain an explicit validation-only pass.
+  At :1570, `_tracked_file_count = inventory.files.len()` is only an unused
+  length lookup, not a second inventory computation; that lookup can go.
 - **Journal writer has a permission window.** assistant/journal.rs:260 writes
   the temp file then chmods 0600; every other writer opens with mode 0600.
 - **Preview/job exclusion is asymmetric.** local/service.rs:2880 only looks at
@@ -86,10 +91,14 @@ Identity is also resolved two to four times per request. `cost::middleware`
 computes `authenticated_identity` and stores it in `RequestContext`
 (cost.rs:269, mod.rs:522), but no handler reads it; `Server::viewer` runs
 `whoami` again (a Postgres read per cookie session), `publisher` a third time,
-and an MCP call runs `mcp_recheck` two to four more times. Consequently
-`Viewer.auth_failed` is provably false in every HTTP handler (the guard already
-answered 401/503 for the same `Err`), so the 28 `if who.auth_failed` sites are
-dead outside the socket reauthorizer.
+and an MCP call runs `mcp_recheck` two to four more times. These lookups can
+return different results: a session revocation or database failure after
+middleware authentication can make `Viewer.auth_failed` true in a handler.
+The 28 `if who.auth_failed` sites are therefore not currently dead. First
+make ordinary handler identity resolution consume the authenticated request
+context and preserve its 401/503 failures; only then remove checks made
+redundant by that change. Keep explicit authorization rechecks for mutations,
+MCP operations and live sockets wherever they enforce current authority.
 
 Shape: `Server::open(&self, ctx: &RequestContext, slug, Access::{Read,
 Comment, Edit, Owner}, need_room) -> Result<Opened { entry, who, room },
@@ -196,9 +205,15 @@ projection (walk and SHA-256 every text) inside `with_head` on every comment
 page read purely to get the digest that `Sequencer::projection()` already
 caches. session/shape.rs:37-44 redeclares the root constants core exports.
 
-Shape: `locate_anchor(&Projected, ..)`, `Sources::of(&Projected)`, digest from
-`self.log().projection()`; session keeps only mutators and imports constants
-from core. About 120 lines plus the per-page recompute.
+Shape: `locate_anchor(&Projected, ..)`, `Sources::of(&Projected)`, and a
+sequencer callback such as `with_projected_head(|doc, projected| ..)` that
+provides the head and its cached projection under one lock. Read the digest
+and resolve CRDT cursors within that callback. Separate calls to
+`projection()` and `with_head()` permit an intervening edit and can tag
+positions with a digest from another revision. Session keeps mutators and
+CRDT cursor helpers and imports constants from core. About 120 lines plus
+the per-page recompute. Validate the change with a concurrent-edit regression
+test that checks attachment positions and digest describe the same revision.
 
 The core crate itself is not consumed by any wasm build (web/ has a hand-written
 JS port kept equal by a fixture); either fold it into `document/` or make
