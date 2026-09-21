@@ -10,7 +10,7 @@
 //! | compaction | `documents.uncompacted_*` over the threshold |
 //! | archive | a label with `archive_requested_at` and no `archive_key` |
 //! | deletion | `documents.status = 'deleting'` |
-//! | superseded bases | a `superseded_bases.delete_after` in the past |
+//! | superseded bases | a `document_snapshots.delete_after` in the past |
 //!
 //! At startup the worker scans those four in bounded pages and enqueues what
 //! it finds.
@@ -449,7 +449,8 @@ impl Worker {
             // not a timer: the pass that finds nothing left stops.
             self.handle.ask(Task::SweepSupersededBases);
         } else if let Some(due) = sqlx::query_scalar::<_, Option<OffsetDateTime>>(
-            "SELECT min(delete_after) FROM superseded_bases",
+            "SELECT min(delete_after) FROM document_snapshots
+             WHERE delete_after IS NOT NULL",
         )
         .fetch_one(self.catalog.pool())
         .await
@@ -861,8 +862,9 @@ impl Worker {
         {
             keys.insert(base.snapshot_key);
         }
-        // Every base still inside its grace, not just the newest: the row
-        // that names each one is about to cascade away with the document.
+        // Every retired snapshot still inside its grace, not just the newest:
+        // the row that names each one is about to cascade away with the
+        // document.
         keys.extend(
             self.catalog
                 .superseded_base_keys(document_id)

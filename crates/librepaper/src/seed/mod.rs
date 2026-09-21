@@ -134,7 +134,7 @@ pub async fn seed_with_backup(
         // version, bundle or job table left to clear, and `document_labels`
         // replaces `document_checkpoints` as the one thing besides the log
         // itself that names a moment.
-        sqlx::query!("TRUNCATE document_updates,document_bases,document_labels,document_proposal_hunks,document_proposals,document_assets,replies,annotations,document_marks,share_links,grants,documents,accounts CASCADE").execute(catalog.pool()).await.unwrap_or_else(|e|die(e));
+        sqlx::query!("TRUNCATE document_updates,document_snapshots,document_labels,document_proposal_hunks,document_proposals,document_assets,replies,annotations,document_marks,share_links,grants,documents,accounts CASCADE").execute(catalog.pool()).await.unwrap_or_else(|e|die(e));
     }
     let handle = if owner.trim().is_empty() {
         "examples"

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE document_snapshots SET delete_after=$2\n             WHERE document_id=$1 AND delete_after IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a35d5c3654b25ec25f5ca56b3649fe2a2ee90ecab4cfc6b85772337acf3711a"
+}

@@ -41,7 +41,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
     catalog.migrate().await.unwrap();
     sqlx::query(
         "TRUNCATE document_proposal_hunks,document_proposals,document_labels,\
-         document_updates,document_bases,document_assets,replies,annotations,\
+         document_updates,document_snapshots,document_assets,replies,annotations,\
          share_links,grants,documents,accounts CASCADE",
     )
     .execute(catalog.pool())

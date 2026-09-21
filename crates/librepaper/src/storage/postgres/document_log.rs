@@ -13,6 +13,10 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+#[cfg(test)]
+#[path = "snapshot_regression_tests.rs"]
+mod snapshot_regression_tests;
+
 use super::{new_id, Error, PostgresCatalog, Result};
 
 /// Above this the recovery of one document would not fit the memory budget
@@ -121,7 +125,8 @@ impl PostgresCatalog {
         .fetch_optional(&self.pool)
         .await?;
         let base = sqlx::query!(
-            "SELECT through_update_sequence,vector FROM document_bases WHERE document_id=$1",
+            r#"SELECT through_update_sequence AS "through_update_sequence!",vector AS "vector!"
+               FROM document_snapshots WHERE document_id=$1 AND delete_after IS NULL"#,
             document_id,
         )
         .fetch_optional(&self.pool)
@@ -205,9 +210,11 @@ impl PostgresCatalog {
     pub async fn log_base(&self, document_id: Uuid) -> Result<Option<LogBase>> {
         sqlx::query_as!(
             LogBase,
-            r#"SELECT document_id,base_id,through_update_sequence,vector,snapshot_key,
-                      snapshot_digest,snapshot_bytes,updated_at
-               FROM document_bases WHERE document_id=$1"#,
+            r#"SELECT document_id,base_id AS "base_id!",
+                      through_update_sequence AS "through_update_sequence!",vector AS "vector!",
+                      snapshot_key,snapshot_digest AS "snapshot_digest!",
+                      snapshot_bytes AS "snapshot_bytes!",updated_at AS "updated_at!"
+               FROM document_snapshots WHERE document_id=$1 AND delete_after IS NULL"#,
             document_id,
         )
         .fetch_optional(&self.pool)
@@ -220,7 +227,8 @@ impl PostgresCatalog {
     /// rows that name them by up to seven days (§8.4 step 5).
     pub async fn superseded_base_keys(&self, document_id: Uuid) -> Result<Vec<String>> {
         sqlx::query_scalar!(
-            "SELECT snapshot_key FROM superseded_bases WHERE document_id=$1",
+            "SELECT snapshot_key FROM document_snapshots
+             WHERE document_id=$1 AND delete_after IS NOT NULL",
             document_id,
         )
         .fetch_all(&self.pool)
@@ -467,32 +475,39 @@ impl PostgresCatalog {
                 "collaboration base is ahead of the durable log".into(),
             ));
         }
-        // The key this activation is about to replace, read under the same
-        // fence so the row cannot move between reading it and superseding it.
-        let outgoing = sqlx::query_scalar!(
-            "SELECT snapshot_key FROM document_bases WHERE document_id=$1 FOR UPDATE",
+        // The document lock serializes activations, including the first base
+        // when there is no snapshot row yet. A stale retry must not retire the
+        // current snapshot or extend any predecessor's grace period.
+        let current_through = sqlx::query_scalar!(
+            r#"SELECT through_update_sequence AS "through_update_sequence!"
+               FROM document_snapshots WHERE document_id=$1 AND delete_after IS NULL"#,
             document_id,
         )
         .fetch_optional(&mut *tx)
         .await?;
+        if current_through.is_some_and(|through| through >= through_update_sequence) {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        sqlx::query!(
+            "UPDATE document_snapshots SET delete_after=$2
+             WHERE document_id=$1 AND delete_after IS NULL",
+            document_id,
+            predecessor_delete_after,
+        )
+        .execute(&mut *tx)
+        .await?;
         let base_id = new_id();
         let base = sqlx::query_as!(
             LogBase,
-            r#"INSERT INTO document_bases
+            r#"INSERT INTO document_snapshots
                (document_id,base_id,through_update_sequence,vector,snapshot_key,
                 snapshot_digest,snapshot_bytes)
                VALUES($1,$2,$3,$4,$5,$6,$7)
-               ON CONFLICT(document_id) DO UPDATE SET
-                 base_id=excluded.base_id,
-                 through_update_sequence=excluded.through_update_sequence,
-                 vector=excluded.vector,
-                 snapshot_key=excluded.snapshot_key,
-                 snapshot_digest=excluded.snapshot_digest,
-                 snapshot_bytes=excluded.snapshot_bytes,
-                 updated_at=now()
-               WHERE document_bases.through_update_sequence < excluded.through_update_sequence
-               RETURNING document_id,base_id,through_update_sequence,vector,snapshot_key,
-                         snapshot_digest,snapshot_bytes,updated_at"#,
+               RETURNING document_id,base_id AS "base_id!",
+                         through_update_sequence AS "through_update_sequence!",vector AS "vector!",
+                         snapshot_key,snapshot_digest AS "snapshot_digest!",
+                         snapshot_bytes AS "snapshot_bytes!",updated_at AS "updated_at!""#,
             document_id,
             base_id,
             through_update_sequence,
@@ -501,62 +516,36 @@ impl PostgresCatalog {
             snapshot_digest.as_slice(),
             snapshot_bytes,
         )
-        .fetch_optional(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
-        let counters = if base.is_some() {
-            if let Some(outgoing) = outgoing {
-                // One row per base this document has left behind, in the
-                // same transaction that stopped anything reading it. The
-                // conflict clause is for a retry that gets this far twice:
-                // the same blob must not be scheduled for deletion under two
-                // deadlines.
-                sqlx::query!(
-                    "INSERT INTO superseded_bases(snapshot_key,document_id,delete_after)
-                     VALUES($1,$2,$3) ON CONFLICT(snapshot_key) DO NOTHING",
-                    outgoing,
-                    document_id,
-                    predecessor_delete_after,
-                )
-                .execute(&mut *tx)
-                .await?;
-            }
-            sqlx::query!(
-                "DELETE FROM document_updates WHERE document_id=$1 AND update_sequence <= $2",
-                document_id,
-                through_update_sequence,
-            )
-            .execute(&mut *tx)
-            .await?;
-            let counters = sqlx::query(
-                "UPDATE documents d SET
-                   uncompacted_update_count=s.remaining_count,
-                   uncompacted_update_bytes=s.remaining_bytes
-                 FROM (SELECT count(*)::bigint remaining_count,
-                              COALESCE(sum(octet_length(update_bytes)),0)::bigint remaining_bytes
-                       FROM document_updates WHERE document_id=$1) s
-                 WHERE d.id=$1
-                 RETURNING d.uncompacted_update_count,d.uncompacted_update_bytes",
-            )
-            .bind(document_id)
-            .fetch_one(&mut *tx)
-            .await?;
-            Some((
-                counters.try_get::<i64, _>("uncompacted_update_count")?,
-                counters.try_get::<i64, _>("uncompacted_update_bytes")?,
-            ))
-        } else {
-            None
-        };
+        sqlx::query!(
+            "DELETE FROM document_updates WHERE document_id=$1 AND update_sequence <= $2",
+            document_id,
+            through_update_sequence,
+        )
+        .execute(&mut *tx)
+        .await?;
+        let counters = sqlx::query(
+            "UPDATE documents d SET
+               uncompacted_update_count=s.remaining_count,
+               uncompacted_update_bytes=s.remaining_bytes
+             FROM (SELECT count(*)::bigint remaining_count,
+                          COALESCE(sum(octet_length(update_bytes)),0)::bigint remaining_bytes
+                   FROM document_updates WHERE document_id=$1) s
+             WHERE d.id=$1
+             RETURNING d.uncompacted_update_count,d.uncompacted_update_bytes",
+        )
+        .bind(document_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let uncompacted_count = counters.try_get("uncompacted_update_count")?;
+        let uncompacted_bytes = counters.try_get("uncompacted_update_bytes")?;
         tx.commit().await?;
-        Ok(base
-            .zip(counters)
-            .map(
-                |(base, (uncompacted_count, uncompacted_bytes))| ActivatedLogBase {
-                    base,
-                    uncompacted_count,
-                    uncompacted_bytes,
-                },
-            ))
+        Ok(Some(ActivatedLogBase {
+            base,
+            uncompacted_count,
+            uncompacted_bytes,
+        }))
     }
 
     /// One keyset-paginated batch of documents whose backlog is over the
@@ -615,7 +604,7 @@ impl PostgresCatalog {
         // else ever looks at that row again, so without this the superseded
         // blob would stay for good: one per compaction, forever.
         let superseded_base_due = sqlx::query_scalar::<_, Option<OffsetDateTime>>(
-            "SELECT min(delete_after) FROM superseded_bases",
+            "SELECT min(delete_after) FROM document_snapshots WHERE delete_after IS NOT NULL",
         )
         .fetch_one(&self.pool)
         .await?;

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT document_id,base_id,through_update_sequence,vector,snapshot_key,\n                      snapshot_digest,snapshot_bytes,updated_at\n               FROM document_bases WHERE document_id=$1",
+  "query": "SELECT document_id,base_id AS \"base_id!\",\n                      through_update_sequence AS \"through_update_sequence!\",vector AS \"vector!\",\n                      snapshot_key,snapshot_digest AS \"snapshot_digest!\",\n                      snapshot_bytes AS \"snapshot_bytes!\",updated_at AS \"updated_at!\"\n               FROM document_snapshots WHERE document_id=$1 AND delete_after IS NULL",
   "describe": {
     "columns": [
       {
@@ -10,17 +10,17 @@
       },
       {
         "ordinal": 1,
-        "name": "base_id",
+        "name": "base_id!",
         "type_info": "Uuid"
       },
       {
         "ordinal": 2,
-        "name": "through_update_sequence",
+        "name": "through_update_sequence!",
         "type_info": "Int8"
       },
       {
         "ordinal": 3,
-        "name": "vector",
+        "name": "vector!",
         "type_info": "Bytea"
       },
       {
@@ -30,17 +30,17 @@
       },
       {
         "ordinal": 5,
-        "name": "snapshot_digest",
+        "name": "snapshot_digest!",
         "type_info": "Bytea"
       },
       {
         "ordinal": 6,
-        "name": "snapshot_bytes",
+        "name": "snapshot_bytes!",
         "type_info": "Int8"
       },
       {
         "ordinal": 7,
-        "name": "updated_at",
+        "name": "updated_at!",
         "type_info": "Timestamptz"
       }
     ],
@@ -51,14 +51,14 @@
     },
     "nullable": [
       false,
+      true,
+      true,
+      true,
       false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false
+      true,
+      true,
+      true
     ]
   },
-  "hash": "1695d4a1bcf27b07a7dd34882c1098dd5c3adc33d7908babcee55960ffeaa8cc"
+  "hash": "fd028f79f359397381a522339969eefefb14b7531df9accbc591971c763aaec1"
 }

@@ -99,7 +99,7 @@ async fn connected(url: &str) -> PostgresCatalog {
 async fn truncate(catalog: &PostgresCatalog) {
     sqlx::query(
         "TRUNCATE document_proposal_hunks,document_proposals,document_labels,\
-         document_updates,document_bases,document_assets,replies,annotations,\
+         document_updates,document_snapshots,document_assets,replies,annotations,\
          document_marks,share_links,grants,documents,accounts CASCADE",
     )
     .execute(catalog.pool())

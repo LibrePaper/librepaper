@@ -332,7 +332,7 @@ mod tests {
     async fn truncate(catalog: &PostgresCatalog) {
         sqlx::query!(
             "TRUNCATE document_proposal_hunks,document_proposals,document_labels,\
-             document_updates,document_bases,document_assets,replies,annotations,\
+             document_updates,document_snapshots,document_assets,replies,annotations,\
              document_marks,share_links,grants,documents,accounts CASCADE",
         )
         .execute(catalog.pool())
@@ -1708,8 +1708,8 @@ mod tests {
 
         // The grace is seven days and a test is not going to wait for it.
         sqlx::query!(
-            "UPDATE superseded_bases SET delete_after=now()-interval '1 hour'
-             WHERE document_id=$1",
+            "UPDATE document_snapshots SET delete_after=now()-interval '1 hour'
+             WHERE document_id=$1 AND delete_after IS NOT NULL",
             document.id,
         )
         .execute(catalog.pool())

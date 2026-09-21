@@ -213,7 +213,7 @@ The worker runs compaction, label archives, deletions and the sweep of
 superseded compaction bases. None of them has a queue table: each is named
 by durable state (`documents.uncompacted_*` over the threshold, a label with
 `archive_requested_at` and no `archive_key`, `documents.status = 'deleting'`,
-a `superseded_bases.delete_after` in the past), and the worker rediscovers
+a `document_snapshots.delete_after` in the past), and the worker rediscovers
 them by a bounded paged scan. That is what makes every bound here safe to
 enforce by refusing rather than growing: refusing a wake-up loses the early
 notification, never the work.

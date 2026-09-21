@@ -27,7 +27,7 @@ impl Maintenance {
             return Err("base cleanup batch must be 1..=500".into());
         }
         let keys = sqlx::query_scalar!(
-            "SELECT snapshot_key FROM superseded_bases WHERE delete_after<=now()
+            "SELECT snapshot_key FROM document_snapshots WHERE delete_after<=now()
              ORDER BY delete_after LIMIT $1",
             batch,
         )
@@ -41,12 +41,15 @@ impl Maintenance {
                 Ok(()) => {
                     // The row goes only after the bytes do, so a failed
                     // delete is retried rather than forgotten.
-                    removed +=
-                        sqlx::query!("DELETE FROM superseded_bases WHERE snapshot_key=$1", key,)
-                            .execute(self.catalog.pool())
-                            .await
-                            .map_err(|error| error.to_string())?
-                            .rows_affected() as usize;
+                    removed += sqlx::query!(
+                        "DELETE FROM document_snapshots
+                             WHERE snapshot_key=$1 AND delete_after<=now()",
+                        key,
+                    )
+                    .execute(self.catalog.pool())
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .rows_affected() as usize;
                 }
                 Err(error) => failures.push(format!("{key}: {error}")),
             }
@@ -145,17 +148,17 @@ async fn referenced_keys(
     if keys.is_empty() {
         return Ok(HashSet::new());
     }
-    // Four tables name a blob now: assets, label archives, the live
-    // compaction base and the bases still inside their seven-day grace. The
-    // last one is not optional: a superseded base is still being read, so a
-    // sweep that did not know about it would delete bytes out from under a
+    // Three tables name a blob now: assets, label archives, and document
+    // snapshots. The snapshot table contains both the current compaction
+    // base and every retired base still inside its seven-day grace. The
+    // retired rows are not optional: they are still being read, so a sweep
+    // that did not know about them would delete bytes out from under a
     // reader. That list is the same one the backup enumerator reads, and the
     // two are changed together (§8.5).
     let found = sqlx::query_scalar!(
         r#"SELECT storage_key AS "key!" FROM document_assets WHERE storage_key=ANY($1)
            UNION SELECT archive_key FROM document_labels WHERE archive_key=ANY($1)
-           UNION SELECT snapshot_key FROM document_bases WHERE snapshot_key=ANY($1)
-           UNION SELECT snapshot_key FROM superseded_bases WHERE snapshot_key=ANY($1)"#,
+           UNION SELECT snapshot_key FROM document_snapshots WHERE snapshot_key=ANY($1)"#,
         keys,
     )
     .fetch_all(catalog.pool())

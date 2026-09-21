@@ -77,7 +77,7 @@ use crate::storage::postgres::{
 };
 use crate::storage::worker::{Task, Worker};
 
-const TRUNCATE: &str = "TRUNCATE document_updates,document_bases,document_proposal_hunks,\
+const TRUNCATE: &str = "TRUNCATE document_updates,document_snapshots,document_proposal_hunks,\
      document_proposals,replies,annotations,document_labels,document_assets,share_links,grants,\
      documents,accounts CASCADE";
 
@@ -261,7 +261,7 @@ impl Bare {
 /// Nothing in this test ever enqueues a task. The worker is started before
 /// the document has a single row, so its startup scan (§8.6) finds nothing
 /// and then parks on its channel for good; the only thing that can put a
-/// base in `document_bases` is the trigger in `Sequencer::flush`. Without
+/// base in `document_snapshots` is the trigger in `Sequencer::flush`. Without
 /// it a log grows until §9.1's quota refuses updates with "waiting to be
 /// compacted", and then waits for ever, because the next scan is the next
 /// process start and the one after that finds the same thing.

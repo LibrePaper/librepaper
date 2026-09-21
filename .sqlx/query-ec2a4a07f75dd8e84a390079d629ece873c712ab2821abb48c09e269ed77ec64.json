@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT through_update_sequence AS \"through_update_sequence!\",vector AS \"vector!\"\n               FROM document_snapshots WHERE document_id=$1 AND delete_after IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "through_update_sequence!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "vector!",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "ec2a4a07f75dd8e84a390079d629ece873c712ab2821abb48c09e269ed77ec64"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT through_update_sequence AS \"through_update_sequence!\"\n               FROM document_snapshots WHERE document_id=$1 AND delete_after IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "through_update_sequence!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "77194b959b4e62ad11cc75fe611596987904a85f7c14330425800b79e300af76"
+}
