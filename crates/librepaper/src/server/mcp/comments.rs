@@ -94,54 +94,13 @@ pub(super) fn parse_uuid(value: &str, what: &str) -> Result<uuid::Uuid, Failure>
         .map_err(|_| Failure::new("invalid_params", format!("{what} must be a UUID")))
 }
 
-/// This endpoint's writer identity for `storage::postgres::Authority`: an
-/// account id where one is live, else the link or session key the viewer
-/// carried. It is what the writer-epoch fence and the rung check at the
-/// commit boundary are made against (§7).
-///
-/// Its sibling `commit_authorization` builds the `MutationAuthorization`
-/// beside it, and the two are not interchangeable: this one names the
-/// principal, and that one additionally carries the session generation,
-/// which is what makes a write from a signed-out session fail rather than
-/// succeed. A command needs both.
-pub(super) fn commit_authority(who: &Viewer) -> crate::storage::postgres::Authority {
-    let account_id = uuid::Uuid::parse_str(&who.id.id).ok();
-    crate::storage::postgres::Authority {
-        principal_key: account_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| who.key.clone()),
-        account_id,
-        link_hash: (!who.link.is_empty())
-            .then(|| hex::decode(&who.link).ok())
-            .flatten(),
-    }
-}
-
-/// The same identity as `commit_authority`, in the shape
-/// `authorize_annotation_mutation` checks a comment command's rung against
-/// (§7): the account's live session and grant, or the link's, rather than
-/// only the writer-epoch fence `Authority` is for. `ceiling` is the
-/// deployment's own policy ceiling for this identity -- `self.ceiling_for`
-/// -- passed in because this is a free function, the same as its sibling.
-pub(super) fn commit_authorization(
-    who: &Viewer,
-    ceiling: crate::document::store::Ceiling,
-) -> crate::storage::postgres::MutationAuthorization {
-    let account_id = uuid::Uuid::parse_str(&who.id.id).ok();
-    let token_hash = (!who.link.is_empty())
-        .then(|| hex::decode(&who.link).ok())
-        .flatten()
-        .and_then(|bytes| bytes.try_into().ok());
-    crate::storage::postgres::MutationAuthorization {
-        principal_key: account_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| who.key.clone()),
-        account_id,
-        session_generation: who.id.session_generation.parse::<i64>().ok(),
-        token_hash,
-        policy_editor: ceiling.edit,
-    }
-}
+// This endpoint's writer identity comes from the viewer itself --
+// `Viewer::document_authority` and `Viewer::mutation_authorization` -- so an
+// MCP caller is named exactly as the same caller is over the socket or an
+// ordinary request. The two are not interchangeable: the first names the
+// principal the writer-epoch fence is made against, the second additionally
+// carries the session generation, which is what makes a write from a
+// signed-out session fail rather than succeed. A command needs both (§7).
 
 pub(super) fn command_failure(error: crate::log::sequencer::CommandError) -> Failure {
     use crate::log::sequencer::CommandError;
@@ -294,8 +253,8 @@ impl Server {
             };
 
         let request_id = key.scoped_request_id(actor);
-        let authority = commit_authority(who);
-        let authorization = commit_authorization(who, self.ceiling_for(&who.id));
+        let authority = who.document_authority();
+        let authorization = who.mutation_authorization(self.ceiling_for(&who.id).edit);
         let author_account_id = uuid::Uuid::parse_str(&who.id.id).ok();
         let catalog = room.catalog().clone();
         let document_id = room.document_id;
@@ -408,6 +367,11 @@ impl Server {
                     &source.prefix,
                     &source.suffix,
                     proposed,
+                    // This transport's own precondition is `expected_version`,
+                    // checked above against the comment as it stands, plus
+                    // the proposal row's version below. There is no
+                    // `expected_proposed` in the tool schema to carry.
+                    None,
                     authorization.clone(),
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;

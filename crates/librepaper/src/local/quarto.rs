@@ -1391,7 +1391,7 @@ pub async fn run_job_with_bindings(
     }
     let mut outputs = BTreeMap::new();
     for (name, bytes) in &files {
-        outputs.insert(name.clone(), output_entry(bytes));
+        outputs.insert(name.clone(), OutputEntry::from_bytes(bytes));
     }
     let summary = QuartoBundleSummary {
         schema: bundle.schema.clone(),
@@ -1517,13 +1517,6 @@ fn failed(request: &JobRequest, id: &str, message: &str) -> JobOutcome {
             ..Default::default()
         },
         files: BTreeMap::new(),
-    }
-}
-
-fn output_entry(bytes: &[u8]) -> OutputEntry {
-    OutputEntry {
-        size: bytes.len() as u64,
-        sha256: sha256(bytes),
     }
 }
 

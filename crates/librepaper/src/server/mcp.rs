@@ -726,7 +726,9 @@ impl Server {
                 } else {
                     vec![json!(receipt)]
                 };
-                view.snapshot.tree[format!("{kind}:{id}")] = json!(items);
+                view.snapshot
+                    .extras
+                    .insert(format!("{kind}:{id}"), json!(items));
             } else if kind == "changes" {
                 let previous = query["revision"].as_str().ok_or_else(|| {
                     Failure::new(
@@ -737,18 +739,16 @@ impl Server {
                 let before = self
                     .mcp_load::<View>(slug, actor, who, previous, "view")
                     .await?;
-                let old = before.snapshot.tree["files"]
-                    .as_object()
-                    .ok_or_else(|| Failure::new("internal", "missing prior manifest"))?;
-                let current = view.snapshot.tree["files"]
-                    .as_object()
-                    .ok_or_else(|| Failure::new("internal", "missing manifest"))?;
+                let old = &before.snapshot.projection.files;
+                let current = &view.snapshot.projection.files;
                 let paths = old
                     .keys()
                     .chain(current.keys())
                     .collect::<std::collections::BTreeSet<_>>();
                 let changes=paths.into_iter().filter(|path|old.get(*path)!=current.get(*path)).map(|path|json!({"path":path,"before":old.get(path),"after":current.get(path),"tree_digest_before":before.snapshot.tree_digest,"tree_digest_after":view.snapshot.tree_digest})).collect::<Vec<_>>();
-                view.snapshot.tree[format!("changes:{previous}")] = json!(changes);
+                view.snapshot
+                    .extras
+                    .insert(format!("changes:{previous}"), json!(changes));
             }
         }
         // Comments are not in the capture, so each `thread` query is handed
@@ -936,25 +936,26 @@ mod selection_tests {
             ..QuerySnapshot::default()
         };
         snapshot.texts.insert(path.into(), text.into());
-        // A real `librepaper_document_core::Projection`, not the shape the
-        // deleted `history::Tree` had: `kind` is `text` or `asset`, the
-        // content digest is `digest` rather than `sha`, and the length is
-        // `bytes`. Written out rather than projected from a `LoroDoc`
-        // because what is under test is the anchoring, and a hand-made view
-        // keeps the failure about that.
-        snapshot.tree = json!({
-            "main": path,
-            "main_id": "f1",
-            "files": {
-                path: {
-                    "kind": "text",
-                    "id": "f1",
-                    "digest": hex::encode(<sha2::Sha256 as sha2::Digest>::digest(text.as_bytes())),
-                    "bytes": text.len(),
-                }
-            },
-            "diagnostics": [],
-        });
+        // Written out rather than projected from a `LoroDoc` because what
+        // is under test is the anchoring, and a hand-made view keeps the
+        // failure about that. The type is the sequencer's own, so it
+        // cannot drift from the shape a capture really holds.
+        snapshot.projection = librepaper_document_core::Projection {
+            main: path.into(),
+            main_id: "f1".into(),
+            files: [(
+                path.to_string(),
+                librepaper_document_core::projection::Entry {
+                    kind: "text".into(),
+                    id: "f1".into(),
+                    digest: hex::encode(<sha2::Sha256 as sha2::Digest>::digest(text.as_bytes())),
+                    bytes: text.len() as u64,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            diagnostics: Vec::new(),
+        };
         View {
             snapshot,
             expires_at: 0,

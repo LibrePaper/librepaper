@@ -182,22 +182,11 @@ impl Server {
             );
         }
         let author_account_id = uuid::Uuid::parse_str(&current_who.id.id).ok();
-        let account_id = uuid::Uuid::parse_str(&current_who.id.id).ok();
         // The same identity `authority` below carries, in the shape
         // `authorize_annotation_mutation` checks a comment command's rung
         // against (§7): the account's live session and grant, or the link's.
-        let authorization = crate::storage::postgres::MutationAuthorization {
-            principal_key: account_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| current_who.key.clone()),
-            account_id,
-            session_generation: current_who.id.session_generation.parse::<i64>().ok(),
-            token_hash: (!current_who.link.is_empty())
-                .then(|| hex::decode(&current_who.link).ok())
-                .flatten()
-                .and_then(|bytes| bytes.try_into().ok()),
-            policy_editor: self.ceiling_for(&current_who.id).edit,
-        };
+        let authorization =
+            current_who.mutation_authorization(self.ceiling_for(&current_who.id).edit);
         let mut cmd = match room::AgentSuggestionBatch::new(
             room.catalog().clone(),
             room.document_id,
@@ -211,15 +200,7 @@ impl Server {
             Ok(cmd) => cmd,
             Err(error) => return write_json(400, &json!({"error":error})),
         };
-        let authority = crate::storage::postgres::Authority {
-            principal_key: account_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| current_who.key.clone()),
-            account_id,
-            link_hash: (!current_who.link.is_empty())
-                .then(|| hex::decode(&current_who.link).ok())
-                .flatten(),
-        };
+        let authority = current_who.document_authority();
         match room.command(&authority, &mut cmd).await {
             Ok(outcomes) => {
                 let results: Vec<Value> = outcomes

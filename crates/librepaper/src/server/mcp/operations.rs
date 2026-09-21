@@ -48,15 +48,54 @@ pub(super) fn failure(error: agent::AgentError) -> Failure {
     Failure::new(code, error.to_string())
 }
 
+/// What identifies "this operation, sent again": the tool and its arguments,
+/// with every object's keys sorted at every depth.
+///
+/// `serde_json` is built with `preserve_order` here -- an ACP dependency
+/// turns the feature on for the whole graph -- so an argument object keeps
+/// whatever order the client wrote it in. Hashing that order made two
+/// spellings of one call two different operations, which is not what an
+/// operation key means. Array order is part of the value and stays.
+///
+/// Deliberately not shared with `room::catalog`'s comment-version tokens or
+/// the assistant's task fingerprints. Those hash bytes that clients hold and
+/// that outlive a restart, so they are not free to be defined well; this one
+/// is (REVIEW finding 12).
+///
+/// **Admissions across this change.** The digest is not an identity of its
+/// own: `mcp_refuse_if_admitted` refuses every key that has already been
+/// admitted, whatever digest it carries. An admission stored under the old
+/// digest therefore still refuses a retry -- with `operation_key_reused`
+/// rather than `outcome_unknown`, both refusals -- and no effect can run a
+/// second time because of this. Admissions are stored against the operation
+/// epoch and expire with it, so the mixed spelling does not outlive one
+/// epoch's lifetime. Nothing is migrated.
+pub(super) fn operation_digest(name: &str, args: &Value) -> String {
+    fn canonical(value: &Value) -> Value {
+        match value {
+            Value::Object(object) => Value::Object(
+                object
+                    .iter()
+                    .collect::<std::collections::BTreeMap<_, _>>()
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical(value)))
+                    .collect(),
+            ),
+            Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
+            other => other.clone(),
+        }
+    }
+    hex::encode(Sha256::digest(
+        json!({"tool": name, "arguments": canonical(args)}).to_string(),
+    ))
+}
+
 pub(super) fn tree_of_view(view: &View) -> Result<SourceTree, Failure> {
-    // The view's `tree` field is `json!(projected.projection)` (§4.4): the
-    // same `Projection` the sequencer produced, not a document-core type of
-    // its own. It is used here only to look up each path's stable file id;
-    // there is no separate canonical checkpoint to carry alongside it any
-    // more, so `canonical` is left empty.
-    let projection: librepaper_document_core::Projection =
-        serde_json::from_value(view.snapshot.tree.clone())
-            .map_err(|e| Failure::new("internal", e.to_string()))?;
+    // The capture holds the `Projection` the sequencer produced (§4.4). It
+    // is used here only to look up each path's stable file id; there is no
+    // separate canonical checkpoint to carry alongside it any more, so
+    // `canonical` is left empty.
+    let projection = &view.snapshot.projection;
     let files = view
         .snapshot
         .texts
@@ -76,7 +115,7 @@ pub(super) fn tree_of_view(view: &View) -> Result<SourceTree, Failure> {
         })
         .collect();
     Ok(SourceTree {
-        main: projection.main,
+        main: projection.main.clone(),
         files,
         revision: view.snapshot.tree_digest.clone(),
     })
@@ -176,25 +215,6 @@ impl Server {
         Ok(())
     }
 
-    /// Private staging has no annotation rows, but its terminal receipt uses
-    /// the same transactional authority/cancellation boundary. A separate
-    /// object write would race cancellation between its check and commit.
-    #[allow(clippy::too_many_arguments)]
-    async fn mcp_private_receipt(
-        &self,
-        slug: &str,
-        actor: &str,
-        key: &OperationKey,
-        digest: &str,
-        result: &Value,
-        who: &Viewer,
-        headers: &HeaderMap,
-        parent_request_id: &str,
-    ) -> Result<Value, Failure> {
-        let _ = (slug, actor, key, digest, who, headers, parent_request_id);
-        Ok(result.clone())
-    }
-
     pub(super) fn mcp_epoch(
         &self,
         actor: &str,
@@ -221,38 +241,38 @@ impl Server {
         Ok(expiry)
     }
 
-    pub(super) async fn mcp_receipt(
+    /// The admission guard: an operation key that was already admitted is
+    /// refused rather than run a second time. No committed result is
+    /// retained, so a repeat can only be told that the outcome is unknown;
+    /// the domain commands carry their own replay records. Passing `digest`
+    /// additionally refuses a key reused for different arguments.
+    pub(super) async fn mcp_refuse_if_admitted(
         &self,
         slug: &str,
         actor: &str,
         who: &Viewer,
         key: &OperationKey,
         digest: Option<&str>,
-    ) -> Result<Option<Value>, Failure> {
+    ) -> Result<(), Failure> {
         self.mcp_epoch(actor, key, true)?;
         let id = key.scoped_request_id(actor);
-        let admitted = match self
+        match self
             .mcp_load::<Admission>(slug, actor, who, &id, "admission")
             .await
         {
-            Ok(admitted) if digest.is_some_and(|digest| digest != admitted.digest) => {
-                return Err(Failure::new(
+            Ok(admitted) if digest.is_some_and(|digest| digest != admitted.digest) => Err(
+                Failure::new(
                     "operation_key_reused",
                     "operation key already admitted different arguments",
-                ));
-            }
-            Ok(_) => true,
-            Err(error) if error.code == "view_expired" => false,
-            Err(error) => return Err(error),
-        };
-        let _ = (slug, who, id);
-        if admitted {
-            return Err(Failure::new(
+                ),
+            ),
+            Ok(_) => Err(Failure::new(
                 "outcome_unknown",
                 "this operation was admitted previously, but no committed result is retained; inspect the document before submitting a new operation",
-            ));
+            )),
+            Err(error) if error.code == "view_expired" => Ok(()),
+            Err(error) => Err(error),
         }
-        Ok(None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -292,21 +312,10 @@ impl Server {
         let key: OperationKey = serde_json::from_value(args["operation"].clone())
             .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
         key.validate().map_err(failure)?;
-        let digest = hex::encode(Sha256::digest(
-            json!({"tool":name,"arguments":args}).to_string(),
-        ));
+        let digest = operation_digest(name, args);
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
-        let receipt = self
-            .mcp_receipt(slug, actor, who, &key, Some(&digest))
+        self.mcp_refuse_if_admitted(slug, actor, who, &key, Some(&digest))
             .await?;
-        if let Some(result) = receipt {
-            return Ok(result);
-        }
-        // Cancellation of uncommitted work precedes fresh admission. A
-        // retained terminal receipt above remains the authoritative outcome.
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, who, &key).await? {
-            return Ok(cancellation);
-        }
         self.mcp_admit(slug, actor, who, &key, &digest).await?;
         match name {
             "document_propose" => {
@@ -315,11 +324,6 @@ impl Server {
                     for (index, patch) in
                         args["patches"].as_array().into_iter().flatten().enumerate()
                     {
-                        if let Some(cancellation) =
-                            self.mcp_cancellation(slug, actor, who, &key).await?
-                        {
-                            return Ok(cancellation);
-                        }
                         let mut child = args.clone();
                         child["batch"] = json!("atomic");
                         child["patches"] = json!([patch]);
@@ -346,19 +350,10 @@ impl Server {
                     // command has none to report, e.g. a private candidate);
                     // there is no batch-level key here.
                     let result = json!({"operation":key,"status":"committed","batch":"independent","items":items});
-                    let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
-                    return self
-                        .mcp_private_receipt(
-                            slug,
-                            actor,
-                            &key,
-                            &digest,
-                            &result,
-                            &current,
-                            headers,
-                            parent_request_id,
-                        )
-                        .await;
+                    // No receipt is retained, but access is still rechecked
+                    // before the batch result is handed back.
+                    self.mcp_recheck(slug, headers, arrival, actor).await?;
+                    return Ok(result);
                 }
                 self.mcp_propose(
                     slug,
@@ -390,12 +385,6 @@ impl Server {
                         "candidate",
                     )
                     .await?;
-                if let Some(cancellation) = self
-                    .mcp_cancellation(slug, actor, who, &candidate.operation)
-                    .await?
-                {
-                    return Ok(cancellation);
-                }
                 let consistency = serde_json::from_value(
                     args.get("consistency")
                         .cloned()
@@ -556,7 +545,7 @@ impl Server {
         } else {
             pseudonym_for(&self.mcp_author(headers, arrival, who, actor), slug)
         };
-        let authorization = super::comments::commit_authorization(who, self.ceiling_for(&who.id));
+        let authorization = who.mutation_authorization(self.ceiling_for(&who.id).edit);
         let request_id = super::comments::parse_uuid(
             &super::comments::comment_uuid(&key.scoped_request_id(actor)),
             "operation id",
@@ -573,7 +562,7 @@ impl Server {
             authorization,
             request_id,
         );
-        let authority = super::comments::commit_authority(who);
+        let authority = who.document_authority();
         let (accepted, replay) = room
             .command_reporting_replay(&authority, &mut cmd)
             .await
@@ -604,9 +593,6 @@ impl Server {
                 "editor access is required to label",
             ));
         }
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, who, key).await? {
-            return Ok(cancellation);
-        }
         let view: View = self
             .mcp_load(
                 slug,
@@ -631,7 +617,7 @@ impl Server {
         // `take_label` finds. There is no `checkpoint_id` any more (§8.2) --
         // a label is `source_sequence` plus the frontier at that row -- so
         // that is what the response carries in place of one.
-        let authority = super::comments::commit_authority(who);
+        let authority = who.document_authority();
         let by = room
             .signed_by(
                 &who.id.id,
@@ -827,10 +813,6 @@ impl Server {
         view: &View,
     ) -> Result<Value, Failure> {
         let key = &candidate.operation;
-        if let Some(cancellation) = self.mcp_cancellation(slug, actor, who, key).await? {
-            return Ok(cancellation);
-        }
-        let digest = candidate.digest.clone();
         let render = if candidate.validation == "compile" {
             Some(match self.load_render_receipt(slug,actor,who,candidate_id).await {
                 Ok(receipt)=>receipt,
@@ -934,8 +916,7 @@ impl Server {
                 })
                 .collect();
             let author_account_id = uuid::Uuid::parse_str(&who.id.id).ok();
-            let authorization =
-                super::comments::commit_authorization(who, self.ceiling_for(&who.id));
+            let authorization = who.mutation_authorization(self.ceiling_for(&who.id).edit);
             let mut cmd = room::AgentSuggestionBatch::new(
                 room.catalog().clone(),
                 room.document_id,
@@ -947,7 +928,7 @@ impl Server {
                 authorization,
             )
             .map_err(|error| Failure::new("invalid_params", error))?;
-            let authority = super::comments::commit_authority(who);
+            let authority = who.document_authority();
             // `AgentSuggestionBatch` is idempotent by each item's own
             // primary key (§7.2's create rule), not by a `document_labels`
             // retry record, so this is honestly always `false`: dedup on
@@ -984,18 +965,10 @@ impl Server {
             );
             return Ok(result);
         }
-        let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
-        self.mcp_private_receipt(
-            slug,
-            actor,
-            key,
-            &digest,
-            &result,
-            &current,
-            headers,
-            &candidate.parent_request_id,
-        )
-        .await
+        // No receipt is retained for private staging, but access is still
+        // rechecked before the result is handed back.
+        self.mcp_recheck(slug, headers, arrival, actor).await?;
+        Ok(result)
     }
 
     async fn mcp_result(
@@ -1020,17 +993,15 @@ impl Server {
                         .unwrap_or(Value::Null),
                 )
                 .map_err(|_| Failure::new("invalid_params", "operation identity required"))?;
-                if let Some(cancellation) = self.mcp_cancellation(slug, actor, &who, &key).await? {
-                    return Ok(cancellation);
-                }
-                self.mcp_receipt(slug, actor, &who, &key, None)
-                    .await?
-                    .ok_or_else(|| {
-                        Failure::new(
-                            "outcome_unknown",
-                            "no retained operation receipt; absence does not prove nonexecution",
-                        )
-                    })
+                // An admitted key reports that its outcome is unknown; an
+                // unknown one reports that nothing is retained. Neither can
+                // return a result, because no receipt is kept.
+                self.mcp_refuse_if_admitted(slug, actor, &who, &key, None)
+                    .await?;
+                Err(Failure::new(
+                    "outcome_unknown",
+                    "no retained operation receipt; absence does not prove nonexecution",
+                ))
             }
             "candidate" | "render" => {
                 let candidate: Candidate = self
@@ -1043,12 +1014,6 @@ impl Server {
                     )
                     .await?;
                 if args["kind"] == "render" {
-                    if let Some(cancellation) = self
-                        .mcp_cancellation(slug, actor, &who, &candidate.operation)
-                        .await?
-                    {
-                        return Ok(cancellation);
-                    }
                     let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
                     let view = self
                         .mcp_load::<View>(slug, actor, &who, &candidate.view_id, "view")
@@ -1066,12 +1031,6 @@ impl Server {
                             &view,
                         )
                         .await;
-                }
-                if let Some(cancellation) = self
-                    .mcp_cancellation(slug, actor, &who, &candidate.operation)
-                    .await?
-                {
-                    return Ok(cancellation);
                 }
                 Ok(
                     json!({"candidate_id":args["id"],"tree_digest":candidate.tree_digest,"base_tree_digest":candidate.base_tree_digest,"validation":candidate.validation,"expires_at":candidate.expires_at,"status":if candidate.validation=="compile"{"awaiting_renderer"}else{"ready"}}),
@@ -1094,4 +1053,47 @@ pub(super) fn byte_of_utf16(text: &str, target: usize) -> Option<usize> {
         units += character.len_utf16();
     }
     (units == target).then_some(text.len())
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+
+    /// An operation key names one operation. Two spellings of the same
+    /// arguments are the same operation, however the client ordered the
+    /// keys -- including inside a nested object.
+    #[test]
+    fn reordering_keys_does_not_change_the_operation() {
+        let one = json!({
+            "operation": {"id": "a", "epoch": "e"},
+            "patches": [{"path": "main.md", "start": 0, "end": 3}],
+        });
+        let other = json!({
+            "patches": [{"end": 3, "path": "main.md", "start": 0}],
+            "operation": {"epoch": "e", "id": "a"},
+        });
+        assert_eq!(
+            operation_digest("document_propose", &one),
+            operation_digest("document_propose", &other),
+        );
+    }
+
+    /// Everything that is actually a difference stays one: a changed value,
+    /// a reordered array, a different tool.
+    #[test]
+    fn a_real_difference_is_still_a_different_operation() {
+        let base = json!({"patches": [{"path": "a.md"}, {"path": "b.md"}], "batch": "atomic"});
+        let changed_value =
+            json!({"patches": [{"path": "a.md"}, {"path": "b.md"}], "batch": "independent"});
+        let reordered_array =
+            json!({"patches": [{"path": "b.md"}, {"path": "a.md"}], "batch": "atomic"});
+        let digest = operation_digest("document_propose", &base);
+        assert_ne!(digest, operation_digest("document_propose", &changed_value));
+        assert_ne!(
+            digest,
+            operation_digest("document_propose", &reordered_array),
+            "an array's order is part of its value",
+        );
+        assert_ne!(digest, operation_digest("document_apply", &base));
+    }
 }

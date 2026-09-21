@@ -2,16 +2,6 @@ use super::*;
 use crate::room::agent::OperationKey;
 
 impl Server {
-    pub(super) async fn mcp_cancellation(
-        &self,
-        _slug: &str,
-        _actor: &str,
-        _who: &Viewer,
-        _target: &OperationKey,
-    ) -> Result<Option<Value>, Failure> {
-        Ok(None)
-    }
-
     pub(super) async fn mcp_cancel(
         &self,
         slug: &str,

@@ -179,13 +179,14 @@ fn manifest(
     candidate: &Candidate,
     texts: &std::collections::BTreeMap<String, String>,
 ) -> Result<Value, Box<Reply>> {
-    let mut files = view
-        .snapshot
-        .tree
-        .get("files")
-        .and_then(Value::as_object)
-        .cloned()
-        .ok_or_else(|| boxed_error(404, "candidate not found"))?;
+    // The candidate manifest is the browser's wire shape, not the
+    // projection's: `assistant-preview.js` reads `sha` and `size`. So the
+    // projection is serialized and then each candidate text is restated in
+    // those keys, exactly as before this capture became typed.
+    let mut files = match json!(view.snapshot.projection.files) {
+        Value::Object(files) => files,
+        _ => return Err(boxed_error(500, "candidate not found")),
+    };
     for (path, text) in texts {
         let Some(entry) = files.get_mut(path).and_then(Value::as_object_mut) else {
             return Err(boxed_error(404, "candidate not found"));
@@ -195,12 +196,10 @@ fn manifest(
         entry.insert("sha".into(), json!(hex::encode(Sha256::digest(bytes))));
         entry.insert("size".into(), json!(bytes.len()));
     }
-    let settings = view
-        .snapshot
-        .tree
-        .get("settings")
-        .cloned()
-        .unwrap_or(Value::Null);
+    // A projection has no settings of its own, and never had: this was
+    // reading a key the capture does not carry. It stays null so the
+    // manifest and its `settings_hash` are unchanged.
+    let settings = Value::Null;
     let dependency_hash = hex::encode(Sha256::digest(
         serde_json::to_vec(&candidate.dependencies)
             .map_err(|_| boxed_error(500, "candidate not found"))?,
@@ -217,7 +216,7 @@ fn manifest(
         "base_revision": candidate.base_tree_digest,
         "revision": candidate.tree_digest,
         "tree_digest": candidate.tree_digest,
-        "main": view.snapshot.tree["main"],
+        "main": view.snapshot.projection.main,
         "files": files,
         "settings": settings,
         "dependency_hash": dependency_hash,

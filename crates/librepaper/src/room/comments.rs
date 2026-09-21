@@ -1553,9 +1553,18 @@ pub struct RefineSuggestion {
     prefix: String,
     suffix: String,
     proposed: String,
+    /// What the caller believes the suggestion currently proposes. §7.2's
+    /// precondition for a refinement: it is checked against the branch as
+    /// stored, so a caller refining a suggestion somebody else has already
+    /// changed is refused rather than quietly overwriting them. `None`
+    /// only where no caller can supply it -- the wire protocol requires it.
+    expected_proposed: Option<String>,
     actor: MutationAuthorization,
     cap_exact: usize,
     prepared: Option<RefineBranch>,
+    /// The proposal row and the annotation's own anchor, read under the
+    /// sequencer lock by `load` because `evaluate` cannot reach Postgres.
+    stored: Option<(postgres::StoredProposal, AnnotationRecord)>,
 }
 
 impl RefineSuggestion {
@@ -1574,6 +1583,7 @@ impl RefineSuggestion {
         prefix: &str,
         suffix: &str,
         proposed: &str,
+        expected_proposed: Option<&str>,
         actor: MutationAuthorization,
     ) -> Result<Self, String> {
         let proposed = strip_control(proposed);
@@ -1593,10 +1603,77 @@ impl RefineSuggestion {
             prefix: clean(prefix, config.caps.context),
             suffix: clean(suffix, config.caps.context),
             proposed,
+            // Stripped the same way the stored side was, so the comparison
+            // is between two texts that went through the same filter.
+            expected_proposed: expected_proposed.map(strip_control),
             actor,
             cap_exact: config.caps.exact,
             prepared: None,
+            stored: None,
         })
+    }
+
+    /// §7.2's refinement precondition: the caller says what the suggestion
+    /// proposed when they read it, and a refinement of a suggestion that has
+    /// moved since is refused.
+    ///
+    /// The row's version check in `transact` guards the interval between the
+    /// server's own lookup and the commit. It cannot see this: a caller
+    /// refining text they read two edits ago quotes a version number they
+    /// were handed just now, and their stale replacement would land.
+    ///
+    /// The comparison is a text one, made the way [`proposals::from_suggestion`]
+    /// makes the branch in the first place -- the file at the proposal's base
+    /// with the anchored passage replaced -- because a hunk diff bridges
+    /// retained characters and would call two different texts equal.
+    fn check_expected_proposed(&mut self, head: &Head<'_>) -> Result<(), CommandError> {
+        let Some(expected) = self.expected_proposed.clone() else {
+            return Ok(());
+        };
+        let (proposal, annotation) = self
+            .stored
+            .as_ref()
+            .ok_or_else(|| CommandError::Conflict("unknown suggestion".into()))?;
+        let stale =
+            || CommandError::Conflict("suggestion changed; read it again before refining".into());
+        // The text was read at this version, and `transact` refuses unless
+        // the row is still there, so the two checks cover the same moment.
+        if proposal.version != self.expected_version {
+            return Err(stale());
+        }
+        let branch = crate::room::proposals::Proposal {
+            base: Frontiers::decode(&proposal.base_frontiers)
+                .map_err(|error| CommandError::Conflict(error.to_string()))?,
+            tip: Frontiers::decode(&proposal.tip_frontiers)
+                .map_err(|error| CommandError::Conflict(error.to_string()))?,
+        };
+        let (at_base, at_tip) =
+            crate::room::proposals::sides(head.doc(), &branch, &proposal.branch_bytes)
+                .map_err(|error| CommandError::Conflict(error.to_string()))?;
+        let file_id = FileId(annotation.file_id.clone().unwrap_or_default());
+        let path = path_for_file_id(&at_base, &file_id).ok_or_else(stale)?;
+        let base_text = session::texts_of(&at_base)
+            .get(&path)
+            .cloned()
+            .ok_or_else(stale)?;
+        let tip_text = session::texts_of(&at_tip)
+            .get(&path)
+            .cloned()
+            .ok_or_else(stale)?;
+        // The same offsets `from_suggestion` was given: a byte offset into
+        // the file as it read at the base, and the passage found there.
+        let at = annotation.start_utf16.unwrap_or_default().max(0) as usize;
+        let exact = annotation.exact.clone().unwrap_or_default();
+        let end = at.saturating_add(exact.len());
+        if base_text.get(at..end) != Some(exact.as_str()) {
+            return Err(stale());
+        }
+        let mut wanted = base_text;
+        wanted.replace_range(at..end, &expected);
+        if wanted != tip_text {
+            return Err(stale());
+        }
+        Ok(())
     }
 }
 
@@ -1611,14 +1688,45 @@ impl SequencerCommand for RefineSuggestion {
         Rung::Commenter
     }
 
+    /// The proposal and the annotation as they stand, read with the
+    /// sequencer lock held so that what `evaluate` checks the caller's
+    /// `expected_proposed` against is what `transact` will then fence on.
+    fn load(&mut self) -> BoxFuture<'_, Result<(), CommandError>> {
+        Box::pin(async move {
+            let proposal = self
+                .catalog
+                .proposal(self.proposal_id)
+                .await?
+                .ok_or_else(|| CommandError::Conflict("unknown suggestion".into()))?;
+            let annotation =
+                find_annotation_committed(&self.catalog, self.document_id, self.comment_id).await?;
+            self.stored = Some((proposal, annotation));
+            Ok(())
+        })
+    }
+
     fn evaluate(&mut self, head: &Head<'_>) -> Result<Option<PreparedSource>, CommandError> {
+        self.check_expected_proposed(head)?;
         let quote = Quote {
             exact: &self.exact,
             prefix: &self.prefix,
             suffix: &self.suffix,
         };
+        // The passage must still resolve in the live document. The proposed
+        // edit, however, belongs to the proposal's original base: that is
+        // the frontier stored beside its bytes and used when reviewing or
+        // accepting it. Exporting a branch made at head would omit intervening
+        // source operations that a replay from the stored base still needs.
+        locate_anchor(head.doc(), &quote, false, self.cap_exact).map_err(CommandError::Conflict)?;
+        let (proposal, _) = self.stored.as_ref().expect("load ran before evaluate");
+        let base = Frontiers::decode(&proposal.base_frontiers)
+            .map_err(|error| CommandError::Conflict(error.to_string()))?;
+        let at_base = head
+            .doc()
+            .fork_at(&base)
+            .map_err(|error| CommandError::Conflict(error.to_string()))?;
         let PreparedBranch { tip, bytes, .. } =
-            build_suggestion_branch(head.doc(), &quote, self.cap_exact, &self.proposed)
+            build_suggestion_branch(&at_base, &quote, self.cap_exact, &self.proposed)
                 .map_err(CommandError::Conflict)?;
         self.prepared = Some(RefineBranch { tip, bytes });
         Ok(None)
@@ -1639,10 +1747,8 @@ impl SequencerCommand for RefineSuggestion {
                     "only the suggestion author or an editor may refine it".into(),
                 ));
             }
-            // `target` is only where the branch's replacement text is rooted
-            // at head; the suggestion's own anchor -- the passage it
-            // discusses -- is immutable and stays whatever `existing`
-            // already carries. It is not written back over that anchor.
+            // Refinement keeps the proposal's original base and the
+            // annotation's immutable anchor; only the replacement changes.
             let RefineBranch {
                 tip: tip_frontiers,
                 bytes: branch_bytes,

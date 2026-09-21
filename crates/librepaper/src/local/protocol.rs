@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// The protocol versions this binary speaks. Version 1 carried the TeX and
 /// Biber jobs of the old browser fallback and is no longer spoken.
@@ -851,6 +852,18 @@ impl CalepinJobOptions {
 pub struct OutputEntry {
     pub size: u64,
     pub sha256: String,
+}
+
+impl OutputEntry {
+    /// The descriptor for bytes in hand. Size and digest have to describe the
+    /// same bytes, so they are paired here rather than at each producer. A
+    /// descriptor copied from already-verified metadata is built directly.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        OutputEntry {
+            size: bytes.len() as u64,
+            sha256: hex::encode(Sha256::digest(bytes)),
+        }
+    }
 }
 
 /// One diagnostic, in the shape `web/src/lib/latex/log.js` emits, with the

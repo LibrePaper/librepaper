@@ -373,21 +373,41 @@ impl Viewer {
         self.role.at_least(wanted)
     }
 
+    /// The account this request authenticated, if any.
+    pub fn account_id(&self) -> Option<uuid::Uuid> {
+        uuid::Uuid::parse_str(&self.id.id).ok()
+    }
+
+    /// The raw bytes of the link digest this request carried, if any.
+    fn link_bytes(&self) -> Option<Vec<u8>> {
+        (!self.link.is_empty())
+            .then(|| hex::decode(&self.link).ok())
+            .flatten()
+    }
+
+    /// What this caller's writes are named by, on every transport alike:
+    /// the account uuid where one is live, else the link they came in on,
+    /// else the upload key. `Server::owner` already spells a visitor's key
+    /// `visitor:<token>`, so prefixing one again would name a principal no
+    /// other path names -- this is the one place that decides.
+    pub fn principal_key(&self) -> String {
+        if let Some(id) = self.account_id() {
+            return id.to_string();
+        }
+        if !self.link.is_empty() {
+            return format!("link:{}", self.link);
+        }
+        if self.key.starts_with(VISITOR_PREFIX) {
+            return self.key.clone();
+        }
+        format!("{VISITOR_PREFIX}{}", self.key)
+    }
+
     pub fn document_authority(&self) -> crate::storage::postgres::Authority {
-        let account_id = uuid::Uuid::parse_str(&self.id.id).ok();
-        let link_hash = if self.link.is_empty() {
-            None
-        } else {
-            hex::decode(&self.link).ok()
-        };
-        let principal_key = account_id
-            .map(|id| id.to_string())
-            .or_else(|| (!self.link.is_empty()).then(|| format!("link:{}", self.link)))
-            .unwrap_or_else(|| format!("visitor:{}", self.key));
         crate::storage::postgres::Authority {
-            principal_key,
-            account_id,
-            link_hash,
+            principal_key: self.principal_key(),
+            account_id: self.account_id(),
+            link_hash: self.link_bytes(),
         }
     }
 
@@ -401,19 +421,11 @@ impl Viewer {
         &self,
         policy_editor: bool,
     ) -> crate::storage::postgres::MutationAuthorization {
-        let account_id = uuid::Uuid::parse_str(&self.id.id).ok();
-        let token_hash = (!self.link.is_empty())
-            .then(|| hex::decode(&self.link).ok())
-            .flatten()
-            .and_then(|bytes| bytes.try_into().ok());
         crate::storage::postgres::MutationAuthorization {
-            principal_key: account_id
-                .map(|id| id.to_string())
-                .or_else(|| (!self.link.is_empty()).then(|| format!("link:{}", self.link)))
-                .unwrap_or_else(|| format!("visitor:{}", self.key)),
-            account_id,
+            principal_key: self.principal_key(),
+            account_id: self.account_id(),
             session_generation: self.id.session_generation.parse::<i64>().ok(),
-            token_hash,
+            token_hash: self.link_bytes().and_then(|bytes| bytes.try_into().ok()),
             policy_editor,
         }
     }
@@ -1388,6 +1400,7 @@ impl Server {
             RoomCommand::Refine {
                 comment_id,
                 proposed,
+                expected_proposed,
                 body,
                 ..
             } => {
@@ -1399,7 +1412,7 @@ impl Server {
                     .await
                 {
                     Ok(found) => found,
-                    Err(message) => return fail(message),
+                    Err(error) => return Err(read_error_value(error)),
                 };
                 let mut refine = crate::room::RefineSuggestion::new(
                     catalog.clone(),
@@ -1415,6 +1428,7 @@ impl Server {
                     &prefix,
                     &suffix,
                     &proposed,
+                    Some(expected_proposed.as_str()),
                     authorization.clone(),
                 )
                 .map_err(|error| json!({"type": "error", "message": error}))?;
@@ -1433,12 +1447,16 @@ impl Server {
                     .await
                 {
                     Ok(found) => found,
-                    Err(message) => return fail(message),
+                    Err(error) => return Err(read_error_value(error)),
                 };
                 let proposal = match catalog.proposal(proposal_id).await {
                     Ok(Some(proposal)) => proposal,
                     Ok(None) => return fail("unknown suggestion".into()),
-                    Err(error) => return fail(error.to_string()),
+                    Err(error) => {
+                        return Err(read_error_value(crate::room::WriteError::Storage(
+                            error.to_string(),
+                        )))
+                    }
                 };
                 let mut accept = crate::room::AcceptSuggestion::new(
                     catalog.clone(),
@@ -1471,12 +1489,16 @@ impl Server {
                     .await
                 {
                     Ok(found) => found,
-                    Err(message) => return fail(message),
+                    Err(error) => return Err(read_error_value(error)),
                 };
                 let proposal = match catalog.proposal(proposal_id).await {
                     Ok(Some(proposal)) => proposal,
                     Ok(None) => return fail("unknown suggestion".into()),
-                    Err(error) => return fail(error.to_string()),
+                    Err(error) => {
+                        return Err(read_error_value(crate::room::WriteError::Storage(
+                            error.to_string(),
+                        )))
+                    }
                 };
                 let mut reject = crate::room::RejectSuggestion::new(
                     catalog.clone(),
@@ -1510,18 +1532,19 @@ impl Server {
         catalog: &crate::storage::postgres::PostgresCatalog,
         document_id: uuid::Uuid,
         comment_id: uuid::Uuid,
-    ) -> Result<(uuid::Uuid, i64, String, String, String), String> {
+    ) -> Result<(uuid::Uuid, i64, String, String, String), crate::room::WriteError> {
         let comment = self
             .comment_row(catalog, document_id, comment_id)
-            .await
-            .ok_or_else(|| "unknown comment".to_string())?;
-        let proposal_id = uuid::Uuid::parse_str(&comment.proposal)
-            .map_err(|_| "that comment has no suggestion".to_string())?;
+            .await?
+            .ok_or_else(|| crate::room::WriteError::Conflict("unknown comment".into()))?;
+        let proposal_id = uuid::Uuid::parse_str(&comment.proposal).map_err(|_| {
+            crate::room::WriteError::Conflict("that comment has no suggestion".into())
+        })?;
         let proposal = catalog
             .proposal(proposal_id)
             .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "unknown suggestion".to_string())?;
+            .map_err(|error| crate::room::WriteError::Storage(error.to_string()))?
+            .ok_or_else(|| crate::room::WriteError::Conflict("unknown suggestion".into()))?;
         // The passage as the comment currently has it anchored, which is
         // what `RefineSuggestion` relocates from -- not anything the wire
         // message carries, since `Command::Refine` names only the new
@@ -1532,7 +1555,11 @@ impl Server {
                 target.prefix.clone(),
                 target.suffix.clone(),
             ),
-            None => return Err("that comment has no source passage".to_string()),
+            None => {
+                return Err(crate::room::WriteError::Conflict(
+                    "that comment has no source passage".into(),
+                ))
+            }
         };
         Ok((proposal_id, proposal.version, exact, prefix, suffix))
     }
@@ -1545,13 +1572,14 @@ impl Server {
         document_id: uuid::Uuid,
         comment_id: uuid::Uuid,
         author_key: &str,
-    ) -> Result<(uuid::Uuid, uuid::Uuid, String), String> {
+    ) -> Result<(uuid::Uuid, uuid::Uuid, String), crate::room::WriteError> {
         let comment = self
             .comment_row(catalog, document_id, comment_id)
-            .await
-            .ok_or_else(|| "unknown comment".to_string())?;
-        let proposal_id = uuid::Uuid::parse_str(&comment.proposal)
-            .map_err(|_| "that comment has no suggestion".to_string())?;
+            .await?
+            .ok_or_else(|| crate::room::WriteError::Conflict("unknown comment".into()))?;
+        let proposal_id = uuid::Uuid::parse_str(&comment.proposal).map_err(|_| {
+            crate::room::WriteError::Conflict("that comment has no suggestion".into())
+        })?;
         let decided_by = if author_key.is_empty() {
             "Anonymous".to_string()
         } else {
@@ -1569,15 +1597,16 @@ impl Server {
         catalog: &crate::storage::postgres::PostgresCatalog,
         document_id: uuid::Uuid,
         comment_id: uuid::Uuid,
-    ) -> Option<crate::room::Comment> {
+    ) -> Result<Option<crate::room::Comment>, crate::room::WriteError> {
         // An indexed `(id, document_id)` read. It used to walk the whole
         // document's comments and pick one out of the result, which cost
         // the collection to answer a question about one row and could not
         // see a comment past the old read budget at all.
-        crate::room::comments::one(catalog, document_id, comment_id, true)
-            .await
-            .ok()
-            .flatten()
+        //
+        // The failure is kept rather than flattened away: an unavailable
+        // database answering "unknown comment" tells a client to stop, when
+        // the one thing it should do is try again.
+        crate::room::comments::one(catalog, document_id, comment_id, true).await
     }
 }
 /// Where the manual lives. It is a static site, deployed separately from this
@@ -1622,6 +1651,47 @@ pub(super) fn command_reply(error: crate::log::CommandError) -> Reply {
 /// JSON value either way, and the room's own error frame shape (`{"type":
 /// "error", ...}`) is what both the socket loop and the REST comments route
 /// send back to a client.
+/// A failed room *read* as the socket's own error value. It is the same
+/// variant-driven mapping `socket_refusal` gives a failed write -- the
+/// message and the retry advice both come from the variant -- so a comment
+/// lookup that failed because storage is away is told apart from one that
+/// found nothing, on the transport as well as in the code.
+fn read_error_value(error: crate::room::WriteError) -> Value {
+    if let Some(context) = error.log_context() {
+        eprintln!("warning: annotation lookup: {context}");
+    }
+    let mut payload = json!({"type": "error", "message": error.client_message()});
+    if error.is_temporary() {
+        payload["retryable"] = json!(true);
+    }
+    payload
+}
+
+#[cfg(test)]
+mod comment_lookup_tests {
+    use super::*;
+
+    /// A comment that is not there and a database that cannot be asked are
+    /// different answers. The second is worth retrying and must not claim
+    /// the comment is unknown.
+    #[test]
+    fn a_failed_read_is_not_an_unknown_comment() {
+        let missing = read_error_value(crate::room::WriteError::Conflict("unknown comment".into()));
+        assert_eq!(missing["message"], json!("unknown comment"));
+        assert!(missing.get("retryable").is_none());
+
+        let unavailable =
+            read_error_value(crate::room::WriteError::Storage("connection reset".into()));
+        assert_eq!(
+            unavailable["message"],
+            json!("storage temporarily unavailable")
+        );
+        assert_eq!(unavailable["retryable"], json!(true));
+        // The cause is logged, never sent.
+        assert!(!unavailable.to_string().contains("connection reset"));
+    }
+}
+
 fn command_error_value(error: crate::log::CommandError) -> Value {
     match error {
         crate::log::CommandError::Conflict(message) => json!({"type": "error", "message": message}),
@@ -1643,6 +1713,71 @@ fn command_error_value(error: crate::log::CommandError) -> Value {
 #[cfg(test)]
 mod automation_authority_tests {
     use super::*;
+
+    fn viewer(account: &str, key: &str, link: &str) -> Viewer {
+        Viewer {
+            id: Identity {
+                id: account.into(),
+                session_generation: "3".into(),
+                ..Identity::default()
+            },
+            key: key.into(),
+            link: link.into(),
+            comment_budget: None,
+            role: Role::Commenter,
+            automation: false,
+            auth_failed: false,
+        }
+    }
+
+    /// Every transport builds its writer identity from the viewer, so a
+    /// caller is the same principal whether they arrive over the socket,
+    /// an ordinary request, or MCP. These are the three shapes that used to
+    /// differ between those builders.
+    #[test]
+    fn principal_key_is_the_same_on_every_transport() {
+        let account = uuid::Uuid::new_v4();
+        let signed_in = viewer(&account.to_string(), "alice", "");
+        assert_eq!(signed_in.principal_key(), account.to_string());
+        assert_eq!(
+            signed_in.document_authority().principal_key,
+            signed_in.mutation_authorization(true).principal_key
+        );
+
+        // A link-only automation caller has no upload key at all. Naming it
+        // by that empty key is what left the principal blank on MCP.
+        let link = hex::encode([0xabu8; 32]);
+        let link_only = viewer("", "", &link);
+        assert_eq!(link_only.principal_key(), format!("link:{link}"));
+        assert_eq!(
+            link_only.document_authority().link_hash,
+            Some(vec![0xabu8; 32])
+        );
+        assert_eq!(
+            link_only.mutation_authorization(false).token_hash,
+            Some([0xabu8; 32])
+        );
+
+        // `Server::owner` already spells a visitor key `visitor:<token>`.
+        let visitor = viewer("", "visitor:token-1", "");
+        assert_eq!(visitor.principal_key(), "visitor:token-1");
+        assert_eq!(
+            visitor.document_authority().principal_key,
+            visitor.mutation_authorization(false).principal_key
+        );
+        assert!(visitor.document_authority().account_id.is_none());
+    }
+
+    #[test]
+    fn mutation_authorization_carries_the_session_generation() {
+        let account = uuid::Uuid::new_v4();
+        let who = viewer(&account.to_string(), "alice", "");
+        let authorization = who.mutation_authorization(true);
+        assert_eq!(authorization.session_generation, Some(3));
+        assert_eq!(authorization.account_id, Some(account));
+        assert!(authorization.policy_editor);
+        assert!(!who.mutation_authorization(false).policy_editor);
+    }
 
     #[test]
     fn large_state_references_keep_exact_bounded_baseline_bytes() {

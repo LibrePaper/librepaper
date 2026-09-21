@@ -630,6 +630,180 @@ async fn a_suggestion_stays_out_of_the_public_channel() {
     deployment.catalog.close().await;
 }
 
+/// §7.2's refinement precondition, end to end: a refinement says what the
+/// suggestion proposed when its caller read it, and one that names text the
+/// suggestion no longer proposes is refused.
+///
+/// The proposal row's own version cannot see this. A caller who read the
+/// suggestion two refinements ago still looks up a current version number
+/// on the way in, and their replacement would land on top of work they
+/// never saw.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_refinement_of_a_suggestion_that_moved_is_refused() {
+    refinement_round_trip(false, true).await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn repeated_refinements_preserve_intervening_source_edits() {
+    refinement_round_trip(true, true).await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn version_checked_refinements_preserve_intervening_source_edits() {
+    refinement_round_trip(true, false).await;
+}
+
+async fn refinement_round_trip(edit_source: bool, check_text: bool) {
+    let Some(deployment) = deployment("anchor-refine").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "editing",
+        Some("*interval* contains the mean"),
+    );
+    let comment = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+    let proposal_id = Uuid::parse_str(&comment.proposal).expect("a proposal id");
+    let source = comment.source().expect("a suggestion is about a passage");
+    let config = Configuration::default();
+    let refine = |version: i64, proposed: &str, expected: &str| {
+        RefineSuggestion::new(
+            deployment.catalog.clone(),
+            room.document_id,
+            Uuid::parse_str(&comment.id).unwrap(),
+            proposal_id,
+            version,
+            format!("account:{}", deployment.account_id),
+            true,
+            &config,
+            "A revised remark.",
+            &source.exact,
+            &source.prefix,
+            &source.suffix,
+            proposed,
+            check_text.then_some(expected),
+            deployment.mutation_authorization(),
+        )
+        .expect("a well-formed refinement")
+    };
+    let version = |id: Uuid| {
+        let catalog = deployment.catalog.clone();
+        async move { catalog.proposal(id).await.unwrap().unwrap().version }
+    };
+
+    let edited_source = format!("An unrelated opening.\n\n{PAPER}\nAn unrelated ending.\n");
+    if edit_source {
+        edit_refinement_source(&room, &edited_source, 1).await;
+    }
+
+    // One refinement, by someone who read the suggestion as it stands.
+    let first = version(proposal_id).await;
+    let mut cmd = refine(
+        first,
+        "*interval* covers the posterior mean",
+        "*interval* contains the mean",
+    );
+    room.command(&deployment.authority(), &mut cmd)
+        .await
+        .expect("a refinement of what the caller read");
+
+    // A second caller who read it before that refinement. Their version
+    // number is current -- they looked it up on the way in -- and only
+    // what they last read tells them apart.
+    let second = version(proposal_id).await;
+    let mut cmd = refine(
+        second,
+        "*interval* covers something else",
+        "*interval* contains the mean",
+    );
+    if check_text {
+        let error = room
+            .command(&deployment.authority(), &mut cmd)
+            .await
+            .expect_err("a refinement of text the suggestion no longer proposes");
+        assert!(
+            matches!(&error, crate::log::CommandError::Conflict(message)
+                if message.contains("read it again")),
+            "{error:?}",
+        );
+    }
+
+    let final_source = if edit_source {
+        format!("{edited_source}\nAnother unrelated ending.\n")
+    } else {
+        PAPER.to_string()
+    };
+    if edit_source {
+        edit_refinement_source(&room, &final_source, 2).await;
+    }
+
+    // And the suggestion still says what the first refinement made it say.
+    let mut cmd = refine(
+        second,
+        "*interval* covers the mean, at last",
+        "*interval* covers the posterior mean",
+    );
+    room.command(&deployment.authority(), &mut cmd)
+        .await
+        .expect("a refinement of what is actually there");
+
+    let proposal = deployment
+        .catalog
+        .proposal(proposal_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut accept = AcceptSuggestion::new(
+        deployment.catalog.clone(),
+        room.document_id,
+        Uuid::parse_str(&comment.id).unwrap(),
+        proposal_id,
+        proposal.base_frontiers,
+        proposal.tip_frontiers,
+        proposal.branch_bytes,
+        "Owner".into(),
+        deployment.mutation_authorization(),
+        Uuid::new_v4(),
+    );
+    room.command(&deployment.authority(), &mut accept)
+        .await
+        .expect("the refined branch can be accepted after source edits");
+    assert_eq!(
+        room.projection().await.unwrap().texts["paper.md"],
+        final_source.replace(
+            "*interval* covers the mean",
+            "*interval* covers the mean, at last"
+        ),
+        "acceptance preserves unrelated source edits and applies only the final refinement",
+    );
+    deployment.catalog.close().await;
+}
+
+async fn edit_refinement_source(room: &Room, text: &str, sequence: i64) {
+    let (vector, edited) = room
+        .log()
+        .with_head(|doc| (session::encode_vector(doc), doc.fork()))
+        .await
+        .unwrap();
+    session::put_text(&edited, "paper.md", text);
+    let update = session::encode_diff(&edited, &vector).unwrap();
+    assert!(matches!(
+        room.ingest(999, "editor-999", "editor-999", sequence, update)
+            .await,
+        crate::log::Ingested::Accepted,
+    ));
+}
+
 /// Whatever is already queued for a peer, as JSON.
 fn received(rx: &mut tokio::sync::mpsc::Receiver<crate::room::outgoing::Outgoing>) -> Vec<Value> {
     let mut out = Vec::new();

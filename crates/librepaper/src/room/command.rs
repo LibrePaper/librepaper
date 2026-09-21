@@ -44,6 +44,10 @@ pub enum Command {
     Refine {
         comment_id: String,
         proposed: String,
+        /// What the caller last read the suggestion as proposing. Required
+        /// on the wire (§7.2) and carried through to the command, which
+        /// checks it against the stored branch.
+        expected_proposed: String,
         body: String,
         temp_id: String,
     },
@@ -146,52 +150,17 @@ impl Command {
         }
     }
 
-    pub fn with_creator(self, creator: String) -> Self {
-        match self {
+    pub fn with_creator(mut self, creator: String) -> Self {
+        match &mut self {
             Self::Comment {
-                motivation,
-                render_digest,
-                body,
-                exact,
-                prefix,
-                suffix,
-                position,
-                document,
-                color,
-                proposed,
-                temp_id,
-                request_id,
-                ..
-            } => Self::Comment {
-                motivation,
-                body,
-                creator,
-                exact,
-                prefix,
-                suffix,
-                position,
-                document,
-                color,
-                proposed,
-                temp_id,
-                request_id,
-                render_digest,
-            },
-            Self::Reply {
-                comment_id,
-                body,
-                temp_id,
-                request_id,
-                ..
-            } => Self::Reply {
-                comment_id,
-                body,
-                creator,
-                temp_id,
-                request_id,
-            },
-            other => other,
+                creator: current, ..
+            }
+            | Self::Reply {
+                creator: current, ..
+            } => *current = creator,
+            _ => {}
         }
+        self
     }
 }
 
@@ -265,12 +234,13 @@ impl Message {
                 let Some(proposed) = self.proposed().map(str::to_owned) else {
                     return missing("refine", "proposed");
                 };
-                if self.expected_proposed().is_none() {
+                let Some(expected_proposed) = self.expected_proposed().map(str::to_owned) else {
                     return missing("refine", "expected_proposed");
-                }
+                };
                 Ok(Command::Refine {
                     comment_id,
                     proposed,
+                    expected_proposed,
                     body: self.body().to_owned(),
                     temp_id,
                 })
@@ -312,5 +282,160 @@ impl Message {
                 request_id,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn comment() -> Command {
+        Command::Comment {
+            motivation: "commenting".into(),
+            render_digest: "digest".into(),
+            body: "body".into(),
+            creator: "claimed".into(),
+            exact: "exact".into(),
+            prefix: "prefix".into(),
+            suffix: "suffix".into(),
+            position: Some(3),
+            document: true,
+            color: Some("amber".into()),
+            proposed: Some("proposed".into()),
+            temp_id: "t".into(),
+            request_id: "r".into(),
+        }
+    }
+
+    /// The server sets the creator from the authenticated caller; a claimed
+    /// one on the wire is overwritten, and every other field survives.
+    #[test]
+    fn with_creator_replaces_only_the_creator() {
+        let Command::Comment {
+            creator,
+            motivation,
+            render_digest,
+            body,
+            exact,
+            prefix,
+            suffix,
+            position,
+            document,
+            color,
+            proposed,
+            temp_id,
+            request_id,
+        } = comment().with_creator("server".into())
+        else {
+            panic!("comment stays a comment");
+        };
+        assert_eq!(creator, "server");
+        assert_eq!(motivation, "commenting");
+        assert_eq!(render_digest, "digest");
+        assert_eq!(body, "body");
+        assert_eq!(exact, "exact");
+        assert_eq!(prefix, "prefix");
+        assert_eq!(suffix, "suffix");
+        assert_eq!(position, Some(3));
+        assert!(document);
+        assert_eq!(color.as_deref(), Some("amber"));
+        assert_eq!(proposed.as_deref(), Some("proposed"));
+        assert_eq!(temp_id, "t");
+        assert_eq!(request_id, "r");
+
+        let reply = Command::Reply {
+            comment_id: "c".into(),
+            body: "body".into(),
+            creator: "claimed".into(),
+            temp_id: "t".into(),
+            request_id: "r".into(),
+        };
+        let Command::Reply {
+            creator,
+            comment_id,
+            ..
+        } = reply.with_creator("server".into())
+        else {
+            panic!("reply stays a reply");
+        };
+        assert_eq!(creator, "server");
+        assert_eq!(comment_id, "c");
+    }
+
+    /// A refinement's precondition reaches the command. It used to be
+    /// required on the wire and then dropped on the floor here, which left
+    /// the handler's own version lookup as the only check -- and that cannot
+    /// tell a caller refining a suggestion they read two edits ago from one
+    /// refining what is there now.
+    #[test]
+    fn a_refinement_carries_what_the_caller_last_read() {
+        let message: Message = serde_json::from_value(json!({
+            "type": "refine",
+            "comment_id": "c",
+            "proposed": "the new words",
+            "expected_proposed": "the words they read",
+            "body": "why",
+        }))
+        .expect("a refine frame");
+        let Command::Refine {
+            comment_id,
+            proposed,
+            expected_proposed,
+            body,
+            ..
+        } = message.into_command().expect("a refine command")
+        else {
+            panic!("a refine frame is a refine command");
+        };
+        assert_eq!(comment_id, "c");
+        assert_eq!(proposed, "the new words");
+        assert_eq!(expected_proposed, "the words they read");
+        assert_eq!(body, "why");
+    }
+
+    /// And it is still required: a refinement without it names no state to
+    /// check against.
+    #[test]
+    fn a_refinement_without_it_is_refused() {
+        let message: Message = serde_json::from_value(json!({
+            "type": "refine",
+            "comment_id": "c",
+            "proposed": "the new words",
+        }))
+        .expect("a refine frame");
+        assert!(matches!(
+            message.into_command(),
+            Err(CommandError::Missing {
+                operation: "refine",
+                field: "expected_proposed",
+                ..
+            })
+        ));
+    }
+
+    /// Commands that carry no creator pass through untouched.
+    #[test]
+    fn with_creator_leaves_other_commands_alone() {
+        let resolve = Command::Resolve {
+            comment_id: "c".into(),
+            resolved: true,
+            temp_id: "t".into(),
+        };
+        let Command::Resolve {
+            comment_id,
+            resolved,
+            temp_id,
+        } = resolve.with_creator("server".into())
+        else {
+            panic!("resolve stays a resolve");
+        };
+        assert_eq!(comment_id, "c");
+        assert!(resolved);
+        assert_eq!(temp_id, "t");
+
+        assert!(matches!(
+            Command::RevisionDecide.with_creator("server".into()),
+            Command::RevisionDecide
+        ));
     }
 }

@@ -3,7 +3,6 @@ use super::{BuildRequest, CommandPlan, Output};
 use crate::local::{discovery, native, presets, protocol};
 pub(crate) use native::RunOutcome as Outcome;
 use protocol::{JobOutcome, JobRequest, JobStatus, Workspace};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -260,15 +259,7 @@ pub async fn run(
     }
     status.outputs = files
         .iter()
-        .map(|(key, bytes)| {
-            (
-                key.clone(),
-                protocol::OutputEntry {
-                    size: bytes.len() as u64,
-                    sha256: hex::encode(Sha256::digest(bytes)),
-                },
-            )
-        })
+        .map(|(key, bytes)| (key.clone(), protocol::OutputEntry::from_bytes(bytes)))
         .collect();
     JobOutcome { status, files }
 }
@@ -292,6 +283,7 @@ fn failed(request: &JobRequest, id: &str, error: &str) -> JobOutcome {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
 
     #[tokio::test]

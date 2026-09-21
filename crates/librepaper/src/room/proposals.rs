@@ -164,6 +164,30 @@ fn rebuild(
     Ok(branch)
 }
 
+/// The branch's two sides as documents: the room as it was at the proposal's
+/// base, and the same with the proposal's operations applied.
+///
+/// This is what lets a caller ask "does this suggestion still propose what I
+/// last read?" without a diff heuristic. [`from_suggestion`] builds a tip by
+/// replacing one passage in one file's text, so the question is answered by
+/// making that same replacement again and comparing the strings: hunks are
+/// for review, and their bridging makes them the wrong tool for an identity
+/// check.
+pub fn sides(
+    doc: &LoroDoc,
+    proposal: &Proposal,
+    branch_bytes: &[u8],
+) -> Result<(LoroDoc, LoroDoc), ProposalError> {
+    let branch = rebuild(doc, proposal, branch_bytes)?;
+    let at_base = branch
+        .fork_at(&proposal.base)
+        .map_err(|error| ProposalError::Failed(error.to_string()))?;
+    let at_tip = branch
+        .fork_at(&proposal.tip)
+        .map_err(|error| ProposalError::Failed(error.to_string()))?;
+    Ok((at_base, at_tip))
+}
+
 /// What a reviewer is deciding about: the hunks between the branch's base and
 /// its tip, numbered across every file it touches.
 pub fn hunks(

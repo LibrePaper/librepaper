@@ -203,20 +203,8 @@ impl Runner for FakeRunner {
         let pdf = vec![0x25, 0x50, 0x44, 0x46, 0xff, 0xfe, 0x00, 0x01, 0x02];
         let log = b"fake compile ok\n".to_vec();
         let mut outputs = BTreeMap::new();
-        outputs.insert(
-            "pdf".to_string(),
-            protocol::OutputEntry {
-                size: pdf.len() as u64,
-                sha256: hex_sha256(&pdf),
-            },
-        );
-        outputs.insert(
-            "log".to_string(),
-            protocol::OutputEntry {
-                size: log.len() as u64,
-                sha256: hex_sha256(&log),
-            },
-        );
+        outputs.insert("pdf".to_string(), protocol::OutputEntry::from_bytes(&pdf));
+        outputs.insert("log".to_string(), protocol::OutputEntry::from_bytes(&log));
         let mut files = BTreeMap::new();
         files.insert("pdf".to_string(), pdf);
         files.insert("log".to_string(), log);
@@ -300,6 +288,50 @@ impl JobEntry {
     fn is_pending(&self) -> bool {
         self.finished_at.is_none()
     }
+}
+
+/// The answer owed to a Quarto request whose scoped idempotency key was
+/// already admitted: the original job for an identical request, a refusal
+/// for a different one. `None` when the key is new, absent, or the request
+/// is not a Quarto render.
+///
+/// A lost browser response must be retryable without rerunning user code.
+/// Reusing a key with a different request is rejected so a stale retry
+/// cannot masquerade as the newer render. Both callers ask the same
+/// question; only what they do first with a staged workspace differs.
+fn admitted_idempotent_response(
+    jobs: &HashMap<String, JobEntry>,
+    origin: &str,
+    project: &str,
+    job: &JobRequest,
+) -> Option<Reply> {
+    if job.kind != "quarto" {
+        return None;
+    }
+    let key = job
+        .quarto
+        .as_ref()
+        .and_then(|options| options.idempotency_key.as_deref())?;
+    jobs.iter().find_map(|(id, entry)| {
+        let same_scope = entry.origin == origin && entry.project == project;
+        let same_key = entry
+            .request
+            .quarto
+            .as_ref()
+            .and_then(|options| options.idempotency_key.as_deref())
+            == Some(key);
+        if !(same_scope && same_key) {
+            return None;
+        }
+        Some(if entry.request == *job {
+            write_json(202, &json!({"id": id, "status": entry.status.status}))
+        } else {
+            write_json(
+                409,
+                &json!({"error": "idempotency key was already used for a different Quarto request"}),
+            )
+        })
+    })
 }
 
 /// Past its retention: the reaper removes the job and its workspace. A
@@ -2261,35 +2293,12 @@ async fn handle_jobs_post(
         }
     }
 
-    // A lost browser response must be retryable without rerunning user code.
-    // Reusing a key with a different request is rejected so a stale retry
-    // cannot masquerade as the newer render.
-    if job.kind == "quarto" {
-        if let Some(options) = job.quarto.as_ref() {
-            if let Some(key) = options.idempotency_key.as_deref() {
-                let jobs = inner.jobs.lock().await;
-                for (id, entry) in jobs.iter() {
-                    let same_scope = entry.origin == origin && entry.project == project;
-                    let same_key = entry
-                        .request
-                        .quarto
-                        .as_ref()
-                        .and_then(|old| old.idempotency_key.as_deref())
-                        == Some(key);
-                    if same_scope && same_key {
-                        if entry.request == job {
-                            return write_json(
-                                202,
-                                &json!({"id": id, "status": entry.status.status}),
-                            );
-                        }
-                        return write_json(
-                            409,
-                            &json!({"error": "idempotency key was already used for a different Quarto request"}),
-                        );
-                    }
-                }
-            }
+    // Answer a repeat before staging anything, so a retry does not copy the
+    // uploads again only to be refused below.
+    {
+        let jobs = inner.jobs.lock().await;
+        if let Some(response) = admitted_idempotent_response(&jobs, &origin, &project, &job) {
+            return response;
         }
     }
 
@@ -2322,38 +2331,10 @@ async fn handle_jobs_post(
     // reserve a key across concurrent requests. Recheck while holding the
     // admission lock immediately before insertion so only one request can
     // become executable for a given scoped idempotency key.
-    if job.kind == "quarto" {
-        if let Some(key) = job
-            .quarto
-            .as_ref()
-            .and_then(|options| options.idempotency_key.as_deref())
-        {
-            for (existing_id, entry) in jobs.iter() {
-                let same_scope = entry.origin == origin && entry.project == project;
-                let same_key = entry
-                    .request
-                    .quarto
-                    .as_ref()
-                    .and_then(|options| options.idempotency_key.as_deref())
-                    == Some(key);
-                if same_scope && same_key {
-                    let response = if entry.request == job {
-                        write_json(
-                            202,
-                            &json!({"id": existing_id, "status": entry.status.status}),
-                        )
-                    } else {
-                        write_json(
-                            409,
-                            &json!({"error": "idempotency key was already used for a different Quarto request"}),
-                        )
-                    };
-                    drop(jobs);
-                    let _ = std::fs::remove_dir_all(&root);
-                    return response;
-                }
-            }
-        }
+    if let Some(response) = admitted_idempotent_response(&jobs, &origin, &project, &job) {
+        drop(jobs);
+        let _ = std::fs::remove_dir_all(&root);
+        return response;
     }
     supersede_older_generations(&mut jobs, &origin, &project, generation);
     let mut queue = inner.queue.lock().await;
@@ -3090,5 +3071,137 @@ mod supersession_tests {
             assert!(!entry.superseded, "{id} was superseded");
             assert!(entry.is_pending(), "{id} was settled");
         }
+    }
+}
+
+#[cfg(test)]
+mod idempotency_tests {
+    use super::*;
+
+    fn quarto_job(key: &str, main: &str) -> JobRequest {
+        serde_json::from_value(json!({
+            "protocol": 2,
+            "kind": "quarto",
+            "project": "paper",
+            "origin": "https://paper.example",
+            "snapshot": "s",
+            "generation": 1,
+            "quarto": {"binding_id": "b", "main": main, "idempotency_key": key},
+            "manifest": [],
+        }))
+        .expect("job request")
+    }
+
+    fn entry_for(request: JobRequest, status: &str) -> JobEntry {
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        JobEntry {
+            status: JobStatus {
+                id: "job".into(),
+                kind: "quarto".into(),
+                status: status.into(),
+                generation: request.generation,
+                ..Default::default()
+            },
+            origin: request.origin.clone(),
+            project: request.project.clone(),
+            request,
+            files: BTreeMap::new(),
+            workspace: Workspace {
+                root: PathBuf::from("/nonexistent/librepaper-test-workspace"),
+            },
+            cancel_tx,
+            cancel_rx,
+            queued: true,
+            superseded: false,
+            finished_at: None,
+        }
+    }
+
+    fn jobs_with(request: JobRequest, status: &str) -> HashMap<String, JobEntry> {
+        HashMap::from([("existing".to_string(), entry_for(request, status))])
+    }
+
+    fn status_of(reply: Option<Reply>) -> Option<u16> {
+        reply.map(|reply| reply.status().as_u16())
+    }
+
+    /// An identical retry is answered with the original job rather than run
+    /// again; the same key with different arguments is refused outright.
+    #[test]
+    fn an_admitted_key_answers_a_repeat_and_refuses_a_different_request() {
+        let original = quarto_job("k1", "paper.qmd");
+        let jobs = jobs_with(original.clone(), "running");
+
+        assert_eq!(
+            status_of(admitted_idempotent_response(
+                &jobs,
+                "https://paper.example",
+                "paper",
+                &original
+            )),
+            Some(202),
+            "an identical repeat replays the original job"
+        );
+
+        let different = quarto_job("k1", "other.qmd");
+        assert_eq!(
+            status_of(admitted_idempotent_response(
+                &jobs,
+                "https://paper.example",
+                "paper",
+                &different
+            )),
+            Some(409),
+            "the same key with different arguments is refused"
+        );
+    }
+
+    #[test]
+    fn a_key_is_scoped_to_its_origin_and_project_and_a_fresh_key_is_admitted() {
+        let original = quarto_job("k1", "paper.qmd");
+        let jobs = jobs_with(original.clone(), "running");
+
+        for (origin, project) in [
+            ("https://other.example", "paper"),
+            ("https://paper.example", "notes"),
+        ] {
+            assert!(
+                admitted_idempotent_response(&jobs, origin, project, &original).is_none(),
+                "{origin}/{project} must not see another scope's key"
+            );
+        }
+
+        let fresh = quarto_job("k2", "paper.qmd");
+        assert!(
+            admitted_idempotent_response(&jobs, "https://paper.example", "paper", &fresh).is_none(),
+            "an unused key is admitted"
+        );
+    }
+
+    #[test]
+    fn a_request_without_a_key_or_without_quarto_is_never_matched() {
+        let jobs = jobs_with(quarto_job("k1", "paper.qmd"), "running");
+
+        let keyless: JobRequest = serde_json::from_value(json!({
+            "protocol": 2, "kind": "quarto", "project": "paper",
+            "origin": "https://paper.example", "snapshot": "s", "generation": 1,
+            "quarto": {"binding_id": "b", "main": "paper.qmd"},
+            "manifest": [],
+        }))
+        .expect("keyless request");
+        assert!(
+            admitted_idempotent_response(&jobs, "https://paper.example", "paper", &keyless)
+                .is_none()
+        );
+
+        let tex: JobRequest = serde_json::from_value(json!({
+            "protocol": 2, "kind": "tex", "project": "paper",
+            "origin": "https://paper.example", "snapshot": "s", "generation": 1,
+            "manifest": [],
+        }))
+        .expect("tex request");
+        assert!(
+            admitted_idempotent_response(&jobs, "https://paper.example", "paper", &tex).is_none()
+        );
     }
 }

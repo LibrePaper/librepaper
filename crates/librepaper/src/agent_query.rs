@@ -32,9 +32,23 @@ pub struct QuerySnapshot {
     pub comment_revision: String,
     #[serde(default)]
     pub main: String,
-    /// Canonical tree metadata. It is never returned whole.
-    #[serde(default)]
-    pub tree: Value,
+    /// What the sequencer projected: the directory this capture is of
+    /// (§4.4). It is never returned whole.
+    ///
+    /// Typed rather than `serde_json::Value` because every reader of it
+    /// wants one of two fields, and while it was a `Value` the query
+    /// helpers went on asking for `sha` and `size` -- the shape a deleted
+    /// history tree had -- long after the projection began spelling them
+    /// `digest` and `bytes`. The serialized name stays `tree`, so a view
+    /// stored before this typing still round-trips.
+    #[serde(default, rename = "tree")]
+    pub projection: librepaper_document_core::Projection,
+    /// Per-request projections that are not part of the capture: a render's
+    /// diagnostics, a rendered receipt, the changes between two views. The
+    /// request that asked for them puts them here, keyed by
+    /// `<kind>:<id>`; nothing stored ever carries them.
+    #[serde(default, skip_serializing)]
+    pub extras: BTreeMap<String, Value>,
     #[serde(default)]
     pub texts: BTreeMap<String, String>,
     /// One bounded window per `thread` query in this request, keyed by
@@ -916,23 +930,11 @@ fn range_value(
 }
 
 fn file_identity(snapshot: &QuerySnapshot, path: &str, source: &str) -> (String, String) {
-    let entry = snapshot
-        .tree
-        .get("files")
-        .and_then(Value::as_object)
-        .and_then(|files| files.get(path))
-        .or_else(|| snapshot.tree.get(path));
-    let id = entry
-        .and_then(Value::as_object)
-        .and_then(|entry| entry.get("id"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
+    let entry = snapshot.projection.files.get(path);
+    let id = entry.map(|entry| entry.id.clone()).unwrap_or_default();
     let hash = entry
-        .and_then(Value::as_object)
-        .and_then(|entry| entry.get("sha").or_else(|| entry.get("hash")))
-        .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(|entry| entry.digest.clone())
+        .filter(|digest| !digest.is_empty())
         .unwrap_or_else(|| digest(source.as_bytes()));
     (id, hash)
 }
@@ -1269,22 +1271,14 @@ fn manifest_query(
 ) -> Result<(Value, bool, Option<String>), String> {
     let mut paths = BTreeSet::new();
     paths.extend(snapshot.texts.keys().cloned());
-    if let Some(files) = snapshot.tree.get("files").and_then(Value::as_object) {
-        paths.extend(files.keys().cloned());
-    }
+    paths.extend(snapshot.projection.files.keys().cloned());
     let mut files = Vec::new();
     for path in paths {
         let source = snapshot.texts.get(&path);
-        let metadata = snapshot
-            .tree
-            .get("files")
-            .and_then(Value::as_object)
-            .and_then(|files| files.get(&path))
-            .or_else(|| snapshot.tree.get(&path));
+        let metadata = snapshot.projection.files.get(&path);
         let kind = metadata
-            .and_then(|v| v.get("kind"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
+            .map(|entry| entry.kind.clone())
+            .filter(|kind| !kind.is_empty())
             .unwrap_or_else(|| {
                 if source.is_some() {
                     "text".into()
@@ -1299,14 +1293,16 @@ fn manifest_query(
             item["file_id"] = json!(identity.0);
             item["file_hash"] = json!(identity.1);
         } else if let Some(metadata) = metadata {
-            if let Some(size) = metadata.get("size") {
-                item["bytes"] = size.clone();
+            // No `bytes` for an asset. `Projection::Entry::bytes` is a
+            // text's UTF-8 length and is zero for an asset, whose bytes
+            // are not in the projection at all, and reporting that zero
+            // would be a measurement nobody made. The digest is real and
+            // is what a caller needs to name the file.
+            if !metadata.id.is_empty() {
+                item["file_id"] = json!(metadata.id);
             }
-            if let Some(id) = metadata.get("id") {
-                item["file_id"] = id.clone();
-            }
-            if let Some(hash) = metadata.get("sha").or_else(|| metadata.get("hash")) {
-                item["file_hash"] = hash.clone();
+            if !metadata.digest.is_empty() {
+                item["file_hash"] = json!(metadata.digest);
             }
         }
         files.push(item);
@@ -1659,9 +1655,9 @@ fn optional_projection(
             .unwrap_or_default()
     );
     let Some(items) = snapshot
-        .tree
+        .extras
         .get(&projection)
-        .or_else(|| snapshot.tree.get(kind))
+        .or_else(|| snapshot.extras.get(kind))
         .and_then(Value::as_array)
     else {
         return Ok((
@@ -1866,27 +1862,155 @@ fn range_count(value: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use librepaper_document_core::projection::Entry;
+
+    /// A projection of the same shape the sequencer produces: `kind`,
+    /// `id`, the content `digest`, and `bytes` as a text's UTF-8 length.
+    /// Written from the texts rather than by hand, so a fixture cannot go
+    /// on describing a tree the projection stopped serializing.
+    fn text_entry(id: &str, source: &str) -> Entry {
+        Entry {
+            kind: "text".into(),
+            id: id.into(),
+            digest: digest(source.as_bytes()),
+            bytes: source.len() as u64,
+        }
+    }
 
     fn snapshot() -> QuerySnapshot {
+        let main = "# Intro\n😀 repeated repeated\nlast\n";
+        let bib = "@book{key,\nauthor={Ada},\ntitle={A title}\n}\n";
         QuerySnapshot {
             tree_digest: "rev-a".into(),
             comment_revision: "rev-c".into(),
             main: "main.md".into(),
-            tree: json!({"files":{"main.md":{"id":"file-1","sha":"sha-1"}}}),
+            projection: librepaper_document_core::Projection {
+                main: "main.md".into(),
+                main_id: "file-1".into(),
+                files: [
+                    ("main.md".to_string(), text_entry("file-1", main)),
+                    ("refs.bib".to_string(), text_entry("file-2", bib)),
+                ]
+                .into_iter()
+                .collect(),
+                diagnostics: Vec::new(),
+            },
             texts: [
-                (
-                    "main.md".into(),
-                    "# Intro\n😀 repeated repeated\nlast\n".into(),
-                ),
-                (
-                    "refs.bib".into(),
-                    "@book{key,\nauthor={Ada},\ntitle={A title}\n}\n".into(),
-                ),
+                ("main.md".into(), main.to_string()),
+                ("refs.bib".into(), bib.to_string()),
             ]
             .into_iter()
             .collect(),
+            extras: Default::default(),
             threads: Default::default(),
         }
+    }
+
+    /// A manifest answers from the projection's own fields. It used to ask
+    /// for `sha` and `size`, which the projection has not spelled that way
+    /// for some time: a text's hash was silently recomputed from source, and
+    /// an asset -- whose bytes are not in the projection at all -- came back
+    /// with no digest, the one thing about it the projection does know.
+    #[test]
+    fn a_manifest_carries_projection_digests_and_no_invented_asset_size() {
+        let main = "# Intro\n😀 repeated repeated\nlast\n";
+        let mut snapshot = snapshot();
+        snapshot.projection.files.insert(
+            "figures/plot.png".into(),
+            Entry {
+                kind: "asset".into(),
+                id: String::new(),
+                digest: "a".repeat(64),
+                // What the projection stores for an asset: its bytes are
+                // not here, so this zero is not a length.
+                bytes: 0,
+            },
+        );
+        let result = read(
+            &snapshot,
+            &[json!({"kind":"manifest"})],
+            QueryBudget::default(),
+        )
+        .expect("manifest query");
+        let files = result["results"][0]["files"]
+            .as_array()
+            .expect("manifest files");
+        let by_path = |path: &str| {
+            files
+                .iter()
+                .find(|file| file["path"] == json!(path))
+                .cloned()
+                .unwrap_or_else(|| panic!("{path} is in the manifest"))
+        };
+
+        let text = by_path("main.md");
+        assert_eq!(text["kind"], json!("text"));
+        assert_eq!(text["file_id"], json!("file-1"));
+        assert_eq!(text["file_hash"], json!(digest(main.as_bytes())));
+        assert_eq!(text["bytes"], json!(main.len()));
+
+        let asset = by_path("figures/plot.png");
+        assert_eq!(asset["kind"], json!("asset"));
+        assert_eq!(asset["file_hash"], json!("a".repeat(64)));
+        assert!(asset.get("file_id").is_none(), "{asset}");
+        assert!(
+            asset.get("bytes").is_none(),
+            "an asset's length is not in the projection: {asset}"
+        );
+    }
+
+    /// Diagnostics, renders and change sets are not part of the capture:
+    /// the request that asked for them puts them beside it. They used to
+    /// be written into the tree itself, where the only thing keeping them
+    /// from colliding with a path was the `:` in their key.
+    #[test]
+    fn a_projection_query_reads_the_request_its_own_extras() {
+        let mut snapshot = snapshot();
+        let absent = read(
+            &snapshot,
+            &[json!({"kind":"changes","revision":"view-1"})],
+            QueryBudget::default(),
+        )
+        .expect("changes query");
+        assert_eq!(absent["results"][0]["status"], json!("unsupported"));
+
+        snapshot.extras.insert(
+            "changes:view-1".into(),
+            json!([{"path":"main.md","tree_digest_before":"rev-0","tree_digest_after":"rev-a"}]),
+        );
+        let result = read(
+            &snapshot,
+            &[json!({"kind":"changes","revision":"view-1"})],
+            QueryBudget::default(),
+        )
+        .expect("changes query");
+        assert_eq!(result["results"][0]["items"][0]["path"], json!("main.md"));
+        // And the capture itself still serializes as the projection alone.
+        assert!(!serde_json::to_string(&snapshot)
+            .expect("a capture serializes")
+            .contains("changes:view-1"));
+    }
+
+    /// A range names the file by the digest the projection recorded, not by
+    /// one recomputed here: that recomputation is what hid the field rename.
+    #[test]
+    fn a_range_names_the_file_by_its_projected_digest() {
+        let mut snapshot = snapshot();
+        snapshot
+            .projection
+            .files
+            .get_mut("main.md")
+            .expect("main is projected")
+            .digest = "b".repeat(64);
+        let result = read(
+            &snapshot,
+            &[json!({"kind":"source","path":"main.md","range":{"start":0,"end":7}})],
+            QueryBudget::default(),
+        )
+        .expect("source query");
+        let block = &result["results"][0]["blocks"][0];
+        assert_eq!(block["file_id"], json!("file-1"));
+        assert_eq!(block["file_hash"], json!("b".repeat(64)));
     }
 
     #[test]
@@ -2101,14 +2225,13 @@ mod tests {
             tree_digest: "structural-pagination".into(),
             comment_revision: "rev-c".into(),
             main: "main.md".into(),
-            tree: Value::Null,
             texts: [
                 ("main.md".into(), headings),
                 ("refs.bib".into(), bibliography),
             ]
             .into_iter()
             .collect(),
-            threads: Default::default(),
+            ..QuerySnapshot::default()
         };
         let budget = QueryBudget {
             max_bytes: 100_000,
@@ -2156,9 +2279,8 @@ mod tests {
             tree_digest: "index-benchmark-revision".into(),
             comment_revision: "rev-c".into(),
             main: "main.md".into(),
-            tree: Value::Null,
             texts: [("main.md".into(), source)].into_iter().collect(),
-            threads: Default::default(),
+            ..QuerySnapshot::default()
         };
         let query = [json!({"kind":"search","path":"main.md","query":"needle"})];
         let started = std::time::Instant::now();
@@ -2196,9 +2318,9 @@ mod thread_pagination_tests {
             tree_digest: "rev-a".into(),
             comment_revision: revision.into(),
             main: "main.md".into(),
-            tree: Value::Null,
             texts: [("main.md".into(), "body\n".into())].into_iter().collect(),
             threads: [(fingerprint, window)].into_iter().collect(),
+            ..QuerySnapshot::default()
         }
     }
 
@@ -2341,9 +2463,9 @@ mod thread_pagination_tests {
             tree_digest: "rev-a".into(),
             comment_revision: "rev-1".into(),
             main: "main.md".into(),
-            tree: Value::Null,
             texts: [("main.md".into(), "body\n".into())].into_iter().collect(),
             threads,
+            ..QuerySnapshot::default()
         };
         let result = read(
             &snapshot,

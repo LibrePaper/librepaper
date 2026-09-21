@@ -26,7 +26,7 @@ impl Room {
         Ok(crate::agent_query::QuerySnapshot {
             tree_digest: projected.projection.digest(),
             main: projected.projection.main.clone(),
-            tree: json!(projected.projection),
+            projection: projected.projection.clone(),
             texts: projected.texts.clone(),
             // A capture is of the source. Comments are read live, a page at
             // a time, by whichever query asks for them: see
@@ -35,6 +35,7 @@ impl Room {
             // capture being immutable ever depended on them -- every
             // edit-safety check reads the comment it is about from the
             // catalogue.
+            extras: Default::default(),
             threads: Default::default(),
             comment_revision: String::new(),
         })
