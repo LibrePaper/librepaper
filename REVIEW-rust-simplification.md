@@ -1,445 +1,338 @@
-# Rust simplification review
+# Rust simplification: implementation shortlist
 
-Review date: 2026-09-21, working tree including the uncommitted diff. Read-only;
-nothing here has been implemented. Companion to REVIEW-small-ideas.md (thirteen
-local findings, several of which the current diff is landing) and
-REVIEW-BIG-IDEAS.md (product-level). Nothing below repeats those. Line numbers
-will drift; every reference was read in the working tree at review time. All
-paths are under `crates/librepaper/src/` unless stated.
+Re-evaluated against the working tree on 2026-09-21. This document contains
+only the changes recommended for implementation, with their scope and required
+behavior checks. No Rust changes have been made as part of this review.
+Paths below are relative to `crates/librepaper/src/` unless stated otherwise;
+symbol names are the stable references.
 
-## Diagnosis
+The useful work is to fix observable defects, remove obsolete
+production paths, and consolidate logic whose copies must agree. Implement
+these as separate changes, not as a server-wide rewrite. Line-count savings
+and implementation-time estimates have been removed: neither establishes
+that a change is worthwhile.
 
-The sprawl has four root causes, and most findings are instances of one of them.
+## 1. Behavior fixes
 
-1. **Every transport re-derives the same things by hand.** HTTP, the room
-   socket, MCP and the local bridge each spell out the per-request prologue
-   (slug, origin, entry, viewer, role, room), the error-to-status mapping and
-   the JSON envelope. There are 452 `write_json` calls and about 960 `json!`
-   sites; the typed error `WriteError` exists but the transports mostly bypass
-   it.
-2. **Two models where one should be.** The local service keeps the v1
-   `JobRequest` as its internal record and converts v2 into it; room code has a
-   second reader of the document schema beside `Projected`; `DocumentService`
-   sits inside `Server` for a migration that never happened; `history::Label`
-   duplicates `TakeLabel`.
-3. **The public surface defeats the dead-code lint.** `lib.rs` re-exports whole
-   modules (`postgres`, `session`, `quarto`, `results`, `log`), so about twenty
-   catalogue methods, a 270-line admission block, a 325-line TeX log parser and
-   assorted helpers are dead without clippy noticing.
-4. **Small helpers copied instead of shared.** SHA-256 hex has nine named
-   copies plus 38 inline ones; "now" has eight clocks; atomic private-file
-   write has six; constant-time compare three; process-group kill two; PATH
-   lookup and version probe three.
+### Repair MCP suggestion-action validation
 
-## Live defects found on the way
+In `server/mcp/comments.rs::validate_existing_action`, reject and non-editor
+refine depend on `Comment.proposed` being populated. `room/comments.rs`
+constructs served comments with `proposed: None` and an empty `outcome`, so
+these predicates reject legitimate actions.
 
-Fix these before or alongside the refactors; each is small.
+Validate against the actual proposal and its state, using the existing
+command authorization, version and pending-state checks. Remove predicates
+that consult unpopulated presentation fields. Keep the browser-facing fields
+out of this fix: `CommentCard.svelte`, `suggestions.js` and other consumers
+still reference them. Exercise a real stored proposal through MCP, covering
+editor rejection, author refinement, stale versions and unauthorized callers;
+synthetic comments with `proposed: Some(..)` miss this defect.
 
-- **MCP reject and author refine can never succeed.** `Comment.proposed` and
-  `Comment.outcome` are documented as "filled in when served" but the only
-  production write is `proposed: None, outcome: String::new()`
-  (room/comments.rs:400). `server/mcp/comments.rs:41-62` gates reject on
-  `proposed.is_some()` and non-editor refine on the same, so both refuse.
-  Drop the two fields and the two predicates.
-- **Seven sites leak storage context to clients.** `plain(503,
-  &error.to_string())` at documents.rs:1019, 1146 and history.rs:400, 482,
-  630, 700, 794 sends `Display`, which for `WriteError::Storage` is "storage
-  failure: {context}"; `client_message()` exists to withhold exactly that.
-  Route through `refused("open room", &error)`.
-- **HTTP comment writes always answer 400.** documents.rs:339-344 reads
-  `result["status"]` from `apply_from`'s error value, which nothing sets, so a
-  retryable storage failure and a 409 both become 400.
-- **Socket reauthorization has two copies that disagree.** Only the bulk
-  `reauthorize` (socket.rs:1461) flushes `AuthorityRevoked`; the per-frame
-  `reauthorize_connection` (socket.rs:1370) does not.
-- **Unused inventory results need a validation-preserving cleanup.**
-  local/quarto.rs:954 discards `_execution_inventory_before`, but the call
-  reads the effective manifest through `read_verified_manifest()` and
-  propagates validation failures before execution. Remove its digest work
-  only after identifying an equivalent remaining check over the same inputs
-  at the same execution stage, or retain an explicit validation-only pass.
-  At :1570, `_tracked_file_count = inventory.files.len()` is only an unused
-  length lookup, not a second inventory computation; that lookup can go.
-- **Journal writer has a permission window.** assistant/journal.rs:260 writes
-  the temp file then chmods 0600; every other writer opens with mode 0600.
-- **Preview/job exclusion is asymmetric.** local/service.rs:2880 only looks at
-  quarto jobs, so a pending native build never blocks a preview on the same
-  root, while :2249 blocks any job.
-- **`begin_account_erasure` has no completion path.** `finish_account_erasure`
-  has no production caller and the worker's task table has no erasure task
-  (repository.rs:144-201, worker.rs:8-13). Either dead or missing.
-- **`document_policy` tests a CSP the server does not serve.** routes.rs:1185
-  is `#[cfg(test)]`; production `serve_shell` and `serve_viewer` admit
-  `https:` in `script-src`.
+### Preserve error status and hide internal storage details
 
-## Big architectural
+`server/documents.rs::handle_comments` expects a `status` in `apply_from`'s
+error value, but `read_error_value` and `command_error_value` do not supply
+one. Errors from that path therefore fall back to 400, including retryable
+storage errors and conflicts. Preserve typed error classification until the
+HTTP response or socket frame is constructed.
 
-### A. One request prologue and one refusal type for the server
+Use `WriteError::client_message()` and its status/retryability methods for
+room-open failures in `server/documents.rs` and `server/history.rs`.
+`command_reply`, `command_error_value` and MCP's `command_failure` also expose
+storage errors through `to_string()`; log those details server-side and send
+a safe message. Share the classification, while retaining each transport's
+wire envelope and conflict metadata. Test 409/503 responses, retry advice,
+stale-selection digest fields and absence of internal error context.
 
-The sequence valid_slug, cross_site_refused, checked_entry, viewer, auth_failed,
-may_read, role gate, rooms.get is hand-written at 20+ sites (documents.rs
-140-170, 228-262, 995-1015, 1041-1060, 1120-1140, 1584-1600; chat/mod.rs
-48-64, 253-275, 305-330; mcp.rs 233-246; mcp/render.rs 91-105, 122-141;
-suggestions.rs 51-84, 95-108; sharing.rs 238-265, 595-605; history.rs 384-400,
-464-482; figures.rs 19-40, 66-80, 122-137; socket.rs 212-237;
-quarto_checkpoint.rs 21-33; routes.rs 697-712). `entry_viewer` covers 13 of
-them and stops before `may_read`. The refusal shapes have drifted: "bad slug"
-is `plain(400)` in some routes and `write_json(400)` in others (24 sites),
-`rooms.get` failure is mapped four ways.
+### Flush buffered work when per-connection authorization is revoked
 
-Identity is also resolved two to four times per request. `cost::middleware`
-computes `authenticated_identity` and stores it in `RequestContext`
-(cost.rs:269, mod.rs:522), but no handler reads it; `Server::viewer` runs
-`whoami` again (a Postgres read per cookie session), `publisher` a third time,
-and an MCP call runs `mcp_recheck` two to four more times. These lookups can
-return different results: a session revocation or database failure after
-middleware authentication can make `Viewer.auth_failed` true in a handler.
-The 28 `if who.auth_failed` sites are therefore not currently dead. First
-make ordinary handler identity resolution consume the authenticated request
-context and preserve its 401/503 failures; only then remove checks made
-redundant by that change. Keep explicit authorization rechecks for mutations,
-MCP operations and live sockets wherever they enforce current authority.
+`server/socket.rs::reauthorize` flushes with `AuthorityRevoked` before leaving
+the room; `reauthorize_connection` disconnects through a path that only calls
+`leave`. With other subscribers still present, this does not provide the
+same durability behavior for the revoked author's buffered work.
 
-Shape: `Server::open(&self, ctx: &RequestContext, slug, Access::{Read,
-Comment, Edit, Owner}, need_room) -> Result<Opened { entry, who, room },
-Refusal>`. `Refusal { status, message, retryable, fields }` in reply.rs with
-`From<WriteError>`, `From<CommandError>`, `From<postgres::Error>` and
-`IntoResponse`; handlers return `Result<Reply, Refusal>` and use `?`. Give
-`CommandError` the same `status/client_message/is_temporary/log_context`
-methods `WriteError` already has (room/error.rs:116-190) so the three
-CommandError mappers (mod.rs:1631, mod.rs:1690, mcp/comments.rs:105, plus the
-inline closure at socket.rs:1024) and three WriteError mappers (reply.rs:409,
-reply.rs:437, mod.rs:1657) become one per transport. `AuthenticationFailure`
-gets a `reply()` so its 401/503 mapping stops being written five times
-(routes.rs:85, routes.rs:620, mod.rs:915, sharing.rs:565, quota.rs:27).
+Share the revocation handling between the two paths. Preserve immediate
+forced closure, room departure and the separate chat-channel behavior. Test
+revocation detected by an inbound frame while another subscriber remains,
+including a failed flush and subsequent retry behavior.
 
-Size: 400-500 lines out of server/, one catalogue round trip per request, the
-seven leak sites closed. This is the single highest-value change.
+### Create journal temporary files with private permissions
 
-### B. Finish the route migration and delete `DocumentService`
+`assistant/journal.rs::publish_durable_private` writes bytes before setting
+0600. Open a new temporary file with private permissions before writing, and
+preserve the file sync, rename, parent-directory sync and journal lock.
+The existing `private_files::publish` is the starting point, subject to the
+platform and durability requirements in section 4. Check permissions at
+creation and recovery after a failed publication.
 
-routes.rs:100-495 is 400 lines of axum wrappers that differ only in which of
-(request | headers, query, peer) the handler takes; routes.rs:640-830 still
-holds three API routes inline in `dispatch` under "not yet expressed in
-api_router", including the largest handler in the file. `DocumentService` plus
-`Deref for Server` (mod.rs:86-131, 279-285) exists "while operations migrate
-to its authorization-aware API", which is two methods and nothing migrated.
+### Complete account erasure through the background worker
 
-Shape: one handler signature `async fn handle_x(&self, ctx: &RequestContext,
-request: Request<Body>, path) -> Result<Reply, Refusal>`, registered by one
-generic closure; move the three routes in; fold `DocumentService` into
-`Server`. About 450 lines.
+`server/routes.rs` exposes `/api/account/erase` and calls
+`begin_account_erasure`. This is live functionality. The method marks accounts
+as `erasing` and owned documents as `deleting`, but
+`storage/postgres/repository.rs::finish_account_erasure` has no production
+caller and `storage/worker.rs::Task` has no account-completion work.
 
-### C. One request model in the local service
+Add bounded, restart-recoverable discovery and completion of erasing accounts,
+including accounts with no documents. Wake deletion work after the request;
+finish only after owned documents are gone, preserving the existing deletion
+grace and attribution anonymization. Test restart recovery, repeat requests,
+failure/retry, zero-document accounts and completion after the last document.
+This is a lifecycle fix, not a small dead-code deletion.
 
-`PROTOCOL_VERSIONS = &[2]` (local/protocol.rs:15) and the browser only sends
-v2, yet the service keeps v1 `JobRequest` (protocol.rs:277-310, every v2 field
-as an `Option`) as its internal record and converts `BuildRequestV2` into it
-at service.rs:1951-2088 (140 lines), then re-validates the same fields against
-the `Option` mirrors at :2122-2148, re-checks scope at :2093 and :2227,
-manifest at :2101 and :2239, source identity at protocol.rs:421 and
-service.rs:2104. Previews do the same through `decode_preview`
-(protocol.rs:551-620). Dead as a result: the `protocol != 2` branches
-(service.rs:2076-2088, :2242-2246, :2823-2857, protocol.rs:552-554),
-`engine_adapter::select`/`JobAdapter` and its v1 fallback, and the TeX-era
-fields `engine/main/stem/max_passes/passes/incompatible`.
+### Test the CSP actually served
 
-Shape: `BuildRequest` (the v2 shape) is the record in `JobEntry`, with
-`builder: BuilderId` and a typed `enum BuildInputs { Quarto(QuartoJobOptions),
-Native { options } }` derived once at admission; `PreviewRequest` carries
-`enum PreviewBuilder { Quarto(..), Calepin(..) }`. Delete `JobRequest`. Also
-type the 44 string-literal `status`/`stage` sites as `enum JobState` (the
-"optional later refactor" of small-ideas finding 1) and collapse the four
-identical terminal-outcome constructors (engine_adapter.rs:134,
-builders/runner.rs:267, quarto.rs:1492, quarto.rs:1507). About 350 lines.
+`server/routes.rs::document_policy` exists only under `#[cfg(test)]`.
+Its assertions cannot detect changes to the headers emitted by `serve_shell`
+and `serve_viewer`, whose script policies differ from that test helper.
 
-### D. One binding resolver, one preview prologue, one tool prober
+Replace the disconnected helper tests with checks of actual response headers
+for both routes. Preserve the current production policy in this change;
+changing allowed script origins requires checking the renderer's loading
+requirements and is outside this simplification task.
 
-Binding resolution (resolve scoped binding, canonicalize root and compare to
-stored, hosted-or-entrypoint, manifest contains entrypoint, main under root)
-is written at engine_adapter.rs:62-92, quarto.rs:727-850 plus :978-1030 and
-:1080-1090, preview/quarto.rs:112-152, preview/calepin.rs:80-112,
-service.rs:2158-2185; only the quarto job path rechecks the preset
-`semantic_revision` before spawn. The two preview adapters share 45
-line-for-line lines of admission (preview/quarto.rs:100-152,
-preview/calepin.rs:69-112). Preset resolution is duplicated between
-builders/runner.rs:100-160 and quarto.rs:741-790. PATH lookup and `--version`
-probing exist in quarto.rs:650-712, preview/calepin.rs:148-263 (verbatim copy,
-including `read_bounded`/`join_streams`) and discovery.rs:197-250 (the only one
-using `run_confined_logged`); calepin is probed twice and its cached path
-ignored by `calepin_plan`.
+### Record the actual Quarto start time
 
-Shape: `BindingStore::resolve_for(..) -> ResolvedBinding` with
-`still_valid()`; `Previews::start` does the generic admission and adapters
-take `(&ResolvedBinding, options)`; `presets::Resolved::for_request` plus
-`apply(&mut Command)` and `recheck`; `discovery::find(name, env)` and
-`discovery::probe(path, args)` on `run_confined_logged`. About 300 lines, and
-the security check lives once.
+`local/quarto.rs::timestamp_from(_started)` ignores the start instant and
+returns the current wall-clock time. Consequently, `started_at` describes
+collection time rather than job start; it is not necessarily byte-for-byte
+equal to `completed_at`.
 
-### E. Delete the TeX layer
+Capture a wall-clock timestamp when execution starts and carry it into bundle
+provenance. Keep `Instant` for deadlines and elapsed time. Check that a delayed
+job retains its captured start timestamp and a later completion timestamp.
 
-`native.rs:9`, `engine_adapter.rs:7` and `builders/mod.rs:229` all state TeX
-builds in the browser, and `BuilderId::parse` refuses `tex|latexmk|tectonic`.
-Still present: `validate_shape` accepting those builders (protocol.rs:465, a
-job that always fails at runner.rs:82); `texlog.rs` (325 lines) reachable only
-from a dead branch in builders/diagnostics.rs:9; tex branches at
-runner.rs:173, :241; TEXMF env exports at runner.rs:20-56; discovery.rs TeX
-search dirs (109-166), makeindex/latexmk/biber banner parsing (218-361),
-`kpsewhich` (366-383) and `Cache.bin_dir/texmf_root/distribution`;
-`Distribution`, `ToolVersions`, `JobStatus.passes/incompatible`,
-`JobOptions.max_passes`, `MAX_PDF_BYTES` in protocol.rs; `--tex-path` /
-`LIBREPAPER_TEX_PATH`. Also the "retained for wire compatibility" fields
-`Capabilities.tools` and `Confinement` (always `none`), read by two Svelte
-lines. About 600 lines, pure deletion under the hard-cutover rule.
+## 2. Focused structural changes
 
-### F. `Projected` is the one read model of a document
+### Reuse request identity and common read authorization
 
-`session::{texts_of, paths_of, text_ids_of, assets_of}` (document/session) is
-a second reader of the Loro schema beside `librepaper_document_core::project`.
-It applies no path rules, so on a path collision it silently overwrites where
-`project()` suffixes `name (2).ext`; `locate_anchor`, `Sources::of`
-(resolve.rs:106) and `Store::project_files` (store.rs:832) therefore see a
-different file set than every reader, exporter and agent. Separately
-`Room::attach` and `reattach_comments` (resolve.rs:451, 520) run the full
-projection (walk and SHA-256 every text) inside `with_head` on every comment
-page read purely to get the digest that `Sequencer::projection()` already
-caches. session/shape.rs:37-44 redeclares the root constants core exports.
+The middleware already stores authentication in `RequestContext`; the account
+erasure handler reads it, while many document handlers call `viewer()` and
+repeat authentication. Let ordinary handler identity resolution consume that
+context. Preserve authentication failures as 401/503 rather than converting
+them into anonymous identities.
 
-Shape: `locate_anchor(&Projected, ..)`, `Sources::of(&Projected)`, and a
-sequencer callback such as `with_projected_head(|doc, projected| ..)` that
-provides the head and its cached projection under one lock. Read the digest
-and resolve CRDT cursors within that callback. Separate calls to
-`projection()` and `with_head()` permit an intervening edit and can tag
-positions with a digest from another revision. Session keeps mutators and
-CRDT cursor helpers and imports constants from core. About 120 lines plus
-the per-page recompute. Validate the change with a concurrent-edit regression
-test that checks attachment positions and digest describe the same revision.
+Extend the existing `entry_viewer` pattern for repeated document-read gates.
+Keep origin checks, missing/private-document behavior and route-specific role
+requirements explicit. Retain mutation-time, MCP and socket reauthorization:
+a successful middleware check does not make later `auth_failed` checks dead
+while those paths still perform fresh lookups.
 
-The core crate itself is not consumed by any wasm build (web/ has a hand-written
-JS port kept equal by a fixture); either fold it into `document/` or make
-`session` import from it, but stop letting "shared with wasm" steer design.
+Centralize repeated authentication/error response construction beside the
+existing reply helpers. Do not require one universal handler signature,
+`need_room` flag or generic refusal payload for every route. Verify account,
+visitor, share-link and automation behavior, including revoked credentials.
 
-### G. Comment writes: one caller context, typed events, no re-reads
+### Finish routing the remaining inline API handlers
 
-The caller context (creator, authority, authorization, author id, author key)
-is built identically at server/mod.rs:1208-1226 and mcp/comments.rs:167-175,
-256-260 and passed positionally to eight command constructors (AddComment
-takes 17 arguments). After a command returns the `Comment` it wrote, the server
-serialises it, `broadcast_comment_event` string-matches `payload["type"]` and
-re-reads the comment (three queries) plus `comment_state` (one) once per role,
-and the socket or HTTP caller reads it a third time: up to nine reads to
-rebuild a value in hand. Author name and key are computed in nine places
-(mod.rs:1206, socket.rs:591, mcp/comments.rs:172, routes.rs:770,
-suggestions.rs:146, mcp/operations.rs:829, `comment_author`, socket.rs:240,
-`mcp_author`). Resolve/Accept/Reject/Refine each read the row, rebuild a
-`NewAnnotation`, replace the whole row, then read it again to flip one
-boolean.
+Move the account-erasure, list and document-detail handlers from
+`server/routes.rs::dispatch` into the existing `api_router` structure. This
+removes the second location for ordinary API dispatch and its authentication
+gates. Preserve methods, paths, origin checks, docs-host restrictions and
+method-error behavior. Use the existing typed axum wrappers; keep
+`DocumentService` as the store/rooms/worker boundary.
 
-Shape: `CommentWriter` built once per request; `run_comment_command` returns
-`enum CommentEvent` with `view(&self, viewer)`; `Viewer::creator_name(slug)`
-computed once in `viewer()`; a catalogue `set_resolved_authorized(..)
-RETURNING`. About 250 lines and six to nine round trips per mutation.
+### Use one validated local build model
 
-### H. Narrow the public surface so the lint can work
+`local/protocol.rs` advertises only protocol 2, but
+`local/service.rs::handle_jobs_post` converts `BuildRequestV2` into the old
+`JobRequest` with optional mirrors of required fields, then validates those
+mirrors again. Use an internal validated request with required fields and
+explicit Quarto/native inputs; have the queue and runners consume it.
+Apply the same approach to preview decoding. Reject unsupported versions at
+the wire boundary and remove the unreachable v1 dispatch fallback and
+`JobAdapter` once no admitted or restored job needs them.
 
-`lib.rs` re-exports `postgres`, `session`, `quarto`, `results` and `pub mod
-log`. Integration tests use only `AccountRecord`, `PostgresCatalog`,
-`PostgresOptions` and a few log types; nothing references
-`librepaper::quarto` or `librepaper::results`. Verified dead behind that
-surface: `documents_by_owner(_page)`, `check_storage_admission`,
-`asset_sizes_by_digests`, `replace_suggestion_authorized`,
-`supersede_proposals`, `forget_marks`, `complete_asset`,
-`retained_asset_bytes`, `annotation_count`, `apply_annotation_batch` and its
-two types, `label_archive_keys`, `access_role`, `set_grant`, `remove_grant`,
-`create_share_link`, `revoke_share_link`, `Sequencer::{is_warm, recover,
-drop_cache, subscribers}`, `quarto::classify_freshness`, the session helpers
-`cursor_at_path`, `replace_text`, `apply_edits`, `main_id`, `has_meta`,
-`mark_meta`, `latex_engine`, `text_of`, `Presence` (154 lines), and the whole
-admission block sync.rs:64-336 (the sequencer imports directly since the log
-cutover). `document/hunks.rs:45` carries a stale `#![allow(dead_code)]`
-("waits for Phase 2"; proposals.rs:49 already consumes it).
+Preserve scope checks before local reads, manifest verification, builder
+option validation, source identity and execution-time binding checks. The
+native runner still uses engine options from presets: remove obsolete fields
+only when their live meaning has moved into the new model. Combine identical
+terminal-failure construction here, preserving snapshot, generation and
+provenance fields. Verify supported builds/previews, rejected versions,
+queued jobs, cancellation and persisted job-state handling.
 
-Shape: re-export by name, make the rest `pub(crate)`, drop the allow, switch
-remaining allows to `#[expect]`, put `[lints.clippy]` in Cargo.toml. About 900
-lines fall out, and the lint stays honest afterwards.
+### Consolidate binding checks and bounded tool probes
 
-## Medium
+`local/preview/quarto.rs` and `local/preview/calepin.rs` repeat scoped binding,
+canonical-root and entrypoint checks. Extract those common checks, leaving
+Quarto's declared inputs, frozen policy and source verification in its adapter.
+Use the same checks in build admission and immediately before execution;
+sharing their implementation must not eliminate checks across a queue delay.
 
-- **Sequencer preambles and fan-outs** (log/sequencer.rs). The readiness check
-  (fenced, unreadable, build cache) is copied five times (1844, 2095, 2139,
-  2167, 2387); the subscriber fan-out loop six times (1776, 2580, 2655, 2677,
-  2710, 2740); row staging twice (1439-1477, 1894-1924); `close_fenced` and
-  `CompactionGate::fence` are identical. `unreadable: Option<String>` plus
-  `fenced: Option<String>` plus `cache`/`projection` `Option` pairs encode a
-  state machine by hand. Shape: `enum Health`, `projection` inside `Cache`,
-  `send_all(..)`, `Inner::stage(..)`. About 250 lines.
-- **Writer-epoch fence spelled four times** (ownership.rs:58,
-  document_log.rs:265, :317, :495), two with `singleton=true` and two with
-  `singleton`. `begin_fenced_flush`/`flush_log_row` are test-only twins of the
-  production charged path. `seed/activity.rs:531` writes log rows directly,
-  bypassing the sequencer and its pending budget; decide whether that is
-  intended and say so.
-- **One storage error.** `collaboration::Error` and `source::Error` differ by
-  one variant, have one caller each, and both callers `.to_string()`. Ten error
-  types and thirteen `From` impls in storage/ and log/; worker.rs has 20
-  `map_err(|e| e.to_string())`. Shape: `storage::Error { Database, Blob,
-  Archive, Io, Invalid }`, wrapped once by the sequencer errors. Do not add
-  thiserror for this; the manual impls are short.
-- **`budget.rs` and `pending.rs` are one bounded-counter primitive** written
-  twice (compare-exchange loop, `Notify` wait, `Reservation` with `Drop`,
-  `snapshot()` JSON). Shape: `log::pool::Pool` with `Lease`. About 90 lines.
-- **`_in_transaction` twins in annotations.rs** (1056/1073/1089, 896/916,
-  832/809, 1008/962) where `repository.rs:1101` already shows the
-  executor-generic shape; two SQL conventions in one directory (`const
-  COLUMNS` + runtime `query_as` vs checked macros); the keyset clause spelled
-  five times. Raw SQL outside the catalogue at worker.rs:451 (duplicating
-  document_log.rs:645) and maintenance.rs:29, :44, :158.
-- **`LogCatalog` trait**: 11 methods, fake implements 6; `log_head`/`log_base`
-  exist only for `admit`, which holds the concrete type; hand-written
-  `BoxFuture` while `BlobStore` uses `async_trait`.
-- **Two label commands.** `history::Label` (history.rs:100-160) and
-  `TakeLabel` (room/label.rs:77-150) both write a `NewLabel` naming head;
-  `Label` decodes the digest by hand and has no `replay`. Keep `TakeLabel`.
-- **`client_seq_of` four times with two semantics** (proposals.rs:302,
-  store.rs:493, history.rs:92 use bytes 0..8; agent.rs:534 uses 8..16;
-  comments.rs:1888 a fifth inline). `Head::prepare` should derive it from the
-  `Uuid`. `fresh_peer` duplicated verbatim; `label_for_request` (agent.rs:667)
-  duplicates `PostgresCatalog::label_by_request`.
-- **Newtypes worth having**: `TreeDigest([u8; 32])` (hex decoded by hand at
-  seven sites; `Evidence` carries hex while `NewLabel` carries bytes),
-  `Frontier` (16 `Frontiers::decode` sites, hand serde in annotation.rs:51),
-  `Principal { Account, Link, Visitor, Agent }` (nine `format!` sites, four
-  prefixes, one constant), and `comment_id: Uuid` through `RoomCommand`
-  (parsed in every arm of `run_comment_command`, mod.rs:1335-1484). Document
-  and account ids are already `Uuid` almost everywhere; do not newtype those.
-- **`document/store.rs` vestiges**: `get_checked` aliases `get_result`;
-  `open_with_catalog` cannot fail; `owned_by(_owner_key, ..)` ignores its
-  argument yet nine call sites thread it; `IndexEntry.size` always 0,
-  `bookmark_link_hash` always `None`, `sha` is `update_sequence.to_string()`;
-  `PutError`/`ModifyError` hand-roll a status table `WriteError::status()`
-  already is.
-- **`room/agent.rs` validates by cloning the whole tree** (`apply_patches`
-  at 255-350) and discards the result (594-606); MCP repeats the same under
-  the lock. `AgentAuthority` to `MutationActor` to `MutationAuthorization` to
-  `Authority` in one function. Shape: `validate_patches(&tree, &req) ->
-  Result<usize>`.
-- **Four principal shapes in server/**: `Viewer`, `Caller` (an `Identity`
-  flattened to five strings and rebuilt), `MutationActor` (hand-built six
-  times with `policy_editor` sometimes literally `true`), `Authority`. Shape:
-  `Viewer::mutation_actor(policy_editor)`.
-- **Two socket pump loops** (`run_socket` socket.rs:312-1335,
-  `run_chat_socket` chat/mod.rs:98-238) each implement write-timeout draining,
-  Close, ping, link-expiry, connection registry and budget admission.
-- **`service.rs` split** (local, 3.2k lines): http plumbing (~350), job table
-  and queue (~1300), pairing (~450), bindings, agents/zotero, previews,
-  capabilities. `management.rs` and `assistant.rs` already show the
-  `&Inner` + `pub(super)` pattern. The local service also duplicates
-  `write_json`, `plain`, `set`, `header_str` from server/reply.rs and
-  hand-matches path segments inside an axum fallback instead of routing.
-- **Agent packages**: `assistant/` and `automation/` import each other by
-  intent; fold into one `agent/` package; move `agent_query.rs` under `room/`
-  beside `agent.rs` and `agent_view.rs`; `QuerySnapshot` is built in three
-  places. Three unrelated `Task` types, two `Admission`, two `Capabilities`,
-  three `Reservation`, two `Retry`, two `Role`.
-- **Quarto in three modules by history**: top-level `quarto/` (parser,
-  fingerprint) is only used by local/; `local/quarto.rs` is bindings +
-  execution + collection in one 3.5k file with `#[cfg(test)]` production-shaped
-  functions (`import_artifact`, 105 lines) kept for `quarto_tests.rs`; two
-  `computation_fingerprint`s. Shape: `local/quarto/{parse,bindings,run,collect}.rs`.
-- **Test fixtures**: `struct Deployment` + `deployment()` is defined in eight
-  files, the 12-table `TRUNCATE` literal appears 20 times in seven files, three
-  `catalog()` helpers, and `tests/` duplicates `blobs/connected/now_unix/
-  bearer_token/truncate` between its two Postgres files. `log/recovery.rs`
-  (2k) is a test file with a production name; `postgres/mod.rs` is 283 lines
-  of code and 1,858 of inline tests. Shape: `src/tests/support.rs` with
-  `fresh_catalog()`, `TRUNCATE_ALL`, `DeploymentBuilder`; `tests/common/`.
-  About 500 lines and the table list stops drifting.
-- **Config**: `extensions` and `max_replies` are set and never read; the
-  advanced YAML is parsed twice (cli/mod.rs:263, :283); ten runtime
-  `LIBREPAPER_*` knobs bypass clap and never appear in `--help`; the
-  chat/document/conversation triple is read in four modules (17 sites).
-- **CLI export** mirrors the comment page wire shape by hand (export.rs:555)
-  against a `json!` on the server and a differently named in-memory
-  `CommentPage`; `Walk` uses raw headers instead of `get_as`.
+Share bounded executable/version probing among `local/discovery.rs`,
+`local/quarto.rs` and `local/preview/calepin.rs`, retaining tool overrides,
+search precedence, output limits, timeout and process cleanup. Pass the
+resolved Calepin executable to its command plan instead of discovering it
+again. Preserve preset grants and check the admitted semantic revision before
+spawn for preset-backed builders. Test binding replacement/revocation, preset
+changes during queueing and hung probes.
 
-## Small and mechanical
+### Remove obsolete direct-TeX builder code
 
-Each under an hour; do them when touching the file, or in one sweep.
+`local/builders/mod.rs::BuilderId::parse` accepts Typst, Pandoc and Calepin;
+Quarto has its own dispatch. Remove direct `tex`/`latexmk`/`tectonic` acceptance
+from request validation, unreachable native-runner and diagnostic branches,
+and `local/texlog.rs` after its dead caller is removed. Retire TeX-only pass
+counters and discovery metadata that no supported builder consumes.
 
-- `util::sha256_hex`: replaces `digest_of_bytes`, `results::sha256`,
-  `quarto::sha256`, two `hex_sha256`, `agent_query::digest`,
-  `device::digest_of`, `pairing::hash_token`, and 38 inline
-  `hex::encode(Sha256::digest(..))`.
-- One clock: `auth::now_unix` and `quarto::now_unix` duplicate
-  `util::now_unix`; `quarto::timestamp` emits fractional seconds where util is
-  to-the-second; `quarto::timestamp_from(_started)` ignores its argument so
-  every bundle has `started_at == completed_at`; `chat/hub::now`,
-  `backup::now`, `lifecycle::unix_now`, `journal::now` (assistant/ is the only
-  `u64` user).
-- One private-file writer: keep `private_files::publish`, add a create-only
-  mode for the auth key, delete `cli/tokens::write_private_file`,
-  `backup::write_private_file` (same name, not atomic),
-  `journal::publish_durable_private`, the inline `presets::save`, and the
-  tmp+rename loops in `BindingStore::save`, `discovery::save_cache`,
-  `persist_quarto_job`, `write_hosted_*`, `persist_frozen_cache_identity`.
-- One constant-time compare (`pairing.rs:258`, `service.rs:1460`,
-  `service.rs:1684`).
-- One process-group kill: move `quarto::terminate_process_group` (spawns a
-  `kill` binary) next to `native::kill_tree`.
-- `local/quarto.rs:2750` hand-implements MD5 (70 lines); `md-5` is already in
-  Cargo.lock.
-- `engine_adapter::quarto_shared_paths` is `#[allow(dead_code)]` with no
-  callers (85 lines).
-- `common_prefix/suffix` twice (locate.rs:267 over char, resolve.rs:359 over
-  u16); `is_html` three times; `by_words` reimplements `Search::find` scoring
-  without the `DECISIVE` margin, so "ambiguous" means two different things;
-  `Search.files` is dead (`let _ = self.files;`); `AnchorStatus::parse` and
-  `ResolutionDiagnostic::parse` have no callers.
-- `decode_update` validates by importing into a scratch doc, then
-  `apply_update` imports again; `text_at/string_at/id_of_path` defined three
-  times; `agent.rs:524` calls `apply_path_edits` (exports a diff per file) and
-  discards it where `apply_edits_at` is meant.
-- `query_map` and `json_body<T>(request, limit)` helpers: the form-urlencoded
-  collect is written 11 times, `to_bytes` + `from_slice` 14 times with eight
-  different literal limits and four error shapes.
-- `.max(0) as u64` on columns with `CHECK (>= 0)` at seven sites; three
-  identical `note_compacted` marshalling blocks in worker.rs.
-- `document_log.rs:420` bounds a row by `DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES`,
-  a fourth spelling of the row bound the sequencer comment says must agree.
-- `FsStore` (blob.rs:299) is a 46-line delegation wrapper for one caller;
-  `BlobStore::delete` loops per key while worker.rs says it batches.
-- `POST /api/documents/{slug}/opened` has no caller; `upsert_account_job`
-  forwards; underscore-kept unused params at mod.rs:1168, suggestions.rs:47,
-  mcp/render.rs:413, mcp/comments.rs:132, :135, mcp/operations.rs:455, :770.
-- `Room::take_label` vs `take_label_reporting_replay`, `command` vs
-  `command_reporting_replay`: return `(output, replayed)` once.
-- `room/mod.rs:726-738` one-line wrappers over `document::render`.
-- Three state-home resolvers, two loopback health probes, `truncate_utf8`
-  duplicating `http::truncate` (which belongs in util).
+Keep browser LaTeX support and Quarto's PDF tooling. Keep the live tool-search
+configuration: despite its name, `--tex-path` currently supplies search
+directories for Typst, Pandoc and Calepin. `Capabilities.tools` and
+`Confinement` also have live settings-UI consumers and are outside this cull.
+Validate supported builder discovery, options, diagnostics and outputs, plus
+explicit rejection of direct-TeX requests.
 
-## What to leave alone
+### Use the canonical projection for file reads and comment attachment
 
-- `Result<_, String>` in cli/, local/ and assistant/ (296 signatures). Those
-  errors terminate in `die` or a JSON message to the browser; a typed error
-  there adds code without a consumer. The convention worth changing is the
-  server's, where `WriteError` exists and is bypassed.
-- The sequencer command boundary, `Projected`, and the engine-neutral preview
-  `Watch`/`Plan` design. They are the foundations the findings above build on.
-- `assistant/task.rs` keeping `serde_json::Value`: its fingerprints are
-  persisted (small-ideas finding 12).
-- `Uuid` for document and account ids: already the norm; a newtype buys little.
-- Not adopting anyhow or thiserror as a blanket rule.
+`document/session` schema readers and `librepaper_document_core::project`
+disagree on path collisions. Migrate `room/resolve.rs::Sources::of`, anchor
+lookup and `document/store.rs::project_files` to the canonical projected file
+set, retaining stable file IDs and the CRDT cursor APIs. Import the shared
+root constants instead of redeclaring them.
 
-## Suggested order
+Avoid recomputing the full projection on every comment page. Provide head
+and cached projection through one sequencer callback, for example
+`with_projected_head(|doc, projected| ..)`, under the same lock. Resolve
+cursors and read the digest inside that callback: independent `projection()`
+and `with_head()` calls permit mixed revisions. Keep the document-core crate.
+Test colliding/invalid paths, assets, renamed files, cursor resolution and
+attachment/digest consistency across concurrent edits.
 
-1. The live defects, each a small targeted change.
-2. H (narrow the public surface) first, because it makes the lint report the
-   rest for free, then E (TeX cull), both mostly deletion.
-3. A and B together (server prologue, refusal type, route migration).
-4. C, then D (local request model, then binding and probe consolidation),
-   then the `service.rs` split, which moves less once C and D have landed.
-5. F and G with the newtypes (`TreeDigest`, `Frontier`, `Principal`, comment
-   id) done first, since both are easier typed.
-6. The sequencer helpers, one storage error, the pool primitive, the test
-   fixture module.
-7. The small sweep: sha256, clocks, private writes, constant-time compare.
+### Reduce comment-write plumbing and repeated event reads
+
+Group command caller data into a small context built from the existing
+`Viewer` authority/authorization methods, reducing long positional
+constructors. Keep attribution, session generation, policy ceiling and
+link-bounded authority distinct; do not introduce another principal model.
+Parse comment UUIDs at transport boundaries and carry them through internal
+command dispatch.
+
+In `room/comments.rs`, event enrichment rereads a comment and collection state
+for editor broadcast, reader broadcast and the initiating caller. Prepare the
+required comment data once per mutation and derive the viewer-specific forms
+from it. Preserve attachment/reply enrichment and reader redaction; collection
+counts describe the whole collection and cannot be inferred from one returned
+comment. Use a typed internal event where it removes JSON inspection, while
+keeping the wire shape. Check that query counts no longer grow per audience
+and that suggestions and private anchors never reach readers.
+
+For resolve/unresolve, replace whole-row reconstruction with an authorized
+update returning the needed row. Keep proposal accept/reject/refine as full
+semantic commands: their work is not merely changing one boolean.
+
+### Narrow visibility and delete demonstrated unused production APIs
+
+`lib.rs` exposes whole modules for integration tests and fuzz targets. Narrow
+individual items or use explicit exports so production-only dead code becomes
+visible to the compiler. Preserve the APIs actually used by
+`crates/librepaper/tests`, `tools/fuzz` and benchmarks, not just unit tests.
+
+Repository searches found no callers for `documents_by_owner`,
+`documents_by_owner_page`, `check_storage_admission`, `asset_sizes_by_digests`,
+`replace_suggestion_authorized`, `supersede_proposals`, `forget_marks` and
+`apply_annotation_batch`. Remove these methods and their exclusively owned
+support types. Also remove the uncalled `engine_adapter::quarto_shared_paths`,
+session `Presence`, and unused `AnchorStatus::parse` and
+`ResolutionDiagnostic::parse` methods. Drop the stale module-level dead-code
+allowance in `document/hunks.rs` and address any actual warnings it reveals.
+
+Keep test/benchmark support such as `Sequencer::is_warm`, `drop_cache`,
+`subscribers`, catalogue fixture writers and annotation-count assertions;
+restrict their compilation/visibility where practical. The old session
+admission path is exercised by `tools/fuzz/fuzz_targets/update.rs`: replace
+that target with coverage of the live admission/import path before retiring
+the obsolete implementation. Likewise preserve or migrate fuzz coverage using
+`session::replace_text` and `text_of`. Compile the integration, benchmark and
+fuzz targets affected by these changes.
+
+## 3. Local refactors with a concrete payoff
+
+- **Share label creation.** Replace `server/history.rs::Label` with the
+  `room/label.rs::TakeLabel` path, including its replay lookup. Preserve
+  attribution, request IDs, reason and the Quarto checkpoint's comparison
+  against the digest actually captured by the label. Check duplicate requests
+  and concurrent edits during checkpoint creation.
+- **Avoid discarded patch copies.** Extract validation from
+  `room/agent.rs::apply_patches` for `AgentPatchCommand::evaluate`, which
+  discards the cloned result. Retain result construction for MCP candidate
+  creation, which consumes `AppliedSource`. Keep validation under the
+  sequencer lock and preserve range, identity, dependency, overlap and final
+  size checks. Use `apply_edits_at` where `apply_patch_edits` discards the
+  per-file diff and `Head::prepare` already exports the command diff.
+- **Share transaction-local queries.** Factor identical annotation reads
+  and reply-summary queries into executor-generic internal helpers. Retain
+  transaction-taking entry points so commands read their uncommitted writes
+  without acquiring a second pool connection. Extract the repeated writer
+  epoch check into a helper operating on the caller's transaction, preserving
+  the writer/document/authorization lock order and scratch accounting.
+- **Reuse the superseded-base deadline query.** The worker's sweep and the
+  catalogue's pending-work scan both query the next snapshot deletion
+  deadline. Give that query one catalogue implementation, preserving bounded
+  sweeps and rescheduling. Do not move all maintenance SQL merely for location.
+- **Extract exact sequencer repetition.** Share identical subscriber fan-out
+  and fence/close code and repeated readiness checks where lock ownership and
+  failure behavior match. Keep `fenced` and `unreadable` distinct, retain lazy
+  cache warming and existing queue-pressure behavior. This does not require
+  a new health state machine or changing memory-pool ownership.
+- **Simplify the store's internal API.** Remove `get_checked` in favor of
+  `get_result`; make the infallible, non-awaiting `open_with_catalog`
+  constructor synchronous and infallible; remove the ignored owner-key
+  parameter from `owned_by`. Preserve account-based ownership checks.
+  Leave serialized `IndexEntry` fields out of this cleanup.
+- **Trim the catalogue test seam.** Remove unused `log_head` and `log_base`
+  methods from `LogCatalog`: admission calls the concrete catalogue directly.
+  Keep the trait's production methods and explicit future/lifetime signatures.
+- **Share test setup that really is identical.** Centralize schema reset SQL
+  and repeated deployment construction within the unit-test and integration-
+  test suites. Preserve database opt-ins, serialization locks, writer leases,
+  resource lifetimes and scenario-specific configuration. A shared reset
+  list must not introduce concurrent truncation of another test's database.
+- **Split the local modules along existing responsibilities.** After the
+  request-model cleanup, extract job queue/admission and pairing handlers from
+  `local/service.rs` using the existing `&Inner`/`pub(super)` pattern. Separate
+  binding persistence and bundle collection from `local/quarto.rs` execution.
+  Keep this mechanical: no routing rewrite, package merge or fingerprint
+  change. The local computation-fingerprint function already delegates to
+  the parser's implementation.
+
+## 4. Small cleanups worth retaining
+
+- Replace the handwritten `local/quarto.rs::md5_hex` with a direct dependency
+  on the appropriate MD5 crate. Lockfile presence alone is not a usable direct
+  dependency. Preserve Quarto freezer compatibility with known digest vectors
+  and existing frozen-cache tests; MD5 remains a format requirement here.
+- Share the equal-length byte comparison used by pairing tokens and service
+  codes. Keep trimming in the code-specific caller and digest parsing/length
+  checks at their existing boundaries.
+- Consolidate equivalent private-file replacement writers, starting with the
+  journal and CLI token writer. Preserve relative-path handling, private
+  creation, temporary-file cleanup, file-handle closure before rename and
+  platform-specific directory syncing. Backup files and auth keys currently
+  use create-only semantics; do not route them through an overwriting rename.
+  Keep caller locking and durability requirements explicit.
+- Reuse named SHA-256 hex helpers when their inputs and encoding are identical.
+  Preserve domain prefixes, framing and persisted fingerprint bytes. This is
+  local cleanup, not a requirement to replace every inline hash expression.
+- Remove `_tracked_file_count = inventory.files.len()` from Quarto collection.
+  Keep `_execution_inventory_before`'s verification until a validation-only
+  pass preserves `read_verified_manifest` checks over the effective inputs at
+  the same execution stage; only its unused aggregate digest is expendable.
+- Remove the unused `Search.files` field in `room/locate.rs`. Keep initial
+  rendered-selection matching and existing-comment reattachment algorithms
+  separate: they operate on different evidence and character representations.
+
+## Implementation order
+
+1. Land the behavior fixes independently, with focused regression coverage.
+   Account erasure is its own lifecycle change, not part of a mechanical sweep.
+2. Narrow visibility and remove unused APIs; migrate affected fuzz coverage.
+3. Simplify the local request model, then remove obsolete direct-TeX paths and
+   consolidate binding/probe logic. Split the local modules afterward.
+4. Consolidate request identity/error handling and finish the inline API routes
+   in separate changes. Preserve commit-time authorization throughout.
+5. Migrate canonical projection reads, then reduce comment-event reads and
+   command plumbing. Test concurrency and audience redaction at each step.
+6. Apply the local refactors and small cleanups independently as their modules
+   are touched. No blanket error-library migration, newtype rollout or
+   repository-wide helper sweep is required.
