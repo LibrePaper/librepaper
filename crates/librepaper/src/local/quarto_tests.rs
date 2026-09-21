@@ -683,3 +683,120 @@ fn project_scope_accepts_only_website_or_book() {
     .expect("config");
     assert!(validate_project_scope(project.path()).is_err());
 }
+
+#[test]
+fn a_bounded_read_honours_a_limit_below_the_output_ceiling() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("payload.bin");
+    let payload = vec![b'q'; 4096];
+    std::fs::write(&path, &payload).expect("payload");
+
+    // Exactly at the supplied limit is allowed, and the whole file comes back.
+    let bytes = read_file_bounded_to(&path, "payload", payload.len()).expect("at the limit");
+    assert_eq!(bytes, payload);
+
+    // One byte over it is refused.
+    let error = read_file_bounded_to(&path, "payload", payload.len() - 1)
+        .expect_err("over the supplied limit");
+    assert!(error.contains("exceeds its size limit"), "{error}");
+
+    // The default ceiling still accepts the same file.
+    assert_eq!(
+        read_file_bounded(&path, "payload").expect("under the ceiling"),
+        payload
+    );
+}
+
+/// The stat check alone does not bound the read. A regular file whose
+/// reported length understates its contents has to be refused by the read
+/// too, which it was not while the read used the 64 MiB Quarto output
+/// ceiling instead of the supplied limit.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_bounded_read_enforces_the_limit_when_the_stat_size_understates_the_file() {
+    let path = Path::new("/proc/self/environ");
+    let actual = std::fs::read(path).expect("environ readable");
+    assert!(actual.len() > 64, "environ is too small to bound");
+    assert_eq!(
+        std::fs::symlink_metadata(path).expect("stat").len(),
+        0,
+        "procfs is expected to report a zero length"
+    );
+
+    // Report only the length on failure; the contents are this process's
+    // environment.
+    let error = read_file_bounded_to(path, "environ", 64)
+        .map(|bytes| bytes.len())
+        .expect_err("a read past the supplied limit must be refused");
+    assert!(error.contains("exceeds its size limit"), "{error}");
+}
+
+/// The render path itself, end to end, through the shared subprocess
+/// supervisor. Nothing else covers `run_job_with_bindings`.
+#[tokio::test]
+#[ignore = "requires installed Quarto"]
+async fn real_quarto_render_reports_success_and_retains_a_failure_log() {
+    async fn render(source: &str) -> JobOutcome {
+        let state = tempfile::tempdir().expect("state");
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("paper.qmd"), source).expect("source");
+        let bindings = BindingStore::new(state.path());
+        let binding = bindings
+            .grant(
+                "https://paper.example",
+                "paper",
+                project.path(),
+                "paper.qmd",
+            )
+            .expect("binding");
+        let workspace_root = tempfile::tempdir().expect("workspace");
+        std::fs::create_dir_all(workspace_root.path().join("out")).expect("out");
+        let request: JobRequest = serde_json::from_value(serde_json::json!({
+            "protocol": 2,
+            "kind": "quarto",
+            "project": "paper",
+            "origin": "https://paper.example",
+            "snapshot": "revision",
+            "generation": 1,
+            "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html"},
+            "manifest": [{
+                "path": "paper.qmd",
+                "sha256": crate::results::sha256(source.as_bytes()),
+                "size": source.len() as u64,
+            }],
+        }))
+        .expect("request");
+        let (_cancel_tx, cancel) = watch::channel(false);
+        let (progress, _progress_rx) = mpsc::unbounded_channel();
+        run_job_with_bindings(
+            request,
+            Workspace {
+                root: workspace_root.path().to_path_buf(),
+            },
+            cancel,
+            progress,
+            &bindings,
+        )
+        .await
+    }
+
+    // A Quarto that runs to completion reports its own exit status, and is
+    // neither cancelled, timed out nor killed by the supervisor. What the
+    // collector then makes of the artifact is a separate stage with its own
+    // coverage, so this asserts the process outcome rather than the bundle.
+    let done = render("---\nformat: html\n---\n\n# Rendered\n").await;
+    assert_eq!(done.status.exit, 0, "{:?}", done.status);
+    assert_ne!(done.status.status, "canceled", "{:?}", done.status);
+
+    // A failing render keeps a non-zero exit and the end of Quarto's output,
+    // which is where the error is. Retaining the head instead would cut the
+    // message off, and decoding a byte-truncated log used to be able to
+    // panic the worker outright.
+    let failed = render("---\nformat: html\n---\n\n{{< include missing.qmd >}}\n").await;
+    assert_eq!(failed.status.status, "failed", "{:?}", failed.status);
+    assert_ne!(failed.status.exit, 0, "{:?}", failed.status);
+    assert!(
+        !failed.status.log_tail.is_empty(),
+        "a failed render must retain its log"
+    );
+}

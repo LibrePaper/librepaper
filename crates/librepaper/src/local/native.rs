@@ -136,8 +136,10 @@ fn kill_tree(pid: Option<u32>) {
             .output();
     }
 }
-/// The tail of a log/byte stream, bounded to `limit` bytes, on a UTF-8
-/// boundary where the input is text.
+/// The tail of a log/byte stream, bounded to `limit` bytes. The cut is made
+/// on a byte index, which for text may land inside a character; callers
+/// decode lossily, so a split character becomes a replacement character
+/// rather than a panic.
 fn truncate_tail(bytes: Vec<u8>, limit: usize) -> Vec<u8> {
     if bytes.len() <= limit {
         return bytes;
@@ -191,6 +193,65 @@ mod tests {
                 .0,
             RunOutcome::TimedOut
         ));
+    }
+
+    /// The Quarto render reads its log through this supervisor. A byte-index
+    /// cut can land inside a multibyte character; the log is carried as bytes
+    /// and decoded lossily for exactly that reason. Truncating the decoded
+    /// `String` at the same byte index instead panics on a non-boundary, and
+    /// in the render path that panic killed the only local worker.
+    #[test]
+    fn a_bounded_log_cut_inside_a_character_decodes_instead_of_panicking() {
+        let text = "é".repeat(100);
+        assert_eq!(text.len(), 200, "each character is two bytes");
+        // An odd limit forces the cut between the two bytes of a character.
+        let tail = truncate_tail(text.into_bytes(), 51);
+        assert_eq!(tail.len(), 51);
+        let decoded = String::from_utf8_lossy(&tail);
+        assert!(decoded.starts_with('\u{fffd}'), "{decoded:?}");
+        assert!(decoded.ends_with('é'), "{decoded:?}");
+        assert_eq!(decoded.matches('é').count(), 25);
+    }
+
+    /// A child that exits while a descendant still holds its stdout must not
+    /// strand the caller. The group is killed on every exit path and the pipe
+    /// joins are bounded, so this returns promptly rather than waiting for
+    /// the descendant.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_descendant_holding_stdout_after_the_parent_exits_does_not_stall() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            // The background sleep inherits stdout and outlives the shell.
+            .arg("sleep 45 & echo parent-done")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0);
+        let (_sender, mut cancel) = watch::channel(false);
+
+        let started = Instant::now();
+        let (outcome, log) = tokio::time::timeout(
+            Duration::from_secs(20),
+            run_confined_logged(command, &mut cancel, started + Duration::from_secs(45)),
+        )
+        .await
+        .expect("the supervisor must not wait for the descendant");
+        let elapsed = started.elapsed();
+
+        assert_eq!(outcome, RunOutcome::Exited(0));
+        assert!(
+            String::from_utf8_lossy(&log).contains("parent-done"),
+            "the parent's own output is still retained"
+        );
+        // The descendant holds the pipe for 45 seconds. Killing the group
+        // closes it at once; the bounded join is the backstop if a process
+        // outside the group ever holds it.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "returned only after {elapsed:?}"
+        );
     }
 
     #[test]

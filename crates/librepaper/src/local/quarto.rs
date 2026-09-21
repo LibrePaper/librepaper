@@ -1116,60 +1116,32 @@ pub async fn run_job_with_bindings(
     {
         return failed(&request, &job_id, "binding revoked before execution");
     }
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            return failed(
-                &request,
-                &job_id,
-                &format!("could not start Quarto: {error}"),
-            )
+    // One supervisor for every subprocess the service starts: it kills the
+    // whole group on every exit path so a descendant holding a pipe cannot
+    // strand the single worker, bounds the pipe joins, and retains the tail
+    // of the run as bytes, which is what a failed render is read for.
+    let deadline = Instant::now() + Duration::from_secs(request.options.deadline_seconds.max(1));
+    let (outcome, log_bytes) =
+        super::native::run_confined_logged(command, &mut cancel, deadline).await;
+    let mut log = String::from_utf8_lossy(&log_bytes).into_owned();
+    let exit = match outcome {
+        super::native::RunOutcome::Exited(code) => code,
+        super::native::RunOutcome::Canceled => return canceled(&request, &job_id),
+        super::native::RunOutcome::TimedOut => {
+            return failed(&request, &job_id, "Quarto render exceeded its deadline")
+        }
+        super::native::RunOutcome::SpawnFailed(error) => {
+            return failed(&request, &job_id, &format!("could not run Quarto: {error}"))
         }
     };
-    let deadline = Duration::from_secs(request.options.deadline_seconds.max(1));
-    let stdout_task = child
-        .stdout
-        .take()
-        .map(|pipe| tokio::spawn(read_bounded(pipe)));
-    let stderr_task = child
-        .stderr
-        .take()
-        .map(|pipe| tokio::spawn(read_bounded(pipe)));
-    let status = tokio::select! {
-        _ = wait_cancel(&mut cancel) => {
-            terminate_process_group(&mut child).await;
-            let _ = child.wait().await;
-            join_streams(stdout_task, stderr_task).await;
-            return canceled(&request, &job_id);
-        }
-        result = tokio::time::timeout(deadline, child.wait()) => match result {
-            Ok(Ok(status)) => status,
-            Ok(Err(error)) => {
-                let _ = join_streams(stdout_task, stderr_task).await;
-                return failed(&request, &job_id, &format!("Quarto process failed: {error}"));
-            }
-            Err(_) => {
-                terminate_process_group(&mut child).await;
-                let _ = child.wait().await;
-                join_streams(stdout_task, stderr_task).await;
-                return failed(&request, &job_id, "Quarto render exceeded its deadline");
-            }
-        },
-    };
-    let (stdout_bytes, stderr_bytes) = join_streams(stdout_task, stderr_task).await;
-    let mut log = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    log.push_str(&String::from_utf8_lossy(&stderr_bytes));
-    if log.len() > MAX_LOG_BYTES {
-        log.truncate(MAX_LOG_BYTES);
-    }
-    if !status.success() {
+    if exit != 0 {
         return JobOutcome {
             status: JobStatus {
                 id: job_id,
                 kind: "quarto".into(),
                 status: "failed".into(),
                 stage: "rendering".into(),
-                exit: status.code().unwrap_or(-1),
+                exit,
                 error: Some("Quarto render failed".into()),
                 snapshot: request.snapshot,
                 generation: request.generation,
@@ -1483,17 +1455,6 @@ pub(crate) async fn terminate_process_group(child: &mut tokio::process::Child) {
             .await;
     }
     let _ = child.kill().await;
-}
-
-async fn wait_cancel(cancel: &mut watch::Receiver<bool>) {
-    loop {
-        if *cancel.borrow() {
-            return;
-        }
-        if cancel.changed().await.is_err() {
-            return;
-        }
-    }
 }
 
 async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R) -> Vec<u8> {
@@ -3520,11 +3481,14 @@ fn read_file_bounded_to(path: &Path, description: &str, limit: usize) -> Result<
         return Err(format!("{description} exceeds its size limit"));
     }
     let file = File::open(path).map_err(|error| format!("{description}: {error}"))?;
-    let mut bytes = Vec::with_capacity(metadata.len().min(MAX_QUARTO_OUTPUT_BYTES as u64) as usize);
-    file.take(MAX_QUARTO_OUTPUT_BYTES as u64 + 1)
+    // The supplied limit governs the read as well as the stat: a caller that
+    // asks for a smaller bound than the Quarto output ceiling gets it, and a
+    // file that grows between the two is still refused.
+    let mut bytes = Vec::with_capacity(metadata.len().min(limit as u64) as usize);
+    file.take(limit as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("{description}: {error}"))?;
-    if bytes.len() > MAX_QUARTO_OUTPUT_BYTES {
+    if bytes.len() > limit {
         return Err(format!("{description} exceeds its size limit"));
     }
     Ok(bytes)

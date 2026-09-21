@@ -292,6 +292,55 @@ struct JobEntry {
     finished_at: Option<Instant>,
 }
 
+impl JobEntry {
+    /// Still owed an answer: queued, or handed to the runner and not back
+    /// yet. The reaper only expires a job that is not pending, and starting
+    /// a preview waits for one on the same binding, so every path that
+    /// takes a job out of circulation has to settle `finished_at`.
+    fn is_pending(&self) -> bool {
+        self.finished_at.is_none()
+    }
+}
+
+/// Past its retention: the reaper removes the job and its workspace. A
+/// pending job never qualifies, so a job that is out of circulation but
+/// never settled would be retained for the life of the process.
+fn expired_by(entry: &JobEntry, now: Instant) -> bool {
+    entry
+        .finished_at
+        .is_some_and(|at| now.duration_since(at) > FINISHED_TTL)
+}
+
+/// Drop every queued job of an older generation of the same
+/// `(origin, project)`; a job already running is left alone, and there is
+/// only ever one of those.
+///
+/// A superseded job is terminal. `run_worker` skips superseded entries, so
+/// nothing downstream will ever finish one: it has to be settled here, or
+/// the reaper never expires it or its workspace and the preview gate waits
+/// on it for the life of the process.
+fn supersede_older_generations(
+    jobs: &mut HashMap<String, JobEntry>,
+    origin: &str,
+    project: &str,
+    generation: u64,
+) {
+    for entry in jobs.values_mut() {
+        if entry.queued
+            && !entry.superseded
+            && entry.origin == origin
+            && entry.project == project
+            && entry.status.generation < generation
+        {
+            entry.superseded = true;
+            entry.queued = false;
+            entry.status.status = "canceled".to_string();
+            entry.status.stage = "finished".to_string();
+            entry.finished_at = Some(Instant::now());
+        }
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DurableQuartoJob {
     request: JobRequest,
@@ -774,11 +823,7 @@ async fn run_reaper(inner: Arc<Inner>) {
         let now = Instant::now();
         let expired: Vec<String> = jobs
             .iter()
-            .filter(|(_, entry)| {
-                entry
-                    .finished_at
-                    .is_some_and(|at| now.duration_since(at) > FINISHED_TTL)
-            })
+            .filter(|(_, entry)| expired_by(entry, now))
             .map(|(id, _)| id.clone())
             .collect();
         for id in expired {
@@ -2310,20 +2355,7 @@ async fn handle_jobs_post(
             }
         }
     }
-    // A strictly newer generation of the same project supersedes any older
-    // one of its own still sitting in the queue; a job already running is
-    // left alone; there is only ever one of those.
-    for entry in jobs.values_mut() {
-        if entry.queued
-            && !entry.superseded
-            && entry.origin == origin
-            && entry.project == project
-            && entry.status.generation < generation
-        {
-            entry.superseded = true;
-            entry.queued = false;
-        }
-    }
+    supersede_older_generations(&mut jobs, &origin, &project, generation);
     let mut queue = inner.queue.lock().await;
     queue.retain(|qid| jobs.get(qid).is_some_and(|entry| !entry.superseded));
     if queue.len() >= MAX_QUEUE {
@@ -2864,7 +2896,7 @@ async fn handle_preview(
         .reap(&active_pairings, &inner.quarto_bindings)
         .await;
     if inner.jobs.lock().await.values().any(|entry| {
-        entry.finished_at.is_none()
+        entry.is_pending()
             && entry.request.quarto.as_ref().is_some_and(|q| {
                 job.quarto.as_ref().is_some_and(|p| {
                     q.binding_id == p.binding_id
@@ -2972,5 +3004,91 @@ mod recovery_tests {
             input_manifest_digest(&[entry]),
             "f2345adfd5a4ed686a4fe787ce78ff6a1edc3c180ccd246395f7b4ebc1c13d8d"
         );
+    }
+}
+
+#[cfg(test)]
+mod supersession_tests {
+    use super::*;
+
+    fn queued_entry(origin: &str, project: &str, generation: u64) -> JobEntry {
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        JobEntry {
+            status: JobStatus {
+                id: "job".into(),
+                kind: "quarto".into(),
+                status: "queued".into(),
+                stage: "staging".into(),
+                generation,
+                ..Default::default()
+            },
+            request: serde_json::from_value(json!({
+                "protocol": 2,
+                "kind": "quarto",
+                "project": project,
+                "origin": origin,
+                "snapshot": "s",
+                "generation": generation,
+                "manifest": [],
+            }))
+            .expect("job request"),
+            origin: origin.into(),
+            project: project.into(),
+            files: BTreeMap::new(),
+            workspace: Workspace {
+                root: PathBuf::from("/nonexistent/librepaper-test-workspace"),
+            },
+            cancel_tx,
+            cancel_rx,
+            queued: true,
+            superseded: false,
+            finished_at: None,
+        }
+    }
+
+    /// The worker skips a superseded job, so supersession is the only place
+    /// that can settle one. Left pending, it held up every later preview on
+    /// the same binding and its workspace was never reaped.
+    #[test]
+    fn a_superseded_job_is_terminal_and_stops_holding_up_preview() {
+        let mut jobs = HashMap::new();
+        jobs.insert("older".to_string(), queued_entry("o", "paper", 1));
+        supersede_older_generations(&mut jobs, "o", "paper", 2);
+
+        let superseded = &jobs["older"];
+        assert!(superseded.superseded);
+        assert!(!superseded.queued);
+        assert_eq!(superseded.status.status, "canceled");
+        assert_eq!(superseded.status.stage, "finished");
+
+        // Starting a preview no longer waits for it.
+        assert!(!superseded.is_pending());
+
+        // And the reaper takes it, and its workspace, once retention passes.
+        let now = Instant::now();
+        assert!(!expired_by(superseded, now));
+        assert!(expired_by(
+            superseded,
+            now + FINISHED_TTL + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn supersession_spares_other_projects_newer_generations_and_running_jobs() {
+        let mut jobs = HashMap::new();
+        jobs.insert("other-project".to_string(), queued_entry("o", "notes", 1));
+        jobs.insert("other-origin".to_string(), queued_entry("p", "paper", 1));
+        jobs.insert("newer".to_string(), queued_entry("o", "paper", 3));
+        let mut running = queued_entry("o", "paper", 1);
+        running.queued = false;
+        jobs.insert("running".to_string(), running);
+
+        supersede_older_generations(&mut jobs, "o", "paper", 2);
+
+        for id in ["other-project", "other-origin", "newer", "running"] {
+            let entry = &jobs[id];
+            assert!(!entry.superseded, "{id} was superseded");
+            assert!(entry.is_pending(), "{id} was settled");
+        }
     }
 }
