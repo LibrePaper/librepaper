@@ -473,7 +473,7 @@ impl PostgresCatalog {
         actor: &MutationAuthorization,
         require_editor: bool,
     ) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_metered().await?;
         Self::authorize_annotation_mutation(&mut tx, document_id, actor, require_editor).await?;
         tx.rollback().await?;
         Ok(())

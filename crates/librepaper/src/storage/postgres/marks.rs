@@ -55,7 +55,7 @@ impl PostgresCatalog {
         // and the table's CHECK refuses to hold it. Clearing first and then
         // sweeping means the sweep sees the row it is meant to remove, and a
         // document this person has also opened keeps its `opened_at`.
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_metered().await?;
         sqlx::query!(
             "UPDATE document_marks SET favorited_at=NULL WHERE account_id=$1 AND document_id=$2",
             account_id,

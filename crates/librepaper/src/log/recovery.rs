@@ -1666,3 +1666,127 @@ async fn a_command_that_produces_no_source_names_the_last_row_and_records_no_aft
 
     deployment.catalog.close().await;
 }
+
+/// One housekeeping pass owes every document that is due a row, and owes
+/// each of them the row in its own order.
+///
+/// The pass used to write them one at a time, which is correct and which is
+/// also the deployment-wide serialization `docs/postgres-capacity.md`
+/// measures: a document's durable acknowledgement waited on every other
+/// document that happened to be due in the same second. It now writes them
+/// concurrently, bounded by the pool.
+///
+/// What must not change is what this asserts. Concurrency is across
+/// documents only: one pass asks each sequencer at most once, and each
+/// sequencer still takes its own transaction gate, so no document can have
+/// two rows in flight and none can be skipped. The failure this would catch
+/// is a pass that drops a document on the floor because its future was never
+/// polled, or one that writes a second row for a document whose first is
+/// still open.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
+    let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let catalog = connect(url).await;
+    let _writer = catalog.claim_writer().await.expect("writer lease");
+    let account = catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some("test".into()),
+            provider_subject: Some("sweep-fanout".into()),
+            handle: "sweep-fanout".into(),
+            display_name: "Sweep".into(),
+            email: None,
+        })
+        .await
+        .expect("owner");
+    let objects = tempfile::tempdir().expect("blob directory");
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(objects.path(), false));
+    let config = Arc::new(Configuration::default());
+    let registry = Registry::new(catalog.clone(), blobs.clone(), config.clone(), "one".into());
+
+    // More documents than the pool has connections, so the pass cannot
+    // finish by holding one connection per document either.
+    let count = (catalog.max_connections() as usize) + 5;
+    let mut documents = Vec::with_capacity(count);
+    for index in 0..count {
+        let slug = format!("sweep-{index}");
+        let document = catalog
+            .create_document(NewDocument {
+                slug: slug.clone(),
+                owner_id: account.id,
+                ownership_mode: "owned".into(),
+                title: "Sweep".into(),
+                source_format: "markdown".into(),
+                main_path: "paper.md".into(),
+                settings: serde_json::json!({}),
+            })
+            .await
+            .expect("document row");
+        let sequencer = registry
+            .get(document.id, &slug)
+            .await
+            .expect("admit the document");
+        let doc = session::new_doc();
+        doc.set_peer_id(index as u64 + 1).expect("peer id");
+        session::put_text(&doc, "paper.md", &format!("document {index}"));
+        doc.commit();
+        assert!(matches!(
+            sequencer
+                .ingest(
+                    index as u64,
+                    "peer",
+                    "principal",
+                    1,
+                    session::encode_state(&doc)
+                )
+                .await,
+            Ingested::Accepted
+        ));
+        documents.push((document.id, sequencer));
+    }
+
+    // Every buffer is non-empty and none has been quiet long enough yet, so
+    // nothing is due and the pass must write nothing.
+    registry.housekeep().await;
+    for (document_id, _) in &documents {
+        assert_eq!(
+            catalog.log_sequence(*document_id).await.unwrap(),
+            0,
+            "a pass wrote a row for a document that was not due"
+        );
+    }
+
+    // Make every one of them due at once, which is the shape a deployment
+    // reaches whenever a cohort of editors pauses together. The flush
+    // deadlines are `std::time::Instant`s, so this waits rather than
+    // advancing a clock: the pass under test is the one a real quiet period
+    // triggers.
+    tokio::time::sleep(crate::log::sequencer::FLUSH_QUIET + Duration::from_millis(500)).await;
+    registry.housekeep().await;
+
+    for (index, (document_id, sequencer)) in documents.iter().enumerate() {
+        assert_eq!(
+            catalog.log_sequence(*document_id).await.unwrap(),
+            1,
+            "document {index} did not get exactly one row from one pass"
+        );
+        assert_eq!(
+            sequencer.log_state().await.buffered,
+            0,
+            "document {index} kept batches the pass claimed to have written"
+        );
+    }
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM document_updates")
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows, count as i64,
+        "one pass over {count} due documents wrote {rows} rows"
+    );
+
+    catalog.close().await;
+}

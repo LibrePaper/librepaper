@@ -56,7 +56,7 @@ impl WriterLease {
 impl PostgresCatalog {
     pub(crate) async fn begin_writer_transaction(&self) -> Result<sqlx::Transaction<'_, Postgres>> {
         let expected_epoch = self.writer_epoch()?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_metered().await?;
         let durable_epoch: i64 =
             sqlx::query_scalar("SELECT epoch FROM deployment_writer WHERE singleton FOR SHARE")
                 .fetch_one(&mut *tx)

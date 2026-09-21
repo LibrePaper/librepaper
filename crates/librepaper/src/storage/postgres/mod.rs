@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{ConnectOptions, PgPool};
+use sqlx::{ConnectOptions, PgPool, Postgres};
 
 mod access;
 mod annotations;
@@ -17,6 +17,7 @@ mod commit;
 mod document_log;
 mod labels;
 mod marks;
+mod meter;
 mod ownership;
 mod proposals;
 mod repository;
@@ -95,6 +96,13 @@ pub struct PostgresCatalog {
     pool: PgPool,
     policy: StoragePolicy,
     writer_epoch: Arc<AtomicI64>,
+    /// What the pool is doing, so an operator can tell a wait for a
+    /// connection from a slow statement. See [`meter`].
+    meter: Arc<meter::PoolMeter>,
+    /// What the pool was configured with. `PgPool` reports the connections
+    /// it has opened, not the ceiling it may open to, and the difference is
+    /// exactly the question "was the pool the constraint".
+    max_connections: u32,
 }
 
 impl PostgresCatalog {
@@ -114,11 +122,55 @@ impl PostgresCatalog {
             pool,
             policy: options.policy,
             writer_epoch: Arc::new(AtomicI64::new(0)),
+            meter: Arc::new(meter::PoolMeter::default()),
+            max_connections: options.max_connections,
         })
     }
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    pub fn max_connections(&self) -> u32 {
+        self.max_connections
+    }
+
+    /// How many document flushes this deployment runs at once.
+    ///
+    /// The periodic sweep used to write one document's row at a time for the
+    /// whole deployment, which made durable acknowledgement latency a
+    /// function of how many *other* documents were being edited: a
+    /// deployment-wide serialization between documents that share nothing.
+    /// It is bounded rather than unbounded because the pool is. A sweep that
+    /// asked for more connections than exist would convert the serialization
+    /// into `acquire_timeout` failures, which is worse.
+    ///
+    /// Half the pool, so the other half stays available to the paths a
+    /// person is waiting on -- opening a document, posting a comment,
+    /// signing in -- while a sweep drains. The lease connection
+    /// (`claim_writer`) never returns to the pool, so it is subtracted
+    /// first.
+    pub fn flush_concurrency(&self) -> usize {
+        flush_concurrency(self.max_connections)
+    }
+
+    /// One transaction, timed, with a note of whether the pool had anything
+    /// free when it was asked. Every write path opens its transaction here.
+    /// Single-statement reads go straight to the pool as an executor and are
+    /// not counted; `docs/postgres-capacity.md` says so rather than letting
+    /// the snapshot imply a coverage it does not have.
+    async fn begin_metered(&self) -> Result<sqlx::Transaction<'static, Postgres>> {
+        let contended = self.pool.num_idle() == 0 && self.pool.size() >= self.max_connections;
+        let attempt = meter::PoolMeter::attempt(contended);
+        let begun = self.pool.begin().await;
+        self.meter.record(attempt, begun.is_ok());
+        Ok(begun?)
+    }
+
+    /// The pool's own numbers, for the operator cost snapshot.
+    pub fn pool_snapshot(&self) -> serde_json::Value {
+        self.meter
+            .snapshot(self.pool.size(), self.pool.num_idle(), self.max_connections)
     }
 
     /// §8.4's compaction triggers -- rows, then bytes -- as this deployment
@@ -157,6 +209,37 @@ impl PostgresCatalog {
 
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+}
+
+/// See [`PostgresCatalog::flush_concurrency`]. Separated from the catalogue
+/// so the arithmetic can be pinned without a database: the two ends are what
+/// matter, and both are reachable through configuration
+/// (`--database-connections` takes 1..=200).
+fn flush_concurrency(max_connections: u32) -> usize {
+    ((max_connections.saturating_sub(1) / 2) as usize).max(1)
+}
+
+#[cfg(test)]
+mod flush_concurrency_tests {
+    #[test]
+    fn it_is_never_zero_and_never_asks_for_the_whole_pool() {
+        // A deployment configured down to one connection still has to be
+        // able to flush; it just does so one document at a time, as before.
+        assert_eq!(super::flush_concurrency(1), 1);
+        assert_eq!(super::flush_concurrency(2), 1);
+        // The lease connection is subtracted, then the rest is split with
+        // the paths a person is waiting on.
+        assert_eq!(super::flush_concurrency(20), 9);
+        assert_eq!(super::flush_concurrency(200), 99);
+        for connections in 1..=200u32 {
+            let concurrency = super::flush_concurrency(connections);
+            assert!(concurrency >= 1);
+            assert!(
+                concurrency < connections.max(2) as usize,
+                "{connections} connections must not all go to one sweep"
+            );
+        }
     }
 }
 

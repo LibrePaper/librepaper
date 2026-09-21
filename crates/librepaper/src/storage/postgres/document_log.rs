@@ -243,7 +243,7 @@ impl PostgresCatalog {
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
         use sqlx::Row as _;
         let epoch = self.writer_epoch()?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_metered().await?;
         let durable_epoch: i64 =
             sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton=true FOR SHARE")
                 .fetch_one(&mut *tx)
@@ -283,7 +283,7 @@ impl PostgresCatalog {
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
         use sqlx::Row as _;
         let epoch = self.writer_epoch()?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_metered().await?;
         let durable_epoch: i64 =
             sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton=true FOR SHARE")
                 .fetch_one(&mut *tx)
@@ -446,7 +446,7 @@ impl PostgresCatalog {
             return Err(Error::Invalid("invalid collaboration base".into()));
         }
         let epoch = self.writer_epoch()?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_metered().await?;
         let durable_epoch: i64 =
             sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton=true FOR SHARE")
                 .fetch_one(&mut *tx)

@@ -329,15 +329,25 @@ Verified by reading the code:
    independently re-verified in this pass beyond reading its validation
    logic.
 
-Inferred, not directly verified by a runtime check:
+Measured since this audit was written:
 
 - The connection pool (`max_connections: 20`, section 4) is a hard ceiling
   on concurrent PostgreSQL work across the whole process, including
   background worker tasks (compaction, deletion, archiving) and the
-  request-serving paths. Nothing in the code read for this audit computes
-  whether 20 connections are sufficient under section 1's `work_concurrency`
-  (64) plus the background worker's own concurrency; this is plausible
-  contention under sustained load but was not measured.
+  request-serving paths. This audit recorded, as an inference, that 20
+  connections against section 1's `work_concurrency` (64) was plausible
+  contention. **It is not, and the comparison was the wrong one.**
+  [`docs/postgres-capacity.md`](postgres-capacity.md) measures it: live
+  editing never passes the work semaphore (it is released at the WebSocket
+  upgrade), and at every point on a curve from 8 to 4096 simultaneously
+  active documents no transaction ever found the pool at its limit with
+  nothing idle. What did saturate was the periodic sweep, which wrote one
+  document's row at a time for the whole deployment and so could not use
+  more than one connection however many were configured. Tripling the pool
+  past 20 buys nothing measurable; the sweep now writes concurrently, bounded
+  by `PostgresCatalog::flush_concurrency()`. The pool's own behaviour is
+  reported at `GET /api/status` under `database`
+  (`storage/postgres/meter.rs`), so this no longer has to be inferred.
 
 ## 10. Timers
 

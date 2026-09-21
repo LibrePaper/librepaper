@@ -126,6 +126,12 @@ impl Server {
         snapshot["host"] = tokio::task::spawn_blocking(super::host_metrics::snapshot)
             .await
             .unwrap_or(Value::Null);
+        // The one pool, and the three waits kept apart: this is the wait for
+        // a connection, `http_work` above is the wait for an admission slot,
+        // and neither is the query itself. REVIEW-BIG-IDEAS.md §2.1 asked
+        // whether the configured connections suffice under the configured
+        // work concurrency; unmeasured, the honest answer was "nobody knows".
+        snapshot["database"] = self.store.catalog.pool_snapshot();
         snapshot["storage"] = match self.store.catalog.usage_bytes(None).await {
             Ok(bytes) => json!({"retained_bytes":bytes}),
             Err(_) => Value::Null,

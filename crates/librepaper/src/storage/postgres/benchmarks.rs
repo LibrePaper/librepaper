@@ -2079,3 +2079,547 @@ async fn batched_import_cost_probe() {
             .expect("report JSON")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Capacity: many active documents at once
+// ---------------------------------------------------------------------------
+//
+// REVIEW-BIG-IDEAS.md §2.1 leaves one thing unverified: "that 20 PostgreSQL
+// connections suffice under 64 concurrent HTTP work slots plus background
+// work. Measure this under load."
+//
+// The benchmark above measures one document with three editors, which is the
+// §14.1 acceptance shape and says nothing about that question. This one moves
+// along the dimension the question is actually about: how many *independent*
+// documents can be edited at once, which is the dimension a deployment grows
+// along and the only one that can make separate documents contend.
+//
+// It deliberately does not go through HTTP. Live editing does not: the work
+// semaphore in `server/cost.rs` is released when the WebSocket upgrade
+// response is returned (`server/socket.rs` hands the socket to
+// `on_upgrade`), so every subsequent edit, flush and durable acknowledgement
+// runs outside it. Measuring editors through HTTP would measure a limiter
+// they never meet. What they do meet is here: the sequencer, the periodic
+// sweep, and the one connection pool.
+//
+// Reported rather than asserted. There is no service level to hold this to
+// yet, so the output is a capacity envelope for the hardware it ran on, and
+// the run records that hardware.
+
+/// What one simulated editor did, so offered load and achieved load can be
+/// told apart. An overloaded harness that quietly slows down is the classic
+/// way a load test hides saturation.
+#[derive(Default)]
+struct EditorReport {
+    /// Edits the schedule called for by the time the run ended.
+    offered: u64,
+    /// Edits handed to `ingest`, including resends of the same client_seq.
+    attempted: u64,
+    accepted: u64,
+    retried: u64,
+    /// Ingest calls, in microseconds: the relay path only.
+    relay: Vec<u64>,
+    /// Submission to `doc-ack`, in microseconds: the durable path, which is
+    /// what an editor's save indicator actually waits for.
+    durable: Vec<u64>,
+    /// Accepted edits that never came back acknowledged before the run
+    /// ended. Counted rather than dropped: a run whose acknowledgements
+    /// stopped arriving must not report a healthy latency for the few that
+    /// did.
+    unacknowledged: u64,
+    /// How far behind its own schedule this editor fell, worst case. A
+    /// generator that cannot keep its cadence is measuring itself.
+    worst_lateness_us: u64,
+    terminal: Option<String>,
+}
+
+/// The shared state one editor's acknowledgement reader and its edit loop
+/// use to match a `doc-ack {upTo}` back to the submission it covers.
+type Pending = Arc<std::sync::Mutex<std::collections::HashMap<i64, Instant>>>;
+
+/// Drains one editor's outbound channel, timing every acknowledged
+/// submission. This is the real frame an editor waits for, read off the real
+/// `Sender` a socket would hold, rather than a flush return value the
+/// server never sends anybody.
+fn acknowledgement_reader(
+    mut rx: crate::room::outgoing::Receiver,
+    pending: Pending,
+) -> tokio::task::JoinHandle<Vec<u64>> {
+    tokio::spawn(async move {
+        let mut durable = Vec::new();
+        while let Some(queued) = rx.recv().await {
+            let (outgoing, _reservation) = queued.into_parts();
+            let text = match &outgoing {
+                crate::room::outgoing::Outgoing::Text(text) => text.to_string(),
+                crate::room::outgoing::Outgoing::SharedText(text) => text.to_string(),
+                _ => continue,
+            };
+            let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            if value["type"] != "doc-ack" {
+                continue;
+            }
+            let Some(up_to) = value["upTo"].as_i64() else {
+                continue;
+            };
+            let now = Instant::now();
+            let mut held = pending.lock().unwrap_or_else(|poison| poison.into_inner());
+            let covered: Vec<i64> = held.keys().copied().filter(|seq| *seq <= up_to).collect();
+            for seq in covered {
+                if let Some(at) = held.remove(&seq) {
+                    durable.push(
+                        now.duration_since(at)
+                            .as_micros()
+                            .try_into()
+                            .unwrap_or(u64::MAX),
+                    );
+                }
+            }
+        }
+        durable
+    })
+}
+
+/// One editor typing into one document on a fixed schedule.
+///
+/// The schedule is a fixed cadence from a fixed start, not a sleep after
+/// each edit: an editor that slept after every round trip would offer less
+/// load exactly when the server got slower, which is how a closed-loop
+/// generator hides saturation. Falling behind the schedule is recorded
+/// instead.
+#[allow(clippy::too_many_arguments)]
+async fn capacity_editor(
+    sequencer: Arc<crate::log::Sequencer>,
+    socket: u64,
+    peer: u64,
+    principal: String,
+    opening: Vec<u8>,
+    path: String,
+    seed_len: usize,
+    started_at: Instant,
+    deadline: Instant,
+    interval: Duration,
+) -> EditorReport {
+    use crate::room::outgoing::Sender;
+
+    let mut report = EditorReport::default();
+    let peer_key = format!("peer-{socket}");
+    let (tx, rx) = Sender::channel(4096, 64 * 1024 * 1024, None, None);
+    let pending: Pending = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let reader = acknowledgement_reader(rx, pending.clone());
+    if let Err(error) = sequencer
+        .join(socket, crate::log::Role::Editor, &peer_key, tx, None)
+        .await
+    {
+        report.terminal = Some(format!("join failed: {error}"));
+        return report;
+    }
+
+    let doc = session::new_doc();
+    doc.set_peer_id(peer).expect("peer id");
+    doc.import(&opening).expect("import the opening state");
+    let mut vector = session::encode_vector(&doc);
+    let mut len = seed_len;
+    let mut sent = 0_i64;
+    // The schedule index, which is not `sent`: an edit that encodes to
+    // nothing advances the clock without advancing the sequence, and
+    // reusing `sent` for both would put this loop in a tight spin at a
+    // deadline it has already passed.
+    let mut round = 0_u32;
+
+    loop {
+        round += 1;
+        let due = started_at + interval.saturating_mul(round);
+        if due >= deadline {
+            break;
+        }
+        let now = Instant::now();
+        if now < due {
+            tokio::time::sleep(due - now).await;
+        } else {
+            report.worst_lateness_us = report.worst_lateness_us.max(
+                now.duration_since(due)
+                    .as_micros()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            );
+        }
+        report.offered += 1;
+
+        let chunk = format!(" edit{sent}from{peer}");
+        if !session::apply_edits_at(
+            &doc,
+            &path,
+            &[wasm_helpers::text::Edit {
+                at: len,
+                delete: 0,
+                insert: chunk.clone(),
+            }],
+        ) {
+            report.terminal = Some("apply_edits_at rejected an append".into());
+            break;
+        }
+        len += chunk.encode_utf16().count();
+        doc.commit();
+        let Ok(update) = session::encode_diff(&doc, &vector) else {
+            report.terminal = Some("encode_diff failed".into());
+            break;
+        };
+        if update.is_empty() {
+            continue;
+        }
+        sent += 1;
+        pending
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(sent, Instant::now());
+        loop {
+            let at = Instant::now();
+            report.attempted += 1;
+            let outcome = sequencer
+                .ingest(socket, &peer_key, &principal, sent, update.clone())
+                .await;
+            report.relay.push(micros(at));
+            match outcome {
+                crate::log::Ingested::Accepted => {
+                    vector = session::encode_vector(&doc);
+                    report.accepted += 1;
+                    break;
+                }
+                crate::log::Ingested::Retryable(reason) => {
+                    report.retried += 1;
+                    if Instant::now() >= deadline {
+                        report.terminal = Some(format!("retryable at deadline: {reason}"));
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                other => {
+                    report.terminal = Some(format!("{other:?}"));
+                    break;
+                }
+            }
+        }
+        if report.terminal.is_some() {
+            break;
+        }
+    }
+
+    // Give acknowledgements that are already in flight a bounded moment to
+    // land, then stop reading. Long enough to cover the quiet-flush deadline
+    // the last edit of the run is waiting on (`FLUSH_QUIET`, five seconds),
+    // because otherwise every editor would end the run reporting its last
+    // edit unacknowledged and the counter would mean nothing. Whatever is
+    // still pending after that is reported rather than waited for forever.
+    tokio::time::sleep(crate::log::sequencer::FLUSH_QUIET + Duration::from_secs(5)).await;
+    sequencer.unsubscribe(socket).await;
+    report.durable = reader.await.unwrap_or_default();
+    report.unacknowledged = pending
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .len() as u64;
+    report
+}
+
+fn env_usize(name: &str, fallback: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(fallback)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+#[ignore = "capacity benchmark; destroys every row in its configured database"]
+async fn active_document_capacity_benchmark() {
+    let Ok(url) = std::env::var("LIBREPAPER_BENCHMARK_POSTGRES_URL") else {
+        return;
+    };
+    let documents = env_usize("LIBREPAPER_CAPACITY_DOCUMENTS", 64);
+    let hot_editors = env_usize("LIBREPAPER_CAPACITY_HOT_EDITORS", 0);
+    let stored = env_usize("LIBREPAPER_CAPACITY_STORED", 0);
+    let seconds = env_usize("LIBREPAPER_CAPACITY_SECONDS", 60) as u64;
+    let connections = env_usize("LIBREPAPER_CAPACITY_CONNECTIONS", 20) as u32;
+    let interval = Duration::from_millis(env_usize("LIBREPAPER_CAPACITY_EDIT_MS", 1000) as u64);
+    let seed_bytes = env_usize("LIBREPAPER_CAPACITY_SEED_BYTES", 4096);
+    let label = std::env::var("LIBREPAPER_CAPACITY_LABEL").unwrap_or_else(|_| "run".into());
+
+    let mut options = PostgresOptions::new(url);
+    options.max_connections = connections;
+    options.policy = StoragePolicy {
+        owner_bytes: i64::MAX / 4,
+        deployment_bytes: i64::MAX / 4,
+        asset_uploads_per_hour: 100_000,
+        versions_per_hour: 100_000,
+        // Compaction is measured separately (`compaction_cost_release_benchmark`).
+        // Here it would turn the run into a measurement of the background
+        // worker instead, so the thresholds are put out of reach.
+        max_uncompacted_updates: 1_000_000,
+        max_uncompacted_bytes: i64::MAX / 4,
+    };
+    let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
+    catalog.migrate().await.expect("migrate");
+    sqlx::query("TRUNCATE accounts CASCADE")
+        .execute(catalog.pool())
+        .await
+        .expect("empty disposable benchmark database");
+    let owner = catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some("benchmark".into()),
+            provider_subject: Some("owner".into()),
+            handle: "benchmark".into(),
+            display_name: "Benchmark".into(),
+            email: None,
+        })
+        .await
+        .expect("owner");
+    let principal = owner.id.to_string();
+    let _writer = catalog.claim_writer().await.expect("writer lease");
+
+    // Stored but inactive documents: rows in the same tables the active
+    // documents index into, so index depth and planner choices are those of
+    // a deployment that has been running rather than of an empty schema.
+    // Inserted in bulk on purpose: these are never edited, so seeding them
+    // through the production path would measure nothing and cost minutes.
+    if stored > 0 {
+        sqlx::query(
+            "INSERT INTO documents(id,slug,owner_id,ownership_mode,title,source_format,\
+             main_path,settings,status)
+             SELECT gen_random_uuid(),'stored-'||n,$1,'owned','Stored','markdown','paper.md',\
+             '{\"version\":1}'::jsonb,'active' FROM generate_series(1,$2) AS n",
+        )
+        .bind(owner.id)
+        .bind(stored as i64)
+        .execute(catalog.pool())
+        .await
+        .expect("seed stored documents");
+    }
+
+    let scratch = tempfile::tempdir().expect("scratch blob directory");
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
+        crate::storage::blob::FsStore::new(scratch.path().to_path_buf(), false),
+    );
+    let config = Arc::new(crate::config::Configuration {
+        memory_budget_bytes: u64::MAX / 4,
+        ..crate::config::Configuration::default()
+    });
+    let registry = Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        "benchmark".to_string(),
+    );
+
+    // One opening row per document, written through the production ingest
+    // and flush path so every document starts from a state a real one could
+    // be in. This is setup, and its cost is reported separately so it cannot
+    // be confused with the measurement.
+    let seeding = Instant::now();
+    let body = "x".repeat(seed_bytes);
+    let mut active = Vec::with_capacity(documents + usize::from(hot_editors > 0));
+    for index in 0..documents + usize::from(hot_editors > 0) {
+        let slug = format!("active-{index}");
+        let id = document(&catalog, owner.id, slug.clone()).await;
+        let sequencer = registry.get(id, &slug).await.expect("admit");
+        let seed = session::new_doc();
+        seed.set_peer_id(1).expect("peer id");
+        session::put_text(&seed, "paper.md", &body);
+        seed.commit();
+        let opening = session::encode_state(&seed);
+        assert!(matches!(
+            sequencer
+                .ingest(0, "seed", &principal, 0, opening.clone())
+                .await,
+            crate::log::Ingested::Accepted
+        ));
+        sequencer
+            .flush(FlushReason::Barrier)
+            .await
+            .expect("opening row");
+        active.push((sequencer, opening));
+    }
+    let seeding_seconds = seeding.elapsed().as_secs_f64();
+
+    // The production sweep, at the production cadence, timed. Whether this
+    // pass keeps up is the measurement: it is the only thing in a deployment
+    // that flushes a document nobody has filled a buffer for.
+    let sweep_times: Arc<std::sync::Mutex<Vec<u64>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let housekeeping = tokio::spawn({
+        let registry = registry.clone();
+        let sweep_times = sweep_times.clone();
+        async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                let at = Instant::now();
+                registry.housekeep().await;
+                sweep_times
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .push(micros(at));
+            }
+        }
+    });
+
+    let multixact_before = control_multixact(&catalog).await;
+    let started_at = Instant::now();
+    let deadline = started_at + Duration::from_secs(seconds);
+    let mut socket = 1_u64;
+    let mut editors = Vec::new();
+    for (index, (sequencer, opening)) in active.iter().take(documents).enumerate() {
+        let handle = tokio::spawn(capacity_editor(
+            sequencer.clone(),
+            socket,
+            (index as u64) + 2,
+            principal.clone(),
+            opening.clone(),
+            "paper.md".to_string(),
+            seed_bytes,
+            started_at,
+            deadline,
+            interval,
+        ));
+        socket += 1;
+        editors.push(handle);
+    }
+    // The shared document, if this run has one: the same cadence, but every
+    // editor's batches land in one buffer, one sequencer lock and one row.
+    if hot_editors > 0 {
+        let (sequencer, opening) = active.last().expect("hot document").clone();
+        for peer in 0..hot_editors {
+            let handle = tokio::spawn(capacity_editor(
+                sequencer.clone(),
+                socket,
+                (peer as u64) + 10_000,
+                principal.clone(),
+                opening.clone(),
+                "paper.md".to_string(),
+                seed_bytes,
+                started_at,
+                deadline,
+                interval,
+            ));
+            socket += 1;
+            editors.push(handle);
+        }
+    }
+
+    let reports = join_all(editors).await;
+    let pool = catalog.pool_snapshot();
+    housekeeping.abort();
+    let elapsed = started_at.elapsed().as_secs_f64().max(1.0);
+    let multixact_after = control_multixact(&catalog).await;
+
+    let mut relay = Vec::new();
+    let mut durable = Vec::new();
+    let (mut offered, mut attempted, mut accepted, mut retried, mut unacknowledged) =
+        (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
+    let mut worst_lateness = 0_u64;
+    let mut terminals: Vec<String> = Vec::new();
+    for report in reports {
+        let report = report.expect("editor task");
+        relay.extend(report.relay);
+        durable.extend(report.durable);
+        offered += report.offered;
+        attempted += report.attempted;
+        accepted += report.accepted;
+        retried += report.retried;
+        unacknowledged += report.unacknowledged;
+        worst_lateness = worst_lateness.max(report.worst_lateness_us);
+        if let Some(reason) = report.terminal {
+            terminals.push(reason);
+        }
+    }
+    let durable_samples = durable.len();
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM document_updates")
+        .fetch_one(catalog.pool())
+        .await
+        .expect("rows");
+    let sweeps = {
+        let held = sweep_times
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        held.clone()
+    };
+
+    let report = json!({
+        "label": label,
+        "workload": {
+            "active_documents": documents,
+            "hot_document_editors": hot_editors,
+            "stored_inactive_documents": stored,
+            "editor_interval_ms": interval.as_millis() as u64,
+            "seed_bytes": seed_bytes,
+            "seconds": seconds,
+        },
+        "configuration": {
+            "database_connections": connections,
+            "flush_concurrency": catalog.flush_concurrency(),
+            "seeding_seconds": (seeding_seconds * 100.0).round() / 100.0,
+        },
+        "offered": {
+            "edits": offered,
+            "per_second": (offered as f64 / elapsed * 100.0).round() / 100.0,
+            "worst_editor_lateness_us": worst_lateness,
+        },
+        "achieved": {
+            "ingest_attempts": attempted,
+            "accepted": accepted,
+            "retried": retried,
+            "accepted_per_second": (accepted as f64 / elapsed * 100.0).round() / 100.0,
+            "durable_rows": rows,
+            "rows_per_second": (rows as f64 / elapsed * 100.0).round() / 100.0,
+            "unacknowledged_at_end": unacknowledged,
+            "editor_terminals": terminals,
+        },
+        "latency": {
+            "relay_us": percentiles(relay),
+            "durable_ack_us": percentiles(durable),
+            "housekeeping_pass_us": percentiles(sweeps),
+        },
+        "database": pool,
+        "multixact_ids_consumed": multixact_after.saturating_sub(multixact_before),
+        "host": {
+            "resident_bytes": resident_bytes(),
+            "cpus": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        },
+    });
+    println!(
+        "active_document_capacity_benchmark {}",
+        serde_json::to_string_pretty(&report).expect("report")
+    );
+
+    // The only thing asserted is that the run measured something. A capacity
+    // envelope is a report, not a gate, but a run whose editors all died in
+    // the first second must not print a healthy-looking one.
+    assert!(
+        accepted > 0 && durable_samples > 0,
+        "no edit was accepted and acknowledged; the run measured nothing: {report}"
+    );
+    catalog.close().await;
+}
+
+/// How many MultiXactIds the deployment consumed during the run.
+///
+/// This is the direct test of one specific suspicion: every writer
+/// transaction takes `SELECT ... FROM deployment_writer FOR SHARE` on one
+/// singleton row, and concurrent share locks on one row are what PostgreSQL
+/// allocates MultiXactIds for. If this number tracks the transaction count
+/// as concurrency rises, that one row is a deployment-wide cost paid by
+/// documents that share nothing.
+/// `pg_control_checkpoint()` reports what the last checkpoint wrote, not
+/// what the server has reached, so this forces one first. Without that the
+/// reading is stale at both ends and the delta is a flat zero, which is what
+/// it reported before the checkpoint was added -- a metric that always says
+/// "no" is worse than no metric.
+async fn control_multixact(catalog: &PostgresCatalog) -> i64 {
+    let _ = sqlx::query("CHECKPOINT").execute(catalog.pool()).await;
+    sqlx::query_scalar::<_, i64>(
+        "SELECT next_multixact_id::text::bigint FROM pg_control_checkpoint()",
+    )
+    .fetch_one(catalog.pool())
+    .await
+    .unwrap_or(0)
+}

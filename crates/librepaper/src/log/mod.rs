@@ -178,15 +178,44 @@ impl Registry {
     /// no queries beyond the lease connection, which is what §14.2's last
     /// test holds.
     pub async fn housekeep(&self) {
-        for sequencer in self.all().await {
+        use futures_util::stream::StreamExt as _;
+
+        let resident = self.all().await;
+        // Which documents owe a row, decided before any of them is written.
+        // `flush_due` is one lock and three comparisons with no query in it,
+        // so asking every resident sequencer costs nothing measurable even
+        // when thousands are resident.
+        let mut due = Vec::new();
+        for sequencer in &resident {
             if let Some(reason) = sequencer.flush_due().await {
+                due.push((sequencer.clone(), reason));
+            }
+        }
+        // Then write them concurrently, up to what the pool can serve.
+        //
+        // This pass used to write one row at a time for the whole
+        // deployment, which made one document's durable acknowledgement wait
+        // on every other document that happened to be due in the same
+        // second: a deployment-wide serialization between documents that
+        // share nothing, and the first thing that saturates as the number of
+        // simultaneously edited documents grows. Per-document ordering is
+        // untouched -- each sequencer still takes its own transaction gate,
+        // and one pass asks each sequencer at most once -- and the bound is
+        // the pool's, so this cannot turn the queue into `acquire_timeout`
+        // failures. Measured in docs/postgres-capacity.md.
+        let concurrency = self.catalog.flush_concurrency();
+        futures_util::stream::iter(due)
+            .for_each_concurrent(concurrency, |(sequencer, reason)| async move {
                 if let Err(error) = sequencer.flush(reason).await {
                     ::log::warn!("could not flush {}: {error}", sequencer.slug);
                 }
-            }
-            // A compaction ask the worker queue dropped has nothing else to
-            // fire it again once editing stops, so the sweep re-asks. Rate
-            // limited inside, and no query either way.
+            })
+            .await;
+        // A compaction ask the worker queue dropped has nothing else to fire
+        // it again once editing stops, so the sweep re-asks. Rate limited
+        // inside, and no query either way, so it stays on this task rather
+        // than joining the concurrent half.
+        for sequencer in &resident {
             sequencer.recheck_compaction().await;
         }
         self.retire_fenced().await;
