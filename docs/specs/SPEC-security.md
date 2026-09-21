@@ -1,210 +1,295 @@
 # LibrePaper security and privacy
 
-*2026-09-15, last trimmed 2026-09-16. Threat model and proposed specification.
-Every finding here describes current behavior; its requirements do not. Settled
-findings are removed, and what is left is renumbered, so this is a list of work
-remaining rather than a record of what was done.*
+*Reassessed 2026-09-20 against the current working tree after the server-as-log
+cutover. This is a security contract and decision backlog, not a fresh security
+audit. Current behavior, proposed changes and unresolved choices are separated
+below; proposals are not implemented guarantees.*
 
-## Purpose
+## Purpose and architectural scope
 
-State what LibrePaper protects, from whom, and where the protection rests on a
-deployment decision rather than on code. The audit behind this document found
-no unauthenticated bypass, no injection sink, and no missing origin check. The
-dangers are structural: boundaries that are derived rather than asserted,
-trust relationships the product does not name, and defaults that hand a
-self-hoster a dependency they did not choose.
+Protect document and account isolation, local execution consent, recoverable
+work and deployment availability while keeping the application small enough to
+operate on a modest VPS.
 
-Four things this document used to ask for are done, and the reasoning moved to
-where it is enforced rather than staying here. The two origins a deployment
-answers on live in `server/origins.rs`; the policy every published document
-renders under is `document_policy` in `server/routes.rs`; the environment a
-preset may not set is `refused_environment` in `local/presets`; and the bound
-on an agent's authority is `resolved_role` in `server/mod.rs`. What a reader
-of a hosted document should expect is in [privacy.md](../privacy.md), and what
-an operator must configure is in [hosting.md](../hosting.md).
+The baseline is one Rust server, PostgreSQL and blob storage, browser-side
+compilation, batched source persistence and evictable CRDT state. Readers follow
+live source projections; there is no longer a published rendered-bundle system.
+Local builds and agent interfaces remain supported. Removing or simplifying
+those workflows is a product decision, not an assumption this spec can make.
 
-This complements the architecture review. Where that document explains how the
-parts fit, this one explains what happens when one of them is wrong. (The
-several specifications under `docs/specs/` that link to `REVIEW-architecture.md`
-all point at a file that is not in the repository; the link is left out here
-rather than repeated.)
+Read this alongside the [simplification audit](../simplification-audit.md),
+[architecture recommendations](../../REVIEW-BIG-IDEAS.md),
+[frugal scaling proposals](../../SPEC-frugal.md) and
+[resource inventory](../resource-bounds.md). The latter two inform the
+availability work below; they are not evidence that every proposed bound or
+optimization already exists. Source references below are relative to
+`crates/librepaper/src/` unless they name another root.
 
-## Trust model
+## Trust model and contracts to preserve
 
-Four principals, in decreasing order of what they are allowed to assume:
+- **The operator is trusted with plaintext.** They control the binary,
+  database and storage and can read documents and identities. There is no
+  end-to-end encryption, and none is proposed here. Backup encryption protects
+  a copied recovery point, not a document from its operator.
+- **Document access is scoped authority.** Owners control sharing; a link is a
+  bearer credential with a role, expiry and revocation. Forwarding it forwards
+  its authority. Local code execution requires a separate consent boundary.
+- **Documents are hostile input and may contain executable code.** HTML runs
+  in the document origin; companion builds may execute code on the machine
+  running them. Neither possession of a document link nor permission to edit
+  implies permission to execute its contents locally.
+- **Agents consume hostile content too.** Document text and comments can carry
+  instructions. Link-scoped authority limits the damage within LibrePaper;
+  it does not constrain unrelated tools or credentials in an external agent.
+- **Availability is part of security.** An authorized editor or commenter can
+  still exhaust shared resources. Per-request and per-document limits must
+  compose into meaningful deployment limits.
 
-1. **The operator** runs the binary and the database. They see every draft,
-   comment, identity and presence event in the clear. There is no end-to-end
-   encryption and none is proposed here.
-2. **The signed-in owner** of a document holds every authority over it.
-3. **A link holder** holds exactly the role their link names, for as long as the
-   link lives. The link is the credential; possession is the grant.
-4. **A document** -- the bytes a person uploads or writes -- is *hostile*. It runs
-   its own scripts, it is framed by the reader, and it may have been written by
-   anyone with editor access.
+Retain separate application and document hosts, authorization at the durable
+semantic-command boundary, revocation enforcement, honest durability signals,
+and recovery of unsynced work. Simplification must preserve these contracts or
+explicitly identify the user promise being changed.
 
-The fourth principal is the one that matters. Every boundary below exists
-because a document is code.
+## 1. Rendering isolation: retained boundary, changed script policy
 
-## Findings, by consequence
+**Current.** `server/origins.rs` validates the deployment origins and refuses
+application and document origins on the same host. The preview frame remains
+sandboxed; `web/src/components/Preview.svelte` checks both the sending origin
+and frame window and addresses outgoing messages to a named origin.
 
-### 1. The companion executes collaborator-authored code
+The production `serve_shell` and `serve_viewer` responses in `server/routes.rs`
+allow `https:` in `script-src`. The stricter `document_policy` that excludes
+remote scripts is now compiled only under `#[cfg(test)]`. Its unit tests test
+that unused policy, not the headers readers actually receive.
 
-`librepaper local` runs Quarto, TeX and the other engines on the user's
-machine. Quarto executes R and Python chunks. The loopback surface is sound:
-loopback bind, `host_allowed` against DNS rebinding, a six-digit code behind a
-constant delay and a rate limit, origin-bound tokens stored only as hashes,
-per-`(origin, project, entrypoint)` preset grants, separate folder bindings,
-and Origin plus `Sec-Fetch-Site` plus nonce on the management page.
+The previous spec's claim that documents cannot load third-party code is
+therefore false for the production policy. Its claims about code being fixed
+at publication and publishing reporting external hosts also do not describe
+the current live-source architecture. The separate-origin boundary remains;
+it must not be confused with a restriction on outbound requests.
 
-The risk is the sanctioned path. Document-level sharing is not a trust boundary
-for code execution: an editor on a Quarto project can put arbitrary code in a
-chunk, and it runs on every other editor's machine at the next preview. Pairing
-tokens currently expire after thirty days; that is separate from an execution
-grant, which must have its own expiry and revocation semantics. Neither should
-silently authorize a newly arriving collaborator.
+**Decision and recommendation.** Decide whether remote scripts are supported
+in rendered documents. Prefer embedded or digest-pinned dependencies where
+compatible with the retained formats, but investigate the actual rendering
+paths before tightening CSP. If remote scripts remain allowed, explicitly
+accept that their hosts can observe requests and change executable content
+independently of a source revision. Images, fonts and network requests also
+remain privacy exposures even if remote scripts are disallowed.
 
-**Required.**
+**Next work.** Test the actual shell and viewer response headers, consolidate
+the intended production policy, and remove the misleading test-only policy.
+Update the privacy documentation to match the decision. A static artifact or
+source digest alone would not freeze remote dependencies.
 
-- A grant for an execution-capable format names the authenticated editors it
-  trusts, the project and entrypoint, and the source revision or content
-  identity it approved. An editor link that is forwarded does not silently add
-  a trusted editor. A newly authenticated or newly granted editor, or a source
-  revision outside the approved identity, suspends execution until the person
-  who granted it approves again.
-- Companion settings list live execution grants with their origin, document,
-  trusted editor identities, approved source identity, entrypoint and expiry,
-  and revoke them individually. Pairing tokens and execution grants are shown
-  and revoked separately; a pairing does not imply permission to execute.
+## 2. Companion execution: preserve consent before simplifying grants
 
-### 2. Content is plain at rest, including backups
+**Current.** Companion presets, folder bindings and isolated workspaces still
+serve local builds, including projects with unshared inputs. Quarto can execute
+R and Python. Preset environment validation refuses loader and interpreter
+variables (`local/presets/mod.rs`), but that does not make document code safe.
 
-`storage/backup.rs` writes `pg_dump` output to a 0600 file and copies blob
-objects beside it. File permissions are correct throughout the tree; encryption
-is absent. A backup archive is the whole deployment in the clear, and it is the
-artifact most likely to leave the host.
+`PresetGrant` binds origin, project, preset, workspace mode, operation,
+entrypoint and preset semantic revision. Changing the preset invalidates its
+grant. The store already supports listing and revoking grants. These grants do
+not bind authenticated collaborator identities or an approved source revision,
+and do not carry an expiry. Quarto folder bindings separately carry an
+`execution_granted` flag. Pairing credentials and execution permissions are
+therefore related but distinct mechanisms.
 
-**Required.** `admin backup` encrypts the archive to an operator-supplied key
-and refuses to write an unencrypted one without an explicit flag. The hosting
-documentation states, in the operator's own words, that the operator can read
-every document.
+**Unresolved.** The earlier proposal required reapproval for every source
+identity outside the approved one and every newly trusted editor. That would
+introduce substantial machinery and could make automatic preview impractical.
+It also needs a reliable account of authorship; a forwarded bearer link is not
+an authenticated individual.
 
-### 3. Link lifetime outlives its purpose
+**Recommendation.** First name the supported execution modes and the meaning
+of consent. Options include explicit execution of a captured revision, or a
+clearly disclosed continuing trust grant for a project. A continuing grant
+must explain that collaborators can change the code that will run. Determine
+expiry and invalidation rules for the chosen mode; do not silently broaden a
+grant when its scope changes. Validate that revision approval covers the actual
+inputs executed, including relevant local inputs and build configuration.
 
-`LINK_DEFAULT_SECONDS` is 180 days and `never` is offered
-(`server/sharing.rs:17`). The rationale in that module is that a round of
-review has an end; the default is longer than most of them. Keys are stored
-hashed, `referrer-policy: no-referrer` is set, and revocation and rotation both
-work -- the exposure is the forwarded mail, not the protocol.
+Expose active execution permissions and revocation separately from pairings,
+reusing the existing grant store where possible. Do not remove frozen-cache
+checks or execution gates merely because another local-build abstraction is
+being removed. Choose the contract before building collaborator identity
+tracking or a second grant system.
 
-**Required.** The default becomes 30 days with renewal offered from the sharing
-dialog. `never` remains available and is labelled as what it is.
+## 3. Backups: plaintext recovery points remain an exposure
 
-### 4. Privacy leaks the product does not name
+**Current.** `storage/backup.rs` takes a snapshot-consistent PostgreSQL dump,
+copies referenced immutable objects and writes a manifest with integrity
+checks. Files and directories use private permissions. The recovery point is
+not encrypted. Checksums detect corruption; they do not provide confidentiality
+or authenticate a backup against an attacker who can replace its manifest.
 
-- **The TeX mirror.** `web/src/lib/latex.js:38` sends every browser to
-  `https://latex.librepaper.workers.dev/`. A self-hosted deployment still
-  leaks each user's address and the exact set of TeX packages their document
-  pulls -- a usable fingerprint of the document -- to a third party the operator
-  never chose. Bytes are sha256-verified (`web/src/lib/latex/resources.js`), so
-  this is a privacy and availability dependency, not an integrity hole.
-- **Visitor identity and presence.** An anonymous reader receives a persistent
-  signed `visitor:` credential (`server/signin.rs:9`), and the collaboration
-  layer broadcasts presence and cursor position. A reviewer reading a paper is
-  visible to its author in real time.
-**Required.** The mirror has a documented self-hosting path; it is already a
-deployment setting (`--latex-mirror`), and the only pointer to hosting one is a
-URL inside a startup error message. Presence is visible to a reader before they
-are visible through it, and a reader may attend without broadcasting.
+**Recommendation.** Establish a documented encrypted backup and restore path.
+Choose between built-in recipient encryption and an operator-managed encrypted
+backup tool before adding key management to LibrePaper. If built-in encryption
+is chosen, make plaintext export an explicit opt-out. If encryption is external,
+state exactly where plaintext staging exists and who must protect and remove
+it. Do not describe the existing command as encrypted in either case.
 
-### 5. Supply chain
+Verify recovery with the encryption layer and its keys, not just successful
+archive creation. Preserve snapshot consistency and object completeness when
+exploring incremental backups. Document separately that the operator can read
+live data and that restored backups can reintroduce previously deleted data.
 
-`deploy/install.sh` and `deploy/install-companion.sh` verify the release
-archive against a `checksums.txt` fetched from the same release. That detects
-corruption, not a compromised pipeline or account. The macOS application is
-ad-hoc signed. The wasm engines are the good pattern -- pinned by digest in
-`wasm-modules.lock`, refused on mismatch -- and the release binaries are not
-held to it. `deploy/keys.yaml` holds live OAuth client secrets and a Cloudflare
-token encrypted to a single PGP recipient, with no second recipient and no
-rotation record.
+## 4. Sharing: lifetime is a product choice, renewal is already possible
 
-**Required.** Releases are signed and the installers verify the signature, not
-only the digest. The secrets file carries a second recipient. Rotation is a
-documented procedure with a date, because the first rotation will happen under
-pressure.
+**Current.** `LINK_DEFAULT_SECONDS` in `server/sharing.rs` remains 180 days.
+The sharing dialog offers 7 days, 30 days, 6 months and Never. Its settings path
+can update an existing link's expiry without replacing the key; the dialog uses
+that path. Rotation is a separate action. The old statement that renewal must
+mint a replacement and drop guests is obsolete.
 
-### 6. Indirect prompt injection is unbounded
+**Decision.** A 30-day default could reduce accidental long-lived access, but
+it is not required by the architecture. Decide according to review workflows
+and the cost of unexpected expiry. If changed, update the server default and
+the dialog's initial selection together. Label non-expiring links explicitly.
 
-`server/mcp.rs` and the chat relay feed document text and comments -- hostile
-content by the definition above -- to an agent that proposes edits and posts
-comments. The relay is well bounded in size and lifetime (`server/chat.rs`:
-16 KiB of context, channels that expire after an hour of idleness rather than
-an hour of life, no stored transcript) and the model runs on the user's own
-machine under the user's own keys, which is the right privacy answer. Nothing
-bounds what instructions hidden in a document can direct the agent to do with
-its authority. That authority is already link-scoped
-(`server/assistant.rs:42`), which is the correct instinct and the actual
-mitigation.
+Preserve role scope, expiry checks and prompt revocation regardless of the
+default. Forwarding a valid link is an accepted property of bearer sharing,
+not something a shorter lifetime prevents.
 
-**Required.** Agent writes are marked as agent writes in the timeline, so an
-injected edit is visible as one. This touches the comment and history data
-model rather than a single decision, which is why it outlived the rest of this
-finding. LibrePaper does not claim to prevent injection.
+## 5. Privacy: distinguish editor presence from reading
 
-## Non-goals
+**Current.** The application has a persistent signed visitor credential.
+However, reader/commenter sessions now use the annotation socket without
+joining source collaboration (`web/src/lib/reader/collaboration.js` and
+`web/src/components/Reader.svelte`). The server accepts `doc-presence` only
+from editors and relays it to other editors (`server/socket.rs`). The previous
+blanket claim that every reader broadcasts their cursor to the author is no
+longer accurate.
 
-- End-to-end encryption. The operator is trusted; the documentation says so.
-- Preventing a document from being hostile. Documents are code, and isolation,
-  not inspection, is the answer.
-- Sanitizing uploaded HTML. The renderer is the identity, deliberately.
-- Defeating a link holder who forwards their link.
+This does not establish anonymous reading: authored document resources can
+still contact outside hosts, the operator sees requests, and comments carry
+identity information. Editor presence remains a separate disclosure question.
+If an invisible mode is proposed, define whether it hides editor identity,
+caret position, connection counts or all three; it cannot promise network
+anonymity or conceal the authorship of a write.
 
-## What is already sound
+**The LaTeX mirror.** Browsers fetch the compiler and packages from the
+configured mirror, by default the project mirror. Digest verification protects
+integrity, not request privacy or availability. The public
+[hosting manual](../../site/host.md#privacy-and-the-latex-mirror) now explains
+the dependency and `--latex-mirror`; documentation is no longer absent. A
+concrete self-hosting recipe or direct link to the mirror layout/build guide
+is still needed. Do not describe document source as being uploaded there.
 
-Recorded so the list above reads as a set of decisions rather than a verdict.
-What this document used to ask for and no longer does, first:
+**Next work.** Reconcile [docs/privacy.md](../privacy.md) and the public
+[privacy page](../../site/privacy.md) with actual rendering and presence
+behavior. Disclose outbound requests and editor visibility before proposing
+additional privacy controls. Browser-first rendering makes mirror requests
+relevant to readers as well as editors.
 
-- **Two configured origins**, validated on every request in the outermost
-  middleware, with a startup refusal when the reader and document origins share
-  a host, and published documents reachable only on the second.
-- **One policy for every published document**: it may run its own code and may
-  not fetch code from another host. Quarto renders self-contained so it needs
-  none, and publishing reports the hosts of a document that does. Images,
-  fonts and connections deliberately still reach the open web, which is an
-  accepted leak rather than an oversight.
-- **Preset environments refuse loader and interpreter variables**, at
-  validation time, before any route that could set one exists.
-- **An agent's authority is the link it was given**, with a test that fails if
-  a caller's own session ever widens it.
+## 6. Supply chain: distinguish integrity, provenance and recovery
 
-And, from the beginning: HMAC with domain separation and constant-time
-verification, PKCE, state cookies, `__Host-` cookie naming wherever the
-deployment is HTTPS, POST-only logout behind rule A, path rules that refuse
-`..`, dotfiles, control characters and deep trees (`document/paths.rs`),
-capabilities stored only as digests, 0600 and 0700 on every secret and state
-directory, atomic key creation,
-`x-content-type-options` and `no-referrer` throughout, postMessage
-authenticated at both ends -- origin-checked inbound on the reader
-(`web/src/components/Preview.svelte:50`), source-checked inbound in the frame
-(`web/src/agent/agent.js:748`), and addressed to a named target origin rather
-than `*` on each side -- inert `template` parsing with resource attributes
-stripped before the parser runs (`web/src/lib/diff-display.js:229`), no process
-spawn on any request path (the operator's `admin backup` shells out to
-`pg_dump`, which is not one), and no constructed SQL outside benchmark
-teardown.
+**Current.** `deploy/install.sh` and `deploy/install-companion.sh` check release
+archives against `checksums.txt` from the same release. The release workflow
+uses ad-hoc macOS signing. The repository's SOPS secrets file has one PGP
+recipient. Wasm modules are pinned by digest in `wasm-modules.lock`.
 
-## Order of work
+**Recommendation.** Authenticate releases with a verification identity that
+installers trust independently of the downloaded checksum file. Specify key
+rotation and recovery, and test installer rejection of invalid releases.
+Signing with credentials available to a compromised build job does not by
+itself solve pipeline compromise; state which attacks the chosen scheme
+addresses. Digest pinning alone is not release provenance either.
 
-1. Backup encryption, finding 2. Self-contained, and it blocks nothing else.
-2. The rest of finding 1: grants that name the editors and the source identity
-   they trust, and a settings surface that lists and revokes them apart from
-   pairings. It needs a design decision first, about what counts as an approved
-   source identity.
-3. Link lifetime, finding 3. Extending an existing grant in place should come
-   before shortening the default: there is no renew operation today, minting
-   replaces the row and drops its guests, so a shorter default alone would
-   force a redistribution every month and push people to `never`.
-4. Release signing and the second secrets recipient, finding 5.
-5. Marking agent writes in the timeline, finding 6.
-6. The presence and mirror items in finding 4, in the order the manual needs
-   them.
+Document secret rotation and recovery as operator procedures, recording dates
+without recording secret values. A second recipient is one recovery option,
+not a universal requirement: it also adds another decryption authority. Choose
+it according to the operator's custody and recovery arrangements.
+
+## 7. Agent writes: attribution is partly implemented, not prevention
+
+**Current.** `server/mod.rs::resolved_role` keeps automation authority bounded
+by the presented link rather than the caller's broader account permissions.
+Agent source patches run through semantic commands, and
+`room/agent.rs::AgentPatchCommand::persist` records a label with reason `agent-patch`
+and author information. Explicit agent checkpoints also exist. The claim that
+agent writes have no history marking at all is outdated.
+
+**Remaining question.** Verify consistent attribution for source patches,
+comments, replies, suggestions and decisions, including what the history and
+comment interfaces actually display. A label on one patch path does not prove
+that every agent-originated write is recognizable. Prefer extending existing
+command/author metadata over introducing another audit subsystem. Distinguish
+server-known agent entry points from a guarantee of detecting all automation.
+
+LibrePaper does not claim to prevent indirect prompt injection. Preserve
+bounded authority and transactional authorization; attribution helps detection
+and recovery, not prevention. External agents and locally launched runners may
+use remote model providers and broader tools, so local execution of a runner
+must not be described as a guarantee that document context stays on the machine.
+Retain these protections whichever assistant entry points survive simplification.
+
+## 8. Availability and authorization under frugal scaling
+
+These concerns were missing from the earlier spec and belong in its security
+scope. The detailed implementation inventory lives in
+[resource-bounds.md](../resource-bounds.md); keep that as the source for exact
+limits rather than duplicating a second table here.
+
+**Deployment bounds.** Per-document pending-update ceilings do not establish
+a global pending-write bound. Audit pending and in-flight byte ownership,
+transient CRDT builds, comment caches and response serialization across many
+documents. Add missing aggregate accounting where evidence warrants it. Under
+pressure, refuse or defer work explicitly and retryably while clients retain
+unsynced work. Never report a refused or merely buffered write as durable.
+
+**Admission versus reading.** Configured comment/reply creation caps and the
+comment-specific rate setting are not currently enforced as their names
+suggest. Pagination and read-memory guards address a different problem from
+write admission. Track the ongoing transport work separately; it must not be
+mistaken for an enforced creation quota. Any admission policy must cover browser
+and agent writes at the authorized transaction boundary, handle concurrent
+last-slot requests and retries, and keep older over-limit documents readable.
+
+**Authorization caching.** Established sockets currently refresh authorization
+through `reauthorize_connection`, with a one-second cache. Reducing that query
+traffic is attractive, but an in-memory replacement needs complete invalidation
+for sharing, ownership, session and account changes, local expiry checks, and
+a defined response to database changes made outside the owning process. Keep
+transactional checks for durable semantic commands. A missed invalidation must
+not turn a performance optimization into continuing access after revocation.
+
+**Verification.** Exercise many idle readers, many actively edited documents,
+a crowded document, reconnect bursts and database slowdowns. Measure total
+memory, pending bytes, refusals and durable-save latency as well as throughput.
+Test revocation on an already-open socket and immediately before a command
+commits. Prefer the existing workload harnesses and one authoritative policy
+path over a new general-purpose security framework.
+
+## Non-goals and accepted limits
+
+- End-to-end encryption or protection from the deployment operator.
+- Making arbitrary document code safe by inspecting or sanitizing it.
+- Preventing a valid link holder from forwarding their credential.
+- Claiming anonymous review while authored resources can contact outside hosts.
+- Preventing prompt injection in external agents or controlling their other tools.
+- Adding distributed security coordination before the single-writer deployment
+  model changes. Future document sharding would need ownership fencing and
+  cross-owner revocation semantics of its own.
+
+## Recommended order of work
+
+1. Correct the rendering-policy discrepancy and test production headers; update
+   the privacy claims that depend on it. Decide whether to restore the stricter
+   policy or explicitly support remote scripts.
+2. Define local execution consent for the workflows being retained. Preserve
+   existing gates while that decision is open.
+3. Address measured aggregate resource gaps and preserve revocation correctness
+   in any authorization-cache work. Coordinate with the current transport work.
+4. Establish encrypted backup recovery and authenticated release verification
+   as independent, bounded operational improvements.
+5. Finish consistent agent attribution and the mirror/presence documentation.
+6. Revisit the link lifetime default as a separate product choice; renewal no
+   longer needs a new backend operation first.
+
+This ordering is a recommendation, not a new implementation mandate. The older
+review's broad “already sound” statements are not a current audit certificate;
+retain focused tests on real enforcement paths rather than carrying those
+statements forward without re-verification.

@@ -26,26 +26,8 @@ pub(super) fn runner_execution_epoch(headers: &HeaderMap) -> String {
         .unwrap_or_default()
         .to_owned()
 }
-// Bounded admission keeps source scans and renderer waits from exhausting the
-// runtime. Result lookup/cancellation has its own capacity to remain usable
-// while document work is saturated.
-pub(super) struct Capacity {
-    reads: tokio::sync::Semaphore,
-    effects: tokio::sync::Semaphore,
-    results: tokio::sync::Semaphore,
-    cancellations: tokio::sync::Semaphore,
-}
-
-impl Default for Capacity {
-    fn default() -> Self {
-        Self {
-            reads: tokio::sync::Semaphore::new(8),
-            effects: tokio::sync::Semaphore::new(8),
-            results: tokio::sync::Semaphore::new(4),
-            cancellations: tokio::sync::Semaphore::new(2),
-        }
-    }
-}
+mod capacity;
+pub(super) use capacity::Capacity;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct View {
@@ -283,23 +265,9 @@ impl Server {
                 if let Err(error) = schema::validate(&tool["inputSchema"], args) {
                     return rpc_error(200, &id, -32602, &error, Value::Null);
                 }
-                let slots = match name {
-                    "document_read" => &self.mcp_capacity.reads,
-                    "document_result" if args["action"] == "cancel" => {
-                        &self.mcp_capacity.cancellations
-                    }
-                    "document_result" => &self.mcp_capacity.results,
-                    _ => &self.mcp_capacity.effects,
-                };
-                let Ok(_permit) = slots.try_acquire() else {
-                    return tool_result(
-                        &id,
-                        Err(Failure::new(
-                            "rate_limited",
-                            "document tool capacity is busy; retry with the same operation key",
-                        )
-                        .with_data(json!({"retry_after_ms":250}))),
-                    );
+                let _permit = match self.mcp_capacity.acquire(&who, name, args) {
+                    Ok(permit) => permit,
+                    Err(error) => return tool_result(&id, Err(error)),
                 };
                 // A wrong argument, not a permission problem. Reported as
                 // `permission_changed` it read to callers as lost access and

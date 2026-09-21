@@ -176,24 +176,39 @@ unauthenticated at the moment they are checked).
 
 ## 6. MCP tool admission (`server/mcp.rs`)
 
-`Capacity` (`mcp.rs:27-32,35-42`) is one instance held on `Server`
-(`server/mod.rs:174,597`), so it is a single deployment-wide set of
-semaphores shared by every document and every connected agent, not scoped
-per document or per principal:
+`Capacity` (`server/mcp/capacity.rs`) is one instance held on `Server`.
+It atomically enforces deployment and per-principal concurrency bounds:
 
-| Semaphore | Permits | Tool group |
-|---|---|---|
-| `reads` | 8 | `document_read` |
-| `effects` | 8 | everything else (mutations) |
-| `results` | 4 | `document_result` (non-cancel) |
-| `cancellations` | 2 | `document_result` with `action: "cancel"` |
+| Lane | Deployment | Per principal | Tool group |
+|---|---|---|---|
+| Reads | 8 | 2 | `document_read` |
+| Effects | 8 | 2 | everything else (mutations) |
+| Results | 4 | 1 | `document_result` (non-cancel) |
+| Cancellations | 2 | 1 | `document_result` with `action: "cancel"` |
 
-A caller past its slot gets a JSON-RPC tool result carrying
-`{"code":"rate_limited","message":"document tool capacity is busy; retry
-with the same operation key","data":{"retry_after_ms":250}}`
-(`mcp.rs:290-299`), which is self-explaining. MCP access requires at least
-Commenter role (`mcp.rs:259-260`), so this path is authenticated or
-link-authorized traffic only; an anonymous reader cannot reach it at all.
+A signed-in principal is its catalogue account ID, shared across documents,
+sessions, links and execution epochs. An anonymous principal is its verified
+live link digest; anonymous users sharing that link share the allowance.
+Account and link identities use separate namespaces. Signed-in and anonymous
+use of a link have separate allowances. This is concurrency isolation, not
+protection against someone holding multiple accounts or independent links.
+
+Admission runs after authorization and tool-schema validation, before tool
+execution. Excess requests are refused immediately, with no admission queue.
+The existing `rate_limited` tool error retains its message and
+`recovery.retry_after_ms: 250`, and adds `recovery.scope` (`principal` or
+`deployment`). Clients should retry the same operation key after backing off.
+There is no FIFO or starvation guarantee when multiple principals saturate the
+deployment limit, and upstream HTTP/authentication capacity remains shared.
+
+A synchronous mutex protects only short accounting operations; it is never
+held across an await. The permit lives through tool execution and the final
+authorization recheck, and dropping it on completion, error or cancellation
+releases both counts. Only active principals occupy the map, so it has at most
+22 entries (the sum of global lane limits); rejected requests add no entries.
+Result lookup and cancellation retain independent capacity when work lanes
+are full. MCP access requires at least Commenter role; anonymous readers
+cannot reach tool admission.
 
 ## 7. Local companion server admission (`local/service.rs`)
 

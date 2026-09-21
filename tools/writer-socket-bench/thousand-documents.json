@@ -1,0 +1,40 @@
+{
+  "commit": "3352432d5b1ef071f6a8146a27ec6fd92c26f645",
+  "binary_sha256": "bd711c854877b8ba8d8d14b081aa3dc5be0c0afadfda960536f4aad366bdc824",
+  "test_passed": true,
+  "test_elapsed_seconds": 42.4,
+  "rows": [
+    {
+      "documents": 1000,
+      "rounds": 25,
+      "updates": 25000,
+      "elapsed_ms": 5005.240384000001,
+      "updates_per_second": 4994.765102574542,
+      "p50_ms": 28.77554,
+      "p95_ms": 61.86999,
+      "p99_ms": 64.955386,
+      "max_ms": 71.06472799999999,
+      "scheduled_p95_ms": 75.864404,
+      "scheduled_p99_ms": 79.401346,
+      "scheduled_max_ms": 82.63887,
+      "select_one_delta": 25000,
+      "rep": 1
+    },
+    {
+      "documents": 1000,
+      "rounds": 25,
+      "updates": 25000,
+      "elapsed_ms": 5002.953468000001,
+      "updates_per_second": 4997.048275564733,
+      "p50_ms": 26.954299000000002,
+      "p95_ms": 64.864903,
+      "p99_ms": 70.439242,
+      "max_ms": 76.917995,
+      "scheduled_p95_ms": 77.276148,
+      "scheduled_p99_ms": 85.221376,
+      "scheduled_max_ms": 89.232736,
+      "select_one_delta": 25000,
+      "rep": 2
+    }
+  ]
+}

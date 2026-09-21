@@ -1,0 +1,37 @@
+source\tpersistent local dev deployment: container librepaper-postgres, database librepaper; PostgreSQL 17.11; not production
+database_bytes\t8976051
+database_pretty\t8766 kB
+documents_total\t6
+documents_active\t6
+documents_deleting\t0
+starter_documents\t5
+starter_owners\t1
+starter_opened\t3
+starter_never_opened\t2
+starter_never_opened_fraction\t0.4
+asset_rows\t5
+asset_reference_bytes\t58470
+asset_global_unique_pairs\t1
+asset_global_unique_bytes\t11694
+asset_storage_keys\t5
+starter_asset_rows\t5
+starter_asset_reference_bytes\t58470
+starter_asset_unique_pairs\t1
+starter_asset_unique_bytes\t11694
+legacy_current_base_rows\t0
+legacy_current_base_bytes\t0
+legacy_retired_base_rows\t0
+update_rows\t11
+update_bytes\t34098
+archive_references\t0
+archive_unique_keys\t0
+archive_reference_bytes\t0
+archive_unique_bytes\t0
+storage_usage_bytes\t58470
+user_relation_bytes\t794624
+physical_object_files\t5
+physical_object_bytes\t58470
+physical_object_size_each\t11694
+repo_local_backup_manifests\t0
+repo_local_backup_dumps\t0
+current_schema_note\tLocal DB has document_bases and no document_snapshots; no migration was run.

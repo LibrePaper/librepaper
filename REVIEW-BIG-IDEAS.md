@@ -15,7 +15,7 @@ the lines it deletes.
 | Priority by payoff | Idea | Why it matters | Recommended next step |
 |---|---|---|---|
 | 1 | Comment admission | Transport is now paged end to end; what one document may accumulate is still unbounded, and making a comment refusable is a product decision | Settle what a caller at the cap is told, and whether a retry of an already-created id still succeeds |
-| 2 | Remaining admission and capacity questions | Label limits, MCP fairness and database contention remain unresolved | Address independently after the comment correctness gap |
+| 2 | Remaining admission and capacity questions | Label limits and database contention remain unresolved | Address independently |
 | 3 | Companion and assistant scope | Potentially large cuts, but some remove useful entry points | Remove proven unreachable remnants; decide which active workflows to support |
 
 History truncation, narrower offline support and new compaction architectures
@@ -41,9 +41,6 @@ the other items should not be bundled into the same change:
   assume otherwise at any layer: see below.
 - `config.session.label_deployment_per_hour` (10,000) reaches no check; only
   `label_owner_per_hour` does.
-- The MCP `Capacity` semaphores are one global instance, not per document or
-  per principal, so one runaway agent loop can starve MCP traffic for the
-  whole deployment.
 
 **Done: bounded transport pagination.** Every consumer walks a keyset
 traversal a page at a time: HTTP, the socket `hello` and its invalidation
