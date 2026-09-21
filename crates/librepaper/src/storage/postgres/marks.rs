@@ -12,6 +12,10 @@ use uuid::Uuid;
 
 use super::{Error, PostgresCatalog, Result};
 
+#[cfg(test)]
+#[path = "listing_regression_tests.rs"]
+mod listing_regression_tests;
+
 #[derive(Clone, Debug)]
 pub struct MarkRecord {
     pub document_id: Uuid,
@@ -50,23 +54,31 @@ impl PostgresCatalog {
             .await?;
             return Ok(true);
         }
-        // Two statements, in this order, in one transaction: a row that was
-        // only ever a favourite has nothing left to say once the star is off,
-        // and the table's CHECK refuses to hold it. Clearing first and then
-        // sweeping means the sweep sees the row it is meant to remove, and a
-        // document this person has also opened keeps its `opened_at`.
+        // Keep the pair of writes together.  In particular, do not briefly
+        // clear a never-opened favourite: the CHECK quite deliberately rejects
+        // that intermediate row.  The row lock also makes this serialize with
+        // mark_opened when both operations race on an existing mark.
         let mut tx = self.begin_metered().await?;
+        let _ = sqlx::query!(
+            "SELECT account_id FROM document_marks
+             WHERE account_id=$1 AND document_id=$2 FOR UPDATE",
+            account_id,
+            document_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
         sqlx::query!(
-            "UPDATE document_marks SET favorited_at=NULL WHERE account_id=$1 AND document_id=$2",
+            "DELETE FROM document_marks
+             WHERE account_id=$1 AND document_id=$2
+               AND favorited_at IS NOT NULL AND opened_at IS NULL",
             account_id,
             document_id,
         )
         .execute(&mut *tx)
         .await?;
         sqlx::query!(
-            "DELETE FROM document_marks
-             WHERE account_id=$1 AND document_id=$2
-               AND favorited_at IS NULL AND opened_at IS NULL",
+            "UPDATE document_marks SET favorited_at=NULL
+             WHERE account_id=$1 AND document_id=$2 AND opened_at IS NOT NULL",
             account_id,
             document_id,
         )

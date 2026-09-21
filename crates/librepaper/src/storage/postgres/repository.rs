@@ -504,24 +504,52 @@ impl PostgresCatalog {
         if !(1..=200).contains(&limit) {
             return Err(Error::Invalid("document page limit must be 1..=200".into()));
         }
+        // Build a bounded candidate set from each access path before joining
+        // back to documents.  The old OR predicate encouraged PostgreSQL to
+        // walk every active document when a caller owned only a small subset;
+        // each branch gets the cursor and page limit, while UNION removes
+        // duplicates when a document is both owned and granted (or an example).
         sqlx::query_as!(
             DocumentRecord,
-            "SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
+            "WITH candidates AS (
+                 (SELECT d.id,d.updated_at
+                 FROM documents d
+                 WHERE d.owner_id=$1 AND d.status='active'
+                   AND (d.updated_at,d.id) <
+                       (COALESCE($2::timestamptz,'infinity'),
+                        COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+                 ORDER BY d.updated_at DESC,d.id DESC LIMIT $5)
+                 UNION
+                 (SELECT g.document_id,d.updated_at
+                 FROM grants g
+                 JOIN documents d ON d.id=g.document_id AND d.status='active'
+                 WHERE g.account_id=$1
+                   AND (g.source_link_hash IS NULL OR EXISTS (
+                     SELECT 1 FROM share_links l
+                     WHERE l.document_id=g.document_id
+                       AND l.token_hash=g.source_link_hash
+                       AND l.revoked_at IS NULL
+                       AND (l.expires_at IS NULL OR l.expires_at>now())
+                   ))
+                   AND (d.updated_at,d.id) <
+                       (COALESCE($2::timestamptz,'infinity'),
+                        COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+                 ORDER BY d.updated_at DESC,d.id DESC LIMIT $5)
+                 UNION
+                 (SELECT d.id,d.updated_at
+                 FROM documents d
+                 WHERE $4 AND d.ownership_mode='example' AND d.status='active'
+                   AND (d.updated_at,d.id) <
+                       (COALESCE($2::timestamptz,'infinity'),
+                        COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+                 ORDER BY d.updated_at DESC,d.id DESC LIMIT $5)
+             )
+             SELECT d.id,d.slug,d.owner_id,d.ownership_mode,d.title,d.status,
                     d.source_format,d.main_path,d.update_sequence,
                     d.settings,d.created_at,
                     d.updated_at,d.deleted_at
              FROM documents d
-             WHERE d.status='active'
-               AND (d.owner_id=$1 OR EXISTS (
-                    SELECT 1 FROM grants g WHERE g.document_id=d.id AND g.account_id=$1
-                      AND (g.source_link_hash IS NULL OR EXISTS (
-                        SELECT 1 FROM share_links l WHERE l.document_id=d.id
-                          AND l.token_hash=g.source_link_hash AND l.revoked_at IS NULL
-                          AND (l.expires_at IS NULL OR l.expires_at>now())
-                      ))
-               ) OR ($4 AND d.ownership_mode='example'))
-               AND (d.updated_at,d.id) < (COALESCE($2::timestamptz,'infinity'),
-                                            COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+             JOIN candidates c ON c.id=d.id
              ORDER BY d.updated_at DESC,d.id DESC LIMIT $5",
             account_id,
             before.map(|value| value.0),
