@@ -145,9 +145,9 @@ impl PostgresCatalog {
     /// asked for more connections than exist would convert the serialization
     /// into `acquire_timeout` failures, which is worse.
     ///
-    /// Half the pool, so the other half stays available to the paths a
-    /// person is waiting on -- opening a document, posting a comment,
-    /// signing in -- while a sweep drains. The lease connection
+    /// Half the pool to leave headroom for opening documents, comments and
+    /// sign-in. This is a sweep limit, not a reservation: mixed load can
+    /// still exhaust the shared pool. The lease connection
     /// (`claim_writer`) never returns to the pool, so it is subtracted
     /// first.
     pub fn flush_concurrency(&self) -> usize {
@@ -224,8 +224,8 @@ fn flush_concurrency(max_connections: u32) -> usize {
 mod flush_concurrency_tests {
     #[test]
     fn it_is_never_zero_and_never_asks_for_the_whole_pool() {
-        // A deployment configured down to one connection still has to be
-        // able to flush; it just does so one document at a time, as before.
+        // Never return zero: for_each_concurrent treats zero as unbounded.
+        // A one-connection pool cannot serve writes while its lease is held.
         assert_eq!(super::flush_concurrency(1), 1);
         assert_eq!(super::flush_concurrency(2), 1);
         // The lease connection is subtracted, then the rest is split with

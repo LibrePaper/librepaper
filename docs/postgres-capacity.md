@@ -5,15 +5,14 @@ connections suffice under 64 concurrent HTTP work slots plus background work.
 Measure this under load." [`docs/resource-bounds.md`](resource-bounds.md) §9
 records the same question as an inference rather than a measurement.
 
-This document answers it. It inventories what actually touches the database
-and when, records what was measured and on what, names the first thing that
-saturates, and says what changed because of it. Everything here was either
-read at the cited line or produced by a run whose command is given.
+This document inventories database consumers and describes an isolated editing
+benchmark. It does **not** establish whether 20 connections suffice for 64
+concurrent HTTP requests plus background work: those consumers are absent
+from the benchmark. The mixed-workload question remains open.
 
-The short answer is that the connection count was never the constraint, and
-could not have been: the path that carries live editing was writing one
-document's row at a time for the whole deployment, so it could not use more
-than one connection no matter how many were configured.
+The production change removes serial database writes from the housekeeping
+sweep. Each document retains its transaction gate, and the sweep limits its
+concurrent flushes to half the pool after allowing for the writer lease.
 
 ## 1. What "scale" means here
 
@@ -86,7 +85,7 @@ this deployment exists for -- is not in either number.
 | Deletion, archive, superseded-base sweep | one transaction each | fenced | varies | one at a time, one worker |
 | Writer lease | the whole process lifetime | none | 1 per `verify` | one, permanent |
 
-No path holds a connection across CPU work, blob-store I/O or network
+The flush path does not hold a connection across blob-store I/O or network
 delivery. Compaction writes its snapshot to the blob store first and opens its
 transaction afterwards (`storage/worker.rs:480-560`), and the Loro export runs
 inside `spawn_blocking` under the heavy-work semaphore with no connection
@@ -160,8 +159,9 @@ Two limits, stated rather than implied:
   is no hook. `open_connections`, `idle_connections` and `checked_out` do see
   those, so pool saturation is visible; their individual waits are not.
 - `begin_wait` includes the `BEGIN` round trip, not only the acquisition.
-  `begun_with_no_connection_free` is what separates a queue from a slow
-  server, which is why it is a separate counter and not a percentile.
+  `begun_with_no_connection_free` samples pool occupancy before acquisition;
+  concurrent acquires and releases can race that sample. It is a contention
+  signal, not proof that no caller ever waited for a connection.
 
 ## 4. The harness
 
@@ -174,14 +174,14 @@ It drives the production paths: `Registry::get` to admit a document,
 `Sequencer::ingest` for each edit, a real `Sender` channel joined through
 `Sequencer::join`, and `Registry::housekeep` on the same one-second tick
 `server/serve.rs:540-550` runs in production. Durable latency is measured from
-submission to the `doc-ack` frame arriving on that channel -- the frame an
+scheduled arrival to the `doc-ack` frame arriving on that channel -- the frame an
 editor's save indicator actually waits for -- rather than from a flush return
 value nobody is sent.
 
-It does not go through HTTP or a WebSocket, for the reason in §2.2: those
-limiters are released before editing begins, so including them would measure
-something the traffic never meets. Document-open and reconnect bursts *do* go
-through them, and are a separate measurement this does not make (§8).
+It does not go through HTTP or a WebSocket. The HTTP work permit is released
+at upgrade, but real sockets still have admission limits, transport costs and
+outbound queue budgets that this harness does not measure. Mixed HTTP traffic,
+document-open and reconnect bursts require separate measurements (§8).
 
 Knobs, all environment variables:
 
@@ -195,190 +195,96 @@ Knobs, all environment variables:
 | `LIBREPAPER_CAPACITY_CONNECTIONS` | 20 | pool size |
 | `LIBREPAPER_CAPACITY_SEED_BYTES` | 4096 | starting document size |
 
-Each editor keeps a fixed cadence from a fixed start rather than sleeping
-after each round trip, so a server that slows down does not quietly receive
-less load. How far the generator fell behind its own schedule is reported as
-`worst_editor_lateness_us`; attempted, accepted, retried and unacknowledged
-work are counted separately from each other.
+Each editor has an independent producer of scheduled arrival timestamps and a
+64-entry queue. Producers never wait for ingest or retries. A full queue drops
+an arrival and counts it in `arrival_queue_dropped`; scheduled demand is
+computed independently, and `not_accepted` includes all scheduled arrivals
+that did not become accepted edits. The consumer keeps the editor's causal
+order, retries only until the workload deadline, and measures acknowledgement
+latency from the scheduled arrival, including generator and queue delay.
+`worst_editor_lateness_us` measures delay at consumption, including late timer
+wakeups. Unaccepted arrivals are counted, not assigned successful latencies.
+
+Opening rows are sampled before the workload and excluded from both reported
+row counts. Offered and accepted rates use the configured workload duration.
+The harness samples durable rows at the workload deadline and records the
+actual sample completion time (the query itself can be delayed). Editors then
+share a ten-second acknowledgement drain. A second row count, taken after the
+sweeper finishes its current pass, uses the reported elapsed time including
+drain and sweep shutdown. These rates have separate names and denominators;
+neither includes setup rows. Pool counters remain lifetime counters, including
+setup, as on the operator endpoint.
 
 ### Why the cadence is 8 seconds
 
 `FLUSH_QUIET` is five seconds and `FLUSH_MAX_AGE` is thirty
 (`log/sequencer.rs:72-75`). An editor typing without pause is flushed every
 thirty seconds; one who pauses is flushed five seconds later. A cadence of
-eight seconds puts every edit past the quiet deadline, so each edit produces
-one row and the offered flush rate is exactly `documents / 8` per second --
-the load can be reasoned about instead of inferred. It also sets the floor for
+eight seconds puts edits past the quiet deadline when the sweep keeps up, so
+each edit can produce one row. The long-run scheduled rate is `documents / 8`
+per second; finite runs report their exact scheduled count divided by the
+workload duration. If the sweep falls behind, multiple edits may share a row. It also sets the floor for
 durable acknowledgement at five seconds, by design. What the measurement
 watches is the distance *above* that floor.
 
-## 5. What was measured
+## 5. Review of the original measurements
 
-### Environment
+The original runs on a local PostgreSQL 16 laptop suggested that serial
+housekeeping delayed durable acknowledgements and that concurrent flushing
+helped. However, the original throughput tables are withdrawn:
 
-Everything below is one laptop. **Do not read a production capacity claim out
-of it.** What transfers is the shape of the curve and which resource runs out
-first; the absolute numbers belong to this machine.
+- The numerator included one opening row per document written during setup.
+- Reported rates included the final drain in the elapsed time, while tables
+  compared them with offered load divided by the workload window alone.
+- The generator waited for each ingest/retry before producing another edit,
+  and latency excluded scheduling delay. Overload could reduce offered load
+  or shift delay outside the latency distribution.
 
-| | |
-|---|---|
-| Host | AMD Ryzen AI 7 PRO 450, 8 cores / 16 threads, 54 GiB RAM, NVMe |
-| PostgreSQL | 16.15 in Docker (`postgres:16-alpine`), loopback, default configuration except `max_connections=300` and `shared_preload_libraries=pg_stat_statements` |
-| Build | `cargo test --release` (a debug build measures Loro, not the server) |
-| Commit | branch `capacity/postgres`, from `3352432d` |
-| Workload | one editor per document, one edit every 8 s, 4 KiB starting documents, 60 s measurement, no compaction (thresholds put out of reach) |
+Consequently, the previous claims of 90 versus 482 rows/s, an envelope of
+500 versus 4096 documents, and no benefit from increasing the pool are not
+validated capacity results. The corrected harness needs a new release-mode
+curve before numerical capacity claims are restored. The historical hot-document
+and fence comparisons also do not establish full deployment capacity.
 
-The database and the application share the machine, so these numbers include
-the server competing with its own database for CPU. A deployment with a
-separate database host would see different absolute figures in both
-directions.
+### Corrected accounting smoke check
 
-### Baseline: the sweep writes one row at a time
+A debug-build check with two documents, a ten-second workload and eight-second
+edit cadence produced two scheduled and accepted edits (0.2 edits/s). Two
+setup rows were excluded. No workload rows were durable at the workload
+snapshot; both were durable after the shared ten-second drain, with no
+unacknowledged edits. This checks accounting and drain behavior, not capacity.
+Use the command in §9 with `LIBREPAPER_CAPACITY_DOCUMENTS=2` and
+`LIBREPAPER_CAPACITY_SECONDS=10` to repeat this workload.
 
-| Active documents | Offered edits/s | Achieved rows/s | Durable ack p50 | p99 | Sweep pass max | Unacknowledged at end |
-|---|---|---|---|---|---|---|
-| 8 | 0.9 | 0.97 | 5.91 s | 5.97 s | 104 ms | 0 |
-| 64 | 7.5 | 5.18 | 8.47 s | 21.6 s | 4.35 s | 0 |
-| 256 | 29.9 | 31.0 | 6.33 s | 7.67 s | 1.82 s | 0 |
-| 512 | 59.7 | 59.6 | 6.60 s | 15.6 s | 2.68 s | 0 |
-| 1024 | 119.5 | **90.7** | 7.22 s | **32.9 s** | 4.01 s | **264** |
+## 6. The change and its regression test
 
-At 1024 documents the deployment stops keeping up: it is offered 119.5 edits a
-second and makes 90.7 rows a second durable, 264 acknowledgements never arrive
-inside the run, and the worst durable acknowledgement is 33 seconds against a
-five-second design floor. A one-second housekeeping tick is taking up to four
-seconds to complete.
+`Registry::housekeep` gathers due documents and flushes them with
+`PostgresCatalog::flush_concurrency()`: half the configured pool after
+subtracting the writer lease, with a minimum of one. At the default pool size
+of twenty, the sweep runs at most nine flushes concurrently. Other consumers
+share the same pool; this bound does not reserve connections for them or
+prevent acquisition timeouts under mixed load.
 
-And in every one of those runs:
+`one_housekeeping_pass_flushes_every_due_document_exactly_once` holds the
+writer fence with an exclusive row lock and observes blocked flushes through
+`pg_stat_activity`. It requires exactly the configured concurrency to overlap,
+checks that the blocked cohort stays bounded, then releases the fence and
+verifies one row per document. A serial sweep fails the overlap check; an
+unbounded sweep fails the upper-bound check. The empty-buffer assertion runs
+before ingest, so slow database setup cannot make an edit unexpectedly due.
 
-```
-"begun_with_no_connection_free": 0,
-"begin_wait_max_us": 2533
-```
+## 7. Conclusions and scope
 
-**The pool was never contended, at any point on the curve.** Not once did a
-transaction find the pool at its limit with nothing idle, and the worst wait
-to open one was 2.5 ms. The saturating deployment was using about one
-connection.
-
-That is the answer to the question REVIEW-BIG-IDEAS.md asked, and it is not
-the answer the question expected. The connections were not scarce because the
-path that needed them could not ask for more than one at a time:
-`Registry::housekeep` wrote one document's row, waited for its commit, and
-then started the next. Each commit is a WAL fsync, which at 8 documents
-measures about 13 ms a flush (a 104 ms pass for eight of them), so the whole
-deployment had a ceiling of roughly 70 to 90 rows a second no matter how many
-documents, editors, cores or connections it had. 90.7 is where it actually
-stopped.
-
-### Hot documents are cheap
-
-| Workload | Offered edits/s | Achieved rows/s | Durable ack p99 |
-|---|---|---|---|
-| 64 documents, one editor each | 7.5 | 5.18 | 21.6 s |
-| 64 documents + one shared by 16 editors | 9.3 | 7.88 | 6.28 s |
-| 256 documents + one shared by 16 editors | 31.7 | 31.2 | 7.02 s |
-
-Sixteen editors on one document cost about what one editor costs: their
-batches coalesce into one buffer and leave as one row. The expensive
-dimension is the number of *documents* being edited, not the number of people
-editing. Sharing is the cheap case, which is worth knowing because it is the
-opposite of the intuition that a busy document is the dangerous one.
-
-## 6. The change
-
-`Registry::housekeep` (`log/mod.rs:180`) now decides which documents are due,
-then writes their rows concurrently, bounded by
-`PostgresCatalog::flush_concurrency()` -- half the pool after the lease
-connection is subtracted, so nine of twenty by default.
-
-What did not change, and is what
-`one_housekeeping_pass_flushes_every_due_document_exactly_once`
-(`log/recovery.rs`) holds: concurrency is across documents only. One pass asks
-each sequencer at most once, each flush still takes that document's own
-transaction gate, so no document has two rows in flight and none is skipped.
-The bound comes from the pool so a sweep cannot turn the queue into
-`acquire_timeout` failures, and it is half rather than all of it so opening a
-document or posting a comment does not queue behind a sweep.
-
-### After
-
-| Active documents | Offered edits/s | Achieved rows/s | Durable ack p50 | p99 | Sweep pass max | Unacknowledged |
-|---|---|---|---|---|---|---|
-| 8 | 0.9 | 0.97 | 5.94 s | 5.97 s | 60 ms | 0 |
-| 64 | 7.5 | 7.76 | 5.90 s | 5.96 s | 81 ms | 0 |
-| 256 | 29.9 | 31.0 | 6.00 s | 6.07 s | 109 ms | 0 |
-| 512 | 59.7 | 62.1 | 6.01 s | 7.07 s | 1.17 s | 0 |
-| 1024 | 119.5 | 124.1 | 6.27 s | 6.75 s | 833 ms | 0 |
-| 2048 | 238.9 | 248.2 | 6.28 s | 6.85 s | 987 ms | 0 |
-| 4096 | 477.9 | 482.0 | 6.64 s | 8.34 s | 3.15 s | 0 |
-
-The saturation at 1024 is gone: offered and achieved match, nothing is left
-unacknowledged, and durable acknowledgement sits just above the five-second
-design floor plus a tick. The measured envelope moves from about 500
-simultaneously active documents to at least 4096, at which point the
-deployment is making 482 rows a second durable and using 193 MiB.
-
-4096 is where the knee starts rather than where it fails: the sweep is back up
-to 3.1 s in its worst pass and p99 acknowledgement has drifted to 8.3 s. The
-next measurement to make is beyond it, and on real hardware.
-
-### The pool is still not the lever
-
-2048 active documents, same workload, only the connection count changed:
-
-| Connections | Flush concurrency | Achieved rows/s | Durable ack p99 | Sweep pass max |
-|---|---|---|---|---|
-| 8 | 3 | 235.8 | 9.08 s | 3.42 s |
-| 20 (default) | 9 | 248.2 | 6.85 s | 0.99 s |
-| 60 | 29 | 248.2 | 6.54 s | 0.63 s |
-
-Tripling the pool past the default buys nothing measurable in throughput and
-a quarter of a second in the sweep's worst pass. Cutting it to 8 does cost
-something. **20 is adequate and raising it is not the lever**; the default
-stands, with the note that a deployment shrinking it below about 8 will feel
-it on the flush path first.
-
-### A hypothesis that did not survive
-
-The `deployment_writer FOR SHARE` fence in §2.4 looked like a deployment-wide
-cost: concurrent share locks on one row are what PostgreSQL allocates
-MultiXactIds for, and every lock writes WAL against one page. It was measured
-two ways rather than assumed.
-
-A `pgbench` pair on the same server, identical except that one takes the
-share lock and the other reads the same row without it:
-
-| Clients | Fenced tps | Unfenced tps |
-|---|---|---|
-| 1 | 145 | 142 |
-| 8 | 655 | 468 |
-| 32 | 2,022 | 2,463 |
-| 64 | 4,551 | 5,833 |
-
-And in the application runs, MultiXactIds consumed went from 0 under the
-serial sweep to 27,613 over 31,827 transactions at 4096 documents -- so the
-allocation is real and the fence is what causes it. It did not stop throughput
-rising more than fivefold across the same change. The share lock may cost
-something in the region of twenty percent at high write concurrency; it is
-not a wall, it is well behind the next real limit, and removing it would mean
-re-arguing writer-takeover safety for no measured gain. **Left alone,
-deliberately, with the counter now in the benchmark so a future run can
-notice if that changes.**
-
-## 7. Answers to the questions that were open
-
-- **Do 20 connections suffice under 64 work slots plus background work?**
-  Yes, with room to spare, and the comparison was the wrong one. Live editing
-  is not under the work semaphore at all (§2.2), and the write path's
-  concurrency was one, not 64.
-- **Which traffic is covered by the HTTP work semaphore?** Requests and
-  WebSocket handshakes. Not edits, flushes, acknowledgements or relay.
-- **Is there deployment-wide serialization limiting independent documents?**
-  There was: the sweep. It is gone. Two remain, below.
-- **Should application replicas be considered?** Not on this evidence. The
-  single-writer lease is doing its job, the bottleneck was a loop rather than
-  a machine, and nothing here needs a second process.
+- **Do 20 connections suffice for 64 HTTP work slots plus background work?**
+  Still unverified. The editing benchmark omits both HTTP load and compaction.
+- **Does the HTTP work semaphore cover socket edits?** No. It covers the
+  handshake, and releases its permit at upgrade. This makes editing an
+  additional source of work, not evidence that HTTP contention is impossible.
+- **Does the sweep serialize independent document writes?** The new sweep
+  allows bounded overlap; per-document transaction gates still enforce order.
+- **Should the pool size or writer fence change?** This change provides no
+  corrected capacity evidence requiring either change. Defaults and takeover
+  protection are retained pending representative measurements.
 
 ## 8. What is still unmeasured
 
@@ -397,8 +303,8 @@ In rough order of how likely each is to be the next thing to bite:
    `document_by_slug` (once in `get_checked`, again inside `Rooms::get`). A
    reconnect storm after a restart is the workload most likely to make the
    pool matter, and it is the one this harness does not generate.
-3. **Total stored documents.** Every run here had at most a few thousand
-   rows. Nothing was measured at a scale where index depth or planner choice
+3. **Total stored documents.** The historical runs had at most a few thousand
+   document rows. Nothing was measured at a scale where index depth or planner choice
    changes, and `LIBREPAPER_CAPACITY_STORED` exists for that run.
 4. **A separate database host.** Every number here has the fsync, the
    application and the database on one laptop. Network latency to a real

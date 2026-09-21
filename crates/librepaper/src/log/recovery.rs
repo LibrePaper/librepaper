@@ -1667,22 +1667,9 @@ async fn a_command_that_produces_no_source_names_the_last_row_and_records_no_aft
     deployment.catalog.close().await;
 }
 
-/// One housekeeping pass owes every document that is due a row, and owes
-/// each of them the row in its own order.
-///
-/// The pass used to write them one at a time, which is correct and which is
-/// also the deployment-wide serialization `docs/postgres-capacity.md`
-/// measures: a document's durable acknowledgement waited on every other
-/// document that happened to be due in the same second. It now writes them
-/// concurrently, bounded by the pool.
-///
-/// What must not change is what this asserts. Concurrency is across
-/// documents only: one pass asks each sequencer at most once, and each
-/// sequencer still takes its own transaction gate, so no document can have
-/// two rows in flight and none can be skipped. The failure this would catch
-/// is a pass that drops a document on the floor because its future was never
-/// polled, or one that writes a second row for a document whose first is
-/// still open.
+/// Hold the writer fence so every flush stays observable in PostgreSQL.
+/// Exactly the configured number must overlap; serial and unbounded sweeps
+/// both fail this test. After releasing the fence, every document gets one row.
 #[tokio::test]
 #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
 async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
@@ -1729,6 +1716,14 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
             .get(document.id, &slug)
             .await
             .expect("admit the document");
+        documents.push((document.id, sequencer));
+    }
+    // Empty buffers are never due, regardless of how long database setup took.
+    registry.housekeep().await;
+    for (document_id, _) in &documents {
+        assert_eq!(catalog.log_sequence(*document_id).await.unwrap(), 0);
+    }
+    for (index, (_, sequencer)) in documents.iter().enumerate() {
         let doc = session::new_doc();
         doc.set_peer_id(index as u64 + 1).expect("peer id");
         session::put_text(&doc, "paper.md", &format!("document {index}"));
@@ -1745,18 +1740,6 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
                 .await,
             Ingested::Accepted
         ));
-        documents.push((document.id, sequencer));
-    }
-
-    // Every buffer is non-empty and none has been quiet long enough yet, so
-    // nothing is due and the pass must write nothing.
-    registry.housekeep().await;
-    for (document_id, _) in &documents {
-        assert_eq!(
-            catalog.log_sequence(*document_id).await.unwrap(),
-            0,
-            "a pass wrote a row for a document that was not due"
-        );
     }
 
     // Make every one of them due at once, which is the shape a deployment
@@ -1765,7 +1748,49 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
     // advancing a clock: the pass under test is the one a real quiet period
     // triggers.
     tokio::time::sleep(crate::log::sequencer::FLUSH_QUIET + Duration::from_millis(500)).await;
-    registry.housekeep().await;
+    let mut blocker = catalog.pool().begin().await.unwrap();
+    sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton FOR UPDATE")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let sweep = tokio::spawn({
+        let registry = registry.clone();
+        async move { registry.housekeep().await }
+    });
+    let concurrency = catalog.flush_concurrency() as i64;
+    let waiting = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM pg_stat_activity
+             WHERE datname=current_database() AND wait_event_type='Lock'
+             AND query LIKE 'SELECT epoch FROM deployment_writer%FOR SHARE%'",
+        )
+        .fetch_one(catalog.pool())
+        .await
+        .unwrap()
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let count = waiting().await;
+            assert!(
+                count <= concurrency,
+                "sweep exceeded its concurrency bound: {count}"
+            );
+            if count == concurrency {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("independent document flushes must overlap");
+    // With every slot blocked, queued documents must not start another flush.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(waiting().await, concurrency);
+    blocker.rollback().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), sweep)
+        .await
+        .expect("sweep finishes once the fence is released")
+        .unwrap();
 
     for (index, (document_id, sequencer)) in documents.iter().enumerate() {
         assert_eq!(
@@ -1788,5 +1813,6 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
         "one pass over {count} due documents wrote {rows} rows"
     );
 
+    drop(_writer);
     catalog.close().await;
 }

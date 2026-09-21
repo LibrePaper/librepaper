@@ -2088,23 +2088,11 @@ async fn batched_import_cost_probe() {
 // connections suffice under 64 concurrent HTTP work slots plus background
 // work. Measure this under load."
 //
-// The benchmark above measures one document with three editors, which is the
-// §14.1 acceptance shape and says nothing about that question. This one moves
-// along the dimension the question is actually about: how many *independent*
-// documents can be edited at once, which is the dimension a deployment grows
-// along and the only one that can make separate documents contend.
-//
-// It deliberately does not go through HTTP. Live editing does not: the work
-// semaphore in `server/cost.rs` is released when the WebSocket upgrade
-// response is returned (`server/socket.rs` hands the socket to
-// `on_upgrade`), so every subsequent edit, flush and durable acknowledgement
-// runs outside it. Measuring editors through HTTP would measure a limiter
-// they never meet. What they do meet is here: the sequencer, the periodic
-// sweep, and the one connection pool.
-//
-// Reported rather than asserted. There is no service level to hold this to
-// yet, so the output is a capacity envelope for the hardware it ran on, and
-// the run records that hardware.
+// This isolates independent-document editing through the sequencer, periodic
+// sweep and pool. It does not answer the mixed HTTP/background-work question:
+// HTTP traffic is absent and compaction is disabled. Socket upgrades release
+// the HTTP work permit, so sustained edits also need their own measurement.
+// Results describe this workload and host, not a deployment capacity limit.
 
 /// What one simulated editor did, so offered load and achieved load can be
 /// told apart. An overloaded harness that quietly slows down is the classic
@@ -2113,14 +2101,15 @@ async fn batched_import_cost_probe() {
 struct EditorReport {
     /// Edits the schedule called for by the time the run ended.
     offered: u64,
+    /// Scheduled arrivals the bounded producer queue could not deliver.
+    queue_dropped: u64,
     /// Edits handed to `ingest`, including resends of the same client_seq.
     attempted: u64,
     accepted: u64,
     retried: u64,
     /// Ingest calls, in microseconds: the relay path only.
     relay: Vec<u64>,
-    /// Submission to `doc-ack`, in microseconds: the durable path, which is
-    /// what an editor's save indicator actually waits for.
+    /// Scheduled arrival to `doc-ack`, including generator and queue delay.
     durable: Vec<u64>,
     /// Accepted edits that never came back acknowledged before the run
     /// ended. Counted rather than dropped: a run whose acknowledgements
@@ -2181,13 +2170,45 @@ fn acknowledgement_reader(
     })
 }
 
-/// One editor typing into one document on a fixed schedule.
-///
-/// The schedule is a fixed cadence from a fixed start, not a sleep after
-/// each edit: an editor that slept after every round trip would offer less
-/// load exactly when the server got slower, which is how a closed-loop
-/// generator hides saturation. Falling behind the schedule is recorded
-/// instead.
+/// Number of arrivals strictly inside the workload window; independent of
+/// how quickly the consumer can submit them. No arrival is scheduled at t=0.
+fn scheduled_edits(window: Duration, interval: Duration) -> u64 {
+    assert!(!interval.is_zero(), "edit interval must be positive");
+    u64::try_from(window.as_nanos().saturating_sub(1) / interval.as_nanos())
+        .expect("too many scheduled edits")
+}
+
+/// Generate arrival timestamps independently of ingest and retries. The queue
+/// is bounded so overload is counted, rather than consuming unlimited memory.
+fn capacity_arrivals(
+    started_at: Instant,
+    deadline: Instant,
+    interval: Duration,
+    queue_capacity: usize,
+) -> (
+    tokio::sync::mpsc::Receiver<Instant>,
+    tokio::task::JoinHandle<u64>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel(queue_capacity);
+    let producer = tokio::spawn(async move {
+        let mut dropped = 0;
+        let mut due = started_at + interval;
+        while due < deadline {
+            tokio::time::sleep_until(due.into()).await;
+            // Check after waking too: runtime starvation is part of overload.
+            if Instant::now() >= deadline || tx.try_send(due).is_err() {
+                dropped += 1;
+            }
+            due += interval;
+        }
+        dropped
+    });
+    (rx, producer)
+}
+
+/// One causally ordered editor consumes independently scheduled arrivals.
+/// Retries block this editor, not its producer; queued and dropped demand
+/// remains visible, and acknowledgement latency includes the queue delay.
 #[allow(clippy::too_many_arguments)]
 async fn capacity_editor(
     sequencer: Arc<crate::log::Sequencer>,
@@ -2203,7 +2224,11 @@ async fn capacity_editor(
 ) -> EditorReport {
     use crate::room::outgoing::Sender;
 
-    let mut report = EditorReport::default();
+    let mut report = EditorReport {
+        offered: scheduled_edits(deadline.duration_since(started_at), interval),
+        ..EditorReport::default()
+    };
+    let (mut arrivals, producer) = capacity_arrivals(started_at, deadline, interval, 64);
     let peer_key = format!("peer-{socket}");
     let (tx, rx) = Sender::channel(4096, 64 * 1024 * 1024, None, None);
     let pending: Pending = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -2213,6 +2238,9 @@ async fn capacity_editor(
         .await
     {
         report.terminal = Some(format!("join failed: {error}"));
+        drop(arrivals);
+        report.queue_dropped = producer.await.expect("arrival producer");
+        reader.await.expect("acknowledgement reader");
         return report;
     }
 
@@ -2222,30 +2250,11 @@ async fn capacity_editor(
     let mut vector = session::encode_vector(&doc);
     let mut len = seed_len;
     let mut sent = 0_i64;
-    // The schedule index, which is not `sent`: an edit that encodes to
-    // nothing advances the clock without advancing the sequence, and
-    // reusing `sent` for both would put this loop in a tight spin at a
-    // deadline it has already passed.
-    let mut round = 0_u32;
-
-    loop {
-        round += 1;
-        let due = started_at + interval.saturating_mul(round);
-        if due >= deadline {
+    while let Ok(Some(due)) = tokio::time::timeout_at(deadline.into(), arrivals.recv()).await {
+        if Instant::now() >= deadline {
             break;
         }
-        let now = Instant::now();
-        if now < due {
-            tokio::time::sleep(due - now).await;
-        } else {
-            report.worst_lateness_us = report.worst_lateness_us.max(
-                now.duration_since(due)
-                    .as_micros()
-                    .try_into()
-                    .unwrap_or(u64::MAX),
-            );
-        }
-        report.offered += 1;
+        report.worst_lateness_us = report.worst_lateness_us.max(micros(due));
 
         let chunk = format!(" edit{sent}from{peer}");
         if !session::apply_edits_at(
@@ -2273,14 +2282,24 @@ async fn capacity_editor(
         pending
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .insert(sent, Instant::now());
+            .insert(sent, due);
         loop {
+            if Instant::now() >= deadline {
+                report.terminal = Some("submission still pending at workload deadline".into());
+                break;
+            }
             let at = Instant::now();
             report.attempted += 1;
-            let outcome = sequencer
-                .ingest(socket, &peer_key, &principal, sent, update.clone())
-                .await;
+            let outcome = tokio::time::timeout_at(
+                deadline.into(),
+                sequencer.ingest(socket, &peer_key, &principal, sent, update.clone()),
+            )
+            .await;
             report.relay.push(micros(at));
+            let Ok(outcome) = outcome else {
+                report.terminal = Some("ingest did not finish before workload deadline".into());
+                break;
+            };
             match outcome {
                 crate::log::Ingested::Accepted => {
                     vector = session::encode_vector(&doc);
@@ -2293,7 +2312,12 @@ async fn capacity_editor(
                         report.terminal = Some(format!("retryable at deadline: {reason}"));
                         break;
                     }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep_until(
+                        (Instant::now() + Duration::from_millis(50))
+                            .min(deadline)
+                            .into(),
+                    )
+                    .await;
                 }
                 other => {
                     report.terminal = Some(format!("{other:?}"));
@@ -2306,15 +2330,20 @@ async fn capacity_editor(
         }
     }
 
-    // Give acknowledgements that are already in flight a bounded moment to
-    // land, then stop reading. Long enough to cover the quiet-flush deadline
-    // the last edit of the run is waiting on (`FLUSH_QUIET`, five seconds),
-    // because otherwise every editor would end the run reporting its last
-    // edit unacknowledged and the counter would mean nothing. Whatever is
-    // still pending after that is reported rather than waited for forever.
-    tokio::time::sleep(crate::log::sequencer::FLUSH_QUIET + Duration::from_secs(5)).await;
+    // A refused or timed-out submission is not an accepted-but-unacknowledged
+    // edit. Sequence numbers advance only once per generated edit.
+    if sent as u64 > report.accepted {
+        pending
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&sent);
+    }
+    drop(arrivals);
+    report.queue_dropped = producer.await.expect("arrival producer");
+    // Every editor shares the same drain deadline, regardless of its last edit.
+    tokio::time::sleep_until((deadline + Duration::from_secs(10)).into()).await;
     sequencer.unsubscribe(socket).await;
-    report.durable = reader.await.unwrap_or_default();
+    report.durable = reader.await.expect("acknowledgement reader");
     report.unacknowledged = pending
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
@@ -2341,6 +2370,8 @@ async fn active_document_capacity_benchmark() {
     let seconds = env_usize("LIBREPAPER_CAPACITY_SECONDS", 60) as u64;
     let connections = env_usize("LIBREPAPER_CAPACITY_CONNECTIONS", 20) as u32;
     let interval = Duration::from_millis(env_usize("LIBREPAPER_CAPACITY_EDIT_MS", 1000) as u64);
+    assert!(seconds > 0 && connections >= 2 && !interval.is_zero());
+    assert!(documents + hot_editors > 0);
     let seed_bytes = env_usize("LIBREPAPER_CAPACITY_SEED_BYTES", 4096);
     let label = std::env::var("LIBREPAPER_CAPACITY_LABEL").unwrap_or_else(|_| "run".into());
 
@@ -2440,11 +2471,16 @@ async fn active_document_capacity_benchmark() {
         active.push((sequencer, opening));
     }
     let seeding_seconds = seeding.elapsed().as_secs_f64();
+    let rows_before: i64 = sqlx::query_scalar("SELECT count(*) FROM document_updates")
+        .fetch_one(catalog.pool())
+        .await
+        .expect("setup row baseline");
 
     // The production sweep, at the production cadence, timed. Whether this
     // pass keeps up is the measurement: it is the only thing in a deployment
     // that flushes a document nobody has filled a buffer for.
     let sweep_times: Arc<std::sync::Mutex<Vec<u64>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (stop_sweep, mut stopped) = tokio::sync::oneshot::channel::<()>();
     let housekeeping = tokio::spawn({
         let registry = registry.clone();
         let sweep_times = sweep_times.clone();
@@ -2452,7 +2488,10 @@ async fn active_document_capacity_benchmark() {
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
-                ticker.tick().await;
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    _ = ticker.tick() => {}
+                }
                 let at = Instant::now();
                 registry.housekeep().await;
                 sweep_times
@@ -2506,16 +2545,27 @@ async fn active_document_capacity_benchmark() {
         }
     }
 
+    tokio::time::sleep_until(deadline.into()).await;
+    let rows_at_deadline: i64 = sqlx::query_scalar("SELECT count(*) FROM document_updates")
+        .fetch_one(catalog.pool())
+        .await
+        .expect("workload row count");
+    let workload_snapshot_seconds = started_at.elapsed().as_secs_f64();
     let reports = join_all(editors).await;
+    let _ = stop_sweep.send(());
+    // Do not cancel a flush between COMMIT and acknowledging its batches.
+    housekeeping
+        .await
+        .expect("housekeeping stopped between passes");
     let pool = catalog.pool_snapshot();
-    housekeeping.abort();
-    let elapsed = started_at.elapsed().as_secs_f64().max(1.0);
+    let elapsed = started_at.elapsed().as_secs_f64();
     let multixact_after = control_multixact(&catalog).await;
 
     let mut relay = Vec::new();
     let mut durable = Vec::new();
     let (mut offered, mut attempted, mut accepted, mut retried, mut unacknowledged) =
         (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
+    let mut queue_dropped = 0_u64;
     let mut worst_lateness = 0_u64;
     let mut terminals: Vec<String> = Vec::new();
     for report in reports {
@@ -2523,6 +2573,7 @@ async fn active_document_capacity_benchmark() {
         relay.extend(report.relay);
         durable.extend(report.durable);
         offered += report.offered;
+        queue_dropped += report.queue_dropped;
         attempted += report.attempted;
         accepted += report.accepted;
         retried += report.retried;
@@ -2554,29 +2605,40 @@ async fn active_document_capacity_benchmark() {
             "seed_bytes": seed_bytes,
             "seconds": seconds,
         },
+        "timing": {
+            "workload_seconds": seconds,
+            "workload_row_snapshot_seconds": workload_snapshot_seconds,
+            "acknowledgement_drain_seconds": 10,
+            "elapsed_through_sweep_stop_seconds": elapsed,
+        },
         "configuration": {
             "database_connections": connections,
             "flush_concurrency": catalog.flush_concurrency(),
             "seeding_seconds": (seeding_seconds * 100.0).round() / 100.0,
+            "setup_rows_excluded": rows_before,
         },
         "offered": {
             "edits": offered,
-            "per_second": (offered as f64 / elapsed * 100.0).round() / 100.0,
+            "per_second": (offered as f64 / seconds as f64 * 100.0).round() / 100.0,
             "worst_editor_lateness_us": worst_lateness,
         },
         "achieved": {
             "ingest_attempts": attempted,
             "accepted": accepted,
             "retried": retried,
-            "accepted_per_second": (accepted as f64 / elapsed * 100.0).round() / 100.0,
-            "durable_rows": rows,
-            "rows_per_second": (rows as f64 / elapsed * 100.0).round() / 100.0,
+            "accepted_per_second": (accepted as f64 / seconds as f64 * 100.0).round() / 100.0,
+            "not_accepted": offered - accepted,
+            "arrival_queue_dropped": queue_dropped,
+            "durable_rows_at_workload_snapshot": rows_at_deadline - rows_before,
+            "rows_per_second_at_workload_snapshot": (rows_at_deadline - rows_before) as f64 / workload_snapshot_seconds,
+            "durable_rows_after_drain": rows - rows_before,
+            "rows_per_second_including_drain": (rows - rows_before) as f64 / elapsed,
             "unacknowledged_at_end": unacknowledged,
             "editor_terminals": terminals,
         },
         "latency": {
             "relay_us": percentiles(relay),
-            "durable_ack_us": percentiles(durable),
+            "scheduled_to_durable_ack_us": percentiles(durable),
             "housekeeping_pass_us": percentiles(sweeps),
         },
         "database": pool,
@@ -2598,6 +2660,7 @@ async fn active_document_capacity_benchmark() {
         accepted > 0 && durable_samples > 0,
         "no edit was accepted and acknowledged; the run measured nothing: {report}"
     );
+    drop(_writer);
     catalog.close().await;
 }
 
@@ -2622,4 +2685,41 @@ async fn control_multixact(catalog: &PostgresCatalog) -> i64 {
     .fetch_one(catalog.pool())
     .await
     .unwrap_or(0)
+}
+
+#[test]
+fn capacity_demand_counts_arrivals_independently_of_delivery() {
+    assert_eq!(
+        scheduled_edits(Duration::from_secs(60), Duration::from_secs(8)),
+        7
+    );
+    assert_eq!(
+        scheduled_edits(Duration::from_secs(16), Duration::from_secs(8)),
+        1
+    );
+    assert_eq!(
+        scheduled_edits(Duration::from_secs(1), Duration::from_secs(8)),
+        0
+    );
+}
+
+#[tokio::test]
+async fn capacity_arrivals_keep_scheduling_when_the_consumer_stalls() {
+    let start = Instant::now();
+    let interval = Duration::from_millis(10);
+    let window = Duration::from_millis(60);
+    let (mut arrivals, producer) = capacity_arrivals(start, start + window, interval, 1);
+    // Never receive until the producer finishes: a blocking send would hang.
+    let dropped = tokio::time::timeout(Duration::from_secs(2), producer)
+        .await
+        .expect("producer must not wait for consumer")
+        .unwrap();
+    let mut received = 0;
+    while let Some(due) = arrivals.recv().await {
+        assert!(due < start + window);
+        assert!(due.elapsed() >= interval);
+        received += 1;
+    }
+    assert_eq!(received + dropped, scheduled_edits(window, interval));
+    assert!(dropped >= 4, "queue overload must be counted");
 }

@@ -75,18 +75,21 @@ already records this; clarify the exception to the idle-query promise in the
 operator-facing retention documentation. A new scheduler is not justified by
 this observation alone.
 
-**Measured: the connection count was never the constraint.**
-[docs/postgres-capacity.md](docs/postgres-capacity.md) has the inventory, the
-harness and the curve. Live editing never passes the HTTP work semaphore (it
-is released at the WebSocket upgrade), so the 20-against-64 comparison
-described the request path only. Across 8 to 4096 simultaneously active
-documents the pool was never found at its limit with nothing idle. What
-saturated was the one-second sweep, which wrote one document row at a time
-for the whole deployment: a deployment-wide serialization between documents
-that share nothing, capping the deployment near 90 durable rows a second. It
-now writes concurrently, bounded by half the pool, and the measured envelope
-moves from about 500 active documents to at least 4096. Raising the pool past
-20 buys nothing measurable.
+**Editing sweep improved; mixed-load capacity still unverified.**
+[docs/postgres-capacity.md](docs/postgres-capacity.md) inventories database
+consumers and describes the benchmark. Socket edits run after the HTTP work
+permit is released, so they add load beyond the 64 request slots. The sweep
+now flushes independent documents concurrently, bounded by half the pool,
+while retaining each document's transaction gate. Its regression test checks
+both overlap and the bound against PostgreSQL.
+
+The original throughput tables counted setup rows and mixed workload and drain
+intervals; their capacity conclusions are withdrawn. The corrected harness
+counts scheduled demand independently of ingest, includes scheduling delay in
+latency, and separates workload and drain measurements. Neither HTTP traffic
+nor background compaction is exercised, so whether twenty connections suffice
+for their combined load remains open. No numerical deployment envelope or
+pool-size recommendation follows from these isolated runs.
 
 **Next, on the same shape:** background maintenance is still one task, so one
 compaction at a time blocks every other document's compaction, deletion and

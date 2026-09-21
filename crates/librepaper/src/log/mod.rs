@@ -182,9 +182,8 @@ impl Registry {
 
         let resident = self.all().await;
         // Which documents owe a row, decided before any of them is written.
-        // `flush_due` is one lock and three comparisons with no query in it,
-        // so asking every resident sequencer costs nothing measurable even
-        // when thousands are resident.
+        // `flush_due` reads in-memory state, though its lock may wait for
+        // another operation on that document.
         let mut due = Vec::new();
         for sequencer in &resident {
             if let Some(reason) = sequencer.flush_due().await {
@@ -200,9 +199,9 @@ impl Registry {
         // share nothing, and the first thing that saturates as the number of
         // simultaneously edited documents grows. Per-document ordering is
         // untouched -- each sequencer still takes its own transaction gate,
-        // and one pass asks each sequencer at most once -- and the bound is
-        // the pool's, so this cannot turn the queue into `acquire_timeout`
-        // failures. Measured in docs/postgres-capacity.md.
+        // and one pass asks each sequencer at most once. The bound limits
+        // this sweep's demand; other pool consumers can still cause waits
+        // or acquisition timeouts. See docs/postgres-capacity.md.
         let concurrency = self.catalog.flush_concurrency();
         futures_util::stream::iter(due)
             .for_each_concurrent(concurrency, |(sequencer, reason)| async move {
