@@ -12,6 +12,7 @@
     "check:frame-overlays": "node tests/unit/frame-overlays.mjs",
     "check:render-diagnostics": "node tests/unit/render-diagnostics.mjs",
     "check:recovery": "node tests/integration/slow-subscriber-recovery.mjs",
+    "check:pending-budget": "node tests/integration/pending-budget-recovery.mjs",
     "check:project-session": "node tests/unit/project-session.mjs && node tests/unit/collab-awareness.mjs && node tests/unit/reader-races.mjs",
     "check:offline-browser": "node tests/browser/editor-browser.mjs",
     "check:render-coordinator": "node tests/unit/render-coordinator.mjs",

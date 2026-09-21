@@ -24,6 +24,7 @@
 pub mod admission;
 pub mod budget;
 pub mod frame;
+pub mod pending;
 #[cfg(test)]
 mod recovery;
 pub mod sequencer;
@@ -37,9 +38,10 @@ use uuid::Uuid;
 
 pub use budget::{Budget, Busy};
 pub use frame::Batch;
+pub use pending::{PendingBudget, Pressure};
 pub use sequencer::{
     Command, CommandError, Evidence, FlushReason, Head, Ingested, Joined, LogState, PreparedSource,
-    Role, Sequencer, SequencerError,
+    Retry, Role, Sequencer, SequencerError,
 };
 
 use crate::config::Configuration;
@@ -62,6 +64,12 @@ pub struct Registry {
     blobs: Arc<dyn BlobStore>,
     config: Arc<Configuration>,
     budget: Arc<Budget>,
+    /// The other deployment-wide bound, and the one this registry hands to
+    /// every sequencer it admits: unsaved source bytes and the scratch that
+    /// writes them (SPEC-frugal §2). Shared by `Arc` for the life of the
+    /// process, so a document is charged against the same pool whichever
+    /// sequencer holds it.
+    pending: Arc<PendingBudget>,
     deployment_peer_key: String,
     /// The background worker every sequencer this registry admits asks for
     /// compaction (§8.4). Filled by [`Registry::compacts_through`] once the
@@ -89,11 +97,13 @@ impl Registry {
         deployment_peer_key: String,
     ) -> Arc<Self> {
         let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
+        let pending = PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);
         let registry = Arc::new(Self {
             catalog,
             blobs,
             config,
             budget,
+            pending,
             deployment_peer_key,
             compaction: Arc::new(std::sync::OnceLock::new()),
             resident: tokio::sync::Mutex::new(HashMap::new()),
@@ -110,6 +120,10 @@ impl Registry {
 
     pub fn budget(&self) -> &Arc<Budget> {
         &self.budget
+    }
+
+    pub fn pending(&self) -> &Arc<PendingBudget> {
+        &self.pending
     }
 
     /// Names the worker a flush asks for compaction (§8.4). Called once, by
@@ -147,6 +161,7 @@ impl Registry {
                 self.blobs.clone(),
                 self.config.clone(),
                 self.budget.clone(),
+                self.pending.clone(),
                 self.deployment_peer_key.clone(),
                 self.compaction.clone(),
             )

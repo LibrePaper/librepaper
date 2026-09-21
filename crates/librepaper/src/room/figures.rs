@@ -87,7 +87,7 @@ impl Command for AttachAsset {
 
     fn transact<'a>(
         &'a mut self,
-        _tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
         Box::pin(async move {

@@ -74,6 +74,17 @@ pub struct Configuration {
     /// from. A measurement rather than a constant of nature, so a deployment
     /// can correct it without a build.
     pub cache_expansion: u64,
+    /// One deployment-wide ceiling on unsaved source bytes: everything every
+    /// document's buffer is holding while it waits for PostgreSQL, framing
+    /// included (SPEC-frugal §2). Separate from `memory_budget_bytes` because
+    /// pending updates are somebody's typing and cannot be evicted the way a
+    /// decoded document can.
+    pub pending_bytes: u64,
+    /// The other half of that bound: what writing those bytes costs while the
+    /// write is in flight -- the encoded row and both driver buffers, including capacity growth.
+    /// Its own pool, so a deployment whose buffers are full can still drain
+    /// them.
+    pub pending_scratch_bytes: u64,
     /// What the figures of one document may come to, and what one of them may
     /// be. Assets are where the bytes of a paper actually go -- a directory of
     /// figures is an order of magnitude larger than its text -- so they get
@@ -409,6 +420,8 @@ impl Default for Configuration {
             log_quota_bytes: 64 * 1024 * 1024,
             memory_budget_bytes: 512 * 1024 * 1024,
             cache_expansion: crate::log::budget::DEFAULT_EXPANSION,
+            pending_bytes: DEFAULT_PENDING_BYTES,
+            pending_scratch_bytes: DEFAULT_PENDING_SCRATCH_BYTES,
             max_assets: 32 * 1024 * 1024,
             max_asset: 8 * 1024 * 1024,
             text_extensions: [
@@ -639,6 +652,79 @@ impl Configuration {
         Ok(())
     }
 
+    /// Overrides the deployment-wide pending-source ceilings, in megabytes.
+    /// `None` leaves a default alone. Advanced configuration only; an
+    /// integration test lowers them to reach pressure without buffering
+    /// sixty-four megabytes first.
+    pub fn set_pending(
+        &mut self,
+        pending_mb: Option<u64>,
+        scratch_mb: Option<u64>,
+    ) -> Result<(), String> {
+        // Checked on a candidate and committed only if it holds, so a refused
+        // override leaves the configuration as it was rather than half
+        // applied.
+        let mut candidate = self.clone();
+        if let Some(megabytes) = pending_mb {
+            candidate.pending_bytes = megabytes
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| "pending_bytes is too large".to_string())?;
+        }
+        if let Some(megabytes) = scratch_mb {
+            candidate.pending_scratch_bytes = megabytes
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| "pending_scratch_bytes is too large".to_string())?;
+        }
+        candidate.validate_pending()?;
+        self.pending_bytes = candidate.pending_bytes;
+        self.pending_scratch_bytes = candidate.pending_scratch_bytes;
+        Ok(())
+    }
+
+    /// Refuses a pending configuration that could not save the work it
+    /// admits.
+    ///
+    /// Two impossibilities, and they are different. A `pending_bytes` below
+    /// one document's buffer ceiling would refuse an update this deployment
+    /// still advertises it accepts, and would do so from the very first
+    /// document. A `pending_scratch_bytes` below one maximum row's scratch
+    /// would let work be accepted that no flush could ever write -- the
+    /// deadlock the two-pool design exists to prevent, reintroduced through
+    /// configuration. Both are checked arithmetic: an operator who writes a
+    /// number near `u64::MAX` gets a configuration error rather than a
+    /// comparison that wrapped.
+    pub fn validate_pending(&self) -> Result<(), String> {
+        use crate::log::sequencer::{BUFFER_CEILING_BYTES, MAX_PENDING_CHARGE, MAX_ROW_BYTES};
+
+        if self.pending_bytes == 0 || self.pending_scratch_bytes == 0 {
+            return Err("the pending-source ceilings must be positive".into());
+        }
+        if self.pending_bytes < MAX_PENDING_CHARGE as u64 {
+            return Err(format!(
+                "the deployment pending-source ceiling ({} MB) cannot hold one document's \
+                 buffer, which this deployment allows to reach {} MB",
+                self.pending_bytes >> 20,
+                BUFFER_CEILING_BYTES >> 20,
+            ));
+        }
+        // The largest row any path writes: a full buffer, plus a source-sized command update. This is a startup sizing floor;
+        // actual CRDT exports may exceed plain source size and are admitted
+        // against their actual encoded length in the command path.
+        let largest_row = (MAX_ROW_BYTES as u64)
+            .checked_add(self.max_document as u64)
+            .ok_or_else(|| "the largest persistence row overflows".to_string())?;
+        let needed = crate::log::pending::scratch_for(largest_row);
+        if self.pending_scratch_bytes < needed {
+            return Err(format!(
+                "the persistence scratch ceiling ({} MB) cannot write one maximum-size row, \
+                 which needs {} MB; accepted work would then have no way to reach storage",
+                self.pending_scratch_bytes >> 20,
+                needed >> 20,
+            ));
+        }
+        Ok(())
+    }
+
     /// Overrides the per-publisher counts: how many documents one publisher may
     /// hold, and how many uploads they may make in an hour. `None` leaves a
     /// default alone.
@@ -659,6 +745,30 @@ impl Configuration {
 
 /// The source ceiling a deployment gets without saying otherwise.
 pub const DEFAULT_MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+
+/// How much unsaved source the whole deployment will hold at once.
+///
+/// Conservative on purpose, for the small VPS this targets. One document may
+/// buffer 4 MiB (`sequencer::BUFFER_CEILING_BYTES`), so this is sixteen
+/// documents entirely backed up, or -- far more likely -- several hundred
+/// documents each holding a few seconds of typing. It is an eighth of the
+/// default decoded-document budget (`memory_budget_bytes`, 512 MiB), which is
+/// the right proportion for a process whose expensive half is decoded CRDTs:
+/// the two together add at most 128 MiB above that budget rather than the
+/// several gigabytes a per-document cap alone permits across a thousand
+/// documents (SPEC-frugal §2).
+pub const DEFAULT_PENDING_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How much temporary memory the persistence path may hold at once.
+///
+/// One maximum-size flush costs a little over 20 MiB of scratch
+/// (`pending::scratch_for` of one maximum row), so this admits three
+/// worst-case flushes concurrently and many more ordinary ones -- a flush
+/// fires at 1 MiB of buffer, so the worst case is reached only when
+/// PostgreSQL has already been slow for a while. A flush that cannot have its
+/// scratch is deferred to the next housekeeping pass, one second later, with
+/// its buffer and charges untouched; it is not a loss.
+pub const DEFAULT_PENDING_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The supported source ceiling, in bytes. `--document-size-limit` may not exceed it.
 ///
@@ -809,6 +919,74 @@ mod tests {
             config.cost.request_body_memory_bytes = value;
             assert!(config.cost.validate().is_err());
         }
+    }
+
+    /// A configuration that cannot persist what it admits has to be refused
+    /// at startup rather than discovered when the first document fills up.
+    #[test]
+    fn pending_ceilings_that_could_not_save_what_they_admit_are_refused() {
+        let mut config = Configuration::default();
+        assert!(
+            config.validate_pending().is_ok(),
+            "the defaults must be sane"
+        );
+
+        // Scratch that cannot hold one maximum row: work would be accepted
+        // that no flush could ever write. This is the deadlock the two-pool
+        // design exists to prevent, and configuration must not reintroduce it.
+        let mut starved = config.clone();
+        starved.pending_scratch_bytes = 1024;
+        let error = starved
+            .validate_pending()
+            .expect_err("a scratch ceiling below one row is not a valid configuration");
+        assert!(error.contains("maximum-size row"), "{error}");
+
+        // A retained ceiling below one document's own allowance would refuse
+        // updates this deployment still says it accepts.
+        let mut cramped = config.clone();
+        cramped.pending_bytes = 1024;
+        assert!(cramped.validate_pending().is_err());
+
+        // Zero is not a budget.
+        let mut nothing = config.clone();
+        nothing.pending_bytes = 0;
+        assert!(nothing.validate_pending().is_err());
+
+        // Raising the document ceiling raises the largest row a semantic
+        // command can write, so the two are checked together rather than
+        // separately.
+        config.max_document = SUPPORTED_MAX_SOURCE_BYTES;
+        config.pending_scratch_bytes = crate::log::pending::scratch_for(
+            (crate::log::sequencer::MAX_ROW_BYTES + SUPPORTED_MAX_SOURCE_BYTES) as u64,
+        );
+        assert!(config.validate_pending().is_ok());
+        config.pending_scratch_bytes -= 1;
+        assert!(
+            config.validate_pending().is_err(),
+            "the check is exact: one byte short of a maximum row is short",
+        );
+    }
+
+    /// The megabyte setters an operator reaches through the advanced
+    /// configuration file validate what they were given rather than storing
+    /// it and failing later.
+    #[test]
+    fn the_pending_overrides_validate_what_they_are_given() {
+        let mut config = Configuration::default();
+        assert!(config.set_pending(Some(128), Some(64)).is_ok());
+        assert_eq!(config.pending_bytes, 128 * 1024 * 1024);
+        assert_eq!(config.pending_scratch_bytes, 64 * 1024 * 1024);
+        assert!(
+            config.set_pending(None, Some(1)).is_err(),
+            "one megabyte of scratch cannot write a four megabyte row",
+        );
+        assert_eq!(
+            config.pending_scratch_bytes,
+            64 * 1024 * 1024,
+            "a refused override left the configuration half applied",
+        );
+        assert!(config.set_pending(Some(u64::MAX), None).is_err());
+        assert_eq!(config.pending_bytes, 128 * 1024 * 1024);
     }
 
     #[test]

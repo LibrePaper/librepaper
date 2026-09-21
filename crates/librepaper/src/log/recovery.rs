@@ -945,7 +945,7 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         }
         fn transact<'a>(
             &'a mut self,
-            _tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+            _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
             _evidence: &'a Evidence,
         ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
             Box::pin(async move { Ok(()) })
@@ -1391,7 +1391,7 @@ impl Command for EvidenceProbe {
 
     fn transact<'a>(
         &'a mut self,
-        _tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         evidence: &'a Evidence,
     ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
         let evidence = evidence.clone();
@@ -1815,4 +1815,185 @@ async fn one_housekeeping_pass_flushes_every_due_document_exactly_once() {
 
     drop(_writer);
     catalog.close().await;
+}
+
+// =========================================================================
+// SPEC-frugal §2: the pending-source accounting across a real transaction.
+//
+// The fake catalogue in `log::tests` covers admission, the flush and
+// cancellation. What it cannot cover is a semantic command, because
+// `Command::transact` takes a real `sqlx::Transaction` -- and a command is a
+// persistence path with its own ownership rules: it carries the buffered
+// prefix, may add a server-authored update, and has to clean up after a
+// rollback as well as after a commit. Those are the claims here.
+// =========================================================================
+
+/// A source-producing command carrying a buffered prefix, committed and
+/// rolled back, with the deployment pending pool watched throughout.
+///
+/// Three things have to hold, and none of them can be seen without a real
+/// transaction:
+///
+/// * A committed command retires the prefix it wrote, releasing exactly
+///   those charges -- the same retirement an ordinary flush does, because
+///   the command's row IS that flush (§7 step 3).
+/// * A rolled-back command retires nothing. The buffered work is still in
+///   memory and still unsaved, so it stays charged; releasing it here would
+///   be claiming a durability the rollback undid.
+/// * Both paths give the scratch back. A leak on either would cost the
+///   deployment its persistence capacity one command at a time, and the
+///   rollback path is the one no explicit release statement covers.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_command_retires_what_it_committed_and_keeps_what_it_rolled_back() {
+    let Some(deployment) = deployment_with_document("recovery-frugal-command").await else {
+        return;
+    };
+    let room = deployment
+        .rooms
+        .get("recovery-frugal-command")
+        .await
+        .expect("the room for the document just created");
+    let pending = deployment.rooms.registry().pending().clone();
+    let baseline = pending.retained_used();
+
+    // Somebody is typing when the command arrives, so the command's row
+    // carries their buffered work as well as its own edit (§7 step 3).
+    let mut outbox = Outbox::new();
+    let vector = room.log().log_state().await.head_vector;
+    let from = if vector.is_empty() {
+        VersionVector::default()
+    } else {
+        VersionVector::decode(&vector).expect("the head vector the room just encoded")
+    };
+    let _ = outbox.edit_at_least(2048);
+    let typed = outbox.export_from(&from);
+    assert!(matches!(
+        room.ingest(1, "account:typist", "account:typist", 1, typed)
+            .await,
+        Ingested::Accepted
+    ));
+    let buffered_charge = pending.retained_used() - baseline;
+    assert!(buffered_charge > 0, "the typed work is charged");
+    assert_eq!(
+        pending.scratch_used(),
+        0,
+        "nothing is being written yet, so nothing holds scratch",
+    );
+
+    // A command that fails inside its transaction. The row it inserted is
+    // rolled back with it, so nothing was retired and nothing may be
+    // released.
+    let mut rolled_back = EvidenceProbe {
+        edit: Some(format!("{PAPER}\nThis edit is rolled back.\n")),
+        fail: true,
+    };
+    let outcome = room
+        .command(&deployment.authority(), &mut rolled_back)
+        .await;
+    assert!(
+        matches!(&outcome, Err(CommandError::Conflict(message)) if message.contains("rolls back")),
+        "the probe must fail inside transact: {outcome:?}",
+    );
+    assert_eq!(
+        pending.retained_used() - baseline,
+        buffered_charge,
+        "a rolled-back command released the typist's buffered work, which is still \
+         in memory and still unsaved",
+    );
+    assert_eq!(
+        pending.scratch_used(),
+        0,
+        "a rolled-back command kept the scratch it encoded its row into",
+    );
+    assert_eq!(
+        room.log().log_state().await.buffered,
+        1,
+        "the typist's batch is still buffered after the rollback",
+    );
+
+    // And now one that commits. The prefix it wrote is retired, so those
+    // charges -- and only those -- go.
+    let mut committed = EvidenceProbe {
+        edit: Some(format!("{PAPER}\nThis edit commits.\n")),
+        fail: false,
+    };
+    room.command(&deployment.authority(), &mut committed)
+        .await
+        .expect("a well-formed source-producing command");
+    assert_eq!(
+        room.log().log_state().await.buffered,
+        0,
+        "the command's row carried the buffered prefix, so the buffer retires with it",
+    );
+    assert_eq!(
+        pending.retained_used(),
+        baseline,
+        "the committed prefix did not release its charges",
+    );
+    assert_eq!(
+        pending.scratch_used(),
+        0,
+        "a committed command kept the scratch it encoded its row into",
+    );
+
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn registry_shutdown_waits_for_scratch_before_retiring_documents() {
+    let deployment = deployment_with_document("recovery-pending-shutdown")
+        .await
+        .expect("PostgreSQL configured");
+    let registry = deployment.rooms.registry().clone();
+    let room = deployment
+        .rooms
+        .get("recovery-pending-shutdown")
+        .await
+        .expect("room");
+    let pending = registry.pending().clone();
+    let mut outbox = Outbox::new();
+    assert!(matches!(
+        room.ingest(1, "a", "a", 1, outbox.edit_at_least(1024))
+            .await,
+        Ingested::Accepted
+    ));
+    let head = room.log().log_state().await.head_vector;
+    let held = pending
+        .try_scratch(pending.scratch_limit())
+        .expect("occupy scratch");
+    let baseline_refused = pending.refused_scratch();
+    let shutdown = {
+        let registry = registry.clone();
+        tokio::spawn(async move { registry.shutdown().await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while pending.refused_scratch() == baseline_refused {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("shutdown reaches the occupied scratch pool");
+    assert!(!shutdown.is_finished());
+    assert!(
+        !registry.all().await.is_empty(),
+        "pending documents remain resident while shutdown waits"
+    );
+    drop(held);
+    tokio::time::timeout(std::time::Duration::from_secs(5), shutdown)
+        .await
+        .expect("shutdown completes")
+        .expect("task");
+    assert!(registry.all().await.is_empty());
+    assert_eq!(room.log().log_state().await.log_vector, head);
+    assert_eq!(pending.retained_used(), 0);
+    assert_eq!(pending.scratch_used(), 0);
+    let durable = deployment
+        .catalog
+        .log_head(deployment.document_id)
+        .await
+        .expect("durable head");
+    assert!(durable.update_sequence > 0);
+    deployment.catalog.close().await;
 }

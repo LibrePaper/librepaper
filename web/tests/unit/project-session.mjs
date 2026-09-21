@@ -1,8 +1,10 @@
+import { VersionVector } from "loro-crdt";
 import assert from "node:assert/strict";
 import { createProjectSession } from "../../src/lib/project-session.js";
 import { assertSameProject, projectIdentity, sameProject } from "../../src/lib/project-identity.js";
 
 const encode = (bytes) => btoa(String.fromCharCode(...bytes));
+const decode = encoded => Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
 
 const states = [];
 let persistenceEvents;
@@ -964,4 +966,167 @@ const gate = () => {
   assert.equal(editor.joined, false);
 }
 
-console.log("project-session: persistence, identity, swap, directory changes, protocol join shapes, doc-gap, acknowledgement boundaries and join cancellation passed");
+// SPEC-frugal §2: an update the server had no room to hold.
+//
+// The refusal is the whole failure this covers. The edit is in this browser's
+// document and nowhere else; the socket is still up, so no reconnect will
+// carry it; the server's head did not move, so no `doc-gap` will ask for it;
+// and `subscribeLocalUpdates` fires on edits, not on refusals, so without
+// something here it takes another keystroke -- which an editor who has
+// stopped typing will not make.
+{
+  const { base, head } = sourceLog();
+  const sentR = [];
+  const statesR = [];
+  // Timers are driven by hand rather than waited on: this is about whether a
+  // retry is scheduled at all, and how long it waits, not about the clock.
+  const timers = new Map();
+  let nextTimer = 1;
+  const pressed = createProjectSession({
+    send: (message) => sentR.push(message),
+    onState: (state) => statesR.push(state),
+    presenceId: () => "pressure",
+    setTimer: (run, delay) => {
+      const id = nextTimer++;
+      timers.set(id, { run, delay });
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+  });
+  const fire = () => {
+    const [id, timer] = [...timers.entries()].at(-1);
+    timers.delete(id);
+    timer.run();
+    return timer.delay;
+  };
+  try {
+    await pressed.start({ protocol: "librepaper.room.v3", vector: encode(head.encode()), base: encode(base), updates: [] });
+    const headVector = encode(pressed.doc.oplogVersion().encode());
+    sentR.length = 0;
+
+    pressed.addText("refused.md", "work the server could not keep");
+    const refused = sentR.filter((message) => message.type === "doc-update");
+    assert.equal(refused.length, 1, "the edit went out once");
+    const before = pressed.text_();
+
+    // The server refuses it and names its head, which does not cover the edit.
+    pressed.pressure(headVector);
+    assert.equal(timers.size, 1, "a refusal with nothing scheduled after it is work that is never sent again");
+    assert.equal(
+      statesR.at(-1).pending, 1,
+      "a refused edit is not durable, so it must still read as unsaved",
+    );
+    assert.equal(pressed.text_(), before, "the refused edit is still in this browser's document");
+    assert.equal(
+      sentR.filter((message) => message.type === "doc-update").length, 1,
+      "nothing is resent before the timer fires: an immediate retry is the resend loop this avoids",
+    );
+
+    // A second refusal while a retry is already armed schedules nothing more.
+    pressed.pressure(headVector);
+    assert.equal(timers.size, 1, "refusals stacked into a queue of retries");
+
+    const firstDelay = fire();
+    assert.equal(firstDelay, 1000, "the first retry waits a second");
+    const resent = sentR.filter((message) => message.type === "doc-update");
+    assert.equal(resent.length, 2, "the retry did not resend anything");
+    // The resend is an export from the server's head, so a peer that holds
+    // only what the server held gets exactly the refused work out of it. That
+    // is the claim worth making, and it is stronger than comparing bytes: it
+    // says the resent update actually carries the edit.
+    {
+      const peer = createProjectSession({ send: () => {}, onState: () => {}, presenceId: () => "peer" });
+      try {
+        await peer.start({ protocol: "librepaper.room.v3", vector: encode(head.encode()), base: encode(base), updates: [] });
+        peer.apply(resent.at(-1).update);
+        assert.equal(
+          peer.textOf(peer.idOf("refused.md"))?.toString() ?? "",
+          "work the server could not keep",
+          "the resent update did not carry the refused edit",
+        );
+      } finally {
+        peer.leave();
+      }
+    }
+
+    // Still under pressure. The wait doubles rather than repeating, so a long
+    // outage is not answered by one client resending as fast as it can be
+    // refused.
+    pressed.pressure(headVector);
+    assert.equal(fire(), 2000);
+    pressed.pressure(headVector);
+    assert.equal(fire(), 4000);
+
+    // An acknowledgement must not cancel an armed retry. `doc-ack` names
+    // batches the server took, and a flush of somebody else's work -- or of
+    // this browser's own earlier work -- acknowledges this peer while the
+    // refused edit is still refused. Cancelling on that left the one edit
+    // that needed resending as the one edit nothing would resend, which is
+    // exactly the failure this whole mechanism exists to prevent. It was
+    // found by the integration test, not by reasoning, which is why it is
+    // pinned here.
+    pressed.pressure(headVector);
+    assert.equal(timers.size, 1);
+    pressed.acknowledge(resent.at(-1).seq);
+    assert.equal(timers.size, 1, "an acknowledgement cancelled the resend of work it did not cover");
+    // The armed retry keeps the time it was given; what the acknowledgement
+    // resets is the wait the NEXT refusal starts from.
+    assert.equal(fire(), 8000);
+    pressed.pressure(headVector);
+    assert.equal(fire(), 1000, "the backoff did not reset when the server started accepting again");
+
+    // A gap recovery can save the refused edit before its timer fires.
+    // Only durable coverage proves the resend is obsolete; an unrelated
+    // acknowledgement above must still leave it armed.
+    pressed.pressure(headVector);
+    pressed.gap(headVector);
+    const recovered = sentR.filter(message => message.type === "doc-update").at(-1);
+    pressed.acknowledge(recovered.seq);
+    assert.equal(timers.size, 1, "transport ack alone cannot cancel recovery");
+    pressed.durable(encode(pressed.doc.oplogVersion().encode()));
+    assert.equal(timers.size, 0, "durable work must not be resent from a stale refusal vector");
+
+    // Partial durable coverage must advance the retry's starting vector
+    // without cancelling recovery of a newer refused edit.
+    const savedHead = encode(pressed.doc.oplogVersion().encode());
+    pressed.addText("later.md", "new unsaved work");
+    pressed.pressure(headVector);
+    pressed.durable(savedHead);
+    assert.equal(timers.size, 1, "partial durability must retain the timer");
+    fire();
+    const partial = sentR.filter(message => message.type === "doc-update").at(-1);
+    const expected = pressed.doc.export({ mode: "update", from: pressed.doc.oplogVersion() });
+    assert.ok(decode(partial.update).length > expected.length, "newer work remains in the retry");
+    const onlyNew = pressed.doc.export({ mode: "update", from: VersionVector.decode(decode(savedHead)) });
+    assert.equal(partial.update, encode(onlyNew), "retry must exclude the already durable prefix");
+
+    // A socket that drops has its own catch-up on rejoin, so an armed retry
+    // is dropped rather than firing into nothing.
+    pressed.pressure(headVector);
+    assert.equal(timers.size, 1);
+    pressed.disconnected();
+    assert.equal(timers.size, 0, "a retry armed for a socket that has gone would send into nothing");
+  } finally {
+    pressed.leave();
+  }
+  assert.equal(timers.size, 0, "leaving a session left a timer running");
+}
+
+// A reader never sends updates, so a refusal should not reach one -- but
+// nothing here assumes that holds, the same as `doc-gap`.
+{
+  const reader = createProjectSession({
+    send: () => { throw new Error("a reader must not send"); },
+    onState: () => {},
+    presenceId: () => "reader-pressure",
+    mayEdit: false,
+    setTimer: () => { throw new Error("a reader must not schedule a resend"); },
+  });
+  try {
+    reader.pressure("");
+  } finally {
+    reader.leave();
+  }
+}
+
+console.log("project-session: persistence, identity, swap, directory changes, protocol join shapes, doc-gap, acknowledgement boundaries, pressure retry and join cancellation passed");

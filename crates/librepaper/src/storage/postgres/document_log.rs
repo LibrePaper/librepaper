@@ -249,12 +249,23 @@ impl PostgresCatalog {
         document_id: Uuid,
         expected_update_sequence: i64,
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+        let mut tx = self.begin_metered().await?;
+        self.check_fenced_flush(&mut tx, document_id, expected_update_sequence)
+            .await?;
+        Ok(tx)
+    }
+
+    pub(crate) async fn check_fenced_flush(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        expected_update_sequence: i64,
+    ) -> Result<()> {
         use sqlx::Row as _;
         let epoch = self.writer_epoch()?;
-        let mut tx = self.begin_metered().await?;
         let durable_epoch: i64 =
             sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton=true FOR SHARE")
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?
                 .try_get(0)?;
         if durable_epoch != epoch {
@@ -263,7 +274,7 @@ impl PostgresCatalog {
         let row =
             sqlx::query("SELECT status,update_sequence FROM documents WHERE id=$1 FOR UPDATE")
                 .bind(document_id)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?
                 .ok_or(Error::NotFound)?;
         let status: String = row.get(0);
@@ -274,7 +285,7 @@ impl PostgresCatalog {
         if sequence != expected_update_sequence {
             return Err(Error::Conflict("document sequence changed".into()));
         }
-        Ok(tx)
+        Ok(())
     }
 
     /// Begins a fenced, authorized transaction for a semantic command
@@ -289,12 +300,24 @@ impl PostgresCatalog {
         authority: &super::Authority,
         rung: crate::log::sequencer::Rung,
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+        let mut tx = self.begin_metered().await?;
+        self.check_document_command(&mut tx, document_id, authority, rung)
+            .await?;
+        Ok(tx)
+    }
+
+    pub(crate) async fn check_document_command(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        authority: &super::Authority,
+        rung: crate::log::sequencer::Rung,
+    ) -> Result<()> {
         use sqlx::Row as _;
         let epoch = self.writer_epoch()?;
-        let mut tx = self.begin_metered().await?;
         let durable_epoch: i64 =
             sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton=true FOR SHARE")
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?
                 .try_get(0)?;
         if durable_epoch != epoch {
@@ -303,7 +326,7 @@ impl PostgresCatalog {
         let status: Option<String> =
             sqlx::query("SELECT status FROM documents WHERE id=$1 FOR UPDATE")
                 .bind(document_id)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?
                 .map(|row| row.get(0));
         if status.as_deref() != Some("active") {
@@ -333,7 +356,7 @@ impl PostgresCatalog {
         .bind(authority.account_id)
         .bind(authority.link_hash.as_deref())
         .bind(editor_only)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?
         .try_get(0)?;
         if !authorized {
@@ -346,7 +369,7 @@ impl PostgresCatalog {
                 .into(),
             ));
         }
-        Ok(tx)
+        Ok(())
     }
 
     /// §5.1: one transaction, one row.
@@ -360,6 +383,22 @@ impl PostgresCatalog {
             .await?;
         let sequence = self.insert_log_row(&mut tx, document_id, row).await?;
         tx.commit().await?;
+        Ok(sequence)
+    }
+
+    pub(crate) async fn flush_log_row_charged(
+        &self,
+        document_id: Uuid,
+        row: FlushRow<'_>,
+        scratch: crate::log::pending::Reservation,
+    ) -> Result<i64> {
+        let mut connection = self.persistence_connection(scratch).await?;
+        let mut tx = connection.begin().await?;
+        self.check_fenced_flush(&mut tx, document_id, row.expected_update_sequence)
+            .await?;
+        let sequence = self.insert_log_row(&mut tx, document_id, row).await?;
+        tx.commit().await?;
+        connection.complete();
         Ok(sequence)
     }
 

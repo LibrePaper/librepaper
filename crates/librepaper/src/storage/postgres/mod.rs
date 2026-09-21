@@ -19,6 +19,8 @@ mod labels;
 mod marks;
 mod meter;
 mod ownership;
+mod persistence;
+pub(crate) use persistence::PersistenceConnection;
 mod proposals;
 mod repository;
 
@@ -1515,6 +1517,8 @@ mod tests {
         let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
         let config = Arc::new(crate::config::Configuration::default());
         let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
+        let pending =
+            crate::log::PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);
         let catalog_arc: Arc<dyn LogCatalog> = Arc::new(catalog.clone());
         // A log vector that does not match the row the sequencer was just
         // handed: `admit` would never produce this, because it reads the
@@ -1527,6 +1531,7 @@ mod tests {
             blobs,
             config,
             budget,
+            pending,
             "deployment-test-peer".into(),
             2,
             loro::VersionVector::default(),
@@ -1880,6 +1885,8 @@ mod tests {
 
         let config = Arc::new(crate::config::Configuration::default());
         let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
+        let pending =
+            crate::log::PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);
         let sequencer = Sequencer::admit(
             document.id,
             document.slug.clone(),
@@ -1887,6 +1894,7 @@ mod tests {
             blobs,
             config,
             budget,
+            pending,
             "deployment-test-peer".into(),
             Arc::new(std::sync::OnceLock::new()),
         )
@@ -2001,7 +2009,7 @@ mod tests {
 
         fn transact<'a>(
             &'a mut self,
-            tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+            tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
             evidence: &'a Evidence,
         ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
             Box::pin(async move {
@@ -2059,6 +2067,8 @@ mod tests {
         let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(object_root.path(), false));
         let config = Arc::new(crate::config::Configuration::default());
         let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
+        let pending =
+            crate::log::PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);
         let sequencer = Sequencer::admit(
             document.id,
             document.slug.clone(),
@@ -2066,6 +2076,7 @@ mod tests {
             blobs,
             config,
             budget,
+            pending,
             "deployment-test-peer".into(),
             Arc::new(std::sync::OnceLock::new()),
         )

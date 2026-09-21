@@ -226,6 +226,9 @@ impl ServiceFlags {
             if let Err(error) = config.set_peer_queue(file.session_peer_queue) {
                 die(format!("invalid advanced session policy: {error}"));
             }
+            if let Err(error) = config.set_pending(file.pending_mb, file.pending_scratch_mb) {
+                die(format!("invalid advanced pending policy: {error}"));
+            }
         }
         if let Err(err) = config.set_budget_document_assets(self.budget_document_assets) {
             die(err);
@@ -248,6 +251,13 @@ impl ServiceFlags {
         if let Err(err) = config.persistence().validate() {
             die(err);
         }
+        // Checked after `set_max_document`, because the largest row a
+        // semantic command can write depends on it: a deployment that raised
+        // its document ceiling without raising its scratch ceiling would
+        // admit work it could not persist.
+        if let Err(err) = config.validate_pending() {
+            die(err);
+        }
         config
     }
 }
@@ -260,6 +270,12 @@ struct AdvancedConfigFile {
     /// How many frames one socket's outbound queue may hold before the
     /// subscriber is closed. The byte budget is this limit times 64 KiB.
     session_peer_queue: Option<usize>,
+    /// How much unsaved source the whole deployment will hold, in megabytes,
+    /// and how much temporary memory the persistence path may hold while
+    /// writing it. Advanced configuration only; an integration test lowers
+    /// them to reach pressure without buffering sixty-four megabytes first.
+    pending_mb: Option<u64>,
+    pending_scratch_mb: Option<u64>,
     #[serde(default)]
     backup: crate::config::BackupPolicyOverrides,
 }

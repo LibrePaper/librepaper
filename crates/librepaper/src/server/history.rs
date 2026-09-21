@@ -126,7 +126,7 @@ impl crate::log::Command for Label {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         evidence: &'a crate::log::Evidence,
     ) -> futures_util::future::BoxFuture<
         'a,
@@ -304,7 +304,7 @@ impl crate::log::Command for Restore {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         evidence: &'a crate::log::Evidence,
     ) -> futures_util::future::BoxFuture<
         'a,

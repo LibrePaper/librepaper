@@ -7,7 +7,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 // "docker exec -i lp-pg psql") and LIBREPAPER_TEST_PSQL_URL the URL that
 // command should connect with, which is not the URL the application uses
 // when the daemon is only published to the host on a different port.
-function psqlCommand() {
+export function psqlCommand() {
   const override = (process.env.LIBREPAPER_TEST_PSQL || "").trim();
   const argv = override ? override.split(/\s+/) : ["psql"];
   return { program: argv[0], prefix: argv.slice(1) };
@@ -44,6 +44,13 @@ export function postgresTestDatabase(label) {
   clientUrl.pathname = `/${database}`;
   return {
     url: url.toString(),
+    /// The same database, as the `psql` client reaches it. Not always the
+    /// same string as `url`: a containerized daemon is published to the host
+    /// on one port and reached from inside the container on another, which is
+    /// what `LIBREPAPER_TEST_PSQL_URL` exists for. A test that wants to hold
+    /// a session open against this database -- a lock, a long transaction --
+    /// spawns `psqlCommand()` with this.
+    psqlUrl: clientUrl.toString(),
     seedRegisteredAccount({ provider, subject, handle, displayName }) {
       const id = randomUUID();
       run(clientUrl.toString(), `INSERT INTO accounts

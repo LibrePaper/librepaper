@@ -4,6 +4,7 @@ import { createReaderCollaboration } from "../../src/lib/reader/collaboration.js
 import * as collab from "../../src/lib/collab.js";
 
 const closes = [];
+const refusals = [];
 const errors = [];
 let opens = 0;
 const NativeWebSocket = globalThis.WebSocket;
@@ -38,13 +39,22 @@ const collaboration = createReaderCollaboration({
     else if (message.type === "doc-ack") session?.acknowledge(message.upTo || 0);
     else if (message.type === "doc-durable") session?.durable(message.vector);
     else if (message.type === "doc-presence") { presenceFrames++; session?.applyPresence(message.update); }
+    // A refused `doc-update` (room-v2.md, the `error` table). Mirrors
+    // Reader.svelte: a retryable refusal naming the server's head is back
+    // pressure, and the session resends from that head on a timer -- so it is
+    // recorded and handed on rather than reported as a page error. Anything
+    // else is still an error.
+    else if (message.type === "error" && message.retryable && message.vector) {
+      refusals.push(message.reason || "unknown");
+      session?.pressure(message.vector);
+    }
     else if (message.type === "error") errors.push(message.message);
   },
 });
 const text = () => session?.textOf(session.mainId())?.toString() || "";
 let flood;
 window.recovery = {
-  snapshot: () => ({ ...state, text: text(), joined: Boolean(session?.joined), presenceFrames, closes, opens, errors }),
+  snapshot: () => ({ ...state, text: text(), joined: Boolean(session?.joined), presenceFrames, closes, opens, errors, refusals }),
   async type(words) {
     const body = session.textOf(session.mainId());
     body.insert(body.length, words);

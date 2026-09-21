@@ -114,8 +114,8 @@ document's WebSocket connections consistently to one application process.
 The server keeps a document's collaborative state as one compressed base
 plus a log of updates, and a document is only ever fully decoded in memory
 while something needs it -- an editor typing, a reader's projection, a
-compaction. Two limits protect a deployment from a document that asks for
-more of that than it should get.
+compaction. Three limits protect a deployment from a document that asks for
+more of that than it should get, and from every document asking at once.
 
 **The per-document log quota** bounds one document's compaction base plus
 every row since it, 64 MiB by default. An update that would push a document
@@ -139,6 +139,27 @@ core the relay path needs. Compaction exports count against the same
 ceiling, because they are the same uninterruptible work over the same
 decoded document.
 
+**The pending-source budget** bounds what the deployment is holding *unsaved*
+while PostgreSQL is slow or unavailable: 64 MiB across every document's buffer
+by default, plus a separate 64 MiB for what writing a row costs while the write
+is in flight. It is deliberately separate from the memory budget above, because
+a decoded document is a cache that can be dropped to make room and somebody's
+unsent typing is not. It is also deliberately two pools rather than one, so
+that a deployment whose buffers are full can still write them out -- with a
+single pool there would be no room left to encode the row that would free the
+room. A document's own 4 MiB buffer ceiling still applies on top, so one
+document cannot spend the whole allowance.
+
+An update refused for either reason comes back as retryable and carries the
+server's head vector; the browser keeps the edit, leaves it showing as unsaved,
+and resends it on a backoff without the person having to type again. No work is
+ever dropped to free memory. Both figures are visible at `GET /api/status`
+under `pending_budget`, together with how many updates have been refused, and
+both can be raised with `pending_mb` and `pending_scratch_mb` in the advanced
+configuration file. The server refuses to start with a scratch ceiling too
+small to write one maximum-size row, since that would admit work it could never
+persist.
+
 **Unreadable.** A build that breaches its wall-clock bound (10 seconds) or
 its memory reservation marks that document unreadable: its projection and
 semantic commands answer 503 until it recovers. Ingest and flush keep
@@ -149,7 +170,7 @@ the next time a build for that document succeeds, which an editor can
 trigger by exporting, trimming the document's size, and re-importing it, or
 an operator can trigger after raising the relevant limit.
 
-Both limits exist because encoded bytes bound ingress and storage, but they
+These limits exist because encoded bytes bound ingress and storage, but they
 do not bound the CPU and memory a decode of those bytes costs, and Loro's
 synchronous work cannot be interrupted once it starts. A limit here is
 therefore a limit on what gets scheduled, not a way to reclaim a thread that

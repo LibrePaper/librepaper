@@ -61,6 +61,8 @@ single-sequencer lock.
 | `log_quota_bytes` | `config.rs:65-70` (default 64 MiB), checked `sequencer.rs:1073-1077` | one document's log (compaction base plus rows since) | per document | `sequencer.rs:1073-1077` | both |
 | `BUFFER_CEILING_BYTES` | `log/sequencer.rs:81` (`FLUSH_TRIGGER_BYTES * 4`), checked `sequencer.rs:1078-1080` | in-memory buffer awaiting a durable flush, when PostgreSQL is unavailable or slow | per document | `sequencer.rs:1078-1080` | both |
 | decoded-document memory budget (`log/budget.rs`, `Budget::reserve`/`try_reserve`) | `config.memory_budget_bytes` (default 512 MiB), `cache_expansion` (default 6x) | resident cache entries, in-flight builds, forks, projection output | deployment-wide (one process-wide `Budget`) | `sequencer.rs:1093-1103` grows the cache reservation on every ingest; builds/compactions reserve at admission | both |
+| pending-source budget (`log/pending.rs`, `PendingBudget::try_retain`) | `config.pending_bytes` (default 64 MiB) | accepted update payloads held in document buffers, framing included | deployment-wide (one process-wide `PendingBudget`) | `Sequencer::ingest`, before any document state is changed | both |
+| persistence-scratch budget (`log/pending.rs`, `PendingBudget::try_scratch`) | `config.pending_scratch_bytes` (default 64 MiB) | the encoded row one write builds, and both SQLx driver buffers, including capacity growth | deployment-wide, same `PendingBudget`, separate pool | `Sequencer::flush` and `Sequencer::command_reporting_replay`, before the row is encoded | both |
 | heavy-work admission semaphore (`log/admission.rs`) | `MOST = 4`, `concurrency() = min(cores, 4)` | Loro build/compaction CPU (synchronous, uninterruptible) | deployment-wide, one process-wide semaphore | `log/admission.rs:51-57`, held across `spawn_blocking` for a build or compaction export | both |
 
 The per-principal update bucket is the one bound in this group keyed on a
@@ -71,17 +73,100 @@ filling the buffer faster than a flush can drain it (comment,
 allowance to every reconnect, exactly the behavior a client stuck resending
 exhibits (`sequencer.rs:155-165`).
 
-Refusals in this group return `Ingested::Retryable(&'static str)`
-(`sequencer.rs:158-159`) with a human-readable reason ("too many updates;
-slow down and they will be accepted"; "this document's log is at its quota
-and is waiting to be compacted"; "sync_delayed: this server cannot save work
-right now"). `server/socket.rs` counts consecutive `Retryable`/`Refused`
-answers per socket and closes the connection after
-`MAX_CONSECUTIVE_REFUSALS = 3` (`socket.rs:21-26`), asking the client to
-reconnect rather than hammer the sequencer forever. The memory-budget refusal
-(`Busy`, `log/budget.rs:98-107`) explains itself in its `Display` impl
-("this deployment has no memory to read that document right now") and is
-counted in a `refused` counter read at `GET /api/status`
+Refusals in this group return `Ingested::Retryable(Retry)`, which carries a
+human-readable `why`, a stable `reason` code (`rate`, `log_quota`,
+`document_buffer`, `pending_budget`), whether it is deployment/document back
+pressure rather than client behaviour, and the server's head vector. The
+vector is what makes recovery automatic: a refused batch is never merged into
+`head_vector`, so re-exporting from it is exactly the refused work.
+`server/socket.rs` turns this into an `error` frame with `reason`,
+`retryable` and `vector` fields, and the browser session resends from that
+vector on a backoff (`web/src/lib/project-session.js`, `retryAfterPressure`;
+1s doubling to 30s, one outstanding retry, reset when the server acknowledges
+anything).
+
+`MAX_CONSECUTIVE_REFUSALS = 3` (`socket.rs:21-26`) still closes a socket
+whose ingest keeps being refused, but **back-pressure refusals no longer
+count towards it**. Closing sockets because the database is slow produces a
+reconnect storm against the same slow database; the rate and quota refusals
+that bound actually count, which is what that bound was written for.
+
+### The pending-source bound (SPEC-frugal §2)
+
+Two pools in one `PendingBudget`, shared by every sequencer the registry
+admits.
+
+**Accounted for.** Accepted payloads retained in document buffers, charged as
+payload plus per-batch framing. Persistence scratch reserves one exactly sized
+encoded row plus up to twice the needed capacity for each of SQLx 0.8.6's
+argument and connection write buffers: `row_bytes + 4 * (row_bytes + 8 KiB)`.
+The 8 KiB allowance covers small query fields and protocol framing. This is a
+conservative capacity allowance, not the number of bytes sent to PostgreSQL.
+
+A `PersistenceConnection` owns the driver reservation while transactions
+borrow its pooled connection. Successful transactions shrink the buffers before
+returning that connection to the pool. Failure or cancellation destroys the
+connection synchronously, before releasing its reservation; it cannot leave a
+large buffer in asynchronous pool cleanup. Ordinary flushes retain a separate
+reservation for the encoded row until that row is dropped.
+
+**No longer allocated at all.** The flush's snapshot copy of every buffered
+payload (`Vec<Batch>`), the clone `ingest` made of the incoming byte vector,
+and the second `frame::encode` a semantic command ran after its commit purely
+to measure the row it had already written. The row is now encoded straight out
+of the buffer under the document lock, and acknowledgement carries attribution
+only, so the row is dropped and its scratch released before the
+acknowledgements go out.
+
+**Governed by another bound, not this one.** A semantic command's
+`PreparedSource.batch` (the server-authored update) is covered by the fork
+reservation `Head::prepare` takes against the *decoded* budget and holds until
+the `PreparedSource` drops -- the same reservation that covers the fork the
+batch was exported from. The scratch reservation still counts those bytes
+where they land *in the row*.
+
+**Not bounded by this.** Decoded CRDT memory (`memory_budget_bytes`), outbound
+socket queues (`socket_budget.queue_bytes_max`), inbound request bodies
+(`cost.request_body_memory_bytes`), one assembling socket update
+(`socket.rs` `update_ceiling`), allocator overhead and fragmentation, and
+PostgreSQL's own memory. This is not a process-RSS limit.
+
+**Why the two pools.** Exhausting update admission must not prevent
+already-accepted work from being persisted. `ingest` spends only the retained
+pool; `flush` and `command` spend only the scratch pool. A full retained pool
+therefore cannot take a byte of scratch. `Configuration::validate_pending`
+refuses a configuration whose scratch ceiling cannot hold one maximum-size row
+(`MAX_ROW_BYTES + max_document`, through `scratch_for`), so at the limit there
+is always room for at least one document to drain, and every scratch holder is
+an in-flight persistence future that releases by `Drop` whether it succeeds,
+fails or is cancelled.
+
+**Per-document ceiling.** `BUFFER_CEILING_BYTES` still applies, now measured
+against the charge rather than the payload, so one document cannot spend the
+deployment allowance and the row it produces is bounded too. An empty buffer
+still admits one update of any permitted size, which is what `MAX_PENDING_CHARGE`
+states. There is no fairness scheduler and none is claimed: documents are
+admitted first-come, and `log::tests::every_document_drains_once_the_pressure_clears`
+demonstrates progress across several documents after pressure clears rather
+than any share guarantee.
+
+**Behaviour when scratch is unavailable.** A flush that cannot reserve scratch
+returns `SequencerError::Busy` with its buffer and charges untouched, and the
+next housekeeping pass retries it. Shutdown, compaction barriers and authority
+revocation instead wait for scratch before taking the document lock; they must
+not treat a deferred write as an empty buffer. A semantic command is refused
+with `CommandError::Conflict` *before* its transaction is opened, so there are
+no effects to roll back.
+
+**Status.** `GET /api/status` reports `pending_budget` with
+`retained_limit_bytes`, `retained_reserved_bytes`, `scratch_limit_bytes`,
+`scratch_reserved_bytes`, `refused_retained` and `refused_scratch`. The scratch
+figure is named `reserved` rather than `bytes` deliberately: it is what
+persistence asked for, which over-counts the payload by design.
+
+The memory-budget refusal (`Busy`, `log/budget.rs:98-107`) explains itself in
+its `Display` impl ("this deployment has no memory to read that document right
+now") and is counted in a `refused` counter read at `GET /api/status`
 (`log/budget.rs:196-197`, `cost.rs:113-135`).
 
 ## 3. Live socket admission (`server/socket_budget.rs`, `server/socket.rs`)

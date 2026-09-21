@@ -18,8 +18,28 @@ pub const VERSION: u8 = 0x01;
 /// the decoder allocate. Both are far above anything a flush produces: a
 /// single batch is capped at `MAX_UPDATE_BYTES` on the way in, and a peer key
 /// is an account id or a deployment marker.
-const MAX_PEER_KEY: usize = 256;
+pub const MAX_PEER_KEY: usize = 256;
 const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+
+/// What one batch's header costs, on top of its payload:
+/// `[peer_key_len u16][client_seq u64][bytes_len u32]`, and then the key
+/// itself. Named rather than spelled `14` in three places, because the
+/// pending accounting in [`super::pending`] charges it -- a buffer of very
+/// many very small updates is mostly this, and an estimate that ignored it
+/// would under-reserve the row it is about to write by however many batches
+/// went into it.
+pub const BATCH_HEADER_BYTES: usize = 2 + 8 + 4;
+
+/// What framing one batch from `peer_key` adds to the row.
+pub fn overhead(peer_key: &str) -> usize {
+    BATCH_HEADER_BYTES + peer_key.len()
+}
+
+/// What the version byte costs. A row is this plus each batch's payload and
+/// [`overhead`], exactly -- which is what lets a flush reserve its scratch
+/// from the buffer's own accounting rather than by encoding first and
+/// measuring afterwards.
+pub const ROW_HEADER_BYTES: usize = 1;
 
 /// One batch as a client sent it, with that client's session sequence.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,22 +80,54 @@ impl std::error::Error for FrameError {}
 /// Frames a flush. The order is the order the batches were accepted in, which
 /// is the order replay must import them in.
 pub fn encode(batches: &[Batch]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(
-        1 + batches
+    let mut out = begin(
+        batches
             .iter()
-            .map(|batch| 14 + batch.peer_key.len() + batch.bytes.len())
+            .map(|batch| overhead(&batch.peer_key) + batch.bytes.len())
             .sum::<usize>(),
     );
-    out.push(VERSION);
     for batch in batches {
-        let key = batch.peer_key.as_bytes();
-        out.extend_from_slice(&(key.len() as u16).to_be_bytes());
-        out.extend_from_slice(key);
-        out.extend_from_slice(&batch.client_seq.to_be_bytes());
-        out.extend_from_slice(&(batch.bytes.len() as u32).to_be_bytes());
-        out.extend_from_slice(&batch.bytes);
+        append(&mut out, &batch.peer_key, batch.client_seq, &batch.bytes);
     }
     out
+}
+
+/// Encode borrowed batches with one allocation sized for the complete row,
+/// including a command's prepared source after its buffered prefix.
+pub fn encode_slices<'a>(
+    batches: impl Iterator<Item = (&'a str, i64, &'a [u8])> + Clone,
+) -> Vec<u8> {
+    let body = batches
+        .clone()
+        .map(|(peer, _, bytes)| overhead(peer) + bytes.len())
+        .sum();
+    let mut out = begin(body);
+    for (peer, seq, bytes) in batches {
+        append(&mut out, peer, seq, bytes);
+    }
+    out
+}
+
+/// Starts a row, with room for `body` bytes of batches.
+///
+/// Separate from [`append`] so a flush can encode straight out of the buffer
+/// it holds, without first copying every payload into a `Vec<Batch>` it would
+/// then throw away. That copy used to be the largest transient allocation on
+/// the persistence path, and the one nothing accounted for.
+pub fn begin(body: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(ROW_HEADER_BYTES.saturating_add(body));
+    out.push(VERSION);
+    out
+}
+
+/// Writes one batch into a row [`begin`] started.
+pub fn append(out: &mut Vec<u8>, peer_key: &str, client_seq: i64, bytes: &[u8]) {
+    let key = peer_key.as_bytes();
+    out.extend_from_slice(&(key.len() as u16).to_be_bytes());
+    out.extend_from_slice(key);
+    out.extend_from_slice(&client_seq.to_be_bytes());
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
 }
 
 /// Reads a row back. Every length is checked against what remains before it
@@ -198,9 +250,63 @@ mod tests {
         assert_eq!(decode(&bytes), Err(FrameError::Oversized));
     }
 
+    /// The pending accounting reserves a row's scratch from the buffer's own
+    /// charges rather than by encoding first and measuring afterwards, so
+    /// "one version byte plus payload plus `overhead` per batch" has to be
+    /// the exact encoded length and not an approximation of it.
+    #[test]
+    fn a_rows_length_is_exactly_what_the_overhead_helpers_predict() {
+        let batches = vec![
+            batch("account:1", 7, b"first"),
+            batch("", -1, b""),
+            batch("deployment", i64::MAX, &[0xff; 300]),
+        ];
+        let predicted = ROW_HEADER_BYTES
+            + batches
+                .iter()
+                .map(|one| overhead(&one.peer_key) + one.bytes.len())
+                .sum::<usize>();
+        assert_eq!(encode(&batches).len(), predicted);
+        assert_eq!(encode(&[]).len(), ROW_HEADER_BYTES);
+    }
+
+    /// `begin`/`append` is what a flush uses instead of building a
+    /// `Vec<Batch>` it would throw away, so it has to produce the same bytes.
+    #[test]
+    fn appending_batches_one_at_a_time_produces_the_same_row() {
+        let batches = vec![batch("account:1", 7, b"first"), batch("b", 2, b"second")];
+        let mut piecewise = begin(0);
+        for one in &batches {
+            append(&mut piecewise, &one.peer_key, one.client_seq, &one.bytes);
+        }
+        assert_eq!(piecewise, encode(&batches));
+    }
+
     #[test]
     fn an_unknown_version_is_named() {
         assert_eq!(decode(&[0x02]), Err(FrameError::UnknownVersion(2)));
         assert_eq!(decode(&[]), Err(FrameError::Empty));
+    }
+    #[test]
+    fn prepared_source_does_not_double_a_large_prefix_allocation() {
+        let prefix = vec![1u8; 2 * 1024 * 1024];
+        let prepared = vec![2u8; 128];
+        let batches = [
+            ("a", 1, prefix.as_slice()),
+            ("deployment", 2, prepared.as_slice()),
+        ];
+        let encoded = encode_slices(batches.into_iter());
+        let expected = ROW_HEADER_BYTES
+            + overhead("a")
+            + prefix.len()
+            + overhead("deployment")
+            + prepared.len();
+        assert_eq!(encoded.len(), expected);
+        assert_eq!(
+            encoded.capacity(),
+            expected,
+            "the full row must be allocated once"
+        );
+        assert_eq!(decode(&encoded).expect("round trip")[1].bytes, prepared);
     }
 }

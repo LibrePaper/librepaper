@@ -207,6 +207,10 @@ export async function startDeployment({ label, advanced = null, handle = "tester
     cookie,
     data,
     accountId,
+    /// The throwaway database itself, for a test that has to reach it
+    /// directly rather than through the deployment -- holding a table lock to
+    /// stall the write path, for instance.
+    postgres,
     get log() { return log; },
     stop,
     /// Stop the process and start it again on the same database, object

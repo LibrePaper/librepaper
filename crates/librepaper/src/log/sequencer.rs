@@ -37,7 +37,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::budget::{estimate, Budget, Busy, Reservation};
-use super::frame::{self, Batch};
+use super::frame;
 use crate::config::Configuration;
 use crate::room::outgoing::{Outgoing, Sender};
 use crate::storage::blob::BlobStore;
@@ -78,7 +78,39 @@ pub const FLUSH_QUIET: Duration = Duration::from_secs(5);
 pub const FLUSH_TRIGGER_BYTES: usize = 1024 * 1024;
 /// With PostgreSQL unavailable the buffer grows to this before ingest is
 /// refused retryably (§10).
+///
+/// Measured against the buffer's CHARGE -- payload plus this batch's framing
+/// -- rather than payload alone, so that the row a flush will write is
+/// bounded by it too. A buffer of very many very small updates is mostly
+/// framing (`frame::overhead` per batch), and a ceiling that ignored it
+/// bounded the payload while letting the row grow several times past it.
 pub const BUFFER_CEILING_BYTES: usize = FLUSH_TRIGGER_BYTES * 4;
+
+/// The most one document's pending charge can come to.
+///
+/// [`BUFFER_CEILING_BYTES`] is the ordinary ceiling, but an empty buffer
+/// always admits one update whatever it weighs -- otherwise a single
+/// maximum-size update, which [`MAX_UPDATE_BYTES`] says this deployment
+/// accepts, would be refused forever the moment its framing pushed it one
+/// byte past the ceiling. So the true per-document maximum is the larger of
+/// the two, and this states it once for the configuration check and the
+/// pending accounting to share.
+pub const MAX_PENDING_CHARGE: usize = {
+    let ceiling = BUFFER_CEILING_BYTES;
+    let single = MAX_UPDATE_BYTES + frame::BATCH_HEADER_BYTES + frame::MAX_PEER_KEY;
+    if single > ceiling {
+        single
+    } else {
+        ceiling
+    }
+};
+
+/// The largest row an ordinary flush can write: one version byte over a
+/// document's whole pending charge. A semantic command's row can be larger by
+/// the server-authored update it adds, which is why
+/// `Configuration::validate_pending` adds `max_document` to this rather than
+/// treating it as the last word.
+pub const MAX_ROW_BYTES: usize = frame::ROW_HEADER_BYTES + MAX_PENDING_CHARGE;
 /// At most one `source-changed` per document per second (§4.5).
 pub const SOURCE_CHANGED_INTERVAL: Duration = Duration::from_secs(1);
 /// How long a build may run before the document is marked unreadable (§9.3).
@@ -111,13 +143,25 @@ struct Subscriber {
     peer_key: String,
 }
 
-/// One batch in the buffer: what arrived, from whom, and what it covers.
-#[derive(Clone)]
+/// One batch in the buffer: what arrived, from whom, what it covers, and the
+/// deployment-wide reservation that admitted it.
+///
+/// Not `Clone`: the reservation is not, on purpose, because a copy of these
+/// bytes is a second allocation that owes a second charge. The charge lives
+/// here rather than in a counter beside the buffer so that it follows the
+/// bytes exactly -- `Inner::retire` drains a prefix and those reservations
+/// drop with it, a failed flush drains nothing and they all survive, and a
+/// sequencer that is dropped while something else still holds an `Arc` to it
+/// keeps paying until that last reference goes.
 struct Pending {
     peer_key: String,
     client_seq: i64,
     bytes: Vec<u8>,
     end: VersionVector,
+    /// What this batch's payload and framing cost the deployment. Released by
+    /// `Drop`, so there is no path -- error, panic, cancellation -- on which
+    /// removing the batch forgets to give the bytes back.
+    charge: super::pending::Reservation,
 }
 
 /// A decoded document, held for as long as the budget allows. Dropping it
@@ -155,11 +199,48 @@ pub enum Ingested {
     /// Not a well-formed Loro update, checksum included. The socket is
     /// closed and the client reconciles on reconnect.
     Invalid(String),
-    /// Refused for a reason the client can retry: the log quota, or a buffer
-    /// that has grown because PostgreSQL is unavailable.
-    Retryable(&'static str),
+    /// Refused for a reason the client can retry: the log quota, a buffer
+    /// that has grown because PostgreSQL is unavailable, or the deployment's
+    /// pending-source ceiling.
+    Retryable(Retry),
     /// Refused for a reason retrying will not change.
     Refused(&'static str),
+}
+
+/// Everything a refused-but-retryable answer has to carry for the client to
+/// actually recover from it.
+///
+/// A string was not enough, and the gap was not theoretical: the socket
+/// handler turned every refusal into one generic `error` frame, the browser
+/// showed a toast, and nothing anywhere resent the update. An editor who
+/// stopped typing after a single refused keystroke kept that keystroke only
+/// in their own browser until they typed again or the socket happened to
+/// drop. So the refusal now says, in fields rather than in prose:
+///
+/// * `reason`, a stable code the client can branch on without parsing
+///   English, and
+/// * `vector`, the head as it stands. A refusal never merges the batch into
+///   `head_vector` (every path returns before that merge), so re-exporting
+///   from this vector is exactly the refused work plus anything since --
+///   which is the same recovery `Gap` already asks for, just later.
+///
+/// `pressure` separates the two kinds of retryable refusal. A rate-limit or
+/// quota refusal is about this client or this document and is what
+/// `MAX_CONSECUTIVE_REFUSALS` exists to stop; back pressure is about the
+/// deployment, and closing sockets over it turns a slow database into a
+/// reconnect storm against the same slow database.
+#[derive(Clone, Debug)]
+pub struct Retry {
+    pub why: &'static str,
+    pub reason: &'static str,
+    pub pressure: bool,
+    pub vector: Vec<u8>,
+}
+
+impl std::fmt::Display for Retry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.why)
+    }
 }
 
 /// What a join is answered with (§6.2).
@@ -401,7 +482,7 @@ pub trait Command {
     /// row naming the state it was evaluated against.
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         evidence: &'a Evidence,
     ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>>;
 }
@@ -519,17 +600,23 @@ pub(crate) trait LogCatalog: Send + Sync {
         &'a self,
         document_id: Uuid,
         row: FlushRow<'a>,
+        scratch: super::pending::Reservation,
     ) -> BoxFuture<'a, postgres::Result<i64>>;
+    fn persistence_connection(
+        &self,
+        scratch: super::pending::Reservation,
+    ) -> BoxFuture<'_, postgres::Result<postgres::PersistenceConnection>>;
     fn log_sequence(&self, document_id: Uuid) -> BoxFuture<'_, postgres::Result<i64>>;
     fn begin_document_command<'a>(
         &'a self,
+        connection: &'a mut postgres::PersistenceConnection,
         document_id: Uuid,
         authority: &'a Authority,
         rung: Rung,
-    ) -> BoxFuture<'a, postgres::Result<sqlx::Transaction<'static, sqlx::Postgres>>>;
+    ) -> BoxFuture<'a, postgres::Result<sqlx::Transaction<'a, sqlx::Postgres>>>;
     fn insert_log_row<'a>(
         &'a self,
-        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         row: FlushRow<'a>,
     ) -> BoxFuture<'a, postgres::Result<i64>>;
@@ -582,8 +669,16 @@ impl LogCatalog for PostgresCatalog {
         &'a self,
         document_id: Uuid,
         row: FlushRow<'a>,
+        scratch: super::pending::Reservation,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
-        Box::pin(self.flush_log_row(document_id, row))
+        Box::pin(self.flush_log_row_charged(document_id, row, scratch))
+    }
+
+    fn persistence_connection(
+        &self,
+        scratch: super::pending::Reservation,
+    ) -> BoxFuture<'_, postgres::Result<postgres::PersistenceConnection>> {
+        Box::pin(self.persistence_connection(scratch))
     }
 
     fn log_sequence(&self, document_id: Uuid) -> BoxFuture<'_, postgres::Result<i64>> {
@@ -592,16 +687,22 @@ impl LogCatalog for PostgresCatalog {
 
     fn begin_document_command<'a>(
         &'a self,
+        connection: &'a mut postgres::PersistenceConnection,
         document_id: Uuid,
         authority: &'a Authority,
         rung: Rung,
-    ) -> BoxFuture<'a, postgres::Result<sqlx::Transaction<'static, sqlx::Postgres>>> {
-        Box::pin(self.begin_document_command(document_id, authority, rung))
+    ) -> BoxFuture<'a, postgres::Result<sqlx::Transaction<'a, sqlx::Postgres>>> {
+        Box::pin(async move {
+            let mut tx = connection.begin().await?;
+            self.check_document_command(&mut tx, document_id, authority, rung)
+                .await?;
+            Ok(tx)
+        })
     }
 
     fn insert_log_row<'a>(
         &'a self,
-        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         document_id: Uuid,
         row: FlushRow<'a>,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
@@ -637,7 +738,14 @@ struct Inner {
     /// The log vector plus the buffer. Never stored.
     head_vector: VersionVector,
     buffer: Vec<Pending>,
+    /// The payload bytes in the buffer. What the resident estimate is taken
+    /// from, because framing is not part of what a decoded document costs.
     buffer_bytes: usize,
+    /// What the buffer is charged against the deployment pending pool:
+    /// payload plus framing, which is also exactly the row those batches
+    /// would encode to minus its one version byte. The per-document ceiling
+    /// and the flush's scratch reservation are both taken from this.
+    charged_bytes: usize,
     oldest_arrival: Option<Instant>,
     last_arrival: Option<Instant>,
     subscribers: HashMap<u64, Subscriber>,
@@ -739,14 +847,45 @@ impl Bucket {
 }
 
 impl Inner {
-    fn buffer_batches(&self, take: usize) -> Vec<Batch> {
+    /// What the first `take` batches are charged, which is also what they
+    /// encode to once the row's version byte is added.
+    fn charge_of(&self, take: usize) -> usize {
         self.buffer[..take]
             .iter()
-            .map(|pending| Batch {
-                peer_key: pending.peer_key.clone(),
-                client_seq: pending.client_seq,
-                bytes: pending.bytes.clone(),
-            })
+            .map(|pending| pending.charge.bytes() as usize)
+            .sum()
+    }
+
+    /// The row those batches make, encoded straight out of the buffer.
+    ///
+    /// Not through a `Vec<Batch>`: that intermediate copied every payload,
+    /// which on a backed-up document is megabytes of transient allocation
+    /// nothing accounted for and nothing needed. The lock is held while this
+    /// runs -- it is a memcpy of at most one document's buffer, not I/O, and
+    /// the round trip it feeds is still made with the lock released.
+    fn encode_prefix(&self, take: usize) -> Vec<u8> {
+        let mut row = frame::begin(self.charge_of(take));
+        self.append_prefix(&mut row, take);
+        row
+    }
+
+    fn append_prefix(&self, row: &mut Vec<u8>, take: usize) {
+        for pending in &self.buffer[..take] {
+            frame::append(row, &pending.peer_key, pending.client_seq, &pending.bytes);
+        }
+    }
+
+    /// Who is owed an acknowledgement for the first `take` batches, and up to
+    /// which of their own sequence numbers.
+    ///
+    /// Separate from the row because acknowledgement needs no payload at all,
+    /// only attribution -- which is what lets the row be encoded once, under
+    /// the lock, and dropped as soon as it is written, while the (tiny) ack
+    /// list survives the round trip.
+    fn ack_prefix(&self, take: usize) -> Vec<(String, i64)> {
+        self.buffer[..take]
+            .iter()
+            .map(|pending| (pending.peer_key.clone(), pending.client_seq))
             .collect()
     }
 
@@ -773,8 +912,13 @@ impl Inner {
     fn retire(&mut self, take: usize, written: i64, vector: VersionVector, row_bytes: usize) {
         self.next_sequence = written + 1;
         self.log_vector = vector;
+        // Draining is what releases the pending charge: each `Pending` owns
+        // its own reservation and gives it back as it drops. Only the
+        // committed prefix goes, so edits that arrived while the row was
+        // being written stay buffered and stay charged.
         self.buffer.drain(..take);
         self.buffer_bytes = self.buffer.iter().map(|pending| pending.bytes.len()).sum();
+        self.charged_bytes = self.charge_of(self.buffer.len());
         self.row_bytes = self.row_bytes.saturating_add(row_bytes as u64);
         self.uncompacted_count = self.uncompacted_count.saturating_add(1);
         self.oldest_arrival = (!self.buffer.is_empty()).then(Instant::now);
@@ -797,6 +941,9 @@ pub struct Sequencer {
     blobs: Arc<dyn BlobStore>,
     config: Arc<Configuration>,
     budget: Arc<Budget>,
+    /// The deployment's one pending-source authority, shared with every other
+    /// sequencer this registry admitted (SPEC-frugal §2).
+    pending: Arc<super::pending::PendingBudget>,
     /// Only one flush or command transaction at a time per document.
     transaction: tokio::sync::Mutex<()>,
     /// The peer key server-authored source is written under (§7.3).
@@ -854,6 +1001,7 @@ impl Sequencer {
         blobs: Arc<dyn BlobStore>,
         config: Arc<Configuration>,
         budget: Arc<Budget>,
+        pending: Arc<super::pending::PendingBudget>,
         deployment_peer_key: String,
         compaction: Arc<std::sync::OnceLock<crate::storage::worker::Handle>>,
     ) -> Result<Self> {
@@ -876,6 +1024,7 @@ impl Sequencer {
             blobs,
             config,
             budget,
+            pending,
             deployment_peer_key,
             head.update_sequence + 1,
             log_vector,
@@ -902,6 +1051,7 @@ impl Sequencer {
         blobs: Arc<dyn BlobStore>,
         config: Arc<Configuration>,
         budget: Arc<Budget>,
+        pending: Arc<super::pending::PendingBudget>,
         deployment_peer_key: String,
         next_sequence: i64,
         log_vector: VersionVector,
@@ -921,6 +1071,7 @@ impl Sequencer {
                 log_vector,
                 buffer: Vec::new(),
                 buffer_bytes: 0,
+                charged_bytes: 0,
                 oldest_arrival: None,
                 last_arrival: None,
                 subscribers: HashMap::new(),
@@ -942,6 +1093,7 @@ impl Sequencer {
             blobs,
             config,
             budget,
+            pending,
             transaction: tokio::sync::Mutex::new(()),
             deployment_peer_key,
             gap_check: std::sync::atomic::AtomicBool::new(true),
@@ -998,6 +1150,14 @@ impl Sequencer {
         }
         if bytes.len() > MAX_UPDATE_BYTES {
             return Ingested::Refused("that update is larger than this deployment accepts");
+        }
+        // A peer key wider than the frame can carry would encode a length
+        // `frame::decode` refuses, so the row would be written and then be
+        // unreadable by replay -- silent loss, discovered only on the next
+        // cold build. Refused here instead, where it is one comparison, and
+        // permanently: nothing about retrying makes the key shorter.
+        if peer_key.len() > frame::MAX_PEER_KEY {
+            return Ingested::Refused("that editor's identity is too long to record");
         }
         let header = match LoroDoc::decode_import_blob_meta(&bytes, true) {
             Ok(header) => header,
@@ -1067,16 +1227,38 @@ impl Sequencer {
             .entry(principal_key.to_string())
             .or_insert_with(|| Bucket::full(capacity, rate_now));
         if !bucket.take(capacity, per_second, rate_now) {
-            return Ingested::Retryable("too many updates; slow down and they will be accepted");
+            return retryable(
+                &inner,
+                "too many updates; slow down and they will be accepted",
+                "rate",
+                false,
+            );
         }
 
         if inner.log_bytes() >= self.config.log_quota_bytes as u64 {
-            return Ingested::Retryable(
+            return retryable(
+                &inner,
                 "this document's log is at its quota and is waiting to be compacted",
+                "log_quota",
+                false,
             );
         }
-        if inner.buffer_bytes.saturating_add(bytes.len()) > BUFFER_CEILING_BYTES {
-            return Ingested::Retryable("sync_delayed: this server cannot save work right now");
+        // What this batch will cost the deployment if it is accepted: its
+        // payload and the framing the row will spend on it.
+        let charge = bytes.len().saturating_add(frame::overhead(peer_key));
+        // The per-document ceiling, on the charge rather than the payload.
+        // An empty buffer always admits one update whatever it weighs
+        // (`MAX_PENDING_CHARGE`), or a single maximum-size update would be
+        // refused forever by its own framing.
+        if !inner.buffer.is_empty()
+            && inner.charged_bytes.saturating_add(charge) > BUFFER_CEILING_BYTES
+        {
+            return retryable(
+                &inner,
+                "sync_delayed: this server cannot save work right now",
+                "document_buffer",
+                true,
+            );
         }
         if self.gap_check.load(std::sync::atomic::Ordering::Relaxed)
             && !covers(&inner.head_vector, &header.partial_start_vv)
@@ -1085,6 +1267,28 @@ impl Sequencer {
                 vector: inner.head_vector.encode(),
             };
         }
+
+        // SPEC-frugal §2: the deployment-wide ceiling, taken BEFORE the
+        // update is accepted into the document. Order matters and is the
+        // whole of what makes this a memory bound rather than a memory
+        // report: the charge is held first, and only a charge that was
+        // granted goes on to move the head, append to the buffer, import
+        // into the cache or relay to anybody.
+        //
+        // A refusal here leaves this document exactly as it was. The rate
+        // token spent above is not given back, which is deliberate: the
+        // allowance bounds attempts, and an attempt was made.
+        let charge = match self.pending.try_retain(charge as u64) {
+            Ok(charge) => charge,
+            Err(_) => {
+                return retryable(
+                    &inner,
+                    "sync_delayed: this deployment is holding all the unsaved work it can",
+                    "pending_budget",
+                    true,
+                )
+            }
+        };
 
         // A warm document grows synchronously below. Extend its reservation
         // before importing; if the budget cannot cover the growth, evict
@@ -1113,23 +1317,33 @@ impl Sequencer {
         }
         inner.last_arrival = Some(now);
         inner.buffer_bytes = inner.buffer_bytes.saturating_add(bytes.len());
-        inner.buffer.push(Pending {
-            peer_key: peer_key.to_string(),
-            client_seq,
-            bytes: bytes.clone(),
-            end: header.partial_end_vv,
-        });
+        inner.charged_bytes = inner.charged_bytes.saturating_add(charge.bytes() as usize);
         if let Some(cache) = &inner.cache {
             // Opportunistic: a warm entry stays at head so a projection is
             // free. A failure is not the sender's problem -- the bytes are
-            // already in the buffer -- so the entry is dropped and rebuilt
-            // rather than the update refused.
+            // accepted and about to be buffered -- so the entry is dropped
+            // and rebuilt rather than the update refused.
             if cache.doc.import(&bytes).is_err() {
                 inner.cache = None;
             }
             inner.projection = None;
         }
         relay(&mut inner, Some(socket), &bytes);
+        // Moved into the buffer rather than cloned into it. `ingest` owns
+        // these bytes; keeping a second copy alive only until the end of the
+        // call doubled what a keystroke costs, and the import and the relay
+        // above are the only readers that needed the original. Both run
+        // first, under the same lock, so nothing observes a different order.
+        inner.buffer.push(Pending {
+            peer_key: peer_key.to_string(),
+            client_seq,
+            bytes,
+            end: header.partial_end_vv,
+            // Moved, not copied: the charge taken above now belongs to these
+            // bytes and is released when they are retired or the sequencer
+            // holding them is dropped.
+            charge,
+        });
         self.note_source_changed(&mut inner);
         Ingested::Accepted
     }
@@ -1200,7 +1414,20 @@ impl Sequencer {
     /// sequence written, or `None` when there was nothing to write.
     pub async fn flush(&self, reason: FlushReason) -> Result<Option<i64>> {
         let _transaction = self.transaction.lock().await;
-        let (take, batches, vector, expected, identity) = {
+        let guaranteed_scratch = if matches!(
+            reason,
+            FlushReason::Shutdown | FlushReason::Barrier | FlushReason::AuthorityRevoked
+        ) {
+            Some(
+                self.pending
+                    .reserve_scratch(super::pending::scratch_for(MAX_ROW_BYTES as u64))
+                    .await
+                    .map_err(|_| SequencerError::Busy)?,
+            )
+        } else {
+            None
+        };
+        let (take, acknowledged, encoded, mut scratch, vector, expected, identity) = {
             let inner = self.inner.lock().await;
             // §10: once fenced, this sequencer's view of the log can never
             // be made durable again by writing more to it. Fail fast rather
@@ -1213,16 +1440,45 @@ impl Sequencer {
             if take == 0 {
                 return Ok(None);
             }
+            // SPEC-frugal §2: the row about to be built, and the copy the
+            // driver will make of it on the way to the wire, are reserved
+            // BEFORE either exists. The size is known exactly rather than
+            // estimated: a row is one version byte over the buffer's own
+            // charge, which is what `charge_of` already holds.
+            //
+            // A refusal here is a deferral and nothing more. The buffer is
+            // untouched, its charges stand, and the next housekeeping pass
+            // -- one second later -- asks again. It cannot be a deadlock:
+            // scratch is a separate pool that `ingest` never spends, and the
+            // configuration is refused unless it can hold one maximum-size
+            // row (`Configuration::validate_pending`).
+            let row_bytes = frame::ROW_HEADER_BYTES.saturating_add(inner.charge_of(take)) as u64;
+            let scratch = match guaranteed_scratch.map(Ok).unwrap_or_else(|| {
+                self.pending
+                    .try_scratch(super::pending::scratch_for(row_bytes))
+            }) {
+                Ok(scratch) => scratch,
+                Err(_) => {
+                    ::log::warn!(
+                        "deferring the flush of {}: no persistence scratch right now",
+                        self.slug
+                    );
+                    return Err(SequencerError::Busy);
+                }
+            };
             (
                 take,
-                inner.buffer_batches(take),
+                inner.ack_prefix(take),
+                inner.encode_prefix(take),
+                scratch,
                 inner.vector_through(take),
                 inner.next_sequence - 1,
                 self.identity_of(&inner),
             )
         };
 
-        let encoded = frame::encode(&batches);
+        let driver_scratch =
+            scratch.split(super::pending::driver_scratch_for(encoded.len() as u64));
         let written = match self
             .catalog
             .flush_log_row(
@@ -1234,6 +1490,7 @@ impl Sequencer {
                     source_format: identity.as_ref().map(|(format, _)| format.as_str()),
                     main_path: identity.as_ref().map(|(_, main)| main.as_str()),
                 },
+                driver_scratch,
             )
             .await
         {
@@ -1251,10 +1508,16 @@ impl Sequencer {
             },
         };
 
+        let row_bytes = encoded.len();
+        // The row has reached storage and nothing reads these bytes again.
+        // Dropped here rather than at the end of the function so the scratch
+        // is back in the pool before the acknowledgements go out.
+        drop(encoded);
+        drop(scratch);
         let mut inner = self.inner.lock().await;
-        inner.retire(take, written, vector, encoded.len());
+        inner.retire(take, written, vector, row_bytes);
         let compaction_due = inner.compaction_due(self.catalog.compaction_thresholds());
-        acknowledge(&mut inner, &batches);
+        acknowledge(&mut inner, &acknowledged);
         notify_durable(&mut inner);
         // A digest the coalescing window suppressed goes out on the flush,
         // which is the floor §4.5 promises a reader.
@@ -1263,7 +1526,7 @@ impl Sequencer {
         }
         ::log::debug!(
             "flushed {} batches for {} as row {written} ({reason:?})",
-            batches.len(),
+            acknowledged.len(),
             self.slug
         );
         drop(inner);
@@ -1629,28 +1892,81 @@ impl Sequencer {
         // 3. Assemble the row: the buffer as it stands, plus the prepared
         //    batch. The buffer itself is not modified.
         let take = inner.buffer.len();
-        let mut batches = inner.buffer_batches(take);
+        let mut acknowledged = inner.ack_prefix(take);
         let mut vector = inner.vector_through(take);
+        // SPEC-frugal §2: what this row will weigh, before it exists. The
+        // buffered prefix is charged already and its size is known exactly;
+        // the prepared batch is not in the buffer and so has to be added,
+        // framing and all.
+        let mut row_bytes = frame::ROW_HEADER_BYTES.saturating_add(inner.charge_of(take));
         if let Some(source) = &prepared {
             vector.merge(&source.end);
-            batches.push(Batch {
-                peer_key: self.deployment_peer_key.clone(),
-                client_seq: source.client_seq,
-                bytes: source.batch.clone(),
-            });
+            acknowledged.push((self.deployment_peer_key.clone(), source.client_seq));
+            row_bytes = row_bytes
+                .saturating_add(frame::overhead(&self.deployment_peer_key))
+                .saturating_add(source.batch.len());
         }
+        // Reserved before the row is encoded, and refused through §7's
+        // ordinary precondition failure -- which runs before the transaction
+        // is opened, so nothing is rolled back and no effect was committed.
+        // `Conflict` is what every other temporary refusal inside a command
+        // uses (`Head::prepare`'s own memory refusal included), and it is
+        // what the caller already turns into a retryable answer.
+        let scratch = self
+            .pending
+            .try_scratch(super::pending::scratch_for(row_bytes as u64))
+            .map_err(|_| {
+                CommandError::Conflict(
+                    "this deployment is holding all the unsaved work it can; retry".to_string(),
+                )
+            })?;
         let expected = inner.next_sequence - 1;
         let identity = self.identity_of(&inner);
 
+        // The connection owns scratch through commit, rollback or cancellation.
+        let mut connection = self.catalog.persistence_connection(scratch).await?;
         // 4. Transact.
         let mut tx = self
             .catalog
-            .begin_document_command(self.document_id, authority, command.authority())
+            .begin_document_command(
+                &mut connection,
+                self.document_id,
+                authority,
+                command.authority(),
+            )
             .await?;
-        let source_sequence = if batches.is_empty() {
+        // The row itself, built once. The buffered prefix is encoded straight
+        // out of the buffer, the prepared batch appended to it: no
+        // intermediate `Vec<Batch>` copying every payload, and -- unlike
+        // before -- no second `frame::encode` of the same batches after the
+        // commit just to learn the row's length. The length is `encoded.len()`
+        // and was already known from the reservation above.
+        let encoded = if acknowledged.is_empty() {
+            Vec::new()
+        } else {
+            frame::encode_slices(
+                inner.buffer[..take]
+                    .iter()
+                    .map(|pending| {
+                        (
+                            pending.peer_key.as_str(),
+                            pending.client_seq,
+                            pending.bytes.as_slice(),
+                        )
+                    })
+                    .chain(prepared.iter().map(|source| {
+                        (
+                            self.deployment_peer_key.as_str(),
+                            source.client_seq,
+                            source.batch.as_slice(),
+                        )
+                    })),
+            )
+        };
+        let row_bytes = encoded.len();
+        let source_sequence = if acknowledged.is_empty() {
             expected
         } else {
-            let encoded = frame::encode(&batches);
             let written = self
                 .catalog
                 .insert_log_row(
@@ -1689,15 +2005,25 @@ impl Sequencer {
             }
         };
         tx.commit().await?;
+        // The row has reached storage and nothing reads these bytes again.
+        // Released here rather than at the end of the call, so the scratch is
+        // back in the pool before the relay and the acknowledgements. On
+        // every other exit -- a precondition failure, a rollback, a
+        // cancelled future -- the same bytes are released by `Drop` instead.
+        drop(encoded);
+        connection.complete();
+        drop(connection);
 
         // 5. Retire the flushed batches, install the prepared batch, relay
         //    it, and acknowledge.
-        let row_bytes = if batches.is_empty() {
-            0
-        } else {
-            frame::encode(&batches).len()
-        };
-        if !batches.is_empty() {
+        //
+        // `row_bytes` is the length of the row written above, kept from the
+        // one encoding rather than recomputed. It used to re-encode the whole
+        // batch list here purely to measure it -- a second full copy of every
+        // buffered payload, allocated after the transaction had already
+        // committed, for a number the first encoding knew.
+        let wrote_a_row = !acknowledged.is_empty();
+        if wrote_a_row {
             inner.retire(take, source_sequence, vector, row_bytes);
         }
         if let Some(source) = &prepared {
@@ -1715,8 +2041,8 @@ impl Sequencer {
             relay(&mut inner, None, &source.batch);
             self.note_source_changed(&mut inner);
         }
-        acknowledge(&mut inner, &batches);
-        if !batches.is_empty() {
+        acknowledge(&mut inner, &acknowledged);
+        if wrote_a_row {
             notify_durable(&mut inner);
         }
         let compaction_due = inner.compaction_due(self.catalog.compaction_thresholds());
@@ -2043,7 +2369,9 @@ impl Sequencer {
         LogState {
             next_sequence: inner.next_sequence,
             log_vector: inner.log_vector.encode(),
+            head_vector: inner.head_vector.encode(),
             buffered: inner.buffer.len(),
+            buffered_charge: inner.charged_bytes,
             log_bytes: inner.log_bytes(),
             subscribers: inner.subscribers.len(),
             warm: inner.cache.is_some(),
@@ -2272,7 +2600,15 @@ impl Sequencer {
 pub struct LogState {
     pub next_sequence: i64,
     pub log_vector: Vec<u8>,
+    /// The log vector plus the buffer: what this document would be at if
+    /// every buffered batch were written. A refused update is never merged
+    /// into it, which is what lets a test say "nothing was accepted" by
+    /// comparing this across the refusal.
+    pub head_vector: Vec<u8>,
     pub buffered: usize,
+    /// What the buffer costs the deployment pending pool: payload and
+    /// framing (SPEC-frugal §2).
+    pub buffered_charge: usize,
     pub log_bytes: u64,
     pub subscribers: usize,
     pub warm: bool,
@@ -2365,8 +2701,12 @@ fn acknowledge_peer(inner: &mut Inner, peer_key: &str, up_to: i64) {
 /// rather than being appended past the hole. The peer recovers by
 /// re-exporting from the vector the gap reports, under a new `client_seq`,
 /// and it is that batch a row can hold (§5.1).
-fn acknowledge(inner: &mut Inner, batches: &[Batch]) {
-    let highest = ack_targets(batches);
+fn acknowledge(inner: &mut Inner, acknowledged: &[(String, i64)]) {
+    let highest = ack_targets(
+        acknowledged
+            .iter()
+            .map(|(peer_key, client_seq)| (peer_key.as_str(), *client_seq)),
+    );
     let mut closed = Vec::new();
     for (id, subscriber) in inner.subscribers.iter() {
         let Some(up_to) = highest.get(subscriber.peer_key.as_str()) else {
@@ -2413,19 +2753,41 @@ fn notify_durable(inner: &mut Inner) {
     drop_slow(inner, closed);
 }
 
-/// Each peer's highest `client_seq` among `batches`: what a single
+/// Each peer's highest `client_seq` among the batches: what a single
 /// `doc-ack` names for that peer. A row commonly holds several batches from
 /// the same session, and one `upTo` covers all of them, which is the whole
 /// of what "acknowledgements name a contiguous prefix" means (§5.1, §14.2).
 /// Pulled out of `acknowledge` so that claim can be checked without a
 /// subscriber or a database: nothing here is I/O.
-pub(crate) fn ack_targets(batches: &[Batch]) -> HashMap<&str, i64> {
+/// Takes attribution alone, not whole batches: acknowledgement never needs a
+/// payload, which is what lets a flush drop the encoded row -- and give its
+/// scratch back -- before the acknowledgements go out.
+pub(crate) fn ack_targets<'a>(
+    acknowledged: impl IntoIterator<Item = (&'a str, i64)>,
+) -> HashMap<&'a str, i64> {
     let mut highest: HashMap<&str, i64> = HashMap::new();
-    for batch in batches {
-        let entry = highest.entry(batch.peer_key.as_str()).or_insert(i64::MIN);
-        *entry = (*entry).max(batch.client_seq);
+    for (peer_key, client_seq) in acknowledged {
+        let entry = highest.entry(peer_key).or_insert(i64::MIN);
+        *entry = (*entry).max(client_seq);
     }
     highest
+}
+
+/// A retryable refusal, with the head vector the client should re-export
+/// from.
+///
+/// Every caller is a path that returns BEFORE merging the batch into
+/// `head_vector`, which is what makes that vector the right answer: exporting
+/// from it resends exactly the refused work. Taking it here, in one place,
+/// is also how that invariant stays true -- a future refusal added after the
+/// merge would have to reach past this helper to get the vector wrong.
+fn retryable(inner: &Inner, why: &'static str, reason: &'static str, pressure: bool) -> Ingested {
+    Ingested::Retryable(Retry {
+        why,
+        reason,
+        pressure,
+        vector: inner.head_vector.encode(),
+    })
 }
 
 fn covers(holder: &VersionVector, wanted: &VersionVector) -> bool {

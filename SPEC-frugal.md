@@ -75,26 +75,68 @@ instead of reconstructing the full catalogue entry, including guest display
 information. Preserve permission, session and expiry checks while reducing
 queries and materialization.
 
-## 2. Budget unsaved bytes across the deployment
+## 2. Budget unsaved bytes across the deployment: implemented
 
-`crates/librepaper/src/log/sequencer.rs` caps buffered updates at 4 MiB per
-document. The decoded-document memory budget is separate; the inspected
-pending-update insertion path does not appear to reserve against a global
-pending-byte budget. Confirm the complete accounting before implementation.
+The reading was right. A document's buffer was capped at 4 MiB and nothing
+counted the sum, so 1,000 documents permitted roughly 4 GiB of pending
+payloads, and a database slowdown is exactly what pushes many documents
+towards that at once.
 
-Across 1,000 documents, those individual allowances permit about 4 GiB of pending
-payloads before other memory. This is a worst-case allowance, not expected normal
-usage. A database slowdown could push many documents toward it simultaneously.
+`crates/librepaper/src/log/pending.rs` is the bound. One `PendingBudget` per
+registry, handed to every sequencer, with two pools:
 
-Add a shared budget for pending and in-flight persistence bytes. Under pressure:
+- **retained** (`pending_bytes`, default 64 MiB): accepted update payloads
+  held in document buffers, charged as payload plus framing, reserved by
+  `Sequencer::ingest` *before* the update is accepted into the document.
+- **scratch** (`pending_scratch_bytes`, default 64 MiB): the encoded row a
+  write builds and both driver buffers, including capacity growth, reserved by
+  `Sequencer::flush` and by the semantic-command path before the row exists.
 
-- Flush earlier.
-- Evict disposable caches.
-- Apply backpressure fairly across documents while clients retain unsynced work.
+They are separate pools because the failure to avoid is a full budget that
+cannot be drained: one undifferentiated pool would let buffers fill it and
+leave nothing to encode the row that would empty them. `ingest` spends only
+the first, persistence only the second, and
+`Configuration::validate_pending` refuses a configuration whose scratch
+ceiling cannot hold one maximum-size row. Reservations are `Drop` types owned
+by the allocation they paid for -- a buffered batch owns its own charge, so
+retiring a committed prefix releases exactly that prefix and a failed or
+cancelled write keeps buffered work and destroys its database connection before
+releasing driver scratch. Successful writes shrink buffers before pool reuse.
 
-Account for ownership transitions and temporary copies during a flush so the
-budget remains meaningful while writes are in flight. Preserve honest durability
-acknowledgments and client recovery behavior.
+Three copies the accounting would otherwise have had to cover are gone
+instead: the flush's `Vec<Batch>` snapshot of every payload, the clone
+`ingest` made of the incoming vector, and the second `frame::encode` a
+command ran after committing just to measure its own row.
+
+Of the three responses this section asked for, the implemented one is
+back pressure, with recovery. Flushing earlier was not added: the existing
+1 MiB / 5s / 30s triggers and the one-second housekeeping sweep already
+recover within seconds, and a second trigger would have meant a second
+scheduler. Cache eviction already happens, against the decoded budget, and is
+deliberately not wired to this one -- pending bytes are not a cache and cannot
+be evicted. Fairness is **not** claimed: admission is first-come, and the
+tests demonstrate that every document drains once pressure clears rather than
+any share guarantee.
+
+A refused update now carries a stable reason code and the server's head
+vector, and the browser resends from it on a backoff (1s doubling to 30s, one
+outstanding retry) -- so an editor who stops typing after a refusal still has
+that work saved, without another keystroke. Retries incorporate newer durable coverage and are
+cancelled when that coverage includes all local work, avoiding duplicate uploads
+after successful gap recovery. Shutdown and other mandatory flushes wait for
+scratch instead of skipping buffered documents. Back-pressure refusals no longer
+count towards the socket's consecutive-refusal close, which would otherwise
+have answered a slow database with a reconnect storm. Durable save status is
+unchanged: it is still computed from the server's durable version vector, so
+a refused edit reads as unsaved until a row actually carries it.
+
+`docs/resource-bounds.md` §2 states what is accounted for, what is covered by
+another bound, and what is excluded. **Remaining measurement limitation:** the
+defaults are reasoned from the existing per-document ceilings rather than
+measured against a real slow-database deployment. The RSS effect of the bound
+has not been measured; the tests assert ownership and accounting invariants
+directly, which is what the first experiment list below should now be run
+against.
 
 ## 3. Verify the existing flush concurrency bound
 
@@ -172,7 +214,9 @@ existing real-WebSocket harness to include sustained persistence and realistic
 document sizes; separate connection setup from steady-state traffic in the results.
 
 A global pending-write budget addresses resilience during database slowdowns,
-rather than a demonstrated routine performance bottleneck. Authorization and
+rather than a demonstrated routine performance bottleneck. It is now
+implemented (section 2); what these experiments still owe it is a measurement
+of where its defaults should sit. Authorization and
 writer-lease checks need measurement before redesign. Prefer a focused
 authorization lookup over generation caching if the measured cost warrants it.
 Bounded flush concurrency is already implemented. Keep the existing

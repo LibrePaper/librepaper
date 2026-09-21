@@ -89,6 +89,17 @@ struct FakeCatalog {
     /// deployment's. Small in the tests that want to cross them without
     /// writing a hundred rows.
     compaction_thresholds: (i64, i64),
+    /// When set, `flush_log_row` announces it has been entered and then
+    /// waits to be released. This is a database that has stopped answering,
+    /// which is the whole workload SPEC-frugal §2 is about: it lets a test
+    /// hold a write open and look at what the buffer and the pending
+    /// reservations are doing meanwhile, without a sleep anywhere.
+    flush_gate: Option<(Arc<Notify>, Arc<Notify>)>,
+    /// When true, every `flush_log_row` fails, with no row written and the
+    /// sequence left where it was. Distinct from `fail_next_flush`, which is
+    /// one-shot and is about an AMBIGUOUS outcome; this is a write that
+    /// plainly did not happen.
+    fail_every_flush: std::sync::atomic::AtomicBool,
 }
 
 impl FakeCatalog {
@@ -104,6 +115,8 @@ impl FakeCatalog {
             lost_flush_committed: false,
             sequence_on_ambiguity: AtomicI64::new(0),
             compaction_thresholds: (100, 16 * 1024 * 1024),
+            flush_gate: None,
+            fail_every_flush: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -164,6 +177,7 @@ impl LogCatalog for FakeCatalog {
         &'a self,
         _document_id: Uuid,
         row: FlushRow<'a>,
+        scratch: super::pending::Reservation,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
         if self.fail_next_flush.swap(false, Ordering::SeqCst) {
             if self.lost_flush_committed {
@@ -182,7 +196,19 @@ impl LogCatalog for FakeCatalog {
                 ))
             });
         }
+        let gate = self.flush_gate.clone();
+        let failing = self.fail_every_flush.load(Ordering::SeqCst);
         Box::pin(async move {
+            let _scratch = scratch;
+            if let Some((entered, release)) = gate {
+                entered.notify_one();
+                release.notified().await;
+            }
+            if failing {
+                return Err(postgres::Error::Conflict(
+                    "simulated: this write did not happen".into(),
+                ));
+            }
             self.flushed.lock().unwrap().push(row.update_bytes.to_vec());
             Ok(self.next_sequence.fetch_add(1, Ordering::SeqCst))
         })
@@ -193,12 +219,20 @@ impl LogCatalog for FakeCatalog {
         Box::pin(async move { Ok(answer) })
     }
 
+    fn persistence_connection(
+        &self,
+        _scratch: super::pending::Reservation,
+    ) -> BoxFuture<'_, postgres::Result<postgres::PersistenceConnection>> {
+        Box::pin(async { unimplemented!("a semantic command needs PostgreSQL") })
+    }
+
     fn begin_document_command<'a>(
         &'a self,
+        _connection: &'a mut postgres::PersistenceConnection,
         _document_id: Uuid,
         _authority: &'a Authority,
         _rung: super::sequencer::Rung,
-    ) -> BoxFuture<'a, postgres::Result<sqlx::Transaction<'static, sqlx::Postgres>>> {
+    ) -> BoxFuture<'a, postgres::Result<sqlx::Transaction<'a, sqlx::Postgres>>> {
         Box::pin(async {
             unimplemented!("a semantic command needs a real transaction; it needs LIBREPAPER_TEST_POSTGRES_URL")
         })
@@ -206,7 +240,7 @@ impl LogCatalog for FakeCatalog {
 
     fn insert_log_row<'a>(
         &'a self,
-        _tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         _document_id: Uuid,
         _row: FlushRow<'a>,
     ) -> BoxFuture<'a, postgres::Result<i64>> {
@@ -240,9 +274,26 @@ fn blobs() -> Arc<dyn BlobStore> {
     Arc::new(FsStore::new(path, false))
 }
 
+/// A pending budget no test reaches by accident. Cases that are ABOUT the
+/// pending bound build their own, deliberately small one and share it across
+/// sequencers, which is what makes the bound deployment-wide.
+fn generous_pending() -> Arc<crate::log::PendingBudget> {
+    crate::log::PendingBudget::new(u64::MAX / 2, u64::MAX / 2)
+}
+
 /// A sequencer with no base, no rows and an empty buffer -- admitted
 /// without I/O, per `Sequencer::from_parts`' own doc comment.
 fn bare_sequencer(catalog: Arc<dyn LogCatalog>) -> Sequencer {
+    sequencer_sharing_pending(catalog, generous_pending())
+}
+
+/// The same, against a pending budget the caller supplies -- so two of them
+/// can be built against ONE budget and the deployment-wide half of the bound
+/// can be seen at all.
+fn sequencer_sharing_pending(
+    catalog: Arc<dyn LogCatalog>,
+    pending: Arc<crate::log::PendingBudget>,
+) -> Sequencer {
     Sequencer::from_parts(
         Uuid::new_v4(),
         "test-doc".to_string(),
@@ -250,6 +301,7 @@ fn bare_sequencer(catalog: Arc<dyn LogCatalog>) -> Sequencer {
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
+        pending,
         "deployment.peer.test".to_string(),
         1,
         VersionVector::default(),
@@ -833,7 +885,11 @@ async fn a_flushed_row_acknowledges_each_peer_by_its_highest_client_seq_in_it() 
     let flushed = catalog.flushed.lock().unwrap();
     assert_eq!(flushed.len(), 1, "one flush writes one row");
     let batches = frame::decode(&flushed[0]).expect("the row this sequencer wrote is well framed");
-    let targets = ack_targets(&batches);
+    let targets = ack_targets(
+        batches
+            .iter()
+            .map(|batch| (batch.peer_key.as_str(), batch.client_seq)),
+    );
 
     // account:a sent client_seq 10 then 11 in the same row. A single ack
     // naming 11 is what "acknowledgements name a contiguous prefix" means:
@@ -1357,6 +1413,7 @@ fn join_fixture() -> JoinFixture {
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
+        generous_pending(),
         "deployment.peer.test".to_string(),
         3,
         v2.clone(),
@@ -1577,6 +1634,7 @@ fn compaction_fixture(
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
+        generous_pending(),
         "deployment.peer.test".to_string(),
         3,
         v2.clone(),
@@ -2005,6 +2063,7 @@ fn sequencer_with_logged_weight(log_bytes: u64, budget: Arc<Budget>) -> Sequence
         blobs(),
         Arc::new(Configuration::default()),
         budget,
+        generous_pending(),
         "deployment.peer.test".to_string(),
         1,
         VersionVector::default(),
@@ -2071,4 +2130,890 @@ async fn the_transient_reservation_is_released_once_the_entry_is_cached() {
         resident,
         "only the resident reservation should still be held once the cache exists"
     );
+}
+
+// -- SPEC-frugal §2: the deployment-wide pending-source bound -------------
+//
+// These are about the bound itself, so none of them uses `bare_sequencer`'s
+// effectively-infinite pending budget: each builds a small one and, where the
+// claim is deployment-wide, shares one budget between two sequencers. What
+// makes that a real test rather than a rename is the sharing -- a per-document
+// cap would pass every case below except the ones that add a second document.
+
+use crate::log::pending::{scratch_for, PendingBudget};
+use crate::log::sequencer::{BUFFER_CEILING_BYTES, MAX_ROW_BYTES};
+
+/// The reason a retryable refusal names, or a panic saying what came back
+/// instead. Written once because nearly every case here asserts on it, and a
+/// case that asserted only "not accepted" would pass if the update had been
+/// refused for the rate bucket or the log quota rather than for the bound
+/// under test.
+fn refusal_reason(outcome: &Ingested) -> &'static str {
+    match outcome {
+        Ingested::Retryable(retry) => retry.reason,
+        other => panic!("expected a retryable refusal, got {other:?}"),
+    }
+}
+
+/// Everything this outbox holds that the server's head does not cover.
+///
+/// What a real client sends after a refusal, and the only correct thing to
+/// send: a refused batch is not merged into the head, so the outbox's own
+/// "since I last exported" bookmark has run ahead of what the server can
+/// place, and anything exported from it comes back `Gap`. Recovery is an
+/// export from the server's vector, which is what `catchUp` does in the
+/// browser (`project-session.js`) and what these tests do here.
+async fn resend_from_head(sequencer: &Sequencer, outbox: &Outbox) -> Vec<u8> {
+    let head = sequencer.log_state().await.head_vector;
+    let from = if head.is_empty() {
+        VersionVector::default()
+    } else {
+        VersionVector::decode(&head).expect("the head vector the sequencer just encoded")
+    };
+    outbox.export_from(&from)
+}
+
+/// Keeps typing into `sequencer` until something is refused, and answers with
+/// what refused it and how many updates got in first. Bounded, so a bound
+/// that silently stopped working fails the test rather than hanging it.
+async fn type_until_refused(
+    sequencer: &Sequencer,
+    outbox: &mut Outbox,
+    peer: &str,
+    each: usize,
+) -> (Ingested, i64) {
+    let mut sent = 0;
+    for seq in 1..10_000 {
+        let outcome = sequencer
+            .ingest(1, peer, peer, seq, outbox.edit_at_least(each))
+            .await;
+        if !matches!(outcome, Ingested::Accepted) {
+            return (outcome, sent);
+        }
+        sent += 1;
+    }
+    panic!("nothing refused {sent} updates; the bound under test is not enforced");
+}
+
+/// The case SPEC-frugal §2 is written about: documents that are each well
+/// inside their own 4 MiB buffer ceiling, which together reach a limit the
+/// deployment actually has.
+///
+/// Both halves matter. Without the first assertion this would pass against a
+/// per-document cap, which is what already existed; without the second it
+/// would pass against a bound that refused the update and kept it anyway.
+#[tokio::test]
+async fn documents_that_are_each_admissible_still_reach_one_shared_deployment_limit() {
+    let pending = PendingBudget::new(128 * 1024, 8 * 1024 * 1024);
+    let first = sequencer_sharing_pending(Arc::new(FakeCatalog::empty()), pending.clone());
+    let second = sequencer_sharing_pending(Arc::new(FakeCatalog::empty()), pending.clone());
+    let (mut one, mut two) = (Outbox::new(), Outbox::new());
+
+    // Fill the first document to well under its own ceiling.
+    let (refused_first, sent) = type_until_refused(&first, &mut one, "account:a", 4096).await;
+    assert_eq!(refusal_reason(&refused_first), "pending_budget");
+    let held = first.log_state().await;
+    assert!(
+        held.buffered_charge < BUFFER_CEILING_BYTES,
+        "this document is nowhere near its own 4 MiB ceiling ({} bytes over {sent} updates); \
+         the refusal has to be the deployment's",
+        held.buffered_charge,
+    );
+
+    // A second, untouched document is refused by the same pool, which is the
+    // whole claim: the bound is the deployment's and not this document's.
+    let before = second.log_state().await;
+    let refused_second = second
+        .ingest(2, "account:b", "account:b", 1, two.edit_at_least(4096))
+        .await;
+    assert_eq!(refusal_reason(&refused_second), "pending_budget");
+
+    // And nothing about the refusal touched the document.
+    let after = second.log_state().await;
+    assert_eq!(after.buffered, 0, "a refused update was buffered anyway");
+    assert_eq!(after.buffered_charge, 0);
+    assert_eq!(
+        after.head_vector, before.head_vector,
+        "a refused update moved the head, so the next one from that peer would be \
+         acknowledged against operations the server never received",
+    );
+    assert_eq!(after.log_vector, before.log_vector);
+    assert!(
+        second.flush_due().await.is_none(),
+        "a refused update left something for a flush to write",
+    );
+    assert!(pending.refused_retained() >= 2);
+}
+
+/// A refusal must leave no reservation behind, or a deployment would lose a
+/// little capacity on every refusal and end up permanently unable to accept
+/// anything -- the failure that turns a slow minute into a dead process.
+#[tokio::test]
+async fn a_refused_update_leaves_no_reservation_behind() {
+    let pending = PendingBudget::new(64 * 1024, 8 * 1024 * 1024);
+    let sequencer = sequencer_sharing_pending(Arc::new(FakeCatalog::empty()), pending.clone());
+    let mut outbox = Outbox::new();
+    let (refused, _) = type_until_refused(&sequencer, &mut outbox, "account:a", 4096).await;
+    assert_eq!(refusal_reason(&refused), "pending_budget");
+
+    let after_first = pending.retained_used();
+    // The same recovery a refused client makes, over and over: re-export
+    // everything the server's head does not cover, and be refused again.
+    for seq in 5_000..5_010 {
+        let resend = resend_from_head(&sequencer, &outbox).await;
+        let outcome = sequencer
+            .ingest(1, "account:a", "account:a", seq, resend)
+            .await;
+        assert_eq!(refusal_reason(&outcome), "pending_budget");
+    }
+    assert_eq!(
+        pending.retained_used(),
+        after_first,
+        "ten more refusals moved the reservation, so refusing is not free",
+    );
+    assert_eq!(
+        pending.retained_used(),
+        sequencer.log_state().await.buffered_charge as u64,
+        "the pool holds exactly what the buffer holds",
+    );
+}
+
+/// Racing documents must not oversubscribe the shared allowance. Every task
+/// asks at once against one budget; what is held afterwards has to be inside
+/// the limit, and it has to be exactly the sum of what the buffers kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_admission_near_the_limit_cannot_oversubscribe() {
+    let limit = 96 * 1024;
+    let pending = PendingBudget::new(limit, 8 * 1024 * 1024);
+    let sequencers: Vec<Arc<Sequencer>> = (0..8)
+        .map(|_| {
+            Arc::new(sequencer_sharing_pending(
+                Arc::new(FakeCatalog::empty()),
+                pending.clone(),
+            ))
+        })
+        .collect();
+
+    let mut tasks = Vec::new();
+    for sequencer in &sequencers {
+        let sequencer = sequencer.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut outbox = Outbox::new();
+            for seq in 1..=8 {
+                let _ = sequencer
+                    .ingest(1, "account:a", "account:a", seq, outbox.edit_at_least(4096))
+                    .await;
+            }
+        }));
+    }
+    for task in tasks {
+        task.await.expect("an ingesting task");
+    }
+
+    assert!(
+        pending.retained_used() <= limit,
+        "{} bytes are reserved against a limit of {limit}",
+        pending.retained_used(),
+    );
+    let mut buffered = 0u64;
+    for sequencer in &sequencers {
+        buffered += sequencer.log_state().await.buffered_charge as u64;
+    }
+    assert_eq!(
+        pending.retained_used(),
+        buffered,
+        "the pool and the buffers disagree, so a charge was taken or released twice",
+    );
+}
+
+/// The pending bound is about bytes the server is holding, not about whether
+/// it has decoded them. A cold document and a warm one are charged alike --
+/// the accounting hangs off the buffer, which both have, and not off the
+/// cache, which only one does.
+#[tokio::test]
+async fn pending_is_charged_whether_or_not_the_document_is_warm() {
+    let pending = PendingBudget::new(1024 * 1024, 8 * 1024 * 1024);
+    let cold = sequencer_sharing_pending(Arc::new(FakeCatalog::empty()), pending.clone());
+    let warm = sequencer_sharing_pending(Arc::new(FakeCatalog::empty()), pending.clone());
+    // A projection builds the entry, which is what makes this one warm.
+    warm.projection().await.expect("an empty document builds");
+    assert!(warm.is_warm().await);
+    assert!(!cold.is_warm().await);
+
+    let (mut a, mut b) = (Outbox::new(), Outbox::new());
+    let batch = a.edit_at_least(4096);
+    let expected = batch.len() + crate::log::frame::overhead("account:a");
+    assert!(matches!(
+        cold.ingest(1, "account:a", "account:a", 1, batch).await,
+        Ingested::Accepted
+    ));
+    assert_eq!(pending.retained_used(), expected as u64);
+
+    let batch = b.edit_at_least(4096);
+    let also = batch.len() + crate::log::frame::overhead("account:a");
+    assert!(matches!(
+        warm.ingest(1, "account:a", "account:a", 1, batch).await,
+        Ingested::Accepted
+    ));
+    assert_eq!(
+        pending.retained_used(),
+        (expected + also) as u64,
+        "a warm document's pending bytes are charged the same as a cold one's",
+    );
+    assert!(!cold.is_warm().await, "ingest must not warm a document");
+}
+
+/// The per-document ceiling is still the per-document ceiling. With a
+/// deployment pool far larger than one document's allowance, one document
+/// filling up is refused by its own cap and not by the deployment's -- which
+/// is what stops one document from spending the whole deployment allowance.
+#[tokio::test]
+async fn the_per_document_ceiling_still_applies_when_the_deployment_has_room() {
+    let pending = PendingBudget::new(64 * 1024 * 1024, 16 * 1024 * 1024);
+    let sequencer = sequencer_sharing_pending(Arc::new(FakeCatalog::empty()), pending.clone());
+    let mut outbox = Outbox::new();
+    // 256 KiB a time, so the 4 MiB ceiling is reached in a few dozen updates
+    // rather than a few thousand.
+    let (refused, _) = type_until_refused(&sequencer, &mut outbox, "account:a", 256 * 1024).await;
+    assert_eq!(
+        refusal_reason(&refused),
+        "document_buffer",
+        "the deployment pool has sixty megabytes free; this can only be the document's own cap",
+    );
+    let held = sequencer.log_state().await;
+    assert!(held.buffered_charge <= BUFFER_CEILING_BYTES);
+    assert!(
+        pending.retained_used() < pending.retained_limit() / 2,
+        "one document reached its cap with most of the deployment pool still free",
+    );
+}
+
+/// §5's zero-change catch-up: every client sends one on every join. It is not
+/// work, produces no row, and must not need pending capacity -- otherwise a
+/// deployment under pressure could not be rejoined at all, which is exactly
+/// when clients are reconnecting.
+///
+/// And its acknowledgement must stay what it was: transport bookkeeping, with
+/// nothing durable claimed. The durable vector is what says otherwise, and it
+/// does not move.
+#[tokio::test]
+async fn an_empty_catch_up_needs_no_pending_capacity_and_claims_no_durability() {
+    // A pool with nothing left in it at all.
+    let pending = PendingBudget::new(1024, 8 * 1024 * 1024);
+    let _full = pending.try_retain(1024).expect("the whole pool");
+    let sequencer = sequencer_sharing_pending(Arc::new(FakeCatalog::empty()), pending.clone());
+
+    let mut outbox = Outbox::new();
+    let _ = outbox.edit();
+    let nothing = outbox.export_since_last();
+    assert_eq!(
+        LoroDoc::decode_import_blob_meta(&nothing, true)
+            .expect("well formed")
+            .change_num,
+        0,
+        "sanity: this is the empty catch-up a rejoin sends",
+    );
+
+    let before = sequencer.log_state().await;
+    assert!(
+        matches!(
+            sequencer
+                .ingest(1, "account:a", "account:a", 1, nothing)
+                .await,
+            Ingested::Accepted
+        ),
+        "an empty catch-up was refused for want of room to hold nothing",
+    );
+    let after = sequencer.log_state().await;
+    assert_eq!(after.buffered, 0);
+    assert_eq!(after.buffered_charge, 0);
+    assert_eq!(
+        after.log_vector, before.log_vector,
+        "acknowledging an empty catch-up must not claim the durable log moved",
+    );
+    assert_eq!(pending.retained_used(), 1024, "nothing else was reserved");
+}
+
+/// A flush stalled in the database holds its scratch and nothing else: the
+/// buffer it snapshotted is still charged, because those bytes are still in
+/// memory and still unsaved, and edits that arrive during the stall are
+/// charged on top.
+#[tokio::test]
+async fn a_stalled_flush_holds_its_scratch_while_the_buffer_stays_charged() {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let catalog = Arc::new(FakeCatalog {
+        flush_gate: Some((entered.clone(), release.clone())),
+        ..FakeCatalog::empty()
+    });
+    let pending = PendingBudget::new(1024 * 1024, 8 * 1024 * 1024);
+    let sequencer = Arc::new(sequencer_sharing_pending(catalog.clone(), pending.clone()));
+    let mut outbox = Outbox::new();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:a", "account:a", 1, outbox.edit_at_least(4096))
+            .await,
+        Ingested::Accepted
+    ));
+    let first_charge = pending.retained_used();
+    assert!(first_charge > 0);
+
+    let flushing = {
+        let sequencer = sequencer.clone();
+        tokio::spawn(async move { sequencer.flush(FlushReason::MaxAge).await })
+    };
+    entered.notified().await;
+
+    assert!(
+        pending.scratch_used() > 0,
+        "a write in flight is holding no scratch, so nothing accounted for the row",
+    );
+    assert_eq!(
+        pending.retained_used(),
+        first_charge,
+        "the buffered bytes are still in memory and still unsaved; retiring them before \
+         the write returns would be claiming a durability that has not happened",
+    );
+
+    // Typing continues during the stall (§10) and is charged on top.
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:a", "account:a", 2, outbox.edit_at_least(4096))
+            .await,
+        Ingested::Accepted
+    ));
+    let during = pending.retained_used();
+    assert!(during > first_charge);
+
+    release.notify_one();
+    flushing
+        .await
+        .expect("the flush task")
+        .expect("the write succeeds once released")
+        .expect("a row was written");
+
+    assert_eq!(
+        pending.scratch_used(),
+        0,
+        "the row was written and its scratch was not given back",
+    );
+    assert_eq!(
+        pending.retained_used(),
+        during - first_charge,
+        "retiring the committed prefix released exactly its charge; the edit that arrived \
+         during the write is still buffered and still charged",
+    );
+    assert_eq!(sequencer.log_state().await.buffered, 1);
+}
+
+/// A write that plainly did not happen must change nothing: no durable
+/// advancement, the work still buffered and still charged, and the temporary
+/// allocations given back so the next attempt can have them.
+#[tokio::test]
+async fn a_failed_flush_keeps_the_work_charged_and_releases_only_its_scratch() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    catalog
+        .fail_every_flush
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let pending = PendingBudget::new(1024 * 1024, 8 * 1024 * 1024);
+    let sequencer = sequencer_sharing_pending(catalog.clone(), pending.clone());
+    let mut outbox = Outbox::new();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:a", "account:a", 1, outbox.edit_at_least(4096))
+            .await,
+        Ingested::Accepted
+    ));
+    let before = sequencer.log_state().await;
+    let charged = pending.retained_used();
+
+    assert!(
+        sequencer.flush(FlushReason::MaxAge).await.is_err(),
+        "the fake refused this write",
+    );
+
+    let after = sequencer.log_state().await;
+    assert_eq!(after.buffered, before.buffered, "work was dropped");
+    assert_eq!(
+        after.log_vector, before.log_vector,
+        "durable coverage advanced on a write that did not happen",
+    );
+    assert_eq!(after.next_sequence, before.next_sequence);
+    assert_eq!(pending.retained_used(), charged, "the work is still held");
+    assert_eq!(
+        pending.scratch_used(),
+        0,
+        "the failed attempt's temporary allocations were not released",
+    );
+    assert!(catalog.flushed.lock().unwrap().is_empty());
+
+    // And it can be written once storage comes back, which is what makes the
+    // retained charge a delay rather than a leak.
+    catalog
+        .fail_every_flush
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    sequencer
+        .flush(FlushReason::MaxAge)
+        .await
+        .expect("storage is back")
+        .expect("a row");
+    assert_eq!(pending.retained_used(), 0);
+    assert_eq!(pending.scratch_used(), 0);
+}
+
+/// A flush whose future is dropped mid-write gives its scratch back and
+/// leaves the buffered work alone. Cancellation is the one path no explicit
+/// release statement covers, which is why the reservations are `Drop` types
+/// and why this asserts on both pools rather than only the one that moved.
+#[tokio::test]
+async fn a_cancelled_flush_releases_its_scratch_and_keeps_the_work() {
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let catalog = Arc::new(FakeCatalog {
+        flush_gate: Some((entered.clone(), release.clone())),
+        ..FakeCatalog::empty()
+    });
+    let pending = PendingBudget::new(1024 * 1024, 8 * 1024 * 1024);
+    let sequencer = Arc::new(sequencer_sharing_pending(catalog.clone(), pending.clone()));
+    let mut outbox = Outbox::new();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:a", "account:a", 1, outbox.edit_at_least(4096))
+            .await,
+        Ingested::Accepted
+    ));
+    let charged = pending.retained_used();
+
+    let flushing = {
+        let sequencer = sequencer.clone();
+        tokio::spawn(async move { sequencer.flush(FlushReason::MaxAge).await })
+    };
+    entered.notified().await;
+    assert!(pending.scratch_used() > 0);
+    flushing.abort();
+    let _ = flushing.await;
+    // The abort unwinds the task; give the runtime the turn it needs to drop
+    // the future and with it every guard the flush was holding.
+    tokio::task::yield_now().await;
+
+    assert_eq!(
+        pending.scratch_used(),
+        0,
+        "an abandoned write is still holding the memory it was writing from",
+    );
+    assert_eq!(
+        pending.retained_used(),
+        charged,
+        "cancelling the write threw away the work it was writing",
+    );
+    assert_eq!(sequencer.log_state().await.buffered, 1);
+
+    // And the surviving work can be retried: the cancelled flush left neither
+    // a held transaction gate nor a half-retired buffer behind. The gate is
+    // released first so this attempt is not stalled the way the last one was.
+    release.notify_waiters();
+    let sequencer_for_retry = sequencer.clone();
+    let retry = tokio::spawn(async move { sequencer_for_retry.flush(FlushReason::MaxAge).await });
+    entered.notified().await;
+    release.notify_one();
+    retry
+        .await
+        .expect("the retry task")
+        .expect("the retried write succeeds")
+        .expect("a row");
+    assert_eq!(pending.retained_used(), 0, "the retry wrote the work");
+    assert_eq!(pending.scratch_used(), 0);
+}
+
+/// The claim at the centre of the design: a deployment whose pending pool is
+/// completely full can still write what is in it. A single undifferentiated
+/// pool fails exactly here, and fails permanently -- there would be no room
+/// left to encode the row that would free the room.
+#[tokio::test]
+async fn work_can_still_be_flushed_with_the_pending_pool_completely_full() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    // Scratch sized as the configuration check requires: enough for one
+    // maximum row. Retained deliberately tiny, and then filled.
+    let pending = PendingBudget::new(64 * 1024, scratch_for(MAX_ROW_BYTES as u64));
+    let sequencer = sequencer_sharing_pending(catalog.clone(), pending.clone());
+    let mut outbox = Outbox::new();
+    let (refused, sent) = type_until_refused(&sequencer, &mut outbox, "account:a", 4096).await;
+    assert_eq!(refusal_reason(&refused), "pending_budget");
+    assert!(
+        sent > 0,
+        "nothing was accepted, so there is nothing to drain"
+    );
+
+    sequencer
+        .flush(FlushReason::Bytes)
+        .await
+        .expect("a full pending pool must not stop a flush")
+        .expect("a row was written");
+
+    assert_eq!(
+        pending.retained_used(),
+        0,
+        "the flush wrote everything it held and released every charge",
+    );
+    assert_eq!(pending.scratch_used(), 0);
+    // And the refused work is accepted on the client's next attempt, without
+    // the limit having been raised or a single edit discarded. This is the
+    // whole recovery: the pressure cleared because the buffer drained, and
+    // the re-export the client makes carries exactly what was refused.
+    let resend = resend_from_head(&sequencer, &outbox).await;
+    assert!(
+        !resend.is_empty(),
+        "sanity: the refused work is still in the client's document",
+    );
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:a", "account:a", 9_000, resend)
+            .await,
+        Ingested::Accepted
+    ));
+    assert!(pending.retained_used() > 0, "the resent work is now held");
+}
+
+/// Progress across documents, not just within one. After the pressure clears
+/// every document that was holding work writes it -- which is what
+/// `Registry::housekeep` does on its ordinary pass, and is the recovery an
+/// operator actually sees.
+#[tokio::test]
+async fn every_document_drains_once_the_pressure_clears() {
+    let pending = PendingBudget::new(128 * 1024, scratch_for(MAX_ROW_BYTES as u64) * 2);
+    let catalogs: Vec<Arc<FakeCatalog>> = (0..3).map(|_| Arc::new(FakeCatalog::empty())).collect();
+    let sequencers: Vec<Sequencer> = catalogs
+        .iter()
+        .map(|catalog| sequencer_sharing_pending(catalog.clone(), pending.clone()))
+        .collect();
+
+    // Spread the deployment allowance across all three, then keep going until
+    // the pool refuses somebody.
+    let mut outboxes: Vec<Outbox> = (0..3).map(|_| Outbox::new()).collect();
+    let mut refused = false;
+    for seq in 1..1000 {
+        for (index, sequencer) in sequencers.iter().enumerate() {
+            let outcome = sequencer
+                .ingest(
+                    1,
+                    "account:a",
+                    "account:a",
+                    seq,
+                    outboxes[index].edit_at_least(2048),
+                )
+                .await;
+            if matches!(outcome, Ingested::Retryable(_)) {
+                assert_eq!(refusal_reason(&outcome), "pending_budget");
+                refused = true;
+            }
+        }
+        if refused {
+            break;
+        }
+    }
+    assert!(refused, "the shared pool never refused anything");
+    for sequencer in &sequencers {
+        assert!(
+            sequencer.log_state().await.buffered > 0,
+            "all three hold work"
+        );
+    }
+
+    for sequencer in &sequencers {
+        sequencer
+            .flush(FlushReason::MaxAge)
+            .await
+            .expect("each document can drain")
+            .expect("a row");
+    }
+    assert_eq!(pending.retained_used(), 0);
+    for catalog in &catalogs {
+        assert_eq!(catalog.flushed.lock().unwrap().len(), 1);
+    }
+}
+
+/// A sequencer dropped from the registry keeps paying for the work it is
+/// still holding, and stops paying the moment the last reference to it goes.
+/// Releasing on removal instead would under-report the bytes the process is
+/// actually holding -- which is the same as not bounding them.
+#[tokio::test]
+async fn a_sequencers_charges_live_exactly_as_long_as_the_sequencer_does() {
+    let pending = PendingBudget::new(1024 * 1024, 8 * 1024 * 1024);
+    let sequencer = Arc::new(sequencer_sharing_pending(
+        Arc::new(FakeCatalog::empty()),
+        pending.clone(),
+    ));
+    let mut outbox = Outbox::new();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:a", "account:a", 1, outbox.edit_at_least(4096))
+            .await,
+        Ingested::Accepted
+    ));
+    let charged = pending.retained_used();
+    assert!(charged > 0);
+
+    // What a registry retirement looks like from here: one reference goes,
+    // another is still held by whoever is mid-operation on it.
+    let still_held = sequencer.clone();
+    drop(sequencer);
+    assert_eq!(
+        pending.retained_used(),
+        charged,
+        "the bytes are still in memory, so they must still be charged",
+    );
+
+    drop(still_held);
+    assert_eq!(
+        pending.retained_used(),
+        0,
+        "the last reference went and the buffer with it, but the charge stayed",
+    );
+}
+
+/// The row a flush writes is exactly what the buffer's charge predicted.
+/// Everything above rests on that: the scratch reservation is computed from
+/// the charge before the row exists, so a charge that under-counted framing
+/// would under-reserve every flush on a document full of small updates.
+#[tokio::test]
+async fn the_buffer_charge_is_exactly_the_row_the_flush_writes() {
+    let catalog = Arc::new(FakeCatalog::empty());
+    let pending = PendingBudget::new(1024 * 1024, 8 * 1024 * 1024);
+    let sequencer = sequencer_sharing_pending(catalog.clone(), pending.clone());
+    let mut outbox = Outbox::new();
+    // Many small updates, which is the shape framing dominates.
+    for seq in 1..=32 {
+        assert!(matches!(
+            sequencer
+                .ingest(1, "account:a-fairly-long-peer-key", "p", seq, outbox.edit())
+                .await,
+            Ingested::Accepted
+        ));
+    }
+    let charge = sequencer.log_state().await.buffered_charge;
+    sequencer
+        .flush(FlushReason::MaxAge)
+        .await
+        .expect("flush")
+        .expect("a row");
+    let flushed = catalog.flushed.lock().unwrap();
+    assert_eq!(
+        flushed[0].len(),
+        crate::log::frame::ROW_HEADER_BYTES + charge,
+        "the row is not the size the charge said it would be, so every scratch \
+         reservation taken from that charge is the wrong size too",
+    );
+}
+
+/// A semantic command that produces no source and writes no rows of its own.
+/// Enough to reach §7's row assembly, which is the part the pending bound
+/// touches: `transact` is never called in these cases, because the scratch
+/// refusal happens before the transaction is opened -- which is the point.
+struct NoopCommand;
+
+impl crate::log::Command for NoopCommand {
+    type Output = ();
+
+    fn name(&self) -> &'static str {
+        "test.noop"
+    }
+
+    fn evaluate(
+        &mut self,
+        _head: &crate::log::Head<'_>,
+    ) -> std::result::Result<Option<crate::log::PreparedSource>, crate::log::CommandError> {
+        Ok(None)
+    }
+
+    fn transact<'a>(
+        &'a mut self,
+        _tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
+        _evidence: &'a crate::log::Evidence,
+    ) -> BoxFuture<'a, std::result::Result<(), crate::log::CommandError>> {
+        Box::pin(async {
+            unimplemented!("this command is only ever refused before its transaction is opened")
+        })
+    }
+}
+
+/// §7's row carries the buffered prefix, so a command is a persistence path
+/// like any other and is admitted like one. When there is no scratch for the
+/// row it would write, it is refused through the ordinary temporary-command
+/// error -- BEFORE the transaction is opened, so there are no effects to roll
+/// back and no authorization decision already made.
+///
+/// The fake catalogue proves that last part by construction: its
+/// `begin_document_command` panics, so this test passing at all is the
+/// evidence that nothing reached it.
+#[tokio::test]
+async fn a_command_with_no_scratch_is_refused_before_it_opens_a_transaction() {
+    let pending = PendingBudget::new(1024 * 1024, 64 * 1024);
+    let sequencer = sequencer_sharing_pending(Arc::new(FakeCatalog::empty()), pending.clone());
+    let mut outbox = Outbox::new();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "account:a", "account:a", 1, outbox.edit_at_least(4096))
+            .await,
+        Ingested::Accepted
+    ));
+    let charged = pending.retained_used();
+
+    // Every byte of scratch spoken for by something else.
+    let held = pending
+        .try_scratch(64 * 1024)
+        .expect("the whole scratch pool");
+
+    let authority = Authority {
+        principal_key: "account:a".into(),
+        account_id: None,
+        link_hash: None,
+    };
+    let error = sequencer
+        .command(&authority, &mut NoopCommand)
+        .await
+        .expect_err("there is no scratch for this command's row");
+    assert!(
+        matches!(&error, crate::log::CommandError::Conflict(why) if why.contains("retry")),
+        "resource exhaustion has to come back as a temporary, retryable refusal: {error:?}",
+    );
+    assert_eq!(
+        pending.retained_used(),
+        charged,
+        "the refused command dropped somebody else's buffered work",
+    );
+    assert_eq!(sequencer.log_state().await.buffered, 1);
+
+    // And once the scratch comes back the same command reaches its
+    // transaction, which the fake refuses to provide -- so this half asserts
+    // only that the budget is no longer what stops it.
+    drop(held);
+    assert_eq!(pending.scratch_used(), 0);
+    let reached_the_transaction = std::panic::AssertUnwindSafe(async {
+        let _ = sequencer.command(&authority, &mut NoopCommand).await;
+    });
+    assert!(
+        futures_util::FutureExt::catch_unwind(reached_the_transaction)
+            .await
+            .is_err(),
+        "with scratch available the command should have got as far as asking the \
+         catalogue for a transaction, which this fake panics on",
+    );
+}
+
+/// §5.1's ambiguous outcome, from the accounting's side: the response was
+/// lost, the re-read proves the row committed, the buffer retires -- and its
+/// charges are released exactly once.
+///
+/// Once is the thing worth asserting. A release on the failure path plus a
+/// release on the resolution path would both run here, and a counter that
+/// went down twice for one payload does not merely mis-report: it would
+/// underflow the pool and let the deployment hold unbounded pending bytes
+/// while reading as empty, which is the bound quietly ceasing to exist.
+#[tokio::test]
+async fn an_ambiguous_commit_that_resolves_releases_each_charge_exactly_once() {
+    let catalog = Arc::new(FakeCatalog {
+        fail_next_flush: std::sync::atomic::AtomicBool::new(true),
+        lost_flush_committed: true,
+        sequence_on_ambiguity: AtomicI64::new(1),
+        ..FakeCatalog::empty()
+    });
+    let pending = PendingBudget::new(1024 * 1024, 8 * 1024 * 1024);
+    let sequencer = sequencer_sharing_pending(catalog.clone(), pending.clone());
+    let mut outbox = Outbox::new();
+    for sent in 1..=3 {
+        assert!(matches!(
+            sequencer
+                .ingest(
+                    1,
+                    "account:a",
+                    "account:a",
+                    sent,
+                    outbox.edit_at_least(2048)
+                )
+                .await,
+            Ingested::Accepted
+        ));
+    }
+    assert!(pending.retained_used() > 0);
+
+    let written = sequencer
+        .flush(FlushReason::MaxAge)
+        .await
+        .expect("the re-read proves the row committed")
+        .expect("something was buffered");
+    assert_eq!(written, 1);
+
+    assert_eq!(
+        pending.retained_used(),
+        0,
+        "the retired batches did not release their charges",
+    );
+    assert_eq!(pending.scratch_used(), 0);
+    assert_eq!(
+        catalog.flushed.lock().unwrap().len(),
+        1,
+        "a lost response must not write the row twice",
+    );
+
+    // The pool is intact rather than merely reading zero: the whole of it can
+    // be taken again, which an underflowed counter would not allow.
+    let all = pending
+        .try_retain(1024 * 1024)
+        .expect("the pool is back to exactly its limit, neither short nor over-credited");
+    assert!(pending.try_retain(1).is_err());
+    drop(all);
+}
+
+/// Shutdown must wait for another document's scratch, without locking out
+/// edits while it waits, then persist the complete buffer before returning.
+#[tokio::test]
+async fn shutdown_waits_for_scratch_and_drains_instead_of_reporting_empty() {
+    let pending = PendingBudget::new(1024 * 1024, scratch_for(MAX_ROW_BYTES as u64));
+    let catalog = Arc::new(FakeCatalog::empty());
+    let sequencer = Arc::new(sequencer_sharing_pending(catalog.clone(), pending.clone()));
+    let mut outbox = Outbox::new();
+    assert!(matches!(
+        sequencer
+            .ingest(1, "a", "a", 1, outbox.edit_at_least(1024))
+            .await,
+        Ingested::Accepted
+    ));
+    let held = pending
+        .try_scratch(pending.scratch_limit())
+        .expect("occupy all scratch");
+    assert!(matches!(
+        sequencer.flush(FlushReason::Quiet).await,
+        Err(SequencerError::Busy)
+    ));
+    let closing = {
+        let sequencer = sequencer.clone();
+        tokio::spawn(async move { sequencer.flush(FlushReason::Shutdown).await })
+    };
+    while pending.refused_scratch() < 2 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !closing.is_finished(),
+        "shutdown must not skip a buffered document"
+    );
+    assert!(matches!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            sequencer.ingest(1, "a", "a", 2, outbox.edit_at_least(1024))
+        )
+        .await
+        .expect("scratch wait must not hold inner lock"),
+        Ingested::Accepted
+    ));
+    drop(held);
+    assert!(tokio::time::timeout(Duration::from_secs(2), closing)
+        .await
+        .expect("shutdown wakes after release")
+        .expect("shutdown task")
+        .expect("flush")
+        .is_some());
+    assert_eq!(sequencer.log_state().await.buffered, 0);
+    assert_eq!(pending.retained_used(), 0);
+    assert_eq!(pending.scratch_used(), 0);
+    assert_eq!(catalog.flushed.lock().unwrap().len(), 1);
 }

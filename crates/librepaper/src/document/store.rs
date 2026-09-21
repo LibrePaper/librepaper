@@ -572,7 +572,7 @@ impl Command for ReplaceProject {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut sqlx::Transaction<'static, sqlx::Postgres>,
+        tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
         evidence: &'a Evidence,
     ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
         Box::pin(async move {

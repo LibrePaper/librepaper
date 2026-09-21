@@ -928,7 +928,7 @@ pub async fn one(
 /// a transaction from taking a second connection out of the pool.
 async fn find_annotation(
     catalog: &PostgresCatalog,
-    tx: &mut Transaction<'static, Postgres>,
+    tx: &mut Transaction<'_, Postgres>,
     document_id: Uuid,
     id: Uuid,
 ) -> Result<AnnotationRecord, CommandError> {
@@ -1162,7 +1162,7 @@ impl SequencerCommand for AddComment {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut Transaction<'static, Postgres>,
+        tx: &'a mut Transaction<'_, Postgres>,
         evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
@@ -1326,7 +1326,7 @@ impl SequencerCommand for AddReply {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut Transaction<'static, Postgres>,
+        tx: &'a mut Transaction<'_, Postgres>,
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
@@ -1409,7 +1409,7 @@ impl SequencerCommand for ResolveComment {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut Transaction<'static, Postgres>,
+        tx: &'a mut Transaction<'_, Postgres>,
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
@@ -1489,7 +1489,7 @@ impl SequencerCommand for DeleteComment {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut Transaction<'static, Postgres>,
+        tx: &'a mut Transaction<'_, Postgres>,
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
@@ -1626,7 +1626,7 @@ impl SequencerCommand for RefineSuggestion {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut Transaction<'static, Postgres>,
+        tx: &'a mut Transaction<'_, Postgres>,
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
@@ -1804,7 +1804,7 @@ impl SequencerCommand for AcceptSuggestion {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut Transaction<'static, Postgres>,
+        tx: &'a mut Transaction<'_, Postgres>,
         evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
@@ -1924,7 +1924,7 @@ impl SequencerCommand for RejectSuggestion {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut Transaction<'static, Postgres>,
+        tx: &'a mut Transaction<'_, Postgres>,
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
@@ -2062,7 +2062,7 @@ impl SequencerCommand for AgentSuggestionBatch {
 
     fn transact<'a>(
         &'a mut self,
-        tx: &'a mut Transaction<'static, Postgres>,
+        tx: &'a mut Transaction<'_, Postgres>,
         evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {

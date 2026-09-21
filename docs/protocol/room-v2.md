@@ -367,6 +367,40 @@ their loaded prefix or was already changed optimistically.
 - `doc-gap {vector}` is sent to an editor whose `doc-update` started before
   the vector the server's log currently covers. See above.
 
+- `error {seq, reason, retryable, vector, message}` answers a `doc-update`
+  the server would not take. `reason` is a stable code and is what a client
+  branches on; `message` is prose for a person and may change. `retryable`
+  says whether trying again can ever succeed.
+
+  | `reason` | `retryable` | Meaning |
+  |---|---|---|
+  | `rate` | yes | Past this principal's per-minute update allowance. |
+  | `log_quota` | yes | This document's log is at its quota and awaits compaction. |
+  | `document_buffer` | yes | This document's unsaved buffer is at its ceiling. |
+  | `pending_budget` | yes | The deployment is holding all the unsaved work it can. |
+  | `refused` | no | Past a ceiling no retry changes, such as the maximum update size. |
+
+  A retryable refusal carries `vector`: the server's head, base64-encoded, as
+  `doc-gap` does. The refused batch was **not** merged into it, so exporting
+  `Updates { from: vector }` and sending that is exactly the refused work plus
+  anything since. This is the whole of the recovery contract, and it is the
+  client's to honour: the refused edit is still in the client's document, the
+  socket stays open, and nothing else will resend it. A client must retry on a
+  timer rather than immediately, and must back off while refusals continue --
+  the browser waits one second and doubles to thirty, with one retry
+  outstanding at a time and the wait reset when the server next acknowledges
+  anything.
+
+  A refusal says nothing about durability. `doc-durable` remains the only
+  statement that work reached storage, and a refused edit stays uncovered by
+  it until a row actually carries it.
+
+  The server closes a socket after three consecutive refusals it attributes to
+  the client (`rate`, `log_quota`, `refused`). `document_buffer` and
+  `pending_budget` are the server's own back pressure and do not count towards
+  that: closing sockets because storage is slow only produces reconnects into
+  the same slow storage.
+
 - `doc-label` receives the label result shapes above.
 - comment, reply, resolve, delete, anchor, and refine receive the annotation
   result shapes above.
@@ -454,3 +488,7 @@ unpaged collection. Every consumer in this repository was moved with it.
 There is no compatibility path for
 `doc-sync` or a `doc-open` without the required protocol. Messages without
 `request_id` remain accepted when the caller does not need correlation.
+
+Pressure retries must incorporate newer `doc-durable` coverage. When durable
+coverage includes the local save target, cancel the armed retry. A transport
+acknowledgement alone must not cancel recovery of other refused work.

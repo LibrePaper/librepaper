@@ -68,6 +68,15 @@ const isPresence = (key) => String(key).startsWith(PRESENCE_PREFIX);
 // sending the latest state at this rate is enough for a smooth cursor while
 // avoiding one room frame per keystroke.
 const AWARENESS_THROTTLE_MS = 100;
+// How long to wait before resending work the server refused for want of room
+// to hold it, and how far that wait is allowed to grow. The server is under
+// pressure by definition when this fires, so the first retry is already a
+// whole second out and every further refusal doubles it: a deployment whose
+// database is slow must not be answered by every editor resending as fast as
+// it can refuse them. The ceiling keeps a long outage from pushing the next
+// attempt past the point where an editor would notice it never came.
+const PRESSURE_RETRY_MS = 1000;
+const PRESSURE_RETRY_MAX_MS = 30_000;
 
 // Updates are binary and the room's socket carries JSON, so they travel
 // base64-encoded. A keystroke is a few dozen bytes either way.
@@ -231,6 +240,15 @@ export function createProjectSession({
   let joined = false;
   let presenceTimer = null;
   const pendingPresence = new Set();
+  // The server refused an update because it had nowhere to keep it, and is
+  // waiting to be asked again. `pressureTimer` is the one outstanding retry
+  // -- one, never a queue: each refusal names the server's head, and a later
+  // refusal's head is at least as new as an earlier one's, so a single
+  // re-export from the newest covers every refused batch. `pressureDelay` is
+  // how long the next one waits, doubling per refusal.
+  let pressureTimer = null;
+  let pressureDelay = 0;
+  let pressureVector = null;
   // Which socket this session is on. A join is several awaits long -- local
   // hydration, a referenced base fetched over HTTP, the digest that binds it
   // -- and none of them stops the socket underneath from dropping or the
@@ -561,6 +579,64 @@ export function createProjectSession({
     unacknowledged.add(mine);
     report();
     sendUpdate(whole, mine);
+  }
+
+  function clearPressureTimer() {
+    if (pressureTimer !== null) clearTimer(pressureTimer);
+    pressureTimer = null;
+  }
+
+  /// The server took something from this browser, so whatever was refusing it
+  /// is refusing it less. The wait for the next refusal starts from the
+  /// bottom again rather than from wherever the last outage pushed it.
+  ///
+  /// It deliberately does NOT cancel an armed retry, which is what it did
+  /// first and what made the whole mechanism useless: `doc-ack` names batches
+  /// the server took, and a flush of somebody else's work -- or of this
+  /// browser's own earlier work -- acknowledges this peer while the refused
+  /// edit is still refused. Cancelling on that left the one edit that needed
+  /// resending as the one edit nothing would resend. An acknowledgement
+  /// cannot say whether it covers the refused work; the retry itself can,
+  /// because a re-export from the server's head is empty when there is
+  /// nothing left to send and costs a frame the server answers without
+  /// writing a row.
+  function pressureEased() {
+    pressureDelay = 0;
+  }
+
+  /// The server refused an update for want of room to hold it.
+  ///
+  /// Nothing is lost: the edit is in this browser's CRDT and, if storage is
+  /// available, on this browser's disk. What is missing is anything that
+  /// would send it again. The socket stays up, so there is no reconnect to
+  /// carry it; the server's head did not move, so there is no `doc-gap` to
+  /// ask for it; and `subscribeLocalUpdates` fires on edits, not on refusals,
+  /// so it takes another keystroke -- which an editor who has stopped typing
+  /// will not make.
+  ///
+  /// So this is what resends it, on a timer, from the head the refusal named.
+  /// That export is the same one `catchUp` makes for a join or a gap, and it
+  /// uses the latest durable coverage too: the refusal's head can become
+  /// stale while a gap recovery or another connection saves this work.
+  function retryAfterPressure(vector) {
+    if (left || !mayEdit) return;
+    pressureVector = vector ?? pressureVector;
+    // One outstanding retry. A refusal arriving while a retry is already
+    // armed lengthens nothing and schedules nothing: it is answered by the
+    // attempt that is already coming.
+    if (pressureTimer !== null) return;
+    pressureDelay = pressureDelay
+      ? Math.min(pressureDelay * 2, PRESSURE_RETRY_MAX_MS)
+      : PRESSURE_RETRY_MS;
+    pressureTimer = setTimer(() => {
+      pressureTimer = null;
+      // A socket that dropped meanwhile has its own catch-up on rejoin, and
+      // sending into it would go nowhere.
+      if (left || !joined) return;
+      if (coveredByDurable()) return;
+      const refusedHead = pressureVector ? VersionVector.decode(decode(pressureVector)) : new VersionVector(undefined);
+      catchUp(encode(mergeVectors(refusedHead, durableCoverage).encode()));
+    }, pressureDelay);
   }
 
   /// What both `doc-state` and `doc-rows` do once the import they carried is
@@ -1036,7 +1112,23 @@ export function createProjectSession({
     /// should not reach it, but nothing here assumes that holds.
     gap(vector) {
       if (left || !mayEdit) return;
+      // The server placed this batch's position, so whatever back pressure
+      // was outstanding is not what is being answered here.
+      pressureEased();
       catchUp(vector);
+    },
+
+    /// The server refused an update it could not find room to hold, and
+    /// asked to be tried again later (`Ingested::Retryable` with
+    /// `pressure`). `vector` is the server's head, which does not cover the
+    /// refused work -- that is what makes re-exporting from it the right
+    /// resend. See `retryAfterPressure`.
+    ///
+    /// Save status is untouched on purpose: `pending` is computed from
+    /// durable coverage, and a refused edit is by definition not covered, so
+    /// it goes on reading as unsaved until a row actually carries it.
+    pressure(vector) {
+      retryAfterPressure(vector);
     },
 
     apply(update) {
@@ -1060,6 +1152,9 @@ export function createProjectSession({
     /// by `doc-durable`.
     acknowledge(upTo) {
       if (left) return;
+      // An acknowledgement resets backoff, but cannot cancel a resend of
+      // other work that this acknowledgement does not cover.
+      pressureEased();
       for (const mine of unacknowledged) {
         if (mine <= upTo) unacknowledged.delete(mine);
       }
@@ -1072,6 +1167,11 @@ export function createProjectSession({
     durable(vector) {
       if (left || !vector) return;
       mergeDurableCoverage(vector);
+      if (coveredByDurable()) {
+        clearPressureTimer();
+        pressureVector = null;
+        pressureEased();
+      }
       report();
     },
 
@@ -1085,8 +1185,11 @@ export function createProjectSession({
       // join starts from an empty gate and catches up on its own.
       abandonQueuedJoins();
       // Keep a pending local state for the next join, but do not leave a
-      // timer running while the socket is unavailable.
+      // timer running while the socket is unavailable. The refused work is
+      // not abandoned by this: the next join's catch-up exports everything
+      // the server's vector does not cover, which includes it.
       clearPresenceTimer();
+      clearPressureTimer();
       report();
     },
 
@@ -1112,6 +1215,7 @@ export function createProjectSession({
 
     leave() {
       clearPresenceTimer();
+      clearPressureTimer();
       pendingPresence.clear();
       left = true;
       // `left` alone would be enough for the checks, but the gate has to be

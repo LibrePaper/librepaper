@@ -863,10 +863,48 @@ impl Server {
                                         )).await;
                                         break 'reader;
                                     }
-                                    Ingested::Retryable(why) | Ingested::Refused(why) => {
+                                    // A refusal the client can do something
+                                    // about. `reason` and `retryable` are
+                                    // fields rather than prose so the browser
+                                    // branches on a code instead of matching
+                                    // English, and `vector` is the head the
+                                    // refused batch was NOT merged into --
+                                    // re-exporting from it is exactly the
+                                    // refused work, which is how an editor
+                                    // who has stopped typing gets it saved
+                                    // without touching the keyboard again.
+                                    Ingested::Retryable(retry) => {
+                                        // Back pressure is not misbehaviour.
+                                        // Counting it would close sockets
+                                        // precisely when the database is
+                                        // slow, and every one of them would
+                                        // reconnect into the same slow
+                                        // database; the client paces its own
+                                        // retries instead. A rate or quota
+                                        // refusal still counts, which is what
+                                        // this bound was written for.
+                                        if !retry.pressure {
+                                            refusals += 1;
+                                        }
+                                        let _ = send_outgoing(&tx, Outgoing::Text(json!({
+                                            "type": "error", "message": retry.why,
+                                            "reason": retry.reason, "retryable": true,
+                                            "vector": encode_update(&retry.vector),
+                                            "request_id": incoming.request_id(), "seq": incoming.seq(),
+                                            "protocol": PROTOCOL,
+                                        }).to_string())).await;
+                                        if refusals >= MAX_CONSECUTIVE_REFUSALS {
+                                            let _ = send_outgoing(&tx, Outgoing::Close(
+                                                "too many refused updates; reconnect and reconcile".into(),
+                                            )).await;
+                                            break 'reader;
+                                        }
+                                    }
+                                    Ingested::Refused(why) => {
                                         refusals += 1;
                                         let _ = send_outgoing(&tx, Outgoing::Text(json!({
                                             "type": "error", "message": why,
+                                            "reason": "refused", "retryable": false,
                                             "request_id": incoming.request_id(), "seq": incoming.seq(),
                                             "protocol": PROTOCOL,
                                         }).to_string())).await;
