@@ -574,25 +574,27 @@
       suffix: target.suffix || "",
       position: comment.sourceStart ?? target.start_utf16,
     } : null;
-    // `Comment::revision()` (comments.rs) is the row that made the quoted
-    // text durable, not the frontier: a frontier is a byte blob with no
-    // business on the wire as an opaque staleness token, and this is the
-    // number a client echoes back for that check to mean anything (§8.2).
-    const revision = comment.original_anchor?.source_sequence != null
-      ? String(comment.original_anchor.source_sequence) : "";
+    // Keep the server-owned comment token separate from source and render
+    // identities. In particular, source_sequence is not a tree digest.
+    const revision = "";
+    const renderDigest = comment.render_digest || "";
     assistantRequest = {
       id: crypto.randomUUID(),
       comment: {
         id: String(comment.id), body: comment.body || "", exact: shownSelector(comment).exact,
         proposed: comment.proposed || "", revision,
+        render_digest: renderDigest,
         source, replies: (comment.replies || []).map((reply) => ({ body: reply.body, creator: reply.creator })),
         suggestion: comment.motivation === "editing" ? {
           id: String(comment.id), proposed: comment.proposed || "", revision,
+          render_digest: renderDigest,
           path: source?.path || "", exact: source?.exact || "",
         } : null,
       },
       selection: source,
       revision,
+      comment_id: String(comment.id),
+      render_digest: renderDigest,
     };
     showPanel("agent");
     if (width <= 760) showMobileView("sidebar");

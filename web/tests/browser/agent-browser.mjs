@@ -98,7 +98,11 @@ window.WebSocket = class {
   constructor(url) { this.url=url; this.sent=[]; window.sockets.push(this); queueMicrotask(()=>this.onopen?.()); }
   send(raw) {
     const frame=JSON.parse(raw); this.sent.push(frame);
-    if (frame.type === 'join') queueMicrotask(()=>{ this.emit({type:'ready',browser:true,agent:true}); this.emit({type:'presence',browser:true,agent:true}); });
+    if (frame.type === 'join') queueMicrotask(()=>{
+      this.emit({type:'ready',browser:true,agent:true,session_id:'runtime-session-1'});
+      this.emit({type:'capabilities',session_id:'runtime-session-1',capabilities:{can_read:true,can_comment:true,can_edit:true}});
+      this.emit({type:'presence',browser:true,agent:true,session_id:'runtime-session-1'});
+    });
     if (frame.type === 'message') queueMicrotask(()=>{
       this.emit({type:'message',message:{id:frame.id,role:'user',text:frame.text,context:frame.context}});
       this.emit({type:'ack',id:frame.id});
@@ -158,11 +162,11 @@ try {
   await until("live agent panel",()=>page.evaluate("Boolean(document.querySelector('.agent-panel textarea[aria-label=Message]'))"),10000);
   await until("runner connected",()=>page.evaluate('document.querySelector("[role=status]")?.textContent.includes("Waiting")'),10000);
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), true);
-  assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll("select[aria-label=Access] option")).slice(1).map(o=>o.textContent.split(":")[0])`), ["Comment", "Track changes", "Edit"]);
+  assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll("select[aria-label=Access] option")).slice(1).map(o=>o.textContent.split(":")[0])`), ["Comment", "Edit"]);
   // The copy action appears only once an access level is chosen.
   assert.equal(await page.evaluate("Boolean(document.querySelector('.access-detail'))"), false);
   if (process.env.AGENT_SCREENSHOT) {
-    await choose("Access", "tracked");
+    await choose("Access", "commenter");
     const shot = await page.command("Page.captureScreenshot", { format: "png" });
     writeFileSync(process.env.AGENT_SCREENSHOT, Buffer.from(shot.data, "base64"));
   }
@@ -187,14 +191,18 @@ try {
 
   // Activity comes from task events, independently of connection presence.
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'})");
-  await until("working indicator", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent === "Working..."'), 1000);
+  await until("working indicator", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent.includes("Working")'), 1000);
   assert.equal(await page.evaluate('document.querySelectorAll(".working-dots > span").length'), 3);
+  assert.equal(await page.evaluate('Array.from(document.querySelectorAll(".agent-task button")).some(b => b.textContent.trim().startsWith("Stop"))'), true);
+  await page.evaluate("window.sockets[0].emit({type:'task',task_id:'queued-task',status:'queued'})");
+  await until("queued request label", () => page.evaluate('document.body.textContent.includes("Queued next request")'), 1000);
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:true})");
-  assert.equal(await page.evaluate('document.querySelector(".agent-actions [role=status]").textContent'), "Working...");
+  assert.match(await page.evaluate('document.querySelector(".agent-actions [role=status]").textContent'), /Working/);
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:false})");
   await until("disconnected indicator", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent === "Disconnected"'), 1000);
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:true}); window.sockets[0].emit({type:'task',task_id:'activity',status:'needs_input'})");
-  await until("waiting for input", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent === "Waiting"'), 1000);
+  await until("waiting for input", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent.includes("Waiting")'), 1000);
+  assert.equal(await page.evaluate('Array.from(document.querySelectorAll(".agent-task button")).some(b => b.textContent.trim().startsWith("Stop"))'), true);
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'}); window.sockets[0].emit({type:'task',task_id:'activity',status:'completed'})");
   await until("waiting after completion", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent === "Waiting" && !document.querySelector(".working-dots")'), 1000);
 
@@ -365,6 +373,19 @@ try {
   assert.equal(explained.context.selection, undefined);
   assert.equal(explained.context.diagnostic.source, "old source");
 
+  // A real rendered quote has no source coordinates or source revision.
+  await page.evaluate("window.setProps({request:{id:'rendered-quote',task:{kind:'tighten',scope:'selection'},selection:{exact:'Rendered passage',render_digest:'rendered-tree',position:null}}})");
+  await until("rendered quote attached",()=>page.evaluate("document.querySelector('.chat-form textarea').value.includes('Tighten')"),1000);
+  await page.evaluate("document.querySelector('.chat-form').requestSubmit()");
+  await until("rendered quote submitted",()=>page.evaluate("window.sockets[1].sent.some(frame=>frame.context?.render_digest==='rendered-tree')"),1000);
+  const rendered = await page.evaluate("window.sockets[1].sent.find(frame=>frame.context?.render_digest==='rendered-tree')");
+  assert.equal(rendered.context.selection.exact,"Rendered passage");
+  assert.equal(rendered.context.revision,undefined);
+  await page.evaluate("window.sockets[1].emit({type:'task',task_id:'partial',status:'cancelled',context:{results:{suggestions:['kept'],effects:{confirmed:[{kind:'application'}],counts:{refused:120,unresolved:3},refused:[],unresolved:[]}}}})");
+  await until("partial effects visible",()=>page.evaluate("document.querySelector('[role=log]').textContent.includes('Source changes applied.') && document.querySelector('[role=log]').textContent.includes('120 document operations were refused')"),1000);
+  await page.evaluate("window.sockets[1].emit({type:'capabilities',session_id:'replacement-session',capabilities:{cancel:true}})");
+  await until("session boundary visible",()=>page.evaluate("document.querySelector('[role=log]').textContent.includes('does not remember earlier messages')"),1000);
+
   // Every role registers a real bounded link, and reuses existing share
   // links. The connection is what carries the access, so getting the key
   // right here is what actually bounds the agent.
@@ -396,11 +417,6 @@ try {
     await connectAs(role);
     assert.equal(await linkFor(role), true, `the ${role} connection carries the ${role} key`);
   }
-  // Track changes deliberately hands out the commenter key: the access level
-  // is what prevents direct source edits, not an instruction asking nicely.
-  await connectAs("tracked");
-  assert.equal(await linkFor("commenter"), true);
-  assert.equal(await linkFor("editor"), false);
   // A level with no existing share link mints one rather than failing.
   await page.evaluate("window.missingAccess=true");
   await connectAs("editor");
@@ -451,10 +467,19 @@ try {
   // Keyboard navigation follows the selected tab (Tasks wraps to Connection).
   await until("keyboard tab navigation", () => page.evaluate('document.activeElement.id === "agent-tab-connection"'), 1000);
 
+  const beforeNewConversation = await page.evaluate("({sockets:window.sockets.length,creates:window.calls.filter(call=>call.suffix==='').length})");
+  // New conversation is a fresh runner boundary: it stops the local assistant,
+  // clears the transcript/context, and returns to connection setup. A socket
+  // reconnect keeps the existing conversation and transcript instead.
+  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(".agent-actions button").click()');
+  await until("new conversation setup", () => page.evaluate('document.querySelector("#agent-tab-connection").getAttribute("aria-selected")==="true" || !document.querySelector("#agent-pane-connection").hidden'), 2000);
+  assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'), false);
+  assert.equal(await page.evaluate('window.localCalls.some(call => call.route === "assistant/stop")'), true);
+  await until("new channel created",()=>page.evaluate(`window.sockets.length === ${beforeNewConversation.sockets + 1}`),10000);
   await page.evaluate("window.remount()");
-  await until("new live channel",()=>page.evaluate("window.sockets.length===3"),10000);
-  assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'),true);
-  assert.equal(await page.evaluate("window.calls.filter(call=>call.suffix==='').length"),1);
+  await until("new live channel",()=>page.evaluate(`window.sockets.length === ${beforeNewConversation.sockets + 2}`),10000);
+  assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'),false);
+  assert.equal(await page.evaluate("window.calls.filter(call=>call.suffix==='').length"),beforeNewConversation.creates + 1);
   // Pairing, from an unpaired browser. A refused code must say so beside the
   // button that was pressed: the panel's shared error line is below three
   // tabs of content, so an error reported only there reads as a dead button.

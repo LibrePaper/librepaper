@@ -22,6 +22,7 @@ pub(super) fn validate(schema: &Value, value: &Value) -> Result<(), String> {
         Some("string") => value.is_string(),
         Some("integer") => value.is_u64() || value.is_i64(),
         Some("boolean") => value.is_boolean(),
+        Some("null") => value.is_null(),
         None => true,
         _ => false,
     };
@@ -87,6 +88,17 @@ pub(super) fn metadata() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_accepts_rendered_quotes_without_source_coordinates() {
+        let read = &tools()
+            .iter()
+            .find(|tool| tool["name"] == "document_read")
+            .unwrap()["inputSchema"];
+        let mut args = json!({"queries":[{"kind":"source","selection":{"exact":"Selected words","position":null},"render_digest":"current"}]});
+        assert!(validate(read, &args).is_ok());
+        args["queries"][0]["selection"]["position"] = json!("invalid");
+        assert!(validate(read, &args).is_err());
+    }
     #[test]
     fn tool_schemas_reject_typos_and_wrong_preconditions() {
         let propose = &tools()

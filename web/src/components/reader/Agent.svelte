@@ -78,10 +78,8 @@
   const roles = [
     { id: "commenter", label: "Comment", help: "Read, comment, and suggest changes",
       detail: "The agent can leave comments and attach suggestions for you to accept or reject." },
-    { id: "tracked", role: "commenter", label: "Track changes", help: "Changes require your approval",
-      detail: "The agent proposes source changes as tracked suggestions. You review and accept or reject each one." },
-    { id: "editor", label: "Edit", help: "Changes do not require approval", warn: true,
-      detail: "The agent writes to the document source directly, with no accept or reject step in between." },
+    { id: "editor", label: "Edit", help: "Apply source changes when asked", warn: true,
+      detail: "Can apply source changes when you ask; otherwise suggests changes." },
   ];
   const currentRole = $derived(!caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
   // Without sharing rights the panel can only hand out the access the reader
@@ -116,7 +114,7 @@
   const caps = $derived(normalizeCapabilities(verifiedCapabilities));
   const contextPath = $derived(diagnostic?.file || diagnostic?.path || path);
   const preparedTaskValid = $derived(!task || capabilityAllows(caps, task, {
-    attached: attachment?.anchored ? attachment : (task.kind === "explain" ? attachment : null), path: contextPath,
+    attached: attachment || null, path: contextPath,
   }));
   const uncertainDelivery = $derived(Object.values(connection.tasks || {}).some((item) =>
     item?.delivery === "uncertain" && item.request === draft.trim()));
@@ -126,7 +124,7 @@
   const chosen = $derived(findTask(chosenTaskId));
   const scopeAvailable = (id) => id === "selection" ? Boolean(attachment) : id === "file" ? Boolean(contextPath) : true;
   const allows = (kind, chosenScope) => capabilityAllows(caps, { kind, scope: chosenScope }, {
-    attached: attachment?.anchored ? attachment : (kind === "explain" ? attachment : null), path: contextPath,
+    attached: attachment || null, path: contextPath,
   });
   // A row is offered when some scope the reader can actually supply works for
   // it; which scope that is belongs to the preparation view, not the catalog.
@@ -235,11 +233,10 @@
       // one would leave the first holding the link it was started with, so a
       // change of agent or access replaces it rather than racing it.
       if (assistant.running && connectionName) {
-        await local.stopAssistant({ connection: connectionName, conversation: connection.id })
-          .catch(() => {});
+        await local.stopAssistant({ connection: connectionName, conversation: connection.id });
         assistant = { running: false, agent: "", access: "" };
       }
-      const name = connectionName || await registerConnection(mode);
+      const name = await registerConnection(mode);
       const answer = await local.startAssistant({
         connection: name, conversation: connection.id,
         chatToken: connection.token, agent: chosenAgent,
@@ -418,6 +415,18 @@
     // would silently hand out the old link after the user picked a narrower
     // level, which is the one mistake this panel must never make.
     connectionName = "";
+  }
+
+  async function newConversation() {
+    await act(async () => {
+      if (assistant.running && connectionName) await local.stopAssistant({ connection: connectionName, conversation: connection.id });
+      assistant = { running: false, agent: "", access: "" }; connectionName = "";
+      await client.end(); await client.create();
+      draft = ""; task = null; attachment = null; suggestion = null; commentContext = null;
+      pendingRequest = null; diagnostic = null; diagnosticRevision = "";
+      suppressedSelection = selectionKey(selection || lastSelection);
+      tab = "connection";
+    });
   }
 
   async function reconnect() { await act(() => client.reconnect()); }
@@ -683,6 +692,7 @@
     <div class="chat-history">
     <div class="agent-actions">
       <span class="panel-meta" role="status">{status}{#if status === "Working"}<span class="working-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>{/if}</span>
+      {#if connection.id}<button class="btn btn-sm" disabled={busy} onclick={() => void newConversation()}>New conversation</button>{/if}
     </div>
 
   {#if pendingRequest}
@@ -694,6 +704,14 @@
 
   {#each uncertainTasks() as item (item.id)}
     <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm preset-outlined-surface-300-700" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
+  {/each}
+  {#each Object.values(connection.tasks || {}).filter((item) => ["queued", "working", "needs_input"].includes(item.status)) as item (item.id)}
+    <div class="agent-task panel-meta" role="status">
+      <span>{item.status === "queued" ? "Queued next request" : item.status === "working" ? "Active request" : "Waiting for your input"}: {item.request || "Request"}</span>
+      {#if item.message}<span>{item.message}</span>{/if}
+      {#if item.cancelRequested}<span>Cancellation requested</span>
+      {:else}<button class="btn btn-sm" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(item.id))}>{item.status === "queued" ? "Cancel queued request" : "Stop task"}</button>{/if}
+    </div>
   {/each}
   <ChatTranscript messages={connection.messages} empty={connection.runnerConnected ? "No messages yet." : "Connect your agent in the Connection tab to begin."} roleLabel={(message) => message.role === "user" ? "You" : "Agent"} onresult={chooseResult} />
 
@@ -719,6 +737,9 @@
   {#if task || attachment}<p class="panel-meta context-summary">{scopeLabel(scope, { path: contextPath, attached: attachment })} <button class="btn btn-sm" onclick={() => { tab = "tasks"; taskView = chosen ? "prepare" : "launcher"; }}>Change context</button>{#if attachment}<button class="btn btn-sm" onclick={removeSelection}>Remove passage</button>{/if}</p>{/if}
   {#if !sendable}<p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : !connection.runnerConnected ? "You can draft now. Connect your agent to send." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>{/if}
     </div>
+  {#if Object.values(connection.tasks || {}).some((item) => ["working", "needs_input"].includes(item.status))}
+    <p class="panel-meta">Queue next request. It will run after the active task; it will not change that task.</p>
+  {/if}
   <ChatComposer placeholder="Ask your agent…" canSend={!busy && sendable} draft={draft} ondraft={saveDraft} onsend={send} />
   </Tabs.Content>
   <Tabs.Content value="tasks" class="agent-tab-content">
@@ -854,6 +875,7 @@
   .access-detail p { margin:0; }
   .setup-actions, .agent-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
   .agent-actions { justify-content:space-between; }
+  .agent-task { display:flex; flex-direction:column; align-items:flex-start; gap:var(--spacing); overflow-wrap:anywhere; }
   .working-dots span { animation:working-dot 1.2s infinite; }
   .working-dots span:nth-child(2) { animation-delay:.2s; }
   .working-dots span:nth-child(3) { animation-delay:.4s; }

@@ -305,6 +305,15 @@ impl Agent {
             .map_err(|_| "agent connection stopped".into())
     }
 
+    /// Stop the ACP connection and wait until its task has exited before a
+    /// replacement is started. Dropping the handle alone only schedules the
+    /// abort and leaves a window where the old connection can still process
+    /// document operations.
+    pub(super) async fn shutdown(&mut self) {
+        self.task.abort();
+        let _ = (&mut self.task).await;
+    }
+
     pub(super) async fn recv(&mut self) -> Option<Event> {
         self.events.recv().await
     }
@@ -343,6 +352,34 @@ fn translate_update(update: SessionUpdate) -> Update {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::PermissionOptionKind;
+
+    #[tokio::test]
+    async fn shutdown_waits_for_connection_resources_to_drop() {
+        struct OnDrop(Option<oneshot::Sender<()>>);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.take().unwrap().send(());
+            }
+        }
+        let (started, ready) = oneshot::channel();
+        let (dropped, mut released) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _guard = OnDrop(Some(dropped));
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        });
+        ready.await.unwrap();
+        let (commands, _) = mpsc::channel(1);
+        let (_, events) = mpsc::channel(1);
+        let mut agent = Agent {
+            commands,
+            events,
+            session_id: "old".into(),
+            task,
+        };
+        agent.shutdown().await;
+        assert_eq!(released.try_recv(), Ok(()));
+    }
 
     #[test]
     fn acp_permission_options_match_the_sidebar_contract() {

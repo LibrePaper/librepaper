@@ -249,7 +249,7 @@ impl Server {
         match method {
             "server/discover" => rpc_result(
                 &id,
-                json!({"supportedVersions":[PROTOCOL],"capabilities":{"tools":{}},"instructions":"Read bounded source, then reuse view and range handles. Every mutation needs an operation: copy operation_epoch verbatim from your most recent document_read response and pair it with an id you mint once per mutation. An epoch cannot be invented or carried over, and authorization_epoch is a different value that will be refused; read again when yours expires. Suggestions are inert. An admitted operation key is single-use: if its outcome is unknown, inspect the document and do not evade the guard with a new id. Apply only when authorized. These tools are the only way to reach this document: if one fails or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.","ttlMs":300000,"cacheScope":"private"}),
+                json!({"supportedVersions":[PROTOCOL],"capabilities":{"tools":{}},"instructions":"Read bounded source, then reuse view and range handles. Every mutation needs an operation: copy operation_epoch verbatim from your most recent document_read response and pair it with an id you mint once per mutation. An epoch cannot be invented or carried over, and authorization_epoch is a different value that will be refused; read again when yours expires. Suggestions are inert. An admitted operation key is single-use: if its outcome is unknown, inspect the document and do not evade the guard with a new id. Apply only when authorized. Multiple published suggestions are independent items; only private staging may combine patches atomically. These tools are the only way to reach this document. A refused read may be repeated after a bounded reread that preserves the selected occurrence; follow supplied render recovery instructions when appropriate. An unknown mutation outcome must not be replayed or retried under a new id. If access is revoked or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.","ttlMs":300000,"cacheScope":"private"}),
             ),
             "ping" => rpc_result(&id, json!({})),
             "tools/list" => rpc_result(
@@ -671,16 +671,31 @@ impl Server {
             if matches!(
                 query["kind"].as_str(),
                 Some("source" | "context" | "section")
-            ) && query["revision"]
-                .as_str()
-                .is_some_and(|revision| revision != view.snapshot.tree_digest)
-            {
-                return Err(Failure::new(
-                    "conflict",
-                    "captured selection belongs to another source revision",
-                ));
+            ) {
+                validate_selection_revision(&view, query)?;
             }
-            if query["selection"].is_object() {
+            if let Some(id) = query.get("comment_id").and_then(Value::as_str) {
+                comments::parse_uuid(id, "comment_id")?;
+                let room = self
+                    .rooms
+                    .get(slug)
+                    .await
+                    .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+                let comment = room
+                    .comment_by_id(id, who.at_least(Role::Editor))
+                    .await
+                    .map_err(|error| Failure::new("unavailable", error.to_string()))?
+                    .ok_or_else(|| Failure::new("not_found", "comment does not exist"))?;
+                let (path, start, end) = locate_comment_selection(&view, &comment)?;
+                query["path"] = json!(path);
+                query["start"] = json!(start);
+                query["end"] = json!(end);
+                if let Some(object) = query.as_object_mut() {
+                    object.remove("selection");
+                    object.remove("range_id");
+                    object.remove("comment_id");
+                }
+            } else if query["selection"].is_object() {
                 let (path, start, end) = locate_selection(&view, &query["selection"])?;
                 query["path"] = json!(path);
                 query["start"] = json!(start);
@@ -712,9 +727,9 @@ impl Server {
                     Failure::new("invalid_query", "render queries require the candidate id")
                 })?;
                 let receipt = self.load_render_receipt(slug, actor, who, id).await?;
-                if query["revision"]
+                if query["tree_digest"]
                     .as_str()
-                    .is_some_and(|revision| revision != receipt.tree_digest)
+                    .is_some_and(|digest| digest != receipt.tree_digest)
                 {
                     return Err(Failure::new(
                         "conflict",
@@ -849,6 +864,70 @@ fn decorate_ranges(value: &mut Value, snapshot: &QuerySnapshot, view_id: &str, k
 /// for once, here. The client's path is not identity -- a passage is where
 /// its words are -- so every file of the view is a candidate, and words that
 /// read the same in several places are refused rather than guessed at.
+fn validate_selection_revision(view: &View, query: &Value) -> Result<(), Failure> {
+    // Rendered project identity and source-view identity use the same
+    // projection digest today. Check every supplied identity so one alias
+    // cannot hide a stale value in another field.
+    for field in ["revision", "tree_digest", "render_digest"] {
+        if let Some(value) = query.get(field) {
+            let digest = value.as_str().ok_or_else(|| {
+                Failure::new("invalid_params", format!("{field} must be a string"))
+            })?;
+            if digest != view.snapshot.tree_digest {
+                return Err(Failure::new(
+                    "conflict",
+                    "captured selection belongs to another source revision",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn locate_comment_selection(
+    view: &View,
+    comment: &crate::room::Comment,
+) -> Result<(String, usize, usize), Failure> {
+    let source = comment
+        .source()
+        .ok_or_else(|| Failure::new("invalid_range", "comment has no source passage"))?;
+    let attachment = comment
+        .attachment
+        .as_ref()
+        .filter(|attachment| {
+            attachment.tree_digest == view.snapshot.tree_digest && attachment.status.is_placed()
+        })
+        .ok_or_else(|| {
+            Failure::new(
+                "conflict",
+                "comment passage is not resolved in this source view",
+            )
+        })?;
+    let (start, end) = attachment
+        .resolved_range_utf16
+        .ok_or_else(|| Failure::new("invalid_range", "comment has no resolved source range"))?;
+    let (path, _) = view
+        .snapshot
+        .projection
+        .files
+        .iter()
+        .find(|(_, file)| file.id == source.file_id.0)
+        .ok_or_else(|| Failure::new("not_found", "comment source file is absent"))?;
+    let text = view
+        .snapshot
+        .texts
+        .get(path)
+        .ok_or_else(|| Failure::new("not_found", "comment source file is absent"))?;
+    let start = operations::byte_of_utf16(text, start as usize)
+        .ok_or_else(|| Failure::new("invalid_range", "comment range splits a Unicode character"))?;
+    let end = operations::byte_of_utf16(text, end as usize)
+        .ok_or_else(|| Failure::new("invalid_range", "comment range splits a Unicode character"))?;
+    if start >= end {
+        return Err(Failure::new("invalid_range", "comment passage is empty"));
+    }
+    Ok((path.clone(), start, end))
+}
+
 fn locate_selection(view: &View, selection: &Value) -> Result<(String, usize, usize), Failure> {
     let quote = crate::room::locate::Quote {
         exact: selection["exact"].as_str().unwrap_or_default(),
@@ -961,6 +1040,54 @@ mod selection_tests {
             expires_at: 0,
             operation_epoch: String::new(),
         }
+    }
+
+    #[test]
+    fn rendered_selections_must_match_every_supplied_identity() {
+        let view = view_of("paper.typ", "Selected words.");
+        assert!(validate_selection_revision(&view, &json!({"render_digest":"rev"})).is_ok());
+        assert!(validate_selection_revision(
+            &view,
+            &json!({"revision":"rev","render_digest":"stale"})
+        )
+        .is_err());
+        assert!(validate_selection_revision(&view, &json!({"tree_digest":42})).is_err());
+        assert!(
+            locate_selection(&view, &json!({"exact":"Selected words.","position":null})).is_ok()
+        );
+    }
+
+    #[test]
+    fn comment_selection_follows_its_resolved_range_and_original_file() {
+        let text = "😀 same words; same words";
+        let view = view_of("renamed.typ", text);
+        let mut comment: crate::room::Comment = serde_json::from_value(json!({
+            "id":"comment", "original_anchor":{"source_sequence":42,"frontier":"","kind":"source_text","target":{
+                "file_id":"f1","start_utf16":0,"end_utf16":10,"start_side":"left","end_side":"right",
+                "exact":"same words","prefix":"","suffix":""
+            }},
+            "render_digest":"historical-render",
+            "attachment":{"tree_digest":"rev","status":"modified","resolved_range_utf16":[15,25]}
+        })).unwrap();
+        let (path, start, end) = locate_comment_selection(&view, &comment).unwrap();
+        assert_eq!(path, "renamed.typ");
+        assert_eq!(&text[start..end], "same words");
+        assert_eq!(start, text.rfind("same words").unwrap());
+        comment.attachment.as_mut().unwrap().tree_digest = "old".into();
+        assert!(locate_comment_selection(&view, &comment).is_err());
+        comment.attachment.as_mut().unwrap().tree_digest = "rev".into();
+        let mut other = view_of("other.typ", text);
+        other
+            .snapshot
+            .projection
+            .files
+            .get_mut("other.typ")
+            .unwrap()
+            .id = "f2".into();
+        assert!(
+            locate_comment_selection(&other, &comment).is_err(),
+            "matching words in another file cannot replace a lost comment anchor"
+        );
     }
 
     /// A browser sends the words it saw, not offsets: the markup around them

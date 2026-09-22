@@ -30,25 +30,37 @@ compaction if its captured source is no longer available to you.
 
 ## Comment and edit
 
-Use `document_comment` for comments, replies, thread resolution, deletion,
-suggestion refinement or decisions, and labels. Existing-comment actions
-must carry the `comment_version` returned by the read as `expected_version`.
+Use `document_comment` for comments, replies, thread resolution, deletion, and
+suggestion refinement, and rejection (with editor authority). Existing-comment
+actions must carry the `comment_version` returned by the read as
+`expected_version`. Accepting or labeling suggestions uses the ordinary editor
+flow; those actions are not supported by these tools.
 
 Use `document_propose` with captured range handles for source changes.
-Suggestions are the default; use `document_apply` only when the user authorized
-direct application. Keep changes inside the requested selection, file, or
-document scope and preserve unrelated markup, references, code, and formatting.
+Suggestions are the default. Direct application requires explicit user
+authorization and the editor role ceiling; use `document_apply` only when both
+are present. Keep changes inside the requested selection, file, or document
+scope and preserve unrelated markup, references, code, and formatting.
 For multi-file and conflict details, read [editing.md](references/editing.md).
 
-Every mutation uses `operation: {epoch, id}`. Choose a fresh ID for new intent;
-retry an uncertain request only with the identical ID and arguments. Resolve an
-uncertain result with `document_result`. A transport acknowledgement or model
-statement is not evidence of a durable effect.
+Every mutation uses `operation: {epoch, id}`. Choose a fresh ID for new intent.
+An uncertain write remains unknown: do not invent a new ID, and do not assume an
+operation lookup returns a retained receipt or makes an admitted write safe to
+replay. Use `document_result` to inspect operation state and retry only through
+an explicitly supported idempotent path with identical arguments. A bounded
+reread may refresh expired read context, but it cannot assume the same passage
+or current revision and must never replay an uncertain write. A transport
+acknowledgement or model statement is not evidence of a durable effect.
 
 ## Report
 
-Report only receipt-confirmed effects and IDs. State partial coverage,
-conflicts, refused permissions, and unavailable compilation plainly.
+For the sidebar assistant, respond in plain prose; its runner records
+receipt-confirmed effects separately, so do not emit a structured result schema
+or a model-generated list of suggestion IDs. Other MCP clients should report
+receipt-confirmed effects and identifiers according to their own interface.
+State partial coverage, conflicts, refused permissions, unknown effects, and
+unavailable compilation plainly. Candidate/render lookup is a separate
+supported flow and may finish an already authorized publication.
 
 The sidebar assistant is started from the document sidebar by the local
 LibrePaper app, not by a skill and not by any command you run. Its writing

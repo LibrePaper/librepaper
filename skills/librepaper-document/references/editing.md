@@ -14,14 +14,17 @@ change relies on them.
 
 ## Proposals and direct edits
 
-Suggestions are inert and are the default, including for an editor. Use
-`publish: "private"` when constructing a candidate that should not create
-review annotations. Call `document_apply` only after the user has authorized a
-direct edit, using the returned candidate ID and a new operation identity.
+Suggestions are inert and are the default, including for an editor. Direct
+application requires explicit user authorization and the editor role ceiling.
+Use `publish: "private"` when constructing a candidate that should not create
+review annotations. Call `document_apply` only after both conditions are met,
+using the returned candidate ID and a new operation identity.
 
-Use an atomic batch for one coherent change. Use independent items only when
-each can stand on its own, and inspect every item result. Never weaken
-`exact_tree` consistency merely to bypass a conflict.
+Use an atomic multi-patch batch only with `publish: "private"` for one staged
+candidate. Published multi-suggestion proposals always use
+`batch: "independent"`; inspect every item result. Separate published
+suggestions cannot make a coherent change atomic. Never weaken `exact_tree`
+consistency merely to bypass a conflict or split a refusal to evade limits.
 
 ## Projects and compilation
 
@@ -36,10 +39,13 @@ candidate revision verifies that candidate.
 ## Conflicts and retries
 
 If the source changed, read fresh evidence and reconcile the intended change
-with it. Do not substitute the latest revision silently. For a lost response,
-reuse the exact original operation identity and arguments or retrieve its
-receipt with `document_result`; a new ID represents new intent and could
-duplicate an effect.
+with it. Do not substitute the latest revision silently. A lost response leaves
+the write unknown: inspect it without inventing a new operation ID. The service
+does not retain committed receipts for operation lookup, so lookup cannot make
+an admitted write safe to replay. Retry only through a supported idempotent
+path with the exact original identity and arguments. A bounded reread can
+refresh expired read context but cannot assume the same passage or revision or
+replay an uncertain write.
 
 Avoid broad formatter rewrites unless requested. They create needless review
 noise and can disturb anchors throughout the document.

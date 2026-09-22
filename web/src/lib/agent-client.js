@@ -109,6 +109,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     status: persisted?.id ? "reconnecting" : "idle",
     error: "", capabilities: null,
   };
+  let runtimeSessionId = persisted?.runtimeSessionId || "";
   id = view.id;
   token = view.token;
   let saveQueued = false;
@@ -118,7 +119,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     writeSession(storage, sessionStorageKey, { id, token,
       messages: view.messages.slice(-MAX_MESSAGES),
       tasks: Object.fromEntries(Object.entries(view.tasks).slice(-MAX_TASKS)),
-      deliveries: [...deliveries.values()].slice(-MAX_TASKS) });
+      deliveries: [...deliveries.values()].slice(-MAX_TASKS), runtimeSessionId });
   }
   function saveSoon() {
     if (saveQueued) return;
@@ -370,6 +371,12 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   }
   function frameReceived(frame, current) {
     if (disposed || socket !== current) return;
+    if (frame.type === "capabilities" && typeof frame.session_id === "string" && frame.session_id.length <= 128 && frame.session_id && frame.session_id !== runtimeSessionId) {
+      const hadSession = Boolean(runtimeSessionId);
+      runtimeSessionId = frame.session_id;
+      if (hadSession || view.messages.length) addMessage({ id: `session-${runtimeSessionId}`, role: "agent", text: "New agent session. The agent does not remember earlier messages in this conversation.", context: { session_boundary: true } });
+      saveSoon();
+    }
     if (frame.type === "ready" || frame.type === "presence") {
       const runnerConnected = Boolean(frame.agent);
       publish({ connected: true, runnerConnected, status: runnerConnected ? "ready" : "waiting", capabilities: frame.capabilities || view.capabilities, error: "" });
@@ -403,7 +410,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
           id: frame.id || `task-${taskId}`,
           role: "agent",
           text: frame.text || (frame.status === "cancelled" ? "Task cancelled." : frame.status === "interrupted" ? "Task interrupted; reconcile its document operations before retrying." : "Task failed."),
-          context: { task_id: taskId },
+          context: { task_id: taskId, ...(context.results ? { results: context.results } : {}) },
         });
       }
       return;
@@ -505,6 +512,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     const result = await request("POST", "/chat", {}, false);
     if (!result.id || !result.token) throw new Error("The server returned an invalid assistant channel.");
     id = result.id; token = result.token;
+    runtimeSessionId = "";
     previewArrival = 0;
     publish({ id, token, messages: [], tasks: {}, previewRequest: null, connected: false, runnerConnected: false, status: "connecting", error: "" });
     connect();
@@ -579,6 +587,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     rejectSends("The assistant channel was closed.");
     if (oldId && token) { try { await request("DELETE", `/chat/${encodeURIComponent(oldId)}`); } catch (error) { if (error.status !== 404) throw error; } }
     deliveries.clear(); removeSession(storage, sessionStorageKey); id = ""; token = "";
+    runtimeSessionId = "";
     previewArrival = 0;
     publish({ id: "", token: "", messages: [], tasks: {}, previewRequest: null, connected: false, runnerConnected: false, status: "idle", error: "" });
   }

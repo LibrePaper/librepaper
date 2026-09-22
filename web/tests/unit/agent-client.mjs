@@ -118,10 +118,22 @@ try {
   socket.emit({ type: "task", id: "event-finished", task_id: "finished", status: "completed", context: { results: { suggestions: ["suggestion-1"] } } });
   assert.equal(client.current.tasks.finished.status, "completed");
   assert.deepEqual(client.current.tasks.finished.result, { suggestions: ["suggestion-1"] });
+  socket.emit({ type: "task", id: "cancelled-with-effects", task_id: "cancelled-effects", status: "cancelled", context: { results: { suggestions: ["suggestion-1"] } } });
+  assert.deepEqual(client.current.messages.at(-1).context.results, { suggestions: ["suggestion-1"] }, "cancelled effects remain reviewable in the transcript");
   socket.emit({ type: "task", id: "event-interrupted", seq: 1, task_id: "recovery", status: "interrupted", text: "Reconcile receipts" });
   assert.equal(client.current.tasks.recovery.status, "interrupted");
   socket.emit({ type: "task", id: "event-stale", seq: 1, task_id: "recovery", status: "completed" });
   assert.equal(client.current.tasks.recovery.status, "interrupted", "stale task frames do not roll state back");
+
+  const boundaries = () => client.current.messages.filter(message => message.context?.session_boundary).length;
+  const beforeBoundary = boundaries();
+  socket.emit({ type: "capabilities", session_id: "runtime-one", capabilities: { read: true } });
+  assert.equal(boundaries(), beforeBoundary + 1);
+  socket.emit({ type: "capabilities", session_id: "runtime-one", capabilities: { read: true } });
+  socket.emit({ type: "presence", session_id: "not-a-session-boundary", agent: true, browser: true });
+  assert.equal(boundaries(), beforeBoundary + 1, "reconnect/presence do not invent a new session");
+  socket.emit({ type: "capabilities", session_id: "runtime-two", capabilities: { read: true } });
+  assert.equal(boundaries(), beforeBoundary + 2, "a replacement runtime marks lost conversational memory");
 
   // Admission is authoritative when the acknowledgement was lost. The task
   // event resolves the original send promise and removes its retry marker.

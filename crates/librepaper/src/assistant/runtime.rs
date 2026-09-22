@@ -130,6 +130,17 @@ async fn report_task(
     id: &str,
     state_path: &Path,
 ) -> Result<(), String> {
+    let task = persist_report(state, id, state_path)?;
+    report(transport, &task).await
+}
+
+fn persist_report(state: &mut State, id: &str, state_path: &Path) -> Result<Task, String> {
+    if state.task(id).is_some_and(|task| terminal(&task.status)) {
+        let journal = Journal::open(state_path.with_file_name("runner.journal.json"))?;
+        if let Some(task) = state.task_mut(id) {
+            task.results = journal.task_results(id);
+        }
+    }
     let task = state
         .task_mut(id)
         .ok_or("task disappeared while reporting")?;
@@ -137,20 +148,7 @@ async fn report_task(
     let task = task.clone();
     state.sync_admission(id);
     state.save(state_path)?;
-    report(transport, &task).await
-}
-
-async fn report_transient_task(
-    transport: &Transport,
-    state: &mut State,
-    id: &str,
-) -> Result<(), String> {
-    let task = state
-        .task_mut(id)
-        .ok_or("task disappeared while reporting")?;
-    task.event_seq = task.event_seq.saturating_add(1);
-    let task = task.clone();
-    report(transport, &task).await
+    Ok(task)
 }
 
 /// Reconcile an already persisted snapshot without inventing a transition or
@@ -187,15 +185,9 @@ async fn reachable_or_refuse(peer: &AutomationPeer) -> Result<(), String> {
 /// model turn. A stale selection is surfaced as a task error instead of being
 /// silently retargeted to a similar passage.
 async fn prepare_task_context(peer: &AutomationPeer, task: &Task) -> Result<Option<Value>, String> {
-    let Some(selection) = task.context.get("selection") else {
+    let queries = context_queries(task)?;
+    if queries.is_empty() {
         return Ok(None);
-    };
-    if !selection.is_object() {
-        return Err("task selection context is not a structured source selection".into());
-    }
-    let mut source = json!({"kind":"source","selection":selection,"context":"paragraph"});
-    if let Some(revision) = task.context.get("revision").and_then(Value::as_str) {
-        source["revision"] = json!(revision);
     }
     let request = json!({
         "jsonrpc":"2.0",
@@ -203,7 +195,7 @@ async fn prepare_task_context(peer: &AutomationPeer, task: &Task) -> Result<Opti
         "method":"tools/call",
         "params": {
             "name":"document_read",
-            "arguments": {"queries":[source],"budget":{"max_bytes":12000,"max_tokens":3000}},
+            "arguments": {"queries":queries,"budget":{"max_bytes":12000,"max_tokens":3000}},
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion":"2026-07-28",
                 "io.modelcontextprotocol/clientCapabilities":{}
@@ -223,7 +215,8 @@ async fn prepare_task_context(peer: &AutomationPeer, task: &Task) -> Result<Opti
     let response: Value = serde_json::from_str(&body)
         .map_err(|_| "document read returned invalid JSON".to_string())?;
     if response["result"]["isError"] == true {
-        return Err("captured selection is stale; read the document again before retrying".into());
+        return Err(runner_journal::failure_detail(&response)
+            .unwrap_or_else(|| "document_read refused the captured context".into()));
     }
     let resolved = response["result"]
         .get("structuredContent")
@@ -235,6 +228,37 @@ async fn prepare_task_context(peer: &AutomationPeer, task: &Task) -> Result<Opti
         .ok_or_else(|| "task context must be an object".to_string())?;
     context.insert("resolved_selection".into(), resolved);
     Ok(Some(prepared))
+}
+
+fn context_queries(task: &Task) -> Result<Vec<Value>, String> {
+    if let Some(id) = task
+        .context
+        .get("comment_id")
+        .and_then(Value::as_str)
+        .or_else(|| task.context.pointer("/thread/id").and_then(Value::as_str))
+    {
+        let mut queries = vec![json!({"kind":"thread","id":id})];
+        // A whole-document comment needs only its thread. A passage task
+        // resolves its server-owned attachment, never the browser's quote
+        // or the historical render identity stored on the comment.
+        if task.context.get("selection").is_some() {
+            queries.push(json!({"kind":"source","comment_id":id,"context":"paragraph"}));
+        }
+        return Ok(queries);
+    }
+    let Some(selection) = task.context.get("selection") else {
+        return Ok(Vec::new());
+    };
+    if !selection.is_object() {
+        return Err("task selection context is not a structured source selection".into());
+    }
+    let mut source = json!({"kind":"source","selection":selection,"context":"paragraph"});
+    for field in ["revision", "tree_digest", "render_digest"] {
+        if let Some(value) = task.context.get(field) {
+            source[field] = value.clone();
+        }
+    }
+    Ok(vec![source])
 }
 
 fn push_bounded_utf8(target: &mut String, chunk: &str, max_bytes: usize) {
@@ -254,8 +278,12 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
     output
 }
 
-async fn reconcile(transport: &Transport, state: &mut State) -> Result<(), String> {
-    emit(transport,json!({"type":"capabilities","id":event_id(),"capabilities":{"steer":false,"cancel":true,"preview":true,"input":true}})).await?;
+async fn reconcile(
+    transport: &Transport,
+    state: &mut State,
+    session_id: &str,
+) -> Result<(), String> {
+    emit(transport,json!({"type":"capabilities","id":event_id(),"session_id":session_id,"capabilities":{"steer":false,"cancel":true,"preview":true,"input":true}})).await?;
     let ids = state
         .tasks
         .iter()
@@ -284,6 +312,29 @@ impl Drop for EpochFileGuard {
     }
 }
 
+fn recover_state(path: &Path) -> Result<State, String> {
+    let mut state = State::load(path)?;
+    let journal = Journal::open(path.with_file_name("runner.journal.json"))?;
+    let ids = state
+        .tasks
+        .iter()
+        // Keep previously reported terminal snapshots: the bounded journal
+        // may already have evicted their receipts. Only unfinished recovery
+        // needs a first durable effects summary.
+        .filter(|task| task.status == "interrupted" && task.results.is_null())
+        .map(|task| task.id.clone())
+        .collect::<Vec<_>>();
+    for id in ids {
+        if let Some(task) = state.task_mut(&id) {
+            task.results = journal.task_results(&id);
+            task.event_seq = task.event_seq.saturating_add(1);
+        }
+        state.sync_admission(&id);
+    }
+    state.save(path)?;
+    Ok(state)
+}
+
 pub async fn run(peer: &AutomationPeer, config: Config) -> Result<(), String> {
     validate_conversation(&config.conversation, &config.token)?;
     let lease = Lease::acquire(
@@ -300,8 +351,7 @@ pub async fn run(peer: &AutomationPeer, config: Config) -> Result<(), String> {
     );
     // Persist uncertainty even when a model or transport error ends the loop.
     // Loading retires every unconfirmed task, so no restart can repeat mutations.
-    let final_state =
-        State::load(&lease.location.state).and_then(|state| state.save(&lease.location.state));
+    let final_state = recover_state(&lease.location.state).map(|_| ());
     let result = result.and(final_state);
     let _ = lease.write_status(
         if result.is_ok() { "stopped" } else { "failed" },
@@ -311,11 +361,11 @@ pub async fn run(peer: &AutomationPeer, config: Config) -> Result<(), String> {
     result
 }
 async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Result<(), String> {
-    let mut state = State::load(&lease.location.state)?;
+    let mut state = recover_state(&lease.location.state)?;
     state.save(&lease.location.state)?;
     let journal_path = lease.location.directory.join("runner.journal.json");
-    let epoch_path = runner_journal::execution_epoch_path(&journal_path);
-    let _epoch_file = EpochFileGuard(epoch_path.clone());
+    let mut epoch_path = runner_journal::execution_epoch_path(&journal_path);
+    let mut _epoch_file = EpochFileGuard(epoch_path.clone());
     let mut journal = Journal::open(&journal_path)?;
     for task in state
         .tasks
@@ -336,7 +386,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // prove execution or safely replay a mutation.
     state.save(&lease.location.state)?;
     let executable = crate::local::paths::current_executable()?;
-    let environment = adapter_environment(&journal_path, &epoch_path);
+    let mut environment = adapter_environment(&journal_path, &epoch_path);
     let connection = internal_connection(peer, config)?;
     // Prove the document is reachable at this access level before starting an
     // agent against it. The tools are handed to the agent as an MCP server it
@@ -372,7 +422,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // The browser keeps the transcript and the journal keeps the task history,
     // so what is lost is the model's own memory of the conversation, not the
     // user's.
-    let session_id = agent.session_id().to_string();
+    let mut session_id = agent.session_id().to_string();
     state.thread_id = Some(session_id.clone());
     state.save(&lease.location.state)?;
     // ACP has no place to put developer instructions on a session, so they
@@ -388,6 +438,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     let mut active: Option<Active> = None;
     let mut connected = false;
     let mut relay_connected = false;
+    let mut current_epoch: Option<String> = None;
     let mut stopping: Option<tokio::time::Instant> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     loop {
@@ -459,6 +510,17 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
             }
         }
         if stopping.is_some_and(|at| active.is_none() || at.elapsed() > Duration::from_secs(3)) {
+            runner_journal::set_execution_epoch(&epoch_path, None)?;
+            agent.shutdown().await;
+            if let Some(current) = &active {
+                finish(
+                    &mut state,
+                    &current.id,
+                    "interrupted",
+                    "Runner stopped; remote document effects may still require reconciliation.",
+                );
+                report_task(&transport, &mut state, &current.id, &lease.location.state).await?;
+            }
             return Ok(());
         }
         tokio::select! {
@@ -469,10 +531,19 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                 }).map(|current| current.id.clone());
                 if let Some(id) = timed_out {
                     journal.append(&id, "cancel_timeout", "", None, Vec::new(), "interrupted")?;
-                    finish(&mut state, &id, "interrupted", "The agent did not stop after cancellation; its local process was terminated. Inspect the document for in-flight effects.");
+                    // Fence the adapter before publishing any terminal state.
+                    // The old ACP task must be fully stopped before a new
+                    // session can acquire the same execution epoch.
+                    runner_journal::set_execution_epoch(&epoch_path, None)?;
+                    agent.shutdown().await;
+                    finish(&mut state, &id, "interrupted", "The agent connection stopped after cancellation; remote document effects may still require reconciliation.");
                     runner_journal::set_active_task(&journal_path, None)?;
                     report_task(&transport, &mut state, &id, &lease.location.state).await?;
                     active = None;
+                    if stopping.is_some() { return Ok(()); }
+                    epoch_path = runner_journal::execution_epoch_path(&journal_path);
+                    _epoch_file = EpochFileGuard(epoch_path.clone());
+                    environment = adapter_environment(&journal_path, &epoch_path);
                     agent = acp::Agent::start(
                         &config.agent,
                         &lease.location.directory,
@@ -481,9 +552,12 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         &executable,
                         &connection,
                     ).await?;
-                    state.thread_id = Some(agent.session_id().to_string());
+                    if connected && stopping.is_none() { runner_journal::set_execution_epoch(&_epoch_file.0, current_epoch.as_deref())?; }
+                    session_id = agent.session_id().to_string();
+                    state.thread_id = Some(session_id.clone());
                     state.save(&lease.location.state)?;
                     instructions = Some(context::instructions(&lease.location.directory)?);
+                    if connected { reconcile(&transport, &mut state, &session_id).await?; }
                 }
                 if let Some(current)=active.as_mut() {
                     if current.pending.front().is_some_and(|pending|pending.deadline<=now) {
@@ -507,6 +581,8 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                 }
                 if lease.stop_requested() && stopping.is_none() {
                     stopping=Some(tokio::time::Instant::now());
+                    runner_journal::set_execution_epoch(&epoch_path, None)?;
+                    let ids = state.tasks.iter().filter(|task| !terminal(&task.status)).map(|task| task.id.clone()).collect::<Vec<_>>();
                     for task in &mut state.tasks { if task.status=="queued" { task.finish("cancelled", "Runner stopped"); } }
                     if let Some(current)=active.as_mut() {
                         if !current.cancelling { current.cancelling = true; agent.cancel().await?; }
@@ -515,6 +591,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         finish(&mut state,&current.id,"interrupted","Runner stopped before completion was confirmed; inspect the document before submitting new work.");
                     }
                     state.save(&lease.location.state)?;
+                    for id in ids { report_task(&transport, &mut state, &id, &lease.location.state).await?; }
                 }
                 let (status,id)=if let Some(current)=&active { (state.task(&current.id).map(|task|task.status.as_str()).unwrap_or("working"),Some(current.id.as_str())) } else if relay_connected { ("ready",None) } else { ("connecting",None) };
                 lease.write_status(status,id,None)?;
@@ -522,6 +599,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
             _=tokio::signal::ctrl_c()=> {
                 if stopping.is_none() {
                     stopping=Some(tokio::time::Instant::now());
+                    runner_journal::set_execution_epoch(&epoch_path, None)?;
                     if let Some(current)=active.as_mut() { if !current.cancelling { current.cancelling=true; current.cancel_deadline=Some(tokio::time::Instant::now()+Duration::from_secs(3)); agent.cancel().await?; } }
                 }
             }
@@ -529,14 +607,15 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                 match event {
                     Some(Event::Presence { browser, execution_epoch })=> {
                         relay_connected=true; connected=browser;
-                        if browser {
-                            runner_journal::set_execution_epoch(&epoch_path, execution_epoch.as_deref())?;
-                            reconcile(&transport,&mut state).await?;
+                        current_epoch=execution_epoch;
+                        if browser && stopping.is_none() {
+                            runner_journal::set_execution_epoch(&epoch_path, current_epoch.as_deref())?;
+                            reconcile(&transport,&mut state, &session_id).await?;
                         } else {
                             runner_journal::set_execution_epoch(&epoch_path, None)?;
                         }
                     }
-                    Some(Event::Offline)=> { relay_connected=false;connected=false; runner_journal::set_execution_epoch(&epoch_path, None)?; }
+                    Some(Event::Offline)=> { relay_connected=false;connected=false; current_epoch=None; runner_journal::set_execution_epoch(&epoch_path, None)?; }
                     Some(Event::Fatal(error))=> {
                         runner_journal::set_active_task(&journal_path, None)?;
                         for task in &mut state.tasks { if !terminal(&task.status) { journal.append(&task.id, "transport_lost", "", None, Vec::new(), "interrupted")?; task.interrupt("Connection ended before completion was confirmed. Inspect the document before submitting new work.");} }
@@ -623,7 +702,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                             acp::Update::Activity(detail) => {
                                 let id=current.id.clone();
                                 let changed=state.task_mut(&id).is_some_and(|task| task.set_activity(detail));
-                                if changed { report_transient_task(&transport,&mut state,&id).await?; }
+                                if changed { report_task(&transport,&mut state,&id,&lease.location.state).await?; }
                             }
                             acp::Update::Ignored => {}
                         }
@@ -661,38 +740,27 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         let answer=std::mem::take(&mut current.answer);
                         while let Some(pending)=current.pending.pop_front() { pending.handle.respond(None)?; }
                         runner_journal::set_active_task(&journal_path, None)?;
+                        journal.refresh()?;
+                        let terminal_results = journal.task_results(&id);
                         match outcome {
                             Err(error) => {
                                 journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?;
+                                if let Some(task) = state.task_mut(&id) { task.results = terminal_results.clone(); }
                                 finish(&mut state,&id,"failed",&error);
                             }
                             Ok(agent_client_protocol::schema::v1::StopReason::EndTurn) => {
-                                journal.refresh()?;
-                                let suggestions=journal.known_result_ids(&id).into_iter().collect::<Vec<_>>();
-                                let refused=journal.refused_tools(&id);
-                                let unresolved=journal.pending_operations().into_iter()
-                                    .filter(|(task_id,_,_)|task_id==&id)
-                                    .map(|(_,tool,operation)|json!({"tool":tool,"operation":operation}))
-                                    .collect::<Vec<_>>();
-                                let unresolved_count=unresolved.len();
-                                let results=json!({
-                                    "suggestions":suggestions.clone(),
-                                    "pass":null,
-                                    "effects":{
-                                        "confirmed":suggestions,
-                                        "refused":refused.iter().map(|(tool,detail)|json!({"tool":tool,"detail":detail})).collect::<Vec<_>>(),
-                                        "unresolved":unresolved
-                                    }
-                                });
+                                let results = journal.task_results(&id);
+                                let unresolved_count = results["effects"]["counts"]["unresolved"].as_u64().unwrap_or(0);
+                                let refused = results["effects"]["counts"]["refused"].as_u64().unwrap_or(0);
                                 let answer=answer.trim().to_string();
                                 if let Some(task)=state.task_mut(&id){
                                     task.answer=Some(if answer.is_empty() {"Finished.".into()} else {truncate_utf8(&answer, 32 * 1024)});
                                     task.results=results;
                                 }
-                                journal.append(&id, "turn_completed", "", None, Vec::new(), if refused.is_empty() {"completed"} else {"refused"})?;
+                                journal.append(&id, "turn_completed", "", None, Vec::new(), if refused == 0 {"completed"} else {"refused"})?;
                                 let detail=if unresolved_count>0 {
                                     "Turn ended; document changes need reconciliation"
-                                } else if refused.is_empty() {
+                                } else if refused == 0 {
                                     "Finished"
                                 } else {
                                     "Finished; some operations were refused"
@@ -701,14 +769,17 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                             }
                             Ok(agent_client_protocol::schema::v1::StopReason::Cancelled) => {
                                 journal.append(&id, "turn_interrupted", "", None, Vec::new(), "cancelled")?;
+                                if let Some(task) = state.task_mut(&id) { task.results = terminal_results.clone(); }
                                 finish(&mut state,&id,"cancelled","Task cancelled");
                             }
                             Ok(agent_client_protocol::schema::v1::StopReason::Refusal) => {
                                 journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?;
+                                if let Some(task) = state.task_mut(&id) { task.results = terminal_results.clone(); }
                                 finish(&mut state,&id,"failed","The agent declined this task. Inspect any document changes before retrying.");
                             }
                             Ok(reason) => {
                                 journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?;
+                                if let Some(task) = state.task_mut(&id) { task.results = terminal_results; }
                                 finish(&mut state,&id,"failed",&format!("Task ended early ({reason:?}). Inspect any document changes before retrying."));
                             }
                         }
@@ -724,6 +795,86 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn activity_is_durable_and_restart_supersedes_the_last_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runner.json");
+        let mut state = State::default();
+        let mut task =
+            Task::from_message(&json!({"id":"one","role":"user","text":"Edit"})).unwrap();
+        task.start(None);
+        state.admit(task).unwrap();
+        let first = persist_report(&mut state, "one", &path).unwrap();
+        state
+            .task_mut("one")
+            .unwrap()
+            .set_activity("Using document tools");
+        let last = persist_report(&mut state, "one", &path).unwrap();
+        assert!(last.event_seq > first.event_seq);
+        let recovered = recover_state(&path).unwrap();
+        assert_eq!(recovered.task("one").unwrap().status, "interrupted");
+        assert!(recovered.task("one").unwrap().event_seq > last.event_seq);
+    }
+
+    #[test]
+    fn cancellation_and_recovery_retain_receipted_suggestions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runner.json");
+        let journal_path = dir.path().join("runner.journal.json");
+        let request = json!({"params":{"arguments":{"operation":{"epoch":"e","id":"suggest"}}}});
+        runner_journal::record_tool_call(&journal_path, "one", "document_propose", &request)
+            .unwrap();
+        runner_journal::record_tool_result(&journal_path,"one","document_propose",&request,&json!({"structuredContent":{"status":"committed","effects":[{"kind":"suggestion","id":"kept"}]}})).unwrap();
+        for status in ["cancelled", "failed", "interrupted"] {
+            let mut state = State::default();
+            let mut task =
+                Task::from_message(&json!({"id":"one","role":"user","text":"Edit"})).unwrap();
+            task.start(None);
+            state.admit(task).unwrap();
+            finish(&mut state, "one", status, "Stopped");
+            assert_eq!(
+                persist_report(&mut state, "one", &path).unwrap().results["suggestions"],
+                json!(["kept"])
+            );
+        }
+        assert_eq!(
+            recover_state(&path).unwrap().task("one").unwrap().results["suggestions"],
+            json!(["kept"])
+        );
+    }
+
+    #[test]
+    fn pre_read_preserves_render_identity_and_uses_comment_identity() {
+        let task = Task::from_message(&json!({"id":"one","role":"user","text":"Edit","context":{"selection":{"exact":"words"},"render_digest":"render","revision":"tree"}})).unwrap();
+        let queries = context_queries(&task).unwrap();
+        assert_eq!(queries[0]["render_digest"], "render");
+        assert_eq!(queries[0]["revision"], "tree");
+        let mut comment = task;
+        comment.context["thread"] = json!({"id":"comment"});
+        let queries = context_queries(&comment).unwrap();
+        assert_eq!(queries[0], json!({"kind":"thread","id":"comment"}));
+        assert_eq!(queries[1]["comment_id"], "comment");
+        assert!(queries[1].get("revision").is_none());
+        assert!(queries[1].get("selection").is_none());
+        assert!(queries[1].get("render_digest").is_none());
+    }
+
+    #[test]
+    fn restart_keeps_terminal_effects_after_journal_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runner.json");
+        let mut state = State::default();
+        let mut task =
+            Task::from_message(&json!({"id":"one","role":"user","text":"Edit"})).unwrap();
+        task.finish("interrupted", "Stopped");
+        task.results = json!({"suggestions":["kept"]});
+        state.admit(task).unwrap();
+        state.save(&path).unwrap();
+        assert_eq!(
+            recover_state(&path).unwrap().task("one").unwrap().results["suggestions"],
+            json!(["kept"])
+        );
+    }
     #[test]
     fn interrupted_tasks_are_retained_without_reexecution() {
         let dir = tempfile::tempdir().unwrap();

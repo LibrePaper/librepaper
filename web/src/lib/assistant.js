@@ -27,13 +27,18 @@ export function captureAttachment(selection, path = "", revision = "") {
   const source = hasSource && selection.source ? selection.source : selection;
   const anchor = normalizeAnchor(source, path);
   if (!anchor) return null;
-  const capturedRevision = text(selection?.revision || source?.revision || revision);
+  const renderDigest = text(selection?.render_digest || source?.render_digest);
+  const capturedRevision = text(selection?.revision || source?.revision || (renderDigest ? "" : revision));
   return {
     path: anchor.path || text(path),
     selection: anchor,
     revision: capturedRevision,
-    // A rendered quotation is useful context, but only a source selector
-    // captured by the reader is safe for an edit suggestion.
+    ...(renderDigest ? { render_digest: renderDigest } : {}),
+    // The server resolves rendered quotations against its immutable view. A
+    // browser selection therefore does not need to invent a source handle or
+    // revision before an editing task can be offered. `anchored` remains a
+    // display hint for source backed attachments, rather than an authority
+    // claim about the selection.
     anchored: Boolean((hasSource ? selection.source : source?.path) && anchor.path && capturedRevision),
   };
 }
@@ -173,7 +178,7 @@ export function capabilityAllows(capabilities, task, { attached = null, path = "
   if (!caps.verified || !caps.can_read) return false;
   if (["tighten", "rewrite", "refine"].includes(task.kind) && task.scope !== "selection") return false;
   if (task.scope === "selection" && !attached) return false;
-  if (taskNeedsAnchor(task) && (!attached?.anchored || !attached?.revision)) return false;
+  if (taskNeedsAnchor(task) && !text(attached?.selection?.exact).trim()) return false;
   if (task.scope === "file" && !path) return false;
   if (["tighten", "rewrite", "proofread", "fix", "refine"].includes(task.kind) && !caps.can_suggest) return false;
   if (task.kind === "respond" && !caps.can_reply) return false;
@@ -217,8 +222,13 @@ export function composeTaskMessage({ id, text: body = "", task, attachment = nul
   const file = selected?.path || (task?.scope === "file" || !task ? path : "");
   if (file) context.file = file;
   if (selected?.selection) context.selection = selected.selection;
-  const currentRevision = selected?.revision || revision;
-  if (currentRevision) context.revision = currentRevision;
+  const commentId = thread?.id || suggestion?.id;
+  const currentRevision = selected?.revision || (selected?.render_digest ? "" : revision);
+  if (commentId) context.comment_id = text(commentId);
+  else {
+    if (currentRevision) context.revision = currentRevision;
+    if (selected?.render_digest) context.render_digest = selected.render_digest;
+  }
   const error = diagnosticContext(diagnostic, revision || diagnostic?.revision || "");
   if (error) context.diagnostic = error;
   const refinement = suggestionContext(suggestion);

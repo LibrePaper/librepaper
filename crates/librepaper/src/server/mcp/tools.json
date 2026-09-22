@@ -96,18 +96,29 @@
                         "maxLength": 4096
                       },
                       "position": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 100000000
+                        "anyOf": [
+                          { "type": "integer", "minimum": 0, "maximum": 100000000 },
+                          { "type": "null" }
+                        ]
                       }
                     },
                     "required": [
-                      "path",
-                      "exact",
-                      "position"
+                      "exact"
                     ]
                   }
                 ]
+              },
+              "render_digest": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "tree_digest": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "comment_id": {
+                "type": "string",
+                "maxLength": 128
               },
               "context": {
                 "type": "string",

@@ -49,39 +49,68 @@ pub(crate) struct Event {
     /// the argument or the permission at fault.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Bounded, typed outcome metadata. Old journal files omit this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Value>,
 }
 
 /// The service's account of a refusal, bounded for the journal. `None` when
 /// the response carries no error, so a successful call stores nothing.
 pub(crate) fn failure_detail(response: &Value) -> Option<String> {
-    let result = response.get("result");
-    let error = response
-        .get("error")
-        .or_else(|| result.and_then(|r| r.get("error")))
-        // How the document service actually reports a refused tool call: a
-        // successful JSON-RPC response carrying `isError` and the reason in
-        // structured content. Missing this shape meant the journal recorded
-        // nothing at all for the failures that matter most.
-        .or_else(|| {
-            result
-                .and_then(|r| r.get("structuredContent"))
-                .and_then(|content| content.get("error"))
-        })?;
-    let message = error
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("refused without a message");
-    // The transport layer numbers its codes; the document service names them
-    // ("permission_changed", "invalid_params"). Either is worth keeping.
-    let detail = match (
-        error.get("code").and_then(Value::as_i64),
-        error.get("code").and_then(Value::as_str),
-    ) {
-        (Some(code), _) => format!("{code}: {message}"),
-        (None, Some(code)) => format!("{code}: {message}"),
-        _ => message.to_string(),
-    };
-    Some(detail.chars().take(400).collect())
+    let failures = refusal_details(response);
+    (!failures.is_empty()).then(|| {
+        failures
+            .iter()
+            .map(|failure| failure["detail"].as_str().unwrap_or("tool refused"))
+            .collect::<Vec<_>>()
+            .join("; ")
+            .chars()
+            .take(400)
+            .collect()
+    })
+}
+
+fn refusal_details(response: &Value) -> Vec<Value> {
+    fn walk(value: &Value, path: &str, depth: usize, out: &mut Vec<Value>) {
+        if depth > 4 || out.len() >= 100 {
+            return;
+        }
+        let body = structured_response(value);
+        if let Some(error) = value.get("error").or_else(|| body.get("error")) {
+            let code = error
+                .get("code")
+                .map(|code| {
+                    code.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| code.to_string())
+                })
+                .unwrap_or_default();
+            let message = error["message"]
+                .as_str()
+                .unwrap_or("refused without a message");
+            let detail = format!(
+                "{path}{}{message}",
+                if code.is_empty() {
+                    String::new()
+                } else {
+                    format!("{code}: ")
+                }
+            );
+            out.push(serde_json::json!({"kind":"refusal", "detail":detail.chars().take(400).collect::<String>()}));
+        }
+        for (index, child) in body["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(100)
+            .enumerate()
+        {
+            walk(child, &format!("{path}item {index}: "), depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(response, "", 0, &mut out);
+    out
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -344,13 +373,20 @@ impl Journal {
         result_ids: Vec<String>,
         status: &str,
     ) -> Result<u64, String> {
-        self.append_detailed(task_id, kind, tool, operation, result_ids, status, None)
+        self.append_detailed_with_effects(
+            task_id,
+            kind,
+            tool,
+            operation,
+            result_ids,
+            status,
+            None,
+            Vec::new(),
+        )
     }
 
-    /// `append` plus the service's account of a refusal. Separate so the
-    /// dozen callers that record ordinary progress stay unchanged.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn append_detailed(
+    fn append_detailed_with_effects(
         &mut self,
         task_id: &str,
         kind: &str,
@@ -359,6 +395,7 @@ impl Journal {
         result_ids: Vec<String>,
         status: &str,
         detail: Option<String>,
+        effects: Vec<Value>,
     ) -> Result<u64, String> {
         if task_id.len() > 128 || kind.len() > 64 || tool.len() > 128 || status.len() > 64 {
             return Err("runner journal event field exceeds its limit".into());
@@ -386,6 +423,7 @@ impl Journal {
                 result_ids: result_ids.clone(),
                 status: status.clone(),
                 detail: detail.clone(),
+                effects: effects.clone(),
             });
             while disk.events.len() > MAX_EVENTS {
                 let unresolved = unresolved_keys(&disk.events);
@@ -411,25 +449,8 @@ impl Journal {
         Ok(())
     }
 
-    /// The document tools this task called that the service refused, newest
-    /// last. An agent that is blocked will often answer as though it had
-    /// succeeded, so the task's own outcome is taken from the receipts rather
-    /// than from what the model said about them.
-    pub(crate) fn refused_tools(&self, task_id: &str) -> Vec<(String, String)> {
-        self.disk
-            .events
-            .iter()
-            .filter(|event| event.task_id == task_id && event.kind == "tool_result")
-            .filter_map(|event| {
-                event
-                    .detail
-                    .as_ref()
-                    .map(|detail| (event.tool.clone(), detail.clone()))
-            })
-            .collect()
-    }
-
     /// Callers must `refresh` first: see the note there.
+    #[cfg(test)]
     pub(crate) fn known_result_ids(&self, task_id: &str) -> BTreeSet<String> {
         self.disk
             .events
@@ -469,6 +490,103 @@ impl Journal {
             })
             .collect()
     }
+
+    /// Receipt metadata, with total counts preserved when details are omitted.
+    pub(crate) fn task_results(&self, task_id: &str) -> Value {
+        let mut confirmed = BTreeMap::new();
+        let mut refused = Vec::new();
+        let mut suggestions = BTreeSet::new();
+        for event in self
+            .disk
+            .events
+            .iter()
+            .filter(|event| event.task_id == task_id)
+        {
+            if !matches!(event.kind.as_str(), "tool_result" | "receipt_reconcile") {
+                continue;
+            }
+            let mut has_refusal = false;
+            for effect in &event.effects {
+                let mut effect = effect.clone();
+                effect["tool"] = Value::String(event.tool.clone());
+                if let Some(operation) = &event.operation {
+                    effect["operation"] = serde_json::json!(operation);
+                }
+                if effect["kind"] == "refusal" {
+                    has_refusal = true;
+                    refused.push(effect);
+                } else {
+                    if effect["kind"] == "suggestion" {
+                        if let Some(id) = effect["id"].as_str() {
+                            suggestions.insert(id.to_owned());
+                        }
+                    }
+                    confirmed.insert(effect.to_string(), effect);
+                }
+            }
+            if !has_refusal {
+                if let Some(detail) = &event.detail {
+                    refused.push(serde_json::json!({"tool":event.tool,"detail":detail}));
+                }
+            }
+            if event.tool == "document_propose" {
+                for id in &event.result_ids {
+                    suggestions.insert(id.clone());
+                    if !event
+                        .effects
+                        .iter()
+                        .any(|effect| effect["kind"] == "suggestion" && effect["id"] == *id)
+                    {
+                        let effect = serde_json::json!({"kind":"suggestion","id":id,"tool":event.tool,"operation":event.operation});
+                        confirmed.insert(effect.to_string(), effect);
+                    }
+                }
+            }
+        }
+        let unresolved = self
+            .pending_operations()
+            .into_iter()
+            .filter(|(task, tool, _)| {
+                task == task_id
+                    && matches!(
+                        tool.as_str(),
+                        "document_propose" | "document_apply" | "document_comment"
+                    )
+            })
+            .map(|(_, tool, operation)| serde_json::json!({"tool":tool,"operation":operation}))
+            .collect::<Vec<_>>();
+        let mut report = serde_json::json!({"suggestions":suggestions,"pass":null,"effects":{
+            "counts":{"confirmed":confirmed.len(),"refused":refused.len(),"unresolved":unresolved.len(),"suggestions":suggestions.len()},
+            "omitted":{"confirmed":0,"refused":0,"unresolved":0,"suggestions":0},
+            "confirmed":confirmed.into_values().collect::<Vec<_>>(),"refused":refused,"unresolved":unresolved
+        }});
+        while serde_json::to_vec(&report).map_or(usize::MAX, |bytes| bytes.len()) > 12 * 1024 {
+            let key = ["confirmed", "suggestions", "refused", "unresolved"]
+                .into_iter()
+                .find(|key| {
+                    let values = if *key == "suggestions" {
+                        &report[*key]
+                    } else {
+                        &report["effects"][*key]
+                    };
+                    values.as_array().is_some_and(|values| !values.is_empty())
+                });
+            let Some(key) = key else {
+                break;
+            };
+            let values = if key == "suggestions" {
+                &mut report[key]
+            } else {
+                &mut report["effects"][key]
+            };
+            if let Some(values) = values.as_array_mut() {
+                values.pop();
+            }
+            let omitted = report["effects"]["omitted"][key].as_u64().unwrap_or(0);
+            report["effects"]["omitted"][key] = Value::from(omitted + 1);
+        }
+        report
+    }
 }
 
 fn operation(value: &Value) -> Option<OperationIdentity> {
@@ -498,6 +616,7 @@ fn structured_response(value: &Value) -> &Value {
         .get("result")
         .and_then(|result| result.get("structuredContent"))
         .or_else(|| value.get("structuredContent"))
+        .or_else(|| value.get("result"))
         .unwrap_or(value)
 }
 
@@ -538,6 +657,16 @@ fn result_ids(tool: &str, response: &Value) -> Vec<String> {
 }
 
 pub(crate) fn response_settled(response: &Value) -> bool {
+    fn has_unknown(value: &Value) -> bool {
+        value.get("error").is_some()
+            || value
+                .get("items")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().any(has_unknown))
+    }
+    if has_unknown(structured_response(response)) {
+        return false;
+    }
     matches!(
         structured_response(response)
             .get("status")
@@ -551,6 +680,68 @@ pub(crate) fn response_settled(response: &Value) -> bool {
                 | "aborted"
         )
     )
+}
+
+fn typed_effects(tool: &str, response: &Value) -> Vec<Value> {
+    fn field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+        value
+            .get(key)?
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 128)
+    }
+    fn walk(tool: &str, value: &Value, depth: usize, out: &mut Vec<Value>) {
+        if depth > 4 || out.len() >= 100 {
+            return;
+        }
+        if matches!(value["status"].as_str(), Some("committed" | "replayed"))
+            && value.get("error").is_none()
+        {
+            match tool {
+                "document_apply" => {
+                    if let (Some(before), Some(after)) = (
+                        field(value, "tree_digest_before"),
+                        field(value, "tree_digest_after"),
+                    ) {
+                        out.push(serde_json::json!({"kind":"application","tree_digest_before":before,"tree_digest_after":after}));
+                    }
+                }
+                "document_comment" => {
+                    if let (Some(action), Some(id)) =
+                        (field(value, "action"), field(value, "comment_id"))
+                    {
+                        let mut effect =
+                            serde_json::json!({"kind":"comment","action":action,"comment_id":id});
+                        if let Some(id) = field(&value["reply"], "id") {
+                            effect["reply_id"] = Value::String(id.into());
+                        }
+                        out.push(effect);
+                    }
+                }
+                "document_propose" | "document_result" => {
+                    for effect in value["effects"].as_array().into_iter().flatten() {
+                        if out.len() >= 100 {
+                            break;
+                        }
+                        if effect["kind"] == "suggestion" {
+                            if let Some(id) = field(effect, "id") {
+                                out.push(serde_json::json!({"kind":"suggestion","id":id}));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for child in value["items"].as_array().into_iter().flatten().take(100) {
+            walk(tool, child, depth + 1, out);
+        }
+        if value["status"] == "already_committed" {
+            walk(tool, &value["outcome"], depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(tool, structured_response(response), 0, &mut out);
+    out
 }
 
 /// Record a tool request before it is sent to the document service. The
@@ -610,7 +801,7 @@ pub(crate) fn record_tool_result(
     } else {
         "outcome_unknown"
     };
-    journal.append_detailed(
+    journal.append_detailed_with_effects(
         task_id,
         "tool_result",
         tool,
@@ -618,6 +809,15 @@ pub(crate) fn record_tool_result(
         ids.clone(),
         status,
         failure_detail(response),
+        {
+            let mut effects = if owned_lookup {
+                typed_effects(tool, response)
+            } else {
+                Vec::new()
+            };
+            effects.extend(refusal_details(response));
+            effects
+        },
     )?;
     if tool == "document_result" && response_settled(response) {
         if let Some(target) = target {
@@ -644,6 +844,155 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn summaries_preserve_partial_effects_and_every_item_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.json");
+        let request = json!({"params":{"arguments":{"operation":{"epoch":"e","id":"batch"}}}});
+        let response = json!({"result":{"structuredContent":{"status":"committed","items":[
+            {"status":"committed","effects":[{"kind":"suggestion","id":"kept"}]},
+            {"error":{"code":"conflict","message":"passage changed"}},
+            {"error":{"code":"outcome_unknown","message":"connection lost"}}
+        ]}}});
+        record_tool_call(&path, "task", "document_propose", &request).unwrap();
+        record_tool_result(&path, "task", "document_propose", &request, &response).unwrap();
+        let summary = Journal::open(&path).unwrap().task_results("task");
+        assert_eq!(summary["suggestions"], json!(["kept"]));
+        assert_eq!(summary["effects"]["counts"]["confirmed"], 1);
+        assert_eq!(summary["effects"]["counts"]["refused"], 2);
+        assert_eq!(summary["effects"]["counts"]["unresolved"], 1);
+        assert!(summary["effects"]["refused"][1]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("item 2"));
+    }
+
+    #[test]
+    fn summaries_include_applications_and_comment_actions_without_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.json");
+        for (tool, id, result) in [
+            (
+                "document_apply",
+                "apply",
+                json!({"status":"committed","tree_digest_before":"old","tree_digest_after":"new"}),
+            ),
+            (
+                "document_comment",
+                "refine",
+                json!({"status":"committed","action":"refine","comment_id":"c1","comment":{"body":"private source"}}),
+            ),
+            (
+                "document_comment",
+                "reply",
+                json!({"status":"committed","action":"reply","comment_id":"c1","reply":{"id":"reply1","body":"private source"}}),
+            ),
+        ] {
+            let request = json!({"params":{"arguments":{"operation":{"epoch":"e","id":id}}}});
+            record_tool_call(&path, "task", tool, &request).unwrap();
+            record_tool_result(
+                &path,
+                "task",
+                tool,
+                &request,
+                &json!({"result":{"structuredContent":result}}),
+            )
+            .unwrap();
+        }
+        let summary = Journal::open(&path).unwrap().task_results("task");
+        assert_eq!(summary["effects"]["counts"]["confirmed"], 3);
+        assert_eq!(summary["effects"]["counts"]["unresolved"], 0);
+        assert!(!std::fs::read_to_string(path)
+            .unwrap()
+            .contains("private source"));
+        assert!(summary["effects"]["confirmed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|effect| effect["kind"].is_string() && effect["operation"].is_object()));
+    }
+
+    #[test]
+    fn summary_counts_survive_truncation_and_old_journals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.json");
+        let events = (0..500)
+            .map(|index| Event {
+                seq: index + 1,
+                at: 0,
+                task_id: "task".into(),
+                kind: "tool_result".into(),
+                tool: "document_propose".into(),
+                operation: None,
+                receipt_id: None,
+                result_ids: vec![format!("suggestion-{index:0110}")],
+                status: "completed".into(),
+                detail: None,
+                effects: Vec::new(),
+            })
+            .collect();
+        let journal = Journal {
+            path,
+            disk: Disk {
+                next_seq: 500,
+                events,
+            },
+        };
+        let summary = journal.task_results("task");
+        assert!(serde_json::to_vec(&summary).unwrap().len() <= 12 * 1024);
+        assert_eq!(summary["effects"]["counts"]["confirmed"], 500);
+        assert_eq!(summary["effects"]["counts"]["suggestions"], 500);
+        for key in ["confirmed", "suggestions"] {
+            let retained = if key == "suggestions" {
+                summary[key].as_array().unwrap().len()
+            } else {
+                summary["effects"][key].as_array().unwrap().len()
+            };
+            assert_eq!(
+                retained as u64 + summary["effects"]["omitted"][key].as_u64().unwrap(),
+                500
+            );
+        }
+    }
+
+    #[test]
+    fn reconciliation_does_not_leave_historical_unknown_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.json");
+        let request = json!({"params":{"arguments":{"operation":{"epoch":"e","id":"apply"}}}});
+        record_tool_call(&path, "task", "document_apply", &request).unwrap();
+        record_tool_result(
+            &path,
+            "task",
+            "document_apply",
+            &request,
+            &json!({"error":{"message":"lost"}}),
+        )
+        .unwrap();
+        let mut journal = Journal::open(&path).unwrap();
+        assert_eq!(
+            journal.task_results("task")["effects"]["counts"]["unresolved"],
+            1
+        );
+        journal
+            .append(
+                "task",
+                "receipt_reconcile",
+                "document_apply",
+                Some(OperationIdentity {
+                    epoch: "e".into(),
+                    id: "apply".into(),
+                }),
+                vec![],
+                "reconciled",
+            )
+            .unwrap();
+        assert_eq!(
+            journal.task_results("task")["effects"]["counts"]["unresolved"],
+            0
+        );
+    }
+
+    #[test]
     fn sequences_survive_reload_and_old_events_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("journal.json");
@@ -661,6 +1010,7 @@ mod tests {
                     result_ids: Vec::new(),
                     status: "working".into(),
                     detail: None,
+                    effects: Vec::new(),
                 })
                 .collect(),
         };

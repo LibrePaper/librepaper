@@ -24,7 +24,14 @@ assert.equal(message.context.revision, "sha-1");
 
 const caps = normalizeCapabilities({ can_read: true, can_comment: true, can_edit: false });
 assert.equal(capabilityAllows(caps, task, { attached: attachment, path: "main.md" }), true);
-assert.equal(capabilityAllows(caps, { kind: "rewrite", scope: "selection" }, { attached: { ...attachment, anchored: false }, path: "main.md" }), false);
+const rendered = captureAttachment({ exact: "Rendered words", prefix: "before ", suffix: " after", render_digest: "render-1" }, "open-file.md", "unrelated-source-revision");
+assert.equal(rendered.anchored, false);
+assert.equal(rendered.render_digest, "render-1");
+assert.equal(capabilityAllows(caps, task, { attached: rendered }), true);
+assert.equal(composeTaskMessage({ task, attachment: rendered }).context.render_digest, "render-1");
+assert.equal(composeTaskMessage({ task, attachment: rendered, revision: "unrelated-source-revision" }).context.revision, undefined);
+assert.equal(capabilityAllows(caps, task, { attached: { selection: { exact: "" } } }), false);
+assert.equal(capabilityAllows(caps, { kind: "rewrite", scope: "selection" }, { attached: { ...attachment, anchored: false }, path: "main.md" }), true);
 assert.equal(capabilityAllows(caps, { kind: "explain", scope: "file" }, { path: "main.md" }), true);
 assert.equal(capabilityAllows({}, { kind: "explain", scope: "file" }, { path: "main.md" }), false);
 
@@ -53,6 +60,8 @@ const thread = { id: "comment-1", body: "Please clarify this", replies: [{ body:
 const response = composeTaskMessage({ id: "m3", text: "I will clarify this.",
   task: { kind: "respond", scope: "selection" }, attachment, thread });
 assert.deepEqual(response.context.thread, thread);
+assert.equal(response.context.comment_id, "comment-1");
+assert.equal(response.context.revision, undefined);
 
 const refinement = composeTaskMessage({ id: "m4", text: "Make the suggestion more concise.",
   task: { kind: "refine", scope: "selection" }, attachment,
