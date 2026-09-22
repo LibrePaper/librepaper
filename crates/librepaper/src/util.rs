@@ -4,6 +4,28 @@
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::OffsetDateTime;
+/// Compares two byte strings without branching on the first differing byte.
+///
+/// For a secret the caller is about to accept or refuse: a pairing token's
+/// digest, a pairing code's challenge. Two lengths are told apart
+/// immediately, which leaks only how long the value is -- and the values
+/// this is used on are fixed-length digests, so that is nothing. The point
+/// is that a near-miss and a wild guess take the same time, so a caller
+/// cannot find a token a byte at a time.
+///
+/// Trimming, decoding and length validation belong to the caller: what a
+/// value is supposed to look like is that caller's business, and doing it
+/// here would mean one function deciding it for every caller.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |difference, (x, y)| difference | (x ^ y))
+        == 0
+}
+
 /// Strips control characters and trims to a length in characters, matching
 /// what every backend has always stored.
 pub fn clean(value: &str, limit: usize) -> String {

@@ -84,7 +84,7 @@ fn diagnostic_of(error: CursorResolutionError) -> ResolutionDiagnostic {
     match error {
         CursorResolutionError::MissingFile => ResolutionDiagnostic::RemovedFile,
         CursorResolutionError::MissingContainer => ResolutionDiagnostic::DeletedContainer,
-        CursorResolutionError::MalformedCursor => ResolutionDiagnostic::MalformedCursor,
+
         CursorResolutionError::ForeignContainer => ResolutionDiagnostic::ForeignContainer,
         CursorResolutionError::InvalidPosition => ResolutionDiagnostic::InvalidRange,
     }
@@ -104,24 +104,49 @@ fn diagnostic_of(error: CursorResolutionError) -> ResolutionDiagnostic {
 /// reason -- otherwise a five-hundred-comment room converts a whole file five
 /// hundred times on every keystroke, to slice eight characters out of it.
 pub(crate) struct Sources {
-    paths: std::collections::HashMap<String, String>,
-    units: std::collections::BTreeMap<String, Vec<u16>>,
+    /// Keyed by the stable Loro id, which is what a comment's anchor names.
+    units: std::collections::HashMap<String, Vec<u16>>,
 }
 
 impl Sources {
-    pub(crate) fn of(doc: &loro::LoroDoc) -> Sources {
-        Sources {
-            paths: session::paths_of(doc),
-            units: session::texts_of(doc)
-                .into_iter()
-                .map(|(path, text)| (path, text.encode_utf16().collect()))
-                .collect(),
+    /// The projected text of every file, by the id a comment anchors to.
+    ///
+    /// Built from the canonical projection rather than from the raw maps,
+    /// because the two disagree about a path collision: `session::texts_of`
+    /// keys by path and keeps whichever text it read last for a duplicated
+    /// one, while `project` reserves paths deterministically and suffixes
+    /// the loser. A comment anchored to the file that lost is about *that*
+    /// file's words, and resolving it against the winner's is resolving it
+    /// against somebody else's document -- silently, and only for a document
+    /// that has a collision in it.
+    ///
+    /// Taking the projection the caller already has is also the cheap way
+    /// round: every caller computed one beside this for the tree digest.
+    pub(crate) fn of(projected: &librepaper_document_core::Projected) -> Sources {
+        let mut units = std::collections::HashMap::new();
+        for (path, entry) in &projected.projection.files {
+            // An asset has no id and no text: it is at a path, not in one.
+            if entry.id.is_empty() {
+                continue;
+            }
+            let Some(text) = projected.texts.get(path) else {
+                continue;
+            };
+            units.insert(entry.id.clone(), text.encode_utf16().collect());
         }
+        Sources { units }
+    }
+
+    /// The same, projecting the document with this deployment's rules. For
+    /// the tests, which have a document and no projection in hand.
+    #[cfg(test)]
+    pub(crate) fn of_doc(doc: &loro::LoroDoc) -> Sources {
+        let config = crate::config::Configuration::default();
+        Sources::of(&librepaper_document_core::project(doc, &config.paths()))
     }
 
     fn units_of(&self, file_id: &str) -> Option<&[u16]> {
-        let path = self.paths.get(file_id)?;
-        self.units.get(path).map(Vec::as_slice)
+        self.units.get(file_id).map(Vec::as_slice)
     }
 }
 
@@ -446,11 +471,13 @@ impl Room {
         };
         let resolved = self
             .log()
-            .with_head(|doc| {
-                let sources = Sources::of(doc);
-                let tree_digest = librepaper_document_core::project(doc, &self.config().paths())
-                    .projection
-                    .digest();
+            .with_projected_head(|doc, projected| {
+                // One acquisition of the sequencer lock for the head and the
+                // projection both: the digest a comment is attached against
+                // has to name the revision its text was read from, and two
+                // calls could be separated by an edit.
+                let sources = Sources::of(projected);
+                let tree_digest = projected.projection.digest();
                 let mut found = Vec::with_capacity(comments.len());
                 for comment in comments.iter() {
                     let Some(anchor) = comment.original_anchor.as_ref() else {
@@ -515,11 +542,13 @@ impl Room {
         }
         let moved = self
             .log()
-            .with_head(|doc| {
-                let sources = Sources::of(doc);
-                let tree_digest = librepaper_document_core::project(doc, &self.config().paths())
-                    .projection
-                    .digest();
+            .with_projected_head(|doc, projected| {
+                // One acquisition of the sequencer lock for the head and the
+                // projection both: the digest a comment is attached against
+                // has to name the revision its text was read from, and two
+                // calls could be separated by an edit.
+                let sources = Sources::of(projected);
+                let tree_digest = projected.projection.digest();
                 let mut moved = Vec::new();
                 for (id, anchor, live, before) in &held {
                     let found = resolve(doc, &sources, &tree_digest, anchor, live.as_ref());
@@ -621,12 +650,82 @@ pub(super) mod tests {
         }
     }
 
+    /// Two files asking for the same path is a document the projection has
+    /// an answer for and the raw maps do not: `project` reserves the path
+    /// for one of them by a stated rule and suffixes the other, while
+    /// `session::texts_of` keys by path and keeps whichever it read last.
+    ///
+    /// A comment is anchored to a file *id*, so resolving it against a
+    /// by-path reading resolves it against whichever file happened to win --
+    /// silently, and only on a document with a collision in it.
+    #[test]
+    fn a_comment_on_the_loser_of_a_path_collision_reads_its_own_file() {
+        // A collision is not something one editor can make -- `put_text`
+        // finds the path and edits the file that is there. It is what a
+        // merge produces: two peers, offline from each other, each creating
+        // `paper.md` under an id of its own.
+        let doc = session::new_doc();
+        doc.set_peer_id(1).expect("a peer id");
+        let mine = session::put_text(&doc, "paper.md", "The winner mentions an interval here.");
+
+        let theirs = session::new_doc();
+        theirs.set_peer_id(2).expect("a peer id");
+        let loser = session::put_text(&theirs, "paper.md", "The loser mentions an interval there.");
+        assert_ne!(mine, loser, "two peers mint two ids");
+        session::apply_update(&doc, &session::encode_state(&theirs)).expect("the merge lands");
+        assert_eq!(
+            session::paths_of(&doc).len(),
+            2,
+            "both files exist, and both are named `paper.md`",
+        );
+
+        let config = crate::config::Configuration::default();
+        let projected = librepaper_document_core::project(&doc, &config.paths());
+        assert_eq!(
+            projected.projection.files.len(),
+            2,
+            "both files are projected, one of them suffixed: {:?}",
+            projected.projection.files.keys().collect::<Vec<_>>()
+        );
+
+        // Both files, because only one of the two can be the one a by-path
+        // reading happens to return: whichever that is, the *other* comment
+        // is the one that was silently resolved against somebody else's
+        // text. Asserting both is what makes this test discriminating.
+        let sources = Sources::of(&projected);
+        for (id, body) in [
+            (&mine, "The winner mentions an interval here."),
+            (&loser, "The loser mentions an interval there."),
+        ] {
+            let at = body.find("interval").expect("the passage is in this file") as u32;
+            let wanted = target(id, at, at + 8, "interval");
+            let live = capture(&doc, &wanted).expect("cursors into this file's text");
+            let found = resolve(&doc, &sources, "b", &anchor(wanted), Some(&live));
+            assert_eq!(
+                found.status,
+                AnchorStatus::Exact,
+                "the passage in {body:?} is still exactly where it was",
+            );
+            assert_eq!(
+                found.resolved_range_utf16,
+                Some((at, at + 8)),
+                "the offsets are this file's own, not the other file's, in {body:?}",
+            );
+        }
+    }
+
     #[test]
     fn an_untouched_passage_resolves_exactly_where_it_was() {
         let (doc, id) = document("paper.md", "The interval covers the mean.");
         let wanted = target(&id, 4, 12, "interval");
         let live = capture(&doc, &wanted).expect("cursors");
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), Some(&live));
+        let found = resolve(
+            &doc,
+            &Sources::of_doc(&doc),
+            "b",
+            &anchor(wanted),
+            Some(&live),
+        );
         assert_eq!(found.status, AnchorStatus::Exact);
         assert_eq!(found.resolved_range_utf16, Some((4, 12)));
     }
@@ -637,7 +736,13 @@ pub(super) mod tests {
         let wanted = target(&id, 4, 12, "interval");
         let live = capture(&doc, &wanted).expect("cursors");
         session::put_text(&doc, "paper.md", "Well. The interval covers the mean.");
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), Some(&live));
+        let found = resolve(
+            &doc,
+            &Sources::of_doc(&doc),
+            "b",
+            &anchor(wanted),
+            Some(&live),
+        );
         assert_eq!(found.status, AnchorStatus::Exact);
         assert_eq!(found.resolved_range_utf16, Some((10, 18)));
     }
@@ -648,7 +753,13 @@ pub(super) mod tests {
         let wanted = target(&id, 4, 12, "interval");
         let live = capture(&doc, &wanted).expect("cursors");
         session::put_text(&doc, "paper.md", "The intervals cover the mean.");
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), Some(&live));
+        let found = resolve(
+            &doc,
+            &Sources::of_doc(&doc),
+            "b",
+            &anchor(wanted),
+            Some(&live),
+        );
         assert_eq!(found.status, AnchorStatus::Modified);
     }
 
@@ -658,7 +769,13 @@ pub(super) mod tests {
         let wanted = target(&id, 4, 12, "interval");
         let live = capture(&doc, &wanted).expect("cursors");
         session::put_text(&doc, "paper.md", "The  covers the mean.");
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), Some(&live));
+        let found = resolve(
+            &doc,
+            &Sources::of_doc(&doc),
+            "b",
+            &anchor(wanted),
+            Some(&live),
+        );
         assert_eq!(found.status, AnchorStatus::Deleted);
     }
 
@@ -671,7 +788,7 @@ pub(super) mod tests {
             target: CommentTarget::Document,
         };
         assert_eq!(
-            resolve(&doc, &Sources::of(&doc), "b", &whole, None).status,
+            resolve(&doc, &Sources::of_doc(&doc), "b", &whole, None).status,
             AnchorStatus::Exact
         );
     }
@@ -680,7 +797,7 @@ pub(super) mod tests {
     fn without_cursors_the_words_are_looked_for() {
         let (doc, id) = document("paper.md", "Well. The interval covers the mean.");
         let wanted = target(&id, 4, 12, "interval");
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), None);
+        let found = resolve(&doc, &Sources::of_doc(&doc), "b", &anchor(wanted), None);
         assert_eq!(found.status, AnchorStatus::Modified);
         assert_eq!(found.resolved_range_utf16, Some((10, 18)));
     }
@@ -689,7 +806,7 @@ pub(super) mod tests {
     fn two_equally_good_candidates_are_ambiguous_rather_than_the_first_one() {
         let (doc, id) = document("paper.md", "interval\ninterval\n");
         let wanted = target(&id, 0, 8, "interval");
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), None);
+        let found = resolve(&doc, &Sources::of_doc(&doc), "b", &anchor(wanted), None);
         assert_eq!(found.status, AnchorStatus::Ambiguous);
     }
 
@@ -697,7 +814,7 @@ pub(super) mod tests {
     fn a_file_that_is_gone_is_unresolved_and_says_why() {
         let (doc, _) = document("paper.md", "The interval covers the mean.");
         let wanted = target("file-missing", 4, 12, "interval");
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted), None);
+        let found = resolve(&doc, &Sources::of_doc(&doc), "b", &anchor(wanted), None);
         assert_eq!(found.status, AnchorStatus::Unresolved);
         assert_eq!(found.diagnostic, Some(ResolutionDiagnostic::RemovedFile));
     }
@@ -710,7 +827,7 @@ pub(super) mod tests {
         let borrowed = capture(&doc, &target(&other, 4, 12, "interval")).expect("cursors");
         let found = resolve(
             &doc,
-            &Sources::of(&doc),
+            &Sources::of_doc(&doc),
             "b",
             &anchor(wanted),
             Some(&borrowed),
@@ -734,7 +851,13 @@ mod cursor_caching_tests {
     fn a_passage_found_by_its_words_is_given_cursors_for_next_time() {
         let (doc, id) = document("paper.md", "Well. The interval covers the mean.");
         let wanted = target(&id, 4, 12, "interval");
-        let found = resolve(&doc, &Sources::of(&doc), "b", &anchor(wanted.clone()), None);
+        let found = resolve(
+            &doc,
+            &Sources::of_doc(&doc),
+            "b",
+            &anchor(wanted.clone()),
+            None,
+        );
         assert_eq!(found.status, AnchorStatus::Modified);
         let live = found.live_source_range.expect("cursors for next time");
 
@@ -745,7 +868,13 @@ mod cursor_caching_tests {
             "paper.md",
             "Well, then. The interval covers the mean.",
         );
-        let again = resolve(&doc, &Sources::of(&doc), "c", &anchor(wanted), Some(&live));
+        let again = resolve(
+            &doc,
+            &Sources::of_doc(&doc),
+            "c",
+            &anchor(wanted),
+            Some(&live),
+        );
         assert_eq!(again.status, AnchorStatus::Exact);
         assert_eq!(again.resolved_range_utf16, Some((16, 24)));
     }

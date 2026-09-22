@@ -419,6 +419,27 @@ pub(super) fn privacy_headers(response: &mut Reply) {
     set(response, "x-robots-tag", "noindex, nofollow, noarchive");
 }
 
+/* ------------------------------------------ refused requests */
+
+/// A caller who presented a credential that did not resolve.
+///
+/// Never an anonymous identity: somebody who sent a session or a bearer and
+/// was quietly downgraded would be shown a public view of their own private
+/// document and be told nothing about why.
+pub(super) fn authentication_expired() -> Reply {
+    write_json(
+        401,
+        &json!({"error": "authentication expired or was revoked"}),
+    )
+}
+
+/// A document this caller may not see. The same answer a document that does
+/// not exist gets, deliberately: an unlisted slug is the only thing standing
+/// between a private document and the public, and a 403 would confirm it.
+pub(super) fn no_such_document() -> Reply {
+    write_json(404, &json!({"error": "not found"}))
+}
+
 /* ------------------------------------------ refused room writes */
 
 /// The one place a refused room write becomes an HTTP answer.
@@ -464,6 +485,72 @@ pub(super) fn socket_refusal(error: &crate::room::WriteError, request_id: &str) 
         "request_id": request_id,
         "version": 1,
         "protocol": "librepaper.room.v3",
+    });
+    if error.is_temporary() {
+        payload["retryable"] = json!(true);
+    }
+    payload
+}
+
+/// A refused semantic command, classified once (§7.1, §7.2).
+///
+/// [`WriteError`](crate::room::WriteError) already owns the status, the retry
+/// advice and the message a client may see; a `CommandError` converts into
+/// one. The single thing that conversion cannot carry is the digest a
+/// `StaleSelection` hands back, and each transport spells that in its own
+/// way, so it comes back beside the classified error rather than every
+/// transport rebuilding the table and reaching for `to_string()` -- which is
+/// how storage context was leaking into replies.
+pub(super) fn classify_command(
+    error: crate::log::CommandError,
+) -> (crate::room::WriteError, Option<String>) {
+    match error {
+        crate::log::CommandError::StaleSelection { digest } => (
+            crate::room::WriteError::Conflict(
+                "current project identity is required; refresh before annotating".into(),
+            ),
+            Some(digest),
+        ),
+        other => (crate::room::WriteError::from(other), None),
+    }
+}
+
+/// A refused command as an HTTP answer. `what` names the operation for the
+/// log, exactly as it does for [`refused`].
+pub(super) fn command_refused(what: &str, error: crate::log::CommandError) -> Reply {
+    let (error, digest) = classify_command(error);
+    let fields: Vec<(&str, Value)> = digest
+        .map(|digest| ("digest", json!(digest)))
+        .into_iter()
+        .collect();
+    refused_with(what, &error, &fields)
+}
+
+/// A refused command as the room protocol's own error frame, carrying the
+/// status its HTTP sibling would have answered with so a REST caller reading
+/// this value does not have to guess one. Storage context goes to the log
+/// here too: the frame reaches a browser.
+pub(super) fn command_refusal_value(what: &str, error: crate::log::CommandError) -> Value {
+    let (error, digest) = classify_command(error);
+    let mut payload = refusal_value(what, &error);
+    if let Some(digest) = digest {
+        payload["stale_source"] = json!(true);
+        payload["digest"] = json!(digest);
+    }
+    payload
+}
+
+/// A refused room read or write as an error frame: the message, the status
+/// and the retry advice the variant decides, and the context it carries
+/// written to the log rather than sent.
+pub(super) fn refusal_value(what: &str, error: &crate::room::WriteError) -> Value {
+    if let Some(context) = error.log_context() {
+        eprintln!("warning: {what}: {context}");
+    }
+    let mut payload = json!({
+        "type": "error",
+        "message": error.client_message(),
+        "status": error.status(),
     });
     if error.is_temporary() {
         payload["retryable"] = json!(true);

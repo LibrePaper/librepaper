@@ -93,9 +93,16 @@ async fn connected(url: &str) -> PostgresCatalog {
     catalog
 }
 
-/// Wipes every row this file's fixtures could have left behind, the same
-/// list `storage/postgres/mod.rs`'s own `truncate` uses. Safe only because
-/// the brief for this file requires a database dedicated to it.
+/// Wipes every row this file's fixtures could have left behind.
+///
+/// The same list as `crate::tests::SCHEMA_TABLES`, spelled out again because
+/// this is an integration test and can only see what the crate makes public:
+/// a reset list is not an API, and exporting one so a test could share it
+/// would put it in the deployment's surface. Adding a table to the schema
+/// means adding it here as well as there.
+///
+/// Safe only because the brief for this file requires a database dedicated
+/// to it.
 async fn truncate(catalog: &PostgresCatalog) {
     sqlx::query(
         "TRUNCATE document_proposal_hunks,document_proposals,document_labels,\
@@ -882,16 +889,29 @@ mod revocation {
             .expect("count document_updates rows")
     }
 
-    #[tokio::test]
-    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
-    async fn authority_revoked_mid_buffer_flushes_the_buffer_and_closes_only_that_socket() {
-        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
-            return;
-        };
+    /// One whole deployment: a real catalogue, a real `Server` on a real
+    /// loopback port, an owner and a second signed-in editor with bearers
+    /// for both. Shared by the two revocation gates below because the setup
+    /// really is identical -- what differs is only which code path notices
+    /// that the second editor's authority has gone.
+    pub(super) struct Deployed {
+        pub catalog: Arc<PostgresCatalog>,
+        pub base: String,
+        pub addr: std::net::SocketAddr,
+        pub http: reqwest::Client,
+        pub owner_bearer: String,
+        pub second_editor_bearer: String,
+        /// The key of an edit link minted through the real sharing route:
+        /// the second editor's only route to Editor, and so the one thing
+        /// revoking takes away.
+        pub edit_key: String,
+        pub document_id: Uuid,
+    }
 
+    pub(super) async fn deploy(url: &str, slug: &str, tag: &str) -> Deployed {
         let blobs = blobs();
         let config = Arc::new(Configuration::default());
-        let catalog = Arc::new(connected(&url).await);
+        let catalog = Arc::new(connected(url).await);
         truncate(&catalog).await;
         let writer = catalog
             .claim_writer()
@@ -905,7 +925,7 @@ mod revocation {
             .create_account(NewAccount {
                 kind: "registered".into(),
                 provider: Some("test".into()),
-                provider_subject: Some("subject-revoke-owner".into()),
+                provider_subject: Some(format!("subject-revoke-owner-{tag}")),
                 handle: "owner".into(),
                 display_name: "Owner".into(),
                 email: None,
@@ -921,14 +941,13 @@ mod revocation {
             .create_account(NewAccount {
                 kind: "registered".into(),
                 provider: Some("test".into()),
-                provider_subject: Some("subject-revoke-editor".into()),
+                provider_subject: Some(format!("subject-revoke-editor-{tag}")),
                 handle: "second-editor".into(),
                 display_name: "Second Editor".into(),
                 email: None,
             })
             .await
             .expect("create the second editor's account");
-        let slug = "authority-revoked-mid-buffer";
         seed_document(&catalog, owner.id, slug).await;
         let document_id = catalog
             .document_by_slug(slug)
@@ -941,7 +960,7 @@ mod revocation {
             catalog.clone(),
             blobs.clone(),
             config.clone(),
-            "deployment-revoke".into(),
+            tag.to_string(),
         );
         let rooms = Rooms::new(
             catalog.clone(),
@@ -961,9 +980,7 @@ mod revocation {
             config.clone(),
             catalog.clone(),
             registry.clone(),
-        )
-        .await
-        .expect("open the store against the same catalogue");
+        );
 
         // `provider_configured` (server/mod.rs) needs a non-empty client id
         // before it grants the owner rung to a GitHub-provider bearer;
@@ -1030,27 +1047,64 @@ mod revocation {
             .to_string();
         assert!(!edit_key.is_empty());
 
-        // -- the owner's own socket: never revoked by anything below ---------
-        let mut owner_request = format!("ws://{addr}/ws/{slug}")
+        Deployed {
+            catalog,
+            base,
+            addr,
+            http,
+            owner_bearer: bearer,
+            second_editor_bearer,
+            edit_key,
+            document_id,
+        }
+    }
+
+    /// Opens one socket and takes it as far as `doc-state`, which is where
+    /// both gates below start from. The `doc-state` frame comes back for the
+    /// caller that wants to look at it.
+    async fn join(addr: std::net::SocketAddr, path: &str, bearer: &str) -> (WsStream, Value) {
+        let mut request = format!("ws://{addr}{path}")
             .into_client_request()
-            .expect("build the owner's websocket handshake request");
-        owner_request.headers_mut().insert(
+            .expect("build a websocket handshake request");
+        request.headers_mut().insert(
             "authorization",
             format!("Bearer {bearer}").parse().expect("a bearer header"),
         );
-        let (mut owner_ws, _) = tokio_tungstenite::connect_async(owner_request)
+        let (mut ws, _) = tokio_tungstenite::connect_async(request)
             .await
-            .expect("the owner's socket must be admitted");
-        wait_for_type(&mut owner_ws, "hello", Duration::from_secs(5)).await;
-        owner_ws
-            .send(WsMessage::Text(
-                json!({"type": "doc-open", "vector": "", "protocol": PROTOCOL})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .expect("send the owner's doc-open");
-        let initial = wait_for_type(&mut owner_ws, "doc-state", Duration::from_secs(5)).await;
+            .expect("the socket must be admitted");
+        wait_for_type(&mut ws, "hello", Duration::from_secs(5)).await;
+        ws.send(WsMessage::Text(
+            json!({"type": "doc-open", "vector": "", "protocol": PROTOCOL})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("send doc-open");
+        let state = wait_for_type(&mut ws, "doc-state", Duration::from_secs(5)).await;
+        (ws, state)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
+    async fn authority_revoked_mid_buffer_flushes_the_buffer_and_closes_only_that_socket() {
+        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let slug = "authority-revoked-mid-buffer";
+        let Deployed {
+            catalog,
+            base,
+            addr,
+            http,
+            owner_bearer: bearer,
+            second_editor_bearer,
+            edit_key,
+            document_id,
+        } = deploy(&url, slug, "deployment-revoke").await;
+
+        // -- the owner's own socket: never revoked by anything below ---------
+        let (mut owner_ws, initial) = join(addr, &format!("/ws/{slug}"), &bearer).await;
         assert!(initial["durableVector"].is_string());
         // A returning client that already covers the whole head receives the
         // buffer-only doc-state branch. It still needs durable coverage even
@@ -1076,28 +1130,12 @@ mod revocation {
         //    websocket handshake is the one request a browser cannot attach
         //    a custom header to, so the link key rides in the query string
         //    there and nowhere else.
-        let mut editor_request = format!("ws://{addr}/ws/{slug}?k={edit_key}")
-            .into_client_request()
-            .expect("build the linked editor's websocket handshake request");
-        editor_request.headers_mut().insert(
-            "authorization",
-            format!("Bearer {second_editor_bearer}")
-                .parse()
-                .expect("a bearer header"),
-        );
-        let (mut editor_ws, _) = tokio_tungstenite::connect_async(editor_request)
-            .await
-            .expect("the link must admit a second editor");
-        wait_for_type(&mut editor_ws, "hello", Duration::from_secs(5)).await;
-        editor_ws
-            .send(WsMessage::Text(
-                json!({"type": "doc-open", "vector": "", "protocol": PROTOCOL})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .expect("send the linked editor's doc-open");
-        wait_for_type(&mut editor_ws, "doc-state", Duration::from_secs(5)).await;
+        let (mut editor_ws, _) = join(
+            addr,
+            &format!("/ws/{slug}?k={edit_key}"),
+            &second_editor_bearer,
+        )
+        .await;
 
         // -- the linked editor types. Nothing here crosses a flush trigger
         //    (30s max age, 5s quiet, 1 MiB of bytes), so this sits in the
@@ -1208,6 +1246,126 @@ mod revocation {
             1,
             "a revoked socket must not be able to add a second row: its edit must be refused \
              before `room.ingest`, not merely left unflushed"
+        );
+    }
+
+    /// The same §10 guarantee, reached by the other door.
+    ///
+    /// `reauthorize` sweeps a document's sockets when sharing changes;
+    /// `reauthorize_connection` rechecks one sender when a frame arrives
+    /// from it, which is the path that notices any revocation the sweep did
+    /// not run for. Only the first flushed: the second disconnected through
+    /// a route that called `Room::leave` alone, and `leave` flushes only
+    /// when the last subscriber goes. So with anybody else still in the
+    /// room -- the owner, here -- a revoked author's buffered typing was
+    /// dropped on this path and kept on the other, for no reason a reader
+    /// of either could see.
+    ///
+    /// The revocation is written straight to `share_links`, which is what
+    /// the sharing route's own write does, precisely so the sweep does not
+    /// run and this test is about `reauthorize_connection` and nothing else.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
+    async fn revocation_noticed_by_an_inbound_frame_flushes_the_buffer_too() {
+        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let slug = "authority-revoked-by-frame";
+        let Deployed {
+            catalog,
+            addr,
+            owner_bearer,
+            second_editor_bearer,
+            edit_key,
+            document_id,
+            ..
+        } = deploy(&url, slug, "deployment-revoke-frame").await;
+
+        // The owner stays in the room throughout, so `Room::leave`'s own
+        // last-subscriber flush can never be what makes this pass.
+        let (mut owner_ws, _) = join(addr, &format!("/ws/{slug}"), &owner_bearer).await;
+        let (mut editor_ws, _) = join(
+            addr,
+            &format!("/ws/{slug}?k={edit_key}"),
+            &second_editor_bearer,
+        )
+        .await;
+
+        // Buffered, relayed, not yet durable -- §10's "buffered work".
+        let mut outbox = Outbox::new();
+        let batch = outbox.edit("the sentence a per-frame recheck must not throw away");
+        editor_ws
+            .send(WsMessage::Text(
+                json!({"type": "doc-update", "update": base64_encode(&batch), "seq": 1})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .expect("send the buffered edit");
+        wait_for_type(&mut owner_ws, "doc-update", Duration::from_secs(5)).await;
+        assert_eq!(
+            document_update_rows(&catalog, document_id).await,
+            0,
+            "the edit is buffered and relayed, not yet a durable row"
+        );
+
+        // Revoke without going through the route, so no sweep runs.
+        sqlx::query(
+            "UPDATE share_links SET revoked_at=now(),generation=generation+1 WHERE document_id=$1",
+        )
+        .bind(document_id)
+        .execute(catalog.pool())
+        .await
+        .expect("revoke the edit link in the catalogue");
+
+        // `reauthorize_connection` short-circuits on an `authorized_at` no
+        // more than a second old, so the frame that triggers the real,
+        // catalogue-backed recheck has to arrive after that.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let _ = editor_ws
+            .send(WsMessage::Text(json!({"type": "ping"}).to_string().into()))
+            .await;
+
+        let mut rows = document_update_rows(&catalog, document_id).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while rows == 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            rows = document_update_rows(&catalog, document_id).await;
+        }
+        assert_eq!(
+            rows, 1,
+            "a revocation noticed by an inbound frame must flush the revoked author's buffered \
+             work, exactly as the sweep does: the author cut off here is the one person who \
+             cannot reconnect and put it back (§6.4), and the owner's socket stayed open \
+             specifically so `Room::leave` cannot be what flushed it"
+        );
+        assert!(
+            wait_for_close(&mut editor_ws, Duration::from_secs(5)).await,
+            "the revoked socket must still be closed"
+        );
+
+        // The owner, never revoked, is untouched.
+        owner_ws
+            .send(WsMessage::Text(json!({"type": "ping"}).to_string().into()))
+            .await
+            .expect("the owner's socket must still take a frame");
+        wait_for_type(&mut owner_ws, "pong", Duration::from_secs(5)).await;
+
+        // And a second edit from the revoked socket is refused before
+        // ingest, not merely left unflushed.
+        let second = outbox.edit("text a socket with no authority must never get to save");
+        let _ = editor_ws
+            .send(WsMessage::Text(
+                json!({"type": "doc-update", "update": base64_encode(&second), "seq": 2})
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            document_update_rows(&catalog, document_id).await,
+            1,
+            "no further ingest from a socket whose authority is gone"
         );
     }
 }
@@ -1374,9 +1532,7 @@ mod comment_traversal {
             config.clone(),
             catalog.clone(),
             registry.clone(),
-        )
-        .await
-        .expect("open the store");
+        );
         let key = vec![9u8; 32];
         let mut server = Server::new(
             store,
@@ -1581,5 +1737,150 @@ mod comment_traversal {
         );
 
         catalog.close().await;
+    }
+}
+
+/// The API routes that used to be answered inside `routes::dispatch` rather
+/// than by `api_router`.
+///
+/// They are checked over the real router because that is the whole of what
+/// moving them changed: the path, the method behaviour, the origin check
+/// and the authentication gate all have to answer exactly as before, and
+/// only a request that goes through `Server::router` exercises the guard
+/// the router applies and the fallback it no longer reaches.
+mod moved_routes {
+    use super::revocation::{deploy, Deployed};
+    use serde_json::Value;
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
+    async fn the_listing_and_document_detail_answer_from_the_router() {
+        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let slug = "moved-routes";
+        let Deployed {
+            base,
+            http,
+            owner_bearer,
+            ..
+        } = deploy(&url, slug, "deployment-routes").await;
+        let bearer = |request: reqwest::RequestBuilder| {
+            request.header("authorization", format!("Bearer {owner_bearer}"))
+        };
+
+        // -- the listing ---------------------------------------------------
+        let listing = bearer(http.get(format!("{base}/api/list")))
+            .send()
+            .await
+            .expect("GET the listing");
+        assert_eq!(listing.status(), 200);
+        let listing: Value = listing.json().await.expect("the listing answers JSON");
+        assert!(
+            listing["documents"]
+                .as_array()
+                .expect("a documents array")
+                .iter()
+                .any(|row| row["slug"] == slug),
+            "the seeded document is listed: {listing}"
+        );
+        // Both methods it has always taken.
+        assert_eq!(
+            bearer(http.post(format!("{base}/api/list")))
+                .send()
+                .await
+                .expect("POST the listing")
+                .status(),
+            200,
+        );
+        // The origin check comes first, exactly as it did inline: a request
+        // carrying neither a bearer nor the client header a browser fetch
+        // sends is refused as cross-site before anybody asks who it is.
+        assert_eq!(
+            http.get(format!("{base}/api/list"))
+                .send()
+                .await
+                .expect("GET the listing with no credential at all")
+                .status(),
+            403,
+        );
+        // And past that check, listing is the one thing a link-holder must
+        // not be able to do: it refuses a caller with no publisher
+        // credential rather than answering an empty page.
+        assert_eq!(
+            http.get(format!("{base}/api/list"))
+                .header("x-librepaper-client", "test")
+                .send()
+                .await
+                .expect("GET the listing anonymously")
+                .status(),
+            401,
+        );
+
+        // -- one document's detail ----------------------------------------
+        let detail = bearer(http.get(format!("{base}/api/documents/{slug}")))
+            .send()
+            .await
+            .expect("GET the document");
+        assert_eq!(detail.status(), 200);
+        let detail: Value = detail.json().await.expect("the detail answers JSON");
+        assert_eq!(detail["slug"], slug);
+        assert_eq!(detail["role"], "owner");
+        assert!(detail["can_edit"].as_bool().unwrap_or(false));
+        assert!(
+            detail["files"].is_array(),
+            "an owner sees the project's paths: {detail}"
+        );
+
+        // A document nobody may read is one that does not exist, and a
+        // method this route never took is answered the way the fallback
+        // answered it rather than with a 405 that would confirm the shape.
+        assert_eq!(
+            bearer(http.get(format!("{base}/api/documents/no-such-document")))
+                .send()
+                .await
+                .expect("GET a missing document")
+                .status(),
+            404,
+        );
+        assert_eq!(
+            bearer(http.put(format!("{base}/api/documents/{slug}")))
+                .send()
+                .await
+                .expect("PUT the document detail")
+                .status(),
+            404,
+        );
+
+        // -- account erasure is a POST, and only a POST --------------------
+        // Not actually erasing the owner here: this test is about which
+        // door the request comes through, and the lifecycle has its own
+        // coverage in `storage::worker`.
+        assert_eq!(
+            bearer(http.get(format!("{base}/api/account/erase")))
+                .send()
+                .await
+                .expect("GET the erase route")
+                .status(),
+            404,
+        );
+        assert_eq!(
+            http.post(format!("{base}/api/account/erase"))
+                .send()
+                .await
+                .expect("POST the erase route with no credential at all")
+                .status(),
+            403,
+        );
+        assert_eq!(
+            http.post(format!("{base}/api/account/erase"))
+                .header("x-librepaper-client", "test")
+                .send()
+                .await
+                .expect("POST the erase route from a browser with no session")
+                .status(),
+            401,
+            "erasing an account takes a signed-in caller"
+        );
     }
 }

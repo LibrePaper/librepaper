@@ -13,7 +13,10 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
     Router::new()
         .route("/api/account/storage", get(quota_storage))
         .route("/api/account/quota-status", get(quota_storage))
+        .route("/api/account/erase", any(account_erase))
+        .route("/api/list", any(list))
         .route("/api/documents", post(upload))
+        .route("/api/documents/{slug}", any(document_detail))
         .route("/api/documents/{slug}/mcp", any(mcp))
         .route("/api/documents/{slug}/delete", post(delete_document))
         .route("/api/documents/{slug}/state", get(document_state))
@@ -118,6 +121,49 @@ async fn upload(
     server.handle_upload(request, &ctx.arrival).await
 }
 
+// The three below arrive through `any` rather than a method filter because
+// each answers a method it does not handle the way `dispatch` did when they
+// lived inline there: with the ordinary not-found, rather than a 405 that
+// would say this path shape exists.
+
+async fn account_erase(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    request: Request<Body>,
+) -> Reply {
+    if request.method() != Method::POST {
+        return server.not_found(request.headers());
+    }
+    server.handle_account_erase(request.headers(), &ctx).await
+}
+
+async fn list(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    request: Request<Body>,
+) -> Reply {
+    if !matches!(*request.method(), Method::GET | Method::POST) {
+        return server.not_found(request.headers());
+    }
+    server
+        .handle_list(request.headers(), &ctx.arrival, request.uri().query())
+        .await
+}
+
+async fn document_detail(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    if request.method() != Method::GET {
+        return server.not_found(request.headers());
+    }
+    server
+        .handle_document_detail(request.headers(), &ctx, request.uri().query(), &slug)
+        .await
+}
+
 async fn mcp(
     State(server): State<Arc<Server>>,
     Extension(ctx): Extension<RequestContext>,
@@ -147,12 +193,7 @@ async fn document_state(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_state(
-            request.headers(),
-            &ctx.arrival,
-            &slug,
-            request.uri().query(),
-        )
+        .handle_state(request.headers(), &ctx, &slug, request.uri().query())
         .await
 }
 
@@ -163,12 +204,7 @@ async fn document_project(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_project(
-            request.headers(),
-            &ctx.arrival,
-            &slug,
-            request.uri().query(),
-        )
+        .handle_project(request.headers(), &ctx, &slug, request.uri().query())
         .await
 }
 
@@ -179,12 +215,7 @@ async fn history(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_history(
-            request.headers(),
-            &ctx.arrival,
-            &slug,
-            request.uri().query(),
-        )
+        .handle_history(request.headers(), &ctx, &slug, request.uri().query())
         .await
 }
 
@@ -195,13 +226,7 @@ async fn label_read(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_label_read(
-            request.headers(),
-            &ctx.arrival,
-            &slug,
-            &sha,
-            request.uri().query(),
-        )
+        .handle_label_read(request.headers(), &ctx, &slug, &sha, request.uri().query())
         .await
 }
 
@@ -212,7 +237,7 @@ async fn label_archive(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_label_archive(request.headers(), &ctx.arrival, &slug, &sha)
+        .handle_label_archive(request.headers(), &ctx, &slug, &sha)
         .await
 }
 
@@ -368,9 +393,7 @@ async fn document_assets(
     if !matches!(*request.method(), Method::PUT | Method::POST) {
         return plain(405, "method not allowed");
     }
-    server
-        .handle_asset_upload(request, &ctx.arrival, &slug)
-        .await
+    server.handle_asset_upload(request, &ctx, &slug).await
 }
 
 async fn document_asset(
@@ -380,7 +403,7 @@ async fn document_asset(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_asset_read(request.headers(), &ctx.arrival, &slug, &sha)
+        .handle_asset_read(request.headers(), &ctx, &slug, &sha)
         .await
 }
 
@@ -420,12 +443,7 @@ async fn source(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_source(
-            request.headers(),
-            &ctx.arrival,
-            &slug,
-            request.uri().query(),
-        )
+        .handle_source(request.headers(), &ctx, &slug, request.uri().query())
         .await
 }
 
@@ -436,12 +454,7 @@ async fn snapshot(
     request: Request<Body>,
 ) -> Reply {
     server
-        .handle_snapshot(
-            request.headers(),
-            &ctx.arrival,
-            &slug,
-            request.uri().query(),
-        )
+        .handle_snapshot(request.headers(), &ctx, &slug, request.uri().query())
         .await
 }
 
@@ -451,9 +464,7 @@ async fn comments(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_comments(request, ctx.peer, &ctx.arrival, &slug)
-        .await
+    server.handle_comments(request, ctx.peer, &ctx, &slug).await
 }
 
 /// One thread's replies, paged on their own so a comment with very many
@@ -464,9 +475,7 @@ async fn replies(
     Path((slug, comment)): Path<(String, String)>,
     request: Request<Body>,
 ) -> Reply {
-    server
-        .handle_replies(request, &ctx.arrival, &slug, &comment)
-        .await
+    server.handle_replies(request, &ctx, &slug, &comment).await
 }
 
 async fn candidate(
@@ -671,269 +680,6 @@ pub(super) async fn dispatch(
         return library
             .response(rest, method == Method::HEAD, request.headers())
             .await;
-    }
-
-    // --- API routes not yet expressed in `api_router` ----------------------
-    if path == "/api/account/erase" && method == Method::POST {
-        if cross_site_refused(request.headers(), &arrival) {
-            return write_json(403, &cross_site_refusal());
-        }
-        if Server::is_automation(request.headers()) {
-            return write_json(
-                403,
-                &json!({"error": "account erasure is unavailable in automation mode"}),
-            );
-        }
-        let identity = context.identity();
-        if !identity.is_signed_in() {
-            return write_json(401, &json!({"error": "sign in to erase this account"}));
-        }
-        if !server.provider_configured(&identity) {
-            return write_json(
-                401,
-                &json!({"error": "authentication provider is not configured"}),
-            );
-        }
-        let catalog = &server.store.catalog;
-        let Ok(account_id) = uuid::Uuid::parse_str(&identity.id) else {
-            return write_json(409, &json!({"error":"invalid account identity"}));
-        };
-        if let Err(error) = catalog
-            .begin_account_erasure(account_id, time::Duration::days(7))
-            .await
-        {
-            return write_json(409, &json!({"error": error.to_string()}));
-        }
-        server.reauthorize_all().await;
-        server.rooms.erase_author_from_caches(&identity.id).await;
-        return write_json(202, &json!({"status": "erasing"}));
-    }
-    // Listing is the one thing a link-holder must not be able to do: knowing
-    // one document must not reveal the others, so it takes a publisher.
-    if path == "/api/list" && (method == Method::POST || method == Method::GET) {
-        if cross_site_refused(request.headers(), &arrival) {
-            return write_json(403, &cross_site_refusal());
-        }
-        let who = match server.publisher(request.headers(), &arrival).await {
-            Ok(who) => who,
-            Err(response) => return response,
-        };
-        let listing_query: HashMap<String, String> = request
-            .uri()
-            .query()
-            .map(|raw| {
-                url::form_urlencoded::parse(raw.as_bytes())
-                    .into_owned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let listing_limit = listing_query
-            .get("limit")
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(200)
-            .clamp(1, 200);
-        let listing_cursor = listing_query
-            .get("after_updated")
-            .zip(listing_query.get("after_slug"))
-            .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
-        let entries = match server
-            .store
-            .visible_page_with_options(
-                (!who.id.is_empty()).then_some(who.id.as_str()),
-                (!who.key.is_empty()).then_some(who.key.as_str()),
-                listing_cursor,
-                listing_limit,
-                server.listing,
-            )
-            .await
-        {
-            Ok(entries) => entries,
-            Err(error) => {
-                eprintln!("could not query document listing: {error}");
-                return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
-            }
-        };
-        // What this caller has done with each of these documents. Fetched
-        // beside the listing rather than joined into it, so a mark can never
-        // widen what the listing returns: the rows are chosen by what the
-        // caller may see, and only then decorated with what they did.
-        let marks = if who.id.is_empty() {
-            Default::default()
-        } else {
-            server
-                .store
-                .marks_for(&who.id, &entries)
-                .await
-                .unwrap_or_default()
-        };
-        // How many comments and how many files, for the whole page at once.
-        // This is what the landing page used to ask for a project at a time.
-        let counts = server.store.counts_for(&entries).await.unwrap_or_default();
-        let documents: Vec<Value> = entries
-            .iter()
-            .map(|entry| {
-                let mut row = server.listing_row(entry, &who);
-                let (favorite, opened) = marks.get(&entry.slug).cloned().unwrap_or_default();
-                row["favorite"] = json!(favorite);
-                row["opened_at"] = json!(opened);
-                let (comments, open, files) =
-                    counts.get(&entry.slug).copied().unwrap_or((0, 0, None));
-                row["comments"] = json!(comments);
-                row["open_comments"] = json!(open);
-                row["files"] = json!(files);
-                row
-            })
-            .collect();
-        let mut body = json!({"documents": documents});
-        if entries.len() == listing_limit as usize {
-            if let Some(last) = entries.last() {
-                body["next_cursor"] = json!({
-                    "after_updated": last.updated_at,
-                    "after_slug": last.slug,
-                });
-            }
-        }
-        return write_json(200, &body);
-    }
-
-    if let ["api", "documents", slug] = parts[..] {
-        if method == Method::GET {
-            let entry = match server.checked_entry(slug).await {
-                Ok(Some(entry)) => entry,
-                Ok(None) => return write_json(404, &json!({"error": "not found"})),
-                Err(response) => return response,
-            };
-            let who = server
-                .viewer(&entry, request.headers(), &arrival, request.uri().query())
-                .await;
-            // A private document is not somebody else's to know exists, so a
-            // stranger gets what a missing document gets. The reader page
-            // turns that into "sign in, if this was shared with you".
-            if !server.may_read(&entry, &who) {
-                return write_json(404, &json!({"error": "not found"}));
-            }
-            let room = match server.rooms.get(slug).await {
-                Ok(room) => room,
-                Err(error) => {
-                    return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-                }
-            };
-            let (total, open) = match room.counts().await {
-                Ok(counts) => counts,
-                Err(error) => {
-                    return write_json(
-                        503,
-                        &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
-                    )
-                }
-            };
-            // Every path in the directory, for the landing page's search: a
-            // project is found by the files in it as well as by its title.
-            // Paths only -- the digests are the timeline's business. An
-            // unreadable document still lists by title; it just has no
-            // paths to search on until it is recovered (§9.3).
-            let files: Vec<String> = room
-                .projection()
-                .await
-                .map(|projected| projected.projection.files.keys().cloned().collect())
-                .unwrap_or_default();
-            let role = who.role;
-            let owned = role.at_least(Role::Editor);
-            let metadata = crate::results::document_metadata(&entry.source_format);
-            // What the comment form would sign this caller's name as, if they
-            // said something right now: the account name when there is one,
-            // otherwise the pseudonym their visitor cookie earns them, or ""
-            // when there is not even a cookie yet to key one on.
-            let author_key = server.comment_author(request.headers(), &arrival, &who.id);
-            let commenting_as = if who.id.is_signed_in() {
-                who.id.name.clone()
-            } else if author_key.is_empty() {
-                String::new()
-            } else {
-                pseudonym_for(&author_key, slug)
-            };
-            // A signed-in caller who is not the owner and reached this
-            // document on a live link is a guest of it: worth recording once,
-            // so the owner's listing shows the document is pinned to them and
-            // the role the link they came in on actually carries. Checked
-            // against the copy already in hand first, so an open that is not
-            // this caller's first never asks the store to write anything.
-            let now = crate::util::now_unix();
-            if who.id.is_signed_in()
-                && !entry.owned_by(&who.key, &who.id.id)
-                && entry.link_role(&who.link, now).is_some()
-                && !entry
-                    .guests
-                    .iter()
-                    .any(|guest| guest.id == who.id.id && guest.link == who.link)
-            {
-                // Not a reason to refuse the document: the pin is bookkeeping
-                // about the visit, and the visit itself is what matters.
-                let _ = server
-                    .store
-                    .pin_link_guest(slug, &who.id.id, &who.link, who.role)
-                    .await;
-            }
-            // And what Recent is made of. Written here rather than asked for
-            // by the reader, because this request *is* the open: a separate
-            // call from the client would be a second round trip that says
-            // something the server already watched happen, and one the reader
-            // could forget to make on the paths that do not go through it.
-            // Never a reason to refuse the document, like the pin above.
-            if who.id.is_signed_in() {
-                let _ = server.store.mark_opened(slug, &who.id.id).await;
-            }
-            let mut body = json!({
-                "slug": entry.slug, "document_id": entry.storage_id, "title": entry.title,
-                "created_at": entry.created_at, "updated_at": entry.updated_at,
-                "comment_count": total, "open_count": open,
-                // The highest role this caller holds, which is what the
-                // reader derives every affordance from: the editor at
-                // `editor` and above, the comment tools at `commenter` and
-                // above. `can_edit` and `can_moderate` are the same answer
-                // in the older shape, kept so a cached page still works.
-                "role": role.as_str(),
-                // What the comment form should sign this caller's remarks
-                // as, computed the same way `apply_from` computes it, so
-                // the name shown while typing is the name the comment
-                // actually lands under.
-                "commenting_as": commenting_as,
-                // Whether the Share dialog is offered, and whether it is
-                // the owner's to change. Somebody named on the document
-                // sees who else is in the room; a reader who arrived by
-                // link sees no Share button at all.
-                // Only the owner ever sees the share route now, so this is
-                // the same question `can_share` is: a named editor used
-                // to see a read-only dialog, but the route that drew it is
-                // 404 to anyone who is not the owner, and offering a
-                // button to a route that refuses would be worse than not
-                // offering one.
-                "can_share": role.at_least(Role::Owner),
-                "can_see_sharing": role.at_least(Role::Owner),
-                // Whether this caller may replace the document, which is what
-                // an editor does on save.
-                "can_edit": owned,
-                // Where the reader should frame this document from, and the
-                // only origin it will accept messages from.
-                "docs_origin": arrival.docs_origin(),
-                // Whether this caller may delete anyone's comment here, per
-                // rule G.
-                "can_moderate": owned,
-            });
-            // Paths and source format are project metadata. They are useful to
-            // editors and local source rendering, but have no place in a
-            // reader's response, which sees only the projection (§2.2).
-            if owned {
-                body["sha"] = json!(entry.sha);
-                body["execution_engine"] = json!(metadata.execution_engine);
-                body["draft_format"] = json!(metadata.draft_format);
-                body["renderers"] = json!(server.renderers());
-                body["files"] = json!(files);
-                body["source_format"] = json!(entry.source_format);
-                body["main"] = json!(entry.main);
-            }
-            return write_json(200, &body);
-        }
     }
 
     // Public, fixed documentation assets linked by the README and the
@@ -1181,62 +927,192 @@ impl Server {
 /// when. That is a known and accepted leak, written down in `docs/privacy.md`
 /// rather than engineered away, and it is why an author who needs a reader to
 /// stay anonymous cannot get that from this policy.
+/// The policy the two document routes above actually send, read back off
+/// their own responses.
+///
+/// There used to be a `document_policy` helper here that no route called,
+/// tested on its own. It had drifted: it refused `https:` in `script-src`
+/// and both routes allow it, so the test that said "a document may not
+/// fetch code from another host" was describing a deployment that does not
+/// exist. A policy is a property of a response, so these read the header off
+/// one.
+///
+/// Nothing here changes what is served. Where the served policy and the
+/// prose above it disagree, these assert the served one and say so: moving
+/// the production policy is a separate decision that has to be taken against
+/// the renderer's actual loading requirements, not smuggled in under a test.
 #[cfg(test)]
-fn document_policy(reader_origin: &str) -> String {
-    format!(
-        "default-src 'self' data: blob: https:; \
-         script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; \
-         style-src 'self' 'unsafe-inline' data: blob: https:; \
-         frame-ancestors {reader_origin}; form-action 'none'; base-uri 'none'"
-    )
-}
+mod served_policy_tests {
+    use super::*;
 
-#[cfg(test)]
-mod document_policy_tests {
-    use super::document_policy;
-
-    #[test]
-    fn a_document_may_not_fetch_code_from_another_host() {
-        let policy = document_policy("https://paper.example");
-        let script = policy
-            .split("; ")
-            .find(|part| part.starts_with("script-src "))
-            .expect("the policy names a script source");
-        assert!(
-            !script.contains("https:"),
-            "script-src must not admit another host: {script}"
+    async fn deployment() -> Option<(Server, Arrival)> {
+        let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
+        let catalog = Arc::new(
+            crate::storage::postgres::PostgresCatalog::connect(
+                crate::storage::postgres::PostgresOptions::new(url),
+            )
+            .await
+            .unwrap(),
         );
-        // Its own bytes, in every form the document can write them.
-        for own in [
-            "'self'",
-            "'unsafe-inline'",
-            "'unsafe-eval'",
-            "data:",
-            "blob:",
-        ] {
+        catalog.migrate().await.unwrap();
+        let objects = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let blobs: Arc<dyn crate::storage::blob::BlobStore> =
+            Arc::new(crate::storage::blob::FsStore::new(objects.path(), false));
+        let config = Arc::new(Configuration::default());
+        let registry = crate::log::Registry::new(
+            catalog.clone(),
+            blobs.clone(),
+            config.clone(),
+            "policy".into(),
+        );
+        let rooms = crate::room::Rooms::new(
+            catalog.clone(),
+            blobs.clone(),
+            config.clone(),
+            registry.clone(),
+        );
+        let (_worker, background) = crate::storage::worker::Worker::new(
+            catalog.clone(),
+            blobs.clone(),
+            registry.clone(),
+            config.clone(),
+        );
+        let store = crate::document::store::Store::open_with_catalog(
+            blobs.clone(),
+            config.clone(),
+            catalog.clone(),
+            registry.clone(),
+        );
+        // The viewer route serves a real shell file, so the map has to hold
+        // one or the route answers 404 before it ever sets a header.
+        let mut shell = HashMap::new();
+        shell.insert(
+            "/viewer.html".to_string(),
+            ShellFile {
+                kind: "text/html; charset=utf-8",
+                body: axum::body::Bytes::from_static(b"<!doctype html><body>viewer</body>"),
+                brotli: None,
+                immutable: false,
+            },
+        );
+        let server = Server::new(
+            store,
+            rooms,
+            background,
+            shell,
+            GithubApp::default(),
+            vec![0u8; 32],
+            config,
+            Policy::parse_publishers("owner").unwrap(),
+            Policy::parse(""),
+        );
+        let origins =
+            crate::server::origins::Origins::configure("https://paper.example", None).unwrap();
+        let arrival = origins
+            .resolve("docs.paper.example")
+            .expect("the document origin answers on its own name");
+        Some((server, arrival))
+    }
+
+    fn policy(response: &Reply) -> String {
+        response
+            .headers()
+            .get("content-security-policy")
+            .expect("every document response carries a policy")
+            .to_str()
+            .expect("the policy is ASCII")
+            .to_string()
+    }
+
+    fn directive<'a>(policy: &'a str, name: &str) -> &'a str {
+        policy
+            .split("; ")
+            .find(|part| part.starts_with(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("the policy names {name}: {policy}"))
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
+    async fn both_document_routes_send_the_policy_they_are_supposed_to() {
+        let Some((server, arrival)) = deployment().await else {
+            return;
+        };
+        let responses = [
+            ("shell", server.serve_shell(&arrival, "a-paper", None).await),
+            ("viewer", server.serve_viewer(&arrival, "a-paper").await),
+        ];
+        for (route, response) in &responses {
+            assert_eq!(response.status(), 200, "{route} must answer");
+            let policy = policy(response);
+
+            // The frame is named by the reader origin, and the classic
+            // paths stay shut. This is the part the frame's isolation rests
+            // on: only the reader may embed a document.
             assert!(
-                script.contains(own),
-                "script-src should keep {own}: {script}"
+                policy.contains("frame-ancestors https://paper.example"),
+                "{route}: {policy}"
+            );
+            assert!(policy.contains("form-action 'none'"), "{route}: {policy}");
+            assert!(policy.contains("base-uri 'none'"), "{route}: {policy}");
+
+            // A document runs its own code, in every form it can write it.
+            let script = directive(&policy, "script-src");
+            for own in [
+                "'self'",
+                "'unsafe-inline'",
+                "'unsafe-eval'",
+                "data:",
+                "blob:",
+            ] {
+                assert!(script.contains(own), "{route}: {script}");
+            }
+            // And, as actually deployed, from another host as well. The
+            // prose on these routes argues for refusing that; the routes do
+            // not. Asserted as it stands so the gap is visible and closing
+            // it is a deliberate change with a failing test to update,
+            // rather than something a reader of the comment assumes is
+            // already true.
+            assert!(
+                script.contains("https:"),
+                "{route}: script-src no longer admits another host. That is very likely an \
+                 improvement, but it is a production policy change: check the renderer's own \
+                 loading requirements, then update this assertion: {script}"
+            );
+
+            // The accepted leak: images, fonts, styles and connections
+            // still reach the open web, so a document can tell its author
+            // who opened it. Written down in docs/privacy.md rather than
+            // engineered away.
+            assert!(
+                policy.contains("default-src 'self' data: blob: https:"),
+                "{route}: {policy}"
+            );
+            assert!(!policy.contains("connect-src"), "{route}: {policy}");
+            assert!(!policy.contains("img-src"), "{route}: {policy}");
+
+            // The other headers the frame depends on, from the same
+            // response rather than from a helper beside it.
+            assert_eq!(
+                response.headers().get("x-content-type-options").unwrap(),
+                "nosniff",
+                "{route}",
+            );
+            assert_eq!(
+                response.headers().get("cache-control").unwrap(),
+                "no-store",
+                "{route}",
+            );
+            assert_eq!(
+                response.headers().get("referrer-policy").unwrap(),
+                "no-referrer",
+                "{route}",
             );
         }
-    }
 
-    /// The accepted leak, asserted so that closing it is a deliberate act with
-    /// a failing test to update, rather than a quiet change of mind.
-    #[test]
-    fn images_and_connections_still_reach_the_open_web() {
-        let policy = document_policy("https://paper.example");
-        assert!(policy.contains("default-src 'self' data: blob: https:"));
-        assert!(!policy.contains("connect-src"));
-        assert!(!policy.contains("img-src"));
-    }
-
-    #[test]
-    fn the_framing_reader_is_named_and_the_classic_paths_stay_shut() {
-        let policy = document_policy("https://paper.example");
-        assert!(policy.contains("frame-ancestors https://paper.example"));
-        assert!(policy.contains("form-action 'none'"));
-        assert!(policy.contains("base-uri 'none'"));
+        // The one place the two policies really do differ, asserted rather
+        // than left to be discovered: the viewer's style-src has no `blob:`.
+        assert!(directive(&policy(&responses[0].1), "style-src").contains("blob:"));
+        assert!(!directive(&policy(&responses[1].1), "style-src").contains("blob:"));
     }
 }
 
@@ -1254,5 +1130,298 @@ mod frame_agent_tests {
         assert!(page.contains(
             "<script src=\"/agent.js?reader=http%3A%2F%2Flocalhost%3A8081\"></script></body>"
         ));
+    }
+}
+
+impl Server {
+    /// `POST /api/account/erase`.
+    ///
+    /// Moved out of `dispatch` with the listing and the document detail
+    /// below: `api_router` is where ordinary API dispatch lives, and a
+    /// second place for it meant a second copy of the docs-host restriction
+    /// and the authentication gate, which `api_guard` already applies to
+    /// everything the router carries.
+    pub(super) async fn handle_account_erase(
+        &self,
+        headers: &HeaderMap,
+        context: &RequestContext,
+    ) -> Reply {
+        let arrival = &context.arrival;
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        if Server::is_automation(headers) {
+            return write_json(
+                403,
+                &json!({"error": "account erasure is unavailable in automation mode"}),
+            );
+        }
+        let identity = context.identity();
+        if !identity.is_signed_in() {
+            return write_json(401, &json!({"error": "sign in to erase this account"}));
+        }
+        if !self.provider_configured(&identity) {
+            return write_json(
+                401,
+                &json!({"error": "authentication provider is not configured"}),
+            );
+        }
+        let catalog = &self.store.catalog;
+        let Ok(account_id) = uuid::Uuid::parse_str(&identity.id) else {
+            return write_json(409, &json!({"error":"invalid account identity"}));
+        };
+        if let Err(error) = catalog
+            .begin_account_erasure(account_id, time::Duration::days(7))
+            .await
+        {
+            return write_json(409, &json!({"error": error.to_string()}));
+        }
+        // The account row now says `erasing` and its documents say
+        // `deleting`, which is durable and enough on its own: the worker's
+        // startup scan reads both. This only saves the person waiting for a
+        // restart. A refused wake-up is folded into the rescan bit, so
+        // nothing here can lose the work either.
+        self.background
+            .ask(crate::storage::worker::Task::EraseAccount {
+                account: account_id,
+                after: uuid::Uuid::nil(),
+            });
+        self.reauthorize_all().await;
+        self.rooms.erase_author_from_caches(&identity.id).await;
+        write_json(202, &json!({"status": "erasing"}))
+    }
+
+    /// `GET`/`POST /api/list`.
+    pub(super) async fn handle_list(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        query: Option<&str>,
+    ) -> Reply {
+        if cross_site_refused(headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let who = match self.publisher(headers, arrival).await {
+            Ok(who) => who,
+            Err(response) => return response,
+        };
+        let listing_query: HashMap<String, String> = query
+            .map(|raw| {
+                url::form_urlencoded::parse(raw.as_bytes())
+                    .into_owned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let listing_limit = listing_query
+            .get("limit")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(200)
+            .clamp(1, 200);
+        let listing_cursor = listing_query
+            .get("after_updated")
+            .zip(listing_query.get("after_slug"))
+            .map(|(updated, slug)| (updated.as_str(), slug.as_str()));
+        let entries = match self
+            .store
+            .visible_page_with_options(
+                (!who.id.is_empty()).then_some(who.id.as_str()),
+                (!who.key.is_empty()).then_some(who.key.as_str()),
+                listing_cursor,
+                listing_limit,
+                self.listing,
+            )
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                eprintln!("could not query document listing: {error}");
+                return write_json(503, &json!({"error": "catalogue temporarily unavailable"}));
+            }
+        };
+        // What this caller has done with each of these documents. Fetched
+        // beside the listing rather than joined into it, so a mark can never
+        // widen what the listing returns: the rows are chosen by what the
+        // caller may see, and only then decorated with what they did.
+        let marks = if who.id.is_empty() {
+            Default::default()
+        } else {
+            self.store
+                .marks_for(&who.id, &entries)
+                .await
+                .unwrap_or_default()
+        };
+        // How many comments and how many files, for the whole page at once.
+        // This is what the landing page used to ask for a project at a time.
+        let counts = self.store.counts_for(&entries).await.unwrap_or_default();
+        let documents: Vec<Value> = entries
+            .iter()
+            .map(|entry| {
+                let mut row = self.listing_row(entry, &who);
+                let (favorite, opened) = marks.get(&entry.slug).cloned().unwrap_or_default();
+                row["favorite"] = json!(favorite);
+                row["opened_at"] = json!(opened);
+                let (comments, open, files) =
+                    counts.get(&entry.slug).copied().unwrap_or((0, 0, None));
+                row["comments"] = json!(comments);
+                row["open_comments"] = json!(open);
+                row["files"] = json!(files);
+                row
+            })
+            .collect();
+        let mut body = json!({"documents": documents});
+        if entries.len() == listing_limit as usize {
+            if let Some(last) = entries.last() {
+                body["next_cursor"] = json!({
+                    "after_updated": last.updated_at,
+                    "after_slug": last.slug,
+                });
+            }
+        }
+        write_json(200, &body)
+    }
+
+    /// `GET /api/documents/{slug}`: everything the reader needs to draw a
+    /// document it has just been pointed at.
+    pub(super) async fn handle_document_detail(
+        &self,
+        headers: &HeaderMap,
+        context: &RequestContext,
+        query: Option<&str>,
+        slug: &str,
+    ) -> Reply {
+        let arrival = &context.arrival;
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return write_json(404, &json!({"error": "not found"})),
+            Err(response) => return response,
+        };
+        let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
+        // A private document is not somebody else's to know exists, so a
+        // stranger gets what a missing document gets. The reader page
+        // turns that into "sign in, if this was shared with you".
+        if !self.may_read(&entry, &who) {
+            return write_json(404, &json!({"error": "not found"}));
+        }
+        let room = match self.rooms.get(slug).await {
+            Ok(room) => room,
+            Err(error) => {
+                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
+            }
+        };
+        let (total, open) = match room.counts().await {
+            Ok(counts) => counts,
+            Err(error) => {
+                return write_json(
+                    503,
+                    &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
+                )
+            }
+        };
+        // Every path in the directory, for the landing page's search: a
+        // project is found by the files in it as well as by its title.
+        // Paths only -- the digests are the timeline's business. An
+        // unreadable document still lists by title; it just has no
+        // paths to search on until it is recovered (§9.3).
+        let files: Vec<String> = room
+            .projection()
+            .await
+            .map(|projected| projected.projection.files.keys().cloned().collect())
+            .unwrap_or_default();
+        let role = who.role;
+        let owned = role.at_least(Role::Editor);
+        let metadata = crate::results::document_metadata(&entry.source_format);
+        // What the comment form would sign this caller's name as, if they
+        // said something right now: the account name when there is one,
+        // otherwise the pseudonym their visitor cookie earns them, or ""
+        // when there is not even a cookie yet to key one on.
+        let author_key = self.comment_author(headers, arrival, &who.id);
+        let commenting_as = if who.id.is_signed_in() {
+            who.id.name.clone()
+        } else if author_key.is_empty() {
+            String::new()
+        } else {
+            pseudonym_for(&author_key, slug)
+        };
+        // A signed-in caller who is not the owner and reached this
+        // document on a live link is a guest of it: worth recording once,
+        // so the owner's listing shows the document is pinned to them and
+        // the role the link they came in on actually carries. Checked
+        // against the copy already in hand first, so an open that is not
+        // this caller's first never asks the store to write anything.
+        let now = crate::util::now_unix();
+        if who.id.is_signed_in()
+            && !entry.owned_by(&who.id.id)
+            && entry.link_role(&who.link, now).is_some()
+            && !entry
+                .guests
+                .iter()
+                .any(|guest| guest.id == who.id.id && guest.link == who.link)
+        {
+            // Not a reason to refuse the document: the pin is bookkeeping
+            // about the visit, and the visit itself is what matters.
+            let _ = self
+                .store
+                .pin_link_guest(slug, &who.id.id, &who.link, who.role)
+                .await;
+        }
+        // And what Recent is made of. Written here rather than asked for
+        // by the reader, because this request *is* the open: a separate
+        // call from the client would be a second round trip that says
+        // something the server already watched happen, and one the reader
+        // could forget to make on the paths that do not go through it.
+        // Never a reason to refuse the document, like the pin above.
+        if who.id.is_signed_in() {
+            let _ = self.store.mark_opened(slug, &who.id.id).await;
+        }
+        let mut body = json!({
+            "slug": entry.slug, "document_id": entry.storage_id, "title": entry.title,
+            "created_at": entry.created_at, "updated_at": entry.updated_at,
+            "comment_count": total, "open_count": open,
+            // The highest role this caller holds, which is what the
+            // reader derives every affordance from: the editor at
+            // `editor` and above, the comment tools at `commenter` and
+            // above. `can_edit` and `can_moderate` are the same answer
+            // in the older shape, kept so a cached page still works.
+            "role": role.as_str(),
+            // What the comment form should sign this caller's remarks
+            // as, computed the same way `apply_from` computes it, so
+            // the name shown while typing is the name the comment
+            // actually lands under.
+            "commenting_as": commenting_as,
+            // Whether the Share dialog is offered, and whether it is
+            // the owner's to change. Somebody named on the document
+            // sees who else is in the room; a reader who arrived by
+            // link sees no Share button at all.
+            // Only the owner ever sees the share route now, so this is
+            // the same question `can_share` is: a named editor used
+            // to see a read-only dialog, but the route that drew it is
+            // 404 to anyone who is not the owner, and offering a
+            // button to a route that refuses would be worse than not
+            // offering one.
+            "can_share": role.at_least(Role::Owner),
+            "can_see_sharing": role.at_least(Role::Owner),
+            // Whether this caller may replace the document, which is what
+            // an editor does on save.
+            "can_edit": owned,
+            // Where the reader should frame this document from, and the
+            // only origin it will accept messages from.
+            "docs_origin": arrival.docs_origin(),
+            // Whether this caller may delete anyone's comment here, per
+            // rule G.
+            "can_moderate": owned,
+        });
+        // Paths and source format are project metadata. They are useful to
+        // editors and local source rendering, but have no place in a
+        // reader's response, which sees only the projection (§2.2).
+        if owned {
+            body["sha"] = json!(entry.sha);
+            body["execution_engine"] = json!(metadata.execution_engine);
+            body["draft_format"] = json!(metadata.draft_format);
+            body["renderers"] = json!(self.renderers());
+            body["files"] = json!(files);
+            body["source_format"] = json!(entry.source_format);
+            body["main"] = json!(entry.main);
+        }
+        write_json(200, &body)
     }
 }

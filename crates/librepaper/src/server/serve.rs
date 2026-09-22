@@ -424,9 +424,7 @@ pub async fn serve(options: ServeOptions) {
     registry.compacts_through(background.clone());
     tokio::spawn(worker.run());
 
-    let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog, registry.clone())
-        .await
-        .unwrap_or_else(|err| die(err));
+    let store = Store::open_with_catalog(blobs.clone(), config.clone(), catalog, registry.clone());
     let mut instance = Server::new(
         store,
         rooms,

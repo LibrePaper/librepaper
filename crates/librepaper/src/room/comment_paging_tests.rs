@@ -33,9 +33,12 @@ use crate::document::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
 use crate::room::annotation::CommentTarget;
 use crate::storage::blob::FsStore;
+use crate::storage::postgres::annotations::{
+    ANNOTATION_PAGE_MAX, REPLY_LOOKUP_MAX, REPLY_PAGE_MAX,
+};
 use crate::storage::postgres::{
     AnnotationRecord, Authority, MutationAuthorization, NewAccount, NewAnnotation, NewReply,
-    PostgresCatalog, PostgresOptions, ANNOTATION_PAGE_MAX, REPLY_LOOKUP_MAX, REPLY_PAGE_MAX,
+    PostgresCatalog,
 };
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n";
@@ -54,21 +57,7 @@ struct Deployment {
 }
 
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
-    let catalog = Arc::new(
-        PostgresCatalog::connect(PostgresOptions::new(url))
-            .await
-            .unwrap(),
-    );
-    catalog.migrate().await.unwrap();
-    sqlx::query!(
-        "TRUNCATE document_updates,document_snapshots,document_proposal_hunks,document_proposals,\
-         replies,annotations,document_labels,document_assets,share_links,grants,documents,\
-         accounts CASCADE",
-    )
-    .execute(catalog.pool())
-    .await
-    .unwrap();
+    let catalog = crate::tests::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog
         .create_account(NewAccount {
@@ -96,9 +85,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         config.clone(),
         catalog.clone(),
         registry.clone(),
-    )
-    .await
-    .unwrap();
+    );
     let actor = MutationActor {
         account_id: account.id.to_string(),
         owner_key: "owner".into(),
@@ -140,6 +127,17 @@ impl Deployment {
             account_id: Some(self.account_id),
             link_hash: None,
         }
+    }
+
+    /// Who this deployment writes as: the owner, at editor rung.
+    fn writer(&self) -> crate::room::CommentAuthor {
+        crate::room::CommentAuthor::new(
+            "Reviewer",
+            Some(self.account_id),
+            format!("account:{}", self.account_id),
+            self.mutation_authorization(),
+            true,
+        )
     }
 
     fn mutation_authorization(&self) -> MutationAuthorization {
@@ -395,7 +393,7 @@ async fn resolve_reply_and_delete_reach_a_comment_past_the_page_size() {
         room.document_id,
         last,
         true,
-        deployment.mutation_authorization(),
+        &deployment.writer(),
     );
     let outcome = room
         .command(&deployment.authority(), &mut resolve)
@@ -424,10 +422,7 @@ async fn resolve_reply_and_delete_reach_a_comment_past_the_page_size() {
         last,
         &Configuration::default(),
         "A reply to a late comment.",
-        "Reviewer",
-        Some(deployment.account_id),
-        deployment.author_key(),
-        deployment.mutation_authorization(),
+        &deployment.writer(),
     )
     .unwrap();
     room.command(&deployment.authority(), &mut reply)
@@ -438,9 +433,7 @@ async fn resolve_reply_and_delete_reach_a_comment_past_the_page_size() {
         deployment.catalog.clone(),
         room.document_id,
         last,
-        deployment.author_key(),
-        true,
-        deployment.mutation_authorization(),
+        &deployment.writer(),
     );
     room.command(&deployment.authority(), &mut delete)
         .await
@@ -543,7 +536,7 @@ async fn a_comment_id_from_another_document_is_not_reachable() {
         room.document_id,
         elsewhere,
         true,
-        deployment.mutation_authorization(),
+        &deployment.writer(),
     );
     let error = match room.command(&deployment.authority(), &mut resolve).await {
         Err(error) => error,

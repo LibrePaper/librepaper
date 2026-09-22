@@ -140,10 +140,11 @@ impl Server {
     pub(super) async fn handle_replies(
         &self,
         request: Request<Body>,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         comment: &str,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
@@ -157,24 +158,20 @@ impl Server {
         };
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let who = self
-            .viewer(&entry, &headers, arrival, query.as_deref())
-            .await;
-        if who.auth_failed {
-            return write_json(
-                401,
-                &json!({"error": "authentication expired or was revoked"}),
-            );
-        }
-        if !self.may_read(&entry, &who) {
-            return write_json(404, &json!({"error": "not found"}));
+        let who = self.viewer_as(
+            &entry,
+            context.identity(),
+            &headers,
+            arrival,
+            query.as_deref(),
+        );
+        if let Err(response) = self.check_readable(&entry, &who) {
+            return response;
         }
         let may_edit = who.at_least(Role::Editor);
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => {
-                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-            }
+            Err(error) => return refused("open the room", &error),
         };
         let values: HashMap<String, String> = query
             .as_deref()
@@ -229,9 +226,10 @@ impl Server {
         &self,
         request: Request<Body>,
         peer: SocketAddr,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
@@ -242,23 +240,19 @@ impl Server {
         };
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => {
-                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-            }
+            Err(error) => return refused("open the room", &error),
         };
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let who = self
-            .viewer(&entry, &headers, arrival, query.as_deref())
-            .await;
-        if who.auth_failed {
-            return write_json(
-                401,
-                &json!({"error": "authentication expired or was revoked"}),
-            );
-        }
-        if !self.may_read(&entry, &who) {
-            return write_json(404, &json!({"error": "not found"}));
+        let who = self.viewer_as(
+            &entry,
+            context.identity(),
+            &headers,
+            arrival,
+            query.as_deref(),
+        );
+        if let Err(response) = self.check_readable(&entry, &who) {
+            return response;
         }
         let author = self.comment_author(&headers, arrival, &who.id);
         let may_edit = who.at_least(Role::Editor);
@@ -335,14 +329,30 @@ impl Server {
                     .apply_from(&room, incoming, &address, &current_who, &author)
                     .await;
                 if ok {
-                    room.broadcast_comment_event(None, &result).await;
-                    let targeted = room.comment_event_for(&result, &author, may_edit).await;
-                    return write_json(200, &targeted);
+                    // One preparation for all three audiences: the two
+                    // broadcasts and this caller's own view. Each used to
+                    // read the comment and the collection counts again for
+                    // itself.
+                    let event = room.prepare_comment_event(&result).await;
+                    room.broadcast_prepared(None, &event).await;
+                    return write_json(200, &event.view_for(&author, may_edit));
                 }
+                // The status is the refusal table's, put there by
+                // `command_refusal_value`. Only the shapes that carry no
+                // typed error -- a malformed message, an unknown comment id
+                // -- still fall back to 400. The allowed set is what
+                // `WriteError::status` can produce plus the statuses this
+                // route decides for itself; anything else would mean a
+                // status arrived from somewhere it should not have.
                 let status = result
                     .get("status")
                     .and_then(Value::as_u64)
-                    .filter(|status| matches!(status, 400 | 403 | 404 | 409 | 410 | 503))
+                    .filter(|status| {
+                        matches!(
+                            status,
+                            400 | 403 | 404 | 409 | 410 | 413 | 426 | 429 | 503 | 507
+                        )
+                    })
                     .unwrap_or(400) as u16;
                 write_json(status, &result)
             }
@@ -392,9 +402,7 @@ impl Server {
                 )
             }
         };
-        let mine = existing
-            .as_ref()
-            .is_some_and(|e| e.owned_by(&who.key, &who.id));
+        let mine = existing.as_ref().is_some_and(|e| e.owned_by(&who.id));
         let key = if mine {
             base.clone()
         } else {
@@ -497,9 +505,7 @@ impl Server {
             match self.store.get_result(&key).await {
                 Ok(Some(entry)) => entry,
                 Ok(None) => entry,
-                Err(error) => {
-                    return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-                }
+                Err(error) => return refused("read the catalogue", &error.into()),
             }
         } else {
             entry
@@ -937,14 +943,15 @@ impl Server {
     pub(super) async fn handle_state(
         &self,
         headers: &HeaderMap,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         query: Option<&str>,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
-        let (entry, who) = match self.entry_viewer(slug, headers, arrival, query).await {
+        let (entry, who) = match self.entry_viewer_in(slug, context, headers, query).await {
             Ok(result) => result,
             Err(response) => return response,
         };
@@ -995,10 +1002,11 @@ impl Server {
     pub(super) async fn handle_source(
         &self,
         headers: &HeaderMap,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         query: Option<&str>,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
@@ -1007,7 +1015,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, query).await;
+        let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -1016,7 +1024,7 @@ impl Server {
         // endpoint is for the editor's own working copy.
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(503, &error.to_string()),
+            Err(error) => return refused("open the room", &error),
         };
         let source = match room.source().await {
             Ok(source) => source,
@@ -1041,10 +1049,11 @@ impl Server {
     pub(super) async fn handle_project(
         &self,
         headers: &HeaderMap,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         query: Option<&str>,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
@@ -1056,15 +1065,13 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, query).await;
+        let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
         if !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => {
-                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-            }
+            Err(error) => return refused("open the room", &error),
         };
         let projected = match room.projection().await {
             Ok(projected) => projected,
@@ -1120,10 +1127,11 @@ impl Server {
     pub(super) async fn handle_snapshot(
         &self,
         headers: &HeaderMap,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         query: Option<&str>,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return write_json(400, &json!({"error": "bad slug"}));
         }
@@ -1132,7 +1140,7 @@ impl Server {
             Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
-        let who = self.viewer(&entry, headers, arrival, query).await;
+        let who = self.viewer_as(&entry, context.identity(), headers, arrival, query);
         if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
             return write_json(404, &json!({"error": "not found"}));
         }
@@ -1143,7 +1151,7 @@ impl Server {
         let may_edit = who.at_least(Role::Editor);
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(503, &error.to_string()),
+            Err(error) => return refused("open the room", &error),
         };
         let projected = match room.projection().await {
             Ok(projected) => projected,
@@ -1243,7 +1251,7 @@ impl Server {
         // Another publisher's document answers exactly as a missing one does,
         // so a guessed slug reveals nothing.
         let entry = match self.checked_entry(slug).await {
-            Ok(Some(entry)) if entry.owned_by(&who.key, &who.id) => entry,
+            Ok(Some(entry)) if entry.owned_by(&who.id) => entry,
             Ok(Some(_)) | Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };
@@ -1299,7 +1307,7 @@ impl Server {
         }
         // Somebody else's document answers as a missing one does.
         match self.checked_entry(slug).await {
-            Ok(Some(entry)) if entry.owned_by(&who.key, &who.id) => entry,
+            Ok(Some(entry)) if entry.owned_by(&who.id) => entry,
             Ok(Some(_)) | Ok(None) => return write_json(404, &json!({"error": "not found"})),
             Err(response) => return response,
         };

@@ -195,6 +195,72 @@ pub fn valid_color(value: Option<&str>) -> Option<String> {
         .then(|| format!("#{}", digits.to_ascii_lowercase()))
 }
 
+/// One comment mutation, with everything every audience has to be told
+/// already read.
+///
+/// Typed rather than three independent passes over the same JSON: which
+/// audience gets a row, which gets a redaction, and which counts go with
+/// it are decisions about the mutation, and making them once is what keeps
+/// the query count from growing with the number of audiences.
+pub struct CommentEvent {
+    payload: Value,
+    /// Whether this kind of event carries a comment row at all. A `delete`
+    /// or a `resolve` names a comment and sends no row; `carries_comment`
+    /// tells that apart from "there was a row and this audience may not see
+    /// it", which is a redaction.
+    carries_comment: bool,
+    editor: Option<Comment>,
+    reader: Option<Comment>,
+    editor_state: Option<crate::storage::postgres::AnnotationState>,
+    reader_state: Option<crate::storage::postgres::AnnotationState>,
+}
+
+impl CommentEvent {
+    fn bare(payload: Value) -> Self {
+        Self {
+            payload,
+            carries_comment: false,
+            editor: None,
+            reader: None,
+            editor_state: None,
+            reader_state: None,
+        }
+    }
+
+    /// This event as one audience is entitled to see it.
+    ///
+    /// `author` decides only `mine` and `deletable`, which are derived from
+    /// the row already read: a second caller asking for their own view costs
+    /// no query.
+    pub fn view_for(&self, author: &str, is_owner: bool) -> Value {
+        let (comment, state) = if is_owner {
+            (&self.editor, &self.editor_state)
+        } else {
+            (&self.reader, &self.reader_state)
+        };
+        let mut event = match (self.carries_comment, comment) {
+            (true, Some(comment)) => {
+                let mut event = self.payload.clone();
+                if let Ok(value) =
+                    serde_json::to_value(CommentView::for_viewer(comment, author, is_owner))
+                {
+                    event["comment"] = value;
+                }
+                event
+            }
+            // A row this audience may not see, or one that is no longer
+            // there. An editor still gets the event; a reader is told only
+            // that the annotation channel moved.
+            (true, None) if !is_owner => json!({"type": "annotation-redacted"}),
+            _ => self.payload.clone(),
+        };
+        if let Some(state) = state {
+            event["state"] = comment_state_json(state);
+        }
+        event
+    }
+}
+
 /// What a caller is shown: every comment field a client ever sees, plus
 /// whether this particular caller may delete it.
 #[derive(Serialize)]
@@ -978,6 +1044,52 @@ fn replay_of(row: &AnnotationRecord) -> Result<NewAnnotation, CommandError> {
 
 // -- semantic commands ---------------------------------------------------
 
+/// Who is writing, as every annotation command needs them.
+///
+/// Not another principal model, and not a widening of one: these are exactly
+/// the answers a [`crate::server::Viewer`] already gives, kept distinct
+/// because they *are* distinct, and grouped only so they stop travelling as
+/// four positional arguments in an order nothing but the compiler enforced.
+///
+/// - `creator` is the display name a comment is signed with, which the
+///   server computes and never takes from a client.
+/// - `account_id` is the account a signed-in comment belongs to.
+/// - `key` is the attribution key, checked server-side and never shown.
+/// - `authorization` carries the session generation, the deployment's policy
+///   ceiling and the link that bounds it, and is re-checked by the catalogue
+///   at commit time. That check is the one that matters and this changes
+///   nothing about it.
+/// - `is_owner` is this caller's rung *on this document*, which is a
+///   different question from the deployment ceiling in `authorization`: it
+///   is what decides moderation -- deleting somebody else's comment,
+///   refining somebody else's suggestion.
+#[derive(Clone, Debug)]
+pub struct CommentAuthor {
+    pub creator: String,
+    pub account_id: Option<Uuid>,
+    pub key: String,
+    pub authorization: MutationAuthorization,
+    pub is_owner: bool,
+}
+
+impl CommentAuthor {
+    pub fn new(
+        creator: impl Into<String>,
+        account_id: Option<Uuid>,
+        key: impl Into<String>,
+        authorization: MutationAuthorization,
+        is_owner: bool,
+    ) -> Self {
+        Self {
+            creator: creator.into(),
+            account_id,
+            key: key.into(),
+            authorization,
+            is_owner,
+        }
+    }
+}
+
 /// The proposal branch half of [`PreparedBranch`], for a caller that already
 /// keeps the target (here, `AddComment::resolved_target`) in a field of its
 /// own and would otherwise carry it twice.
@@ -1027,10 +1139,7 @@ impl AddComment {
         config: &Configuration,
         motivation: &str,
         body: &str,
-        creator: &str,
-        author_account_id: Option<Uuid>,
-        author_key: String,
-        actor: MutationAuthorization,
+        author: &CommentAuthor,
         exact: &str,
         prefix: &str,
         suffix: &str,
@@ -1048,7 +1157,9 @@ impl AddComment {
         if body.is_empty() && !matches!(motivation.as_str(), "highlighting" | "editing") {
             return Err("comment body is required".into());
         }
-        let mut creator = clean(creator, config.caps.creator).trim().to_string();
+        let mut creator = clean(&author.creator, config.caps.creator)
+            .trim()
+            .to_string();
         if creator.is_empty() {
             creator = "Anonymous".to_string();
         }
@@ -1079,9 +1190,9 @@ impl AddComment {
             body,
             creator,
             color,
-            author_account_id,
-            author_key,
-            actor,
+            author_account_id: author.account_id,
+            author_key: author.key.clone(),
+            actor: author.authorization.clone(),
             exact: clean(exact, config.caps.exact),
             prefix: clean(prefix, config.caps.context),
             suffix: clean(suffix, config.caps.context),
@@ -1277,16 +1388,15 @@ impl AddReply {
         comment_id: Uuid,
         config: &Configuration,
         body: &str,
-        creator: &str,
-        author_account_id: Option<Uuid>,
-        author_key: String,
-        actor: MutationAuthorization,
+        author: &CommentAuthor,
     ) -> Result<Self, String> {
         let body = clean(body, config.caps.body).trim().to_string();
         if body.is_empty() {
             return Err("reply body is required".into());
         }
-        let mut creator = clean(creator, config.caps.creator).trim().to_string();
+        let mut creator = clean(&author.creator, config.caps.creator)
+            .trim()
+            .to_string();
         if creator.is_empty() {
             creator = "Anonymous".to_string();
         }
@@ -1297,9 +1407,9 @@ impl AddReply {
             comment_id,
             body,
             creator,
-            author_account_id,
-            author_key,
-            actor,
+            author_account_id: author.account_id,
+            author_key: author.key.clone(),
+            actor: author.authorization.clone(),
         })
     }
 }
@@ -1374,14 +1484,14 @@ impl ResolveComment {
         document_id: Uuid,
         comment_id: Uuid,
         resolved: bool,
-        actor: MutationAuthorization,
+        author: &CommentAuthor,
     ) -> Self {
         Self {
             catalog,
             document_id,
             comment_id,
             resolved,
-            actor,
+            actor: author.authorization.clone(),
         }
     }
 }
@@ -1413,24 +1523,31 @@ impl SequencerCommand for ResolveComment {
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, Result<Self::Output, CommandError>> {
         Box::pin(async move {
-            let existing =
-                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
-            let input = replay_of(&existing)?;
-            self.catalog
-                .replace_annotation_authorized(
+            // One column, changed by one authorized update that answers with
+            // what it wrote. Nothing else about the annotation is touched,
+            // so nothing else about it can be lost on the way round.
+            //
+            // `document_id` is in the predicate, not checked afterwards, so
+            // naming another document's comment finds nothing -- which is
+            // the caller's precondition failing, not a storage failure.
+            let resolved_at = self
+                .catalog
+                .set_annotation_resolved_authorized(
                     tx,
+                    self.document_id,
                     self.comment_id,
-                    input,
                     self.resolved,
                     &self.actor,
                 )
-                .await?;
-            let updated =
-                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
+                .await
+                .map_err(|error| match error {
+                    postgres::Error::NotFound => CommandError::Conflict("unknown comment".into()),
+                    other => CommandError::Storage(other),
+                })?;
             Ok(ResolveOutcome {
                 comment_id: self.comment_id,
-                resolved: updated.resolved_at.is_some(),
-                resolved_at: updated.resolved_at.map(format_time),
+                resolved: resolved_at.is_some(),
+                resolved_at: resolved_at.map(format_time),
             })
         })
     }
@@ -1457,17 +1574,15 @@ impl DeleteComment {
         catalog: Arc<PostgresCatalog>,
         document_id: Uuid,
         comment_id: Uuid,
-        author_key: String,
-        is_owner: bool,
-        actor: MutationAuthorization,
+        author: &CommentAuthor,
     ) -> Self {
         Self {
             catalog,
             document_id,
             comment_id,
-            author_key,
-            is_owner,
-            actor,
+            author_key: author.key.clone(),
+            is_owner: author.is_owner,
+            actor: author.authorization.clone(),
         }
     }
 }
@@ -1575,8 +1690,7 @@ impl RefineSuggestion {
         comment_id: Uuid,
         proposal_id: Uuid,
         expected_version: i64,
-        author_key: String,
-        is_owner: bool,
+        author: &CommentAuthor,
         config: &Configuration,
         body: &str,
         exact: &str,
@@ -1584,7 +1698,6 @@ impl RefineSuggestion {
         suffix: &str,
         proposed: &str,
         expected_proposed: Option<&str>,
-        actor: MutationAuthorization,
     ) -> Result<Self, String> {
         let proposed = strip_control(proposed);
         if proposed.chars().count() > config.caps.exact || body.chars().count() > config.caps.body {
@@ -1596,8 +1709,8 @@ impl RefineSuggestion {
             comment_id,
             proposal_id,
             expected_version,
-            author_key,
-            is_owner,
+            author_key: author.key.clone(),
+            is_owner: author.is_owner,
             body: clean(body, config.caps.body).trim().to_string(),
             exact: clean(exact, config.caps.exact),
             prefix: clean(prefix, config.caps.context),
@@ -1606,7 +1719,7 @@ impl RefineSuggestion {
             // Stripped the same way the stored side was, so the comparison
             // is between two texts that went through the same filter.
             expected_proposed: expected_proposed.map(strip_control),
-            actor,
+            actor: author.authorization.clone(),
             cap_exact: config.caps.exact,
             prepared: None,
             stored: None,
@@ -1998,8 +2111,7 @@ impl RejectSuggestion {
         comment_id: Uuid,
         proposal_id: Uuid,
         tip_frontiers: Vec<u8>,
-        decided_by: String,
-        actor: MutationAuthorization,
+        author: &CommentAuthor,
     ) -> Self {
         Self {
             catalog,
@@ -2007,8 +2119,8 @@ impl RejectSuggestion {
             comment_id,
             proposal_id,
             tip_frontiers,
-            decided_by,
-            actor,
+            decided_by: author.creator.clone(),
+            actor: author.authorization.clone(),
         }
     }
 }
@@ -2262,33 +2374,39 @@ impl Room {
     /// need of: a `reply` event names its thread and a `comment` event
     /// names itself.
     pub async fn comment_event_for(&self, payload: &Value, author: &str, is_owner: bool) -> Value {
+        self.prepare_comment_event(payload)
+            .await
+            .view_for(author, is_owner)
+    }
+
+    /// Everything one comment mutation has to be told with, read once.
+    ///
+    /// A mutation is announced three times -- to the editors, to the
+    /// readers, and back to whoever made it -- and each announcement used to
+    /// re-read the comment and the collection counts for itself. Six queries
+    /// for two distinct answers, and the number grew with the number of
+    /// audiences rather than with what they need to be told apart by.
+    ///
+    /// What genuinely differs between audiences is the *query*: a reader's
+    /// comment lookup and collection count do not include suggestions at
+    /// all, so those are two reads and not one read seen two ways. What does
+    /// not differ is the caller: `author` only decides `mine` and
+    /// `deletable`, which are derived from the row already in hand.
+    pub async fn prepare_comment_event(&self, payload: &Value) -> CommentEvent {
         let kind = payload.get("type").and_then(Value::as_str);
         if !matches!(
             kind,
             Some("comment" | "refine" | "reply" | "delete" | "resolve" | "accept" | "reject")
         ) {
-            return payload.clone();
+            return CommentEvent::bare(payload.clone());
         }
         if kind == Some("delete") {
             if let Some(id) = payload.get("comment_id").and_then(Value::as_str) {
                 self.attachments.lock().await.remove(id);
             }
         }
-        let mut event = self.comment_event_view(payload, author, is_owner).await;
-        // Counts describe the viewer's entire collection, including rows
-        // outside their loaded prefix. Never derive them from a client delta.
-        match self.comment_state(is_owner).await {
-            Ok(state) => event["state"] = comment_state_json(&state),
-            Err(error) => log::warn!("could not read comment counts for {}: {error}", self.slug),
-        }
-        event
-    }
-
-    async fn comment_event_view(&self, payload: &Value, author: &str, is_owner: bool) -> Value {
-        let kind = payload.get("type").and_then(Value::as_str);
-        if !matches!(kind, Some("comment" | "refine" | "reply")) {
-            return payload.clone();
-        }
+        // The row, for each audience that reads a different query. Only the
+        // three kinds that carry one need it at all.
         let id = match kind {
             Some("comment" | "refine") => payload
                 .get("comment")
@@ -2297,16 +2415,35 @@ impl Room {
             Some("reply") => payload.get("comment_id").and_then(Value::as_str),
             _ => None,
         };
-        let redacted = || {
-            if is_owner {
-                payload.clone()
-            } else {
-                json!({"type": "annotation-redacted"})
+        let mut event = CommentEvent::bare(payload.clone());
+        event.carries_comment = id.is_some();
+        if let Some(id) = id {
+            event.editor = self.event_comment(id, true).await;
+            event.reader = self.event_comment(id, false).await;
+        }
+        // Counts describe the viewer's entire collection, including rows
+        // outside their loaded prefix. Never derived from a client delta,
+        // and never from the one row above: they are about the collection.
+        for (is_owner, slot) in [
+            (true, &mut event.editor_state),
+            (false, &mut event.reader_state),
+        ] {
+            match self.comment_state(is_owner).await {
+                Ok(state) => *slot = Some(state),
+                Err(error) => {
+                    log::warn!("could not read comment counts for {}: {error}", self.slug)
+                }
             }
-        };
-        let comment = match self.comment_by_id(id.unwrap_or_default(), is_owner).await {
-            Ok(Some(comment)) => comment,
-            Ok(None) => return redacted(),
+        }
+        event
+    }
+
+    /// One audience's comment row, or nothing when there is no row to send
+    /// them.
+    async fn event_comment(&self, id: &str, is_owner: bool) -> Option<Comment> {
+        match self.comment_by_id(id, is_owner).await {
+            Ok(Some(comment)) if is_owner || visible_to_reader(&comment) => Some(comment),
+            Ok(_) => None,
             Err(error) => {
                 // A read failure is not "there is no such comment". A
                 // broadcast has nowhere to put a reason, so the peer gets
@@ -2315,18 +2452,9 @@ impl Room {
                     "could not read a comment of {} for its event: {error}",
                     self.slug
                 );
-                return redacted();
+                None
             }
-        };
-        if !is_owner && !visible_to_reader(&comment) {
-            return json!({"type": "annotation-redacted"});
         }
-        let view = CommentView::for_viewer(&comment, author, is_owner);
-        let mut event = payload.clone();
-        if let Ok(value) = serde_json::to_value(view) {
-            event["comment"] = value;
-        }
-        event
     }
 
     /// Relays a comment event to everyone else in the room, in the view each
@@ -2334,10 +2462,17 @@ impl Room {
     /// editor peer has open; a reader peer sees only what the public
     /// annotation channel may carry, which for that comment is a redaction.
     pub async fn broadcast_comment_event(&self, skip: Option<u64>, payload: &Value) {
-        let editors = self.comment_event_for(payload, "", true).await;
-        self.broadcast_editors_except(skip, &editors).await;
-        let readers = self.comment_event_for(payload, "", false).await;
-        self.broadcast_readers_except(skip, &readers).await;
+        let event = self.prepare_comment_event(payload).await;
+        self.broadcast_prepared(skip, &event).await;
+    }
+
+    /// The same, for a caller that has already prepared the event because it
+    /// also wants a view of its own.
+    pub async fn broadcast_prepared(&self, skip: Option<u64>, event: &CommentEvent) {
+        self.broadcast_editors_except(skip, &event.view_for("", true))
+            .await;
+        self.broadcast_readers_except(skip, &event.view_for("", false))
+            .await;
     }
 
     /// Says the collection moved in a way no single event describes -- an

@@ -18,7 +18,7 @@ use loro::{
     Container, ContainerTrait, LoroDoc, LoroText, ValueOrContainer,
 };
 
-use super::shape::{FILES, PATHS};
+use super::shape::FILES;
 
 /// The result of resolving a source range in the current CRDT state.
 ///
@@ -40,25 +40,8 @@ pub struct ResolvedRange {
 pub enum CursorResolutionError {
     MissingFile,
     MissingContainer,
-    MalformedCursor,
     ForeignContainer,
     InvalidPosition,
-}
-
-/// Captures a position in the text at `path` that follows the same CRDT
-/// content when concurrent updates shift its ordinary UTF-16 offset.
-///
-/// All positions are UTF-16 code units, matching the browser's coordinate
-/// system. Loro's `get_cursor` natively takes Unicode code points; this
-/// function converts the UTF-16 input position to Unicode, calls `get_cursor`,
-/// and returns the resulting cursor.
-pub fn cursor_at_path(doc: &LoroDoc, path: &str, pos_utf16: u32, side: Side) -> Option<Cursor> {
-    let paths_map = doc.get_map(PATHS);
-
-    // Find the file ID that corresponds to this path.
-    let id = id_of_path(&paths_map, path)?;
-
-    cursor_at_file_id(doc, &id, pos_utf16, side)
 }
 
 /// Captures a cursor at a stable Loro `files` map key. This is the source
@@ -84,6 +67,11 @@ pub fn cursor_at_file_id(
 ///
 /// Returns `None` if the cursor's container no longer exists in the document,
 /// or if the position cannot be resolved.
+/// Exercised by this module's own tests rather than by the server, which
+/// resolves whole files through [`offsets_of_cursors_in_file`]; kept because
+/// it is the single-anchor half of the same CRDT cursor API and the cheapest
+/// way to state what an anchor promises across an edit.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn offset_of_cursor(doc: &LoroDoc, cursor: &Cursor) -> Option<(u32, Option<Cursor>)> {
     // Query the cursor's current position. This returns a PosQueryResult which
     // contains the current position in Unicode code points and an optional
@@ -99,59 +87,6 @@ pub fn offset_of_cursor(doc: &LoroDoc, cursor: &Cursor) -> Option<(u32, Option<C
 
     // Return both the current position and any updated cursor Loro provides.
     Some((pos_utf16, result.update))
-}
-
-/// Resolves two anchors against the text currently named by `path`.
-///
-/// A bare [`offset_of_cursor`] call only asks Loro whether an anchor
-/// resolves somewhere in the document. That is not sufficient for review:
-/// a forged cursor from another LoroText could otherwise resolve to a plausible
-/// offset and cause a rejection to edit the wrong file. Resolving through
-/// the named path makes the container identity part of the guard.
-///
-/// Returns the current offsets and Loro's replacement cursors, or `None` if
-/// either cursor does not resolve, or if their containers do not match the
-/// expected file's container. Callers must persist replacements in derived
-/// resolver state before the next resolution attempt.
-pub fn offsets_of_cursors(
-    doc: &LoroDoc,
-    path: &str,
-    start: &Cursor,
-    end: &Cursor,
-) -> Option<ResolvedRange> {
-    let files = doc.get_map(FILES);
-    let paths_map = doc.get_map(PATHS);
-
-    // Find the file ID that corresponds to this path, and get the text.
-    let id = id_of_path(&paths_map, path)?;
-    let text = text_at(&files, &id)?;
-    let expected_container_id = text.id();
-
-    // Check that both cursors' containers match the expected file's container.
-    // This is a security guard: it prevents a forged or misplaced cursor from
-    // being resolved to an offset in the wrong file. Do this check first, before
-    // resolving positions, because a guard that runs before the work it guards
-    // is clearer than one that runs after.
-    if start.container != expected_container_id || end.container != expected_container_id {
-        return None;
-    }
-
-    // Resolve both cursors' current positions in Unicode.
-    let start_result = doc.get_cursor_pos(start).ok()?;
-    let end_result = doc.get_cursor_pos(end).ok()?;
-
-    // Convert both positions from Unicode to UTF-16.
-    let start_utf16 =
-        text.convert_pos(start_result.current.pos, PosType::Unicode, PosType::Utf16)? as u32;
-    let end_utf16 =
-        text.convert_pos(end_result.current.pos, PosType::Unicode, PosType::Utf16)? as u32;
-
-    Some(ResolvedRange {
-        start_utf16,
-        end_utf16,
-        start_replacement: start_result.update,
-        end_replacement: end_result.update,
-    })
 }
 
 /// Resolves a source range through its immutable Loro file ID. Unlike the
@@ -196,23 +131,6 @@ fn text_at(files: &loro::LoroMap, id: &str) -> Option<LoroText> {
         ValueOrContainer::Container(Container::Text(t)) => Some(t),
         _ => None,
     }
-}
-
-/// The id of the text currently named `path`, or `None` when nothing in
-/// `paths_map` holds that path.
-fn id_of_path(paths_map: &loro::LoroMap, path: &str) -> Option<String> {
-    for key in paths_map.keys() {
-        let k = key.to_string();
-        let Some(v) = paths_map.get(&k) else {
-            continue;
-        };
-        if let ValueOrContainer::Value(loro::LoroValue::String(s)) = v {
-            if s.to_string() == path {
-                return Some(k);
-            }
-        }
-    }
-    None
 }
 
 /// Encodes a cursor to bytes for storage.

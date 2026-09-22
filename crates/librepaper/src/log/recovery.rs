@@ -77,10 +77,6 @@ use crate::storage::postgres::{
 };
 use crate::storage::worker::{Task, Worker};
 
-const TRUNCATE: &str = "TRUNCATE document_updates,document_snapshots,document_proposal_hunks,\
-     document_proposals,replies,annotations,document_labels,document_assets,share_links,grants,\
-     documents,accounts CASCADE";
-
 async fn connect(url: String) -> Arc<PostgresCatalog> {
     let catalog = Arc::new(
         PostgresCatalog::connect(PostgresOptions::new(url))
@@ -88,10 +84,7 @@ async fn connect(url: String) -> Arc<PostgresCatalog> {
             .expect("connect to the throwaway database"),
     );
     catalog.migrate().await.expect("apply the current schema");
-    sqlx::query(TRUNCATE)
-        .execute(catalog.pool())
-        .await
-        .expect("start each test from an empty database");
+    crate::tests::reset(&catalog).await;
     catalog
 }
 
@@ -822,16 +815,12 @@ async fn deployment_with_document(slug: &str) -> Option<Deployment> {
         config.clone(),
         "deployment".into(),
     );
-    let store = Arc::new(
-        Store::open_with_catalog(
-            blobs.clone(),
-            config.clone(),
-            catalog.clone(),
-            registry.clone(),
-        )
-        .await
-        .unwrap(),
-    );
+    let store = Arc::new(Store::open_with_catalog(
+        blobs.clone(),
+        config.clone(),
+        catalog.clone(),
+        registry.clone(),
+    ));
     let actor = MutationActor {
         account_id: account.id.to_string(),
         owner_key: "owner".into(),
@@ -870,6 +859,17 @@ impl Deployment {
             account_id: Some(self.account_id),
             link_hash: None,
         }
+    }
+
+    /// Who this deployment writes as: the owner, at editor rung.
+    fn writer(&self) -> crate::room::CommentAuthor {
+        crate::room::CommentAuthor::new(
+            "Reviewer",
+            Some(self.account_id),
+            format!("account:{}", self.account_id),
+            self.mutation_authorization(),
+            true,
+        )
     }
 
     fn mutation_authorization(&self) -> MutationAuthorization {
@@ -996,10 +996,7 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         &config,
         "commenting",
         "A remark.",
-        "Reviewer",
-        Some(deployment.account_id),
-        format!("account:{}", deployment.account_id),
-        deployment.mutation_authorization(),
+        &deployment.writer(),
         "paragraph",
         "One ",
         " a reader can quote.",
@@ -1053,10 +1050,7 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         &config,
         "commenting",
         "A remark on the original paragraph.",
-        "Reviewer",
-        Some(deployment.account_id),
-        format!("account:{}", deployment.account_id),
-        deployment.mutation_authorization(),
+        &deployment.writer(),
         "paragraph",
         "One ",
         " a reader can quote.",
@@ -1133,10 +1127,7 @@ async fn a_durable_projection_is_stable_and_command_bundles_or_writes_nothing() 
         &config,
         "commenting",
         "Never lands.",
-        "Reviewer",
-        Some(deployment.account_id),
-        format!("account:{}", deployment.account_id),
-        deployment.mutation_authorization(),
+        &deployment.writer(),
         "paragraph",
         "One ",
         " a reader can quote.",

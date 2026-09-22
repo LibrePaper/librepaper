@@ -11,7 +11,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{ConnectOptions, PgPool, Postgres};
 
 mod access;
-mod annotations;
+pub(crate) mod annotations;
 
 mod commit;
 mod document_log;
@@ -25,12 +25,8 @@ mod proposals;
 mod repository;
 
 pub use commit::Authority;
-pub use document_log::{
-    ActivatedLogBase, FlushRow, LogBase, LogHead, LogRow, NewSnapshot, PendingWork,
-    PendingWorkCursor, RowCoverage, MAX_RECOVERABLE_LOG_BYTES,
-};
+pub use document_log::{FlushRow, LogRow, NewSnapshot, PendingWorkCursor, RowCoverage};
 pub use labels::{LabelRecord, NewLabel};
-pub use marks::{CountRecord, MarkRecord};
 pub use ownership::WriterLease;
 pub use proposals::{NewProposal, StoredDecision, StoredProposal};
 pub use repository::{
@@ -311,7 +307,7 @@ mod tests {
         through: i64,
         vector: &[u8],
         snapshot: &[u8],
-    ) -> Option<LogBase> {
+    ) -> Option<document_log::LogBase> {
         let written = storage.write_base(document_id, snapshot).await.unwrap();
         catalog
             .activate_log_base(
@@ -332,14 +328,7 @@ mod tests {
     /// into every id it creates, for a test that is scoped to its own rows
     /// and would rather not race a truncate against whatever else is running.
     async fn truncate(catalog: &PostgresCatalog) {
-        sqlx::query!(
-            "TRUNCATE document_proposal_hunks,document_proposals,document_labels,\
-             document_updates,document_snapshots,document_assets,replies,annotations,\
-             document_marks,share_links,grants,documents,accounts CASCADE",
-        )
-        .execute(catalog.pool())
-        .await
-        .unwrap();
+        crate::tests::reset(catalog).await;
     }
 
     async fn seed_account(catalog: &PostgresCatalog, tag: &str) -> AccountRecord {
@@ -2140,10 +2129,8 @@ mod tests {
 
 #[cfg(test)]
 mod benchmarks;
-pub use access::{AccessRole, GrantRecord, ShareLinkRecord};
+pub use access::AccessRole;
 pub use annotations::{
-    original_anchor_from_record, presentation_from_record, AnnotationBatchCommand,
-    AnnotationBatchUpsert, AnnotationRecord, AnnotationState, MutationAuthorization, NewAnnotation,
-    NewReply, ReplyRecord, ReplySummary, SizedReply, SizedRow, ANNOTATION_PAGE_MAX,
-    REPLY_LOOKUP_MAX, REPLY_PAGE_MAX,
+    original_anchor_from_record, presentation_from_record, AnnotationRecord, AnnotationState,
+    MutationAuthorization, NewAnnotation, NewReply, ReplyRecord, SizedReply,
 };

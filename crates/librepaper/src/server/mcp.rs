@@ -5,7 +5,7 @@ use hmac::{Hmac, Mac};
 use serde::Serialize;
 
 mod cancel;
-mod comments;
+pub(crate) mod comments;
 mod operations;
 mod render;
 mod schema;
@@ -37,9 +37,9 @@ struct View {
 }
 
 #[derive(Debug)]
-struct Failure {
-    code: &'static str,
-    message: String,
+pub(crate) struct Failure {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
     data: Value,
 }
 

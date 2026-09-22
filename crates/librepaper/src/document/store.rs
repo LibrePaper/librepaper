@@ -184,8 +184,11 @@ impl IndexEntry {
         }
     }
 
-    /// Ownership compares the exact immutable account identity from the catalog.
-    pub fn owned_by(&self, _owner_key: &str, caller_id: &str) -> bool {
+    /// Ownership compares the exact immutable account identity from the
+    /// catalogue, and nothing else. It used to take an owner key beside it,
+    /// ignored since the catalogue became authoritative: a parameter every
+    /// caller filled in and nothing read.
+    pub fn owned_by(&self, caller_id: &str) -> bool {
         !self.publisher_id.is_empty() && !caller_id.is_empty() && caller_id == self.publisher_id
     }
 
@@ -195,20 +198,13 @@ impl IndexEntry {
     /// somebody is the owner, and this answers what they may do, which is the
     /// question the routes were really asking.
     ///
-    /// A caller is named by their owner key and, when signed in, their GitHub
-    /// numeric id; `link_hash` is the digest of the key their request carried,
+    /// A caller is named by their account id; `link_hash` is the digest of
+    /// the key their request carried,
     /// or "" for none. `ceiling` is the deployment's own switches, which a
     /// document may be stricter than and never wider: a grant the switch does
     /// not allow this caller is still recorded, and simply is not honoured.
-    pub fn role_of(
-        &self,
-        owner_key: &str,
-        caller_id: &str,
-        link_hash: &str,
-        ceiling: Ceiling,
-        now: i64,
-    ) -> Role {
-        if self.owned_by(owner_key, caller_id) {
+    pub fn role_of(&self, caller_id: &str, link_hash: &str, ceiling: Ceiling, now: i64) -> Role {
+        if self.owned_by(caller_id) {
             return Role::Owner;
         }
         let mut role = Role::Reader;
@@ -302,8 +298,8 @@ impl IndexEntry {
 
     /// Whether a caller is on this document at all: its owner or the holder of
     /// a live link.
-    pub fn names(&self, owner_key: &str, caller_id: &str, link_hash: &str, now: i64) -> bool {
-        self.owned_by(owner_key, caller_id)
+    pub fn names(&self, caller_id: &str, link_hash: &str, now: i64) -> bool {
+        self.owned_by(caller_id)
             || self.account_grants.contains_key(caller_id)
             || self.link_role(link_hash, now).is_some()
     }
@@ -313,8 +309,8 @@ impl IndexEntry {
     /// is the least a link carries. The URL alone opens nothing for anybody
     /// else -- a link is the whole of sharing, and the bare slug is not one.
     /// The reserved examples are the exception: they are there to be read.
-    pub fn readable_by(&self, owner_key: &str, caller_id: &str, link_hash: &str, now: i64) -> bool {
-        self.example || self.unowned || self.names(owner_key, caller_id, link_hash, now)
+    pub fn readable_by(&self, caller_id: &str, link_hash: &str, now: i64) -> bool {
+        self.example || self.unowned || self.names(caller_id, link_hash, now)
     }
 
     /// When this document expires from, as seconds since the epoch.
@@ -616,18 +612,24 @@ impl Command for ReplaceProject {
 }
 
 impl Store {
-    pub async fn open_with_catalog(
+    /// Assembles a store from collaborators the caller already holds.
+    ///
+    /// Neither asynchronous nor fallible, and never was: it awaits nothing
+    /// and the only value it can produce is `Ok`. Every caller wrote
+    /// `.await.unwrap()` or `.await.expect(..)` after it, which reads as
+    /// though opening a store could fail.
+    pub fn open_with_catalog(
         blobs: Arc<dyn BlobStore>,
         config: Arc<Configuration>,
         catalog: Arc<Catalog>,
         registry: Arc<Registry>,
-    ) -> Result<Self, String> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             blobs,
             config,
             catalog,
             registry,
-        })
+        }
     }
 
     /// Marks a document for deletion. That mark -- `documents.status =
@@ -658,10 +660,6 @@ impl Store {
             return Ok(None);
         };
         Ok(Some(entry_from_document(catalog, &document).await?))
-    }
-
-    pub async fn get_checked(&self, slug: &str) -> Result<Option<IndexEntry>, CatalogError> {
-        self.get_result(slug).await
     }
 
     pub async fn list_result(&self) -> Result<Vec<IndexEntry>, CatalogError> {
@@ -812,6 +810,12 @@ impl Store {
     /// way here. A document created but never opened reads the same way,
     /// because creation itself is now a row in the log rather than a version
     /// kept beside it.
+    ///
+    /// The paths are the projection's, not the raw maps'. Those two disagree
+    /// about a path collision, an invalid name and a text that is not one,
+    /// and this is a copy of the project: writing it out under the raw names
+    /// produces a directory that is not the document anybody reads, and on a
+    /// collision writes one of the two files over the other.
     pub async fn project_files(
         &self,
         slug: &str,
@@ -829,19 +833,24 @@ impl Store {
             .get(document.id, slug)
             .await
             .map_err(|error| error.to_string())?;
-        let (texts, named_assets) = sequencer
-            .with_head(|doc| {
-                (
-                    crate::document::session::texts_of(doc),
-                    crate::document::session::assets_of(doc),
-                )
-            })
+        let rules = self.config.paths();
+        let projected = sequencer
+            .with_head(|doc| librepaper_document_core::project(doc, &rules))
             .await
             .map_err(|error| error.to_string())?;
-        let mut files: Vec<(String, Vec<u8>)> = texts
-            .into_iter()
-            .map(|(path, text)| (path, text.into_bytes()))
-            .collect();
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut named_assets: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for (path, entry) in &projected.projection.files {
+            match projected.texts.get(path) {
+                Some(text) => files.push((path.clone(), text.clone().into_bytes())),
+                // No text at a projected path is an asset: its bytes are in
+                // the store under the digest the entry names.
+                None => {
+                    named_assets.insert(path.clone(), entry.digest.clone());
+                }
+            }
+        }
         // Figures live in the store under their digest, and the document
         // carries only the name somebody gave them. One whose bytes have gone
         // is skipped rather than failing the copy: a project missing a figure
@@ -1421,5 +1430,5 @@ pub fn digest_of(text: &str) -> String {
     digest_of_bytes(text.as_bytes())
 }
 pub fn digest_of_bytes(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+    crate::results::sha256(bytes)
 }

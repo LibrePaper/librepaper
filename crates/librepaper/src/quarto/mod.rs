@@ -3,9 +3,7 @@
 //! Immutable result contracts are defined in crate::results. This module
 //! keeps the QMD parser.
 
-use crate::results::{
-    sha256, BundleManifest, Diagnostic, DiagnosticSeverity, OutputFormat, ProvenanceKind,
-};
+use crate::results::{sha256, Diagnostic, DiagnosticSeverity};
 
 use serde::{Deserialize, Serialize};
 
@@ -373,15 +371,6 @@ fn cell_fingerprint(language: &str, options: &str, source: &str) -> String {
     sha256(&bytes)
 }
 
-pub fn computation_fingerprint(
-    document: &QmdDocument,
-    entrypoint: &str,
-    profiles: &[String],
-    parameters_sha256: Option<&str>,
-) -> String {
-    computation_fingerprint_for_format(document, entrypoint, "", profiles, parameters_sha256)
-}
-
 pub fn computation_fingerprint_for_format(
     document: &QmdDocument,
     entrypoint: &str,
@@ -431,53 +420,12 @@ pub fn computation_fingerprint_for_format(
     sha256(&bytes)
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum Freshness {
-    MatchesRecordedInputs,
-    SourceCompatible,
-    PotentiallyStale,
-    Unknown,
-    Missing,
-}
-
-pub fn classify_freshness(
-    old: &BundleManifest,
-    current: &QmdDocument,
-    entrypoint: &str,
-    profiles: &[String],
-    parameters_sha256: Option<&str>,
-) -> Freshness {
-    if old.provenance.kind == ProvenanceKind::Imported || old.source.tree_sha256.is_none() {
-        return Freshness::Unknown;
-    }
-    let format = match old.context.format {
-        OutputFormat::Html => "html",
-        OutputFormat::Revealjs => "revealjs",
-        OutputFormat::Pdf => "pdf",
-        OutputFormat::Docx => "docx",
-        OutputFormat::Other => "other",
-    };
-    let current_hash = computation_fingerprint_for_format(
-        current,
-        entrypoint,
-        format,
-        profiles,
-        parameters_sha256,
-    );
-    if current_hash == old.context.computation_sha256 {
-        Freshness::MatchesRecordedInputs
-    } else {
-        Freshness::PotentiallyStale
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::results::{
-        parameters_sha256, DocumentMetadata, DraftFormat, ExecutionEngine, BUNDLE_SCHEMA,
-        FINGERPRINT_VERSION,
+        parameters_sha256, BundleManifest, DocumentMetadata, DraftFormat, ExecutionEngine,
+        BUNDLE_SCHEMA, FINGERPRINT_VERSION,
     };
     use std::collections::BTreeMap;
 
@@ -524,8 +472,8 @@ mod tests {
         let a = parse_qmd("```{r #a}\nx <- 1\n```\n", "p.qmd");
         let b = parse_qmd("```{r #a echo=false}\nx <- 1\n```\n", "p.qmd");
         assert_ne!(
-            computation_fingerprint(&a, "p.qmd", &[], None),
-            computation_fingerprint(&b, "p.qmd", &[], None)
+            computation_fingerprint_for_format(&a, "p.qmd", "", &[], None),
+            computation_fingerprint_for_format(&b, "p.qmd", "", &[], None)
         );
     }
     #[test]
@@ -546,8 +494,8 @@ mod tests {
         let unknown = parse_qmd("```{custom-engine}\nrun()\n```\n", "p.qmd");
         assert_eq!(unknown.cells.len(), 1);
         assert_ne!(
-            computation_fingerprint(&unknown, "p.qmd", &[], None),
-            computation_fingerprint(&QmdDocument::default(), "p.qmd", &[], None)
+            computation_fingerprint_for_format(&unknown, "p.qmd", "", &[], None),
+            computation_fingerprint_for_format(&QmdDocument::default(), "p.qmd", "", &[], None)
         );
     }
     #[test]
@@ -566,8 +514,8 @@ mod tests {
         let mut changed = doc.clone();
         changed.inline_expressions[0].push('!');
         assert_ne!(
-            computation_fingerprint(&doc, "p.qmd", &[], None),
-            computation_fingerprint(&changed, "p.qmd", &[], None)
+            computation_fingerprint_for_format(&doc, "p.qmd", "", &[], None),
+            computation_fingerprint_for_format(&changed, "p.qmd", "", &[], None)
         );
     }
 
@@ -643,11 +591,11 @@ mod tests {
         let metadata = DocumentMetadata::from_source_format("quarto");
         assert_eq!(metadata.execution_engine, ExecutionEngine::Quarto);
         assert_eq!(metadata.draft_format, DraftFormat::Markdown);
-        assert!(metadata
-            .validate_bundle_engine(ExecutionEngine::Quarto)
-            .is_ok());
-        assert!(metadata
-            .validate_bundle_engine(ExecutionEngine::None)
-            .is_err());
+        // And a document that is not Quarto gets neither the engine nor a
+        // Quarto draft format, which is what a bundle's engine has to agree
+        // with.
+        let plain = DocumentMetadata::from_source_format("markdown");
+        assert_eq!(plain.execution_engine, ExecutionEngine::None);
+        assert_eq!(plain.draft_format, DraftFormat::Markdown);
     }
 }

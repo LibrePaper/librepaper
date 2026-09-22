@@ -7,6 +7,7 @@
 
 pub mod acp_agents;
 pub(crate) mod assistant;
+pub mod bindings;
 pub mod builders;
 pub mod cli;
 pub mod connections;
@@ -25,7 +26,8 @@ pub mod protocol;
 pub mod quarto;
 pub mod quarto_capture;
 pub mod service;
-pub mod texlog;
+pub(crate) mod tools;
+
 pub mod zotero;
 
 pub(crate) mod preview;

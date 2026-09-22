@@ -38,12 +38,6 @@
 //! a delta run crossing the wire and being applied on the other side, or a
 //! delta offset being compared against a UTF-16 offset from anywhere else.
 
-// Landed with Phase 0 (SPEC-loro.md §11.1) ahead of its only consumer, the
-// accept/decline command path Phase 2 builds. Until that lands, the tests below
-// are what this module is for: they hold the attribution property the whole
-// proposal model rests on.
-#![allow(dead_code)]
-
 use loro::event::{Diff, DiffBatch};
 use loro::{ContainerID, TextDelta};
 

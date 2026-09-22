@@ -122,21 +122,6 @@ impl FakeCatalog {
 }
 
 impl LogCatalog for FakeCatalog {
-    fn log_head(&self, _document_id: Uuid) -> BoxFuture<'_, postgres::Result<postgres::LogHead>> {
-        Box::pin(async {
-            unimplemented!("admission is bypassed by Sequencer::from_parts in these tests")
-        })
-    }
-
-    fn log_base(
-        &self,
-        _document_id: Uuid,
-    ) -> BoxFuture<'_, postgres::Result<Option<postgres::LogBase>>> {
-        Box::pin(async {
-            unimplemented!("admission is bypassed by Sequencer::from_parts in these tests")
-        })
-    }
-
     fn log_coverage(
         &self,
         _document_id: Uuid,

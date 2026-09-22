@@ -34,17 +34,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use loro::{Container, LoroDoc, LoroMap, LoroText, LoroValue, ValueOrContainer};
 
-pub const FILES: &str = "files";
-pub const PATHS: &str = "paths";
-pub const ASSETS: &str = "assets";
-pub const META: &str = "meta";
-
-/// The key in `meta` that names the main file, by id.
-pub const MAIN: &str = "main";
-pub const STARTER_BIBLIOGRAPHY_REPAIRED: &str = "starter-bibliography-repaired-v1";
-
-/// The selected engine. Legacy release pins are ignored.
-pub const LATEX_ENGINE: &str = "latex.engine";
+// The document's four roots and the key that names its main file, from the
+// crate that owns the schema. They were declared here as well, with the same
+// four strings, which is a schema defined in two places that nothing would
+// have made disagree except somebody changing one of them.
+pub use librepaper_document_core::{ASSETS, FILES, MAIN, META, PATHS};
 
 /// A document the browser can talk to.
 pub fn new_doc() -> LoroDoc {
@@ -65,22 +59,6 @@ pub fn mint_id() -> String {
     hex::encode(crate::auth::random_bytes(6))
 }
 
-pub fn has_meta(doc: &LoroDoc, key: &str) -> bool {
-    let meta = doc.get_map(META);
-    string_at(&meta, key).is_some()
-}
-
-pub fn mark_meta(doc: &LoroDoc, key: &str) {
-    let meta = doc.get_map(META);
-    meta.insert(key, "true").ok();
-}
-
-/// The id of the main file, or "" when the document has none yet.
-pub fn main_id(doc: &LoroDoc) -> String {
-    let meta = doc.get_map(META);
-    string_at(&meta, MAIN).unwrap_or_default()
-}
-
 /// The path the main file is known by, which is what the index entry records
 /// and what the format is derived from.
 pub fn main_path(doc: &LoroDoc) -> String {
@@ -97,23 +75,6 @@ pub fn main_path(doc: &LoroDoc) -> String {
 pub fn set_main(doc: &LoroDoc, id: &str) {
     let meta = doc.get_map(META);
     meta.insert(MAIN, id).ok();
-}
-
-/// Names an existing text. Unlike `put_text`, this does not mint an id --
-/// it writes the path for a text that is already in `files`, which is what
-/// repairing an orphaned file needs.
-pub fn put_path(doc: &LoroDoc, id: &str, path: &str) {
-    let paths = doc.get_map(PATHS);
-    paths.insert(id, path).ok();
-}
-
-/// The selected engine.
-pub fn latex_engine(doc: &LoroDoc) -> String {
-    let meta = doc.get_map(META);
-    match string_at(&meta, LATEX_ENGINE).as_deref() {
-        Some(engine @ ("pdflatex" | "xelatex" | "lualatex")) => engine.to_string(),
-        _ => String::new(),
-    }
 }
 
 /// Every text in the document, by path. What a renderer is given and what a

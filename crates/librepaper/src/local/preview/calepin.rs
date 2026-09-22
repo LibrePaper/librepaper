@@ -12,10 +12,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use super::{ArtifactKind, Plan, Session, Watch};
@@ -64,53 +62,23 @@ pub(crate) fn plan(
     request: &PreviewRequest,
     bindings: &BindingStore,
 ) -> Result<Plan, String> {
-    let options = request.calepin.as_ref().ok_or("missing Calepin options")?;
-    options.validate()?;
-    let other_scope = |p: &&Session| p.origin != request.origin || p.project != request.project;
-    if existing
-        .values()
-        .filter(other_scope)
-        .any(|p| p.binding == options.binding_id)
-    {
-        return Err("Stop the existing preview before starting another watcher.".into());
-    }
-    if existing.values().filter(other_scope).count() >= 8 {
-        return Err("Too many active previews".into());
-    }
-    let binding = bindings
-        .resolve_scoped(&options.binding_id, &request.origin, &request.project)
-        .map_err(|_| "Preview binding is not authorized")?;
-    if existing
-        .values()
-        .filter(other_scope)
-        .any(|p| p.root == binding.root)
-    {
-        return Err("Another managed preview already watches this project directory".into());
-    }
-    let hosted = BindingStore::is_hosted(&binding);
-    // A hosted binding names no fixed entrypoint: each preview names its
-    // own `.typ`, already validated as a safe relative path by
-    // `options.validate()` above. A granted binding still refuses any
-    // entrypoint but the one it was granted for.
-    let entrypoint = if hosted {
-        options.main.clone()
-    } else {
-        binding.entrypoint.clone()
+    let crate::local::protocol::PreviewInputs::Calepin(options) = &request.inputs else {
+        return Err("calepin preview planned for another engine".into());
     };
-    if !hosted && options.main != binding.entrypoint {
-        return Err("calepin entrypoint does not match the granted project binding".into());
-    }
-    if !request.manifest.iter().any(|f| f.path == entrypoint) {
-        return Err("Preview inventory must contain the bound entrypoint".into());
-    }
-    if std::fs::canonicalize(&binding.root).map_err(|e| e.to_string())? != binding.root {
-        return Err("Bound root changed".into());
-    }
+    options.validate()?;
+    let super::BoundScope {
+        binding,
+        entrypoint,
+    } = super::bind_scope(
+        existing,
+        request,
+        bindings,
+        &options.binding_id,
+        &options.main,
+        "calepin",
+    )?;
     verify_bound_manifest(&binding.root, &request.manifest)?;
-    let main = std::fs::canonicalize(binding.root.join(&entrypoint)).map_err(|e| e.to_string())?;
-    if !main.starts_with(&binding.root) {
-        return Err("Preview entrypoint escapes bound root".into());
-    }
+    super::refuse_escaping_entrypoint(&binding.root, &entrypoint)?;
     let kind = match options.format.as_str() {
         "pdf" => ArtifactKind::Pdf,
         _ => ArtifactKind::Html,
@@ -146,28 +114,12 @@ pub(crate) fn plan(
 /// accepted for tests and app packaging; normal operation searches PATH
 /// explicitly -- the same shape as `local::quarto::find_quarto`.
 pub(crate) fn find_calepin() -> Option<PathBuf> {
-    let configured = std::env::var_os("LIBREPAPER_CALEPIN_PATH").map(PathBuf::from);
-    configured.filter(|path| path.is_file()).or_else(|| {
-        executable(if cfg!(windows) {
-            "calepin.exe"
-        } else {
-            "calepin"
-        })
-    })
-}
-
-fn executable(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())?
-        .into_iter()
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
+    crate::local::tools::find("LIBREPAPER_CALEPIN_PATH", "calepin")
 }
 
 /// `GET capabilities`'s `calepin` entry: whether the tool was found and its
-/// version string, probed the same bounded-timeout way as the other tool
-/// probes in this codebase (`local::discovery::probe_version`,
-/// `local::quarto::bounded_version_output`).
+/// version string, through the one bounded probe every tool lookup in this
+/// service shares ([`crate::local::tools`]).
 pub(crate) async fn discover() -> Tool {
     let Some(path) = find_calepin() else {
         return Tool {
@@ -184,80 +136,12 @@ pub(crate) async fn discover() -> Tool {
     }
 }
 
+/// The preview adapter probes the tool it is about to run, in the
+/// environment the watcher will use.
 async fn version_of(path: &Path) -> Option<String> {
-    let (stdout, stderr) = bounded_version_output(path).await?;
-    let value = if stdout.trim().is_empty() {
-        stderr.trim().to_owned()
-    } else {
-        stdout.trim().to_owned()
-    };
-    (!value.is_empty()).then(|| value.lines().next().unwrap_or(&value).to_string())
-}
-
-async fn bounded_version_output(path: &Path) -> Option<(String, String)> {
-    let mut command = Command::new(path);
-    command
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = command.spawn().ok()?;
-    let stdout = child
-        .stdout
-        .take()
-        .map(|pipe| tokio::spawn(read_bounded(pipe)));
-    let stderr = child
-        .stderr
-        .take()
-        .map(|pipe| tokio::spawn(read_bounded(pipe)));
-    let status = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-        Ok(Ok(status)) => status,
-        _ => {
-            let _ = child.kill().await;
-            let _ = join_streams(stdout, stderr).await;
-            return None;
-        }
-    };
-    let (stdout, stderr) = join_streams(stdout, stderr).await;
-    if !status.success() && stdout.is_empty() && stderr.is_empty() {
-        return None;
-    }
-    Some((
-        String::from_utf8_lossy(&stdout).into_owned(),
-        String::from_utf8_lossy(&stderr).into_owned(),
-    ))
-}
-
-async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R) -> Vec<u8> {
-    const MAX_PROBE_BYTES: usize = 64 * 1024;
-    let mut retained = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        match reader.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(count) => {
-                let remaining = MAX_PROBE_BYTES.saturating_sub(retained.len());
-                if remaining > 0 {
-                    retained.extend_from_slice(&chunk[..count.min(remaining)]);
-                }
-            }
-        }
-    }
-    retained
-}
-
-async fn join_streams(
-    stdout: Option<tokio::task::JoinHandle<Vec<u8>>>,
-    stderr: Option<tokio::task::JoinHandle<Vec<u8>>>,
-) -> (Vec<u8>, Vec<u8>) {
-    let stdout = match stdout {
-        Some(task) => task.await.unwrap_or_default(),
-        None => Vec::new(),
-    };
-    let stderr = match stderr {
-        Some(task) => task.await.unwrap_or_default(),
-        None => Vec::new(),
-    };
-    (stdout, stderr)
+    crate::local::tools::version_line(
+        path,
+        crate::local::tools::Probe::inherited(Duration::from_secs(5)),
+    )
+    .await
 }

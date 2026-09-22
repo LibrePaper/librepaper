@@ -261,11 +261,20 @@ console.log("quarto-local: localPreviewPage resolves fresh HTML, a 304 miss, and
     options: { entrypoint: "doc.typ", format: "pdf" },
   });
   assert.equal(calepinPreview.id, "preview-calepin");
+  // The protocol 2 envelope, which is now the only one sent: the builder,
+  // the bound workspace and the entrypoint are named at the top level
+  // rather than nested under an engine-specific block. This used to assert
+  // the v1 shape and passed only because the request fell back to v1 when
+  // the harness left the capability status unset -- a shape the bridge
+  // stopped accepting.
   const calepinRequest = JSON.parse(calepinCalls[0].init.body);
-  assert.equal(calepinRequest.engine, "calepin");
-  assert.equal(calepinRequest.calepin.binding_id, "binding-1");
-  assert.equal(calepinRequest.calepin.main, "doc.typ");
-  assert.equal(calepinRequest.calepin.format, "pdf");
+  assert.equal(calepinRequest.protocol, 2);
+  assert.equal(calepinRequest.kind, "preview");
+  assert.equal(calepinRequest.builder, "calepin");
+  assert.deepEqual(calepinRequest.workspace, { mode: "bound", binding_id: "binding-1" });
+  assert.equal(calepinRequest.entrypoint, "doc.typ");
+  assert.equal(calepinRequest.output, "pdf");
+  assert.equal(calepinRequest.calepin, undefined);
   assert.equal(calepinRequest.manifest[0].sha256, await sha(new TextEncoder().encode("= Hello")));
 
   await assert.rejects(
@@ -277,13 +286,17 @@ console.log("quarto-local: localPreviewPage resolves fresh HTML, a 304 miss, and
     /invalid Calepin output format/,
   );
 
-  // The default engine keeps producing exactly the Quarto envelope, with no
-  // `engine`/`calepin` fields leaking in.
+  // The default engine produces the same envelope naming Quarto, with no
+  // engine-specific block leaking in.
   const quartoOnly = await startLocalPreview({ job: { binding: "binding-1" }, tree: { main: "paper.qmd", texts: { "paper.qmd": "# Preview" } }, options: {} });
   assert.equal(quartoOnly.id, "preview-calepin");
   const quartoOnlyRequest = JSON.parse(calepinCalls[calepinCalls.length - 1].init.body);
+  assert.equal(quartoOnlyRequest.kind, "preview");
+  assert.equal(quartoOnlyRequest.builder, "quarto");
+  assert.equal(quartoOnlyRequest.entrypoint, "paper.qmd");
+  assert.equal(quartoOnlyRequest.quarto, undefined);
+  assert.equal(quartoOnlyRequest.calepin, undefined);
   assert.equal(quartoOnlyRequest.engine, undefined);
-  assert.equal(quartoOnlyRequest.kind, "quarto");
 }
 console.log("quarto-local: startLocalPreview validates both Calepin and default Quarto envelopes");
 
@@ -333,8 +346,11 @@ console.log("quarto-local: preview lifecycle calls work, and calepinAvailable de
       }
       if (init.method === "POST" && url.endsWith("/previews")) {
         const request = init.body?.get ? JSON.parse(await init.body.get("job").text()) : JSON.parse(init.body);
-        calls.push(request[engine].binding_id);
-        return request[engine].binding_id === "hosted"
+        // The protocol 2 envelope names the binding once, in `workspace`,
+        // rather than inside an engine-specific block.
+        const binding = request.workspace?.binding_id;
+        calls.push(binding);
+        return binding === "hosted"
           ? response({ id: "live" }, 201)
           : response({ error: "Preview binding is not authorized" }, 400);
       }

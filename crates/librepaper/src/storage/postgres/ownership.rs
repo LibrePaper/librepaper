@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use sqlx::pool::PoolConnection;
-use sqlx::{Acquire, Postgres, Row};
+use sqlx::{Acquire, PgConnection, Postgres, Row};
 
 use super::{Error, PostgresCatalog, Result};
 
@@ -54,16 +54,31 @@ impl WriterLease {
 }
 
 impl PostgresCatalog {
-    pub(crate) async fn begin_writer_transaction(&self) -> Result<sqlx::Transaction<'_, Postgres>> {
-        let expected_epoch = self.writer_epoch()?;
-        let mut tx = self.begin_metered().await?;
-        let durable_epoch: i64 =
+    /// Refuses a write from a process that is no longer the writer.
+    ///
+    /// The fence is the durable `deployment_writer.epoch` compared against
+    /// the one this process claimed. `FOR SHARE` holds it for the caller's
+    /// transaction, so a successor that bumps the epoch waits behind this
+    /// write rather than racing it.
+    ///
+    /// Takes the caller's transaction rather than opening one: the check
+    /// only means anything inside the transaction the write happens in, and
+    /// four places had written the same four lines against theirs.
+    pub(crate) async fn check_writer_epoch(&self, tx: &mut PgConnection) -> Result<()> {
+        let expected = self.writer_epoch()?;
+        let durable: i64 =
             sqlx::query_scalar("SELECT epoch FROM deployment_writer WHERE singleton FOR SHARE")
-                .fetch_one(&mut *tx)
+                .fetch_one(tx)
                 .await?;
-        if durable_epoch != expected_epoch {
+        if durable != expected {
             return Err(Error::Ownership("writer epoch was superseded".into()));
         }
+        Ok(())
+    }
+
+    pub(crate) async fn begin_writer_transaction(&self) -> Result<sqlx::Transaction<'_, Postgres>> {
+        let mut tx = self.begin_metered().await?;
+        self.check_writer_epoch(&mut tx).await?;
         Ok(tx)
     }
 

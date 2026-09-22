@@ -346,7 +346,7 @@ pub fn locate(files: &[Candidate<'_>], quote: &Quote<'_>) -> Result<SourceTextTa
 /// on trying again, not on accepting: a phrase below it is still tried once,
 /// because it may well occur only once, but nothing shorter is -- a shorter
 /// phrase can only be less certain than one that has already failed.
-fn first_hit<'a>(search: &Search<'_>, needles: impl Iterator<Item = &'a [char]>) -> Option<Hit> {
+fn first_hit<'a>(search: &Search, needles: impl Iterator<Item = &'a [char]>) -> Option<Hit> {
     for needle in needles {
         if let Some(hit) = search.find(needle) {
             return Some(hit);
@@ -410,16 +410,18 @@ fn shortening_from_the_end(phrase: &[char]) -> impl Iterator<Item = &[char]> {
 }
 
 /// One question, asked of every file of a document.
-struct Search<'a> {
+///
+/// It borrowed the candidate files as well as flattening them, and never
+/// read the borrowed copy: the flattened text is what a search is over.
+struct Search {
     flattened: Vec<(bool, Flat)>,
     prefix: Vec<char>,
     suffix: Vec<char>,
     ambiguous: std::cell::Cell<bool>,
-    files: &'a [Candidate<'a>],
 }
 
-impl<'a> Search<'a> {
-    fn over(files: &'a [Candidate<'a>], quote: &Quote<'_>) -> Search<'a> {
+impl Search {
+    fn over(files: &[Candidate<'_>], quote: &Quote<'_>) -> Search {
         Search {
             flattened: files
                 .iter()
@@ -428,7 +430,6 @@ impl<'a> Search<'a> {
             prefix: flatten(quote.prefix, false).chars,
             suffix: flatten(quote.suffix, false).chars,
             ambiguous: std::cell::Cell::new(false),
-            files,
         }
     }
 
@@ -439,7 +440,6 @@ impl<'a> Search<'a> {
     /// trying again a word shorter, while a phrase that is in several places
     /// that the context cannot separate is a refusal in the making.
     fn find(&self, needle: &[char]) -> Option<Hit> {
-        let _ = self.files;
         let mut hits = Vec::new();
         for (index, (_, flat)) in self.flattened.iter().enumerate() {
             for at in occurrences(&flat.chars, needle) {

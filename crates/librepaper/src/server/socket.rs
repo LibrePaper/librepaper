@@ -213,7 +213,7 @@ impl Server {
         // conjure one, and since the rate limiter counts per room, a new slug
         // per comment would also mean no rate limit at all.
         let entry = {
-            match self.store.get_checked(slug).await {
+            match self.store.get_result(slug).await {
                 Ok(Some(entry)) => entry,
                 Ok(None) => return plain(404, "not found"),
                 Err(error) => {
@@ -1288,8 +1288,9 @@ impl Server {
                     // only the submitting socket receives its own `mine` and
                     // deletion state. This keeps per-caller controls private
                     // while preserving the sender's optimistic-row echo.
-                    room.broadcast_comment_event(Some(socket_id), &result).await;
-                    let targeted = room.comment_event_for(&result, &author, may_edit).await;
+                    let event = room.prepare_comment_event(&result).await;
+                    room.broadcast_prepared(Some(socket_id), &event).await;
+                    let targeted = event.view_for(&author, may_edit);
                     if send_outgoing(&tx, Outgoing::Text(targeted.to_string())).await.is_err() {
                         break 'reader;
                     }
@@ -1433,15 +1434,59 @@ impl Server {
         let Some(connection) = connection else {
             return;
         };
+        self.revoke(slug, socket_id, &connection).await;
+    }
+
+    /// What happens to one socket whose authorization no longer holds.
+    ///
+    /// Both revocation paths run this: the sweep over a document's sockets
+    /// and the per-sender recheck an inbound frame triggers. They used to
+    /// differ, and the difference was the flush: the sweep flushed with
+    /// `AuthorityRevoked` before leaving, the per-sender path called `leave`
+    /// alone, so whether a revoked author's buffered work survived depended
+    /// on which path happened to notice -- and, because `leave` only flushes
+    /// when the last subscriber goes, on whether anybody else was in the
+    /// room.
+    async fn revoke(&self, slug: &str, socket_id: u64, connection: &Connection) {
+        // A chat channel is not a room: it holds no buffered document work,
+        // and its subscriber is detached rather than left.
         if let Some(id) = &connection.chat {
             self.chat.detach(id, socket_id).await;
             let _ = connection.tx.force_close("access changed; reconnect");
             return;
         }
+        // Never waited on: the sharing change that revoked this socket must
+        // not be held up by how far behind the socket is. The close goes
+        // through `force_close`, so it is admitted whatever the queue budget
+        // says and the transport is certain to come down once the writer
+        // reaches it; dropping the connection from the room meanwhile stops
+        // every further broadcast to it.
         let _ = connection.tx.force_close("access changed; reconnect");
-        if let Ok(room) = self.rooms.get(slug).await {
-            room.leave(socket_id).await;
+        let Ok(room) = self.rooms.get(slug).await else {
+            return;
+        };
+        // §10, "authority revoked mid-buffer: buffered work flushes; socket
+        // closed". The flush is before the leave and is not conditional on
+        // this being the last socket, which is what `leave` alone would
+        // give. The reason is that the author being cut off here is the one
+        // person who CANNOT put the work back: §6.4 says unflushed text
+        // returns when its author reconnects and reconciles, and a revoked
+        // author has nothing to reconnect with. Their work is in the buffer
+        // and nowhere else, so if the process dies before the next ordinary
+        // trigger it is gone with no one left holding a copy.
+        //
+        // A failed flush does not keep the socket: the revocation still
+        // takes effect, and the next ordinary trigger -- or the next
+        // revocation -- retries the buffer, which is still there because a
+        // failed flush leaves it alone.
+        if let Err(error) = room
+            .log()
+            .flush(crate::log::FlushReason::AuthorityRevoked)
+            .await
+        {
+            log::warn!("could not flush {slug} as access was revoked: {error}");
         }
+        room.leave(socket_id).await;
     }
 
     /// Reruns every live socket on `slug`'s authorization against the current
@@ -1501,39 +1546,7 @@ impl Server {
             if allowed {
                 continue;
             }
-            if let Some(id) = &connection.chat {
-                self.chat.detach(id, socket_id).await;
-                let _ = connection.tx.force_close("access changed; reconnect");
-                continue;
-            }
-            // Never waited on: the sharing change that revoked this socket
-            // must not be held up by how far behind the socket is. The close
-            // goes through `force_close`, so it is admitted whatever the queue
-            // budget says and the transport is certain to come down once the
-            // writer reaches it; dropping the connection from the room
-            // meanwhile stops every further broadcast to it.
-            let _ = connection.tx.force_close("access changed; reconnect");
-            let Ok(room) = self.rooms.get(slug).await else {
-                continue;
-            };
-            // §10, "authority revoked mid-buffer: buffered work flushes;
-            // socket closed". The flush is before the leave and is not
-            // conditional on this being the last socket, which is what
-            // `leave` alone would give. The reason is that the author being
-            // cut off here is the one person who CANNOT put the work back:
-            // §6.4 says unflushed text returns when its author reconnects
-            // and reconciles, and a revoked author has nothing to reconnect
-            // with. Their work is in the buffer and nowhere else, so if the
-            // process dies before the next ordinary trigger it is gone with
-            // no one left holding a copy.
-            if let Err(error) = room
-                .log()
-                .flush(crate::log::FlushReason::AuthorityRevoked)
-                .await
-            {
-                log::warn!("could not flush {slug} as access was revoked: {error}");
-            }
-            room.leave(socket_id).await;
+            self.revoke(slug, socket_id, &connection).await;
         }
     }
 

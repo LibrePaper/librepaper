@@ -12,9 +12,10 @@ impl Server {
     pub(super) async fn handle_asset_upload(
         &self,
         request: Request<Body>,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
     ) -> Reply {
+        let arrival = &context.arrival;
         let headers = request.headers().clone();
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
@@ -22,25 +23,16 @@ impl Server {
         if cross_site_refused(&headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
+        // The rung failure is "not found" on the same reasoning the delete
+        // route follows: a document somebody may not change is not a
+        // document they need to learn the shape of.
         let (_entry, who) = match self
-            .entry_viewer(slug, request.headers(), arrival, None)
+            .entry_at_least_in(slug, context, request.headers(), None, Role::Editor)
             .await
         {
             Ok(result) => result,
             Err(response) => return response,
         };
-        if who.auth_failed {
-            return write_json(
-                401,
-                &json!({"error": "authentication expired or was revoked"}),
-            );
-        }
-        // A caller who may not edit is told the document is not there, on the
-        // same reasoning the delete route follows: a document somebody may not
-        // change is not a document they need to learn the shape of.
-        if !who.at_least(Role::Editor) {
-            return plain(404, "not found");
-        }
         // Counted before the bytes are read, so a refusal costs the body
         // rather than the storage. The ceiling is per hour and per owner.
         {
@@ -63,16 +55,10 @@ impl Server {
         let Ok(body) = to_bytes(request.into_body(), ceiling).await else {
             return write_json(413, &json!({"error": "that figure is too large"}));
         };
-        let (_entry, who) = match self.entry_viewer(slug, &headers, arrival, None).await {
+        let (_entry, who) = match self.entry_viewer_in(slug, context, &headers, None).await {
             Ok(result) => result,
             Err(response) => return response,
         };
-        if who.auth_failed {
-            return write_json(
-                401,
-                &json!({"error": "authentication expired or was revoked"}),
-            );
-        }
         if !who.at_least(Role::Editor) {
             return write_json(403, &json!({"error": "edit access changed"}));
         }
@@ -111,10 +97,11 @@ impl Server {
     pub(super) async fn handle_asset_read(
         &self,
         headers: &HeaderMap,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         sha: &str,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
@@ -126,13 +113,10 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+        let (entry, _who) = match self.readable_entry_in(slug, context, headers, None).await {
             Ok(result) => result,
             Err(response) => return response,
         };
-        if !self.may_read(&entry, &who) {
-            return plain(404, "not found");
-        }
         // Assets retained for history are not part of the reader contract.
         // Resolve the resident room and prove the digest is in its current
         // tree before looking up the document-scoped physical object.

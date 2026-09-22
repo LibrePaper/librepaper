@@ -174,13 +174,7 @@ pub(crate) fn set_execution_epoch(path: &Path, epoch: Option<&str>) -> Result<()
     let target = path;
     match epoch.filter(|value| !value.is_empty() && value.len() <= 256) {
         Some(epoch) => {
-            let temporary = temporary_path(target, "epoch");
-            publish_durable_private(
-                &temporary,
-                target,
-                epoch.as_bytes(),
-                "runner execution epoch",
-            )?;
+            crate::private_files::publish(target, epoch.as_bytes(), "runner execution epoch")?;
         }
         None => {
             if fs::remove_file(target).is_ok() {
@@ -200,18 +194,6 @@ pub(crate) fn execution_epoch(path: &Path) -> Option<String> {
     (!value.is_empty() && !value.chars().any(char::is_control)).then_some(value)
 }
 
-/// Keep temporary files distinct when the journal and its active-task marker
-/// share a basename.  Using `with_extension("tmp")` for both would let an
-/// active-task update race with a journal append and publish the wrong bytes.
-fn temporary_path(path: &Path, label: &str) -> PathBuf {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("journal");
-    parent.join(format!(".{name}.{label}.tmp"))
-}
-
 #[cfg(unix)]
 fn sync_parent(path: &Path, what: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -226,8 +208,7 @@ pub(crate) fn set_active_task(path: &Path, task_id: Option<&str>) -> Result<(), 
     let active = active_task_path(path);
     match task_id {
         Some(task_id) if !task_id.is_empty() && task_id.len() <= 128 => {
-            let temporary = temporary_path(&active, "task");
-            publish_durable_private(&temporary, &active, task_id.as_bytes(), "active task")?;
+            crate::private_files::publish(&active, task_id.as_bytes(), "active task")?;
         }
         _ => {
             if fs::remove_file(&active).is_ok() {
@@ -281,31 +262,14 @@ fn write(path: &Path, disk: &Disk) -> Result<(), String> {
     if bytes.len() as u64 > MAX_BYTES {
         return Err("runner journal exceeds its size limit".into());
     }
-    let temporary = temporary_path(path, "journal");
-    publish_durable_private(&temporary, path, &bytes, "runner journal")?;
-    Ok(())
-}
-
-fn publish_durable_private(
-    temporary: &Path,
-    target: &Path,
-    bytes: &[u8],
-    what: &str,
-) -> Result<(), String> {
-    fs::write(temporary, bytes).map_err(|error| format!("could not write {what}: {error}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(temporary, fs::Permissions::from_mode(0o600))
-            .map_err(|error| error.to_string())?;
-    }
-    File::open(temporary)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| format!("could not durable-sync {what}: {error}"))?;
-    fs::rename(temporary, target).map_err(|error| format!("could not publish {what}: {error}"))?;
-    #[cfg(unix)]
-    sync_parent(target, what)?;
-    Ok(())
+    // `private_files::publish` creates its temporary with 0600 before any
+    // bytes go into it, picks a name no concurrent publication can collide
+    // with, syncs the file and the directory entry, and takes the temporary
+    // with it if it cannot finish. The journal lock in `update` still
+    // serialises readers against writers; this is about what is on disk in
+    // between. What it replaced wrote first and chmodded second, which left
+    // the journal world-readable for the length of that window.
+    crate::private_files::publish(path, &bytes, "runner journal")
 }
 
 fn update<T>(path: &Path, f: impl FnOnce(&mut Disk) -> Result<T, String>) -> Result<T, String> {

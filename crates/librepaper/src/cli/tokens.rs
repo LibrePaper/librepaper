@@ -193,44 +193,16 @@ pub(super) fn create_private_file_exclusive(path: &Path) -> Result<std::fs::File
         .map_err(|err| format!("could not create {}: {err}", path.display()))
 }
 
+/// Replaces `path` with `bytes`, readable by nobody else.
+///
+/// The private-replacement mechanics -- create the temporary already
+/// private, sync it, close it before the rename, sync the directory, take
+/// the temporary away on failure -- are [`crate::private_files::publish`]'s,
+/// shared with the assistant journal so the two cannot drift. Caller
+/// locking stays here: `save_tokens` holds the tokens lock across a
+/// read-modify-write, which no single replacement can provide.
 pub(super) fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(parent)
-        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
-    let temporary = parent.join(format!(".librepaper-write-{}", new_id()));
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(&temporary)
-        .map_err(|err| format!("could not create {}: {err}", path.display()))?;
-    let _cleanup = Cleanup(temporary.clone());
-    use std::io::Write;
-    file.write_all(bytes)
-        .map_err(|err| format!("could not write {}: {err}", path.display()))?;
-    file.sync_all()
-        .map_err(|err| format!("could not sync {}: {err}", path.display()))?;
-    drop(file);
-    std::fs::rename(&temporary, path)
-        .map_err(|err| format!("could not replace {}: {err}", path.display()))?;
-    #[cfg(unix)]
-    std::fs::File::open(parent)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|err| format!("could not sync {}: {err}", parent.display()))?;
-    Ok(())
+    crate::private_files::publish(path, bytes, &path.display().to_string())
 }
 
 /// Writes the token where the next command will look for it, readable by

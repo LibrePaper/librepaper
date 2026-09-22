@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::config::Configuration;
 use crate::http::{detail_of, get_as, get_with_token, post_json, text, Credentials};
 use crate::storage::StorageFlags;
-use crate::util::{die, new_id};
+use crate::util::die;
 
 mod agent;
 

@@ -27,7 +27,8 @@ use crate::log::Registry;
 use crate::room::{Message as RoomMessage, Rooms};
 use crate::server::origins::Origins;
 use crate::storage::blob::FsStore;
-use crate::storage::postgres::{NewAccount, PostgresCatalog, PostgresOptions};
+use crate::storage::postgres::NewAccount;
+use crate::storage::postgres::PostgresCatalog;
 
 use super::{Server, Viewer};
 
@@ -49,13 +50,7 @@ struct Deployment {
 /// resolves from headers) -- this file needs the second for the route it is
 /// proving, which `comment_http_tests.rs`'s fixture never exercises.
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
-    let catalog = Arc::new(
-        PostgresCatalog::connect(PostgresOptions::new(url))
-            .await
-            .unwrap(),
-    );
-    catalog.migrate().await.unwrap();
+    let catalog = crate::tests::catalog().await?;
     sqlx::query(
         "TRUNCATE document_updates,document_snapshots,document_proposal_hunks,document_proposals,\
          replies,annotations,document_labels,document_assets,share_links,grants,documents,\
@@ -104,9 +99,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         config.clone(),
         catalog.clone(),
         registry.clone(),
-    )
-    .await
-    .unwrap();
+    );
     let actor = MutationActor {
         account_id: owner.id.to_string(),
         owner_key: "owner".into(),
@@ -246,9 +239,18 @@ async fn a_comments_own_frontier_reads_back_through_the_history_route() {
     let sha = format!("frontier:{frontier}");
     let arrival = Origins::loopback_only().resolve("localhost").unwrap();
     let headers = owner_bearer(&deployment);
+    // The context the cost middleware would have attached. These handlers
+    // read the caller out of it rather than authenticating a second time.
+    let context = crate::server::RequestContext::resolved(
+        &deployment.server,
+        &headers,
+        arrival.clone(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
     let response = deployment
         .server
-        .handle_label_read(&headers, &arrival, &deployment.slug, &sha, None)
+        .handle_label_read(&headers, &context, &deployment.slug, &sha, None)
         .await;
     assert_eq!(
         response.status(),
@@ -283,7 +285,7 @@ async fn a_comments_own_frontier_reads_back_through_the_history_route() {
         .server
         .handle_label_read(
             &headers,
-            &arrival,
+            &context,
             &deployment.slug,
             &sha,
             Some("archive=1"),

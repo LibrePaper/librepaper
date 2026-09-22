@@ -110,7 +110,7 @@ where
 }
 
 #[cfg(unix)]
-fn kill_tree(pid: Option<u32>) {
+pub(crate) fn kill_tree(pid: Option<u32>) {
     extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
@@ -129,7 +129,7 @@ fn kill_tree(pid: Option<u32>) {
 }
 
 #[cfg(windows)]
-fn kill_tree(pid: Option<u32>) {
+pub(crate) fn kill_tree(pid: Option<u32>) {
     if let Some(pid) = pid {
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])

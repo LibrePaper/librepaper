@@ -7,7 +7,6 @@
 //! the only computation engine currently supported by this adapter surface.
 //! LaTeX is built in the browser, so no TeX or Biber job reaches here.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde_json::Value;
@@ -18,30 +17,6 @@ use super::protocol::{
     Capabilities, JobOutcome, JobRequest, JobStatus, QuartoJobOptions, Workspace,
 };
 use super::{quarto, quarto_capture};
-
-/// The engine selected for a local job.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JobAdapter {
-    Quarto,
-}
-
-/// Selects an adapter from the explicit wire job kind and engine field.
-/// Unknown kinds are refused rather than dispatched. Calepin is named here so
-/// adding its wire vocabulary cannot accidentally enable execution before its
-/// adapter, grants and capture policy exist.
-pub fn select(request: &JobRequest) -> Result<JobAdapter, String> {
-    match request.kind.as_str() {
-        "quarto" if request.engine.is_empty() || request.engine == "quarto" => {
-            Ok(JobAdapter::Quarto)
-        }
-        "quarto" => Err(format!(
-            "unsupported engine {:?} for quarto job",
-            request.engine
-        )),
-        "calepin" => Err("unsupported execution engine: calepin".into()),
-        other => Err(format!("unknown job kind: {other}")),
-    }
-}
 
 /// Dispatches an admitted job while preserving the shared runner contract.
 /// The caller still supplies the same workspace, cancellation receiver and
@@ -59,52 +34,46 @@ pub async fn run(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    if request.protocol == 2 && request.builder.is_some() {
-        let tools = crate::local::discovery::tool_paths(tex_path).await;
-        if let Some(super::protocol::WorkspaceRequest::Snapshot {
-            binding_id: Some(binding_id),
-        }) = request.workspace.as_ref()
-        {
-            let binding =
-                match bindings.resolve_scoped(binding_id, &request.origin, &request.project) {
-                    Ok(binding) => binding,
-                    Err(error) => return unsupported(&request, &job_id, &error),
-                };
-            let root = match std::fs::canonicalize(&binding.root) {
-                Ok(root) if root.is_dir() => root,
-                _ => return unsupported(&request, &job_id, "bound workspace root is unavailable"),
-            };
-            if root != binding.root {
-                return unsupported(&request, &job_id, "bound workspace root changed");
-            }
-            if request.entrypoint.as_deref() != Some(binding.entrypoint.as_str()) {
-                return unsupported(
-                    &request,
-                    &job_id,
-                    "entrypoint no longer matches the scoped binding",
-                );
-            }
+    let tools = crate::local::discovery::tool_paths(tex_path).await;
+    // The binding a bound snapshot named is checked again here rather than
+    // only at admission: the queue delay between the two is long enough for
+    // the folder to be moved, replaced or revoked, and what runs is what is
+    // on disk now.
+    if let super::protocol::WorkspaceRequest::Snapshot {
+        binding_id: Some(binding_id),
+    } = &request.workspace
+    {
+        let binding = match bindings.resolve_scoped(binding_id, &request.origin, &request.project) {
+            Ok(binding) => binding,
+            Err(error) => return unsupported(&request, &job_id, &error),
+        };
+        let root = match std::fs::canonicalize(&binding.root) {
+            Ok(root) if root.is_dir() => root,
+            _ => return unsupported(&request, &job_id, "bound workspace root is unavailable"),
+        };
+        if root != binding.root {
+            return unsupported(&request, &job_id, "bound workspace root changed");
         }
-        if request.builder.as_deref() == Some("quarto") {
-            return quarto::run_job_with_bindings(request, workspace, cancel, progress, bindings)
-                .await;
+        if request.entrypoint != binding.entrypoint {
+            return unsupported(
+                &request,
+                &job_id,
+                "entrypoint no longer matches the scoped binding",
+            );
         }
-        return crate::local::builders::runner::run(
-            request,
-            workspace,
-            tools,
-            cancel,
-            progress,
-            &bindings.preset_store(),
-        )
-        .await;
     }
-    match select(&request) {
-        Ok(JobAdapter::Quarto) => {
-            quarto::run_job_with_bindings(request, workspace, cancel, progress, bindings).await
-        }
-        Err(error) => unsupported(&request, &job_id, &error),
+    if request.builder == "quarto" {
+        return quarto::run_job_with_bindings(request, workspace, cancel, progress, bindings).await;
     }
+    crate::local::builders::runner::run(
+        request,
+        workspace,
+        tools,
+        cancel,
+        progress,
+        &bindings.preset_store(),
+    )
+    .await
 }
 
 /// Capabilities remain the existing browser-facing shape.  Keeping discovery
@@ -239,111 +208,6 @@ pub fn quarto_capture(
     quarto_capture::collect(manifest_path, source_path, source, output_root)
 }
 
-/// The files selected for a Quarto bundle.  Quarto's source and
-/// editorial inputs are shareable by default; generated output and local
-/// environments require an explicit `.librepaper-share.json` include.
-#[allow(dead_code)]
-pub fn quarto_shared_paths(
-    root: &Path,
-    main: &str,
-    files: Vec<String>,
-) -> Result<Vec<String>, String> {
-    use std::io::Read;
-
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Share {
-        #[serde(default)]
-        include: Vec<String>,
-    }
-
-    let policy = root.join(".librepaper-share.json");
-    let read_policy = std::fs::File::open(&policy).and_then(|file| {
-        let mut bytes = Vec::new();
-        file.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
-    let include = match read_policy {
-        Ok(bytes) => {
-            if bytes.len() > 64 * 1024 {
-                return Err(".librepaper-share.json exceeds 64 KiB".into());
-            }
-            serde_json::from_slice::<Share>(&bytes)
-                .map_err(|error| format!("invalid .librepaper-share.json: {error}"))?
-                .include
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(format!("cannot read .librepaper-share.json: {error}")),
-    };
-    let config = crate::config::Configuration::default();
-    for path in &include {
-        crate::document::paths::check(&config.paths(), path)?;
-        if !files.contains(path) {
-            return Err(format!(
-                "shared file {path:?} is missing, ignored, or outside the project"
-            ));
-        }
-    }
-    let quarto_stems: BTreeSet<_> = files
-        .iter()
-        .filter(|file| crate::document::render::is_quarto(file))
-        .map(|file| Path::new(file).with_extension(""))
-        .collect();
-    let mut selected = Vec::new();
-    for file in files {
-        let path = Path::new(&file);
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let generated_sibling = matches!(
-            extension.as_str(),
-            "md" | "html" | "htm" | "ipynb" | "pdf" | "docx" | "tex"
-        ) && quarto_stems.contains(&path.with_extension(""));
-        let generated = generated_sibling
-            || file.split('/').any(|part| {
-                part == "_freeze"
-                    || part == "_site"
-                    || part == "_book"
-                    || part == "site_libs"
-                    || part == "node_modules"
-                    || part == "renv"
-                    || part == "venv"
-                    || part == "env"
-                    || part.ends_with("_files")
-                    || part.ends_with("_cache")
-            });
-        let editorial = matches!(
-            extension.as_str(),
-            "qmd"
-                | "md"
-                | "bib"
-                | "csl"
-                | "yml"
-                | "yaml"
-                | "css"
-                | "png"
-                | "jpg"
-                | "jpeg"
-                | "gif"
-                | "svg"
-                | "webp"
-                | "pdf"
-                | "r"
-                | "py"
-                | "jl"
-                | "lua"
-        );
-        if file == main || include.contains(&file) || (editorial && !generated) {
-            selected.push(file);
-        } else {
-            eprintln!("not shared: {file} (Quarto output, local input, or environment)");
-        }
-    }
-    Ok(selected)
-}
-
 /// Whether a Quarto format produces a web page, and so has to carry its own
 /// resources. `pdf` and `docx` are self-contained by construction.
 fn html_output(format: &str) -> bool {
@@ -402,44 +266,6 @@ mod tests {
                 "{format} should not be told to embed: {args:?}"
             );
         }
-    }
-
-    fn request(kind: &str, engine: &str) -> JobRequest {
-        JobRequest {
-            protocol: 2,
-            kind: kind.into(),
-            project: "project".into(),
-            origin: "https://example.test".into(),
-            snapshot: "snapshot".into(),
-            generation: 1,
-            engine: engine.into(),
-            main: String::new(),
-            stem: String::new(),
-            quarto: None,
-            manifest: Vec::new(),
-            source: None,
-            options: Default::default(),
-            builder: None,
-            workspace: None,
-            entrypoint: None,
-            output: None,
-            builder_options: None,
-            preset: None,
-        }
-    }
-
-    #[test]
-    fn explicit_job_gate_keeps_quarto_narrow() {
-        assert_eq!(select(&request("quarto", "")), Ok(JobAdapter::Quarto));
-        assert_eq!(select(&request("quarto", "quarto")), Ok(JobAdapter::Quarto));
-        // LaTeX builds in the browser; no TeX or Biber job is dispatchable.
-        assert!(select(&request("tex", "")).is_err());
-        assert!(select(&request("biber", "")).is_err());
-        assert_eq!(
-            select(&request("calepin", "")),
-            Err("unsupported execution engine: calepin".into())
-        );
-        assert!(select(&request("future", "")).is_err());
     }
 
     #[test]

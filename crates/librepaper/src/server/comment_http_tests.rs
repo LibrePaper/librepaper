@@ -24,7 +24,8 @@ use crate::document::store::{DocumentInput, MutationActor, Role, Store};
 use crate::log::Registry;
 use crate::room::{Message as RoomMessage, Rooms};
 use crate::storage::blob::FsStore;
-use crate::storage::postgres::{AccessRole, NewAccount, PostgresCatalog, PostgresOptions};
+use crate::storage::postgres::PostgresCatalog;
+use crate::storage::postgres::{AccessRole, NewAccount};
 
 use super::{Server, Viewer};
 
@@ -45,21 +46,7 @@ struct Deployment {
 /// this file is to catch a mismatch between that wiring and the comment
 /// path, which a smaller fixture could hide.
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
-    let catalog = Arc::new(
-        PostgresCatalog::connect(PostgresOptions::new(url))
-            .await
-            .unwrap(),
-    );
-    catalog.migrate().await.unwrap();
-    sqlx::query!(
-        "TRUNCATE document_updates,document_snapshots,document_proposal_hunks,document_proposals,\
-         replies,annotations,document_labels,document_assets,share_links,grants,documents,\
-         accounts CASCADE",
-    )
-    .execute(catalog.pool())
-    .await
-    .unwrap();
+    let catalog = crate::tests::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let owner = catalog
         .create_account(NewAccount {
@@ -111,9 +98,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         config.clone(),
         catalog.clone(),
         registry.clone(),
-    )
-    .await
-    .unwrap();
+    );
     let actor = MutationActor {
         account_id: owner.id.to_string(),
         owner_key: "owner".into(),
@@ -424,7 +409,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
     assert!(ok, "{first}");
     let through_the_wire = first["comment"]["id"].as_str().unwrap().to_string();
 
-    let page = crate::storage::postgres::ANNOTATION_PAGE_MAX as usize;
+    let page = crate::storage::postgres::annotations::ANNOTATION_PAGE_MAX as usize;
     let actor = crate::storage::postgres::MutationAuthorization {
         principal_key: deployment.commenter_id.to_string(),
         account_id: Some(deployment.commenter_id),
@@ -613,13 +598,20 @@ async fn get_comment_page(deployment: &Deployment, query: &str) -> super::Reply 
     let arrival = super::origins::Origins::loopback_only()
         .resolve("127.0.0.1:8080")
         .unwrap();
+    let peer = "127.0.0.1:4321".parse().unwrap();
+    // The context the cost middleware attaches in production. The handler
+    // reads its caller out of it rather than authenticating a second time,
+    // so a test that passed only an `Arrival` would be exercising an
+    // anonymous caller while believing it had signed one in.
+    let context = crate::server::RequestContext::resolved(
+        &deployment.server,
+        request.headers(),
+        arrival,
+        peer,
+    )
+    .await;
     deployment
         .server
-        .handle_comments(
-            request,
-            "127.0.0.1:4321".parse().unwrap(),
-            &arrival,
-            &deployment.slug,
-        )
+        .handle_comments(request, peer, &context, &deployment.slug)
         .await
 }

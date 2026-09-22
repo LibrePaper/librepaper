@@ -36,8 +36,7 @@ pub const MAX_QUARTO_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_QUARTO_OUTPUT_FILES: usize = 2000;
 /// Default whole-job deadline.
 pub const DEFAULT_DEADLINE_SECONDS: u64 = 300;
-/// Default bounded pass count.
-pub const DEFAULT_MAX_PASSES: u32 = 8;
+
 /// Version of the LibrePaper Quarto collector manifest.
 pub const QUARTO_COLLECTOR_VERSION: &str = "librepaper-quarto-collector/v1";
 
@@ -148,20 +147,12 @@ pub struct Confinement {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct Distribution {
-    pub name: String,
-    pub year: String,
-}
-
 /// `GET capabilities`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Capabilities {
     pub tools: Tools,
     pub confinement: Confinement,
     pub platform: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub distribution: Option<Distribution>,
     #[serde(default)]
     pub quarto: QuartoCapabilities,
     /// Whether a local Calepin (Typst) install was found, and its version.
@@ -252,67 +243,103 @@ impl SourceSnapshot {
 pub struct JobOptions {
     #[serde(default = "default_deadline")]
     pub deadline_seconds: u64,
-    #[serde(default = "default_passes")]
-    pub max_passes: u32,
 }
 
 fn default_deadline() -> u64 {
     DEFAULT_DEADLINE_SECONDS
-}
-fn default_passes() -> u32 {
-    DEFAULT_MAX_PASSES
 }
 
 impl Default for JobOptions {
     fn default() -> Self {
         JobOptions {
             deadline_seconds: DEFAULT_DEADLINE_SECONDS,
-            max_passes: DEFAULT_MAX_PASSES,
         }
     }
 }
 
-/// The `job` part of `POST jobs`.
+/// What a builder is given beyond the fields every build has.
+///
+/// Two shapes, named rather than inferred: Quarto's typed options, or a
+/// native builder's validated option map. They used to be two fields on
+/// `JobRequest`, each optional, and every consumer opened the one it wanted
+/// and produced a runtime error if the wrong one was there -- "missing
+/// Quarto options" for a request the wire had already established was a
+/// Quarto build. The wrong combination is now unconstructable.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "engine", rename_all = "lowercase")]
+pub enum BuildInputs {
+    Quarto {
+        options: QuartoJobOptions,
+        /// The request's own typed options, kept verbatim. A preset-backed
+        /// build computes its effective options against what the caller
+        /// asked for, not against the Quarto options those were folded into,
+        /// so the two are not the same value and neither can stand in for
+        /// the other.
+        #[serde(default)]
+        overrides: BTreeMap<String, serde_json::Value>,
+    },
+    Native {
+        #[serde(default)]
+        options: BTreeMap<String, serde_json::Value>,
+    },
+}
+
+impl BuildInputs {
+    pub fn quarto(&self) -> Option<&QuartoJobOptions> {
+        match self {
+            Self::Quarto { options, .. } => Some(options),
+            Self::Native { .. } => None,
+        }
+    }
+
+    pub fn quarto_mut(&mut self) -> Option<&mut QuartoJobOptions> {
+        match self {
+            Self::Quarto { options, .. } => Some(options),
+            Self::Native { .. } => None,
+        }
+    }
+
+    /// The typed options the request carried, whichever builder it named.
+    /// This is what a preset's effective options are computed against.
+    pub fn options(&self) -> &BTreeMap<String, serde_json::Value> {
+        match self {
+            Self::Native { options } => options,
+            Self::Quarto { overrides, .. } => overrides,
+        }
+    }
+}
+
+/// One admitted build, as the queue and the runners consume it.
+///
+/// Every field here is required, because every one of them is filled in from
+/// [`BuildRequestV2`] by the one validation this protocol has, at the wire
+/// boundary. The optional mirrors this type used to carry -- a `builder` that
+/// might be absent, an `entrypoint` beside a `main`, an `engine` beside a
+/// `builder` -- existed so that a v1 request could omit them, and v1 is not
+/// admitted any more. Each mirror was also re-validated deeper in, which is
+/// what let the two disagree.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct JobRequest {
     pub protocol: u32,
-    /// `biber`, `tex`, or `quarto`.
+    /// `quarto` or `build`. Derived from the builder at admission and kept
+    /// because it is what a status frame and a recovered record are keyed
+    /// on.
     pub kind: String,
     pub project: String,
     pub origin: String,
     pub snapshot: String,
     pub generation: u64,
-    /// `pdflatex`, `xelatex` or `lualatex`; tex jobs only. Respected, never
-    /// substituted.
-    #[serde(default)]
-    pub engine: String,
-    /// Project-relative main file; tex jobs only.
-    #[serde(default)]
-    pub main: String,
-    /// The job name whose `.bcf` Biber reads; biber jobs only.
-    #[serde(default)]
-    pub stem: String,
-    /// Quarto-only typed options. Keeping these in a nested value prevents
-    /// shell fragments and environment maps from becoming part of the wire
-    /// protocol while retaining additive decoding for old TeX clients.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quarto: Option<QuartoJobOptions>,
+    pub builder: String,
+    pub workspace: WorkspaceRequest,
+    pub entrypoint: String,
+    pub output: String,
+    /// The typed options for whichever builder this is.
+    pub inputs: BuildInputs,
     pub manifest: Vec<ManifestEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceSnapshot>,
     #[serde(default)]
     pub options: JobOptions,
-    /// Protocol v2 stable builder identifier; absent on v1 requests.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub builder: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<WorkspaceRequest>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entrypoint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub builder_options: Option<BTreeMap<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
 }
@@ -385,8 +412,6 @@ pub struct BuildRequestV2 {
     #[serde(default)]
     pub deadline_seconds: Option<u64>,
     #[serde(default)]
-    pub max_passes: Option<u32>,
-    #[serde(default)]
     pub manifest: Vec<ManifestEntry>,
     #[serde(default)]
     pub source: Option<SourceSnapshot>,
@@ -455,15 +480,15 @@ impl BuildRequestV2 {
         if self
             .deadline_seconds
             .is_some_and(|seconds| seconds == 0 || seconds > 3600)
-            || self
-                .max_passes
-                .is_some_and(|passes| passes == 0 || passes > 20)
         {
             return Err("build limits are outside the supported range".into());
         }
+        // No TeX builder is nameable. LaTeX is built in the browser, and
+        // `BuilderId::parse` has not accepted `tex`, `latexmk` or `tectonic`
+        // for some time -- so a request naming one passed this validation and
+        // was then refused deeper in, with a worse message. The `engine` and
+        // `synctex` options went with them: they were TeX's alone.
         let (outputs, allowed): (&[&str], &[&str]) = match self.builder.as_str() {
-            "tex" | "latexmk" => (&["pdf"], &["engine", "synctex"]),
-            "tectonic" => (&["pdf"], &["synctex"]),
             "typst" => (&["pdf"], &[]),
             "pandoc" => (&["html", "docx"], &[]),
             "calepin" => (&["html", "pdf"], &[]),
@@ -482,8 +507,6 @@ impl BuildRequestV2 {
                     return Err(format!("unknown {} option: {name}", self.builder));
                 }
                 let valid = match name.as_str() {
-                    "engine" => matches!(value.as_str(), Some("pdflatex" | "xelatex" | "lualatex")),
-                    "synctex" => value.is_boolean(),
                     "profile" => value.is_string(),
                     "parameters" => value.is_object(),
                     "policy" => matches!(
@@ -512,45 +535,60 @@ impl BuildRequestV2 {
 /// (`engine_adapter::select`) must never see or need Calepin's typed
 /// options, and this type's `engine` selects a preview adapter instead of an
 /// execution engine.
+/// Which adapter watches the document, and with what.
+///
+/// One value rather than two optional ones for the same reason
+/// [`BuildInputs`] is: the pairing that cannot happen -- a Calepin preview
+/// carrying Quarto options, a Quarto preview carrying none -- used to be
+/// representable, and every adapter opened its own field and produced
+/// "missing Quarto options" if the wrong one was there.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "engine", rename_all = "lowercase")]
+pub enum PreviewInputs {
+    Quarto(QuartoJobOptions),
+    Calepin(CalepinJobOptions),
+}
+
+impl PreviewInputs {
+    pub fn engine(&self) -> &'static str {
+        match self {
+            Self::Quarto(_) => "quarto",
+            Self::Calepin(_) => "calepin",
+        }
+    }
+}
+
+/// The `POST previews` (and `GET`/`DELETE previews/{id}`) request body: a
+/// managed-preview session description, after validation.
+///
+/// Like [`JobRequest`], every field is required: `decode_preview` refuses
+/// anything that is not protocol 2 at the wire and fills all of them in from
+/// the one validated shape, so there is nothing left for a consumer to
+/// default or to check again.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PreviewRequest {
     pub protocol: u32,
-    /// Always `"quarto"`: the shape of a preview request is unchanged by
-    /// which rendering engine actually watches the document. `engine` below
-    /// makes that choice.
-    pub kind: String,
     pub project: String,
     pub origin: String,
     pub snapshot: String,
     pub generation: u64,
-    /// `"quarto"` (the default, also written as `""` for wire compatibility
-    /// with clients predating this field) or `"calepin"`.
-    #[serde(default)]
-    pub engine: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quarto: Option<QuartoJobOptions>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub calepin: Option<CalepinJobOptions>,
+    pub inputs: PreviewInputs,
     pub manifest: Vec<ManifestEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceSnapshot>,
-    /// Protocol v2 preview declaration. Managed previews require a bound
-    /// workspace; snapshot previews are intentionally rejected.
-    #[serde(default)]
-    pub workspace: Option<WorkspaceRequest>,
-    #[serde(default)]
-    pub builder: Option<String>,
-    #[serde(default)]
-    pub output: Option<String>,
-    #[serde(default)]
-    pub entrypoint: Option<String>,
+    /// Managed previews require a bound workspace; snapshot previews are
+    /// intentionally rejected.
+    pub workspace: WorkspaceRequest,
+    pub builder: String,
+    pub output: String,
+    pub entrypoint: String,
 }
 
 /// Strict v2 wire decoding; old nested tool envelopes cannot override the
 /// declared workspace, builder, or entrypoint.
 pub fn decode_preview(mut raw: serde_json::Value) -> Result<PreviewRequest, String> {
     if raw.get("protocol").and_then(serde_json::Value::as_u64) != Some(2) {
-        return serde_json::from_value(raw).map_err(|error| error.to_string());
+        return Err("unsupported protocol version".into());
     }
     if raw.get("kind").and_then(serde_json::Value::as_str) != Some("preview") {
         return Err("protocol 2 preview kind must be preview".into());
@@ -564,7 +602,7 @@ pub fn decode_preview(mut raw: serde_json::Value) -> Result<PreviewRequest, Stri
     let WorkspaceRequest::Bound { binding_id } = &request.workspace else {
         return Err("managed previews require bound workspace".into());
     };
-    let (quarto, calepin) = match request.builder.as_str() {
+    let inputs = match request.builder.as_str() {
         "quarto" => {
             let mut options = serde_json::to_value(QuartoJobOptions::default())
                 .map_err(|error| error.to_string())?;
@@ -577,34 +615,28 @@ pub fn decode_preview(mut raw: serde_json::Value) -> Result<PreviewRequest, Stri
             let options: QuartoJobOptions =
                 serde_json::from_value(options).map_err(|error| error.to_string())?;
             options.validate()?;
-            (Some(options), None)
+            PreviewInputs::Quarto(options)
         }
-        "calepin" => (
-            None,
-            Some(CalepinJobOptions {
-                binding_id: binding_id.clone(),
-                main: request.entrypoint.clone(),
-                format: request.output.clone(),
-            }),
-        ),
+        "calepin" => PreviewInputs::Calepin(CalepinJobOptions {
+            binding_id: binding_id.clone(),
+            main: request.entrypoint.clone(),
+            format: request.output.clone(),
+        }),
         _ => return Err("builder does not support managed previews".into()),
     };
     Ok(PreviewRequest {
         protocol: 2,
-        kind: "quarto".into(),
         project: request.project,
         origin: request.origin,
         snapshot: request.snapshot,
         generation: request.generation,
-        engine: request.builder.clone(),
-        quarto,
-        calepin,
+        inputs,
         manifest: request.manifest,
         source: request.source,
-        workspace: Some(request.workspace),
-        builder: Some(request.builder),
-        output: Some(request.output),
-        entrypoint: Some(request.entrypoint),
+        workspace: request.workspace,
+        builder: request.builder,
+        output: request.output,
+        entrypoint: request.entrypoint,
     })
 }
 
@@ -937,11 +969,9 @@ pub struct JobStatus {
     pub kind: String,
     /// `queued`, `running`, `done`, `failed`, `canceled`.
     pub status: String,
-    /// `staging`, `tex`, `bibtex`, `biber`, `makeindex`, `finished`.
+    /// `staging`, `build`, `rendering`, `collecting`, `finished`.
     #[serde(default)]
     pub stage: String,
-    #[serde(default)]
-    pub passes: u32,
     #[serde(default)]
     pub exit: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1123,11 +1153,13 @@ mod tests {
     #[test]
     fn job_options_default_when_absent() {
         let request: JobRequest = serde_json::from_str(
-            r#"{"protocol":1,"kind":"biber","project":"p","origin":"https://x","snapshot":"s","generation":1,"stem":"main","manifest":[]}"#,
+            r#"{"protocol":2,"kind":"build","project":"p","origin":"https://x","snapshot":"s",
+                "generation":1,"builder":"typst","workspace":{"mode":"snapshot"},
+                "entrypoint":"main.typ","output":"pdf","inputs":{"engine":"native"},
+                "manifest":[]}"#,
         )
         .expect("parses");
         assert_eq!(request.options.deadline_seconds, DEFAULT_DEADLINE_SECONDS);
-        assert_eq!(request.options.max_passes, DEFAULT_MAX_PASSES);
     }
 
     #[test]
@@ -1202,6 +1234,46 @@ mod tests {
         });
         let request: BuildRequestV2 = serde_json::from_value(value).expect("decode");
         assert!(request.validate_shape().is_err());
+    }
+
+    /// The builder vocabulary, which is now the only gate a job passes on
+    /// its way in: `engine_adapter::select` used to run a second, different
+    /// one for requests that never arrive any more.
+    ///
+    /// LaTeX is built in the browser, so no direct-TeX builder is nameable,
+    /// and `engine`/`synctex` went with them -- they were TeX's alone.
+    #[test]
+    fn only_the_supported_builders_are_nameable() {
+        let request = |builder: &str, output: &str, options: serde_json::Value| {
+            serde_json::from_value::<BuildRequestV2>(serde_json::json!({
+                "protocol": 2, "kind": "build", "project": "p", "origin": "https://x",
+                "snapshot": "s", "generation": 1, "builder": builder,
+                "workspace": {"mode": "snapshot"}, "entrypoint": "index.md",
+                "output": output, "options": options,
+            }))
+            .expect("decode")
+            .validate_shape()
+        };
+
+        for builder in ["tex", "latexmk", "tectonic", "biber", "future"] {
+            assert!(
+                request(builder, "pdf", serde_json::json!({})).is_err(),
+                "{builder} is still nameable on the wire"
+            );
+        }
+        request("typst", "pdf", serde_json::json!({})).expect("typst builds a PDF");
+        request("pandoc", "html", serde_json::json!({})).expect("pandoc builds HTML");
+        request("calepin", "html", serde_json::json!({})).expect("calepin builds HTML");
+        request(
+            "quarto",
+            "revealjs",
+            serde_json::json!({"profile": "review"}),
+        )
+        .expect("quarto takes its own typed options");
+
+        // TeX's options left with TeX.
+        assert!(request("typst", "pdf", serde_json::json!({"engine": "xelatex"})).is_err());
+        assert!(request("typst", "pdf", serde_json::json!({"synctex": true})).is_err());
     }
 
     #[test]

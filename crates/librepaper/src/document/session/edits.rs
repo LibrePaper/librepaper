@@ -116,58 +116,6 @@ fn apply_text_edits(text: &LoroText, edits: &[wasm_helpers::text::Edit]) -> bool
     true
 }
 
-/// Applies word-level edits to the main file, in one transaction.
-///
-/// `replace_text` above states a change as one contiguous replacement, which
-/// is right for a publish -- the whole text is being set -- and wrong for a
-/// merge: a file whose author edited two distant paragraphs would have
-/// everything between them deleted and reinserted, taking the concurrent
-/// insertions in the middle with it. `wasm-helpers` says exactly which
-/// spans moved, so those are the spans that move here.
-///
-/// Back to front, so that an edit's offsets are still the ones `diff`
-/// measured when it is applied. Offsets are UTF-16 code units on both sides.
-///
-/// Returns whether the edits were applied at all: see `apply_text_edits` for
-/// what makes a set of edits fit the text they are offered against. A caller
-/// that already trusts its own offsets -- the diff this file computed against
-/// the text it is about to edit -- can ignore this; one applying edits a
-/// message carried from somewhere else should not.
-pub fn apply_edits(doc: &LoroDoc, edits: &[wasm_helpers::text::Edit]) -> bool {
-    let (files, _, _, meta) = maps(doc);
-    let Some(id) = string_at(&meta, MAIN) else {
-        return false;
-    };
-    let Some(text) = text_at(&files, &id) else {
-        return false;
-    };
-    apply_text_edits(&text, edits)
-}
-
-/// Applies word-level edits to the `LoroText` at `path`, in one transaction,
-/// and returns the update they produced -- the shape accepting a suggestion
-/// needs, since it edits a named file rather than the main one and has to
-/// hand what it did to every other socket, the way `apply_edits` does for
-/// the main file. `None` when `path` names no text in the document, which is
-/// the caller's cue that the file no longer exists, and also
-/// when the edits do not fit the text at that path any more -- see
-/// `apply_text_edits`.
-pub fn apply_path_edits(
-    doc: &LoroDoc,
-    path: &str,
-    edits: &[wasm_helpers::text::Edit],
-) -> Option<Vec<u8>> {
-    let (files, path_map, _, _) = maps(doc);
-    let id = id_of_path(&path_map, path)?;
-    let before = super::sync::encode_vector(doc);
-    let text = text_at(&files, &id)?;
-    let applied = apply_text_edits(&text, edits);
-    if !applied {
-        return None;
-    }
-    super::sync::encode_diff(doc, &before).ok()
-}
-
 /// Applies word-level edits to the `LoroText` at `path`, in one transaction.
 /// Returns false when `path` names no text in the document, which is
 /// the caller's cue that the file no longer exists, and also

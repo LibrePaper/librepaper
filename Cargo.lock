@@ -2973,6 +2973,7 @@ dependencies = [
  "librepaper-document-core",
  "log",
  "loro",
+ "md5",
  "object_store",
  "percent-encoding",
  "rand 0.9.5",

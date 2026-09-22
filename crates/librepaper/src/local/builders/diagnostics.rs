@@ -4,10 +4,10 @@ use regex::Regex;
 
 use crate::local::protocol::{safe_relative_path, Diagnostic};
 
-pub fn normalize(builder: &str, log: &str, entrypoint: &str, paths: &[String]) -> Vec<Diagnostic> {
-    if matches!(builder, "tex" | "latexmk" | "tectonic") {
-        return crate::local::texlog::parse(log, entrypoint, paths);
-    }
+/// `paths` is the job's manifest: a location is kept only when it names a
+/// file the caller actually sent, so a builder that quotes an absolute path
+/// on this machine cannot leak it back to the browser.
+pub fn normalize(log: &str, paths: &[String]) -> Vec<Diagnostic> {
     let location = Regex::new(r"┌─\s*([^:]+):(\d+):(\d+)").expect("static regex");
     let mut file = String::new();
     let mut line = 0;
@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn typst_location_is_kept_only_for_manifest_files() {
         let log = "error: unknown function\n┌─ main.typ:4:7";
-        let diagnostics = normalize("typst", log, "main.typ", &["main.typ".into()]);
+        let diagnostics = normalize(log, &["main.typ".into()]);
         assert_eq!(diagnostics[0].file, "main.typ");
         assert_eq!(diagnostics[0].line, 4);
         assert_eq!(diagnostics[0].column, 7);
@@ -66,9 +66,7 @@ mod tests {
     #[test]
     fn outside_paths_are_not_exposed() {
         let diagnostics = normalize(
-            "calepin",
             "error: failed\n┌─ /tmp/private.typ:1:1",
-            "main.typ",
             &["main.typ".into()],
         );
         assert!(diagnostics[0].file.is_empty());

@@ -165,7 +165,8 @@ impl PairingStore {
         let now = now_unix();
         self.load().into_values().find_map(|pairing| {
             let live = pairing.origin == origin && pairing.expires > now;
-            let matches = constant_time_eq(pairing.token_sha256.as_bytes(), hash.as_bytes());
+            let matches =
+                crate::util::constant_time_eq(pairing.token_sha256.as_bytes(), hash.as_bytes());
             (live && matches).then_some(pairing.project)
         })
     }
@@ -250,20 +251,6 @@ fn hash_token(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     hex::encode(hasher.finalize())
-}
-
-/// Compares two equal-length ASCII strings (hex digests here) without
-/// branching on the first differing byte, so a wrong guess and a near-miss
-/// take the same time to be told apart from a live token.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 /// scheme + host + port, lowercase, with no path, query or trailing slash --

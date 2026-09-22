@@ -825,9 +825,10 @@ function jobEnvelope({ job, manifest, inputRevision }) {
     snapshot: String(inputRevision || job.inputRevision || ""),
     generation: Number.isFinite(job.generation) ? Math.max(0, Math.floor(job.generation)) : 0,
     manifest,
+    // No `max_passes`: it bounded latexmk's reruns, and LaTeX is built in
+    // the browser now. Nothing on either side has read it since.
     options: {
       deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
-      max_passes: Number.isFinite(job.maxPasses) ? Math.max(1, Math.floor(job.maxPasses)) : 8,
     },
   };
 }
@@ -1225,25 +1226,25 @@ export async function startLocalPreview({ engine = "quarto", job = {}, tree, opt
   const form = engine === "calepin"
     ? await buildCalepinForm({ job, tree, options: { ...options, livePreview: true } })
     : await buildQuartoForm({ job, tree, options: { ...options, livePreview: true } });
-  const request = JSON.parse(await form.get("job").text());
-  if (Math.max(...(status().protocol || [1])) >= 2) {
-    const details = request.quarto || request.calepin || {};
-    const builder = engine === "calepin" ? "calepin" : "quarto";
-    const output = details.format || options.format || "html";
-    const entrypoint = details.main || options.entrypoint;
-    const bindingId = details.binding_id;
-    const v2 = {
-      protocol: 2, kind: "preview", project: request.project, origin: request.origin,
-      snapshot: request.snapshot, generation: request.generation, builder,
-      workspace: { mode: "bound", binding_id: bindingId }, entrypoint, output,
-      manifest: request.manifest,
-      options: engine === "quarto" ? { ...(details.profile ? { profile: details.profile } : {}), parameters: details.parameters || {}, policy: details.policy || "project-defaults" } : {},
-    };
-    const source = await sourceSnapshot(request.snapshot, entrypoint, request.manifest);
-    if (source) v2.source = source;
-    Object.keys(request).forEach((key) => delete request[key]);
-    Object.assign(request, v2);
-  }
+  const built = JSON.parse(await form.get("job").text());
+  // Unconditionally protocol 2, like `runBuild`: a pairing only exists after
+  // a health check that refused anything below it (see `probe`), and the
+  // bridge has no other shape to decode a preview from. The version guard
+  // this replaced defaulted to 1 when the status was unset, which produced a
+  // request nothing could answer.
+  const details = built.quarto || built.calepin || {};
+  const builder = engine === "calepin" ? "calepin" : "quarto";
+  const output = details.format || options.format || "html";
+  const entrypoint = details.main || options.entrypoint;
+  const request = {
+    protocol: 2, kind: "preview", project: built.project, origin: built.origin,
+    snapshot: built.snapshot, generation: built.generation, builder,
+    workspace: { mode: "bound", binding_id: details.binding_id }, entrypoint, output,
+    manifest: built.manifest,
+    options: engine === "quarto" ? { ...(details.profile ? { profile: details.profile } : {}), parameters: details.parameters || {}, policy: details.policy || "project-defaults" } : {},
+  };
+  const source = await sourceSnapshot(built.snapshot, entrypoint, built.manifest);
+  if (source) request.source = source;
   const response = await send("POST", "previews", { token:pairing.token, jsonBody:request });
   return response.json();
 }

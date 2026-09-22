@@ -261,29 +261,6 @@ impl PostgresCatalog {
         Ok(())
     }
 
-    /// Every still-open branch on this document is unreachable: a restore or
-    /// a whole-project replacement moved the text out from under all of them.
-    pub async fn supersede_proposals(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        document_id: Uuid,
-    ) -> Result<u64> {
-        let changed = sqlx::query(
-            "WITH changed AS (
-               UPDATE document_proposals SET status='superseded',resolved_at=now(),
-                      version=version+1,updated_at=now()
-               WHERE document_id=$1 AND status='pending' RETURNING id
-             )
-             UPDATE annotations SET resolved_at=COALESCE(resolved_at,now()),updated_at=now()
-             WHERE proposal_id IN (SELECT id FROM changed)",
-        )
-        .bind(document_id)
-        .execute(&mut **tx)
-        .await?
-        .rows_affected();
-        Ok(changed)
-    }
-
     /// The open proposals for a document, which is what a joining client asks
     /// for and what the sequencer broadcasts after every decision.
     pub async fn open_proposals(&self, document_id: Uuid) -> Result<Vec<StoredProposal>> {

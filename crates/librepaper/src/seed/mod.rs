@@ -187,11 +187,12 @@ pub async fn seed_with_backup(
     };
     let registry =
         crate::log::Registry::new(catalog.clone(), blobs.clone(), config.clone(), peer_key);
-    let store = Arc::new(
-        Store::open_with_catalog(blobs.clone(), config, catalog.clone(), registry)
-            .await
-            .unwrap_or_else(|e| die(e)),
-    );
+    let store = Arc::new(Store::open_with_catalog(
+        blobs.clone(),
+        config,
+        catalog.clone(),
+        registry,
+    ));
     for document in documents {
         let (source, format) = read_seed_document(document);
         let main = seed_main(document);

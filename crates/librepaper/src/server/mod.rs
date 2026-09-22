@@ -56,7 +56,7 @@ mod history;
 #[cfg(test)]
 mod history_frontier_tests;
 mod host_metrics;
-mod mcp;
+pub(crate) mod mcp;
 mod onboarding;
 pub mod origins;
 mod quarto_checkpoint;
@@ -126,7 +126,7 @@ impl DocumentService {
                         .link_role(&who.link, crate::util::now_unix())
                         .is_some());
         }
-        entry.readable_by(&who.key, &who.id.id, &who.link, crate::util::now_unix())
+        entry.readable_by(&who.id.id, &who.link, crate::util::now_unix())
     }
 }
 
@@ -305,14 +305,12 @@ pub const AUTOMATION_HEADER: &str = "x-librepaper-automation";
 /// that grants anything is the presented link, and `ceiling` can only lower
 /// what the link says, never raise it.
 ///
-/// `role_of` is deliberately not called with blanked owner and caller fields:
-/// an unowned entry treats an empty caller as its owner, which would turn
-/// "no identity" into the highest rung rather than the lowest.
-#[allow(clippy::too_many_arguments)] // Each input to an authority decision stays named.
+/// `role_of` is deliberately not called with a blanked caller: an unowned
+/// entry treats an empty caller as its owner, which would turn "no identity"
+/// into the highest rung rather than the lowest.
 fn resolved_role(
     automation: bool,
     entry: &IndexEntry,
-    owner_key: &str,
     caller_id: &str,
     presented_link: &str,
     ceiling: crate::document::store::Ceiling,
@@ -323,7 +321,7 @@ fn resolved_role(
         // passed on. That is the whole property: see `automation_role`.
         automation_role(entry, presented_link, ceiling, now)
     } else {
-        entry.role_of(owner_key, caller_id, presented_link, ceiling, now)
+        entry.role_of(caller_id, presented_link, ceiling, now)
     }
 }
 
@@ -531,6 +529,28 @@ impl RequestContext {
     fn identity(&self) -> Identity {
         self.authentication.clone().unwrap_or_default()
     }
+
+    /// The context the cost middleware would have built for this request.
+    ///
+    /// Only for the in-crate tests that drive a handler directly, with no
+    /// router above them to have run the middleware: a handler that reads
+    /// its caller out of the context must be given the same context a real
+    /// request would carry, or the test is exercising an anonymous caller
+    /// while believing it authenticated one.
+    #[cfg(test)]
+    pub(super) async fn resolved(
+        server: &Server,
+        headers: &HeaderMap,
+        arrival: Arrival,
+        peer: SocketAddr,
+    ) -> Self {
+        let authentication = server.authenticated_identity(headers, &arrival).await;
+        Self {
+            arrival,
+            peer,
+            authentication,
+        }
+    }
 }
 
 /// Read one account row off the runtime worker.
@@ -578,11 +598,145 @@ impl Server {
     ) -> Result<(IndexEntry, Viewer), Reply> {
         let entry = match self.checked_entry(slug).await {
             Ok(Some(entry)) => entry,
-            Ok(None) => return Err(plain(404, "not found")),
+            Ok(None) => return Err(no_such_document()),
             Err(response) => return Err(response),
         };
         let who = self.viewer(&entry, headers, arrival, query).await;
         Ok((entry, who))
+    }
+
+    /// The same, resolving the caller from the request context the
+    /// middleware already filled in rather than authenticating again.
+    ///
+    /// Safe because `api_guard` refuses a request whose credential did not
+    /// validate before any router handler runs: by this point the context's
+    /// identity is the answer a fresh lookup would give, and the 401/503
+    /// that a failure would have produced has already been sent.
+    // The error is a whole response, for the same reason `entry_viewer`'s is.
+    #[allow(clippy::result_large_err)]
+    pub(super) async fn entry_viewer_in(
+        &self,
+        slug: &str,
+        context: &RequestContext,
+        headers: &HeaderMap,
+        query: Option<&str>,
+    ) -> Result<(IndexEntry, Viewer), Reply> {
+        let entry = match self.checked_entry(slug).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return Err(no_such_document()),
+            Err(response) => return Err(response),
+        };
+        let who = self.viewer_as(&entry, context.identity(), headers, &context.arrival, query);
+        Ok((entry, who))
+    }
+
+    /// [`Self::entry_at_least`], from the request context.
+    #[allow(clippy::result_large_err)]
+    pub(super) async fn entry_at_least_in(
+        &self,
+        slug: &str,
+        context: &RequestContext,
+        headers: &HeaderMap,
+        query: Option<&str>,
+        rung: Role,
+    ) -> Result<(IndexEntry, Viewer), Reply> {
+        let (entry, who) = self.entry_viewer_in(slug, context, headers, query).await?;
+        self.check_readable_at(&entry, &who, rung)?;
+        Ok((entry, who))
+    }
+
+    /// [`Self::readable_entry`], from the request context.
+    #[allow(clippy::result_large_err)]
+    pub(super) async fn readable_entry_in(
+        &self,
+        slug: &str,
+        context: &RequestContext,
+        headers: &HeaderMap,
+        query: Option<&str>,
+    ) -> Result<(IndexEntry, Viewer), Reply> {
+        self.entry_at_least_in(slug, context, headers, query, Role::Reader)
+            .await
+    }
+
+    /// [`Self::entry_viewer`], with a credential that did not resolve
+    /// refused rather than treated as anonymous.
+    ///
+    /// Every route that does anything with a caller's identity needs this,
+    /// and every route had its own copy of it. The copies agreed, which is
+    /// the only reason nothing had gone wrong: the one that did not would
+    /// have shown a signed-in reader with a stale session the public view of
+    /// their own document.
+    #[allow(clippy::result_large_err)]
+    pub(super) async fn authenticated_entry(
+        &self,
+        slug: &str,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        query: Option<&str>,
+    ) -> Result<(IndexEntry, Viewer), Reply> {
+        let (entry, who) = self.entry_viewer(slug, headers, arrival, query).await?;
+        if who.auth_failed {
+            return Err(authentication_expired());
+        }
+        Ok((entry, who))
+    }
+
+    /// The gate a document *read* passes: the entry exists, the credential
+    /// resolved, and this document is this caller's to see.
+    ///
+    /// Route-specific rung requirements stay with their routes: this is the
+    /// floor, not the whole of any route's authorization.
+    #[allow(clippy::result_large_err)]
+    pub(super) async fn readable_entry(
+        &self,
+        slug: &str,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        query: Option<&str>,
+    ) -> Result<(IndexEntry, Viewer), Reply> {
+        self.entry_at_least(slug, headers, arrival, query, Role::Reader)
+            .await
+    }
+
+    /// The same, for a route that takes more than reading.
+    ///
+    /// The rung failure answers "not found" rather than "forbidden", on the
+    /// reasoning the delete route already followed: a document somebody may
+    /// not change is not a document they need to learn the shape of.
+    #[allow(clippy::result_large_err)]
+    pub(super) async fn entry_at_least(
+        &self,
+        slug: &str,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        query: Option<&str>,
+        rung: Role,
+    ) -> Result<(IndexEntry, Viewer), Reply> {
+        let (entry, who) = self
+            .authenticated_entry(slug, headers, arrival, query)
+            .await?;
+        self.check_readable_at(&entry, &who, rung)?;
+        Ok((entry, who))
+    }
+
+    /// The same two checks, for a caller that already holds the entry and
+    /// the viewer -- because it read the entry first and then resolved the
+    /// viewer against headers of its own making, as the assistant routes do
+    /// to keep an owner session from widening a link.
+    #[allow(clippy::result_large_err)]
+    pub(super) fn check_readable(&self, entry: &IndexEntry, who: &Viewer) -> Result<(), Reply> {
+        self.check_readable_at(entry, who, Role::Reader)
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn check_readable_at(&self, entry: &IndexEntry, who: &Viewer, rung: Role) -> Result<(), Reply> {
+        if who.auth_failed {
+            return Err(authentication_expired());
+        }
+        if !who.at_least(rung) || !self.may_read(entry, who) {
+            return Err(no_such_document());
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)] // a server is made of exactly these
@@ -896,12 +1050,30 @@ impl Server {
         arrival: &Arrival,
         query: Option<&str>,
     ) -> Viewer {
+        let id = self.whoami(headers, arrival).await;
+        self.viewer_as(entry, id, headers, arrival, query)
+    }
+
+    /// The same, for a caller that already knows who this is.
+    ///
+    /// Resolving an identity is a signature check and, for a GitHub bearer,
+    /// a call out to GitHub. The middleware does it once per request and
+    /// keeps the answer in [`RequestContext`]; a handler that called
+    /// `viewer` did it again, and a handler that resolved it twice in one
+    /// request did it three times.
+    pub(super) fn viewer_as(
+        &self,
+        entry: &IndexEntry,
+        id: Identity,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        query: Option<&str>,
+    ) -> Viewer {
         // Automation is link-bounded even when the command runs beside a
         // browser's cookies. Keep the account for attribution and policy
         // ceilings, while preventing the cached owner session from widening
         // the link's authority.
         let automation = Self::is_automation(headers);
-        let id = self.whoami(headers, arrival).await;
         let key = if automation {
             String::new()
         } else {
@@ -921,15 +1093,7 @@ impl Server {
         }
         let now = crate::util::now_unix();
         let ceiling = self.ceiling_for(&id);
-        let mut role = resolved_role(
-            automation,
-            entry,
-            &key,
-            &id.id,
-            &presented_link,
-            ceiling,
-            now,
-        );
+        let mut role = resolved_role(automation, entry, &id.id, &presented_link, ceiling, now);
         // Legacy rows can carry an owner key from before provider identities
         // existed.  The visitor credential that happens to match that key is
         // useful for attribution, but it is not proof of OAuth ownership and
@@ -940,7 +1104,7 @@ impl Server {
         // ordinary read/comment access but remove the owner rung.  This also
         // prevents an old owner cookie from mutating a legacy row.
         if role == Role::Owner && !ceiling.edit {
-            role = entry.role_of("", "", &presented_link, ceiling, now);
+            role = entry.role_of("", &presented_link, ceiling, now);
         }
         // Only a live row supplies rate metadata or a `via` attribution. A
         // signed-in caller cannot attach an invented key merely to obtain a
@@ -1101,13 +1265,7 @@ impl Server {
                     .map(|guest| guest.link.clone())
             })
             .unwrap_or_default();
-        let role = entry.role_of(
-            &who.key,
-            &who.id,
-            &link,
-            self.ceiling_for(&who.identity()),
-            now,
-        );
+        let role = entry.role_of(&who.id, &link, self.ceiling_for(&who.identity()), now);
         let metadata = crate::results::document_metadata(&entry.source_format);
         json!({
             "slug": entry.slug,
@@ -1139,7 +1297,7 @@ impl Server {
             // the owner and the people named on it; a link-holder learning
             // who else holds the link is what the blind-review link exists to
             // prevent.
-            "people": if entry.owned_by(&who.key, &who.id) {
+            "people": if entry.owned_by(&who.id) {
                 json!(entry
                     .guests
                     .iter()
@@ -1212,24 +1370,23 @@ impl Server {
         } else {
             pseudonym_for(author, &room.slug)
         };
-        let command = command.with_creator(creator);
+        let command = command.with_creator(creator.clone());
         let authority = who.document_authority();
-        let authorization = who.mutation_authorization(self.ceiling_for(&who.id).edit);
-        let author_account_id = uuid::Uuid::parse_str(&id.id).ok();
-        let author_key = author.to_owned();
+        // Who is writing, built once from the viewer and carried whole. The
+        // things it holds used to travel as positional arguments through
+        // every command constructor below.
+        let writer = crate::room::CommentAuthor::new(
+            creator,
+            uuid::Uuid::parse_str(&id.id).ok(),
+            author,
+            who.mutation_authorization(self.ceiling_for(&who.id).edit),
+            may_edit,
+        );
         let temp_id = command.temp_id().to_owned();
         let comment_id_field = command.comment_id().to_owned();
 
         let outcome = self
-            .run_comment_command(
-                room,
-                command,
-                &authority,
-                authorization,
-                author_account_id,
-                &author_key,
-                may_edit,
-            )
+            .run_comment_command(room, command, &authority, &writer)
             .await;
         // Comment rows are read live. Their immutable anchors must stay
         // cached so source edits keep updating comments already on screen.
@@ -1266,10 +1423,7 @@ impl Server {
         room: &Room,
         command: RoomCommand,
         authority: &crate::storage::postgres::Authority,
-        authorization: crate::storage::postgres::MutationAuthorization,
-        author_account_id: Option<uuid::Uuid>,
-        author_key: &str,
-        may_edit: bool,
+        author: &crate::room::CommentAuthor,
     ) -> Result<Value, Value> {
         let catalog = self.store.catalog.clone();
         let config = &self.config;
@@ -1281,7 +1435,7 @@ impl Server {
                 motivation,
                 render_digest,
                 body,
-                creator,
+                creator: _,
                 exact,
                 prefix,
                 suffix,
@@ -1305,10 +1459,7 @@ impl Server {
                     config,
                     &motivation,
                     &body,
-                    &creator,
-                    author_account_id,
-                    author_key.to_string(),
-                    authorization.clone(),
+                    author,
                     &exact,
                     &prefix,
                     &suffix,
@@ -1328,13 +1479,10 @@ impl Server {
             RoomCommand::Reply {
                 comment_id,
                 body,
-                creator,
+                creator: _,
                 request_id,
                 ..
             } => {
-                let Ok(comment_id) = uuid::Uuid::parse_str(&comment_id) else {
-                    return fail("unknown comment".into());
-                };
                 let id =
                     uuid::Uuid::parse_str(&request_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
                 let mut add_reply = crate::room::AddReply::new(
@@ -1344,10 +1492,7 @@ impl Server {
                     comment_id,
                     config,
                     &body,
-                    &creator,
-                    author_account_id,
-                    author_key.to_string(),
-                    authorization.clone(),
+                    author,
                 )
                 .map_err(|error| json!({"type": "error", "message": error}))?;
                 let outcome = room
@@ -1363,15 +1508,12 @@ impl Server {
                 resolved,
                 ..
             } => {
-                let Ok(comment_id) = uuid::Uuid::parse_str(&comment_id) else {
-                    return fail("unknown comment".into());
-                };
                 let mut resolve = crate::room::ResolveComment::new(
                     catalog.clone(),
                     document_id,
                     comment_id,
                     resolved,
-                    authorization.clone(),
+                    author,
                 );
                 let outcome = room
                     .command(authority, &mut resolve)
@@ -1381,16 +1523,12 @@ impl Server {
                     "resolved": outcome.resolved, "resolved_at": outcome.resolved_at}))
             }
             RoomCommand::Delete { comment_id, .. } => {
-                let Ok(parsed_id) = uuid::Uuid::parse_str(&comment_id) else {
-                    return fail("unknown comment".into());
-                };
+                let parsed_id = comment_id;
                 let mut delete = crate::room::DeleteComment::new(
                     catalog.clone(),
                     document_id,
                     parsed_id,
-                    author_key.to_string(),
-                    may_edit,
-                    authorization.clone(),
+                    author,
                 );
                 room.command(authority, &mut delete)
                     .await
@@ -1404,9 +1542,7 @@ impl Server {
                 body,
                 ..
             } => {
-                let Ok(parsed_id) = uuid::Uuid::parse_str(&comment_id) else {
-                    return fail("unknown comment".into());
-                };
+                let parsed_id = comment_id;
                 let (proposal_id, expected_version, exact, prefix, suffix) = match self
                     .proposal_for_comment(&catalog, document_id, parsed_id)
                     .await
@@ -1420,8 +1556,7 @@ impl Server {
                     parsed_id,
                     proposal_id,
                     expected_version,
-                    author_key.to_string(),
-                    may_edit,
+                    author,
                     config,
                     &body,
                     &exact,
@@ -1429,7 +1564,6 @@ impl Server {
                     &suffix,
                     &proposed,
                     Some(expected_proposed.as_str()),
-                    authorization.clone(),
                 )
                 .map_err(|error| json!({"type": "error", "message": error}))?;
                 let comment = room
@@ -1439,11 +1573,9 @@ impl Server {
                 Ok(json!({"type": "refine", "comment": comment}))
             }
             RoomCommand::Accept { comment_id, .. } => {
-                let Ok(parsed_id) = uuid::Uuid::parse_str(&comment_id) else {
-                    return fail("unknown comment".into());
-                };
+                let parsed_id = comment_id;
                 let (proposal_id, request_id, decided_by) = match self
-                    .accept_reject_context(&catalog, document_id, parsed_id, author_key)
+                    .accept_reject_context(&catalog, document_id, parsed_id, &author.key)
                     .await
                 {
                     Ok(found) => found,
@@ -1467,7 +1599,7 @@ impl Server {
                     proposal.tip_frontiers,
                     proposal.branch_bytes,
                     decided_by,
-                    authorization.clone(),
+                    author.authorization.clone(),
                     request_id,
                 );
                 let accepted = room
@@ -1481,11 +1613,9 @@ impl Server {
                 }))
             }
             RoomCommand::Reject { comment_id, .. } => {
-                let Ok(parsed_id) = uuid::Uuid::parse_str(&comment_id) else {
-                    return fail("unknown comment".into());
-                };
-                let (proposal_id, _request_id, decided_by) = match self
-                    .accept_reject_context(&catalog, document_id, parsed_id, author_key)
+                let parsed_id = comment_id;
+                let (proposal_id, _request_id, _decided_by) = match self
+                    .accept_reject_context(&catalog, document_id, parsed_id, &author.key)
                     .await
                 {
                     Ok(found) => found,
@@ -1506,8 +1636,7 @@ impl Server {
                     parsed_id,
                     proposal_id,
                     proposal.tip_frontiers,
-                    decided_by,
-                    authorization.clone(),
+                    author,
                 );
                 let comment = room
                     .command(authority, &mut reject)
@@ -1624,47 +1753,23 @@ pub(super) fn sequencer_reply(error: &crate::log::SequencerError) -> Reply {
     write_json(503, &json!({"error": error.to_string(), "retryable": true}))
 }
 
-/// A semantic command's failure as an HTTP answer (§7.1, §7.2). `Conflict`
-/// and `StaleSelection` are the command's own precondition speaking, so they
-/// answer 409 with the message or the current digest a client refreshes
-/// against; the other two variants are `SequencerError` in different
-/// clothing and get the same 503 treatment.
-pub(super) fn command_reply(error: crate::log::CommandError) -> Reply {
-    match error {
-        crate::log::CommandError::Conflict(message) => write_json(409, &json!({"error": message})),
-        crate::log::CommandError::StaleSelection { digest } => write_json(
-            409,
-            &json!({
-                "error": "current project identity is required; refresh before annotating",
-                "digest": digest,
-            }),
-        ),
-        crate::log::CommandError::Storage(error) => {
-            write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-        }
-        crate::log::CommandError::Sequencer(error) => sequencer_reply(&error),
-    }
+/// A semantic command's failure as an HTTP answer (§7.1, §7.2).
+///
+/// The classification lives in [`reply::command_refused`] with the rest of
+/// the refusal table, so a command's failure answers with the same status,
+/// retry advice and safe message a room write's does, and the storage
+/// context that used to travel here through `to_string()` goes to the log.
+pub(super) fn command_reply(what: &str, error: crate::log::CommandError) -> Reply {
+    command_refused(what, error)
 }
 
-/// The same mapping as [`command_reply`], for a caller that answers over the
-/// socket protocol rather than with an HTTP status: `apply_from` builds one
-/// JSON value either way, and the room's own error frame shape (`{"type":
-/// "error", ...}`) is what both the socket loop and the REST comments route
-/// send back to a client.
 /// A failed room *read* as the socket's own error value. It is the same
 /// variant-driven mapping `socket_refusal` gives a failed write -- the
-/// message and the retry advice both come from the variant -- so a comment
-/// lookup that failed because storage is away is told apart from one that
-/// found nothing, on the transport as well as in the code.
+/// message, the status and the retry advice all come from the variant -- so
+/// a comment lookup that failed because storage is away is told apart from
+/// one that found nothing, on the transport as well as in the code.
 fn read_error_value(error: crate::room::WriteError) -> Value {
-    if let Some(context) = error.log_context() {
-        eprintln!("warning: annotation lookup: {context}");
-    }
-    let mut payload = json!({"type": "error", "message": error.client_message()});
-    if error.is_temporary() {
-        payload["retryable"] = json!(true);
-    }
-    payload
+    refusal_value("annotation lookup", &error)
 }
 
 #[cfg(test)]
@@ -1689,25 +1794,98 @@ mod comment_lookup_tests {
         assert_eq!(unavailable["retryable"], json!(true));
         // The cause is logged, never sent.
         assert!(!unavailable.to_string().contains("connection reset"));
+        // And the status travels with it: the REST comments route answers
+        // with this rather than falling back to 400.
+        assert_eq!(missing["status"], json!(409));
+        assert_eq!(unavailable["status"], json!(503));
+    }
+
+    /// `handle_comments` picks its status out of the error value. Before the
+    /// value carried one, every refusal from this path -- a retryable
+    /// storage failure, a precondition conflict -- came back as 400, and a
+    /// storage error's context came back with it.
+    #[test]
+    fn a_refused_command_keeps_its_status_and_loses_its_storage_context() {
+        use crate::log::CommandError;
+        use crate::storage::postgres::Error as CatalogError;
+
+        let conflict =
+            command_error_value(CommandError::Conflict("comment version changed".into()));
+        assert_eq!(conflict["status"], json!(409));
+        assert_eq!(conflict["message"], json!("comment version changed"));
+        assert!(conflict.get("retryable").is_none());
+
+        let storage = command_error_value(CommandError::Storage(CatalogError::Ownership(
+            "pool timed out reaching db.internal".into(),
+        )));
+        assert_eq!(storage["status"], json!(503));
+        assert_eq!(storage["message"], json!("storage temporarily unavailable"));
+        assert_eq!(storage["retryable"], json!(true));
+        assert!(
+            !storage.to_string().contains("db.internal"),
+            "the cause belongs in the log: {storage}"
+        );
+
+        let stale = command_error_value(CommandError::StaleSelection {
+            digest: "abc123".into(),
+        });
+        assert_eq!(stale["status"], json!(409));
+        assert_eq!(stale["stale_source"], json!(true));
+        assert_eq!(stale["digest"], json!("abc123"));
+    }
+
+    /// The same classification on the HTTP side, and in MCP's envelope.
+    #[tokio::test]
+    async fn every_transport_reads_the_same_refusal_table() {
+        use crate::log::CommandError;
+        use crate::storage::postgres::Error as CatalogError;
+
+        let storage = || {
+            CommandError::Storage(CatalogError::Ownership(
+                "pool timed out reaching db.internal".into(),
+            ))
+        };
+
+        let response = command_reply("test", storage());
+        assert_eq!(response.status(), 503);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], json!("storage temporarily unavailable"));
+        assert_eq!(body["retryable"], json!(true));
+        assert!(!body.to_string().contains("db.internal"));
+
+        let response = command_reply(
+            "test",
+            CommandError::StaleSelection {
+                digest: "abc123".into(),
+            },
+        );
+        assert_eq!(response.status(), 409);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["digest"], json!("abc123"));
+
+        let failure = mcp::comments::command_failure(storage());
+        assert_eq!(failure.code, "unavailable");
+        assert_eq!(failure.message, "storage temporarily unavailable");
+        assert!(!failure.message.contains("db.internal"));
+        assert_eq!(
+            mcp::comments::command_failure(CommandError::Conflict("moved".into())).code,
+            "conflict",
+        );
     }
 }
 
+/// The same mapping as [`command_reply`], for a caller that answers over the
+/// room protocol rather than with an HTTP status: `apply_from` builds one
+/// JSON value either way, and the room's own error frame shape (`{"type":
+/// "error", ...}`) is what both the socket loop and the REST comments route
+/// send back to a client. The frame carries `status`, which is what the REST
+/// route then answers with -- it used to look for one that was never there
+/// and fall back to 400, so a storage failure or a conflict came back as a
+/// bad request.
 fn command_error_value(error: crate::log::CommandError) -> Value {
-    match error {
-        crate::log::CommandError::Conflict(message) => json!({"type": "error", "message": message}),
-        crate::log::CommandError::StaleSelection { digest } => json!({
-            "type": "error",
-            "message": "current project identity is required; refresh before annotating",
-            "stale_source": true,
-            "digest": digest,
-        }),
-        crate::log::CommandError::Storage(error) => {
-            json!({"type": "error", "message": error.to_string(), "retryable": true})
-        }
-        crate::log::CommandError::Sequencer(error) => {
-            json!({"type": "error", "message": error.to_string(), "retryable": true})
-        }
-    }
+    command_refusal_value("annotation command", error)
 }
 
 #[cfg(test)]
@@ -1855,30 +2033,14 @@ mod automation_authority_tests {
         let now = crate::util::now_unix();
         // One caller, one document, one reader link. The only thing that
         // differs between these two calls is whether it is the agent asking.
-        let owner = ("owner-key", "github:alice");
+        let owner = "github:alice";
         assert_eq!(
-            resolved_role(
-                false,
-                &entry,
-                owner.0,
-                owner.1,
-                "reader-hash",
-                ceiling(),
-                now
-            ),
+            resolved_role(false, &entry, owner, "reader-hash", ceiling(), now),
             Role::Owner,
             "the owner is still the owner in their own browser"
         );
         assert_eq!(
-            resolved_role(
-                true,
-                &entry,
-                owner.0,
-                owner.1,
-                "reader-hash",
-                ceiling(),
-                now
-            ),
+            resolved_role(true, &entry, owner, "reader-hash", ceiling(), now),
             Role::Reader,
             "an agent holds the link's authority, never the caller's"
         );

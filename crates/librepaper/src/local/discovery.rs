@@ -1,13 +1,18 @@
-//! Local tool discovery: find `pdflatex`, `xelatex`, `lualatex`, `bibtex`,
-//! `bibtex8`, `biber` and `makeindex` as explicit absolute paths, and report
-//! each individually.
+//! Local tool discovery: find `typst`, `pandoc` and `calepin` as explicit
+//! absolute paths, and report each individually.
 //!
-//! An installed LibrePaper app does not imply an installed TeX distribution;
-//! finding Biber does not imply finding a complete TeX installation. This
-//! module never installs anything, never modifies `PATH` or a TeX
-//! installation, and never leaks a filesystem path to the browser --
-//! `discover` returns `Capabilities` (paths omitted), `tool_paths` returns
-//! the paths for `native.rs`'s own use.
+//! An installed LibrePaper app does not imply an installed builder. This
+//! module never installs anything, never modifies `PATH`, and never leaks a
+//! filesystem path to the browser -- `discover` returns `Capabilities`
+//! (paths omitted), `tool_paths` returns the paths for the native runner's
+//! own use.
+//!
+//! What it does not look for any more is a TeX installation. It used to
+//! detect the distribution, its TEXMF root and its bin directory, tell
+//! `biber`'s version format from `pdflatex`'s and answer `makeindex`'s
+//! missing `--version`. None of that had a consumer: `TOOL_NAMES` names no
+//! TeX tool, so the branches were unreachable, and the distribution and the
+//! two directories were written to the cache and never read.
 //!
 //! Results are cached under `<state home>/librepaper/local/tools.json` and
 //! reused until an explicit rescan, a changed configured search path, or a
@@ -18,10 +23,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
 
 use super::protocol::{
-    BuilderCapability, BuilderOperation, Capabilities, Confinement, Distribution, Tool, Tools,
+    BuilderCapability, BuilderOperation, Capabilities, Confinement, Tool, Tools,
 };
 
 /// The tool names this module discovers, in the order `Tools` lists them.
@@ -77,12 +81,6 @@ struct Cache {
     confinement: Confinement,
     #[serde(default)]
     platform: String,
-    #[serde(default)]
-    distribution: Option<Distribution>,
-    #[serde(default)]
-    bin_dir: Option<PathBuf>,
-    #[serde(default)]
-    texmf_root: Option<PathBuf>,
 }
 
 fn cache_path() -> PathBuf {
@@ -182,20 +180,12 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn exe_name(tool: &str) -> String {
-    if cfg!(windows) {
-        format!("{tool}.exe")
-    } else {
-        tool.to_string()
-    }
-}
-
 /// The first directory among `dirs` that holds `tool`, resolved to its
 /// canonical absolute path. Spaces and non-ASCII bytes in a directory name
 /// are preserved as-is: this never shells out to find the file, only
 /// `std::fs` metadata, so nothing here re-tokenises the path.
 fn find_tool(tool: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    let name = exe_name(tool);
+    let name = super::tools::exe_name(tool);
     for dir in dirs {
         let candidate = dir.join(&name);
         if candidate.is_file() {
@@ -212,86 +202,38 @@ fn mtime_of(path: &Path) -> Option<i64> {
     i64::try_from(secs).ok()
 }
 
-/// Runs `path --version` (or, for `makeindex`, a flag that at least prints
-/// its usage banner -- it has no `--version`) under a cleared environment
-/// and a bounded timeout, and returns the combined output.
-async fn probe_version(path: &Path, tool: &str) -> Option<String> {
-    let arg = if tool == "makeindex" {
-        "-h"
+/// Runs `path --version` under a cleared environment and a bounded timeout,
+/// and returns the combined output.
+///
+/// Isolated, unlike an adapter's probe: this is deciding what is installed,
+/// and a tool that reads its configuration out of the ambient environment
+/// would make that answer depend on who started the service.
+async fn probe_version(path: &Path) -> Option<String> {
+    let (stdout, stderr) =
+        super::tools::version_output(path, super::tools::Probe::isolated(PROBE_TIMEOUT)).await?;
+    let text = if stdout.trim().is_empty() {
+        stderr
     } else {
-        "--version"
+        stdout
     };
-    let mut command = Command::new(path);
-    let directory = tempfile::tempdir().ok()?;
-    command.current_dir(directory.path());
-    if tool == "latexmk" {
-        command.arg("-norc");
-    }
-    command
-        .arg(arg)
-        .env_clear()
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    #[cfg(unix)]
-    command.process_group(0);
-    let (_sender, mut cancel) = tokio::sync::watch::channel(false);
-    let (outcome, bytes) = super::native::run_confined_logged(
-        command,
-        &mut cancel,
-        std::time::Instant::now() + PROBE_TIMEOUT,
-    )
-    .await;
-    if !matches!(outcome, super::native::RunOutcome::Exited(_)) {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// The setup hint every missing tool carries.
 fn setup_hint(tool: &str) -> String {
-    if matches!(tool, "typst" | "pandoc" | "tectonic") {
-        return format!(
-            "{tool} not found: install it locally and ensure it is on the companion's PATH"
-        );
-    }
-    format!(
-        "{tool} not found: install TeX Live or TinyTeX, or point --tex-path at its bin directory"
-    )
+    format!("{tool} not found: install it locally and ensure it is on the companion's PATH")
 }
 
 /// Turns one tool's raw `--version` banner into the `Tool` the browser is
-/// allowed to see: `biber`'s wire version is just the number (`2.21`), the
-/// TeX engines and BibTeX keep their full banner line, `makeindex` has no
-/// `--version` at all and is reported available with no version.
+/// allowed to see: the first line of the banner, which is what every
+/// supported builder puts its version on.
 fn tool_from_banner(tool: &str, banner: Option<&str>) -> Tool {
-    let Some(banner) = banner else {
-        return Tool {
-            available: false,
-            version: None,
-            note: setup_hint(tool),
-        };
-    };
-    if tool == "makeindex" {
-        if banner.contains("Usage: makeindex") || banner.to_lowercase().contains("makeindex") {
-            return Tool {
-                available: true,
-                version: None,
-                note: "found (makeindex reports no version)".to_string(),
-            };
-        }
-        return Tool {
-            available: false,
-            version: None,
-            note: setup_hint(tool),
-        };
-    }
-    let first_line = banner.lines().next().unwrap_or("").trim();
+    let first_line = banner
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim();
     if first_line.is_empty() {
         return Tool {
             available: false,
@@ -299,86 +241,10 @@ fn tool_from_banner(tool: &str, banner: Option<&str>) -> Tool {
             note: setup_hint(tool),
         };
     }
-    if tool == "biber" {
-        let version = biber_re()
-            .captures(first_line)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string());
-        return Tool {
-            available: true,
-            version,
-            note: String::new(),
-        };
-    }
     Tool {
         available: true,
         version: Some(first_line.to_string()),
         note: String::new(),
-    }
-}
-
-fn biber_re() -> &'static regex::Regex {
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(r"version:\s*([0-9]+\.[0-9]+)").unwrap())
-}
-
-/// The distribution a tool's banner and path suggest, tried in the same
-/// order MiKTeX / TinyTeX / TeX Live / MacTeX would be told apart: a
-/// name-bearing banner wins over a path guess.
-fn distribution_from(banner: &str, path: &Path) -> Option<Distribution> {
-    let year_re = regex::Regex::new(r"(20[0-9]{2})").unwrap();
-    let year = || {
-        year_re
-            .captures(banner)
-            .map(|c| c[1].to_string())
-            .unwrap_or_default()
-    };
-    if banner.contains("MiKTeX") {
-        return Some(Distribution {
-            name: "MiKTeX".to_string(),
-            year: year(),
-        });
-    }
-    let path_str = path.to_string_lossy();
-    if path_str.contains(".TinyTeX") {
-        return Some(Distribution {
-            name: "TinyTeX".to_string(),
-            year: year(),
-        });
-    }
-    if banner.contains("TeX Live") {
-        return Some(Distribution {
-            name: "TeX Live".to_string(),
-            year: year(),
-        });
-    }
-    if path_str.contains("/Library/TeX") {
-        return Some(Distribution {
-            name: "MacTeX".to_string(),
-            year: year(),
-        });
-    }
-    None
-}
-
-/// A TEXMF root, from `kpsewhich`, when one of the discovered tools can
-/// report it; used when constructing native tool commands.
-async fn texmf_root_of(tool_path: &Path) -> Option<PathBuf> {
-    let kpsewhich = tool_path.parent()?.join(exe_name("kpsewhich"));
-    if !kpsewhich.is_file() {
-        return None;
-    }
-    let mut command = Command::new(&kpsewhich);
-    command.arg("-var-value").arg("SELFAUTOPARENT").env_clear();
-    let output = tokio::time::timeout(PROBE_TIMEOUT, command.output())
-        .await
-        .ok()?
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(text))
     }
 }
 
@@ -393,28 +259,14 @@ async fn rediscover(configured: Vec<PathBuf>) -> Cache {
     dirs.extend(fallback_search_dirs());
 
     let mut tools = BTreeMap::new();
-    let mut bin_dir: Option<PathBuf> = None;
-    let mut texmf_root: Option<PathBuf> = None;
-    let mut distribution: Option<Distribution> = None;
 
     for name in TOOL_NAMES {
         let found = find_tool(name, &dirs);
         let (banner, mtime) = match &found {
-            Some(path) => (probe_version(path, name).await, mtime_of(path)),
+            Some(path) => (probe_version(path).await, mtime_of(path)),
             None => (None, None),
         };
         let tool = tool_from_banner(name, banner.as_deref());
-        if let (Some(path), Some(banner_text)) = (&found, &banner) {
-            if bin_dir.is_none() {
-                bin_dir = path.parent().map(Path::to_path_buf);
-            }
-            if distribution.is_none() {
-                distribution = distribution_from(banner_text, path);
-            }
-            if texmf_root.is_none() {
-                texmf_root = texmf_root_of(path).await;
-            }
-        }
         tools.insert(
             (*name).to_string(),
             CachedTool {
@@ -434,9 +286,6 @@ async fn rediscover(configured: Vec<PathBuf>) -> Cache {
             reason: "local execution is authorized by explicit user consent".into(),
         },
         platform: platform_name(),
-        distribution,
-        bin_dir,
-        texmf_root,
     }
 }
 
@@ -537,7 +386,6 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
         },
         confinement: cache.confinement.clone(),
         platform: cache.platform.clone(),
-        distribution: cache.distribution.clone(),
         quarto: Default::default(),
         calepin: Default::default(),
         zotero: Default::default(),
@@ -656,41 +504,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_from_banner_extracts_bibers_bare_version_number() {
-        let tool = tool_from_banner("biber", Some("biber version: 2.21 (beta)\n"));
+    fn tool_from_banner_keeps_the_version_line() {
+        let tool = tool_from_banner("typst", Some("typst 0.13.1 (abcdef)\nsome detail\n"));
         assert!(tool.available);
-        assert_eq!(tool.version.as_deref(), Some("2.21"));
+        assert_eq!(tool.version.as_deref(), Some("typst 0.13.1 (abcdef)"));
     }
 
     #[test]
-    fn tool_from_banner_keeps_the_full_line_for_tex_engines() {
-        let tool = tool_from_banner(
-            "pdflatex",
-            Some("pdfTeX 3.141592653-2.6-1.40.27 (TeX Live 2025)\nkpathsea version 6.4.1\n"),
-        );
-        assert!(tool.available);
-        assert_eq!(
-            tool.version.as_deref(),
-            Some("pdfTeX 3.141592653-2.6-1.40.27 (TeX Live 2025)")
-        );
-    }
-
-    #[test]
-    fn a_missing_tool_gets_a_setup_hint() {
-        let tool = tool_from_banner("xelatex", None);
-        assert!(!tool.available);
-        assert!(tool.note.contains("--tex-path"));
-    }
-
-    #[test]
-    fn distribution_detection_prefers_the_banner_name() {
-        let distribution = distribution_from(
-            "pdfTeX 3.14 (TeX Live 2025/nixos.org)",
-            Path::new("/usr/bin/pdflatex"),
-        )
-        .expect("a distribution");
-        assert_eq!(distribution.name, "TeX Live");
-        assert_eq!(distribution.year, "2025");
+    fn a_missing_or_silent_tool_gets_a_setup_hint() {
+        for banner in [None, Some("   \n")] {
+            let tool = tool_from_banner("pandoc", banner);
+            assert!(!tool.available);
+            assert!(tool.note.contains("pandoc not found"), "{}", tool.note);
+        }
     }
 
     #[test]

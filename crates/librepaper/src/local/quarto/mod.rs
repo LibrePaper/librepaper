@@ -10,11 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 
@@ -22,8 +21,7 @@ use super::engine_adapter::{self, QuartoInvocationPlan};
 use super::protocol::{
     self, BuildProvenance, JobOutcome, JobRequest, JobStatus, OutputEntry, QuartoBundleSummary,
     QuartoCoverage, QuartoJobOptions, QuartoRenderPolicy, Tool, ToolVersions, Workspace,
-    MAX_LOG_BYTES, MAX_QUARTO_OUTPUT_BYTES, MAX_QUARTO_OUTPUT_FILES, MAX_UPLOAD_BYTES,
-    QUARTO_COLLECTOR_VERSION,
+    MAX_QUARTO_OUTPUT_BYTES, MAX_QUARTO_OUTPUT_FILES, MAX_UPLOAD_BYTES, QUARTO_COLLECTOR_VERSION,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,229 +30,23 @@ pub struct SourceInventory {
     pub files: Vec<String>,
 }
 
+mod collect;
+
+// Collection is its own module; every caller still names these here,
+// because which half of the adapter reads the output is not something a
+// caller has to know.
+#[cfg(test)]
+pub(crate) use collect::{collect_bundle, import_artifact, referenced_resource_closure};
+pub(crate) use collect::{collect_bundle_with_dependencies, resolve_resource_path};
+
 pub const SUPPORTED_FORMATS: &[&str] = &["html", "pdf", "docx", "revealjs"];
 
-/// A binding is machine-local. Its absolute path never appears in the wire
-/// response; callers receive only the opaque id.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ProjectBinding {
-    pub id: String,
-    pub origin: String,
-    pub project: String,
-    pub root: PathBuf,
-    pub entrypoint: String,
-    #[serde(default)]
-    pub created_at: i64,
-    #[serde(default)]
-    pub execution_granted: bool,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct BindingFile {
-    #[serde(default)]
-    bindings: Vec<ProjectBinding>,
-}
-
-/// The one binding id that needs no grant: a document the serving deployment
-/// itself hosts, rendered inside a workspace the server owns. Only a service
-/// started with `with_hosted_workspaces` resolves it; a standalone
-/// `librepaper local start` never does.
-pub const HOSTED_BINDING: &str = "hosted";
-
-/// The store intentionally takes an explicit config root so tests never need
-/// to alter process-wide XDG variables.
-#[derive(Clone, Debug)]
-pub struct BindingStore {
-    path: PathBuf,
-    /// Where hosted workspaces live, one directory per project slug, when
-    /// this service belongs to a running `librepaper admin serve`. None for the
-    /// standalone local app, which executes only explicitly granted roots.
-    hosted: Option<PathBuf>,
-}
-
-impl BindingStore {
-    pub(crate) fn preset_store(&self) -> super::presets::PresetStore {
-        super::presets::PresetStore::new(
-            self.path
-                .parent()
-                .and_then(Path::parent)
-                .and_then(Path::parent)
-                .expect("binding store has a state root"),
-        )
-    }
-    pub fn new(config_home: &Path) -> Self {
-        Self {
-            path: config_home
-                .join("librepaper")
-                .join("local")
-                .join("quarto-bindings.json"),
-            hosted: None,
-        }
-    }
-
-    /// The same store, also answering `HOSTED_BINDING` with a workspace
-    /// under `base`. The workspace is the server's own copy of the shared
-    /// tree, written from the job's uploads before each render, so nothing
-    /// of the user's machine is exposed and nothing has to be bound by hand.
-    pub fn with_hosted_workspaces(mut self, base: PathBuf) -> Self {
-        self.hosted = Some(base);
-        self
-    }
-
-    /// Whether `binding` is a hosted workspace rather than a granted root.
-    pub fn is_hosted(binding: &ProjectBinding) -> bool {
-        binding.id == HOSTED_BINDING
-    }
-
-    fn hosted_binding(&self, origin: &str, project: &str) -> Option<ProjectBinding> {
-        let base = self.hosted.as_ref()?;
-        if !hosted_project_name_ok(project) {
-            return None;
-        }
-        // One workspace per deployment and document: two deployments can
-        // mint the same slug, and their trees must never share caches.
-        let origin = super::pairing::normalize_origin(origin);
-        let deployment = hex::encode(&Sha256::digest(origin.as_bytes())[..8]);
-        let root = base.join(deployment).join(project);
-        std::fs::create_dir_all(&root).ok()?;
-        let root = std::fs::canonicalize(&root).ok()?;
-        Some(ProjectBinding {
-            id: HOSTED_BINDING.to_string(),
-            origin,
-            project: project.to_string(),
-            root,
-            // Decided by each job: the workspace holds whatever the document
-            // holds, and the entrypoint the browser names has already been
-            // validated as a safe supported entrypoint inside that tree.
-            entrypoint: String::new(),
-            created_at: 0,
-            execution_granted: true,
-        })
-    }
-
-    fn load(&self) -> BindingFile {
-        std::fs::read(&self.path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    }
-
-    fn save(&self, file: &BindingFile) -> Result<(), String> {
-        let Some(parent) = self.path.parent() else {
-            return Err("invalid binding store path".into());
-        };
-        std::fs::create_dir_all(parent).map_err(|e| format!("create binding store: {e}"))?;
-        let temporary = self.path.with_extension("json.tmp");
-        let bytes = serde_json::to_vec_pretty(file).map_err(|e| format!("encode bindings: {e}"))?;
-        std::fs::write(&temporary, bytes).map_err(|e| format!("write bindings: {e}"))?;
-        std::fs::rename(&temporary, &self.path).map_err(|e| format!("commit bindings: {e}"))
-    }
-
-    /// Grant a binding after resolving the root and entrypoint. The root is
-    /// canonicalised before persistence, and must be a directory.
-    pub fn grant(
-        &self,
-        origin: &str,
-        project: &str,
-        root: &Path,
-        entrypoint: &str,
-    ) -> Result<ProjectBinding, String> {
-        let root = std::fs::canonicalize(root).map_err(|e| format!("project root: {e}"))?;
-        if !root.is_dir() {
-            return Err("project root is not a directory".into());
-        }
-        validate_binding_entrypoint(entrypoint)?;
-        let entrypoint_path = root.join(entrypoint);
-        let resolved_entrypoint = std::fs::canonicalize(&entrypoint_path)
-            .map_err(|e| format!("project entrypoint: {e}"))?;
-        if !resolved_entrypoint.starts_with(&root) || !resolved_entrypoint.is_file() {
-            return Err("project entrypoint escapes the selected root".into());
-        }
-        let id = opaque_id();
-        let binding = ProjectBinding {
-            id,
-            origin: super::pairing::normalize_origin(origin),
-            project: project.to_string(),
-            root,
-            entrypoint: entrypoint.to_string(),
-            created_at: now_unix(),
-            execution_granted: true,
-        };
-        let mut file = self.load();
-        file.bindings
-            .retain(|old| !(old.origin == binding.origin && old.project == binding.project));
-        file.bindings.push(binding.clone());
-        self.save(&file)?;
-        Ok(binding)
-    }
-
-    pub fn revoke_scoped(&self, id: &str, origin: &str, project: &str) -> bool {
-        let origin = super::pairing::normalize_origin(origin);
-        let mut file = self.load();
-        let old = file.bindings.len();
-        file.bindings.retain(|binding| {
-            !(binding.id == id && binding.origin == origin && binding.project == project)
-        });
-        old != file.bindings.len() && self.save(&file).is_ok()
-    }
-
-    pub fn get_scoped(&self, id: &str, origin: &str, project: &str) -> Option<ProjectBinding> {
-        if id == HOSTED_BINDING {
-            return self.hosted_binding(origin, project);
-        }
-        let origin = super::pairing::normalize_origin(origin);
-        self.load().bindings.into_iter().find(|binding| {
-            binding.id == id
-                && binding.origin == origin
-                && binding.project == project
-                && binding.execution_granted
-                && binding.root.is_dir()
-        })
-    }
-
-    /// Resolve a binding for another local service component after the same
-    /// origin/project/grant checks used by render admission.  Keeping this
-    /// helper crate-visible lets managed preview share the binding authority
-    /// without exposing machine paths through the wire protocol.
-    pub(crate) fn resolve_scoped(
-        &self,
-        id: &str,
-        origin: &str,
-        project: &str,
-    ) -> Result<ProjectBinding, String> {
-        self.get_scoped(id, origin, project).ok_or_else(|| {
-            "quarto binding is missing, revoked, or outside its authorized root".into()
-        })
-    }
-
-    pub fn list_scoped(&self, origin: &str, project: &str) -> Vec<ProjectBinding> {
-        let origin = super::pairing::normalize_origin(origin);
-        self.load()
-            .bindings
-            .into_iter()
-            .filter(|binding| binding.origin == origin && binding.project == project)
-            .collect()
-    }
-
-    /// Public metadata for the management API. Absolute roots intentionally
-    /// stay inside the companion and are never serialized onto the wire.
-    pub fn summaries_scoped(
-        &self,
-        origin: &str,
-        project: &str,
-    ) -> Vec<super::protocol::BindingSummary> {
-        self.list_scoped(origin, project)
-            .into_iter()
-            .map(|binding| super::protocol::BindingSummary {
-                id: binding.id,
-                project: binding.project,
-                entrypoint: binding.entrypoint,
-                created_at: binding.created_at,
-            })
-            .collect()
-    }
-}
-
+// Bindings moved to their own module; every caller still names them here,
+// because where a grant is stored is not something an execution path should
+// have to know.
+pub use super::bindings::{
+    validate_binding_entrypoint, BindingStore, ProjectBinding, HOSTED_BINDING,
+};
 /// The stable, versioned result bundle. It is intentionally independent of
 /// Quarto's `_freeze` internals so a future Quarto upgrade can be adapted here.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -508,20 +300,6 @@ impl QuartoBundle {
     }
 }
 
-/// Validate an entrypoint stored in a user-approved project binding. Bindings
-/// are shared by project-backed builders, while each builder still validates
-/// its own input before execution (for example, Quarto accepts Markdown only).
-pub fn validate_binding_entrypoint(entrypoint: &str) -> Result<(), String> {
-    if !protocol::safe_relative_path(entrypoint)
-        || !(entrypoint.ends_with(".qmd")
-            || entrypoint.ends_with(".md")
-            || entrypoint.ends_with(".typ"))
-    {
-        return Err("entrypoint must be a safe project-relative .qmd, .md, or .typ path".into());
-    }
-    Ok(())
-}
-
 /// Discover Quarto without exposing its path. A configured path is accepted
 /// for tests and app packaging; normal operation searches PATH explicitly.
 pub async fn discover() -> protocol::QuartoCapabilities {
@@ -619,13 +397,15 @@ async fn runtime_checks() -> BTreeMap<String, Tool> {
             );
             continue;
         };
-        let text = bounded_version_output(&path).await.map(|(stdout, stderr)| {
-            if stdout.trim().is_empty() {
-                stderr.trim().to_string()
-            } else {
-                stdout.trim().to_string()
-            }
-        });
+        let text = crate::local::tools::version_output(&path, probe())
+            .await
+            .map(|(stdout, stderr)| {
+                if stdout.trim().is_empty() {
+                    stderr.trim().to_string()
+                } else {
+                    stdout.trim().to_string()
+                }
+            });
         checks.insert(
             name.into(),
             Tool {
@@ -656,59 +436,17 @@ fn executable(name: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn find_quarto() -> Option<PathBuf> {
-    let configured = std::env::var_os("LIBREPAPER_QUARTO_PATH").map(PathBuf::from);
-    configured.filter(|path| path.is_file()).or_else(|| {
-        executable(if cfg!(windows) {
-            "quarto.exe"
-        } else {
-            "quarto"
-        })
-    })
+    crate::local::tools::find("LIBREPAPER_QUARTO_PATH", "quarto")
 }
 
 async fn version_of(path: &Path) -> Option<String> {
-    let (stdout, stderr) = bounded_version_output(path).await?;
-    let value = if stdout.trim().is_empty() {
-        stderr.trim().to_owned()
-    } else {
-        stdout.trim().to_owned()
-    };
-    (!value.is_empty()).then(|| value.lines().next().unwrap_or(&value).to_string())
+    crate::local::tools::version_line(path, probe()).await
 }
 
-async fn bounded_version_output(path: &Path) -> Option<(String, String)> {
-    let mut command = Command::new(path);
-    command
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = command.spawn().ok()?;
-    let stdout = child
-        .stdout
-        .take()
-        .map(|pipe| tokio::spawn(read_bounded(pipe)));
-    let stderr = child
-        .stderr
-        .take()
-        .map(|pipe| tokio::spawn(read_bounded(pipe)));
-    let status = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-        Ok(Ok(status)) => status,
-        _ => {
-            let _ = child.kill().await;
-            let _ = join_streams(stdout, stderr).await;
-            return None;
-        }
-    };
-    let (stdout, stderr) = join_streams(stdout, stderr).await;
-    if !status.success() && stdout.is_empty() && stderr.is_empty() {
-        return None;
-    }
-    Some((
-        String::from_utf8_lossy(&stdout).into_owned(),
-        String::from_utf8_lossy(&stderr).into_owned(),
-    ))
+/// The adapter's probe: bounded, and in the environment the render itself
+/// will run in, because that is the installation whose version this is.
+fn probe() -> crate::local::tools::Probe {
+    crate::local::tools::Probe::inherited(Duration::from_secs(5))
 }
 
 pub async fn run_job_with_bindings(
@@ -723,7 +461,7 @@ pub async fn run_job_with_bindings(
         .file_name()
         .map(|x| x.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let Some(mut options) = request.quarto.clone() else {
+    let Some(mut options) = request.inputs.quarto().cloned() else {
         return failed(&request, &job_id, "quarto job is missing typed options");
     };
     let mut invocation_plan = match QuartoInvocationPlan::from_options(&options) {
@@ -760,7 +498,7 @@ pub async fn run_job_with_bindings(
             return failed(&request, &job_id, "preset is not a Quarto preset");
         }
         let mut overrides = BTreeMap::new();
-        for (key, value) in request.builder_options.as_ref().into_iter().flatten() {
+        for (key, value) in request.inputs.options() {
             let value = match value {
                 serde_json::Value::String(value) => value.clone(),
                 _ => value.to_string(),
@@ -1066,7 +804,12 @@ pub async fn run_job_with_bindings(
     }
     #[cfg(unix)]
     command.process_group(0);
-    let started = Instant::now();
+    // Captured here, where execution actually begins, and carried into the
+    // bundle's provenance. It has to be a wall clock reading: an `Instant`
+    // has no calendar, so nothing downstream can turn one into a timestamp
+    // after the fact -- which is exactly what the collector used to try, and
+    // why `started_at` ended up describing when the bundle was collected.
+    let started = timestamp();
     let _ = progress.send(JobStatus {
         id: job_id.clone(),
         kind: "quarto".into(),
@@ -1177,7 +920,7 @@ pub async fn run_job_with_bindings(
         &output,
         &bundle_inventory,
         quarto_version,
-        started,
+        &started,
         &dependencies,
     ) {
         Ok(bundle) => bundle,
@@ -1457,38 +1200,6 @@ pub(crate) async fn terminate_process_group(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
 }
 
-async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R) -> Vec<u8> {
-    let mut retained = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        match reader.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(count) => {
-                let remaining = MAX_LOG_BYTES.saturating_sub(retained.len());
-                if remaining > 0 {
-                    retained.extend_from_slice(&chunk[..count.min(remaining)]);
-                }
-            }
-        }
-    }
-    retained
-}
-
-async fn join_streams(
-    stdout: Option<tokio::task::JoinHandle<Vec<u8>>>,
-    stderr: Option<tokio::task::JoinHandle<Vec<u8>>>,
-) -> (Vec<u8>, Vec<u8>) {
-    let stdout = match stdout {
-        Some(task) => task.await.unwrap_or_default(),
-        None => Vec::new(),
-    };
-    let stderr = match stderr {
-        Some(task) => task.await.unwrap_or_default(),
-        None => Vec::new(),
-    };
-    (stdout, stderr)
-}
-
 fn canceled(request: &JobRequest, id: &str) -> JobOutcome {
     JobOutcome {
         status: JobStatus {
@@ -1518,566 +1229,6 @@ fn failed(request: &JobRequest, id: &str, message: &str) -> JobOutcome {
         },
         files: BTreeMap::new(),
     }
-}
-
-#[cfg(test)]
-pub fn collect_bundle(
-    project: &Path,
-    options: &QuartoJobOptions,
-    output: &Path,
-    inventory: &SourceInventory,
-    quarto_version: Option<String>,
-    started: Instant,
-) -> Result<QuartoBundle, String> {
-    collect_bundle_with_dependencies(
-        project,
-        options,
-        output,
-        inventory,
-        quarto_version,
-        started,
-        &[],
-    )
-}
-
-fn collect_bundle_with_dependencies(
-    project: &Path,
-    options: &QuartoJobOptions,
-    output: &Path,
-    inventory: &SourceInventory,
-    quarto_version: Option<String>,
-    started: Instant,
-    dependencies: &[String],
-) -> Result<QuartoBundle, String> {
-    let main_path = project.join(&options.main);
-    let source =
-        std::fs::read_to_string(&main_path).map_err(|e| format!("read {}: {e}", options.main))?;
-    let parsed_source = crate::quarto::parse_qmd(&source, &options.main);
-    let cells: Vec<QuartoCell> = parsed_source
-        .cells
-        .iter()
-        .map(|cell| QuartoCell {
-            id: cell.id.clone(),
-            source_path: options.main.clone(),
-            label: cell.label.clone(),
-            source_sha256: cell.source_sha256.clone(),
-            coverage: "unavailable".into(),
-            outputs: Vec::new(),
-        })
-        .collect();
-    let mut assets = Vec::new();
-    let mut artifact = None;
-    let _tracked_file_count = inventory.files.len();
-    let mut files = Vec::new();
-    walk_files(output, output, &mut files)?;
-    if files.len() > MAX_QUARTO_OUTPUT_FILES {
-        return Err("Quarto output contains too many files".into());
-    }
-    let mut total_bytes = 0usize;
-    for relative in files {
-        let metadata = std::fs::metadata(output.join(&relative))
-            .map_err(|e| format!("stat output {relative}: {e}"))?;
-        let size =
-            usize::try_from(metadata.len()).map_err(|_| "Quarto output file is too large")?;
-        total_bytes = total_bytes
-            .checked_add(size)
-            .ok_or("Quarto output is too large")?;
-        if total_bytes > MAX_QUARTO_OUTPUT_BYTES {
-            return Err("Quarto output exceeds its aggregate size limit".into());
-        }
-        let bytes = std::fs::read(output.join(&relative))
-            .map_err(|e| format!("read output {relative}: {e}"))?;
-        let digest = sha256(&bytes);
-        if is_artifact(
-            &relative,
-            &options.main,
-            &options.format,
-            options.render_scope,
-        ) {
-            artifact = Some(QuartoArtifact {
-                kind: options.format.clone(),
-                entrypoint: relative.clone(),
-                sha256: digest,
-                size: bytes.len() as u64,
-            });
-        } else if relative != ".librepaper-quarto-cells.tsv" {
-            assets.push(QuartoAsset {
-                path: relative.clone(),
-                sha256: digest,
-                mime: crate::results::canonical_mime(&relative, mime_for(&relative)).into(),
-                size: bytes.len() as u64,
-            });
-        }
-    }
-    if options.render_scope == protocol::QuartoRenderScope::Project && artifact.is_none() {
-        if let Some(index) = assets.iter().position(|asset| asset.path == "index.html") {
-            let index = assets.remove(index);
-            artifact = Some(QuartoArtifact {
-                kind: options.format.clone(),
-                entrypoint: index.path,
-                sha256: index.sha256,
-                size: index.size,
-            });
-        }
-    }
-    if matches!(options.format.as_str(), "html" | "revealjs") {
-        let Some(artifact_descriptor) = artifact.as_ref() else {
-            return Err("Quarto HTML render did not produce an artifact".into());
-        };
-        let artifact_bytes = std::fs::read(output.join(&artifact_descriptor.entrypoint))
-            .map_err(|error| format!("read Quarto artifact: {error}"))?;
-        let references = referenced_resource_closure(
-            output,
-            Some(project),
-            Some(&inventory.files),
-            &artifact_descriptor.entrypoint,
-            &artifact_bytes,
-        )?;
-        assets.retain(|asset| references.contains(&asset.path));
-        for relative in references {
-            if assets.iter().any(|asset| asset.path == relative) || output.join(&relative).is_file()
-            {
-                continue;
-            }
-            let path = project.join(&relative);
-            let bytes = std::fs::read(&path)
-                .map_err(|error| format!("read Quarto dependency {relative}: {error}"))?;
-            assets.push(QuartoAsset {
-                path: relative.clone(),
-                sha256: sha256(&bytes),
-                mime: crate::results::canonical_mime(&relative, mime_for(&relative)).into(),
-                size: bytes.len() as u64,
-            });
-        }
-    }
-    let has_manifest = output.join(".librepaper-quarto-manifest.json").is_file()
-        || output.join(".librepaper-quarto-cells.tsv").is_file();
-    let mut cells = cells;
-    let mut coverage = QuartoCoverage {
-        full_artifact: artifact.is_some(),
-        cell_outputs: if has_manifest {
-            "captured".into()
-        } else {
-            "unavailable".into()
-        },
-        ..Default::default()
-    };
-    for cell in &mut cells {
-        if has_manifest {
-            cell.coverage = "unmapped".into();
-            coverage.ambiguous += 1;
-        } else {
-            cell.coverage = "unavailable".into();
-            coverage.unavailable += 1;
-        }
-    }
-    if has_manifest {
-        coverage.cell_outputs = "partial".into();
-    }
-    let parameters_sha256 = crate::results::parameters_sha256(&options.parameters);
-    let profiles: Vec<String> = options.profile.iter().cloned().collect();
-    let format_name = options.format.as_str();
-    // Keep the durable computation identity sensitive to every shared input
-    // supplied for this invocation. The path/hash records are public source
-    // identity only; private linked-project files remain in provenance.
-    let computation_sha256 = computation_fingerprint(
-        &source,
-        &options.main,
-        format_name,
-        &profiles,
-        Some(&parameters_sha256),
-        dependencies,
-    );
-    let context_material = match options.render_scope {
-        protocol::QuartoRenderScope::Document => format!(
-            "librepaper-quarto-selection-v1\0{format_name}\0{}\0{parameters_sha256}",
-            profiles.join("\0")
-        ),
-        protocol::QuartoRenderScope::Project => format!(
-            "librepaper-quarto-selection-v2\0project\0{format_name}\0{}\0{parameters_sha256}",
-            profiles.join("\0")
-        ),
-    };
-    let context_id = format!("ctx-{}", &sha256(context_material.as_bytes())[..16]);
-    let now = timestamp();
-    Ok(QuartoBundle {
-        schema: crate::results::BUNDLE_SCHEMA.into(),
-        render_id: opaque_id(),
-        source: QuartoSource {
-            revision: None,
-            tree_sha256: options.shared_tree_sha256.clone(),
-            main: options.main.clone(),
-            verification: if options.execution_mode
-                == protocol::QuartoExecutionMode::IsolatedSnapshot
-            {
-                "isolated-snapshot-verified"
-            } else if options.shared_tree_sha256.is_some() {
-                "working-tree-verified"
-            } else {
-                "working-tree-unverified"
-            }
-            .into(),
-        },
-        context: QuartoContext {
-            id: context_id,
-            fingerprint_version: 1,
-            computation_sha256,
-            format: options.format.clone(),
-            profiles,
-            parameters_sha256,
-        },
-        provenance: QuartoProvenance {
-            kind: "managed-local-render".into(),
-            quarto_version,
-            collector_version: protocol::QUARTO_COLLECTOR_VERSION.into(),
-            policy: policy_name(options.policy).into(),
-            computation: match options.policy {
-                QuartoRenderPolicy::RefreshComputations => "refresh-requested",
-                QuartoRenderPolicy::Frozen => "frozen-results",
-                QuartoRenderPolicy::ProjectDefaults => "cache-use-unknown",
-            }
-            .into(),
-            external_inputs: if options.data_inputs.is_empty() {
-                "not-fully-observed"
-            } else {
-                "unknown"
-            }
-            .into(),
-            started_at: timestamp_from(started),
-            completed_at: now,
-        },
-        artifact,
-        cells,
-        assets,
-        inline_results: Vec::new(),
-        diagnostics: parsed_source.diagnostics,
-        coverage,
-    })
-}
-
-/// Import an existing render without invoking Quarto. With no source bytes
-/// available, the full artifact remains useful but cell association and
-/// freshness are explicitly unknown.
-#[cfg(test)]
-pub fn import_artifact(
-    artifact_root: &Path,
-    entrypoint: &str,
-    format: &str,
-) -> Result<QuartoBundle, String> {
-    if !protocol::safe_relative_path(entrypoint) {
-        return Err("unsafe imported artifact path".into());
-    }
-    if !matches!(format, "html" | "pdf" | "docx" | "revealjs") {
-        return Err(format!("unsupported imported format: {format}"));
-    }
-    let artifact = artifact_root.join(entrypoint);
-    let bytes = read_file_bounded(&artifact, "imported artifact")?;
-    if bytes.len() > MAX_QUARTO_OUTPUT_BYTES {
-        return Err("imported artifact exceeds its size limit".into());
-    }
-    let mut assets = Vec::new();
-    let mut files = Vec::new();
-    walk_files(artifact_root, artifact_root, &mut files)?;
-    if files.len() > MAX_QUARTO_OUTPUT_FILES {
-        return Err("imported artifact directory contains too many files".into());
-    }
-    // An import is allowed to see only files explicitly referenced by the
-    // artifact. A render directory can sit beside private data, source, or
-    // credentials; inventorying every sibling would publish those by
-    // accident. HTML references are normalized and traversal is rejected.
-    let references = if format == "html" {
-        referenced_resource_closure(artifact_root, None, None, entrypoint, &bytes)?
-    } else {
-        BTreeSet::new()
-    };
-    let mut total_bytes = bytes.len();
-    for relative in files {
-        if relative == entrypoint {
-            continue;
-        }
-        if !references.contains(&relative) {
-            continue;
-        }
-        let bytes = read_file_bounded(
-            &artifact_root.join(&relative),
-            &format!("imported asset {relative}"),
-        )?;
-        total_bytes = total_bytes
-            .checked_add(bytes.len())
-            .ok_or("imported artifact exceeds its aggregate size limit")?;
-        if total_bytes > MAX_QUARTO_OUTPUT_BYTES {
-            return Err("imported artifact exceeds its aggregate size limit".into());
-        }
-        let mime = crate::results::canonical_mime(&relative, mime_for(&relative)).to_string();
-        assets.push(QuartoAsset {
-            path: relative,
-            sha256: sha256(&bytes),
-            mime,
-            size: bytes.len() as u64,
-        });
-    }
-    let digest = sha256(&bytes);
-    let context_material = format!("librepaper-quarto-selection-v1\0{format}\0\0");
-    let context = sha256(context_material.as_bytes());
-    Ok(QuartoBundle {
-        schema: crate::results::BUNDLE_SCHEMA.into(),
-        render_id: opaque_id(),
-        source: QuartoSource {
-            revision: None,
-            tree_sha256: None,
-            main: entrypoint.into(),
-            verification: "imported-unknown".into(),
-        },
-        context: QuartoContext {
-            id: format!("ctx-{}", &context[..16]),
-            fingerprint_version: 1,
-            computation_sha256: context.clone(),
-            format: format.into(),
-            profiles: Vec::new(),
-            parameters_sha256: crate::results::parameters_sha256(&BTreeMap::new()),
-        },
-        provenance: QuartoProvenance {
-            kind: "imported-artifact".into(),
-            quarto_version: None,
-            collector_version: protocol::QUARTO_COLLECTOR_VERSION.into(),
-            policy: "import-existing-output".into(),
-            computation: "unknown".into(),
-            external_inputs: "unknown".into(),
-            started_at: timestamp(),
-            completed_at: timestamp(),
-        },
-        artifact: Some(QuartoArtifact {
-            kind: format.into(),
-            entrypoint: entrypoint.into(),
-            sha256: digest,
-            size: bytes.len() as u64,
-        }),
-        cells: Vec::new(),
-        assets,
-        inline_results: Vec::new(),
-        diagnostics: Vec::new(),
-        coverage: QuartoCoverage {
-            full_artifact: true,
-            cell_outputs: "unknown".into(),
-            unavailable: 1,
-            ..Default::default()
-        },
-    })
-}
-
-fn referenced_resource_closure(
-    root: &Path,
-    fallback: Option<&Path>,
-    fallback_allowed: Option<&[String]>,
-    entrypoint: &str,
-    artifact: &[u8],
-) -> Result<BTreeSet<String>, String> {
-    let mut references = BTreeSet::new();
-    let mut seen = BTreeMap::new();
-    let mut pending = vec![(entrypoint.to_string(), artifact.to_vec())];
-    let mut total_bytes = artifact.len();
-    while let Some((current, bytes)) = pending.pop() {
-        for (reference, kind) in referenced_resources(&bytes, &current) {
-            if seen
-                .get(&reference)
-                .is_some_and(|previous| *previous == ReferenceKind::Resource || *previous == kind)
-            {
-                continue;
-            }
-            seen.insert(reference.clone(), kind);
-            let path = root.join(&reference);
-            let path = if is_regular_file(&path) {
-                path
-            } else if let Some(fallback) = fallback {
-                let fallback_path = fallback.join(&reference);
-                let allowed = fallback_allowed
-                    .is_none_or(|files| files.iter().any(|file| file == &reference));
-                if allowed && is_regular_file(&fallback_path) {
-                    fallback_path
-                } else if kind == ReferenceKind::Navigation {
-                    // A link to another page may point at a page outside the
-                    // submitted render closure.  Keep it as navigation when
-                    // present in the output, but never read an unshared local
-                    // page merely because it was linked from HTML.
-                    seen.remove(&reference);
-                    continue;
-                } else {
-                    return Err(format!(
-                        "required artifact dependency {reference} is missing"
-                    ));
-                }
-            } else if kind == ReferenceKind::Navigation {
-                seen.remove(&reference);
-                continue;
-            } else {
-                return Err(format!(
-                    "required artifact dependency {reference} is missing"
-                ));
-            };
-            references.insert(reference.clone());
-            let extension = Path::new(&reference)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .map(|extension| extension.to_ascii_lowercase());
-            if matches!(extension.as_deref(), Some("css" | "html" | "htm")) {
-                let dependency =
-                    read_file_bounded(&path, &format!("read artifact dependency {reference}"))?;
-                total_bytes = total_bytes
-                    .checked_add(dependency.len())
-                    .ok_or("imported artifact dependency closure is too large")?;
-                if total_bytes > MAX_QUARTO_OUTPUT_BYTES {
-                    return Err("imported artifact dependency closure is too large".into());
-                }
-                pending.push((reference, dependency));
-            } else {
-                let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-                    format!("required artifact dependency {reference}: {error}")
-                })?;
-                total_bytes = total_bytes
-                    .checked_add(metadata.len() as usize)
-                    .ok_or("imported artifact dependency closure is too large")?;
-                if total_bytes > MAX_QUARTO_OUTPUT_BYTES {
-                    return Err("imported artifact dependency closure is too large".into());
-                }
-            }
-        }
-    }
-    Ok(references)
-}
-
-fn is_regular_file(path: &Path) -> bool {
-    std::fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_type().is_file())
-        .unwrap_or(false)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReferenceKind {
-    Navigation,
-    Resource,
-}
-
-fn referenced_resources(bytes: &[u8], current: &str) -> BTreeMap<String, ReferenceKind> {
-    let text = String::from_utf8_lossy(bytes);
-    let mut paths = BTreeMap::new();
-    for marker in ["src=", "href=", "url("] {
-        let mut rest = text.as_ref();
-        while let Some(index) = rest.find(marker) {
-            let marker_offset = text.len() - rest.len() + index;
-            rest = &rest[index + marker.len()..];
-            let rest_trimmed = rest.trim_start();
-            let quote = rest_trimmed
-                .as_bytes()
-                .first()
-                .copied()
-                .filter(|byte| *byte == b'\'' || *byte == b'\"');
-            let value = if let Some(quote) = quote {
-                let body = &rest_trimmed[1..];
-                let end = body.find(char::from(quote)).unwrap_or(body.len());
-                &body[..end]
-            } else {
-                let end = rest_trimmed
-                    .find(['\"', '\'', ')', ' ', '\t', '\r', '\n'])
-                    .unwrap_or(rest_trimmed.len());
-                &rest_trimmed[..end]
-            };
-            let ignored = value.starts_with('#')
-                || value.contains("://")
-                || value.starts_with("data:")
-                || value.starts_with("mailto:");
-            if !ignored {
-                let clean = value
-                    .split('?')
-                    .next()
-                    .unwrap_or(value)
-                    .split('#')
-                    .next()
-                    .unwrap_or(value)
-                    .trim();
-                if let Some(path) = resolve_resource_path(current, clean) {
-                    let kind = if marker == "href="
-                        && html_tag_name(&text, marker_offset).is_some_and(|tag| {
-                            tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area")
-                        }) {
-                        ReferenceKind::Navigation
-                    } else {
-                        ReferenceKind::Resource
-                    };
-                    paths
-                        .entry(path)
-                        .and_modify(|existing| {
-                            if kind == ReferenceKind::Resource {
-                                *existing = kind;
-                            }
-                        })
-                        .or_insert(kind);
-                }
-            }
-            rest = rest_trimmed.get(value.len()..).unwrap_or_default();
-        }
-    }
-    paths
-}
-
-fn html_tag_name(text: &str, marker_offset: usize) -> Option<&str> {
-    let open = text[..marker_offset].rfind('<')?;
-    if text[..marker_offset]
-        .rfind('>')
-        .is_some_and(|close| close > open)
-    {
-        return None;
-    }
-    let start = open + 1;
-    let tag = text[start..marker_offset].trim_start();
-    let end = tag
-        .find(|character: char| character.is_whitespace() || character == '>')
-        .unwrap_or(tag.len());
-    let name = &tag[..end];
-    (!name.is_empty()
-        && name
-            .chars()
-            .all(|character| character.is_ascii_alphabetic()))
-    .then_some(name)
-}
-
-fn resolve_resource_path(current: &str, reference: &str) -> Option<String> {
-    if reference.is_empty() || reference.starts_with('/') {
-        return None;
-    }
-    let mut components: Vec<String> = Path::new(current)
-        .parent()
-        .map(|parent| {
-            parent
-                .to_string_lossy()
-                .split('/')
-                .filter(|component| !component.is_empty())
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    for component in reference.split('/') {
-        match component {
-            "" | "." => {}
-            ".." => {
-                components.pop()?;
-            }
-            value => components.push(value.to_owned()),
-        }
-    }
-    let path = components.join("/");
-    protocol::safe_relative_path(&path).then_some(path)
-}
-
-/// A project slug fit to be a directory name under the hosted base: the
-/// slugs the server mints are lowercase letters, digits and dashes, and
-/// anything wider is refused rather than mapped.
-fn hosted_project_name_ok(project: &str) -> bool {
-    !project.is_empty()
-        && project.len() <= 128
-        && !project.starts_with('.')
-        && project
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// The record of which paths the last sync wrote into a hosted workspace, so
@@ -2747,70 +1898,18 @@ fn sha256(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Quarto stores the MD5 of the source bytes in `execute-results/*.json`,
+/// so the frozen-cache preflight has to compute the same digest to tell a
+/// stale cache from a current one before Quarto starts. MD5 is a format
+/// requirement here and not a security choice.
+///
+/// This was a hand-written MD5 -- the padding, the four rounds, the sine
+/// table -- kept because the crate it needed was "already in the lockfile".
+/// It was in the lockfile as somebody else's transitive dependency, which is
+/// not a dependency this crate may use, and the answer to that is to depend
+/// on it rather than to reimplement it.
 fn md5_hex(bytes: &[u8]) -> String {
-    // Quarto stores the MD5 of the source bytes in execute-results/*.json.
-    // This small implementation keeps frozen preflight independent of an
-    // external command and lets us reject stale caches before Quarto starts.
-    const S: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
-        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
-        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
-    ];
-    const K: [u32; 64] = [
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
-        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
-        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
-        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
-        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
-        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
-        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
-        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
-        0xeb86d391,
-    ];
-    let mut message = bytes.to_vec();
-    let bit_length = (message.len() as u64).wrapping_mul(8);
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
-    }
-    message.extend_from_slice(&bit_length.to_le_bytes());
-    let mut state = [0x67452301_u32, 0xefcdab89, 0x98badcfe, 0x10325476];
-    let (blocks, _) = message.as_chunks::<64>();
-    for block in blocks {
-        let mut words = [0_u32; 16];
-        let (word_bytes, _) = block.as_chunks::<4>();
-        for (word, bytes) in words.iter_mut().zip(word_bytes) {
-            *word = u32::from_le_bytes(*bytes);
-        }
-        let (mut a, mut b, mut c, mut d) = (state[0], state[1], state[2], state[3]);
-        for index in 0..64 {
-            let (f, g) = match index {
-                0..=15 => ((b & c) | (!b & d), index),
-                16..=31 => ((d & b) | (!d & c), (5 * index + 1) % 16),
-                32..=47 => (b ^ c ^ d, (3 * index + 5) % 16),
-                _ => (c ^ (b | !d), (7 * index) % 16),
-            };
-            let next = a
-                .wrapping_add(f)
-                .wrapping_add(K[index])
-                .wrapping_add(words[g])
-                .rotate_left(S[index]);
-            a = d;
-            d = c;
-            c = b;
-            b = b.wrapping_add(next);
-        }
-        state[0] = state[0].wrapping_add(a);
-        state[1] = state[1].wrapping_add(b);
-        state[2] = state[2].wrapping_add(c);
-        state[3] = state[3].wrapping_add(d);
-    }
-    state
-        .iter()
-        .flat_map(|word| word.to_le_bytes())
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    format!("{:x}", md5::compute(bytes))
 }
 
 /// Frozen rendering is deliberately narrower than ordinary Quarto rendering.
@@ -3490,21 +2589,12 @@ fn read_file_bounded_to(path: &Path, description: &str, limit: usize) -> Result<
 fn opaque_id() -> String {
     format!("q-{}", hex::encode(crate::auth::random_bytes(16)))
 }
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default()
-}
 fn timestamp() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
-fn timestamp_from(_started: Instant) -> String {
-    timestamp()
-}
 
 #[cfg(test)]
-#[path = "quarto_tests.rs"]
+#[path = "../quarto_tests.rs"]
 mod tests;

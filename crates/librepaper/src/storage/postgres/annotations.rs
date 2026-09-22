@@ -217,27 +217,6 @@ pub struct ReplyRecord {
     pub updated_at: OffsetDateTime,
 }
 
-pub struct AnnotationBatchUpsert {
-    pub id: Uuid,
-    pub input: NewAnnotation,
-    pub resolved: bool,
-    pub proposal: Option<super::NewProposal>,
-}
-
-/// A whole agent turn's worth of annotation writes, applied under one
-/// document lock (§7 step 4). What used to make this replay-safe as a unit
-/// was a lifetime receipt; now each piece is idempotent on its own -- the
-/// upserts through `put_annotation`'s `ON CONFLICT DO NOTHING`, the replies
-/// through the same, and a delete of an already-deleted row is simply
-/// `NotFound`, which a retrying caller already has to handle.
-pub struct AnnotationBatchCommand {
-    pub document_id: Uuid,
-    pub upserts: Vec<AnnotationBatchUpsert>,
-    pub deletes: Vec<Uuid>,
-    pub replies: Vec<NewReply>,
-    pub require_editor: bool,
-}
-
 /// Inserts an annotation's immutable evidence, or -- on a retry with the
 /// same id -- reads back the row that a previous attempt already wrote and
 /// checks it says the same thing.
@@ -348,115 +327,6 @@ async fn put_reply(
 }
 
 impl PostgresCatalog {
-    /// Applies an agent annotation batch under one document lock (§7 step 4).
-    /// Any validation or write failure rolls back the caller's transaction
-    /// with it; nothing here commits on its own.
-    pub async fn apply_annotation_batch(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        batch: AnnotationBatchCommand,
-        actor: &MutationAuthorization,
-    ) -> Result<()> {
-        for upsert in &batch.upserts {
-            validate(&upsert.input)?;
-            if upsert.input.document_id != batch.document_id {
-                return Err(Error::Invalid("annotation batch crosses documents".into()));
-            }
-            if let Some(proposal) = &upsert.proposal {
-                if upsert.input.kind != "suggestion"
-                    || upsert.input.proposal_id != Some(proposal.id)
-                    || proposal.document_id != batch.document_id
-                {
-                    return Err(Error::Invalid(
-                        "suggestion annotation and proposal do not match".into(),
-                    ));
-                }
-            }
-        }
-        for reply in &batch.replies {
-            if reply.body.is_empty() || reply.author_key.is_empty() || reply.author_label.is_empty()
-            {
-                return Err(Error::Invalid("invalid reply".into()));
-            }
-        }
-
-        Self::authorize_annotation_mutation(tx, batch.document_id, actor, batch.require_editor)
-            .await?;
-
-        for upsert in batch.upserts {
-            let existing = annotation_by_id(tx, upsert.id).await?;
-            match (existing, upsert.proposal) {
-                (None, proposal) => {
-                    if let Some(proposal) = proposal {
-                        self.open_proposal(tx, proposal).await?;
-                    }
-                    put_annotation(tx, upsert.id, &upsert.input).await?;
-                }
-                (Some(existing), None) => {
-                    if existing.document_id != batch.document_id
-                        || !same_anchor(&existing, &upsert.input.original_anchor)?
-                    {
-                        return Err(Error::Conflict(
-                            "annotation original anchor is immutable".into(),
-                        ));
-                    }
-                    if upsert.input.kind == "suggestion" && upsert.resolved {
-                        Self::authorize_annotation_mutation(tx, batch.document_id, actor, true)
-                            .await?;
-                    }
-                    sqlx::query(
-                        "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,\
-                         author_label=$6,color=$7,proposal_id=$8,\
-                         resolved_at=CASE WHEN $9 THEN COALESCE(resolved_at,now()) ELSE NULL END,\
-                         updated_at=now() WHERE id=$1",
-                    )
-                    .bind(upsert.id)
-                    .bind(&upsert.input.kind)
-                    .bind(&upsert.input.body)
-                    .bind(upsert.input.author_account_id)
-                    .bind(&upsert.input.author_key)
-                    .bind(&upsert.input.author_label)
-                    .bind(&upsert.input.color)
-                    .bind(upsert.input.proposal_id)
-                    .bind(upsert.resolved)
-                    .execute(&mut **tx)
-                    .await?;
-                }
-                (Some(_), Some(_)) => {
-                    return Err(Error::Conflict(
-                        "proposal batch cannot replace an existing annotation".into(),
-                    ));
-                }
-            }
-        }
-
-        for id in batch.deletes {
-            let deleted = sqlx::query("DELETE FROM annotations WHERE id=$1 AND document_id=$2")
-                .bind(id)
-                .bind(batch.document_id)
-                .execute(&mut **tx)
-                .await?
-                .rows_affected();
-            if deleted != 1 {
-                return Err(Error::NotFound);
-            }
-        }
-
-        for reply in batch.replies {
-            let parent: Option<Uuid> =
-                sqlx::query_scalar("SELECT document_id FROM annotations WHERE id=$1")
-                    .bind(reply.annotation_id)
-                    .fetch_optional(&mut **tx)
-                    .await?;
-            if parent != Some(batch.document_id) {
-                return Err(Error::NotFound);
-            }
-            put_reply(tx, &reply).await?;
-        }
-
-        Ok(())
-    }
-
     /// The in-transaction authorization check a document command runs
     /// before writing. The writer-epoch fence and the document row lock
     /// already happened when the caller opened `tx`
@@ -590,55 +460,6 @@ impl PostgresCatalog {
         Ok(row)
     }
 
-    /// Rewrites a suggestion to a fresh proposal branch. Unlike opening a
-    /// suggestion for the first time, this always mints a new proposal id
-    /// (the caller's), so it goes through `open_proposal` the same way a
-    /// first suggestion does and a retry of the same refine is idempotent
-    /// on that id.
-    pub async fn replace_suggestion_authorized(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        id: Uuid,
-        input: NewAnnotation,
-        proposal: super::NewProposal,
-        actor: &MutationAuthorization,
-    ) -> Result<AnnotationRecord> {
-        validate(&input)?;
-        if input.kind != "suggestion"
-            || input.proposal_id != Some(proposal.id)
-            || input.document_id != proposal.document_id
-        {
-            return Err(Error::Invalid(
-                "suggestion annotation and proposal do not match".into(),
-            ));
-        }
-        Self::authorize_annotation_mutation(tx, input.document_id, actor, false).await?;
-        let existing = annotation_by_id(tx, id).await?.ok_or(Error::NotFound)?;
-        if existing.document_id != input.document_id
-            || !same_anchor(&existing, &input.original_anchor)?
-        {
-            return Err(Error::Conflict(
-                "annotation original anchor is immutable".into(),
-            ));
-        }
-        self.open_proposal(tx, proposal).await?;
-        sqlx::query(
-            "UPDATE annotations SET kind=$2,body=$3,author_account_id=$4,author_key=$5,author_label=$6, \
-                                    color=$7,proposal_id=$8,updated_at=now() WHERE id=$1",
-        )
-        .bind(id)
-        .bind(&input.kind)
-        .bind(&input.body)
-        .bind(input.author_account_id)
-        .bind(&input.author_key)
-        .bind(&input.author_label)
-        .bind(&input.color)
-        .bind(input.proposal_id)
-        .execute(&mut **tx)
-        .await?;
-        annotation_by_id(tx, id).await?.ok_or(Error::NotFound)
-    }
-
     /// Rewrites the parts of an annotation that can change: its words, its
     /// kind, and whether it is resolved.
     ///
@@ -686,6 +507,56 @@ impl PostgresCatalog {
         .execute(&mut **tx)
         .await?;
         Ok(true)
+    }
+
+    /// Resolves or reopens one annotation, and says when it became resolved.
+    ///
+    /// Resolving is one column. It used to go through
+    /// `replace_annotation_authorized`: read the row, decode its immutable
+    /// anchor, rebuild the whole `NewAnnotation` from it, write every column
+    /// back, have the anchor re-encoded and compared against itself for
+    /// immutability, and read the row a second time for the timestamp. Every
+    /// one of those steps was a chance for a round trip to lose a field that
+    /// nothing was trying to change.
+    ///
+    /// The authorization is the same, including the extra editor rung a
+    /// suggestion's decision takes: resolving a suggestion decides it.
+    pub async fn set_annotation_resolved_authorized(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        document_id: Uuid,
+        id: Uuid,
+        resolved: bool,
+        actor: &MutationAuthorization,
+    ) -> Result<Option<OffsetDateTime>> {
+        Self::authorize_annotation_mutation(tx, document_id, actor, false).await?;
+        // Locked, so the kind this decision is authorized against is the
+        // kind the update below writes to.
+        let kind: String = sqlx::query_scalar(
+            "SELECT kind FROM annotations WHERE id=$1 AND document_id=$2 FOR UPDATE",
+        )
+        .bind(id)
+        .bind(document_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        if kind == "suggestion" && resolved {
+            Self::authorize_annotation_mutation(tx, document_id, actor, true).await?;
+        }
+        let resolved_at: Option<OffsetDateTime> = sqlx::query_scalar(
+            "UPDATE annotations
+             SET resolved_at=CASE WHEN $3 THEN COALESCE(resolved_at,now()) ELSE NULL END,
+                 updated_at=now()
+             WHERE id=$1 AND document_id=$2
+             RETURNING resolved_at",
+        )
+        .bind(id)
+        .bind(document_id)
+        .bind(resolved)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        Ok(resolved_at)
     }
 
     /// `document_id` is the caller's rather than looked up here, because the
@@ -894,23 +765,7 @@ impl PostgresCatalog {
     /// How many replies each of these threads has, and when each last
     /// changed. One query for a whole annotation page.
     pub async fn reply_summaries(&self, annotation_ids: &[Uuid]) -> Result<Vec<ReplySummary>> {
-        if annotation_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        if annotation_ids.len() > ANNOTATION_PAGE_MAX as usize {
-            return Err(Error::Invalid("too many threads requested".into()));
-        }
-        sqlx::query_as::<_, ReplySummary>(
-            r#"SELECT annotation_id,
-                      count(*)::bigint AS replies,
-                      coalesce(max((extract(epoch FROM updated_at)*1000000)::bigint),0)::bigint
-                        AS changed_micros
-               FROM replies WHERE annotation_id=ANY($1) GROUP BY annotation_id"#,
-        )
-        .bind(annotation_ids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Error::from)
+        reply_summary_rows(&self.pool, annotation_ids).await
     }
 
     pub async fn reply_summaries_in_transaction(
@@ -918,17 +773,7 @@ impl PostgresCatalog {
         tx: &mut PgConnection,
         annotation_ids: &[Uuid],
     ) -> Result<Vec<ReplySummary>> {
-        if annotation_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        if annotation_ids.len() > ANNOTATION_PAGE_MAX as usize {
-            return Err(Error::Invalid("too many threads requested".into()));
-        }
-        sqlx::query_as::<_, ReplySummary>(
-            r#"SELECT annotation_id, count(*)::bigint AS replies,
-                      coalesce(max((extract(epoch FROM updated_at)*1000000)::bigint),0)::bigint AS changed_micros
-               FROM replies WHERE annotation_id=ANY($1) GROUP BY annotation_id"#,
-        ).bind(annotation_ids).fetch_all(tx).await.map_err(Error::from)
+        reply_summary_rows(tx, annotation_ids).await
     }
 
     pub async fn reply_preview_sizes_in_transaction(
@@ -1058,13 +903,7 @@ impl PostgresCatalog {
         document_id: Uuid,
         id: Uuid,
     ) -> Result<Option<AnnotationRecord>> {
-        Ok(sqlx::query_as::<_, AnnotationRecord>(&format!(
-            "SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE id=$1 AND document_id=$2"
-        ))
-        .bind(id)
-        .bind(document_id)
-        .fetch_optional(&self.pool)
-        .await?)
+        annotation_row(&self.pool, document_id, id).await
     }
 
     /// [`Self::annotation`] inside a caller's transaction, so a command that
@@ -1076,14 +915,56 @@ impl PostgresCatalog {
         document_id: Uuid,
         id: Uuid,
     ) -> Result<Option<AnnotationRecord>> {
-        Ok(sqlx::query_as::<_, AnnotationRecord>(&format!(
-            "SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE id=$1 AND document_id=$2"
-        ))
-        .bind(id)
-        .bind(document_id)
-        .fetch_optional(&mut **tx)
-        .await?)
+        annotation_row(&mut **tx, document_id, id).await
     }
+}
+
+/// One annotation, from whichever executor the caller has: the pool, or the
+/// transaction they are already inside. The two entry points above differ
+/// only in that, and used to differ in a copy of the statement as well.
+async fn annotation_row<'e, E>(
+    executor: E,
+    document_id: Uuid,
+    id: Uuid,
+) -> Result<Option<AnnotationRecord>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    Ok(sqlx::query_as::<_, AnnotationRecord>(&format!(
+        "SELECT {ANNOTATION_COLUMNS} FROM annotations WHERE id=$1 AND document_id=$2"
+    ))
+    .bind(id)
+    .bind(document_id)
+    .fetch_optional(executor)
+    .await?)
+}
+
+/// How many replies each of these threads has, and when each last changed,
+/// from whichever executor the caller has.
+async fn reply_summary_rows<'e, E>(
+    executor: E,
+    annotation_ids: &[Uuid],
+) -> Result<Vec<ReplySummary>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    if annotation_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    if annotation_ids.len() > ANNOTATION_PAGE_MAX as usize {
+        return Err(Error::Invalid("too many threads requested".into()));
+    }
+    sqlx::query_as::<_, ReplySummary>(
+        r#"SELECT annotation_id,
+                  count(*)::bigint AS replies,
+                  coalesce(max((extract(epoch FROM updated_at)*1000000)::bigint),0)::bigint
+                    AS changed_micros
+           FROM replies WHERE annotation_id=ANY($1) GROUP BY annotation_id"#,
+    )
+    .bind(annotation_ids)
+    .fetch_all(executor)
+    .await
+    .map_err(Error::from)
 }
 
 async fn annotation_by_id(

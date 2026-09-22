@@ -12,7 +12,7 @@ use super::*;
 use crate::room::agent::OperationKey;
 use crate::room::{self, Comment};
 
-fn validate_existing_action(
+pub(crate) fn validate_existing_action(
     action: &str,
     comment_id: &str,
     comment: Option<&Comment>,
@@ -38,38 +38,55 @@ fn validate_existing_action(
         return Err(Failure::new("conflict", "comment version changed"));
     }
     let own = !author.is_empty() && comment.author == author;
+    // `proposed` and `outcome` are presentation projections that `room` never
+    // fills in on a served comment, so nothing here may consult them: the
+    // predicates that did refused every real stored suggestion. What a
+    // suggestion is, is a comment whose motivation is `editing` carrying a
+    // proposal id; whether that proposal is still open is the proposal row's
+    // own `status`, checked by `pending_proposal` once it is loaded and
+    // fenced again by the command itself at commit time.
+    let suggestion = comment.motivation == "editing" && !comment.proposal.is_empty();
     match action {
-        "refine"
-            if !(editor
-                || (own
-                    && comment.motivation == "editing"
-                    && comment.outcome.is_empty()
-                    && !comment.resolved
-                    && comment.proposed.is_some())) =>
-        {
-            Err(Failure::new(
-                "permission_changed",
-                "only the suggestion author or an editor may refine a pending suggestion",
-            ))
-        }
-        "reject"
-            if !editor
-                || comment.motivation != "editing"
-                || !comment.outcome.is_empty()
-                || comment.resolved
-                || comment.proposed.is_none() =>
-        {
-            Err(Failure::new(
-                "permission_changed",
-                "editor access is required to reject a suggestion",
-            ))
-        }
+        "refine" if !(editor || (own && suggestion && !comment.resolved)) => Err(Failure::new(
+            "permission_changed",
+            "only the suggestion author or an editor may refine a pending suggestion",
+        )),
+        "reject" if !editor || !suggestion || comment.resolved => Err(Failure::new(
+            "permission_changed",
+            "editor access is required to reject a suggestion",
+        )),
         "delete" | "resolve" if !(editor || own) => Err(Failure::new(
             "permission_changed",
             "only the comment author or an editor may change this comment",
         )),
         _ => Ok(()),
     }
+}
+
+/// The proposal a suggestion comment names, refused unless it is still open.
+///
+/// The comment row says a suggestion exists; only the proposal row says
+/// whether anyone has already decided it. A resolved or superseded proposal
+/// is a conflict rather than a permission failure: the caller read a state
+/// that has since moved, which is exactly what `expected_version` reports
+/// everywhere else.
+pub(crate) async fn pending_proposal(
+    catalog: &crate::storage::postgres::PostgresCatalog,
+    comment: &Comment,
+) -> Result<crate::storage::postgres::StoredProposal, Failure> {
+    let proposal_id = parse_uuid(&comment.proposal, "proposal")?;
+    let stored = catalog
+        .proposal(proposal_id)
+        .await
+        .map_err(|error| Failure::new("unavailable", error.to_string()))?
+        .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))?;
+    if stored.status != "pending" {
+        return Err(Failure::new(
+            "conflict",
+            "suggestion has already been decided",
+        ));
+    }
+    Ok(stored)
 }
 
 /// The id a newly created annotation gets, for a comment and for a suggestion
@@ -102,22 +119,41 @@ pub(super) fn parse_uuid(value: &str, what: &str) -> Result<uuid::Uuid, Failure>
 // carries the session generation, which is what makes a write from a
 // signed-out session fail rather than succeed. A command needs both (§7).
 
-pub(super) fn command_failure(error: crate::log::sequencer::CommandError) -> Failure {
-    use crate::log::sequencer::CommandError;
-    match error {
+/// A refused command as an MCP failure.
+///
+/// The classification is the same table every other transport reads
+/// (`reply::classify_command`), so a conflict is a conflict and a storage
+/// failure is retryable here too. Only the envelope is MCP's: a code an
+/// agent matches on, and the stale-selection digest under the name the tool
+/// schema gives it. Storage context goes to the log rather than to the
+/// agent, which used to receive it verbatim through `to_string()`.
+pub(crate) fn command_failure(error: crate::log::sequencer::CommandError) -> Failure {
+    let (error, digest) = crate::server::reply::classify_command(error);
+    if let Some(context) = error.log_context() {
+        eprintln!("warning: annotation command: {context}");
+    }
+    if let Some(digest) = digest {
         // §7.1: the words the caller quoted no longer resolve to one place.
         // A generic conflict reads to an agent as "try again unchanged",
         // which does nothing here; naming the current digest is what lets it
         // capture a fresh view and requote instead of looping.
-        CommandError::StaleSelection { digest } => Failure::new(
+        return Failure::new(
             "conflict",
             "captured selection belongs to another source revision",
         )
-        .with_data(json!({"current_tree_digest": digest})),
-        CommandError::Conflict(message) => Failure::new("conflict", message),
-        CommandError::Storage(error) => Failure::new("unavailable", error.to_string()),
-        CommandError::Sequencer(error) => Failure::new("unavailable", error.to_string()),
+        .with_data(json!({"current_tree_digest": digest}));
     }
+    let code = if error.is_temporary() {
+        "unavailable"
+    } else {
+        match error.status() {
+            404 => "not_found",
+            409 => "conflict",
+            400 => "invalid_params",
+            _ => "conflict",
+        }
+    };
+    Failure::new(code, error.client_message())
 }
 
 impl Server {
@@ -254,10 +290,24 @@ impl Server {
 
         let request_id = key.scoped_request_id(actor);
         let authority = who.document_authority();
-        let authorization = who.mutation_authorization(self.ceiling_for(&who.id).edit);
-        let author_account_id = uuid::Uuid::parse_str(&who.id.id).ok();
+        // Who is writing, built once and carried whole, the same shape the
+        // socket and the REST route build.
+        let writer = room::CommentAuthor::new(
+            creator.clone(),
+            uuid::Uuid::parse_str(&who.id.id).ok(),
+            author.clone(),
+            who.mutation_authorization(self.ceiling_for(&who.id).edit),
+            who.at_least(Role::Editor),
+        );
         let catalog = room.catalog().clone();
         let document_id = room.document_id;
+        // Parsed once, at the transport boundary, rather than in each arm
+        // that needs it: an id that is not a UUID is a bad request and not
+        // something a command has to answer for.
+        let comment_uuid_value = (!comment_id.is_empty())
+            .then(|| parse_uuid(comment_id, "comment_id"))
+            .transpose()?;
+        let named_comment = || comment_uuid_value.expect("validated above");
 
         let result = match action {
             "create" => {
@@ -273,10 +323,7 @@ impl Server {
                     &self.config,
                     "comment",
                     body,
-                    &creator,
-                    author_account_id,
-                    author.clone(),
-                    authorization.clone(),
+                    &writer,
                     &exact,
                     &prefix,
                     &suffix,
@@ -302,18 +349,14 @@ impl Server {
                     ));
                 }
                 let id = parse_uuid(&comment_uuid(&format!("reply\0{request_id}")), "reply id")?;
-                let comment_uuid_value = parse_uuid(comment_id, "comment_id")?;
                 let mut cmd = room::AddReply::new(
                     catalog,
                     document_id,
                     id,
-                    comment_uuid_value,
+                    named_comment(),
                     &self.config,
                     body,
-                    &creator,
-                    author_account_id,
-                    author.clone(),
-                    authorization.clone(),
+                    &writer,
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;
                 let outcome = room
@@ -327,9 +370,9 @@ impl Server {
                 let mut cmd = room::ResolveComment::new(
                     catalog.clone(),
                     document_id,
-                    parse_uuid(comment_id, "comment_id")?,
+                    named_comment(),
                     resolved,
-                    authorization.clone(),
+                    &writer,
                 );
                 let outcome = room
                     .command(&authority, &mut cmd)
@@ -346,21 +389,14 @@ impl Server {
                 let source = existing.source().ok_or_else(|| {
                     Failure::new("invalid_range", "suggestion has no source anchor")
                 })?;
-                let proposal_id = parse_uuid(&existing.proposal, "proposal")?;
-                let stored = catalog
-                    .proposal(proposal_id)
-                    .await
-                    .map_err(|error| Failure::new("unavailable", error.to_string()))?
-                    .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))?;
-                let editor = who.at_least(Role::Editor);
+                let stored = pending_proposal(&catalog, &existing).await?;
                 let mut cmd = room::RefineSuggestion::new(
                     catalog,
                     document_id,
-                    parse_uuid(comment_id, "comment_id")?,
-                    proposal_id,
+                    named_comment(),
+                    stored.id,
                     stored.version,
-                    author.clone(),
-                    editor,
+                    &writer,
                     &self.config,
                     body,
                     &source.exact,
@@ -372,7 +408,6 @@ impl Server {
                     // the proposal row's version below. There is no
                     // `expected_proposed` in the tool schema to carry.
                     None,
-                    authorization.clone(),
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;
                 let comment = room
@@ -383,20 +418,14 @@ impl Server {
             }
             "reject" => {
                 let existing = existing.expect("validated above");
-                let proposal_id = parse_uuid(&existing.proposal, "proposal")?;
-                let stored = catalog
-                    .proposal(proposal_id)
-                    .await
-                    .map_err(|error| Failure::new("unavailable", error.to_string()))?
-                    .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))?;
+                let stored = pending_proposal(&catalog, &existing).await?;
                 let mut cmd = room::RejectSuggestion::new(
                     catalog,
                     document_id,
                     parse_uuid(comment_id, "comment_id")?,
-                    proposal_id,
+                    stored.id,
                     stored.tip_frontiers,
-                    creator.clone(),
-                    authorization.clone(),
+                    &writer,
                 );
                 let comment = room
                     .command(&authority, &mut cmd)
@@ -413,14 +442,8 @@ impl Server {
                         "only the comment author or an editor may delete it",
                     ));
                 }
-                let mut cmd = room::DeleteComment::new(
-                    catalog,
-                    document_id,
-                    parse_uuid(comment_id, "comment_id")?,
-                    author.clone(),
-                    editor,
-                    authorization.clone(),
-                );
+                let mut cmd =
+                    room::DeleteComment::new(catalog, document_id, named_comment(), &writer);
                 room.command(&authority, &mut cmd)
                     .await
                     .map_err(command_failure)?;
@@ -452,14 +475,80 @@ impl Server {
 mod tests {
     use super::*;
 
+    /// A suggestion shaped the way `room::comments` actually serves one:
+    /// a proposal id and nothing in the `proposed`/`outcome` projections.
+    /// A fixture that filled those was what hid the defect these predicates
+    /// had, so this one deliberately leaves them at their served values.
     fn pending(author: &str) -> Comment {
         Comment {
             id: "c".into(),
             motivation: "editing".into(),
             author: author.into(),
-            proposed: Some("replacement".into()),
+            proposal: uuid::Uuid::from_u128(7).to_string(),
             ..Comment::default()
         }
+    }
+
+    #[test]
+    fn a_served_suggestion_passes_validation_for_its_author_and_an_editor() {
+        let comment = pending("author-a");
+        assert!(
+            comment.proposed.is_none() && comment.outcome.is_empty(),
+            "the served shape has no proposal projection; validation must not need one"
+        );
+        let version = crate::room::agent_comments::comment_version(&comment);
+        for (action, author, editor) in [
+            ("refine", "author-a", false),
+            ("refine", "someone-else", true),
+            ("reject", "someone-else", true),
+        ] {
+            validate_existing_action(
+                action,
+                "c",
+                Some(&comment),
+                &version,
+                Some(&version),
+                author,
+                editor,
+            )
+            .unwrap_or_else(|error| panic!("{action} was refused: {}", error.message));
+        }
+    }
+
+    #[test]
+    fn a_plain_comment_is_not_a_suggestion() {
+        let mut comment = pending("author-a");
+        comment.motivation = "commenting".into();
+        comment.proposal.clear();
+        let version = crate::room::agent_comments::comment_version(&comment);
+        let error = validate_existing_action(
+            "reject",
+            "c",
+            Some(&comment),
+            &version,
+            Some(&version),
+            "editor",
+            true,
+        )
+        .expect_err("a plain comment carries no proposal to reject");
+        assert_eq!(error.code, "permission_changed");
+    }
+
+    #[test]
+    fn a_stale_expected_version_is_a_conflict() {
+        let comment = pending("author-a");
+        let version = crate::room::agent_comments::comment_version(&comment);
+        let error = validate_existing_action(
+            "refine",
+            "c",
+            Some(&comment),
+            "an-older-version",
+            Some(&version),
+            "author-a",
+            false,
+        )
+        .expect_err("a version the caller did not read must not pass");
+        assert_eq!(error.code, "conflict");
     }
 
     #[test]

@@ -256,6 +256,21 @@ pub fn apply_patches(
     tree: &SourceTree,
     request: &PatchRequest,
 ) -> Result<AppliedSource, AgentError> {
+    validate_patches(tree, request)?;
+    build_patched(tree, request)
+}
+
+/// Everything a patch request has to satisfy against the tree it names, and
+/// nothing built.
+///
+/// The sequencer only ever asked whether a request was admissible: it called
+/// `apply_patches`, which cloned every file in the tree and spliced each
+/// patch into the clone to produce a result it then dropped on the floor,
+/// and then built the source again properly through `head.prepare`. What
+/// [`apply_patches`] adds on top of this is that result, and the one caller
+/// that wants it is MCP's candidate creation, which shows the author what a
+/// patch would produce before anything is committed.
+pub fn validate_patches(tree: &SourceTree, request: &PatchRequest) -> Result<(), AgentError> {
     request.operation.validate()?;
     if request.base_tree.is_empty() || request.base_tree.len() > 128 {
         return Err(AgentError::Invalid("invalid base tree digest".into()));
@@ -319,8 +334,12 @@ pub fn apply_patches(
             )?;
         }
     }
-    reject_overlaps(&mut checked)?;
+    reject_overlaps(&mut checked)
+}
 
+/// The source a validated patch request produces. Callers that only need to
+/// know whether it would be admitted use [`validate_patches`].
+fn build_patched(tree: &SourceTree, request: &PatchRequest) -> Result<AppliedSource, AgentError> {
     let mut files = tree.files.clone();
     // Group by path and apply from the end. A path with several edits gets one
     // deterministic splice sequence, and distinct paths cannot interfere.
@@ -521,7 +540,11 @@ fn apply_patch_edits(
                 insert: patch.replacement.clone(),
             })
             .collect();
-        session::apply_path_edits(doc, path, &edits);
+        // `apply_edits_at`, not `apply_path_edits`: the latter encodes a
+        // per-file diff against the document's vector before and after, and
+        // this caller throws it away. `Head::prepare` exports the command's
+        // whole diff once, which is the batch that actually gets written.
+        session::apply_edits_at(doc, path, &edits);
     }
     Ok(())
 }
@@ -592,7 +615,9 @@ impl Command for AgentPatchCommand<'_> {
         head: &Head<'_>,
     ) -> std::result::Result<Option<PreparedSource>, CommandError> {
         let tree = tree_from_head(head);
-        apply_patches(&tree, self.request).map_err(to_conflict)?;
+        // Validation only: the source this produces is built once, by
+        // `head.prepare` below, straight into the draft document.
+        validate_patches(&tree, self.request).map_err(to_conflict)?;
         let after_bytes = source_size_after(&tree, self.request).map_err(to_conflict)?;
         if after_bytes > self.max_document {
             return Err(CommandError::Conflict(

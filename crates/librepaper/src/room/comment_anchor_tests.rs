@@ -20,7 +20,7 @@ use crate::document::session;
 use crate::document::store::{DocumentInput, MutationActor, Store};
 use crate::log::Registry;
 use crate::storage::blob::FsStore;
-use crate::storage::postgres::{Authority, PostgresCatalog, PostgresOptions};
+use crate::storage::postgres::Authority;
 use serde_json::json;
 
 const PAPER: &str = "# Interval estimates\n\nThe *interval* covers the mean of the posterior.\n\nA second paragraph, for company.\n";
@@ -35,21 +35,7 @@ struct Deployment {
 }
 
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
-    let catalog = Arc::new(
-        PostgresCatalog::connect(PostgresOptions::new(url))
-            .await
-            .unwrap(),
-    );
-    catalog.migrate().await.unwrap();
-    sqlx::query!(
-        "TRUNCATE document_updates,document_snapshots,document_proposal_hunks,document_proposals,\
-         replies,annotations,document_labels,document_assets,share_links,grants,documents,\
-         accounts CASCADE",
-    )
-    .execute(catalog.pool())
-    .await
-    .unwrap();
+    let catalog = crate::tests::catalog().await?;
     let writer = catalog.claim_writer().await.unwrap();
     let account = catalog
         .create_account(crate::storage::postgres::NewAccount {
@@ -72,16 +58,12 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         config.clone(),
         "deployment".into(),
     );
-    let store = Arc::new(
-        Store::open_with_catalog(
-            blobs.clone(),
-            config.clone(),
-            catalog.clone(),
-            registry.clone(),
-        )
-        .await
-        .unwrap(),
-    );
+    let store = Arc::new(Store::open_with_catalog(
+        blobs.clone(),
+        config.clone(),
+        catalog.clone(),
+        registry.clone(),
+    ));
     let actor = MutationActor {
         account_id: account.id.to_string(),
         owner_key: "owner".into(),
@@ -126,6 +108,17 @@ impl Deployment {
     /// The owner, at editor rung, which is also more than enough for a
     /// commenter-gated command -- `authorize_annotation_mutation` admits an
     /// owner at either rung.
+    /// Who this deployment writes as: the owner, at editor rung.
+    fn writer(&self) -> CommentAuthor {
+        CommentAuthor::new(
+            "Reviewer",
+            Some(self.account_id),
+            format!("account:{}", self.account_id),
+            self.mutation_authorization(),
+            true,
+        )
+    }
+
     fn mutation_authorization(&self) -> crate::storage::postgres::MutationAuthorization {
         crate::storage::postgres::MutationAuthorization {
             principal_key: self.account_id.to_string(),
@@ -153,10 +146,7 @@ impl Deployment {
             &config,
             motivation,
             "A remark.",
-            "Reviewer",
-            Some(self.account_id),
-            format!("account:{}", self.account_id),
-            self.mutation_authorization(),
+            &self.writer(),
             exact,
             prefix,
             suffix,
@@ -246,10 +236,7 @@ async fn a_remark_about_the_whole_document_needs_no_passage() {
         &config,
         "commenting",
         "A remark.",
-        "Reviewer",
-        Some(deployment.account_id),
-        format!("account:{}", deployment.account_id),
-        deployment.mutation_authorization(),
+        &deployment.writer(),
         "",
         "",
         "",
@@ -683,8 +670,7 @@ async fn refinement_round_trip(edit_source: bool, check_text: bool) {
             Uuid::parse_str(&comment.id).unwrap(),
             proposal_id,
             version,
-            format!("account:{}", deployment.account_id),
-            true,
+            &deployment.writer(),
             &config,
             "A revised remark.",
             &source.exact,
@@ -692,7 +678,6 @@ async fn refinement_round_trip(edit_source: bool, check_text: bool) {
             &source.suffix,
             proposed,
             check_text.then_some(expected),
-            deployment.mutation_authorization(),
         )
         .expect("a well-formed refinement")
     };
@@ -816,4 +801,122 @@ fn received(rx: &mut tokio::sync::mpsc::Receiver<crate::room::outgoing::Outgoing
         out.push(serde_json::from_str(&text).expect("every frame is JSON"));
     }
     out
+}
+
+/// The MCP action gate, against a suggestion that really was stored.
+///
+/// `validate_existing_action` used to require `Comment::proposed` and an
+/// empty `Comment::outcome`, and `room::comments` fills in neither when it
+/// serves a comment. Every unit test of the gate built its own comment with
+/// `proposed: Some(..)`, so the gate looked correct while refusing every
+/// real suggestion an agent had made. This drives the gate with exactly the
+/// value `comment_by_id` hands MCP.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
+    use crate::server::mcp::comments::{pending_proposal, validate_existing_action};
+
+    let Some(deployment) = deployment("anchor-mcp-gate").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let mut cmd = deployment.add_comment(
+        &room,
+        "interval covers the mean",
+        "Interval estimates The ",
+        " of the posterior.",
+        "editing",
+        Some("*interval* contains the mean"),
+    );
+    let created = room
+        .command(&deployment.authority(), &mut cmd)
+        .await
+        .unwrap();
+
+    // Not `created`: what MCP validates is the indexed read, and that is
+    // the shape whose projections are empty.
+    let served = room
+        .comment_by_id(&created.id, true)
+        .await
+        .unwrap()
+        .expect("the suggestion is readable");
+    assert!(
+        served.proposed.is_none() && served.outcome.is_empty(),
+        "the served shape carries no proposal projection",
+    );
+    assert!(!served.proposal.is_empty(), "it does carry a proposal id");
+
+    let author = format!("account:{}", deployment.account_id);
+    let version = crate::room::agent_comments::comment_version(&served);
+    let check = |action: &str, caller: &str, editor: bool| {
+        validate_existing_action(
+            action,
+            &served.id,
+            Some(&served),
+            &version,
+            Some(&version),
+            caller,
+            editor,
+        )
+    };
+
+    check("refine", &author, false).expect("the suggestion's own author may refine it");
+    check("reject", "an-editor", true).expect("an editor may reject it");
+    check("delete", &author, false).expect("the author may delete it");
+
+    assert_eq!(
+        check("refine", "someone-else", false)
+            .expect_err("an unrelated commenter may not refine")
+            .code,
+        "permission_changed",
+    );
+    assert_eq!(
+        check("reject", &author, false)
+            .expect_err("rejecting is an editor's decision, even over one's own suggestion")
+            .code,
+        "permission_changed",
+    );
+    assert_eq!(
+        validate_existing_action(
+            "refine",
+            &served.id,
+            Some(&served),
+            "a-version-read-two-edits-ago",
+            Some(&version),
+            &author,
+            false,
+        )
+        .expect_err("a stale expected_version is refused")
+        .code,
+        "conflict",
+    );
+
+    // The proposal row, not the comment, says whether it is still open.
+    let open = pending_proposal(&deployment.catalog, &served)
+        .await
+        .expect("the proposal is pending");
+    let mut cmd = RejectSuggestion::new(
+        deployment.catalog.clone(),
+        room.document_id,
+        Uuid::parse_str(&served.id).unwrap(),
+        open.id,
+        open.tip_frontiers.clone(),
+        &deployment.writer(),
+    );
+    room.command(&deployment.authority(), &mut cmd)
+        .await
+        .expect("an editor rejects it");
+    let decided = room
+        .comment_by_id(&created.id, true)
+        .await
+        .unwrap()
+        .expect("the comment survives its decision");
+    assert_eq!(
+        pending_proposal(&deployment.catalog, &decided)
+            .await
+            .expect_err("a decided proposal is not open")
+            .code,
+        "conflict",
+    );
+    deployment.catalog.close().await;
 }

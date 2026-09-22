@@ -77,20 +77,20 @@ pub async fn run(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let builder_name = request.builder.as_deref().unwrap_or_default();
+    let builder_name = request.builder.as_str();
     let builder = match super::BuilderId::parse(builder_name) {
         Ok(value) => value,
         Err(error) => return failed(&request, &id, &error),
     };
-    let output = match request.output.as_deref() {
-        Some("pdf") => Output::Pdf,
-        Some("html") => Output::Html,
-        Some("docx") => Output::Docx,
+    let output = match request.output.as_str() {
+        "pdf" => Output::Pdf,
+        "html" => Output::Html,
+        "docx" => Output::Docx,
         _ => return failed(&request, &id, "unsupported output"),
     };
-    let entrypoint = request.entrypoint.as_deref().unwrap_or(&request.main);
+    let entrypoint = request.entrypoint.as_str();
     let mut options = BTreeMap::new();
-    for (key, value) in request.builder_options.as_ref().into_iter().flatten() {
+    for (key, value) in request.inputs.options() {
         let value = match value {
             serde_json::Value::String(value) => value.clone(),
             serde_json::Value::Bool(value) => value.to_string(),
@@ -121,9 +121,11 @@ pub async fn run(
     } else {
         None
     };
-    let engine = options
-        .remove("engine")
-        .or_else(|| (!request.engine.is_empty()).then(|| request.engine.clone()));
+    // Only a preset can still supply an engine: `engine` left the typed
+    // option vocabulary with the direct-TeX builders that were its only
+    // users, and `BuildRequestV2::validate_shape` refuses it on a request
+    // that names no preset.
+    let engine = options.remove("engine");
     let project = workspace.project();
     if project.join("out").exists() {
         return failed(
@@ -172,11 +174,7 @@ pub async fn run(
     };
     status.provenance = protocol::BuildProvenance {
         backend: "local".into(),
-        version: tools.version(if builder_name == "tex" {
-            engine.as_deref().unwrap_or("pdflatex")
-        } else {
-            builder_name
-        }),
+        version: tools.version(builder_name),
         builder: builder.as_str().into(),
         engine: engine.unwrap_or_default(),
         preset: request.preset.clone(),
@@ -242,14 +240,19 @@ pub async fn run(
             status.error = Some(error);
         }
     }
-    if status.status == "failed" || matches!(builder_name, "tex" | "latexmk" | "tectonic") {
+    // Only a failure produces diagnostics now. The other arm of this
+    // condition asked for them on every successful direct-TeX build, because
+    // `latexmk` reports overfull boxes and undefined references through a
+    // log a caller has to read even when it exits zero. No direct-TeX
+    // builder is nameable on the wire any more -- LaTeX is built in the
+    // browser -- so what is left is the native builders, which say what went
+    // wrong by failing.
+    if status.status == "failed" {
         let log = status
             .log_tail
             .replace(&format!("{}/", project.display()), "");
         status.diagnostics = super::diagnostics::normalize(
-            builder_name,
             &log,
-            entrypoint,
             &request
                 .manifest
                 .iter()
@@ -300,7 +303,14 @@ mod tests {
         let store = presets::PresetStore::new(root.path());
         let preset: presets::Preset = serde_json::from_value(serde_json::json!({"id":"test","display_name":"Test","base_adapter":"typst","source_formats":["typst"],"semantic_revision":1})).unwrap();
         store.create(preset).unwrap();
-        let request: JobRequest = serde_json::from_value(serde_json::json!({"protocol":2,"kind":"build","project":"p","origin":"https://example.test","snapshot":"s","generation":1,"builder":"typst","workspace":{"mode":"snapshot"},"entrypoint":"main.typ","main":"main.typ","output":"pdf","preset":"test","manifest":[]})).unwrap();
+        let request: JobRequest = serde_json::from_value(serde_json::json!({
+            "protocol": 2, "kind": "build", "project": "p",
+            "origin": "https://example.test", "snapshot": "s", "generation": 1,
+            "builder": "typst", "workspace": {"mode": "snapshot"},
+            "entrypoint": "main.typ", "output": "pdf", "inputs": {"engine": "native"},
+            "preset": "test", "manifest": [],
+        }))
+        .unwrap();
         let stage = |name: &str| {
             let workspace = Workspace {
                 root: root.path().join(name),

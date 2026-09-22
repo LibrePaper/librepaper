@@ -456,9 +456,7 @@ async fn writer_socket_end_to_end_benchmark() {
         config.clone(),
     );
     tokio::spawn(worker.run());
-    let store = Store::open_with_catalog(blobs, config.clone(), catalog.clone(), registry)
-        .await
-        .expect("open benchmark store");
+    let store = Store::open_with_catalog(blobs, config.clone(), catalog.clone(), registry);
     let mut server = Server::new(
         store,
         rooms,

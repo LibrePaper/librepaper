@@ -69,14 +69,8 @@ impl Server {
         let who = self
             .viewer(&entry, &bounded, arrival, query.as_deref())
             .await;
-        if who.auth_failed {
-            return write_json(
-                401,
-                &json!({"error":"authentication expired or was revoked"}),
-            );
-        }
-        if !self.may_read(&entry, &who) {
-            return write_json(404, &json!({"error":"not found"}));
+        if let Err(response) = self.check_readable(&entry, &who) {
+            return response;
         }
         if !who.at_least(Role::Editor) {
             return write_json(
@@ -258,14 +252,8 @@ impl Server {
         let mut bounded = headers.clone();
         bounded.insert(AUTOMATION_HEADER, HeaderValue::from_static("1"));
         let who = self.viewer(&entry, &bounded, arrival, None).await;
-        if who.auth_failed {
-            return write_json(
-                401,
-                &json!({"error":"authentication expired or was revoked"}),
-            );
-        }
-        if !self.may_read(&entry, &who) {
-            return write_json(404, &json!({"error":"not found"}));
+        if let Err(response) = self.check_readable(&entry, &who) {
+            return response;
         }
         let can_read = true;
         let can_comment = who.at_least(Role::Commenter);

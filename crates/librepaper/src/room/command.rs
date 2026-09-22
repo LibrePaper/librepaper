@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use super::Message;
 
@@ -26,23 +27,23 @@ pub enum Command {
         request_id: String,
     },
     Reply {
-        comment_id: String,
+        comment_id: Uuid,
         body: String,
         creator: String,
         temp_id: String,
         request_id: String,
     },
     Resolve {
-        comment_id: String,
+        comment_id: Uuid,
         resolved: bool,
         temp_id: String,
     },
     Delete {
-        comment_id: String,
+        comment_id: Uuid,
         temp_id: String,
     },
     Refine {
-        comment_id: String,
+        comment_id: Uuid,
         proposed: String,
         /// What the caller last read the suggestion as proposing. Required
         /// on the wire (§7.2) and carried through to the command, which
@@ -52,11 +53,11 @@ pub enum Command {
         temp_id: String,
     },
     Accept {
-        comment_id: String,
+        comment_id: Uuid,
         temp_id: String,
     },
     Reject {
-        comment_id: String,
+        comment_id: Uuid,
         temp_id: String,
     },
     // Agent candidate revisions are the assistant surface's own concept, not
@@ -124,16 +125,20 @@ impl CommandError {
 }
 
 impl Command {
-    pub fn comment_id(&self) -> &str {
+    /// The comment this command names, as the wire echoes it back.
+    ///
+    /// Parsed once, at the boundary in `into_command`, rather than in each
+    /// of the six arms that used to turn the same string into the same
+    /// `Uuid` and answer "unknown comment" when it would not.
+    pub fn comment_id(&self) -> String {
         match self {
             Self::Reply { comment_id, .. }
             | Self::Resolve { comment_id, .. }
             | Self::Delete { comment_id, .. }
             | Self::Refine { comment_id, .. }
             | Self::Accept { comment_id, .. }
-            | Self::Reject { comment_id, .. } => comment_id,
-            Self::RevisionDecide => "",
-            Self::Comment { .. } => "",
+            | Self::Reject { comment_id, .. } => comment_id.to_string(),
+            Self::RevisionDecide | Self::Comment { .. } => String::new(),
         }
     }
 
@@ -180,6 +185,19 @@ impl Message {
                 request_id: request_id.clone(),
             })
         };
+        // An id that is absent and one that is not a UUID are the same
+        // refusal, made here rather than in each of the six arms below. The
+        // catalogue stores annotation ids as `uuid`, so a string that will
+        // not parse names no comment that could ever exist.
+        let named = |operation: &'static str| -> Result<Uuid, CommandError> {
+            Uuid::parse_str(comment_id.trim()).map_err(|_| CommandError::Missing {
+                operation,
+                field: "comment_id",
+                comment_id: comment_id.clone(),
+                temp_id: temp_id.clone(),
+                request_id: request_id.clone(),
+            })
+        };
         match kind.as_str() {
             "comment" => Ok(Command::Comment {
                 motivation: self.motivation().to_owned(),
@@ -197,9 +215,7 @@ impl Message {
                 request_id,
             }),
             "reply" => {
-                if comment_id.trim().is_empty() {
-                    return missing("reply", "comment_id");
-                }
+                let comment_id = named("reply")?;
                 Ok(Command::Reply {
                     comment_id,
                     body: self.body().to_owned(),
@@ -209,9 +225,7 @@ impl Message {
                 })
             }
             "resolve" => {
-                if comment_id.trim().is_empty() {
-                    return missing("resolve", "comment_id");
-                }
+                let comment_id = named("resolve")?;
                 Ok(Command::Resolve {
                     comment_id,
                     resolved: self.resolved(),
@@ -219,18 +233,14 @@ impl Message {
                 })
             }
             "delete" => {
-                if comment_id.trim().is_empty() {
-                    return missing("delete", "comment_id");
-                }
+                let comment_id = named("delete")?;
                 Ok(Command::Delete {
                     comment_id,
                     temp_id,
                 })
             }
             "refine" => {
-                if comment_id.trim().is_empty() {
-                    return missing("refine", "comment_id");
-                }
+                let comment_id = named("refine")?;
                 let Some(proposed) = self.proposed().map(str::to_owned) else {
                     return missing("refine", "proposed");
                 };
@@ -246,18 +256,14 @@ impl Message {
                 })
             }
             "accept" => {
-                if comment_id.trim().is_empty() {
-                    return missing("accept", "comment_id");
-                }
+                let comment_id = named("accept")?;
                 Ok(Command::Accept {
                     comment_id,
                     temp_id,
                 })
             }
             "reject" => {
-                if comment_id.trim().is_empty() {
-                    return missing("reject", "comment_id");
-                }
+                let comment_id = named("reject")?;
                 Ok(Command::Reject {
                     comment_id,
                     temp_id,
@@ -288,6 +294,10 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A comment id on the wire is a UUID, because that is what the
+    /// catalogue stores annotation ids as.
+    const NAMED: &str = "9f1c0d1e-2b3a-4c5d-8e7f-0a1b2c3d4e5f";
 
     fn comment() -> Command {
         Command::Comment {
@@ -344,7 +354,7 @@ mod tests {
         assert_eq!(request_id, "r");
 
         let reply = Command::Reply {
-            comment_id: "c".into(),
+            comment_id: Uuid::parse_str(NAMED).expect("a comment id"),
             body: "body".into(),
             creator: "claimed".into(),
             temp_id: "t".into(),
@@ -359,7 +369,7 @@ mod tests {
             panic!("reply stays a reply");
         };
         assert_eq!(creator, "server");
-        assert_eq!(comment_id, "c");
+        assert_eq!(comment_id.to_string(), NAMED);
     }
 
     /// A refinement's precondition reaches the command. It used to be
@@ -371,7 +381,7 @@ mod tests {
     fn a_refinement_carries_what_the_caller_last_read() {
         let message: Message = serde_json::from_value(json!({
             "type": "refine",
-            "comment_id": "c",
+            "comment_id": NAMED,
             "proposed": "the new words",
             "expected_proposed": "the words they read",
             "body": "why",
@@ -387,7 +397,7 @@ mod tests {
         else {
             panic!("a refine frame is a refine command");
         };
-        assert_eq!(comment_id, "c");
+        assert_eq!(comment_id.to_string(), NAMED);
         assert_eq!(proposed, "the new words");
         assert_eq!(expected_proposed, "the words they read");
         assert_eq!(body, "why");
@@ -399,7 +409,7 @@ mod tests {
     fn a_refinement_without_it_is_refused() {
         let message: Message = serde_json::from_value(json!({
             "type": "refine",
-            "comment_id": "c",
+            "comment_id": NAMED,
             "proposed": "the new words",
         }))
         .expect("a refine frame");
@@ -417,7 +427,7 @@ mod tests {
     #[test]
     fn with_creator_leaves_other_commands_alone() {
         let resolve = Command::Resolve {
-            comment_id: "c".into(),
+            comment_id: Uuid::parse_str(NAMED).expect("a comment id"),
             resolved: true,
             temp_id: "t".into(),
         };
@@ -429,7 +439,7 @@ mod tests {
         else {
             panic!("resolve stays a resolve");
         };
-        assert_eq!(comment_id, "c");
+        assert_eq!(comment_id.to_string(), NAMED);
         assert!(resolved);
         assert_eq!(temp_id, "t");
 

@@ -97,7 +97,7 @@ pub fn plan(
     let mut plan = match request.builder {
         BuilderId::Typst => typst_plan(request, tools, workspace, &entrypoint, &output)?,
         BuilderId::Pandoc => pandoc_plan(request, tools, workspace, &entrypoint, &output)?,
-        BuilderId::Calepin => calepin_plan(request, workspace, &entrypoint, &output)?,
+        BuilderId::Calepin => calepin_plan(request, tools, workspace, &entrypoint, &output)?,
     };
     plan.cwd = workspace.to_path_buf();
     Ok(plan)
@@ -105,6 +105,7 @@ pub fn plan(
 
 fn calepin_plan(
     request: &BuildRequest,
+    tools: &BTreeMap<String, PathBuf>,
     workspace: &Path,
     entrypoint: &Path,
     output: &Path,
@@ -113,10 +114,12 @@ fn calepin_plan(
     if !matches!(request.output, Output::Pdf | Output::Html) {
         return Err("Calepin output must be PDF or HTML".into());
     }
-    let executable =
-        crate::local::preview::calepin::find_calepin().ok_or("tool-missing: calepin")?;
+    // From discovery, like every other native builder. This used to search
+    // `PATH` again here, which could resolve a different executable from
+    // the one discovery reported as available -- and reported a build
+    // failure for a tool the capabilities call had just called present.
     Ok(CommandPlan {
-        executable,
+        executable: tool(tools, "calepin")?,
         args: vec![
             "compile".into(),
             entrypoint.display().to_string(),

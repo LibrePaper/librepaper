@@ -174,16 +174,4 @@ impl PostgresCatalog {
         .await
         .map_err(Error::from)
     }
-
-    /// Forget every mark this person holds. Part of erasing an account: the
-    /// cascade on `accounts` covers it, and this exists for the case where the
-    /// account stays and its history does not.
-    pub async fn forget_marks(&self, account_id: Uuid) -> Result<u64> {
-        Ok(
-            sqlx::query!("DELETE FROM document_marks WHERE account_id=$1", account_id)
-                .execute(&self.pool)
-                .await?
-                .rows_affected(),
-        )
-    }
 }

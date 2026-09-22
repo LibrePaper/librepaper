@@ -18,7 +18,7 @@ use crate::document::session;
 use crate::document::store::{DocumentInput, MutationActor, Store};
 use crate::room::proposals::{DecideProposalHunk, OpenProposal, ProposalDecided, UpdateProposal};
 use crate::storage::blob::FsStore;
-use crate::storage::postgres::{Authority, PostgresCatalog, PostgresOptions, StoredProposal};
+use crate::storage::postgres::{Authority, PostgresCatalog, StoredProposal};
 use loro::Frontiers;
 use uuid::Uuid;
 
@@ -32,21 +32,7 @@ struct Deployment {
 }
 
 async fn deployment(slug: &str) -> Option<Deployment> {
-    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
-    let catalog = Arc::new(
-        PostgresCatalog::connect(PostgresOptions::new(url))
-            .await
-            .unwrap(),
-    );
-    catalog.migrate().await.unwrap();
-    sqlx::query(
-        "TRUNCATE document_proposal_hunks,document_proposals,document_labels,\
-         document_updates,document_snapshots,document_assets,replies,annotations,\
-         share_links,grants,documents,accounts CASCADE",
-    )
-    .execute(catalog.pool())
-    .await
-    .unwrap();
+    let catalog = crate::tests::catalog().await?;
     let account = catalog
         .create_account(crate::storage::postgres::NewAccount {
             kind: "registered".into(),
@@ -79,9 +65,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         config.clone(),
         catalog.clone(),
         registry.clone(),
-    )
-    .await
-    .unwrap();
+    );
     store
         .put_directory_as_actor(
             DocumentInput {

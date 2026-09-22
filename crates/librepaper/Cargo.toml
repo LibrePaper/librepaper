@@ -35,6 +35,10 @@ serde_yaml = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2", "multipart"] }
 # Digests, SigV4, and the signature on every cookie.
 sha2 = "0.10"
+# Quarto's freezer names a cached computation by the MD5 of its source, so
+# reading that cache means computing the same digest. A format requirement,
+# not a security choice: nothing here trusts MD5 for anything.
+md5 = "0.7"
 hmac = "0.12"
 base64 = "0.22"
 hex = "0.4"

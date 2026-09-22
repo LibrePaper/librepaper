@@ -581,11 +581,6 @@ pub type Result<T> = std::result::Result<T, SequencerError>;
 /// still takes a concrete `PostgresCatalog`; the trait object is an internal
 /// seam, not a new public surface.
 pub(crate) trait LogCatalog: Send + Sync {
-    fn log_head(&self, document_id: Uuid) -> BoxFuture<'_, postgres::Result<postgres::LogHead>>;
-    fn log_base(
-        &self,
-        document_id: Uuid,
-    ) -> BoxFuture<'_, postgres::Result<Option<postgres::LogBase>>>;
     fn log_coverage(
         &self,
         document_id: Uuid,
@@ -638,17 +633,6 @@ pub(crate) trait LogCatalog: Send + Sync {
 }
 
 impl LogCatalog for PostgresCatalog {
-    fn log_head(&self, document_id: Uuid) -> BoxFuture<'_, postgres::Result<postgres::LogHead>> {
-        Box::pin(self.log_head(document_id))
-    }
-
-    fn log_base(
-        &self,
-        document_id: Uuid,
-    ) -> BoxFuture<'_, postgres::Result<Option<postgres::LogBase>>> {
-        Box::pin(self.log_base(document_id))
-    }
-
     fn log_coverage(
         &self,
         document_id: Uuid,
@@ -847,6 +831,45 @@ impl Bucket {
 }
 
 impl Inner {
+    /// Refuses a caller when this process no longer holds the writer lease.
+    ///
+    /// The two states are kept apart deliberately and both are answered from
+    /// here rather than at each caller: `fenced` means somebody else is
+    /// writing this document and reconnecting reaches them (§10), while
+    /// `unreadable` means this document breached a resource bound and cannot
+    /// be built (§9.3) -- ingest and flush continue through the second and
+    /// not through the first.
+    fn writable(&self) -> Result<()> {
+        match &self.fenced {
+            Some(why) => Err(SequencerError::Fenced(why.clone())),
+            None => Ok(()),
+        }
+    }
+
+    /// The same, for a caller that also needs the document built.
+    fn readable(&self) -> Result<()> {
+        self.writable()?;
+        match &self.unreadable {
+            Some(why) => Err(SequencerError::Unreadable(why.clone())),
+            None => Ok(()),
+        }
+    }
+
+    /// Marks this sequencer fenced and closes every socket on it.
+    ///
+    /// Idempotent: the second call finds no subscribers to close. Both
+    /// callers -- `Sequencer::close_fenced`, which holds the lock, and
+    /// `Entry::fence`, which owns the whole `Inner` -- had the same three
+    /// lines, and the message a browser reads on the close frame was written
+    /// out twice.
+    fn fence(&mut self, why: String) {
+        self.fenced = Some(why.clone());
+        let payload = format!("fenced: {why}; reconnect");
+        for (_, subscriber) in self.subscribers.drain() {
+            let _ = subscriber.tx.force_close(payload.clone());
+        }
+    }
+
     /// What the first `take` batches are charged, which is also what they
     /// encode to once the row's version byte is added.
     fn charge_of(&self, take: usize) -> usize {
@@ -1005,13 +1028,16 @@ impl Sequencer {
         deployment_peer_key: String,
         compaction: Arc<std::sync::OnceLock<crate::storage::worker::Handle>>,
     ) -> Result<Self> {
-        // Upcast once, here: every other method sees only the eight
-        // questions and two writes in `LogCatalog`, not the concrete
-        // catalog, which is what lets `from_parts` build a sequencer without
-        // one (§14.2).
-        let catalog: Arc<dyn LogCatalog> = catalog;
+        // Admission's own two reads, made against the concrete catalogue.
+        // They happen before the upcast because they happen only here:
+        // putting them in `LogCatalog` put two methods in the trait that
+        // every test double had to answer and nothing else ever called.
         let head = catalog.log_head(document_id).await?;
         let base = catalog.log_base(document_id).await?;
+        // Upcast once, here: every other method sees only the questions and
+        // writes in `LogCatalog`, not the concrete catalog, which is what
+        // lets `from_parts` build a sequencer without one (§14.2).
+        let catalog: Arc<dyn LogCatalog> = catalog;
         let log_vector = decode_vector(&head.vector)?;
         let base_vector = match &base {
             Some(base) => decode_vector(&base.vector)?,
@@ -1433,9 +1459,7 @@ impl Sequencer {
             // be made durable again by writing more to it. Fail fast rather
             // than round-tripping to PostgreSQL only to be told the same
             // thing again.
-            if let Some(why) = &inner.fenced {
-                return Err(SequencerError::Fenced(why.clone()));
-            }
+            inner.writable()?;
             let take = inner.buffer.len();
             if take == 0 {
                 return Ok(None);
@@ -1673,9 +1697,7 @@ impl Sequencer {
         }
 
         let mut inner = self.inner.lock().await;
-        if let Some(why) = &inner.fenced {
-            return Err(SequencerError::Fenced(why.clone()));
-        }
+        inner.writable()?;
         inner.subscribers.insert(
             socket,
             Subscriber {
@@ -1774,20 +1796,10 @@ impl Sequencer {
     ) {
         let text = payload.to_string();
         let mut inner = self.inner.lock().await;
-        let mut closed = Vec::new();
-        for (id, subscriber) in inner.subscribers.iter() {
-            if Some(*id) == skip || role.is_some_and(|wanted| wanted != subscriber.role) {
-                continue;
-            }
-            if subscriber
-                .tx
-                .try_send(Outgoing::shared_text(text.clone()))
-                .is_err()
-            {
-                closed.push(*id);
-            }
-        }
-        drop_slow(&mut inner, closed);
+        fan_out(&mut inner, false, |id, subscriber| {
+            let wanted = Some(id) != skip && role.is_none_or(|wanted| wanted == subscriber.role);
+            wanted.then(|| Outgoing::shared_text(text.clone()))
+        });
     }
 
     // -- section 7: semantic commands ------------------------------------
@@ -2092,12 +2104,7 @@ impl Sequencer {
     /// The projection at head, building a cache entry if there is not one.
     pub async fn projection(&self) -> Result<Arc<librepaper_document_core::Projected>> {
         let mut inner = self.inner.lock().await;
-        if let Some(why) = &inner.fenced {
-            return Err(SequencerError::Fenced(why.clone()));
-        }
-        if let Some(why) = &inner.unreadable {
-            return Err(SequencerError::Unreadable(why.clone()));
-        }
+        inner.readable()?;
         if let Some(projection) = &inner.projection {
             return Ok(projection.clone());
         }
@@ -2136,12 +2143,7 @@ impl Sequencer {
         read: impl FnOnce(&LoroDoc) -> T,
     ) -> Result<T> {
         let mut inner = self.inner.lock().await;
-        if let Some(why) = &inner.fenced {
-            return Err(SequencerError::Fenced(why.clone()));
-        }
-        if let Some(why) = &inner.unreadable {
-            return Err(SequencerError::Unreadable(why.clone()));
-        }
+        inner.readable()?;
         if inner.cache.is_none() {
             let cache = self.build(&mut inner).await?;
             inner.cache = Some(cache);
@@ -2160,16 +2162,43 @@ impl Sequencer {
         Ok(read(&fork))
     }
 
+    /// The head document *and* its projection, under one acquisition of the
+    /// lock.
+    ///
+    /// A caller that wanted both asked for them separately, and the two
+    /// answers were about two different moments: an edit landing between the
+    /// `projection()` call and the `with_head` call gave a caller a digest
+    /// naming one revision and text from another, which is exactly the
+    /// mismatch a stale-selection check exists to catch and would instead
+    /// have caused. Holding the lock across both also means the projection
+    /// is built once and cached, rather than recomputed per comment page.
+    pub async fn with_projected_head<T>(
+        &self,
+        read: impl FnOnce(&LoroDoc, &librepaper_document_core::Projected) -> T,
+    ) -> Result<T> {
+        let mut inner = self.inner.lock().await;
+        inner.readable()?;
+        if inner.cache.is_none() {
+            let cache = self.build(&mut inner).await?;
+            inner.cache = Some(cache);
+        }
+        if inner.projection.is_none() {
+            let cache = inner.cache.as_ref().expect("a cache was just built");
+            inner.projection = Some(Arc::new(librepaper_document_core::project(
+                &cache.doc,
+                &self.config.paths(),
+            )));
+        }
+        let projected = inner.projection.clone().expect("just built");
+        let cache = inner.cache.as_ref().expect("a cache was just built");
+        Ok(read(&cache.doc, &projected))
+    }
+
     /// The head document, for a caller that has to read more than the
     /// projection and is not writing anything.
     pub async fn with_head<T>(&self, read: impl FnOnce(&LoroDoc) -> T) -> Result<T> {
         let mut inner = self.inner.lock().await;
-        if let Some(why) = &inner.fenced {
-            return Err(SequencerError::Fenced(why.clone()));
-        }
-        if let Some(why) = &inner.unreadable {
-            return Err(SequencerError::Unreadable(why.clone()));
-        }
+        inner.readable()?;
         if inner.cache.is_none() {
             let cache = self.build(&mut inner).await?;
             inner.cache = Some(cache);
@@ -2355,12 +2384,7 @@ impl Sequencer {
     /// `resident`, and calling it twice just re-sends `Close` to whatever
     /// subscribers (normally none, the second time) remain.
     async fn close_fenced(&self, why: String) {
-        let mut inner = self.inner.lock().await;
-        inner.fenced = Some(why.clone());
-        let payload = format!("fenced: {why}; reconnect");
-        for (_, subscriber) in inner.subscribers.drain() {
-            let _ = subscriber.tx.force_close(payload.clone());
-        }
+        self.inner.lock().await.fence(why);
     }
 
     /// The log as it stands, for compaction and for the cost report.
@@ -2384,9 +2408,7 @@ impl Sequencer {
     /// next opportunity.
     pub async fn snapshot_at_log_vector(&self) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize)>> {
         let mut inner = self.inner.lock().await;
-        if let Some(why) = &inner.fenced {
-            return Err(SequencerError::Fenced(why.clone()));
-        }
+        inner.writable()?;
         if !inner.buffer.is_empty() {
             return Ok(None);
         }
@@ -2516,11 +2538,7 @@ impl CompactionGate<'_> {
     /// Prevents this instance from serving state when an activation may
     /// have committed but its durable result cannot be read back.
     pub(crate) fn fence(&mut self, why: String) {
-        self.inner.fenced = Some(why.clone());
-        let payload = format!("fenced: {why}; reconnect");
-        for (_, subscriber) in self.inner.subscribers.drain() {
-            let _ = subscriber.tx.force_close(payload.clone());
-        }
+        self.inner.fence(why);
     }
 }
 
@@ -2577,20 +2595,9 @@ impl Sequencer {
         inner.last_source_changed = Some(Instant::now());
         inner.source_changed_owed = false;
         let payload = json!({"type": "source-changed", "digest": digest}).to_string();
-        let mut closed = Vec::new();
-        for (id, subscriber) in inner.subscribers.iter() {
-            if subscriber.role != Role::Reader {
-                continue;
-            }
-            if subscriber
-                .tx
-                .try_send(Outgoing::shared_text(payload.clone()))
-                .is_err()
-            {
-                closed.push(*id);
-            }
-        }
-        drop_slow(inner, closed);
+        fan_out(inner, false, |_, subscriber| {
+            (subscriber.role == Role::Reader).then(|| Outgoing::shared_text(payload.clone()))
+        });
     }
 }
 
@@ -2644,6 +2651,35 @@ fn drop_slow(inner: &mut Inner, closed: Vec<u64>) {
     }
 }
 
+/// Sends one frame to every subscriber `frame` produces one for, and closes
+/// the ones whose queue is full.
+///
+/// Every fan-out in this module had this loop, and each had its own copy of
+/// the slow-peer collection and the `drop_slow` that goes with it. Missing
+/// either leaves a peer that has stopped reading holding a socket for good,
+/// which is exactly the failure a bounded queue exists to prevent.
+///
+/// `durable` picks the send: a frame the peer must not miss -- an
+/// acknowledgement, a durability announcement -- goes through
+/// `try_send_durable`, which is admitted past the ordinary queue budget.
+fn fan_out(inner: &mut Inner, durable: bool, frame: impl Fn(u64, &Subscriber) -> Option<Outgoing>) {
+    let mut closed = Vec::new();
+    for (id, subscriber) in inner.subscribers.iter() {
+        let Some(outgoing) = frame(*id, subscriber) else {
+            continue;
+        };
+        let sent = if durable {
+            subscriber.tx.try_send_durable(outgoing)
+        } else {
+            subscriber.tx.try_send(outgoing)
+        };
+        if sent.is_err() {
+            closed.push(*id);
+        }
+    }
+    drop_slow(inner, closed);
+}
+
 /// Copies one frame to every editor but the sender.
 fn relay(inner: &mut Inner, skip: Option<u64>, bytes: &[u8]) {
     use base64::Engine as _;
@@ -2652,20 +2688,10 @@ fn relay(inner: &mut Inner, skip: Option<u64>, bytes: &[u8]) {
         "update": base64::engine::general_purpose::STANDARD.encode(bytes),
     })
     .to_string();
-    let mut closed = Vec::new();
-    for (id, subscriber) in inner.subscribers.iter() {
-        if Some(*id) == skip || subscriber.role != Role::Editor {
-            continue;
-        }
-        if subscriber
-            .tx
-            .try_send(Outgoing::shared_text(payload.clone()))
-            .is_err()
-        {
-            closed.push(*id);
-        }
-    }
-    drop_slow(inner, closed);
+    fan_out(inner, false, |id, subscriber| {
+        (Some(id) != skip && subscriber.role == Role::Editor)
+            .then(|| Outgoing::shared_text(payload.clone()))
+    });
 }
 
 /// `doc-ack {upTo}` to one peer, for a batch that never reached the buffer
@@ -2707,21 +2733,12 @@ fn acknowledge(inner: &mut Inner, acknowledged: &[(String, i64)]) {
             .iter()
             .map(|(peer_key, client_seq)| (peer_key.as_str(), *client_seq)),
     );
-    let mut closed = Vec::new();
-    for (id, subscriber) in inner.subscribers.iter() {
-        let Some(up_to) = highest.get(subscriber.peer_key.as_str()) else {
-            continue;
-        };
-        let payload = json!({"type": "doc-ack", "upTo": up_to}).to_string();
-        if subscriber
-            .tx
-            .try_send_durable(Outgoing::Text(payload))
-            .is_err()
-        {
-            closed.push(*id);
-        }
-    }
-    drop_slow(inner, closed);
+    fan_out(inner, true, |_, subscriber| {
+        let up_to = highest.get(subscriber.peer_key.as_str())?;
+        Some(Outgoing::Text(
+            json!({"type": "doc-ack", "upTo": up_to}).to_string(),
+        ))
+    });
 }
 
 /// Announces the vector through the row that has just committed. This is
@@ -2737,20 +2754,9 @@ fn notify_durable(inner: &mut Inner) {
         "vector": base64::engine::general_purpose::STANDARD.encode(inner.log_vector.encode()),
     })
     .to_string();
-    let mut closed = Vec::new();
-    for (id, subscriber) in inner.subscribers.iter() {
-        if subscriber.role != Role::Editor {
-            continue;
-        }
-        if subscriber
-            .tx
-            .try_send_durable(Outgoing::shared_text(payload.clone()))
-            .is_err()
-        {
-            closed.push(*id);
-        }
-    }
-    drop_slow(inner, closed);
+    fan_out(inner, true, |_, subscriber| {
+        (subscriber.role == Role::Editor).then(|| Outgoing::shared_text(payload.clone()))
+    });
 }
 
 /// Each peer's highest `client_seq` among the batches: what a single

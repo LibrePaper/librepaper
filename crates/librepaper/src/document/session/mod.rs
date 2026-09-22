@@ -40,14 +40,12 @@
 
 mod anchors;
 mod edits;
-mod presence;
 
 mod shape;
 mod sync;
 
 pub use anchors::*;
 pub use edits::*;
-pub use presence::*;
 
 pub use shape::*;
 pub use sync::*;

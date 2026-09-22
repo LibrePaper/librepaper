@@ -1,18 +1,19 @@
 //! Background work, in this process, with no queue table.
 //!
-//! There are four kinds of it -- compaction, archives, deletion and the
-//! sweep of superseded compaction bases -- and what they have in common is
-//! that none of them needs a row to remember it (SPEC-server-is-a-log §8.6).
-//! Durable state is what survives a restart:
+//! There are five kinds of it -- compaction, archives, deletion, account
+//! erasure and the sweep of superseded compaction bases -- and what they
+//! have in common is that none of them needs a row to remember it
+//! (SPEC-server-is-a-log §8.6). Durable state is what survives a restart:
 //!
 //! | task | the state that remembers it |
 //! |---|---|
 //! | compaction | `documents.uncompacted_*` over the threshold |
 //! | archive | a label with `archive_requested_at` and no `archive_key` |
 //! | deletion | `documents.status = 'deleting'` |
+//! | account erasure | `accounts.status = 'erasing'` |
 //! | superseded bases | a `document_snapshots.delete_after` in the past |
 //!
-//! At startup the worker scans those four in bounded pages and enqueues what
+//! At startup the worker scans those in bounded pages and enqueues what
 //! it finds.
 //! Afterwards it is woken by the events that create the state: an idle
 //! deployment issues no queries beyond the lease connection, which is the
@@ -71,6 +72,18 @@ pub enum Task {
     Archive(Uuid),
     /// The document has been in the trash long enough.
     Delete(Uuid),
+    /// Somebody asked for their account to be erased. `begin_account_erasure`
+    /// marked the row `erasing` and its documents `deleting`; this finishes
+    /// the job, and only once every document the account owned is actually
+    /// gone.
+    ///
+    /// `after` is a keyset cursor over those documents, so waking deletion
+    /// for an account that owns thousands of them stays bounded and is
+    /// resumable: a page that fills asks for itself again from its last id.
+    /// Two cursors over the same account are two tasks on purpose -- the
+    /// deadline map keys on `Task`, and collapsing them would drop the
+    /// continuation.
+    EraseAccount { account: Uuid, after: Uuid },
     /// §8.4 step 5. A compaction base that was replaced is out of the grace
     /// that kept it readable for a download already in flight.
     ///
@@ -401,15 +414,34 @@ impl Worker {
         if let Some(id) = pending.archives.last() {
             next.archives = *id;
         }
+        if let Some(id) = pending.erasing.last() {
+            next.erasing = *id;
+        }
         next.compaction_done = cursor.compaction_done || (pending.compaction.len() as i64) < PAGE;
         next.deleting_done = cursor.deleting_done || (pending.deleting.len() as i64) < PAGE;
         next.archives_done = cursor.archives_done || (pending.archives.len() as i64) < PAGE;
-        let continues = !next.compaction_done || !next.deleting_done || !next.archives_done;
+        next.erasing_done = cursor.erasing_done || (pending.erasing.len() as i64) < PAGE;
+        let continues = !next.compaction_done
+            || !next.deleting_done
+            || !next.archives_done
+            || !next.erasing_done;
         let mut tasks = Vec::with_capacity(
-            pending.compaction.len() + pending.deleting.len() + pending.archives.len(),
+            pending.compaction.len()
+                + pending.deleting.len()
+                + pending.archives.len()
+                + pending.erasing.len(),
         );
         tasks.extend(pending.compaction.into_iter().map(Task::Compact));
         tasks.extend(pending.deleting.into_iter().map(Task::Delete));
+        tasks.extend(
+            pending
+                .erasing
+                .into_iter()
+                .map(|account| Task::EraseAccount {
+                    account,
+                    after: Uuid::nil(),
+                }),
+        );
         for label in pending.archives {
             // The label's own row says which document it belongs to; the
             // scan returns ids only, so the task looks it up when it runs.
@@ -430,6 +462,7 @@ impl Worker {
             Task::Compact(document) => self.compact(document).await,
             Task::Archive(label) => self.archive(label).await,
             Task::Delete(document) => self.delete(document).await,
+            Task::EraseAccount { account, after } => self.erase_account(account, after).await,
             Task::SweepSupersededBases => self.sweep_superseded_bases().await,
         }
     }
@@ -448,13 +481,11 @@ impl Worker {
             // More were due than one batch takes. Asking again is progress,
             // not a timer: the pass that finds nothing left stops.
             self.handle.ask(Task::SweepSupersededBases);
-        } else if let Some(due) = sqlx::query_scalar::<_, Option<OffsetDateTime>>(
-            "SELECT min(delete_after) FROM document_snapshots
-             WHERE delete_after IS NOT NULL",
-        )
-        .fetch_one(self.catalog.pool())
-        .await
-        .map_err(|error| error.to_string())?
+        } else if let Some(due) = self
+            .catalog
+            .superseded_base_due()
+            .await
+            .map_err(|error| error.to_string())?
         {
             self.schedule_sweep_at(due);
         }
@@ -884,11 +915,97 @@ impl Worker {
             .finish_document_deletion(document_id)
             .await
             .map_err(|error| error.to_string())?;
+        // That may have been the last document standing between an erasing
+        // account and its completion. Asking is unconditional and cheap --
+        // `erase_account` reads the account row first and returns at once
+        // for an owner who is not erasing -- which keeps the purge path from
+        // carrying a second query of its own for the ordinary case.
+        self.handle.ask(Task::EraseAccount {
+            account: document.owner_id,
+            after: Uuid::nil(),
+        });
         // A hastened purge may complete before the old grace reminder fires.
         // Remove that armed entry so it cannot wake the worker for a row that
         // no longer exists; the normal `clear` call then has nothing to keep.
         self.deadlines.remove(&Task::Delete(document_id));
         Ok(())
+    }
+
+    /// Finishing what `begin_account_erasure` started.
+    ///
+    /// That call marks the account `erasing` and every document it owns
+    /// `deleting`, and then stops: the rest is background work, because a
+    /// document's deletion has a grace period and an erasure cannot outrun
+    /// it. So this runs in two halves. While documents remain it only makes
+    /// sure each one is awake for deletion, a bounded page at a time,
+    /// resuming from `after`; the purge of the last one asks for this task
+    /// again. When none remain it calls `finish_account_erasure`, which
+    /// removes the grants, anonymises the attribution left on annotations,
+    /// replies and labels, and deletes the row -- all in the one transaction
+    /// that rechecks the document count, so an erasure can never complete
+    /// while the person's work is still there.
+    ///
+    /// Restart-recoverable with no queue: the `erasing` status is the whole
+    /// of the durable state, and the startup scan reads it.
+    async fn erase_account(&mut self, account_id: Uuid, after: Uuid) -> Result<(), String> {
+        /// How many of an account's documents one pass wakes. The same size
+        /// as the startup scan's page, for the same reason: a bounded amount
+        /// of work per turn of the loop.
+        const PAGE: i64 = 64;
+
+        let Some(account) = self
+            .catalog
+            .account(account_id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            // Already erased. A repeated request, or a wake-up that lost a
+            // race with the pass that finished the job.
+            return Ok(());
+        };
+        if account.status != "erasing" {
+            return Ok(());
+        }
+        let page = self
+            .catalog
+            .documents_awaiting_account_erasure(account_id, after, PAGE)
+            .await
+            .map_err(|error| error.to_string())?;
+        let full = (page.len() as i64) >= PAGE;
+        let last = page.last().copied();
+        for document in page {
+            // Not `local`: this runs inside `execute`, which has no access
+            // to the worker's local queue. A refused ask folds into the
+            // rescan bit, and the rescan finds these rows again through
+            // `documents.status='deleting'`.
+            self.handle.ask(Task::Delete(document));
+        }
+        if full {
+            if let Some(after) = last {
+                self.handle.ask(Task::EraseAccount {
+                    account: account_id,
+                    after,
+                });
+            }
+            return Ok(());
+        }
+        if last.is_some() || after != Uuid::nil() {
+            // Documents are still there. Their purges will ask again; a
+            // deadline here would only be a second timer for the deletion
+            // grace that `Task::Delete` already holds.
+            return Ok(());
+        }
+        // No documents at all, in this pass or any before it. This is also
+        // the whole of the work for an account that never had one, which
+        // nothing else would ever have completed.
+        match self.catalog.finish_account_erasure(account_id).await {
+            Ok(_) => Ok(()),
+            // A document appeared between the page above and the count
+            // inside the transaction. Not a failure worth a backoff: the
+            // purge of that document asks for this task again.
+            Err(super::postgres::Error::Conflict(_)) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
     }
 }
 
@@ -1063,6 +1180,180 @@ mod tests {
         worker.process(task).await;
         assert_eq!(worker.deadlines.failures(&task), 1);
         assert_eq!(worker.deadlines.next(), deadline);
+    }
+
+    /// Everything the erasure lifecycle owes the person who asked for it.
+    ///
+    /// `begin_account_erasure` marks the row and stops; before this task
+    /// existed, `finish_account_erasure` had no production caller at all, so
+    /// an account that asked to be erased stayed in the table with its
+    /// grants and its attribution for good -- and an account that owned no
+    /// documents had nothing that would ever even look at it again.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
+    async fn an_erasing_account_is_finished_only_once_its_documents_are_gone() {
+        use super::super::postgres::{NewAccount, NewDocument, PostgresOptions};
+
+        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let catalog = Arc::new(
+            PostgresCatalog::connect(PostgresOptions::new(url))
+                .await
+                .unwrap(),
+        );
+        catalog.migrate().await.unwrap();
+        crate::tests::reset(&catalog).await;
+        let _writer = catalog.claim_writer().await.unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let blobs: Arc<dyn BlobStore> =
+            Arc::new(super::super::blob::FsStore::new(directory.path(), false));
+        let config = Arc::new(crate::config::Configuration::default());
+        let registry = Registry::new(
+            catalog.clone(),
+            blobs.clone(),
+            config.clone(),
+            "test".into(),
+        );
+        let (mut worker, handle) = Worker::new(catalog.clone(), blobs, registry, config);
+
+        let account = |tag: &str| {
+            let catalog = catalog.clone();
+            let tag = tag.to_string();
+            async move {
+                catalog
+                    .create_account(NewAccount {
+                        kind: "registered".into(),
+                        provider: Some("test".into()),
+                        provider_subject: Some(format!("erase-{tag}")),
+                        handle: format!("erase-{tag}"),
+                        display_name: "Erasing".into(),
+                        email: None,
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // -- an account with no documents at all. Nothing but this task
+        //    would ever have completed it.
+        let empty = account("empty").await;
+        assert!(catalog
+            .begin_account_erasure(empty.id, time::Duration::ZERO)
+            .await
+            .unwrap());
+        worker
+            .erase_account(empty.id, Uuid::nil())
+            .await
+            .expect("an account with no documents finishes in one pass");
+        assert!(
+            catalog.account(empty.id).await.unwrap().is_none(),
+            "a zero-document erasure must complete"
+        );
+        // And a repeat, of a request and of the task, is quiet rather than
+        // an error: the row is simply not there any more.
+        worker.erase_account(empty.id, Uuid::nil()).await.unwrap();
+
+        // -- an account that owns one document.
+        let owner = account("owner").await;
+        let document = catalog
+            .create_document(NewDocument {
+                slug: "erase-me".into(),
+                owner_id: owner.id,
+                ownership_mode: "owned".into(),
+                title: "Erase me".into(),
+                source_format: "markdown".into(),
+                main_path: "document.md".into(),
+                settings: serde_json::json!({"version": 1}),
+            })
+            .await
+            .unwrap();
+        assert!(catalog
+            .begin_account_erasure(owner.id, time::Duration::ZERO)
+            .await
+            .unwrap());
+        // A second request is not a second erasure.
+        assert!(!catalog
+            .begin_account_erasure(owner.id, time::Duration::ZERO)
+            .await
+            .unwrap());
+
+        // The pass while the document is still there wakes its deletion and
+        // does not finish the account. This is the guarantee that matters:
+        // an erasure cannot run ahead of the deletion grace.
+        worker.erase_account(owner.id, Uuid::nil()).await.unwrap();
+        assert!(
+            catalog.account(owner.id).await.unwrap().is_some(),
+            "the account must survive while it still owns a document"
+        );
+        let mut woken = Vec::new();
+        while let Ok(task) = worker.rx.try_recv() {
+            woken.push(task);
+        }
+        assert!(
+            woken.contains(&Task::Delete(document.id)),
+            "the pass must wake the owned document's deletion: {woken:?}"
+        );
+
+        // -- restart recovery: a fresh worker, told nothing, finds the
+        //    account through the durable scan alone.
+        let page = worker.scan(PendingWorkCursor::default()).await.unwrap();
+        assert!(
+            page.tasks.contains(&Task::EraseAccount {
+                account: owner.id,
+                after: Uuid::nil()
+            }),
+            "the startup scan must rediscover an erasing account: {:?}",
+            page.tasks,
+        );
+
+        // -- completion after the last document. The purge path asks for
+        //    the account task itself, which is what makes "finish only
+        //    after owned documents are gone" happen without a timer.
+        assert!(catalog.hasten_deletion(document.id).await.unwrap());
+        worker.delete(document.id).await.unwrap();
+        assert!(catalog.document(document.id).await.unwrap().is_none());
+        let mut woken = Vec::new();
+        while let Ok(task) = worker.rx.try_recv() {
+            woken.push(task);
+        }
+        assert!(
+            woken.contains(&Task::EraseAccount {
+                account: owner.id,
+                after: Uuid::nil()
+            }),
+            "purging the last document must ask for its owner's erasure: {woken:?}"
+        );
+
+        // Attribution the person left behind is anonymised, not deleted,
+        // and the account row goes.
+        worker.erase_account(owner.id, Uuid::nil()).await.unwrap();
+        assert!(
+            catalog.account(owner.id).await.unwrap().is_none(),
+            "the erasure completes once the last document is gone"
+        );
+
+        // -- failure and retry. A closed pool is a failure, not a silent
+        //    success, so the deadline map gives it a backoff and the task
+        //    comes back.
+        let orphan = account("failure").await;
+        assert!(catalog
+            .begin_account_erasure(orphan.id, time::Duration::ZERO)
+            .await
+            .unwrap());
+        let task = Task::EraseAccount {
+            account: orphan.id,
+            after: Uuid::nil(),
+        };
+        catalog.close().await;
+        assert!(
+            worker.erase_account(orphan.id, Uuid::nil()).await.is_err(),
+            "an unreachable catalogue must not read as a completed erasure"
+        );
+        worker.process(task).await;
+        assert_eq!(worker.deadlines.failures(&task), 1);
+        assert!(worker.deadlines.next().is_some(), "the retry is scheduled");
+        drop(handle);
     }
 
     fn document_with(text: &str) -> LoroDoc {

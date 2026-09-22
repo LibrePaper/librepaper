@@ -206,17 +206,6 @@ impl AnchorStatus {
             AnchorStatus::Unresolved => "unresolved",
         }
     }
-
-    pub fn parse(value: &str) -> Option<AnchorStatus> {
-        Some(match value {
-            "exact" => AnchorStatus::Exact,
-            "modified" => AnchorStatus::Modified,
-            "ambiguous" => AnchorStatus::Ambiguous,
-            "deleted" => AnchorStatus::Deleted,
-            "unresolved" => AnchorStatus::Unresolved,
-            _ => return None,
-        })
-    }
 }
 
 impl AnchorSide {
@@ -246,18 +235,6 @@ impl ResolutionDiagnostic {
             ResolutionDiagnostic::ForeignContainer => "foreign_container",
             ResolutionDiagnostic::InvalidRange => "invalid_range",
         }
-    }
-
-    pub fn parse(value: &str) -> Option<ResolutionDiagnostic> {
-        Some(match value {
-            "removed_file" => ResolutionDiagnostic::RemovedFile,
-            "deleted_container" => ResolutionDiagnostic::DeletedContainer,
-            "cleared_history" => ResolutionDiagnostic::ClearedHistory,
-            "malformed_cursor" => ResolutionDiagnostic::MalformedCursor,
-            "foreign_container" => ResolutionDiagnostic::ForeignContainer,
-            "invalid_range" => ResolutionDiagnostic::InvalidRange,
-            _ => return None,
-        })
     }
 }
 

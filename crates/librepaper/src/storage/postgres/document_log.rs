@@ -19,10 +19,6 @@ mod snapshot_regression_tests;
 
 use super::{new_id, Error, PostgresCatalog, Result};
 
-/// Above this the recovery of one document would not fit the memory budget
-/// whatever the budget is set to, so the log is refused rather than read.
-pub const MAX_RECOVERABLE_LOG_BYTES: i64 = 128 * 1024 * 1024;
-
 /// One row of the log.
 #[derive(Clone, Debug)]
 pub struct LogRow {
@@ -262,15 +258,7 @@ impl PostgresCatalog {
         expected_update_sequence: i64,
     ) -> Result<()> {
         use sqlx::Row as _;
-        let epoch = self.writer_epoch()?;
-        let durable_epoch: i64 =
-            sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton=true FOR SHARE")
-                .fetch_one(&mut **tx)
-                .await?
-                .try_get(0)?;
-        if durable_epoch != epoch {
-            return Err(Error::Ownership("writer epoch was superseded".into()));
-        }
+        self.check_writer_epoch(tx).await?;
         let row =
             sqlx::query("SELECT status,update_sequence FROM documents WHERE id=$1 FOR UPDATE")
                 .bind(document_id)
@@ -314,15 +302,7 @@ impl PostgresCatalog {
         rung: crate::log::sequencer::Rung,
     ) -> Result<()> {
         use sqlx::Row as _;
-        let epoch = self.writer_epoch()?;
-        let durable_epoch: i64 =
-            sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton=true FOR SHARE")
-                .fetch_one(&mut **tx)
-                .await?
-                .try_get(0)?;
-        if durable_epoch != epoch {
-            return Err(Error::Ownership("writer epoch was superseded".into()));
-        }
+        self.check_writer_epoch(tx).await?;
         let status: Option<String> =
             sqlx::query("SELECT status FROM documents WHERE id=$1 FOR UPDATE")
                 .bind(document_id)
@@ -492,16 +472,8 @@ impl PostgresCatalog {
         if through_update_sequence < 0 || snapshot_bytes < 0 || snapshot_key.is_empty() {
             return Err(Error::Invalid("invalid collaboration base".into()));
         }
-        let epoch = self.writer_epoch()?;
         let mut tx = self.begin_metered().await?;
-        let durable_epoch: i64 =
-            sqlx::query("SELECT epoch FROM deployment_writer WHERE singleton=true FOR SHARE")
-                .fetch_one(&mut *tx)
-                .await?
-                .try_get(0)?;
-        if durable_epoch != epoch {
-            return Err(Error::Ownership("writer epoch was superseded".into()));
-        }
+        self.check_writer_epoch(&mut tx).await?;
         let head = sqlx::query_scalar!(
             "SELECT update_sequence FROM documents WHERE id=$1 FOR UPDATE",
             document_id,
@@ -587,10 +559,32 @@ impl PostgresCatalog {
         }))
     }
 
+    /// When the next superseded compaction base may be deleted, if one is
+    /// waiting.
+    ///
+    /// Compaction leaves the base it replaced in the store for seven days so
+    /// a reader mid-download is not cut off (§8.4 step 5). Nothing else ever
+    /// looks at that row again, so without the sweep the superseded blob
+    /// would stay for good: one per compaction, forever.
+    ///
+    /// Asked twice -- by the startup scan and by the sweep, when it decides
+    /// whether to arm itself again -- and so written once, here, rather than
+    /// as the same statement in both. The rest of the maintenance SQL stays
+    /// where it is: this one moved because it is the same question asked in
+    /// two places, not because of where it lived.
+    pub async fn superseded_base_due(&self) -> Result<Option<OffsetDateTime>> {
+        sqlx::query_scalar::<_, Option<OffsetDateTime>>(
+            "SELECT min(delete_after) FROM document_snapshots WHERE delete_after IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
     /// One keyset-paginated batch of documents whose backlog is over the
     /// compaction threshold, whose deletion has not finished, or whose
-    /// archive was requested and never landed, plus whether a superseded
-    /// base is due.
+    /// archive was requested and never landed, plus the accounts still owed
+    /// their erasure and whether a superseded base is due.
     pub async fn pending_background_work(
         &self,
         after: PendingWorkCursor,
@@ -638,19 +632,30 @@ impl PostgresCatalog {
             .fetch_all(&self.pool)
             .await?
         };
-        // Compaction leaves the base it replaced in the store for seven days
-        // so a reader mid-download is not cut off (§8.4 step 5). Nothing
-        // else ever looks at that row again, so without this the superseded
-        // blob would stay for good: one per compaction, forever.
-        let superseded_base_due = sqlx::query_scalar::<_, Option<OffsetDateTime>>(
-            "SELECT min(delete_after) FROM document_snapshots WHERE delete_after IS NOT NULL",
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        // An account whose owner asked for it to be erased. The account row
+        // saying `erasing` is the whole of the durable state that remembers
+        // it, exactly as `documents.status='deleting'` is for a document,
+        // and an account with no documents at all has nothing else that
+        // could ever remind anyone: without this page the request marked the
+        // row and no production caller ever came back to finish it.
+        let erasing = if after.erasing_done {
+            Vec::new()
+        } else {
+            sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM accounts WHERE status='erasing' AND id > $1
+             ORDER BY id LIMIT $2",
+            )
+            .bind(after.erasing)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        let superseded_base_due = self.superseded_base_due().await?;
         Ok(PendingWork {
             compaction,
             deleting,
             archives,
+            erasing,
             superseded_base_due,
         })
     }
@@ -662,6 +667,8 @@ pub struct PendingWork {
     pub compaction: Vec<Uuid>,
     pub deleting: Vec<Uuid>,
     pub archives: Vec<Uuid>,
+    /// Accounts marked `erasing` whose erasure has not been completed.
+    pub erasing: Vec<Uuid>,
     /// The next superseded compaction base deadline, if one exists.
     pub superseded_base_due: Option<OffsetDateTime>,
 }
@@ -671,9 +678,11 @@ pub struct PendingWorkCursor {
     pub compaction: Uuid,
     pub deleting: Uuid,
     pub archives: Uuid,
+    pub erasing: Uuid,
     pub compaction_done: bool,
     pub deleting_done: bool,
     pub archives_done: bool,
+    pub erasing_done: bool,
 }
 
 impl Default for PendingWorkCursor {
@@ -682,9 +691,11 @@ impl Default for PendingWorkCursor {
             compaction: Uuid::nil(),
             deleting: Uuid::nil(),
             archives: Uuid::nil(),
+            erasing: Uuid::nil(),
             compaction_done: false,
             deleting_done: false,
             archives_done: false,
+            erasing_done: false,
         }
     }
 }

@@ -3,6 +3,23 @@
 //! Engine adapters produce bundles; this module validates their payloads
 //! without parsing source or executing computations. Quarto is the only
 //! supported engine today. Generated results are transient.
+//!
+//! ## The validator has no production caller
+//!
+//! [`BundleManifest::validate`] and everything it reaches -- the ceilings
+//! above, `safe_path`, `safe_component`, `is_sha` -- are exercised only by
+//! the test suite. The local companion builds bundles and the server stores
+//! them without either of them running this pass. That is a gap worth
+//! closing, and closing it is a change to what the server accepts rather
+//! than a tidy-up: it belongs with whoever decides what to do about the
+//! bundles already stored that would not pass.
+//!
+//! Until then the contract stays whole rather than trimmed to whichever half
+//! happens to be reachable, and this allowance says so out loud instead of
+//! letting the deletions look like the module's real shape. It is scoped to
+//! the build without `cfg(test)`, so the lint still reports anything the
+//! tests do not reach either.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -15,7 +32,7 @@ pub const BUNDLE_SCHEMA: &str = "librepaper-quarto-bundle/v1";
 pub const FINGERPRINT_VERSION: u32 = 1;
 pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_BUNDLE_BYTES: usize = 512 * 1024 * 1024;
+
 pub const MAX_ASSETS: usize = 2048;
 pub const MAX_OUTPUTS: usize = 4096;
 pub const MAX_CELLS: usize = 4096;
@@ -278,22 +295,11 @@ impl ExecutionEngine {
         matches!(*self, Self::Quarto)
     }
 
-    pub const fn is_none(&self) -> bool {
-        matches!(*self, Self::None)
-    }
-
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
             "none" => Ok(Self::None),
             "quarto" => Ok(Self::Quarto),
             other => Err(format!("unsupported execution engine: {other}")),
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Quarto => "quarto",
         }
     }
 }
@@ -321,16 +327,6 @@ impl DraftFormat {
             "typst" => Self::Typst,
             "latex" => Self::Latex,
             _ => Self::Other,
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Markdown => "markdown",
-            Self::Html => "html",
-            Self::Typst => "typst",
-            Self::Latex => "latex",
-            Self::Other => "other",
         }
     }
 
@@ -365,15 +361,6 @@ impl DocumentMetadata {
             draft_format: DraftFormat::from_source_format(source_format),
         }
     }
-
-    pub fn validate_bundle_engine(self, bundle_engine: ExecutionEngine) -> Result<(), BundleError> {
-        if self.execution_engine != bundle_engine {
-            return Err(BundleError::Invalid(
-                "result bundle execution engine does not match document".into(),
-            ));
-        }
-        Ok(())
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -386,28 +373,19 @@ pub enum AssetRole {
     DraftDependency,
 }
 
-impl AssetRole {
-    pub const fn is_display(&self) -> bool {
-        matches!(*self, Self::Display)
-    }
-}
-
+/// Why a bundle is not one. Only the two refusals
+/// [`BundleManifest::validate`] can actually reach: the others described
+/// failures of a storage layer that never answered with this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BundleError {
     Invalid(String),
     TooLarge(String),
-    NotFound,
-    Conflict(String),
-    Storage(String),
 }
 
 impl fmt::Display for BundleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Invalid(s) | Self::TooLarge(s) | Self::Conflict(s) | Self::Storage(s) => {
-                f.write_str(s)
-            }
-            Self::NotFound => f.write_str("bundle not found"),
+            Self::Invalid(s) | Self::TooLarge(s) => f.write_str(s),
         }
     }
 }

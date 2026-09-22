@@ -35,6 +35,98 @@ use tokio::{
 /// always what survives.
 pub(crate) const PREVIEW_LOG_CAP_BYTES: usize = 16 * 1024;
 
+/// At most this many managed previews run at once across every other scope.
+const MAX_OTHER_PREVIEWS: usize = 8;
+
+/// A bound project directory a preview has been admitted to watch.
+pub(crate) struct BoundScope {
+    pub binding: crate::local::quarto::ProjectBinding,
+    /// The file the watcher renders, project-relative. A granted binding
+    /// fixes it; a hosted one lets each preview name its own.
+    pub entrypoint: String,
+}
+
+/// The checks every managed preview passes before its command line is built.
+///
+/// Both adapters had their own copy of all of this, character for
+/// character, and each copy was the place the other's fix would have to be
+/// repeated. What stays in an adapter is what genuinely differs: Quarto's
+/// declared data inputs, its frozen-policy and execution-mode gates, and
+/// its shared-tree verification.
+///
+/// This resolves the binding against *this* caller's origin and project,
+/// not against the binding id alone, and re-canonicalises the root: a
+/// preview is planned long enough after admission for the folder to have
+/// been moved or replaced.
+pub(crate) fn bind_scope(
+    existing: &HashMap<String, Session>,
+    request: &PreviewRequest,
+    bindings: &BindingStore,
+    binding_id: &str,
+    main: &str,
+    engine: &str,
+) -> Result<BoundScope, String> {
+    // A session in this same scope is this caller's own previous watcher,
+    // which `start` replaces. Every exclusion below is about somebody else's.
+    let other_scope = |p: &&Session| p.origin != request.origin || p.project != request.project;
+    if existing
+        .values()
+        .filter(other_scope)
+        .any(|p| p.binding == binding_id)
+    {
+        return Err("Stop the existing preview before starting another watcher.".into());
+    }
+    if existing.values().filter(other_scope).count() >= MAX_OTHER_PREVIEWS {
+        return Err("Too many active previews".into());
+    }
+    let binding = bindings
+        .resolve_scoped(binding_id, &request.origin, &request.project)
+        .map_err(|_| "Preview binding is not authorized")?;
+    if existing
+        .values()
+        .filter(other_scope)
+        .any(|p| p.root == binding.root)
+    {
+        return Err("Another managed preview already watches this project directory".into());
+    }
+    // A hosted binding names no fixed entrypoint: each preview names its
+    // own, already validated as a safe relative path by the adapter's
+    // option validation. A granted binding still refuses any entrypoint but
+    // the one it was granted for.
+    let hosted = BindingStore::is_hosted(&binding);
+    if !hosted && main != binding.entrypoint {
+        return Err(format!(
+            "{engine} entrypoint does not match the granted project binding"
+        ));
+    }
+    let entrypoint = if hosted {
+        main.to_string()
+    } else {
+        binding.entrypoint.clone()
+    };
+    if !request.manifest.iter().any(|f| f.path == entrypoint) {
+        return Err("Preview inventory must contain the bound entrypoint".into());
+    }
+    if std::fs::canonicalize(&binding.root).map_err(|e| e.to_string())? != binding.root {
+        return Err("Bound root changed".into());
+    }
+    Ok(BoundScope {
+        binding,
+        entrypoint,
+    })
+}
+
+/// Refuses an entrypoint that resolves outside the bound root -- which a
+/// symlink planted between the grant and here can still do. The watcher is
+/// given the relative path, so the resolved one is checked and discarded.
+pub(crate) fn refuse_escaping_entrypoint(root: &Path, entrypoint: &str) -> Result<(), String> {
+    let main = std::fs::canonicalize(root.join(entrypoint)).map_err(|e| e.to_string())?;
+    if !main.starts_with(root) {
+        return Err("Preview entrypoint escapes bound root".into());
+    }
+    Ok(())
+}
+
 /// Which shape the session's rendering process produces. Determines both
 /// the completeness check applied to a fresh render and the `content-type`/
 /// `x-librepaper-kind` a reader sees at `GET previews/{id}/page`.
@@ -174,13 +266,6 @@ fn strip_ansi(line: &str) -> String {
     re.replace_all(line, "").into_owned()
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
-}
-
 /// A rendered HTML page is only safe to serve once it is fully
 /// self-contained: Quarto's Pandoc pass writes the same output file first
 /// with figures referenced by a relative `<stem>_files/...` path, and its
@@ -279,7 +364,7 @@ async fn finish_render(watch: &SessionWatch) {
     let note = match watch.adapter.output_path(&watch.root) {
         Some(path) => match wait_stable_then_read(&path).await {
             Some(bytes) if looks_complete(watch.adapter.kind(), &watch.entrypoint, &bytes) => {
-                let sha256 = hex_sha256(&bytes);
+                let sha256 = crate::results::sha256(&bytes);
                 let mut latest = watch.latest.lock().await;
                 *latest = Some(Artifact {
                     kind: watch.adapter.kind(),
@@ -361,15 +446,13 @@ impl Previews {
         request: &PreviewRequest,
         bindings: &BindingStore,
     ) -> Result<String, String> {
-        let engine = if request.engine.is_empty() {
-            "quarto"
-        } else {
-            request.engine.as_str()
-        };
-        let plan = match engine {
-            "quarto" => quarto::plan(&self.0, request, bindings)?,
-            "calepin" => calepin::plan(&self.0, request, bindings)?,
-            other => return Err(format!("unsupported preview engine: {other}")),
+        let plan = match &request.inputs {
+            crate::local::protocol::PreviewInputs::Quarto(_) => {
+                quarto::plan(&self.0, request, bindings)?
+            }
+            crate::local::protocol::PreviewInputs::Calepin(_) => {
+                calepin::plan(&self.0, request, bindings)?
+            }
         };
         // A retry or a reloaded browser replaces its own document watcher.
         // Planning has already validated the replacement, so an invalid
@@ -418,7 +501,7 @@ impl Previews {
         self.0.insert(
             id.clone(),
             Session {
-                engine: engine.to_string(),
+                engine: request.inputs.engine().to_string(),
                 kind,
                 origin: request.origin.clone(),
                 project: request.project.clone(),

@@ -51,18 +51,12 @@ impl Server {
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
         let (entry, who) = match self
-            .entry_viewer(slug, &headers, arrival, query.as_deref())
+            .readable_entry(slug, &headers, arrival, query.as_deref())
             .await
         {
             Ok(result) => result,
             Err(response) => return response,
         };
-        if who.auth_failed {
-            return plain(401, "authentication expired or was revoked");
-        }
-        if !self.may_read(&entry, &who) {
-            return plain(404, "not found");
-        }
         let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
         let link_expires = entry
             .live_link(&who.link, crate::util::now_unix())
@@ -259,22 +253,13 @@ impl Server {
         }
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_string);
-        let (entry, who) = match self
-            .entry_viewer(slug, &headers, arrival, query.as_deref())
+        let (_entry, _who) = match self
+            .readable_entry(slug, &headers, arrival, query.as_deref())
             .await
         {
             Ok(result) => result,
             Err(response) => return response,
         };
-        if who.auth_failed {
-            return write_json(
-                401,
-                &json!({"error":"authentication expired or was revoked"}),
-            );
-        }
-        if !self.may_read(&entry, &who) {
-            return write_json(404, &json!({"error":"not found"}));
-        }
         let token = request
             .headers()
             .get("x-librepaper-chat-token")

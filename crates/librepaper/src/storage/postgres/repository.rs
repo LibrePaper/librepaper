@@ -151,6 +151,36 @@ impl PostgresCatalog {
         Ok(true)
     }
 
+    /// One keyset-paginated page of the documents an erasing account still
+    /// owns, whatever state they are in.
+    ///
+    /// Not `documents_by_owner`: that one is about a person's listing and so
+    /// asks only for `status='active'`, and the documents an erasure is
+    /// waiting on are precisely the ones already marked `deleting` or
+    /// `purging`. Ordered by id, which is what makes the cursor total: a
+    /// row's `updated_at` moves under a walk, an id does not.
+    pub async fn documents_awaiting_account_erasure(
+        &self,
+        owner_id: Uuid,
+        after: Uuid,
+        limit: i64,
+    ) -> Result<Vec<Uuid>> {
+        if !(1..=500).contains(&limit) {
+            return Err(Error::Invalid(
+                "erasure document page limit must be 1..=500".into(),
+            ));
+        }
+        sqlx::query_scalar!(
+            "SELECT id FROM documents WHERE owner_id=$1 AND id > $2 ORDER BY id LIMIT $3",
+            owner_id,
+            after,
+            limit,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
     pub async fn finish_account_erasure(&self, account_id: Uuid) -> Result<bool> {
         let mut tx = self.begin_writer_transaction().await?;
         let remaining = sqlx::query_scalar!(
@@ -198,34 +228,6 @@ impl PostgresCatalog {
             == 1;
         tx.commit().await?;
         Ok(deleted)
-    }
-
-    pub async fn check_storage_admission(
-        &self,
-        document_id: Uuid,
-        incoming_bytes: i64,
-    ) -> Result<()> {
-        if incoming_bytes < 0 {
-            return Err(Error::Invalid("invalid incoming byte count".into()));
-        }
-        let owner_id = sqlx::query_scalar!(
-            "SELECT owner_id FROM documents WHERE id=$1 AND status='active'",
-            document_id,
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or(Error::NotFound)?;
-        let owner_usage = self.usage_bytes(Some(owner_id)).await?;
-        let deployment_usage = self.usage_bytes(None).await?;
-        if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
-            return Err(Error::Conflict("account storage quota exceeded".into()));
-        }
-        if deployment_usage.saturating_add(incoming_bytes) > self.policy.deployment_bytes {
-            return Err(Error::Conflict(
-                "deployment storage threshold exceeded".into(),
-            ));
-        }
-        Ok(())
     }
 
     pub async fn update_document_identity(
@@ -434,57 +436,6 @@ impl PostgresCatalog {
                AND (updated_at,id) < (COALESCE($1::timestamptz,'infinity'),
                                       COALESCE($2::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
              ORDER BY updated_at DESC,id DESC LIMIT $3",
-            before.map(|value| value.0),
-            before.map(|value| value.1),
-            limit,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
-    pub async fn documents_by_owner(
-        &self,
-        owner_id: Uuid,
-        limit: i64,
-    ) -> Result<Vec<DocumentRecord>> {
-        if !(1..=200).contains(&limit) {
-            return Err(Error::Invalid("document page limit must be 1..=200".into()));
-        }
-        sqlx::query_as!(
-            DocumentRecord,
-            "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,
-                       settings,created_at,updated_at,deleted_at
-             FROM documents WHERE owner_id=$1 AND status='active'
-             ORDER BY updated_at DESC,id DESC LIMIT $2",
-            owner_id,
-            limit,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Error::from)
-    }
-
-    pub async fn documents_by_owner_page(
-        &self,
-        owner_id: Uuid,
-        before: Option<(OffsetDateTime, Uuid)>,
-        limit: i64,
-    ) -> Result<Vec<DocumentRecord>> {
-        if !(1..=200).contains(&limit) {
-            return Err(Error::Invalid("document page limit must be 1..=200".into()));
-        }
-        sqlx::query_as!(
-            DocumentRecord,
-            "SELECT id,slug,owner_id,ownership_mode,title,status,source_format,
-                    main_path,update_sequence,
-                       settings,created_at,updated_at,deleted_at
-             FROM documents WHERE owner_id=$1 AND status='active'
-             AND (updated_at,id) < (COALESCE($2::timestamptz,'infinity'),
-                                    COALESCE($3::uuid,'ffffffff-ffff-ffff-ffff-ffffffffffff'))
-             ORDER BY updated_at DESC,id DESC LIMIT $4",
-            owner_id,
             before.map(|value| value.0),
             before.map(|value| value.1),
             limit,
@@ -833,34 +784,6 @@ impl PostgresCatalog {
         .fetch_all(&self.pool)
         .await
         .map_err(Error::from)
-    }
-
-    pub async fn asset_sizes_by_digests(
-        &self,
-        document_id: Uuid,
-        digests: &[String],
-    ) -> Result<std::collections::HashMap<String, i64>> {
-        if digests.len() > 4096 {
-            return Err(Error::Invalid("too many asset digests requested".into()));
-        }
-        let decoded: Vec<Vec<u8>> = digests
-            .iter()
-            .map(|digest| {
-                hex::decode(digest).map_err(|_| Error::Invalid("invalid asset digest".into()))
-            })
-            .collect::<Result<_>>()?;
-        let rows = sqlx::query!(
-            "SELECT digest,byte_length FROM document_assets
-             WHERE document_id=$1 AND digest=ANY($2)",
-            document_id,
-            &decoded,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| (hex::encode(row.digest), row.byte_length))
-            .collect())
     }
 
     pub async fn assets_by_digests(

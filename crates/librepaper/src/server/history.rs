@@ -93,72 +93,6 @@ fn client_seq_of(id: uuid::Uuid) -> i64 {
     i64::from_be_bytes(id.as_bytes()[..8].try_into().expect("a uuid is 16 bytes"))
 }
 
-/// Names the current head, or the head a flush is about to produce, as a
-/// label. No precondition (§7.1: "label | none") and no edit -- but running
-/// it through the sequencer still forces a flush of whatever is buffered, so
-/// "current" always names a real, durable row rather than a promise of one.
-pub(super) struct Label {
-    pub request_id: uuid::Uuid,
-    pub document_id: uuid::Uuid,
-    pub catalog: std::sync::Arc<crate::storage::postgres::PostgresCatalog>,
-    /// "label" for a name a caller typed, or the producing command's own
-    /// name when a label is a byproduct of something else (§7.2). This
-    /// command is only ever used for the former.
-    pub reason: String,
-    pub label: Option<String>,
-    pub author_account_id: Option<uuid::Uuid>,
-    pub author_label: String,
-}
-
-impl crate::log::Command for Label {
-    type Output = crate::storage::postgres::LabelRecord;
-
-    fn name(&self) -> &'static str {
-        "label"
-    }
-
-    fn evaluate(
-        &mut self,
-        _head: &crate::log::Head<'_>,
-    ) -> std::result::Result<Option<crate::log::PreparedSource>, crate::log::CommandError> {
-        Ok(None)
-    }
-
-    fn transact<'a>(
-        &'a mut self,
-        tx: &'a mut sqlx::Transaction<'_, sqlx::Postgres>,
-        evidence: &'a crate::log::Evidence,
-    ) -> futures_util::future::BoxFuture<
-        'a,
-        std::result::Result<Self::Output, crate::log::CommandError>,
-    > {
-        Box::pin(async move {
-            let tree_digest = hex::decode(&evidence.before_digest)
-                .ok()
-                .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
-            self.catalog
-                .insert_label(
-                    tx,
-                    &crate::storage::postgres::NewLabel {
-                        id: uuid::Uuid::new_v4(),
-                        document_id: self.document_id,
-                        source_sequence: evidence.source_sequence,
-                        vector: evidence.vector.clone(),
-                        frontier: evidence.before_frontier.clone(),
-                        tree_digest,
-                        label: self.label.clone(),
-                        reason: self.reason.clone(),
-                        request_id: Some(self.request_id),
-                        author_account_id: self.author_account_id,
-                        author_label: self.author_label.clone(),
-                    },
-                )
-                .await
-                .map_err(crate::log::CommandError::Storage)
-        })
-    }
-}
-
 /// Restores the document to an earlier projection (§7.1: "restore |
 /// `expected_frontier` equals the head frontier"). The precondition is what
 /// keeps a restore from silently discarding a concurrent edit the caller
@@ -378,26 +312,27 @@ impl Server {
     pub(super) async fn handle_history(
         &self,
         headers: &HeaderMap,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         query: Option<&str>,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+        let (entry, _who) = match self
+            .entry_at_least_in(slug, context, headers, None, Role::Editor)
+            .await
+        {
             Ok(result) => result,
             Err(response) => return response,
         };
-        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
-            return plain(404, "not found");
-        }
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(503, &error.to_string()),
+            Err(error) => return refused("open the room", &error),
         };
         let (after, limit) = query
             .map(|raw| {
@@ -422,9 +357,7 @@ impl Server {
             .await
         {
             Ok(rows) => rows,
-            Err(error) => {
-                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-            }
+            Err(error) => return refused("read the catalogue", &error.into()),
         };
         let next_cursor = (rows.len() as i64 == limit)
             .then(|| rows.last().map(|row| row.sequence))
@@ -455,11 +388,12 @@ impl Server {
     pub(super) async fn handle_label_read(
         &self,
         headers: &HeaderMap,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         sha: &str,
         query: Option<&str>,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
@@ -470,16 +404,16 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+        let (entry, _who) = match self
+            .entry_at_least_in(slug, context, headers, None, Role::Editor)
+            .await
+        {
             Ok(result) => result,
             Err(response) => return response,
         };
-        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
-            return plain(404, "not found");
-        }
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(503, &error.to_string()),
+            Err(error) => return refused("open the room", &error),
         };
         if let Some(encoded) = moment {
             // A comment's own frontier, not a named label: there is no
@@ -528,9 +462,7 @@ impl Server {
         let label = match self.store.catalog.label(room.document_id, label_id).await {
             Ok(Some(label)) => label,
             Ok(None) => return plain(404, "not found"),
-            Err(error) => {
-                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-            }
+            Err(error) => return refused("read the catalogue", &error.into()),
         };
         let wants_archive = query.is_some_and(|raw| {
             url::form_urlencoded::parse(raw.as_bytes()).any(|(k, v)| k == "archive" && v != "0")
@@ -605,10 +537,11 @@ impl Server {
     pub(super) async fn handle_label_archive(
         &self,
         headers: &HeaderMap,
-        arrival: &Arrival,
+        context: &RequestContext,
         slug: &str,
         sha: &str,
     ) -> Reply {
+        let arrival = &context.arrival;
         if !self.valid_slug(slug) {
             return plain(400, "bad slug");
         }
@@ -618,23 +551,21 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (entry, who) = match self.entry_viewer(slug, headers, arrival, None).await {
+        let (_entry, _who) = match self
+            .entry_at_least_in(slug, context, headers, None, Role::Editor)
+            .await
+        {
             Ok(result) => result,
             Err(response) => return response,
         };
-        if !who.at_least(Role::Editor) || !self.may_read(&entry, &who) {
-            return plain(404, "not found");
-        }
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(503, &error.to_string()),
+            Err(error) => return refused("open the room", &error),
         };
         let label = match self.store.catalog.label(room.document_id, label_id).await {
             Ok(Some(label)) => label,
             Ok(None) => return plain(404, "not found"),
-            Err(error) => {
-                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-            }
+            Err(error) => return refused("read the catalogue", &error.into()),
         };
         let Some(archive_key) = label.archive_key else {
             return plain(404, "not found");
@@ -697,23 +628,25 @@ impl Server {
         let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(503, &error.to_string()),
+            Err(error) => return refused("open the room", &error),
         };
         let authority = who.document_authority();
-        let author_account_id = uuid::Uuid::parse_str(&who.id.id).ok();
         let label_id = if current {
-            let mut command = Label {
-                request_id: uuid::Uuid::new_v4(),
-                document_id: room.document_id,
-                catalog: self.store.catalog.clone(),
-                reason: "label".to_string(),
-                label: None,
-                author_account_id,
-                author_label: who.attribution().display().to_string(),
-            };
-            match room.command(&authority, &mut command).await {
+            // `Room::take_label` rather than a second label command of this
+            // module's own: that one had no §7.2 replay lookup, so a retry
+            // of the same request wrote a second row naming the same state.
+            match room
+                .take_label(
+                    "label",
+                    None,
+                    who.attribution(),
+                    &authority,
+                    Some(uuid::Uuid::new_v4()),
+                )
+                .await
+            {
                 Ok(row) => row.id,
-                Err(error) => return command_reply(error),
+                Err(error) => return refused("label a version", &error),
             }
         } else {
             uuid::Uuid::parse_str(sha).expect("checked by is_label_id")
@@ -791,7 +724,7 @@ impl Server {
 
         let room = match self.rooms.get(slug).await {
             Ok(room) => room,
-            Err(error) => return plain(503, &error.to_string()),
+            Err(error) => return refused("open the room", &error),
         };
         // The owner may have transferred the document, or a link may have
         // been revoked, while the request body was being read.
@@ -806,9 +739,7 @@ impl Server {
         let label = match self.store.catalog.label(room.document_id, label_id).await {
             Ok(Some(label)) => label,
             Ok(None) => return plain(404, "not found"),
-            Err(error) => {
-                return write_json(503, &json!({"error": error.to_string(), "retryable": true}))
-            }
+            Err(error) => return refused("read the catalogue", &error.into()),
         };
         let Ok(frontier) = loro::Frontiers::decode(&label.frontier) else {
             return write_json(
@@ -845,7 +776,7 @@ impl Server {
             author_label: current_who.attribution().display().to_string(),
         };
         if let Err(error) = room.command(&authority, &mut command).await {
-            return command_reply(error);
+            return command_reply("restore a version", error);
         }
         // The command wrote its own label for the moment the restore
         // produced; what a caller wants back here is what it asked to

@@ -82,7 +82,9 @@ pub(crate) fn plan(
     request: &PreviewRequest,
     bindings: &BindingStore,
 ) -> Result<Plan, String> {
-    let options = request.quarto.as_ref().ok_or("missing Quarto options")?;
+    let crate::local::protocol::PreviewInputs::Quarto(options) = &request.inputs else {
+        return Err("quarto preview planned for another engine".into());
+    };
     options.validate()?;
     let kind = match options.format.as_str() {
         "html" | "revealjs" => ArtifactKind::Html,
@@ -98,46 +100,19 @@ pub(crate) fn plan(
     if options.policy != QuartoRenderPolicy::ProjectDefaults {
         return Err("managed preview uses project-default render policy".into());
     }
-    let other_scope = |p: &&Session| p.origin != request.origin || p.project != request.project;
-    if existing
-        .values()
-        .filter(other_scope)
-        .any(|p| p.binding == options.binding_id)
-    {
-        return Err("Stop the existing preview before starting another watcher.".into());
-    }
-    if existing.values().filter(other_scope).count() >= 8 {
-        return Err("Too many active previews".into());
-    }
-    let binding = bindings
-        .resolve_scoped(&options.binding_id, &request.origin, &request.project)
-        .map_err(|_| "Preview binding is not authorized")?;
-    if existing
-        .values()
-        .filter(other_scope)
-        .any(|p| p.root == binding.root)
-    {
-        return Err("Another managed preview already watches this project directory".into());
-    }
-    let hosted = BindingStore::is_hosted(&binding);
-    // A hosted binding names no fixed entrypoint: each job (and each
-    // preview) names its own `.qmd`, already validated as a safe relative
-    // path by `options.validate()` above. A granted binding still refuses
-    // any entrypoint but the one it was granted for.
-    let entrypoint = if hosted {
-        options.main.clone()
-    } else {
-        binding.entrypoint.clone()
-    };
-    if !hosted && options.main != binding.entrypoint {
-        return Err("quarto entrypoint does not match the granted project binding".into());
-    }
-    if !request.manifest.iter().any(|f| f.path == entrypoint) {
-        return Err("Preview inventory must contain the bound entrypoint".into());
-    }
-    if std::fs::canonicalize(&binding.root).map_err(|e| e.to_string())? != binding.root {
-        return Err("Bound root changed".into());
-    }
+    let super::BoundScope {
+        binding,
+        entrypoint,
+    } = super::bind_scope(
+        existing,
+        request,
+        bindings,
+        &options.binding_id,
+        &options.main,
+        "quarto",
+    )?;
+    // Quarto's own half: the data files it declares are part of what a
+    // render reads, so they are verified with the rest of the inventory.
     let mut inventory = request.manifest.clone();
     crate::local::quarto::add_declared_inputs(&binding.root, &options.data_inputs, &mut inventory)?;
     verify_bound_manifest(&binding.root, &inventory)?;
@@ -148,10 +123,7 @@ pub(crate) fn plan(
             return Err("preview source inventory is stale; synchronize before previewing".into());
         }
     }
-    let main = std::fs::canonicalize(binding.root.join(&entrypoint)).map_err(|e| e.to_string())?;
-    if !main.starts_with(&binding.root) {
-        return Err("Preview entrypoint escapes bound root".into());
-    }
+    super::refuse_escaping_entrypoint(&binding.root, &entrypoint)?;
     let mut command = Command::new(find_quarto().ok_or("Quarto is not installed")?);
     command
         .current_dir(&binding.root)
@@ -252,30 +224,29 @@ mod tests {
             )
             .unwrap();
         let request = PreviewRequest {
-            protocol: 1,
-            kind: "quarto".into(),
+            protocol: 2,
             project: "paper".into(),
             origin: "https://paper.example".into(),
             snapshot: "revision".into(),
             generation: 1,
-            engine: "quarto".into(),
-            quarto: Some(QuartoJobOptions {
-                binding_id: binding.id,
+            inputs: crate::local::protocol::PreviewInputs::Quarto(QuartoJobOptions {
+                binding_id: binding.id.clone(),
                 main: "paper.qmd".into(),
                 format: "pdf".into(),
                 ..Default::default()
             }),
-            calepin: None,
             manifest: vec![ManifestEntry {
                 path: "paper.qmd".into(),
                 sha256: crate::results::sha256(source),
                 size: source.len() as u64,
             }],
             source: None,
-            workspace: None,
-            builder: None,
-            output: None,
-            entrypoint: None,
+            workspace: crate::local::protocol::WorkspaceRequest::Bound {
+                binding_id: binding.id,
+            },
+            builder: "quarto".into(),
+            output: "pdf".into(),
+            entrypoint: "paper.qmd".into(),
         };
         let mut previews = Previews::default();
         let id = previews.start(&request, &bindings).await.unwrap();

@@ -29,7 +29,7 @@ use std::path::{Component, Path};
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use librepaper::protocol::{decode_preview, safe_relative_path, WorkspaceRequest};
+use librepaper::protocol::{decode_preview, safe_relative_path, PreviewInputs, WorkspaceRequest};
 use serde_json::{json, Value};
 
 /// JSON the mutator can shape, so that `options` is a real tree rather than
@@ -173,14 +173,18 @@ fuzz_target!(|input: Input| {
     // Whatever came back was accepted, so every field of it is a field the
     // service will act on.
     assert_eq!(preview.protocol, 2, "a preview was admitted off protocol 2");
-    let Some(WorkspaceRequest::Bound { binding_id }) = &preview.workspace else {
+    // Every field of an admitted preview is required, so there is nothing to
+    // unwrap: `decode_preview` either fills all of them in from one validated
+    // shape or refuses. That it is bound is still worth asserting -- a
+    // snapshot preview is refused, and this is where that would show.
+    let WorkspaceRequest::Bound { binding_id } = &preview.workspace else {
         panic!("a managed preview was admitted without a bound workspace");
     };
     assert!(
         !binding_id.is_empty() && binding_id.len() <= 256,
         "a managed preview was admitted with an unusable binding"
     );
-    let builder = preview.builder.as_deref().unwrap_or_default();
+    let builder = preview.builder.as_str();
     assert!(
         matches!(builder, "quarto" | "calepin"),
         "a managed preview was admitted for builder {builder:?}"
@@ -189,57 +193,60 @@ fuzz_target!(|input: Input| {
     // The declaration, as the request made it. These are what the adapter is
     // told to render, and they are what the envelope must not have moved.
     assert_eq!(
-        preview.entrypoint.as_deref(),
-        Some(sent_entrypoint.as_str()),
+        preview.entrypoint, sent_entrypoint,
         "the request came back naming a different file than it sent"
     );
-    assert_eq!(preview.output.as_deref(), Some(sent_output.as_str()));
-    assert_eq!(preview.builder.as_deref(), Some(sent_builder.as_str()));
+    assert_eq!(preview.output, sent_output);
+    assert_eq!(preview.builder, sent_builder);
     assert_eq!(*binding_id, sent_binding);
-    let entrypoint = preview.entrypoint.as_deref().unwrap_or_default();
-    let output = preview.output.as_deref().unwrap_or_default();
+    let entrypoint = preview.entrypoint.as_str();
+    let output = preview.output.as_str();
     assert!(
         safe_relative_path(entrypoint),
         "a managed preview was admitted with entrypoint {entrypoint:?}"
     );
     check_path(entrypoint);
 
-    if let Some(quarto) = &preview.quarto {
-        assert_eq!(
-            quarto.main, entrypoint,
-            "the options envelope moved the file that will be rendered"
-        );
-        assert_eq!(
-            quarto.format, output,
-            "the options envelope moved the format that will be produced"
-        );
-        assert_eq!(
-            quarto.binding_id, *binding_id,
-            "the options envelope moved the workspace that will be read"
-        );
-        // Every extra file the adapter is told to copy is a path the check
-        // above accepts, so none of them reaches outside the project.
-        for path in &quarto.data_inputs {
-            assert!(
-                safe_relative_path(path),
-                "a declared data input {path:?} was admitted"
+    // One adapter, never neither and never both, chosen by the builder the
+    // request named. That used to be two optional fields and an assertion
+    // that exactly one of them was set; it is now the shape of the value,
+    // and what is left to check is that the shape agrees with the builder.
+    match &preview.inputs {
+        PreviewInputs::Quarto(quarto) => {
+            assert_eq!(builder, "quarto", "a Quarto adapter for builder {builder:?}");
+            assert_eq!(
+                quarto.main, entrypoint,
+                "the options envelope moved the file that will be rendered"
             );
-            check_path(path);
+            assert_eq!(
+                quarto.format, output,
+                "the options envelope moved the format that will be produced"
+            );
+            assert_eq!(
+                quarto.binding_id, *binding_id,
+                "the options envelope moved the workspace that will be read"
+            );
+            // Every extra file the adapter is told to copy is a path the
+            // check above accepts, so none of them reaches outside the
+            // project.
+            for path in &quarto.data_inputs {
+                assert!(
+                    safe_relative_path(path),
+                    "a declared data input {path:?} was admitted"
+                );
+                check_path(path);
+            }
+        }
+        PreviewInputs::Calepin(calepin) => {
+            assert_eq!(
+                builder, "calepin",
+                "a Calepin adapter for builder {builder:?}"
+            );
+            assert_eq!(calepin.main, entrypoint);
+            assert_eq!(calepin.format, output);
+            assert_eq!(calepin.binding_id, *binding_id);
         }
     }
-    if let Some(calepin) = &preview.calepin {
-        assert_eq!(calepin.main, entrypoint);
-        assert_eq!(calepin.format, output);
-        assert_eq!(calepin.binding_id, *binding_id);
-    }
-    // One of the two, never neither and never both: the adapter is chosen by
-    // the builder the request named.
-    assert_eq!(
-        preview.quarto.is_some(),
-        builder == "quarto",
-        "the adapter chosen does not match the builder declared"
-    );
-    assert_eq!(preview.calepin.is_some(), builder == "calepin");
 });
 
 /// A path the string check accepts is a path that stays under the root it is

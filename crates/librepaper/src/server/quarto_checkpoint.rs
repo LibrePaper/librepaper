@@ -8,7 +8,6 @@
 //! this route is `history::Label` with `reason: "render"` in place of
 //! `"label"`.
 
-use super::history::Label;
 use super::*;
 
 impl Server {
@@ -68,18 +67,18 @@ impl Server {
             );
         }
         let authority = who.document_authority();
-        let mut command = Label {
-            request_id: uuid::Uuid::new_v4(),
-            document_id: room.document_id,
-            catalog: self.store.catalog.clone(),
-            reason: "render".to_string(),
-            label: None,
-            author_account_id: uuid::Uuid::parse_str(&who.id.id).ok(),
-            author_label: who.attribution().display().to_string(),
-        };
-        let row = match room.command(&authority, &mut command).await {
+        let row = match room
+            .take_label(
+                "render",
+                None,
+                who.attribution(),
+                &authority,
+                Some(uuid::Uuid::new_v4()),
+            )
+            .await
+        {
             Ok(row) => row,
-            Err(error) => return command_reply(error),
+            Err(error) => return refused("checkpoint a render", &error),
         };
         // Edits can arrive while the transaction above was in flight. The
         // label names whatever head the flush actually captured, which may

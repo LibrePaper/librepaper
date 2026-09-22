@@ -15,13 +15,64 @@ fn collector_keeps_unlabelled_cells_distinct() {
         ..Default::default()
     };
     let inventory = inventory_tree(dir.path()).expect("inventory");
-    let bundle = collect_bundle(dir.path(), &options, &out, &inventory, None, Instant::now())
-        .expect("bundle");
+    let bundle = collect_bundle(
+        dir.path(),
+        &options,
+        &out,
+        &inventory,
+        None,
+        "2026-01-01T00:00:00Z",
+    )
+    .expect("bundle");
     assert_eq!(bundle.cells.len(), 2);
     assert_ne!(bundle.cells[0].id, bundle.cells[1].id);
     assert_eq!(
         bundle.artifact.as_ref().map(|a| a.entrypoint.as_str()),
         Some("paper.html")
+    );
+}
+
+/// A render that takes time keeps the moment it began, not the moment its
+/// output was collected.
+///
+/// The collector used to take an `Instant` for the start and throw it away,
+/// answering with `now()`. An `Instant` cannot be turned into a calendar
+/// time, so there was nothing else it could have done: the start had to be
+/// read as a wall clock where execution actually begins. Until it was,
+/// `started_at` described collection, and on a fast render the two readings
+/// were often the same string -- which is why nothing noticed.
+#[test]
+fn a_delayed_render_keeps_the_time_it_started() {
+    let dir = tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("paper.qmd"), "```{r}\n1 + 1\n```\n").expect("source");
+    let out = dir.path().join("out");
+    std::fs::create_dir_all(&out).expect("out");
+    std::fs::write(out.join("paper.html"), b"<html></html>").expect("artifact");
+    let options = QuartoJobOptions {
+        binding_id: "b".into(),
+        main: "paper.qmd".into(),
+        ..Default::default()
+    };
+    let inventory = inventory_tree(dir.path()).expect("inventory");
+
+    // A start an hour before this bundle is collected: what a long render
+    // looks like, without one.
+    let started = "2026-01-01T00:00:00Z";
+    let bundle =
+        collect_bundle(dir.path(), &options, &out, &inventory, None, started).expect("bundle");
+    assert_eq!(
+        bundle.provenance.started_at, started,
+        "the collector must carry the start it was given, not read the clock again"
+    );
+    assert!(
+        bundle.provenance.completed_at.as_str() > started,
+        "completion is after the start: started_at {}, completed_at {}",
+        bundle.provenance.started_at,
+        bundle.provenance.completed_at,
+    );
+    assert_ne!(
+        bundle.provenance.started_at, bundle.provenance.completed_at,
+        "a render that took an hour must not report the same instant for both"
     );
 }
 
@@ -43,8 +94,15 @@ fn revealjs_bundle_preserves_format_and_freshness_context() {
         ..Default::default()
     };
     let inventory = inventory_tree(dir.path()).expect("inventory");
-    let bundle = collect_bundle(dir.path(), &options, &out, &inventory, None, Instant::now())
-        .expect("bundle");
+    let bundle = collect_bundle(
+        dir.path(),
+        &options,
+        &out,
+        &inventory,
+        None,
+        "2026-01-01T00:00:00Z",
+    )
+    .expect("bundle");
     let manifest = bundle.to_storage_manifest("doc", "revision");
     manifest.validate().expect("valid bundle");
     assert_eq!(
@@ -59,16 +117,21 @@ fn revealjs_bundle_preserves_format_and_freshness_context() {
         serde_json::to_value(&manifest).expect("JSON")["context"]["format"],
         "revealjs"
     );
+    // The recorded computation fingerprint is the source's own, so a
+    // re-render of the same inputs lands on the same context. `Freshness`
+    // used to say this in its own vocabulary and nothing in production ever
+    // asked it, so the comparison is made directly against the fingerprint
+    // the bundle actually carries.
     let parsed = crate::quarto::parse_qmd(source, "paper.qmd");
     assert_eq!(
-        crate::quarto::classify_freshness(
-            &manifest,
+        crate::quarto::computation_fingerprint_for_format(
             &parsed,
             "paper.qmd",
+            "revealjs",
             &["review".into()],
-            manifest.context.parameters_sha256.as_deref()
+            manifest.context.parameters_sha256.as_deref(),
         ),
-        crate::quarto::Freshness::MatchesRecordedInputs
+        manifest.context.computation_sha256,
     );
 }
 
@@ -93,7 +156,7 @@ fn shared_dependency_hashes_change_computation_context() {
         &out,
         &inventory,
         None,
-        Instant::now(),
+        "2026-01-01T00:00:00Z",
         &[format!("data.csv\0{}", sha256(b"x\n1\n"))],
     )
     .expect("bundle");
@@ -103,7 +166,7 @@ fn shared_dependency_hashes_change_computation_context() {
         &out,
         &inventory,
         None,
-        Instant::now(),
+        "2026-01-01T00:00:00Z",
         &[format!("data.csv\0{}", sha256(b"x\n2\n"))],
     )
     .expect("bundle");
@@ -758,7 +821,14 @@ async fn real_quarto_render_reports_success_and_retains_a_failure_log() {
             "origin": "https://paper.example",
             "snapshot": "revision",
             "generation": 1,
-            "quarto": {"binding_id": binding.id, "main": "paper.qmd", "format": "html"},
+            "builder": "quarto",
+            "workspace": {"mode": "snapshot", "binding_id": binding.id},
+            "entrypoint": "paper.qmd",
+            "output": "html",
+            "inputs": {
+                "engine": "quarto",
+                "options": {"binding_id": binding.id, "main": "paper.qmd", "format": "html"},
+            },
             "manifest": [{
                 "path": "paper.qmd",
                 "sha256": crate::results::sha256(source.as_bytes()),

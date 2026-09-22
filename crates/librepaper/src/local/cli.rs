@@ -504,14 +504,6 @@ async fn doctor(tex_path: Vec<PathBuf>) {
     println!("librepaper local doctor");
     println!();
     println!("platform: {}", capabilities.platform);
-    if let Some(distribution) = &capabilities.distribution {
-        println!(
-            "distribution: {} ({})",
-            distribution.name, distribution.year
-        );
-    } else {
-        println!("distribution: not detected");
-    }
     println!();
     println!("tools:");
     print_tool("calepin", &capabilities.calepin);

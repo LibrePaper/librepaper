@@ -1,17 +1,24 @@
-//! A v1 update as it arrives on the socket, checked against the admission
-//! ceilings. The update is a real one -- the encoded state of a document a
-//! peer built -- and then damaged the way a bad client or a corrupt frame
-//! would damage it: truncated, bytes flipped, bytes dropped or added. So the
+//! An update as it arrives on the socket, taken through the live import
+//! path. The update is a real one -- the encoded state of a document a peer
+//! built -- and then damaged the way a bad client or a corrupt frame would
+//! damage it: truncated, bytes flipped, bytes dropped or added. So the
 //! mutator works on the encoding's structure rather than on noise that never
 //! decodes.
 //!
-//! What is asserted: a refusal of any kind leaves the document exactly as it
-//! was, and an admitted update applies.
+//! This used to drive `session::admit_update`, a size-ceiling check the
+//! server stopped calling when the log took over admission (§9.1 bounds the
+//! log, not the document). Fuzzing it kept an implementation alive that
+//! nothing shipped, and left the path bytes really do take -- decode,
+//! import, project -- with no coverage at all. What is asserted now is what
+//! that path promises: a refused update leaves the document exactly as it
+//! was, an accepted one applies, and whatever comes out still projects
+//! without panicking, because the very next thing the server does with an
+//! imported document is read it.
 #![no_main]
 
 use arbitrary::Arbitrary;
-use librepaper::session::{self, Admission};
 use libfuzzer_sys::fuzz_target;
+use librepaper::session;
 
 #[derive(Arbitrary, Debug)]
 enum Damage {
@@ -27,9 +34,6 @@ struct Input {
     files: Vec<(String, String)>,
     /// What to do to the encoding of it.
     damage: Vec<Damage>,
-    /// The ceilings, small so that the scratch-copy path is reached often.
-    ceiling: u16,
-    max_files: u8,
 }
 
 fuzz_target!(|input: Input| {
@@ -74,13 +78,25 @@ fuzz_target!(|input: Input| {
     session::put_text(&doc, "chapters/one.typ", "one");
     let before = session::encode_state(&doc);
 
-    let ceiling = usize::from(input.ceiling);
-    let max_files = usize::from(input.max_files);
-    match session::admit_update(&doc, &update, ceiling, max_files) {
-        Admission::Fits => {
-            session::apply_update(&doc, &update).expect("an admitted update applies");
+    // `decode_update` is the socket's first act on the bytes: it rehearses
+    // the import somewhere that is not the live document, so that a frame
+    // which cannot be read never touches the text every reader is looking
+    // at. Its answer must agree with what applying them actually does.
+    let decoded = session::decode_update(&update).is_ok();
+    match session::apply_update(&doc, &update) {
+        Ok(()) => {
+            assert!(
+                decoded,
+                "an update that applied was refused by the rehearsal that guards the document"
+            );
+            // The projection is the next thing the server reads, and it
+            // reads whatever the peer's bytes just put there.
+            let _ = session::paths_of(&doc);
+            let _ = session::text_of(&doc);
+            let _ = session::main_path(&doc);
         }
-        Admission::Malformed | Admission::TooLarge | Admission::TooMany => {
+        Err(_) => {
+            assert!(!decoded, "the rehearsal admitted bytes the import refused");
             assert_eq!(
                 session::encode_state(&doc),
                 before,
