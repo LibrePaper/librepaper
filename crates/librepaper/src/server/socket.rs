@@ -1332,14 +1332,13 @@ impl Server {
         slug: &str,
         update: Vec<u8>,
     ) -> Option<(String, String)> {
-        let Some(reservation) = self
+        let reservation = self
             .rooms
             .registry()
             .budget()
-            .try_reserve(update.len() as u64)
-        else {
-            return None;
-        };
+            .reserve(update.len() as u64, crate::log::sequencer::RESERVE_PATIENCE)
+            .await
+            .ok()?;
         let now = crate::util::now_unix();
         let id = random_token();
         let digest = format!("{:x}", Sha256::digest(&update));

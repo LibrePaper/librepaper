@@ -214,11 +214,10 @@ pub(super) async fn middleware(
     let Some(arrival) = server.origins.resolve(&host) else {
         return plain(421, "this host is not served by this deployment");
     };
-    // Reserve parsing and decoded-payload memory before reading a mutation.
-    // The middleware requires declared content length, and the memory budget
-    // covers the deserialized working copy during processing. Without a length
-    // the parsing would not know when to stop, and the bound would have to
-    // fall back to a ceiling that does not exist any more.
+    // Mutations must declare their length, because without one the only bound
+    // would be a ceiling, and there is no ceiling any more. Four times the
+    // declared length is reserved from the memory budget -- the same budget
+    // decoded documents live in -- and released when the request ends.
     let _incoming = if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
         let Some(length) = request
             .body()
@@ -229,9 +228,15 @@ pub(super) async fn middleware(
             return plain(411, "a mutation must declare its content length");
         };
         let reservation = length.saturating_mul(4);
-        match server.rooms.registry().budget().try_reserve(reservation) {
-            Some(r) => Some(r),
-            None => return refusal("request_memory", "deployment"),
+        match server
+            .rooms
+            .registry()
+            .budget()
+            .reserve(reservation, crate::log::sequencer::RESERVE_PATIENCE)
+            .await
+        {
+            Ok(r) => Some(r),
+            Err(_) => return refusal("request_memory", "deployment"),
         }
     } else {
         None
