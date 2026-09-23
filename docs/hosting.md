@@ -150,13 +150,14 @@ start with a memory budget below that at the log quota; raise the two together.
 
 **The pending-source budget** bounds what the deployment is holding *unsaved*
 while PostgreSQL is slow or unavailable: 64 MiB across every document's buffer
-by default, plus a separate 64 MiB for what writing a row costs while the write
-is in flight. It is deliberately separate from the memory budget above, because
-a decoded document is a cache that can be dropped to make room and somebody's
-unsent typing is not. It is also deliberately two pools rather than one, so
-that a deployment whose buffers are full can still write them out, with a
-single pool there would be no room left to encode the row that would free the
-room. A document's own 4 MiB buffer ceiling still applies on top, so one
+by default. A separate write scratch budget reserves for what writing a row costs
+while the write is in flight, five times the largest row, which is the log quota,
+so about 160 MiB at the default quota. It is deliberately separate from the memory
+budget above, because a decoded document is a cache that can be dropped to make
+room and somebody's unsent typing is not. It is also deliberately two pools rather
+than one, so that a deployment whose buffers are full can still write them out,
+with a single pool there would be no room left to encode the row that would free
+the room. A document's own 4 MiB buffer ceiling still applies on top, so one
 document cannot spend the whole allowance.
 
 An update refused for either reason comes back as retryable and carries the

@@ -40,7 +40,8 @@ edit unsaved.
 |---|---:|---|
 | Deployment storage | 5 GiB | `--deployment-storage-limit` |
 | Memory budget | 512 MiB | `memory_budget_mb` in config file |
-| Pending source buffers | 64 MiB each | `pending_mb`, `pending_scratch_mb` in config file |
+| Pending source buffer | 64 MiB | `pending_mb` in config file |
+| Pending write scratch | five times the log quota | `pending_scratch_mb` in config file |
 | PostgreSQL connections | 20 | `--database-connections` |
 | Live sockets per network | 128 | fixed |
 | Live sockets per principal | 64 | fixed |
