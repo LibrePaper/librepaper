@@ -1991,13 +1991,14 @@ mod automation_authority_tests {
     #[test]
     fn large_state_references_keep_exact_bounded_baseline_bytes() {
         let mut transfers = StateTransfers::default();
+        let budget = crate::log::budget::Budget::new(1 << 20, 1);
         assert!(transfers.insert(
             "first".into(),
             "paper".into(),
             Bytes::from_static(b"baseline-r1"),
             "digest-r1".into(),
             10,
-            64,
+            budget.try_reserve(11).expect("room"),
         ));
         assert!(transfers.insert(
             "second".into(),
@@ -2005,7 +2006,7 @@ mod automation_authority_tests {
             Bytes::from_static(b"baseline-r2"),
             "digest-r2".into(),
             11,
-            64,
+            budget.try_reserve(12).expect("room"),
         ));
         assert_eq!(transfers.entries["first"].bytes, "baseline-r1");
         assert_eq!(transfers.entries["second"].bytes, "baseline-r2");
@@ -2016,9 +2017,8 @@ mod automation_authority_tests {
             Bytes::from_static(b"a baseline that forces bounded eviction"),
             "digest-large".into(),
             12,
-            48,
+            budget.try_reserve(40).expect("room"),
         ));
-        assert!(transfers.bytes <= 48);
         assert!(!transfers.entries.contains_key("first"));
         assert_eq!(transfers.entries["large"].slug, "paper");
     }

@@ -599,7 +599,7 @@ impl Server {
             if sent.len() == 1 && main.is_empty() {
                 let (at, bytes) = &sent[0];
                 filename = at.clone();
-                html = String::from_utf8_lossy(bytes)
+                html = String::from_utf8_lossy(&bytes)
                     .to_string();
                 sent.clear();
             } else if !sent.is_empty() {
@@ -617,7 +617,7 @@ impl Server {
                 let (path, bytes) = sent.remove(at);
                 main = path.clone();
                 filename = path;
-                html = String::from_utf8_lossy(bytes)
+                html = String::from_utf8_lossy(&bytes)
                     .to_string();
             }
             // Markdown dropped on the page is stored as markdown. It is not
@@ -863,22 +863,22 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let transfer = {
+        let (slug_in_transfer, bytes, digest) = {
             let mut transfers = self.state_transfers.lock().await;
-            let Some(transfer) = transfers.entries.get(&transfer_id).cloned() else {
+            let Some(transfer) = transfers.entries.get(&transfer_id).map(|t| (t.slug.clone(), t.bytes.clone(), t.digest.clone(), t.expires_at)) else {
                 return plain(410, "that baseline has expired; reconnect for a newer one");
             };
-            if transfer.slug != slug || transfer.expires_at < crate::util::now_unix() {
+            if transfer.0 != slug || transfer.3 < crate::util::now_unix() {
                 transfers.remove(&transfer_id);
                 transfers.order.retain(|id| id != &transfer_id);
                 return plain(410, "that baseline has expired; reconnect for a newer one");
             }
-            transfer
+            (transfer.0, transfer.1, transfer.2)
         };
-        let mut response = Response::new(Body::from(transfer.bytes));
+        let mut response = Response::new(Body::from(bytes));
         set(&mut response, "content-type", "application/octet-stream");
         set(&mut response, "cache-control", "no-store");
-        set(&mut response, "x-librepaper-state-digest", &transfer.digest);
+        set(&mut response, "x-librepaper-state-digest", &digest);
         privacy_headers(&mut response);
         response
     }
