@@ -71,7 +71,7 @@
   }
 
   async function chooseFolder() {
-    if (choosingFolder) return;
+    if (!mayEdit || choosingFolder) return;
     choosingFolder = true;
     try {
       const result = await localBridge.chooseFolderBinding({ entrypoint: entrypoint.trim() });
@@ -87,20 +87,13 @@
 
 <section id="local-install-help" class="setting-description local-install-help" aria-label="About and install the LibrePaper Companion">
   <p>The LibrePaper Companion runs on your computer and connects this browser to local services. It can make installed coding agents such as Claude Code, Codex, pi, and OpenCode available to work with a project, search your Zotero library, and run local tools such as Quarto. Those tools must be installed separately.</p>
-  <p>For a live Quarto preview, LibrePaper sends current project files from the browser to the companion's preview workspace as the project changes. This is not a general backup or continuous sync into a chosen local folder. A selected project folder is used only by local operations that explicitly use that binding.</p>
-  <p>Install the companion on this computer, then start it once. These download links remain available while connected:</p>
-  <ul>
-    <li>Linux: save and run the <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/install-companion.sh">Linux installer</a> with <code>sh install-companion.sh</code>; it adds LibrePaper to the applications menu.</li>
-    <li>macOS: download the <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper_darwin_arm64.app.zip">Apple silicon</a> or <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper_darwin_amd64.app.zip">Intel</a> app, unzip it, move it to <code>~/Applications</code>, and open it. Quit the current app before replacing it with an update.</li>
-    <li>Windows: run <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/install-companion.cmd">install-companion.cmd</a>; it installs the companion and creates a settings shortcut.</li>
-  </ul>
-  <p>Use <strong>Start at login</strong> in companion settings if you want it to launch automatically. <a href="https://github.com/LibrePaper/librepaper/blob/main/deploy/README.md" target="_blank" rel="noreferrer">Full installation instructions</a>.</p>
+  <p>Continuous one-way sync (backup) to a directory on your file system is not available yet. Project folders currently support local builds and previews.</p>
 </section>
 
 <div id="local-status" class="setting-status" data-tone={tone}>
   <span class="setting-status-dot" aria-hidden="true"></span>
   <div class="setting-status-words">
-    <div class="setting-title">{WORDS[local?.state] || WORDS.unknown}</div>
+    <div class="setting-title" role="status">{WORDS[local?.state] || WORDS.unknown}</div>
     <div class="setting-description">
       {#if connected}
         The companion is paired with this project. It can use tools installed on this computer, including Quarto, R, Python, TeX, and Zotero.
@@ -120,10 +113,21 @@
     {#if connected}
       <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void localBridge.disconnect()}>Disconnect</button>
     {/if}
-    {#if canPair}<button type="button" class="btn btn-sm preset-filled-primary-500" disabled={connecting} onclick={pair}>{connecting ? "Waiting…" : "Enable local rendering"}</button>{/if}
+    {#if canPair}<button type="button" class="btn btn-sm preset-filled-primary-500" disabled={connecting} onclick={pair}>{connecting ? "Waiting…" : "Connect companion"}</button>{/if}
     <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void localBridge.retry()}>Retry</button>
   </div>
 </div>
+
+<section class="local-install-help setting-description" aria-label="Install and run the companion">
+  <h4 class="setting-title">Install and run</h4>
+  <p>Install the companion on this computer, then start it once. Choose your operating system:</p>
+  <ul>
+    <li>Linux: save and run the <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/install-companion.sh">Linux installer</a> with <code>sh install-companion.sh</code>; it adds LibrePaper to the applications menu.</li>
+    <li>macOS: download the <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper_darwin_arm64.app.zip">macOS Apple silicon</a> or <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper_darwin_amd64.app.zip">macOS Intel</a> app, unzip it, move it to <code>~/Applications</code>, and open it. Quit the current app before replacing it with an update.</li>
+    <li>Windows: run <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/install-companion.cmd">Windows setup</a> (<code>install-companion.cmd</code>); it installs the companion and creates a settings shortcut.</li>
+  </ul>
+  <p>Use <strong>Start at login</strong> in companion settings if you want it to launch automatically. <a href="https://github.com/LibrePaper/librepaper/blob/main/deploy/README.md" target="_blank" rel="noreferrer">Full installation instructions</a>.</p>
+</section>
 
 {#if !connected}
   <details id="local-pairing" class="setting-advanced">
@@ -178,3 +182,8 @@
 </SettingRow>
 
 </details>
+
+<style>
+  .local-install-help { display: grid; gap: calc(var(--spacing) * 3); margin-block: calc(var(--spacing) * 3); }
+  .local-install-help ul { list-style: disc; padding-left: calc(var(--spacing) * 5); display: grid; gap: calc(var(--spacing) * 2); }
+</style>
