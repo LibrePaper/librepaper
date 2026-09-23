@@ -529,13 +529,11 @@ impl Server {
     }
 
     /// Parses a publish request's body, in either format it may arrive as, and
-    /// applies the checks common to both: a title and some HTML are present,
-    /// and the HTML is not over the size ceiling. It answers the request
-    /// itself on any problem, so `handle_upload` only has to decide where to
-    /// store what comes back.
+    /// applies the checks common to both: a title and some HTML are present.
+    /// It answers the request itself on any problem, so `handle_upload` only
+    /// has to decide where to store what comes back.
     #[allow(clippy::result_large_err)] // as publisher: the error is a response
     pub(super) async fn read_upload(&self, request: Request<Body>) -> Result<Upload, Reply> {
-        let max_document = self.config.max_document;
         let content_type = header_of(request.headers(), "content-type").unwrap_or_default();
         let (mut title, mut slug, mut html) = (String::new(), String::new(), String::new());
         // A whole directory: the main file's name, and every other file in it.
@@ -547,13 +545,14 @@ impl Server {
         let mut requested_draft_format: Option<String> = None;
 
         if content_type.contains("multipart/form-data") {
-            // The whole request is bounded, not just the document: without
-            // this an oversized body would be read in full before the HTML
-            // limit below is even consulted. The slack covers the part
-            // headers and the other fields; the document and the figure
-            // budget are counted separately because a directory is allowed
-            // both at once, not one shared between them.
-            let ceiling = max_document + self.config.max_assets.max(0) as usize + MULTIPART_SLACK;
+            // The middleware declares the content length, and the body is
+            // bounded by that declared length rather than a ceiling computed
+            // from document and figure limits.
+            let Some(ceiling) = header_of(request.headers(), "content-length")
+                .and_then(|v| v.parse::<usize>().ok())
+            else {
+                return Err(write_json(411, &json!({"error": "a multipart upload must declare its content length"})));
+            };
             let (parts, body) = request.into_parts();
             let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
             let mut multipart = match Multipart::from_request(limited, &()).await {
@@ -565,7 +564,7 @@ impl Server {
                 let field = match multipart.next_field().await {
                     Ok(Some(field)) => field,
                     Ok(None) => break,
-                    Err(err) => return Err(upload_limit_exceeded(&err, ceiling)),
+                    Err(err) => return Err(upload_limit_exceeded(&err)),
                 };
                 let name = field.name().unwrap_or_default().to_string();
                 match name.as_str() {
@@ -587,7 +586,7 @@ impl Server {
                         let at = field.file_name().unwrap_or_default().to_string();
                         let bytes = match field.bytes().await {
                             Ok(bytes) => bytes,
-                            Err(err) => return Err(upload_limit_exceeded(&err, ceiling)),
+                            Err(err) => return Err(upload_limit_exceeded(&err)),
                         };
                         sent.push((at, bytes.to_vec()));
                     }
@@ -600,7 +599,7 @@ impl Server {
             if sent.len() == 1 && main.is_empty() {
                 let (at, bytes) = &sent[0];
                 filename = at.clone();
-                html = String::from_utf8_lossy(&bytes[..bytes.len().min(max_document + 1)])
+                html = String::from_utf8_lossy(bytes)
                     .to_string();
                 sent.clear();
             } else if !sent.is_empty() {
@@ -618,7 +617,7 @@ impl Server {
                 let (path, bytes) = sent.remove(at);
                 main = path.clone();
                 filename = path;
-                html = String::from_utf8_lossy(&bytes[..bytes.len().min(max_document + 1)])
+                html = String::from_utf8_lossy(bytes)
                     .to_string();
             }
             // Markdown dropped on the page is stored as markdown. It is not
@@ -653,18 +652,12 @@ impl Server {
                 source_format = format.to_string();
             }
         } else {
-            // JSON escaping can inflate the document, so the body is allowed to
-            // be larger than the document limit; the real check is on the
-            // decoded html below. Refusing early keeps a huge body from being
-            // read at all, and says why rather than failing to parse.
-            let ceiling = max_document * 2 + 1024;
-            if let Some(length) =
-                header_of(request.headers(), "content-length").and_then(|v| v.parse::<usize>().ok())
-            {
-                if length > ceiling {
-                    return Err(write_json(413, &json!({"error": "document too large"})));
-                }
-            }
+            // The middleware declares the content length.
+            let Some(declared_length) = header_of(request.headers(), "content-length")
+                .and_then(|v| v.parse::<usize>().ok())
+            else {
+                return Err(write_json(411, &json!({"error": "a JSON upload must declare its content length"})));
+            };
             #[derive(Deserialize, Default)]
             struct Body_ {
                 #[serde(default)]
@@ -682,7 +675,7 @@ impl Server {
                 #[serde(default)]
                 draft_format: Option<String>,
             }
-            let Ok(bytes) = to_bytes(request.into_body(), ceiling).await else {
+            let Ok(bytes) = to_bytes(request.into_body(), declared_length).await else {
                 return Err(write_json(413, &json!({"error": "document too large"})));
             };
             let Ok(body) = serde_json::from_slice::<Body_>(&bytes) else {
@@ -734,9 +727,6 @@ impl Server {
                     &json!({"error": "draft format does not match source_format"}),
                 ));
             }
-        }
-        if source.len() > max_document {
-            return Err(write_json(413, &json!({"error": "document too large"})));
         }
 
         let title = title.trim().to_string();
@@ -791,31 +781,6 @@ impl Server {
                 &json!({"error": format!("a document may hold {} files", self.config.max_files)}),
             ));
         }
-        // The texts are measured together with the main file, because that is
-        // what the ceiling bounds: a paper split into thirty files is allowed
-        // exactly what a paper in one file is allowed.
-        let texts: usize = kept
-            .iter()
-            .filter(|(_, kind, _)| *kind == crate::document::paths::Kind::Text)
-            .map(|(_, _, bytes)| bytes.len())
-            .sum();
-        if source.len() + texts > max_document {
-            return Err(write_json(413, &json!({"error": "document too large"})));
-        }
-        let figures: i64 = kept
-            .iter()
-            .filter(|(_, kind, _)| *kind == crate::document::paths::Kind::Asset)
-            .map(|(_, _, bytes)| bytes.len() as i64)
-            .sum();
-        if figures > self.config.max_assets {
-            return Err(write_json(
-                413,
-                &json!({"error": format!(
-                    "this document has reached the {} MB it may keep in figures",
-                    self.config.max_assets >> 20
-                )}),
-            ));
-        }
 
         Ok(Upload {
             title,
@@ -830,17 +795,13 @@ impl Server {
         })
     }
 
-    /// Checks a whole directory upload against the size and encoding rules
+    /// Checks a whole directory upload against the encoding and path rules
     /// before any of it touches storage or the session. A document is a
     /// directory, so it is admitted whole or refused whole, naming the file
     /// and the rule it broke -- never accepted with the eleventh file silently
-    /// missing because it was the one that turned out to be too large.
+    /// missing because it was the one that turned out to be invalid.
     ///
-    /// `main_path` is where the upload's main file will live and `current` is
-    /// the directory as it stands before this upload lands, which is empty
-    /// for a creation and the live tree for a republish: a file this upload
-    /// does not mention is judged by whether the document already keeps it,
-    /// not refused twice or forgotten from the aggregate ceilings.
+    /// `main_path` is where the upload's main file will live.
     #[allow(clippy::result_large_err)] // as read_upload: the error is a response
     pub(super) fn preflight_directory(
         &self,
@@ -858,73 +819,9 @@ impl Server {
                     }
                 }
                 Ok(crate::document::paths::Kind::Asset) => {
-                    if bytes.len() as i64 > self.config.max_asset {
-                        return Err(write_json(
-                            413,
-                            &json!({"error": format!(
-                                "{path} is larger than the {} MB one file may be",
-                                self.config.max_asset >> 20
-                            )}),
-                        ));
-                    }
                 }
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             }
-        }
-        // `parsed.files` is always the complete file set this document will
-        // have -- `handle_upload` already carried forward whatever an
-        // untouched file needed to survive a one-file republish -- so the
-        // size and count ceilings below are simply totals over it and the
-        // main file, with nothing implicit left to merge in.
-        let mut resulting: HashMap<String, (String, String, i64)> = HashMap::new();
-        resulting.insert(
-            main_path.to_string(),
-            (
-                "text".to_string(),
-                crate::document::store::digest_of(&parsed.source),
-                parsed.source.len() as i64,
-            ),
-        );
-        for (path, bytes) in &parsed.files {
-            let kind = crate::document::paths::check(&self.config.paths(), path)
-                .expect("validated directory path");
-            let (kind, sha) = match kind {
-                crate::document::paths::Kind::Text => (
-                    "text".to_string(),
-                    crate::document::store::digest_of(
-                        std::str::from_utf8(bytes).expect("validated UTF-8 text"),
-                    ),
-                ),
-                crate::document::paths::Kind::Asset => (
-                    "asset".to_string(),
-                    crate::document::store::digest_of_bytes(bytes),
-                ),
-            };
-            resulting.insert(path.clone(), (kind, sha, bytes.len() as i64));
-        }
-        let mut by_sha: HashMap<String, i64> = HashMap::new();
-        for (kind, sha, size) in resulting.values() {
-            if kind == "asset" {
-                by_sha.entry(sha.clone()).or_insert(*size);
-            }
-        }
-        let assets_total: i64 = by_sha.values().sum();
-        if assets_total > self.config.max_assets {
-            return Err(write_json(
-                413,
-                &json!({"error": format!(
-                    "this document has reached the {} MB it may keep in figures",
-                    self.config.max_assets >> 20
-                )}),
-            ));
-        }
-        let text_total: usize = resulting
-            .values()
-            .filter(|(kind, _, _)| kind == "text")
-            .map(|(_, _, size)| *size as usize)
-            .sum();
-        if text_total > self.config.max_document {
-            return Err(write_json(413, &json!({"error": "document too large"})));
         }
         Ok(())
     }
@@ -1070,13 +967,6 @@ impl Server {
             Ok(format) => format,
             Err(error) => return sequencer_reply(&error),
         };
-        let text_bytes = projected
-            .texts
-            .values()
-            .fold(0usize, |total, body| total.saturating_add(body.len()));
-        if text_bytes > self.config.max_document {
-            return write_json(413, &json!({"error": "that project is too large to read"}));
-        }
         // The etag -- and what `source-changed {digest}` on the socket
         // names (§4.5) -- is the projection digest, not a row number: two
         // heads with the same files answer the same identity (§2.2).

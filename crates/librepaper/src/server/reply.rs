@@ -255,14 +255,11 @@ pub fn write_json(status: u16, payload: &Value) -> Reply {
 /// the `Limited` reader's length limit, from a stream that is simply
 /// malformed -- so an upload that ran into the ceiling is named as too large
 /// even when the request never sent a Content-Length to compare against.
-pub(super) fn upload_limit_exceeded(err: &MultipartError, ceiling: usize) -> Reply {
+pub(super) fn upload_limit_exceeded(err: &MultipartError) -> Reply {
     if err.status() == StatusCode::PAYLOAD_TOO_LARGE {
         write_json(
             413,
-            &json!({"error": format!(
-                "that upload is too large; it may be at most {} MB",
-                ceiling >> 20
-            )}),
+            &json!({"error": "upload is larger than its declared length"}),
         )
     } else {
         write_json(400, &json!({"error": "bad upload"}))

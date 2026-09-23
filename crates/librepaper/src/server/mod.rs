@@ -213,19 +213,18 @@ pub struct Server {
     state_transfers: tokio::sync::Mutex<StateTransfers>,
 }
 
-#[derive(Clone)]
 struct StateTransfer {
     slug: String,
     bytes: Bytes,
     digest: String,
     expires_at: i64,
+    reservation: crate::log::budget::Reservation,
 }
 
 #[derive(Default)]
 struct StateTransfers {
     entries: HashMap<String, StateTransfer>,
     order: VecDeque<String>,
-    bytes: usize,
 }
 
 impl StateTransfers {
@@ -236,7 +235,7 @@ impl StateTransfers {
         bytes: Bytes,
         digest: String,
         now: i64,
-        ceiling: usize,
+        reservation: crate::log::budget::Reservation,
     ) -> bool {
         let expired: Vec<_> = self
             .entries
@@ -249,13 +248,12 @@ impl StateTransfers {
         }
         let retained: std::collections::HashSet<_> = self.entries.keys().cloned().collect();
         self.order.retain(|queued| retained.contains(queued));
-        while self.entries.len() >= 64 || self.bytes.saturating_add(bytes.len()) > ceiling {
+        while self.entries.len() >= 64 {
             let Some(oldest) = self.order.pop_front() else {
                 return false;
             };
             self.remove(&oldest);
         }
-        self.bytes = self.bytes.saturating_add(bytes.len());
         self.order.push_back(id.clone());
         self.entries.insert(
             id,
@@ -264,15 +262,14 @@ impl StateTransfers {
                 bytes,
                 digest,
                 expires_at: now + 120,
+                reservation,
             },
         );
         true
     }
 
     fn remove(&mut self, id: &str) -> Option<StateTransfer> {
-        let removed = self.entries.remove(id)?;
-        self.bytes = self.bytes.saturating_sub(removed.bytes.len());
-        Some(removed)
+        self.entries.remove(id)
     }
 }
 

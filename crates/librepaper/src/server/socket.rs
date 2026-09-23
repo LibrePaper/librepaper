@@ -107,10 +107,6 @@ async fn send_outgoing_with_timeout(
         .map_err(|_| ())
 }
 
-/// How much room a multipart upload gets beyond the document itself for part
-/// headers, the title, and the slug.
-pub(super) const MULTIPART_SLACK: usize = 1 << 20;
-
 // One assembly per socket; declared lengths never cause an allocation.
 #[derive(Default)]
 pub(super) struct UpdateAssembly {
@@ -481,12 +477,8 @@ impl Server {
         // Retry metadata contains no chat bodies. IDs are scoped to this socket.
         let mut chat_requests: std::collections::VecDeque<(String, String)> =
             std::collections::VecDeque::new();
-        // CRDT history can exceed visible source, but peer memory stays bounded.
-        let update_ceiling = self
-            .config
-            .max_document
-            .saturating_mul(16)
-            .saturating_add(1 << 20);
+        // An update larger than the log quota can never be admitted.
+        let update_ceiling = self.config.log_quota_bytes;
         let mut writer_done = false;
         // Whether this editor has completed the `doc-open` handshake. Every
         // `doc-update` before that point is refused: the protocol string is
@@ -1340,14 +1332,14 @@ impl Server {
         slug: &str,
         update: Vec<u8>,
     ) -> Option<(String, String)> {
-        let ceiling = self
-            .config
-            .persistence()
-            .max_encoded_snapshot_bytes
-            .saturating_mul(4);
-        if update.len() > ceiling {
+        let Some(reservation) = self
+            .rooms
+            .registry()
+            .budget()
+            .try_reserve(update.len() as u64)
+        else {
             return None;
-        }
+        };
         let now = crate::util::now_unix();
         let id = random_token();
         let digest = format!("{:x}", Sha256::digest(&update));
@@ -1358,7 +1350,7 @@ impl Server {
             Bytes::from(update),
             digest.clone(),
             now,
-            ceiling,
+            reservation,
         ) {
             return None;
         }

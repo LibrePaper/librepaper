@@ -809,7 +809,7 @@ impl Server {
         ))));
         let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
         result["permissions"] = json!({"read":true,"suggest":who.at_least(Role::Commenter),"comment":who.at_least(Role::Commenter),"apply":who.at_least(Role::Editor)});
-        result["limits"] = json!({"control_bytes":MAX_MESSAGE,"source_bytes":self.config.max_document,"queries":8,"patches":100,"view_lifetime_seconds":3600,"concurrent_reads":8,"concurrent_effects":8,"concurrent_results":4});
+        result["limits"] = json!({"control_bytes":MAX_MESSAGE,"source_bytes":self.config.log_quota_bytes,"queries":8,"patches":100,"view_lifetime_seconds":3600,"concurrent_reads":8,"concurrent_effects":8,"concurrent_results":4});
         result
             .as_object_mut()
             .expect("read object")

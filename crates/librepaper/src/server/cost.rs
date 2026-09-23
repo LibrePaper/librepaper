@@ -60,7 +60,6 @@ pub struct CostMeter {
     pub transfers: Arc<tokio::sync::Semaphore>,
     work: Arc<tokio::sync::Semaphore>,
     control_work: Arc<tokio::sync::Semaphore>,
-    incoming_memory: Arc<tokio::sync::Semaphore>,
 }
 
 impl CostMeter {
@@ -74,9 +73,6 @@ impl CostMeter {
             transfers: Arc::new(tokio::sync::Semaphore::new(config.cost.artifact_transfers)),
             work: Arc::new(tokio::sync::Semaphore::new(config.cost.work_concurrency)),
             control_work: Arc::new(tokio::sync::Semaphore::new(16)),
-            incoming_memory: Arc::new(tokio::sync::Semaphore::new(
-                config.cost.request_body_memory_bytes,
-            )),
             state: Mutex::new(State {
                 requests: Requests::default(),
             }),
@@ -124,7 +120,7 @@ impl Server {
             .capacity_snapshot()
             .await
             .unwrap_or(Value::Null);
-        snapshot["http_work"] = json!({"active":self.config.cost.work_concurrency-self.cost.work.available_permits(),"control_active":16-self.cost.control_work.available_permits(),"request_body_reserved_bytes":self.config.cost.request_body_memory_bytes-self.cost.incoming_memory.available_permits(),"active_artifact_transfers":self.config.cost.artifact_transfers-self.cost.transfers.available_permits()});
+        snapshot["http_work"] = json!({"active":self.config.cost.work_concurrency-self.cost.work.available_permits(),"control_active":16-self.cost.control_work.available_permits(),"active_artifact_transfers":self.config.cost.artifact_transfers-self.cost.transfers.available_permits()});
         // The worker refuses rather than grows when either of its bounds is
         // reached, and hands the work back to a durable rescan. That is
         // invisible from outside unless it is counted here.
@@ -219,30 +215,22 @@ pub(super) async fn middleware(
         return plain(421, "this host is not served by this deployment");
     };
     // Reserve parsing and decoded-payload memory before reading a mutation.
-    // Unknown-length bodies reserve the configured upload ceiling. The route
-    // retains its own actual-byte ceiling, including multipart overhead.
+    // The middleware requires declared content length, and the memory budget
+    // covers the deserialized working copy during processing. Without a length
+    // the parsing would not know when to stop, and the bound would have to
+    // fall back to a ceiling that does not exist any more.
     let _incoming = if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
-        let ceiling = server
-            .config
-            .max_document
-            .saturating_add(server.config.max_assets.max(0) as usize)
-            .saturating_add(super::MULTIPART_SLACK);
-        let length = request
+        let Some(length) = request
             .body()
             .size_hint()
             .exact()
-            .and_then(|n| usize::try_from(n).ok())
-            .unwrap_or(ceiling);
+            .and_then(|n| u64::try_from(n).ok())
+        else {
+            return plain(411, "a mutation must declare its content length");
+        };
         let reservation = length.saturating_mul(4);
-        match u32::try_from(reservation).ok().and_then(|n| {
-            server
-                .cost
-                .incoming_memory
-                .clone()
-                .try_acquire_many_owned(n)
-                .ok()
-        }) {
-            Some(permit) => Some(permit),
+        match server.rooms.registry().budget().try_reserve(reservation) {
+            Some(r) => Some(r),
             None => return refusal("request_memory", "deployment"),
         }
     } else {

@@ -51,8 +51,12 @@ impl Server {
             }
             seen.1 += 1;
         }
-        let ceiling = (self.config.max_asset as usize).saturating_add(1);
-        let Ok(body) = to_bytes(request.into_body(), ceiling).await else {
+        let Some(length) = header_of(&headers, "content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+        else {
+            return write_json(411, &json!({"error": "a figure upload must declare its content length"}));
+        };
+        let Ok(body) = to_bytes(request.into_body(), length).await else {
             return write_json(413, &json!({"error": "that figure is too large"}));
         };
         let (_entry, who) = match self.entry_viewer_in(slug, context, &headers, None).await {
@@ -79,7 +83,6 @@ impl Server {
         let stored = room
             .put_asset_authorized(
                 body.to_vec(),
-                (self.config.max_asset, self.config.max_assets),
                 &mutation_actor,
             )
             .await;
