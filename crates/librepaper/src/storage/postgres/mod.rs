@@ -32,7 +32,7 @@ pub use labels::{LabelRecord, NewLabel};
 pub use ownership::WriterLease;
 pub use proposals::{NewProposal, StoredDecision, StoredProposal};
 pub use repository::{
-    AccountRecord, AssetRecord, DocumentRecord, NewAccount, NewAsset, NewDocument,
+    AccountRecord, AssetRecord, DocumentRecord, DocumentStorage, NewAccount, NewAsset, NewDocument,
 };
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
@@ -296,7 +296,7 @@ mod tests {
         vector: &[u8],
         snapshot: &[u8],
     ) -> Option<document_log::LogBase> {
-        let written = storage.write_base(document_id, snapshot).await.unwrap();
+        let written = storage.write_base(document_id, snapshot, crate::config::Configuration::default().log_quota_bytes).await.unwrap();
         catalog
             .activate_log_base(
                 document_id,
