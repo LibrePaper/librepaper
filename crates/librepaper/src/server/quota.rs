@@ -1,12 +1,15 @@
-//! Account storage status.
+//! Account storage status, including each document's editing log.
 
 use super::*;
+
+use crate::storage::postgres::repository::DocumentStorage;
 
 #[derive(Clone)]
 struct AccountStorageUsage {
     charged_bytes: i64,
     document_count: i64,
     label_count: i64,
+    documents: Vec<DocumentStorage>,
 }
 
 impl Server {
@@ -63,10 +66,15 @@ impl Server {
             .document_counts_by_owner(id)
             .await
             .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?;
+        let documents = catalog
+            .document_storage_by_owner(id)
+            .await
+            .map_err(|e| write_json(503, &json!({"error":e.to_string()})))?;
         Ok(AccountStorageUsage {
             charged_bytes,
             document_count,
             label_count: labels,
+            documents,
         })
     }
 
@@ -83,6 +91,20 @@ impl Server {
             Ok(usage) => usage,
             Err(reply) => return reply,
         };
+        let documents = usage
+            .documents
+            .iter()
+            .map(|d| {
+                json!({
+                    "id": d.id,
+                    "slug": d.slug,
+                    "title": d.title,
+                    "figureBytes": d.figure_bytes,
+                    "archiveBytes": d.archive_bytes,
+                    "historyBytes": d.history_bytes,
+                })
+            })
+            .collect::<Vec<_>>();
         let mut response = write_json(
             200,
             &json!({
@@ -91,6 +113,7 @@ impl Server {
                     "documentCount": usage.document_count,
                     "labelCount": usage.label_count,
                     "hardQuotaBytes": self.config.storage.per_owner,
+                    "documents": documents,
                 },
                 "constraints": {
                     "hardQuotaBytes": self.config.storage.per_owner,

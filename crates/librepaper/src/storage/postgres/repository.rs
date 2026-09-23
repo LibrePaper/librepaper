@@ -947,10 +947,16 @@ impl PostgresCatalog {
 
     pub async fn usage_bytes(&self, account_id: Option<Uuid>) -> Result<i64> {
         let Some(account_id) = account_id else {
-            return sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton")
-                .fetch_one(&self.pool)
-                .await
-                .map_err(Error::from);
+            return sqlx::query_scalar!(
+                r#"SELECT (
+                     (SELECT bytes FROM storage_usage WHERE singleton) +
+                     COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL), 0) +
+                     COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents), 0)
+                   )::bigint AS "total!""#
+            )
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Error::from);
         };
         owner_usage_bytes(&self.pool, account_id).await
     }
@@ -986,11 +992,12 @@ fn validate_document(input: &NewDocument) -> Result<()> {
     Ok(())
 }
 
-/// Every byte an account is charged for: version archives, document assets,
-/// and published files. This is the single definition of what counts toward
-/// the owner quota -- it was copied into three call sites before, keyed two
-/// different ways, so a new kind of billable byte had to be remembered in
-/// three places to be counted in any of them.
+/// Every byte an account is charged for: label archives, document assets,
+/// and each document's editing log (base snapshot plus uncompacted rows).
+/// This is the single definition of what counts toward the owner quota -- it
+/// was copied into three call sites before, keyed two different ways, so a
+/// new kind of billable byte had to be remembered in three places to be
+/// counted in any of them.
 ///
 /// Callers holding a document row pass its `owner_id` from whatever lock they
 /// already took, so the sum is measured against the owner the document has
@@ -1010,6 +1017,11 @@ where
              ) l
              UNION ALL SELECT a.byte_length FROM document_assets a
                JOIN documents d ON d.id=a.document_id WHERE d.owner_id=$1
+             UNION ALL SELECT s.snapshot_bytes FROM document_snapshots s
+               JOIN documents d ON d.id=s.document_id
+               WHERE d.owner_id=$1 AND s.delete_after IS NULL
+             UNION ALL SELECT d.uncompacted_update_bytes FROM documents d
+               WHERE d.owner_id=$1
            ) usage"#,
         account_id,
     )
@@ -1026,6 +1038,62 @@ impl PostgresCatalog {
         sqlx::query_scalar!(
             "SELECT storage_key FROM document_assets WHERE document_id=$1",
             document_id,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DocumentStorage {
+    pub id: Uuid,
+    pub slug: String,
+    pub title: String,
+    pub figure_bytes: i64,
+    pub archive_bytes: i64,
+    pub history_bytes: i64,
+}
+
+impl PostgresCatalog {
+    pub async fn document_storage_by_owner(&self, owner_id: Uuid) -> Result<Vec<DocumentStorage>> {
+        sqlx::query_as!(
+            DocumentStorage,
+            r#"SELECT
+                 d.id,
+                 d.slug,
+                 d.title,
+                 COALESCE(SUM(a.byte_length), 0)::bigint AS "figure_bytes!",
+                 COALESCE((
+                   SELECT COALESCE(SUM(archive_bytes), 0)::bigint
+                   FROM (
+                     SELECT DISTINCT ON (archive_key) archive_bytes
+                     FROM document_labels
+                     WHERE document_id = d.id AND archive_key IS NOT NULL
+                   ) DISTINCT_labels
+                 ), 0)::bigint AS "archive_bytes!",
+                 (COALESCE(
+                   (SELECT snapshot_bytes FROM document_snapshots WHERE document_id = d.id AND delete_after IS NULL),
+                   0
+                 ) + d.uncompacted_update_bytes)::bigint AS "history_bytes!"
+               FROM documents d
+               LEFT JOIN document_assets a ON a.document_id = d.id
+               WHERE d.owner_id = $1 AND d.status = 'active'
+               GROUP BY d.id, d.slug, d.title, d.uncompacted_update_bytes
+               ORDER BY (
+                 COALESCE(SUM(a.byte_length), 0) +
+                 COALESCE((
+                   SELECT COALESCE(SUM(archive_bytes), 0)
+                   FROM (
+                     SELECT DISTINCT ON (archive_key) archive_bytes
+                     FROM document_labels
+                     WHERE document_id = d.id AND archive_key IS NOT NULL
+                   ) DISTINCT_labels
+                 ), 0) +
+                 COALESCE((SELECT snapshot_bytes FROM document_snapshots WHERE document_id = d.id AND delete_after IS NULL), 0) +
+                 d.uncompacted_update_bytes
+               ) DESC, d.title ASC"#,
+            owner_id,
         )
         .fetch_all(&self.pool)
         .await
