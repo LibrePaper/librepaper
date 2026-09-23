@@ -4133,7 +4133,6 @@
     .connection-pill { min-height: 1.5rem; gap: calc(var(--spacing) * .5); padding-inline: calc(var(--spacing) * 1.25); }
   }
   .presence { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-surface-600-400); font-size: var(--text-xs); }
-  .connection-label { color: var(--color-warning-600-400); font-weight: 600; }
   .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-surface-200-800); color: var(--color-surface-700-300); font-size: .65rem; }
   .preview-status-details { display: grid; gap: calc(var(--spacing) * 2); }
