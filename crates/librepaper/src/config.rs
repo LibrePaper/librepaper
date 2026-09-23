@@ -79,8 +79,8 @@ pub struct Configuration {
     pub pending_bytes: u64,
     /// The other half of that bound: what writing those bytes costs while the
     /// write is in flight -- the encoded row and both driver buffers, including capacity growth.
-    /// Its own pool, so a deployment whose buffers are full can still drain
-    /// them.
+    /// Its own pool, so a deployment whose buffers are full can still drain them.
+    /// The default derives from the log quota via `default_pending_scratch_bytes`.
     pub pending_scratch_bytes: u64,
     /// Which extensions name a file a person edits, which name bytes nobody
     /// edits in place, and which name what a compiler wrote -- and a document
@@ -362,11 +362,11 @@ impl Default for Configuration {
         Configuration {
             max_files: 200,
             max_path: 200,
-            log_quota_bytes: 32 * 1024 * 1024,
+            log_quota_bytes: DEFAULT_LOG_QUOTA_BYTES,
             memory_budget_bytes: 512 * 1024 * 1024,
             cache_expansion: crate::log::budget::DEFAULT_EXPANSION,
             pending_bytes: DEFAULT_PENDING_BYTES,
-            pending_scratch_bytes: DEFAULT_PENDING_SCRATCH_BYTES,
+            pending_scratch_bytes: default_pending_scratch_bytes(DEFAULT_LOG_QUOTA_BYTES),
             text_extensions: [
                 ".tex",
                 ".typ",
@@ -632,7 +632,15 @@ impl Configuration {
                 BUFFER_CEILING_BYTES
             ));
         }
-        self.log_quota_bytes = bytes as usize;
+
+        // If scratch is at the old default, move it to the new default.
+        let old_default_scratch = default_pending_scratch_bytes(self.log_quota_bytes);
+        let new_quota = bytes as usize;
+        if self.pending_scratch_bytes == old_default_scratch {
+            self.pending_scratch_bytes = default_pending_scratch_bytes(new_quota);
+        }
+
+        self.log_quota_bytes = new_quota;
         Ok(())
     }
 
@@ -693,6 +701,14 @@ impl Configuration {
     }
 }
 
+/// The per-document log ceiling, in bytes.
+///
+/// The default is what a 512 MiB memory budget can build, because a cold build
+/// reserves the resident expansion plus the transient one, fourteen times the
+/// log at the measured factors, and raising the quota means raising the budget
+/// with it.
+pub const DEFAULT_LOG_QUOTA_BYTES: usize = 32 * 1024 * 1024;
+
 /// How much unsaved source the whole deployment will hold at once.
 ///
 /// Conservative on purpose, for the small VPS this targets. One document may
@@ -706,16 +722,14 @@ impl Configuration {
 /// documents (SPEC-frugal §2).
 pub const DEFAULT_PENDING_BYTES: u64 = 64 * 1024 * 1024;
 
-/// How much temporary memory the persistence path may hold at once.
+/// Compute the default pending-scratch ceiling for a given log quota.
 ///
-/// One maximum-size flush costs a little over 20 MiB of scratch
-/// (`pending::scratch_for` of one maximum row), so this admits three
-/// worst-case flushes concurrently and many more ordinary ones -- a flush
-/// fires at 1 MiB of buffer, so the worst case is reached only when
-/// PostgreSQL has already been slow for a while. A flush that cannot have its
-/// scratch is deferred to the next housekeeping pass, one second later, with
-/// its buffer and charges untouched; it is not a loss.
-pub const DEFAULT_PENDING_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
+/// What writing one maximum row costs while the write is in flight: the encoded
+/// row and both driver buffers, including capacity growth. The pool is a ceiling
+/// on reservations, not memory held.
+pub fn default_pending_scratch_bytes(log_quota_bytes: usize) -> u64 {
+    crate::log::pending::scratch_for(crate::log::sequencer::max_row_bytes(log_quota_bytes) as u64)
+}
 
 #[cfg(test)]
 mod tests {
@@ -764,7 +778,7 @@ mod tests {
         assert_eq!(config.pending_scratch_bytes, 64 * 1024 * 1024);
         assert!(
             config.set_pending(None, Some(1)).is_err(),
-            "one megabyte of scratch cannot write a four megabyte row",
+            "one megabyte of scratch is too small for the largest row",
         );
         assert_eq!(
             config.pending_scratch_bytes,
@@ -773,6 +787,26 @@ mod tests {
         );
         assert!(config.set_pending(Some(u64::MAX), None).is_err());
         assert_eq!(config.pending_bytes, 128 * 1024 * 1024);
+    }
+
+    #[test]
+    fn log_quota_change_updates_scratch_default() {
+        let mut config = Configuration::default();
+        let old_scratch = config.pending_scratch_bytes;
+
+        // When scratch is at the old default and log quota changes,
+        // scratch should move to the new default.
+        assert!(config.set_log_quota(Some(64)).is_ok());
+        let new_scratch = default_pending_scratch_bytes(64 * 1024 * 1024);
+        assert_eq!(config.pending_scratch_bytes, new_scratch);
+        assert_ne!(old_scratch, new_scratch);
+
+        // But if scratch was set explicitly, it should stay unchanged.
+        let mut config2 = Configuration::default();
+        config2.pending_scratch_bytes = 100 * 1024 * 1024;  // explicitly set
+        let explicit_scratch = config2.pending_scratch_bytes;
+        assert!(config2.set_log_quota(Some(128)).is_ok());
+        assert_eq!(config2.pending_scratch_bytes, explicit_scratch);
     }
 
     #[test]
