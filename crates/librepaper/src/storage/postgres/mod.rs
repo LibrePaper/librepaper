@@ -1600,7 +1600,7 @@ mod tests {
         let sequencer = Sequencer::from_parts(
             document.id,
             document.slug.clone(),
-            Uuid::nil(),
+            uuid::Uuid::nil(),
             catalog_arc,
             blobs,
             config,

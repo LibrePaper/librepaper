@@ -468,28 +468,6 @@ fn byte_to_utf16(text: &str, byte: usize) -> usize {
     text[..byte].encode_utf16().count()
 }
 
-fn source_size_after(tree: &SourceTree, request: &PatchRequest) -> Result<usize, AgentError> {
-    let mut sizes: BTreeMap<&str, usize> = tree
-        .files
-        .iter()
-        .map(|(path, file)| (path.as_str(), file.text.len()))
-        .collect();
-    for patch in &request.patches {
-        let size = sizes
-            .get_mut(patch.path.as_str())
-            .ok_or_else(|| AgentError::Conflict(format!("file is absent: {}", patch.path)))?;
-        *size = size
-            .checked_sub(patch.exact.len())
-            .and_then(|size| size.checked_add(patch.replacement.len()))
-            .ok_or_else(|| AgentError::Invalid("source size overflow".into()))?;
-    }
-    sizes.values().try_fold(0usize, |total, size| {
-        total
-            .checked_add(*size)
-            .ok_or_else(|| AgentError::Invalid("source size overflow".into()))
-    })
-}
-
 /// The head's text files, as the patch validator needs them. Rebuilt on
 /// every evaluation -- including a retried one -- because the head it is
 /// built from is exactly what a retry's precondition has to agree with.

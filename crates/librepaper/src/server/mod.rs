@@ -218,7 +218,9 @@ struct StateTransfer {
     bytes: Bytes,
     digest: String,
     expires_at: i64,
-    reservation: crate::log::budget::Reservation,
+    /// Held for its drop: the bytes above are charged to the memory budget
+    /// for as long as this entry exists.
+    _reservation: crate::log::budget::Reservation,
 }
 
 #[derive(Default)]
@@ -262,7 +264,7 @@ impl StateTransfers {
                 bytes,
                 digest,
                 expires_at: now + 120,
-                reservation,
+                _reservation: reservation,
             },
         );
         true

@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     fn log_quota_change_updates_scratch_default() {
-        let mut config = Configuration::default();
+        let config = Configuration::default();
         let old_scratch = config.pending_scratch_bytes;
 
         // When scratch is at the old default and log quota changes,

@@ -862,17 +862,23 @@ impl Server {
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let (slug_in_transfer, bytes, digest) = {
+        let (bytes, digest) = {
             let mut transfers = self.state_transfers.lock().await;
-            let Some(transfer) = transfers.entries.get(&transfer_id).map(|t| (t.slug.clone(), t.bytes.clone(), t.digest.clone(), t.expires_at)) else {
+            // Only what the response needs leaves the lock: the entry itself
+            // holds a memory reservation and cannot be cloned.
+            let Some((transfer_slug, bytes, digest, expires_at)) = transfers
+                .entries
+                .get(&transfer_id)
+                .map(|t| (t.slug.clone(), t.bytes.clone(), t.digest.clone(), t.expires_at))
+            else {
                 return plain(410, "that baseline has expired; reconnect for a newer one");
             };
-            if transfer.0 != slug || transfer.3 < crate::util::now_unix() {
+            if transfer_slug != slug || expires_at < crate::util::now_unix() {
                 transfers.remove(&transfer_id);
                 transfers.order.retain(|id| id != &transfer_id);
                 return plain(410, "that baseline has expired; reconnect for a newer one");
             }
-            (transfer.0, transfer.1, transfer.2)
+            (bytes, digest)
         };
         let mut response = Response::new(Body::from(bytes));
         set(&mut response, "content-type", "application/octet-stream");
