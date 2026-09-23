@@ -138,7 +138,7 @@
   // belongs on neither.
   let identity = $derived(me.name || "");
   let canModerate = $derived(Boolean(doc.can_moderate));
-  let connected = $state(true);
+  let connected = $state(false);
   // Whether this tab is the one in front of the reader. Only background work
   // consults it; nothing about the document depends on being looked at.
   let hidden = $state(typeof document !== "undefined" && document.visibilityState === "hidden");
@@ -3619,9 +3619,21 @@
       <IconButton icon="keyboard" label="Keyboard shortcuts" tone="plain"
                   onclick={() => void runCommand("shortcuts")} />
     </div>
+    <div class="connection-settings" role="group" aria-label="Connection settings">
+      <button class="connection-pill" type="button" onclick={() => openSettings("local")}
+              aria-label={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}; open local settings`}
+              title={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}. Open local settings`}>
+        <span class="connection-dot" class:offline={localAppStatus.state !== "connected"} aria-hidden="true"></span>
+        <span>Local</span>
+      </button>
+      <button class="connection-pill" type="button" onclick={() => openSettings("remote")}
+              aria-label={`Remote server ${connected ? "connected" : "disconnected"}; open remote settings`}
+              title={connected ? `${peers} people connected. Open remote settings` : `${connectionNote}. Open remote settings`}>
+        <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
+        <span>Remote</span>
+      </button>
+    </div>
     <div class="presence" role="group" aria-label={connected ? `${peers} people connected` : connectionNote} title={connected ? `${peers} people connected` : connectionNote}>
-      <span class="connection-dot" class:offline={!connected} aria-hidden="true"></span>
-      {#if !connected}<span class="connection-label">Offline</span>{/if}
       {#each participants.slice(0, 3) as person (person.key)}
         <Avatar name={person.name} key={person.key} colour={person.colour} size={6} />
       {/each}
@@ -4042,6 +4054,7 @@
      better at the width of the window than in a column beside the text. -->
 <SettingsDialog bind:open={settingsOpen} bind:category={settingsCategory}
                 {sourceFormat} {mayEdit}
+                remoteConnected={connected} remoteNote={connectionNote}
                 {keys} onkeys={setKeys} commands={commandContext}
                 buildPreferences={buildPreferences} documentId={SLUG} userId={buildUserId} onbuildpreferences={setBuildPreferences}
                 main={previewMain} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
@@ -4109,9 +4122,17 @@
   @media (max-width: 760px) {
     .face-switch :global(.icon-control) { width: 2.5rem; height: 2.5rem; }
   }
+  .connection-settings { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .5); }
+  .connection-pill { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .75); min-height: 1.75rem; padding: 0 calc(var(--spacing) * 2); border: 1px solid var(--color-surface-300-700); border-radius: 999px; background: var(--color-surface-100-900); color: var(--color-surface-700-300); font: inherit; font-size: var(--text-xs); cursor: pointer; }
+  .connection-pill:hover { background: var(--color-row-hover); color: var(--color-surface-900-100); }
+  .connection-pill:focus-visible { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
+  .connection-dot { width: .5rem; height: .5rem; flex: 0 0 .5rem; border-radius: 50%; background: var(--color-success-500); }
+  .connection-dot.offline { background: var(--color-error-500); }
+  @media (max-width: 600px) {
+    .connection-settings { gap: calc(var(--spacing) * .25); }
+    .connection-pill { min-height: 1.5rem; gap: calc(var(--spacing) * .5); padding-inline: calc(var(--spacing) * 1.25); }
+  }
   .presence { display: inline-flex; align-items: center; gap: calc(var(--spacing) * .5); color: var(--color-surface-600-400); font-size: var(--text-xs); }
-  .connection-dot { width: .5rem; height: .5rem; margin-inline: var(--spacing); border-radius: 50%; background: var(--color-success-500); }
-  .connection-dot.offline { background: var(--color-warning-500); }
   .connection-label { color: var(--color-warning-600-400); font-weight: 600; }
   .presence :global(.avatar + .avatar) { margin-left: calc(var(--spacing) * -1.5); box-shadow: 0 0 0 2px var(--color-shell); }
   .presence-more { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; margin-left: calc(var(--spacing) * -1.5); border-radius: 50%; background: var(--color-surface-200-800); color: var(--color-surface-700-300); font-size: .65rem; }
