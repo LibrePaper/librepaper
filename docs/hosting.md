@@ -128,7 +128,7 @@ storage.
 by every resident cache entry, in-flight build, temporary fork and
 projection output buffer across every document the process is holding. It is
 also what request bodies and outgoing state transfers reserve from. A mutation
-must declare its content length, a request without one is refused with 411.
+must declare its content length. A request without one is refused with 411.
 Four times the content length is reserved from the budget before the body is
 read; a request that cannot reserve is refused with a retryable 429. A request
 that cannot reserve its decoded share waits briefly and then fails with
