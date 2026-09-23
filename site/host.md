@@ -54,7 +54,6 @@ The storage flags bound what a deployment will store:
 | `--document-assets-limit` | combined input assets of one document | 32 MiB |
 | `--publisher-storage-limit` | everything one publisher holds | 100 MB |
 | `--deployment-storage-limit` | the whole deployment | 5120 MB |
-| `--publisher-document-limit` | documents one publisher may hold | 50 |
 | `--publisher-upload-limit` | uploads one publisher may make in an hour | 30 |
 
 ```sh

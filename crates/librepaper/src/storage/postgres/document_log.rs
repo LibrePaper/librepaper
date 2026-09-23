@@ -599,8 +599,8 @@ impl PostgresCatalog {
                AND id > $3
              ORDER BY id LIMIT $4",
             )
-            .bind(self.policy.compaction_count_threshold())
-            .bind(self.policy.compaction_byte_threshold())
+            .bind(super::COMPACTION_UPDATE_THRESHOLD)
+            .bind(super::COMPACTION_BYTE_THRESHOLD)
             .bind(after.compaction)
             .bind(limit)
             .fetch_all(&self.pool)

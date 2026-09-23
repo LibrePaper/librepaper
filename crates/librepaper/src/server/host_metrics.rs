@@ -71,11 +71,17 @@ pub fn warn(config: &crate::config::Configuration, primary: &Path) {
         .filter_map(|name| measurements[*name].as_u64())
         .min();
     if let Some(memory) = memory {
-        let rooms = config.session.rooms_bytes_max as u64;
-        let staging = config.persistence().max_staging_bytes as u64;
+        let decoded_docs = config.memory_budget_bytes;
+        let pending_source = config.pending_bytes;
+        let pending_scratch = config.pending_scratch_bytes;
         let incoming = config.cost.request_body_memory_bytes as u64;
-        if rooms.saturating_add(staging).saturating_add(incoming) > memory.saturating_mul(3) / 4 {
-            eprintln!("warning: room, persistence and request-body memory ceilings exceed three quarters of detected host/container memory; leave space for the binary, proxy and operating system");
+        if decoded_docs
+            .saturating_add(pending_source)
+            .saturating_add(pending_scratch)
+            .saturating_add(incoming)
+            > memory.saturating_mul(3) / 4
+        {
+            eprintln!("warning: the decoded-document, pending-source and request-body memory ceilings exceed three quarters of detected host/container memory; leave space for the binary, proxy and operating system");
         }
     }
 }

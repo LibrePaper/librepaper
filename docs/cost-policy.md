@@ -8,19 +8,34 @@ object ledger.
 
 The initial application limits are:
 
-| Resource | Default |
-|---|---:|
-| Inline source per document | 4 MiB |
-| Retained assets per document | 32 MiB |
-| Retained storage per owner | 100 MiB |
-| Deployment storage threshold | 5 GiB |
-| One document's log (compaction base plus rows since) | 64 MiB |
-| Process-wide memory budget for decoded documents | 512 MiB |
-| Asset uploads per owner per hour | 30 |
-| Label creations per owner per hour | 300 |
-| Label creations per deployment per hour | 10,000 |
-| PostgreSQL connections per process | 20 |
-| One update | 4 MiB |
+**One document:**
+
+| Resource | Default | Flag or key |
+|---|---:|---|
+| Inline source | 4 MiB (max 8) | `--document-size-limit` |
+| Retained assets | 32 MiB | `--document-assets-limit` |
+| Log (compaction base plus rows since) | 32 MiB | `log_quota_mb` in config file |
+
+**One owner:**
+
+| Resource | Default | Flag or key |
+|---|---:|---|
+| Retained storage | 100 MiB | `--publisher-storage-limit` |
+| Asset uploads per hour | 30 | `--publisher-upload-limit` |
+
+**Process:**
+
+| Resource | Default | Flag or key |
+|---|---:|---|
+| Deployment storage | 5 GiB | `--deployment-storage-limit` |
+| Memory budget for decoded documents | 512 MiB | `memory_budget_mb` in config file |
+| Pending source buffers | 64 MiB each | `pending_mb`, `pending_scratch_mb` in config file |
+| PostgreSQL connections | 20 | `--database-connections` |
+| One update | 4 MiB | fixed |
+| Request body memory | 256 MiB | fixed |
+| Live sockets per network | 128 | fixed |
+| Live sockets per principal | 64 | fixed |
+| Live sockets per document | 256 (32 editors) | fixed |
 
 Retained storage includes labels' source archives and all completed document
 assets. An archive is produced on request, not written for every label, so it
@@ -29,16 +44,17 @@ asset does not restore quota; the asset remains until its document is
 deleted. Reusing identical bytes later reuses the existing document asset and
 does not issue another sequential object-store PUT.
 
-There is no jobs-claimed-per-pass figure any more. Compaction, archiving and
-deletion run on an in-process bounded queue, not a polled table, so nothing
-is claimed in a pass; see [SPEC-server-is-a-log.md](../SPEC-server-is-a-log.md)
-§8.6. The two numbers that actually bound server-side cost per document are
+Compaction, archiving and deletion run on an in-process bounded queue, not a
+polled table. The two numbers that actually bound server-side cost per document are
 the log quota above, which is what limits how long a cache rebuild can
 occupy a thread, and the memory budget, which is shared by every resident
 document's cache entries, in-flight builds and projection buffers on the
-process. A document that exceeds either becomes unreadable until an editor
-exports, trims and re-imports it, or an operator raises the limit; ingest and
-typing continue while it is unreadable. See
+process. The memory budget must cover a cold build at the quota, fourteen times
+the log bytes at the measured expansion factors, and the server refuses to start
+otherwise. A document that exceeds either limit becomes unreadable until an editor
+exports, trims and re-imports it, or an operator raises the log quota with
+`log_quota_mb` or the memory budget with `memory_budget_mb` in the configuration
+file; ingest and typing continue while it is unreadable. See
 [self-managed hosting](hosting.md#resource-limits).
 
 LibrePaper checks coarse owner and deployment thresholds before blob writes and
@@ -49,11 +65,12 @@ objects later. A provider-side billing alert and, where available, a hard
 spending cap remain required because cached estimates and asynchronous cleanup
 cannot exactly match an invoice.
 
-`--database-connections` bounds each process's pool. Multiply it by the number
-of application and worker processes when sizing PostgreSQL. Keep enough server
-connections for administration and backup. Upload, render, agent, room, socket,
-and outbound-memory limits are also bounded by the server configuration shown
-by `librepaper admin serve --help`.
+`--database-connections` bounds each process's pool. One `admin serve` process
+serves a deployment and runs its background work in-process. Keep enough server
+connections for administration and backup. Document size, asset, storage and
+upload limits are set by flags shown by `librepaper admin serve --help`. The log
+quota, memory budget and pending budgets are set in the advanced configuration
+file passed with `--config`.
 
 Fetch `/api/status` over loopback for operational state, for example
 `curl http://127.0.0.1:8080/api/status`. PostgreSQL

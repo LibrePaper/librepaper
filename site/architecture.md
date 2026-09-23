@@ -234,7 +234,6 @@ Storage limits are set per deployment and enforced at several scopes:
 | `--document-assets-limit` | combined input assets of one document |
 | `--publisher-storage-limit` | everything one publisher holds |
 | `--deployment-storage-limit` | the whole deployment |
-| `--publisher-document-limit` | documents one publisher may hold |
 | `--publisher-upload-limit` | uploads one publisher may make in an hour |
 
 Owners can set a softer history budget, retention density and warning thresholds

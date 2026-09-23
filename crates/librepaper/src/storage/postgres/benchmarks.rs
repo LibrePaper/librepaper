@@ -101,9 +101,6 @@ async fn typing_throughput_release_benchmark() {
         owner_bytes: i64::MAX / 4,
         deployment_bytes: i64::MAX / 4,
         asset_uploads_per_hour: 100_000,
-        versions_per_hour: 100_000,
-        max_uncompacted_updates: 1_000_000,
-        max_uncompacted_bytes: i64::MAX / 4,
     };
     let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
     catalog.migrate().await.expect("migrate");
@@ -765,13 +762,6 @@ async fn compaction_cost_release_benchmark() {
         owner_bytes: i64::MAX / 4,
         deployment_bytes: i64::MAX / 4,
         asset_uploads_per_hour: 100_000,
-        versions_per_hour: 100_000,
-        // Thresholds high enough that nothing schedules itself. Compaction
-        // is driven by hand here, one stage at a time; a background
-        // compaction landing in the middle of that would measure two
-        // compactions as one.
-        max_uncompacted_updates: 1_000_000,
-        max_uncompacted_bytes: i64::MAX / 4,
     };
     let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
     catalog.migrate().await.expect("migrate");
@@ -1575,9 +1565,6 @@ async fn concurrent_compaction_release_benchmark() {
         owner_bytes: i64::MAX / 4,
         deployment_bytes: i64::MAX / 4,
         asset_uploads_per_hour: 100_000,
-        versions_per_hour: 100_000,
-        max_uncompacted_updates: 1_000_000,
-        max_uncompacted_bytes: i64::MAX / 4,
     };
     let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
     catalog.migrate().await.expect("migrate");
@@ -2381,12 +2368,6 @@ async fn active_document_capacity_benchmark() {
         owner_bytes: i64::MAX / 4,
         deployment_bytes: i64::MAX / 4,
         asset_uploads_per_hour: 100_000,
-        versions_per_hour: 100_000,
-        // Compaction is measured separately (`compaction_cost_release_benchmark`).
-        // Here it would turn the run into a measurement of the background
-        // worker instead, so the thresholds are put out of reach.
-        max_uncompacted_updates: 1_000_000,
-        max_uncompacted_bytes: i64::MAX / 4,
     };
     let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
     catalog.migrate().await.expect("migrate");

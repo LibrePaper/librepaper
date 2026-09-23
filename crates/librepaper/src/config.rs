@@ -64,7 +64,10 @@ pub struct Configuration {
     /// semantic commands still work against the log as it stands
     /// (SPEC-server-is-a-log §9.1). It is the real bound on how long a build
     /// can occupy a thread, which is why it is a per-document ceiling and not
-    /// a deployment-wide one.
+    /// a deployment-wide one. The default is what a 512 MiB memory budget can
+    /// build, because a cold build reserves the resident expansion plus the
+    /// transient one, fourteen times the log at the measured factors, and
+    /// raising the quota means raising the budget with it.
     pub log_quota_bytes: usize,
     /// One process-wide budget for everything holding a decoded document:
     /// resident cache entries, in-flight builds, temporary forks and
@@ -99,13 +102,11 @@ pub struct Configuration {
     pub text_extensions: Vec<String>,
     pub asset_extensions: Vec<String>,
     pub derived_extensions: Vec<String>,
-    pub max_comments: usize,
-    pub rate_per_hour: i64,
     pub caps: CapLimit,
 
     /// Storage is what keeps a deployment's bill bounded no matter who shows
     /// up: a ceiling on everything stored, a ceiling per publisher, and a cap
-    /// on how many documents and how many uploads an hour one publisher gets.
+    /// on how many uploads an hour one publisher gets.
     /// Sizes are bytes of stored HTML; every index entry records its own.
     pub storage: StorageLimit,
 
@@ -145,10 +146,6 @@ pub struct Configuration {
     /// read on nearly every request, so an unbounded title is a way to sink the
     /// whole deployment.
     pub max_title: usize,
-    /// Caps replies on one comment, so a thread cannot grow without bound and a
-    /// room stays small enough to load and rewrite whole.
-    pub max_replies: usize,
-
     /// The live document, and what it costs to keep. Every one of these is a
     /// bound on the bill or on the memory of a server nobody is watching.
     pub session: SessionLimit,
@@ -164,9 +161,8 @@ pub struct Configuration {
     pub suffix_alphabet: String,
     pub suffix_length: usize,
 
-    /// The persistence policy: what a source may be, what its encoded CRDT
-    /// snapshot may be, and the transient memory budget that must carry one.
-    /// Not part of the shell configuration -- a
+    /// The persistence policy: what a source may be and what its encoded CRDT
+    /// snapshot may be. Not part of the shell configuration -- a
     /// browser has no use for the server's storage ceilings -- so it is
     /// skipped rather than injected. `max_source_bytes` follows
     /// `max_document`; read the pair through [`Configuration::persistence`].
@@ -175,12 +171,11 @@ pub struct Configuration {
 }
 
 /// Bounds what a deployment will hold. `total` and `per_owner` are bytes;
-/// `documents_per_owner` and `uploads_per_hour` are counts.
+/// `uploads_per_hour` is a count.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct StorageLimit {
     pub total: i64,
     pub per_owner: i64,
-    pub documents_per_owner: usize,
     pub uploads_per_hour: usize,
 }
 
@@ -366,33 +361,16 @@ fn validate_proxy_network(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// What the server-held document may cost: how often it is written, how big a
-/// state may travel inline, how many rooms may be hot at once, how far behind
-/// a socket may fall, and how fast one may write.
+/// What the server-held document may cost: how big a state may travel inline,
+/// how far behind a socket may fall, and how fast one may write.
 ///
-/// Storage quotas bound the bill; these bound the memory and the traffic,
-/// which storage quotas say nothing about.
+/// These bound the memory and the traffic, which storage quotas say nothing about.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct SessionLimit {
-    /// Seconds of quiet before the room writes `sessions/<slug>`. Every update
-    /// is relayed at once whatever this is; what waits is the durability
-    /// acknowledgment, and nothing tells a browser its work is safe until the
-    /// write has landed.
-    pub write_after_seconds: i64,
-    /// Rolling-hour version budget for one owner. Versions are asked for
-    /// rather than scheduled, so this bounds a client asking in a loop.
-    pub label_owner_per_hour: i64,
-    /// Rolling-hour version budget shared by the deployment.
-    pub label_deployment_per_hour: i64,
     /// A state larger than this is fetched over HTTP instead of being sent
     /// down the socket, so one cold join of a large document does not sit in a
     /// text frame.
     pub inline_state_max: usize,
-    /// How many documents may be held in memory at once. The least recently
-    /// used idle room is persisted and evicted past this.
-    pub rooms_max: usize,
-    /// Conservative resident-memory budget for all open and loading rooms.
-    pub rooms_bytes_max: usize,
     /// How many frames may be queued for one socket before it is disconnected.
     /// A peer that cannot keep up is resynchronised on reconnect, which costs
     /// one state transfer and bounds what a slow reader can make the server
@@ -417,7 +395,7 @@ impl Default for Configuration {
             max_document: DEFAULT_MAX_SOURCE_BYTES,
             max_files: 200,
             max_path: 200,
-            log_quota_bytes: 64 * 1024 * 1024,
+            log_quota_bytes: 32 * 1024 * 1024,
             memory_budget_bytes: 512 * 1024 * 1024,
             cache_expansion: crate::log::budget::DEFAULT_EXPANSION,
             pending_bytes: DEFAULT_PENDING_BYTES,
@@ -472,12 +450,9 @@ impl Default for Configuration {
             ]
             .map(String::from)
             .to_vec(),
-            max_comments: 500,
-            rate_per_hour: 20,
             storage: StorageLimit {
                 total: 5 * 1024 * 1024 * 1024,
                 per_owner: 100 * 1024 * 1024,
-                documents_per_owner: 50,
                 uploads_per_hour: 30,
             },
             cost: CostPolicy::default(),
@@ -513,14 +488,8 @@ impl Default for Configuration {
                 .to_vec(),
             default_motivation: "commenting".to_string(),
             max_title: 200,
-            max_replies: 100,
             session: SessionLimit {
-                write_after_seconds: 2,
-                label_owner_per_hour: 300,
-                label_deployment_per_hour: 10_000,
                 inline_state_max: 256 * 1024,
-                rooms_max: 200,
-                rooms_bytes_max: 512 * 1024 * 1024,
                 peer_queue: 256,
                 updates_per_minute: 3000,
             },
@@ -725,19 +694,88 @@ impl Configuration {
         Ok(())
     }
 
-    /// Overrides the per-publisher counts: how many documents one publisher may
-    /// hold, and how many uploads they may make in an hour. `None` leaves a
-    /// default alone.
-    pub fn set_counts(
-        &mut self,
-        documents: Option<usize>,
-        uploads_per_hour: Option<usize>,
-    ) -> Result<(), String> {
-        if let Some(documents) = documents {
-            self.storage.documents_per_owner = documents;
-        }
+    /// Overrides how many uploads one publisher may make in an hour. `None`
+    /// leaves the default alone.
+    pub fn set_uploads_per_hour(&mut self, uploads_per_hour: Option<usize>) -> Result<(), String> {
         if let Some(uploads_per_hour) = uploads_per_hour {
             self.storage.uploads_per_hour = uploads_per_hour;
+        }
+        Ok(())
+    }
+
+    /// Overrides the per-document log ceiling, in megabytes. `None` leaves the
+    /// default alone. Refuses zero or a quota smaller than the largest row any
+    /// path writes. Does not check the memory budget, because the two are
+    /// checked together by `validate_budgets` once every override is applied.
+    pub fn set_log_quota(&mut self, megabytes: Option<u64>) -> Result<(), String> {
+        let Some(megabytes) = megabytes else {
+            return Ok(());
+        };
+        if megabytes == 0 {
+            return Err("log quota must be positive".to_string());
+        }
+        let bytes = megabytes
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| "log quota is too large".to_string())?;
+        if (bytes as usize) < crate::log::sequencer::MAX_ROW_BYTES {
+            return Err("the log quota cannot hold one maximum-size row".to_string());
+        }
+        self.log_quota_bytes = bytes as usize;
+        Ok(())
+    }
+
+    /// Overrides the process-wide budget for decoded documents, in megabytes.
+    /// `None` leaves the default alone. Refuses zero. Does not check the log
+    /// quota, because the two are checked together by `validate_budgets` once
+    /// every override is applied.
+    pub fn set_memory_budget(&mut self, megabytes: Option<u64>) -> Result<(), String> {
+        let Some(megabytes) = megabytes else {
+            return Ok(());
+        };
+        if megabytes == 0 {
+            return Err("memory budget must be positive".to_string());
+        }
+        let bytes = megabytes
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| "memory budget is too large".to_string())?;
+        self.memory_budget_bytes = bytes;
+        Ok(())
+    }
+
+    /// Validates that the log quota and memory budget are compatible:
+    /// the quota can hold one maximum-size row, and the budget can build and
+    /// read one document at the quota this deployment allows. A cold build
+    /// reserves the resident expansion plus the transient one, and Budget::reserve
+    /// refuses a request larger than the whole limit, so the budget must cover both.
+    pub fn validate_budgets(&self) -> Result<(), String> {
+        use crate::log::sequencer::MAX_ROW_BYTES;
+
+        if self.log_quota_bytes < MAX_ROW_BYTES {
+            return Err(format!(
+                "the log quota ({} MB) cannot hold one maximum-size row, which is {} bytes",
+                self.log_quota_bytes >> 20,
+                MAX_ROW_BYTES,
+            ));
+        }
+
+        let quota = self.log_quota_bytes as u64;
+        let resident = crate::log::budget::estimate(quota, self.cache_expansion);
+        let transient =
+            crate::log::budget::estimate(quota, crate::log::budget::BUILD_TRANSIENT_EXPANSION);
+        let needed = resident
+            .checked_add(transient)
+            .ok_or_else(|| "the memory budget requirement overflows".to_string())?;
+
+        if self.memory_budget_bytes < needed {
+            return Err(format!(
+                "the memory budget ({} MB) cannot build one document at the log quota this \
+                 deployment allows ({} MB): a cold build reserves {} MB, resident plus \
+                 transient, and a reservation past the budget is refused outright, so every \
+                 document at the quota would be unreadable",
+                self.memory_budget_bytes >> 20,
+                self.log_quota_bytes >> 20,
+                needed >> 20,
+            ));
         }
         Ok(())
     }
@@ -774,37 +812,20 @@ pub const DEFAULT_PENDING_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
 ///
 /// It is a policy, not a theorem: nothing proves that eight megabytes of text
 /// can never encode past [`PersistenceLimits::max_encoded_snapshot_bytes`].
-/// It is the largest source ceiling for which the snapshot copies counted by
-/// [`SNAPSHOT_COPY_FACTOR`] still leave room for the CRDT history and
-/// metadata that grow beside the visible text.
+/// The 8 MiB policy leaves room inside the 16 MiB snapshot ceiling for history
+/// and metadata.
 pub const SUPPORTED_MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 
 /// `E`: the largest encoded CRDT snapshot this deployment will write.
 pub const DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 
-/// `M`: the memory admission for the transient copies persistence makes
-/// around one snapshot -- construction, staging, encoded segment bodies,
-/// record fragments, and the overlap a compaction adds. It is not a storage
-/// quota: nothing here is billed to an owner, and nothing here survives the
-/// operation.
-pub const DEFAULT_MAX_STAGING_BYTES: usize = 512 * 1024 * 1024;
-
-/// How many live copies of one snapshot persistence may hold at its peak.
-/// The inventory behind this number is the set of transient copies listed
-/// under [`DEFAULT_MAX_STAGING_BYTES`]; changing the factor without
-/// recounting them makes the memory admission a decoration.
-pub const SNAPSHOT_COPY_FACTOR: usize = 8;
-
-/// The relationship between visible source, encoded collaboration state, and
-/// the transient memory needed to validate and compact that state.
+/// The relationship between visible source and encoded collaboration state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PersistenceLimits {
     /// `S`: the configured source-byte ceiling, which is `max_document`.
     pub max_source_bytes: usize,
     /// `E`: the supported encoded CRDT snapshot ceiling.
     pub max_encoded_snapshot_bytes: usize,
-    /// `M`: the memory admission for transient persistence copies.
-    pub max_staging_bytes: usize,
 }
 
 impl Default for PersistenceLimits {
@@ -812,19 +833,11 @@ impl Default for PersistenceLimits {
         Self {
             max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
             max_encoded_snapshot_bytes: DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES,
-            max_staging_bytes: DEFAULT_MAX_STAGING_BYTES,
         }
     }
 }
 
 impl PersistenceLimits {
-    /// The peak transient memory one snapshot of `bytes` is admitted for.
-    /// Saturating rather than checked: an estimate that overflows `usize` is
-    /// past every budget anyway, and the caller compares it against one.
-    pub fn staging_cost(bytes: usize) -> usize {
-        bytes.saturating_mul(SNAPSHOT_COPY_FACTOR)
-    }
-
     /// Refuse a configuration that cannot durably save the work it advertises.
     ///
     /// Every derived bound is checked arithmetic: an operator who sets a
@@ -854,18 +867,6 @@ impl PersistenceLimits {
         }
         if self.max_encoded_snapshot_bytes == 0 {
             return Err("the encoded snapshot ceiling must be positive".into());
-        }
-        let peak = self
-            .max_encoded_snapshot_bytes
-            .checked_mul(SNAPSHOT_COPY_FACTOR)
-            .ok_or_else(|| "the snapshot memory estimate overflows".to_string())?;
-        if peak > self.max_staging_bytes {
-            return Err(format!(
-                "the persistence memory budget ({} MB) cannot process one maximum snapshot, \
-                 which peaks at {} MB",
-                self.max_staging_bytes >> 20,
-                peak >> 20,
-            ));
         }
         Ok(())
     }
@@ -998,5 +999,59 @@ mod tests {
         let mut config = Configuration::default();
         config.apply_backup_overrides(overrides).unwrap();
         assert_eq!(config.backup.warning_count, 20);
+    }
+
+    /// The megabyte setters an operator reaches through the advanced
+    /// configuration file validate what they were given rather than storing
+    /// it and failing later. The log quota and memory budget are checked
+    /// together by validate_budgets once every override is applied.
+    #[test]
+    fn the_budget_overrides_validate_what_they_are_given() {
+        let mut config = Configuration::default();
+
+        // Configuration::default().validate_budgets() is ok
+        assert!(
+            config.validate_budgets().is_ok(),
+            "the defaults must be sane"
+        );
+
+        // set_log_quota(Some(128)) is ok and stores 128 MiB
+        assert!(config.set_log_quota(Some(128)).is_ok());
+        assert_eq!(config.log_quota_bytes, 128 * 1024 * 1024);
+
+        // validate_budgets() now errors (128 MiB times fourteen exceeds 512 MiB)
+        assert!(
+            config.validate_budgets().is_err(),
+            "128 MiB at expansion 6+8 exceeds 512 MiB budget"
+        );
+
+        // set_memory_budget(Some(2048)) is ok and stores 2 GiB
+        assert!(config.set_memory_budget(Some(2048)).is_ok());
+        assert_eq!(config.memory_budget_bytes, 2048 * 1024 * 1024);
+
+        // validate_budgets() is ok
+        assert!(
+            config.validate_budgets().is_ok(),
+            "2 GiB budget can build 128 MiB quota"
+        );
+
+        // set_log_quota(Some(0)) errors and leaves 128 MiB
+        assert!(config.set_log_quota(Some(0)).is_err());
+        assert_eq!(config.log_quota_bytes, 128 * 1024 * 1024);
+
+        // set_log_quota(Some(1)) errors because 1 MiB is below MAX_ROW_BYTES, and leaves 128 MiB
+        assert!(
+            config.set_log_quota(Some(1)).is_err(),
+            "1 MiB is below MAX_ROW_BYTES"
+        );
+        assert_eq!(config.log_quota_bytes, 128 * 1024 * 1024);
+
+        // set_memory_budget(Some(0)) errors and leaves 2 GiB
+        assert!(config.set_memory_budget(Some(0)).is_err());
+        assert_eq!(config.memory_budget_bytes, 2048 * 1024 * 1024);
+
+        // set_log_quota(Some(u64::MAX)) errors and leaves 128 MiB
+        assert!(config.set_log_quota(Some(u64::MAX)).is_err());
+        assert_eq!(config.log_quota_bytes, 128 * 1024 * 1024);
     }
 }

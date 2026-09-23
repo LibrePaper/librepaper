@@ -105,13 +105,6 @@ pub(crate) struct ServiceFlags {
         value_name = "MB"
     )]
     storage: Option<usize>,
-    /// Most documents one publisher may hold (default 50)
-    #[arg(
-        long = "publisher-document-limit",
-        env = "LIBREPAPER_MAX_DOCUMENTS",
-        value_name = "N"
-    )]
-    max_documents: Option<usize>,
     /// Most uploads one publisher may make in an hour (default 30)
     #[arg(
         long = "publisher-upload-limit",
@@ -229,6 +222,12 @@ impl ServiceFlags {
             if let Err(error) = config.set_pending(file.pending_mb, file.pending_scratch_mb) {
                 die(format!("invalid advanced pending policy: {error}"));
             }
+            if let Err(error) = config.set_log_quota(file.log_quota_mb) {
+                die(format!("invalid advanced log quota: {error}"));
+            }
+            if let Err(error) = config.set_memory_budget(file.memory_budget_mb) {
+                die(format!("invalid advanced memory budget: {error}"));
+            }
         }
         if let Err(err) = config.set_budget_document_assets(self.budget_document_assets) {
             die(err);
@@ -239,7 +238,7 @@ impl ServiceFlags {
         if let Err(err) = config.set_storage(self.quota, self.storage) {
             die(err);
         }
-        if let Err(err) = config.set_counts(self.max_documents, self.uploads_per_hour) {
+        if let Err(err) = config.set_uploads_per_hour(self.uploads_per_hour) {
             die(err);
         }
         if let Err(err) = config.cost.validate() {
@@ -256,6 +255,9 @@ impl ServiceFlags {
         // its document ceiling without raising its scratch ceiling would
         // admit work it could not persist.
         if let Err(err) = config.validate_pending() {
+            die(err);
+        }
+        if let Err(err) = config.validate_budgets() {
             die(err);
         }
         config
@@ -276,6 +278,15 @@ struct AdvancedConfigFile {
     /// them to reach pressure without buffering sixty-four megabytes first.
     pending_mb: Option<u64>,
     pending_scratch_mb: Option<u64>,
+    /// The per-document log ceiling, in megabytes. Advanced configuration only;
+    /// the memory budget must be able to build one document this large, see
+    /// `memory_budget_mb`.
+    log_quota_mb: Option<u64>,
+    /// The process-wide budget for decoded documents, in megabytes. Advanced
+    /// configuration only. It must be able to build one document at the log
+    /// quota, so a raised quota needs a raised budget with it; the pair is
+    /// checked at startup.
+    memory_budget_mb: Option<u64>,
     #[serde(default)]
     backup: crate::config::BackupPolicyOverrides,
 }

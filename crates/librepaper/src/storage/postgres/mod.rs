@@ -49,9 +49,6 @@ pub struct StoragePolicy {
     pub owner_bytes: i64,
     pub deployment_bytes: i64,
     pub asset_uploads_per_hour: i64,
-    pub versions_per_hour: i64,
-    pub max_uncompacted_updates: i64,
-    pub max_uncompacted_bytes: i64,
 }
 
 impl Default for StoragePolicy {
@@ -60,22 +57,15 @@ impl Default for StoragePolicy {
             owner_bytes: 100 * 1024 * 1024,
             deployment_bytes: 5 * 1024 * 1024 * 1024,
             asset_uploads_per_hour: 30,
-            versions_per_hour: 30,
-            max_uncompacted_updates: 1_000,
-            max_uncompacted_bytes: 512 * 1024 * 1024,
         }
     }
 }
 
-impl StoragePolicy {
-    fn compaction_count_threshold(self) -> i64 {
-        self.max_uncompacted_updates.clamp(1, 100)
-    }
+/// A document is queued for compaction once its rows since the last base exceed this count.
+pub const COMPACTION_UPDATE_THRESHOLD: i64 = 100;
 
-    fn compaction_byte_threshold(self) -> i64 {
-        (self.max_uncompacted_bytes.min(128 * 1024 * 1024) / 2).clamp(1, 16 * 1024 * 1024)
-    }
-}
+/// A document is queued for compaction once its bytes since the last base exceed this many.
+pub const COMPACTION_BYTE_THRESHOLD: i64 = 16 * 1024 * 1024;
 
 impl PostgresOptions {
     pub fn new(url: impl Into<String>) -> Self {
@@ -179,10 +169,7 @@ impl PostgresCatalog {
     /// compaction at the same moment (§8.4, §8.6). Nowhere else should decide
     /// what "over the threshold" means.
     pub fn compaction_thresholds(&self) -> (i64, i64) {
-        (
-            self.policy.compaction_count_threshold(),
-            self.policy.compaction_byte_threshold(),
-        )
+        (COMPACTION_UPDATE_THRESHOLD, COMPACTION_BYTE_THRESHOLD)
     }
 
     pub async fn migrate(&self) -> std::result::Result<(), sqlx::migrate::MigrateError> {

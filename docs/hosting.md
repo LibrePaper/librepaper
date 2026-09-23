@@ -17,7 +17,7 @@ That serves the reader on `paper.example` and documents on
 and a certificate covering them; a wildcard or a SAN entry covers the second.
 Pass `--docs-origin` if documents belong on an unrelated name. The two must be
 different hosts. A different port is not enough, because cookies ignore ports,
-and the server refuses to start if both names resolve to one host.
+and the server refuses to start if both are the same host.
 
 The origin also fixes the scheme the server believes it is on, which is what
 decides whether session cookies are marked `Secure` and carry the `__Host-`
@@ -104,10 +104,8 @@ forwarded header, so the proxy does not have to send `X-Forwarded-Proto`; set
 `trusted_proxies` in the advanced configuration file if you want forwarded
 client addresses honored for rate limiting. The proxy must pass the original
 `Host` through unchanged, since a proxy that rewrites it will have its requests
-refused. Start worker-capable LibrePaper processes before
-admitting traffic after a restore. Horizontally scaled deployments use the same
-schema and object interface; use a bounded pool per process and route a
-document's WebSocket connections consistently to one application process.
+refused. One `admin serve` process owns a deployment's writes; a second one
+started against the same database refuses to start.
 
 ## Resource limits
 
@@ -118,7 +116,7 @@ compaction. Three limits protect a deployment from a document that asks for
 more of that than it should get, and from every document asking at once.
 
 **The per-document log quota** bounds one document's compaction base plus
-every row since it, 64 MiB by default. An update that would push a document
+every row since it, 32 MiB by default. An update that would push a document
 past its quota is refused with a retryable reason; the document's existing
 log is untouched and semantic commands (restore, comment, label) still work
 against it. This is the real bound on how long a cache rebuild for that
@@ -138,6 +136,12 @@ lock keeps only one build running for that document at a time; the
 core the relay path needs. Compaction exports count against the same
 ceiling, because they are the same uninterruptible work over the same
 decoded document.
+
+Both can be raised in the advanced configuration file: `log_quota_mb` for the
+per-document log quota and `memory_budget_mb` for the process-wide memory
+budget. A cold build reserves the resident estimate and a transient one on top,
+fourteen times the log bytes at the measured factors, so the server refuses to
+start with a memory budget below that at the log quota; raise the two together.
 
 **The pending-source budget** bounds what the deployment is holding *unsaved*
 while PostgreSQL is slow or unavailable: 64 MiB across every document's buffer
@@ -168,13 +172,14 @@ but nobody, including the document's own editors, can read a rendered
 projection of it until someone shrinks it. Recovery happens automatically
 the next time a build for that document succeeds, which an editor can
 trigger by exporting, trimming the document's size, and re-importing it, or
-an operator can trigger after raising the relevant limit.
+an operator can trigger after raising `log_quota_mb` or `memory_budget_mb`
+in the configuration file.
 
 These limits exist because encoded bytes bound ingress and storage, but they
 do not bound the CPU and memory a decode of those bytes costs, and Loro's
 synchronous work cannot be interrupted once it starts. A limit here is
 therefore a limit on what gets scheduled, not a way to reclaim a thread that
-is already running. See `SPEC-server-is-a-log.md` §9 for the full reasoning.
+is already running.
 
 ## Containers
 

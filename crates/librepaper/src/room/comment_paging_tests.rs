@@ -10,8 +10,8 @@
 //! one thread. The second was the whole-snapshot protocol that replaced it:
 //! SQL paged, but every consumer then collected the result, so a 16 MiB
 //! read guard refused collections that were larger than one process wanted
-//! to hold. Nothing enforces `config.max_comments` at admission, so
-//! documents do get that large.
+//! to hold. There is no admission limit on how many comments a document holds,
+//! which is why the paging contract has to hold for an arbitrary count.
 //!
 //! What is here now is a bounded keyset traversal
 //! (`docs/protocol/comments-v1.md`), and these tests are about its

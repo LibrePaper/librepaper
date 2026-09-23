@@ -12,10 +12,9 @@ guard that refused a collection larger than one process wanted to hold.
 None of those exist any more. There is no compatibility path: this is an
 unreleased protocol change and every consumer in the tree was moved.
 
-This is a transport change only. Nothing here limits how many comments a
-document may accumulate; admission (`config.max_comments`,
-`config.max_replies`, `config.rate_per_hour`) is a separate, still
-undecided product question recorded in REVIEW-BIG-IDEAS.md.
+This is a transport change only. There is no admission limit on comments or
+replies today; whether to add one is a product question recorded in
+REVIEW-BIG-IDEAS.md.
 
 ## 1. Pages and cursors
 
