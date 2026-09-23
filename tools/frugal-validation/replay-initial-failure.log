@@ -1,0 +1,14 @@
+
+running 1 test
+
+thread 'restored_heads_and_history_replay_identically' (87576) panicked at crates/librepaper/tests/frugal_restore_verify.rs:42:9:
+fixture must have actual source text
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test restored_heads_and_history_replay_identically ... FAILED
+
+failures:
+
+failures:
+    restored_heads_and_history_replay_identically
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s

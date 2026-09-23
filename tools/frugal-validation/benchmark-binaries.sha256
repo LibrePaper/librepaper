@@ -1,0 +1,4 @@
+# Writer binary used for the recorded writer runs (before unrelated backup/seed fixes).
+8049aeb91a6d9a4881fb0f7d0bc9591e18921f987b7860f09f463073d0af77a2  target/release/build/librepaper/45552896f764adf7/out/writer_socket_bench-45552896f764adf7
+# Final mixed benchmark binary.
+eeb6fff522b8a22fd6527cd25d94920434a64131b371de8141409cc626b52b58  target/release/build/librepaper/6e72caf223c8143e/out/frugal_mixed_bench-6e72caf223c8143e

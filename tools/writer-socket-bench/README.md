@@ -1,5 +1,8 @@
 # WebSocket writer-probe investigation
 
+For the newer sustained-write, slow-database and recovery measurements, see
+the [2026-09-23 validation report](../frugal-validation/REPORT.md).
+
 The harness is [writer_socket_bench.rs](../../crates/librepaper/tests/writer_socket_bench.rs).
 It starts a real Axum server and authenticated WebSocket clients, with one active
 writer and one observer on each independent document. Every update passes through
@@ -66,3 +69,46 @@ The separate [probe microbenchmark](../writer-lease-bench/REPORT.md) measures
 mutex wait and query time directly. Socket latency by itself does not identify
 how much time belongs to writer verification. No production optimization or
 probe-disabled comparison is included in this investigation.
+
+## Sustained persistence and write-stall mode
+
+Set `WRITER_SOCKET_BENCH_MODE=durable` to run the production registry's
+one-second housekeeping sweep while the socket workload runs. This mode
+checks that each document's final version vector appears in
+`document_updates`, reports the per-document time from its last client send to
+the first post-workload poll that observes durable coverage, and asserts that
+all pending retained and scratch reservations have drained. Since polling
+starts after the workload ends, this is an upper bound when a final edit became
+durable earlier. It also samples the pending-budget counters and process RSS.
+RSS is the combined benchmark test process: it includes both the server and
+in-process clients, Loro documents, and socket buffers.
+
+`WRITER_SOCKET_BENCH_DB_STALL_SECONDS=N` holds a transaction-level
+`EXCLUSIVE` lock on `document_updates` for N seconds. The lease uses a
+separate table, so this specifically stalls log writes while the writer lease
+and ordinary reads remain available. The timer releases the lock while traffic
+continues. Retryable socket refusals are counted and the same update
+is resent on a one-second backoff until relayed; no new edit is generated to
+recover it. The measured workload duration excludes the final durable drain;
+the output reports that tail separately. `WRITER_SOCKET_BENCH_UPDATE_BYTES`
+sets each edit's printable pseudorandom text payload (default 128 bytes).
+
+Example, with a 64 MiB pending budget and a two-minute write stall:
+
+```sh
+LIBREPAPER_BENCH_POSTGRES_URL=postgresql://postgres:writer-socket-bench@127.0.0.1:55435/writer_socket \
+WRITER_SOCKET_BENCH_MODE=durable \
+WRITER_SOCKET_BENCH_DB_STALL_SECONDS=120 \
+WRITER_SOCKET_BENCH_DOCUMENTS=100 \
+WRITER_SOCKET_BENCH_RATE=5 \
+WRITER_SOCKET_BENCH_SECONDS=180 \
+WRITER_SOCKET_BENCH_UPDATE_BYTES=1024 \
+cargo test -p librepaper --test writer_socket_bench --release --offline -- \
+  --ignored --nocapture --test-threads=1
+```
+
+The configured pending budget remains the production default (64 MiB retained
+and 64 MiB scratch). The app validates that a configured budget can admit a
+maximum document buffer, so very small comparison values may be rejected at
+startup. This harness does not claim server-only RSS; sample PostgreSQL memory
+separately at the container level.

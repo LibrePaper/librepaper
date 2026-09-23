@@ -1,0 +1,14 @@
+  learn-librepaper-with-markdown-stujjmxwur Learn LibrePaper with Markdown
+                               written in 37 steps and 14 labels over 7237 minutes, from 2026-09-18
+  learn-librepaper-with-typst-8ft3tbtada Learn LibrePaper with Typst
+                               written in 40 steps and 19 labels over 8601 minutes, from 2026-09-17
+  learn-librepaper-with-html-89xt4yy5js Learn LibrePaper with HTML
+                               written in 32 steps and 18 labels over 8016 minutes, from 2026-09-17
+  learn-librepaper-with-latex-22pnt9rakw Learn LibrePaper with LaTeX
+                               written in 41 steps and 15 labels over 8606 minutes, from 2026-09-17
+  learn-librepaper-with-quarto-vda6mhwid5 Learn LibrePaper with Quarto
+                               written in 36 steps and 16 labels over 8418 minutes, from 2026-09-17
+pg_dump: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: No such file or directory
+	Is the server running locally and accepting connections on that socket?
+error: pg_dump exited with exit status: 1
+preserved failed synthetic fixture at /tmp/librepaper-frugal-recovery.aMUSFk for inspection

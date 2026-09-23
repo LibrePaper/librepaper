@@ -496,7 +496,11 @@ pub async fn simulate(
         account_id: Some(author_account_id),
         link_hash: None,
     };
-    let mut vector = doc.oplog_vv();
+    // No operation has reached storage yet. The first row must include the
+    // file containers, paths, main entrypoint and assets created above; a
+    // delta starting at the current vector would strand every later edit
+    // behind dependencies that a cold replay can never obtain.
+    let mut vector = loro::VersionVector::default();
     let mut next_sequence = head.update_sequence;
     let mut versions = 0usize;
     let mut present: Vec<String> = Vec::new();

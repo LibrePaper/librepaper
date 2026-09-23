@@ -1,0 +1,5 @@
+{
+  "samples": 477,
+  "peak_container_memory_bytes_approx": 283744666,
+  "scope": "Docker stats working-set metric, shared disposable cluster, includes baseline tail and full slowdown run"
+}

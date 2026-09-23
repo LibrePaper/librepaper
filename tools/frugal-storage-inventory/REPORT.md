@@ -1,5 +1,9 @@
 # Frugal storage inventory
 
+This historical sample is superseded for current-schema tooling by the
+[2026-09-23 synthetic inventory and recovery drill](../frugal-validation/REPORT.md).
+Neither sample is representative production storage evidence.
+
 This is a read-only inventory of the persistent local development deployment,
 not a production sample. The target was the existing `librepaper-postgres`
 container/database (`127.0.0.1:55432/librepaper`); the unrelated `lp-cap`

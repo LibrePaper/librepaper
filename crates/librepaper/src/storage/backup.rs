@@ -116,10 +116,9 @@ async fn create(options: StorageOptions, destination: &Path, id: String) -> Resu
     let references = by_key.into_values().collect::<Vec<_>>();
     let dump = destination.join("database.dump");
     write_private_file(&dump, &[])?;
-    let status = tokio::process::Command::new("pg_dump")
+    let status = postgres_tool("pg_dump", &options.database_url)?
         .args(["--format=custom", "--snapshot", &snapshot, "--file"])
         .arg(&dump)
-        .env("PGDATABASE", &options.database_url)
         .status()
         .await
         .map_err(|e| format!("could not run pg_dump: {e}"))?;
@@ -230,9 +229,8 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
         }
         write_private_file(&target, &body)?;
     }
-    let status = tokio::process::Command::new("pg_restore")
-        .arg("--no-owner")
-        .env("PGDATABASE", &database_url)
+    let status = postgres_tool("pg_restore", &database_url)?
+        .args(["--no-owner", "--exit-on-error"])
         .arg(dump)
         .status()
         .await
@@ -253,6 +251,52 @@ async fn restore(options: StorageOptions, backup: &Path, destination: &Path) -> 
     Ok(())
 }
 
+/// libpq does not expand a connection URI supplied only through PGDATABASE.
+/// pg_restore additionally needs --dbname to restore instead of printing SQL.
+/// Keep the password in the child's environment, outside the process arguments.
+fn postgres_tool(program: &str, database_url: &str) -> Result<tokio::process::Command, String> {
+    let mut url = url::Url::parse(database_url).map_err(|_| "invalid PostgreSQL URL")?;
+    if !matches!(url.scheme(), "postgres" | "postgresql") {
+        return Err("expected a PostgreSQL URL".into());
+    }
+    let mut password = url
+        .password()
+        .map(|value| {
+            percent_encoding::percent_decode_str(value)
+                .decode_utf8()
+                .map(|value| value.into_owned())
+                .map_err(|_| "PostgreSQL password is not UTF-8")
+        })
+        .transpose()?;
+    for (key, value) in url.query_pairs() {
+        if key == "password" {
+            password = Some(value.into_owned());
+        }
+    }
+    // Preserve unrelated URI parameters exactly, including percent-encoding.
+    let query = url.query().map(|query| {
+        query
+            .split('&')
+            .filter(|pair| {
+                let key = pair.split('=').next().unwrap_or_default();
+                percent_encoding::percent_decode_str(key).decode_utf8_lossy() != "password"
+            })
+            .collect::<Vec<_>>()
+            .join("&")
+    });
+    url.set_query(query.as_deref().filter(|query| !query.is_empty()));
+    if url.password().is_some() {
+        url.set_password(None)
+            .map_err(|_| "invalid PostgreSQL URL authority")?;
+    }
+    let mut command = tokio::process::Command::new(program);
+    command.args(["--no-password", "--dbname", url.as_str()]);
+    if let Some(password) = password {
+        command.env("PGPASSWORD", password);
+    }
+    Ok(command)
+}
+
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
@@ -268,4 +312,55 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 fn safe_target(root: &Path, key: &str) -> Result<PathBuf, String> {
     super::blob::validate_object_key(key).map_err(|e| e.to_string())?;
     Ok(root.join(key))
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::postgres_tool;
+
+    #[test]
+    fn postgres_tools_select_the_database_without_exposing_passwords_in_arguments() {
+        for program in ["pg_dump", "pg_restore"] {
+            let command = postgres_tool(program,
+                "postgresql://alice:p%40ss@127.0.0.1:55439/backup?sslmode=require&options=-c%20statement_timeout%3D0").unwrap();
+            let command = command.as_std();
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_str().unwrap())
+                .collect();
+            assert_eq!(args, ["--no-password", "--dbname", "postgresql://alice@127.0.0.1:55439/backup?sslmode=require&options=-c%20statement_timeout%3D0"]);
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(key, _)| *key == "PGPASSWORD")
+                    .unwrap()
+                    .1
+                    .unwrap(),
+                "p@ss"
+            );
+        }
+    }
+
+    #[test]
+    fn query_password_overrides_authority_and_is_removed_from_arguments() {
+        let command = postgres_tool(
+            "pg_restore",
+            "postgres://alice:old@localhost/db?password=new%23value&sslmode=disable",
+        )
+        .unwrap();
+        let command = command.as_std();
+        assert_eq!(
+            command.get_args().last().unwrap(),
+            "postgres://alice@localhost/db?sslmode=disable"
+        );
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(key, _)| *key == "PGPASSWORD")
+                .unwrap()
+                .1
+                .unwrap(),
+            "new#value"
+        );
+    }
 }

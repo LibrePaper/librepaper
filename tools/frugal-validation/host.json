@@ -1,0 +1,10 @@
+{
+  "observed_at": "2026-09-23T10:50:06.442Z",
+  "architecture": "x64",
+  "cpu": "AMD Ryzen AI 7 PRO 450 w/ Radeon 860M",
+  "logical_cpus": 16,
+  "total_memory_bytes": 58609012736,
+  "kernel": "6.18.45",
+  "base_commit": "139b9852c90cef37fb251f33f3ea20e534b455ad",
+  "scope": "local synthetic fixtures; server and clients share the host"
+}
