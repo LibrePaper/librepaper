@@ -453,7 +453,7 @@ impl Server {
         // published whole or refused whole, never left half-written because
         // the eleventh file was the one that broke a rule the first ten
         // happened to keep.
-        if let Err(response) = self.preflight_directory(&parsed, &main) {
+        if let Err(response) = self.preflight_directory(&parsed) {
             return response;
         }
         let entry = match self
@@ -806,7 +806,6 @@ impl Server {
     pub(super) fn preflight_directory(
         &self,
         parsed: &Upload,
-        main_path: &str,
     ) -> Result<(), Reply> {
         for (path, bytes) in &parsed.files {
             match crate::document::paths::check(&self.config.paths(), path) {

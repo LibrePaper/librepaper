@@ -651,10 +651,17 @@ impl PostgresCatalog {
             total.saturating_add(input.byte_length)
         });
         let owner_usage = owner_usage_bytes(&mut *tx, document.owner_id).await?;
-        let deployment_usage =
-            sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
-                .fetch_one(&mut *tx)
-                .await?;
+        // Lock taken by the first statement; the deployment total is blob bytes
+        // plus every current base plus every document's uncompacted rows.
+        let _lock = sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)
+            .fetch_one(&mut *tx)
+            .await?;
+        let log_usage = sqlx::query_scalar!(
+            r#"SELECT (COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL),0) + COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents),0))::bigint AS "total!""#
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        let deployment_usage = _lock.saturating_add(log_usage);
         if owner_usage.saturating_add(incoming_bytes) > self.policy.owner_bytes {
             return Err(Error::Conflict("account storage quota exceeded".into()));
         }

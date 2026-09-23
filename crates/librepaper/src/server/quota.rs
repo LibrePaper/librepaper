@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::storage::postgres::repository::DocumentStorage;
+use crate::storage::postgres::DocumentStorage;
 
 #[derive(Clone)]
 struct AccountStorageUsage {
