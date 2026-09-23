@@ -35,9 +35,10 @@ impl StorageLedger {
         let owner_bytes = catalog.usage_bytes(Some(owner)).await?;
         self.owners.lock().unwrap().insert(owner, owner_bytes);
 
-        let mut deployment = self.deployment.lock().unwrap();
-        if deployment.is_none() {
-            *deployment = Some(catalog.usage_bytes(None).await?);
+        let needs_deployment = self.deployment.lock().unwrap().is_none();
+        if needs_deployment {
+            let total = catalog.usage_bytes(None).await?;
+            self.deployment.lock().unwrap().get_or_insert(total);
         }
 
         Ok(())

@@ -43,20 +43,10 @@ use crate::room::outgoing::{Outgoing, Sender};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{self, Authority, FlushRow, PostgresCatalog};
 
-/// The log quota is the one bound on a document's bytes. The two expansion
-/// factors in budget.rs are measurements applied to it.
-/// `budget::DEFAULT_EXPANSION` bounds what a decoded document costs
-/// RESIDENT once cached, as a multiple of its log bytes.
-/// `budget::BUILD_TRANSIENT_EXPANSION` bounds the extra a cold build
-/// costs while it is PRODUCING that resident document -- a different
-/// number because a build's peak and a cache's steady state are
-/// different things, not two measurements of one thing.
-///
-/// One update as it arrives is limited by `max_update_bytes(log_quota_bytes)`,
-/// which is 4 MiB at any standard quota. This is a large paste of a whole file,
-/// and several times any keystroke.
-
 /// The maximum size of one update as it arrives, derived from the log quota.
+/// One update on the wire may be as large as the log quota, since anything
+/// larger could never be admitted. The two expansion factors in budget.rs
+/// are measurements applied to the log bytes, not bounds of their own.
 pub fn max_update_bytes(log_quota_bytes: usize) -> usize {
     log_quota_bytes
 }
@@ -1032,10 +1022,7 @@ impl Sequencer {
         // every test double had to answer and nothing else ever called.
         let head = catalog.log_head(document_id).await?;
         let base = catalog.log_base(document_id).await?;
-        ledger
-            .refresh(&catalog, head.owner_id)
-            .await
-            .map_err(|error| SequencerError::Catalog(error))?;
+        ledger.refresh(&catalog, head.owner_id).await?;
         // Upcast once, here: every other method sees only the questions and
         // writes in `LogCatalog`, not the concrete catalog, which is what
         // lets `from_parts` build a sequencer without one (§14.2).
@@ -1290,7 +1277,7 @@ impl Sequencer {
         }
         // The per-document ceiling, on the charge rather than the payload.
         // An empty buffer always admits one update whatever it weighs
-        // (`MAX_PENDING_CHARGE`), or a single maximum-size update would be
+        // (max_pending_charge), or a single maximum-size update would be
         // refused forever by its own framing.
         if !inner.buffer.is_empty()
             && inner.charged_bytes.saturating_add(charge) > BUFFER_CEILING_BYTES

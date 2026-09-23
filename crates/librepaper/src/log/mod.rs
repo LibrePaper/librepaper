@@ -80,6 +80,7 @@ pub struct Registry {
     /// a sequencer admitted during startup -- before the worker is wired --
     /// still reaches it afterwards.
     compaction: Arc<std::sync::OnceLock<crate::storage::worker::Handle>>,
+    ledger: Arc<ledger::StorageLedger>,
     resident: tokio::sync::Mutex<HashMap<Uuid, Arc<Sequencer>>>,
     /// One slot per document currently being admitted, so a slow head read
     /// stalls only callers of the same document.
@@ -100,6 +101,7 @@ impl Registry {
     ) -> Arc<Self> {
         let budget = Budget::new(config.memory_budget_bytes, config.cache_expansion);
         let pending = PendingBudget::new(config.pending_bytes, config.pending_scratch_bytes);
+        let ledger = ledger::StorageLedger::new();
         let registry = Arc::new(Self {
             catalog,
             blobs,
@@ -108,6 +110,7 @@ impl Registry {
             pending,
             deployment_peer_key,
             compaction: Arc::new(std::sync::OnceLock::new()),
+            ledger,
             resident: tokio::sync::Mutex::new(HashMap::new()),
             admitting: tokio::sync::Mutex::new(HashMap::new()),
         });
@@ -122,6 +125,10 @@ impl Registry {
 
     pub fn budget(&self) -> &Arc<Budget> {
         &self.budget
+    }
+
+    pub fn ledger(&self) -> &Arc<ledger::StorageLedger> {
+        &self.ledger
     }
 
     pub fn pending(&self) -> &Arc<PendingBudget> {
@@ -165,6 +172,7 @@ impl Registry {
                 self.budget.clone(),
                 self.pending.clone(),
                 self.deployment_peer_key.clone(),
+                self.ledger.clone(),
                 self.compaction.clone(),
             )
             .await?,
