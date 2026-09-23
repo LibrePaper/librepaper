@@ -461,6 +461,7 @@ impl PostgresCatalog {
         vector: &[u8],
         snapshot: NewSnapshot,
         predecessor_delete_after: OffsetDateTime,
+        replace_equal: bool,
     ) -> Result<Option<ActivatedLogBase>> {
         use sqlx::Row as _;
         let NewSnapshot {
@@ -487,7 +488,9 @@ impl PostgresCatalog {
         }
         // The document lock serializes activations, including the first base
         // when there is no snapshot row yet. A stale retry must not retire the
-        // current snapshot or extend any predecessor's grace period.
+        // current snapshot or extend any predecessor's grace period. When
+        // replace_equal is true (for shallow bases replacing full ones), only
+        // a strictly greater current through is a no-op, so equal bases are replaced.
         let current_through = sqlx::query_scalar!(
             r#"SELECT through_update_sequence AS "through_update_sequence!"
                FROM document_snapshots WHERE document_id=$1 AND delete_after IS NULL"#,
@@ -495,7 +498,13 @@ impl PostgresCatalog {
         )
         .fetch_optional(&mut *tx)
         .await?;
-        if current_through.is_some_and(|through| through >= through_update_sequence) {
+        if current_through.is_some_and(|through| {
+            if replace_equal {
+                through > through_update_sequence
+            } else {
+                through >= through_update_sequence
+            }
+        }) {
             tx.commit().await?;
             return Ok(None);
         }

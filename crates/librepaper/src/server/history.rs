@@ -790,5 +790,86 @@ impl Server {
         )
     }
 
+    /// Discards a document's editing history, compacting it to a shallow snapshot.
+    ///
+    /// The document keeps its content; named versions (source archives) and comments
+    /// are untouched; every live socket on the document is closed and asked to
+    /// reconnect, and the request is refused while another editor is connected.
+    pub(super) async fn handle_history_trim(
+        &self,
+        request: Request<Body>,
+        arrival: &Arrival,
+        slug: &str,
+    ) -> Reply {
+        let headers = request.headers().clone();
+        if !self.valid_slug(slug) {
+            return plain(400, "bad slug");
+        }
+        if cross_site_refused(&headers, arrival) {
+            return write_json(403, &cross_site_refusal());
+        }
+        let (_entry, who) = match self
+            .entry_viewer(slug, request.headers(), arrival, None)
+            .await
+        {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
+        if !who.at_least(Role::Editor) {
+            return plain(404, "not found");
+        }
+        let _body = match to_bytes(request.into_body(), 16 * 1024).await {
+            Ok(body) => body,
+            Err(_) => return write_json(413, &json!({"error": "trim request too large"})),
+        };
+        let room = match self.rooms.get(slug).await {
+            Ok(room) => room,
+            Err(error) => return refused("open the room", &error),
+        };
+        // The owner may have transferred the document, or a link may have
+        // been revoked, while the request body was being read.
+        let (_current_entry, current_who) =
+            match self.entry_viewer(slug, &headers, arrival, None).await {
+                Ok(result) => result,
+                Err(response) => return response,
+            };
+        if !current_who.at_least(Role::Editor) {
+            return plain(404, "not found");
+        }
+        // Check if another editor has the document open. The caller's own tab
+        // may hold one editor socket, which is why the bound is 1, not 0.
+        match room.editors().await {
+            Ok(count) if count > 1 => {
+                return write_json(
+                    409,
+                    &json!({"error": "another editor has this document open; ask them to close it first"}),
+                );
+            }
+            Err(error) => return sequencer_reply(&error),
+            _ => {}
+        }
+        // Compact to a shallow snapshot and delete the log.
+        let result = crate::storage::worker::compact_document(
+            &self.store.catalog,
+            &self.store.blobs,
+            self.rooms.registry(),
+            &self.background,
+            &self.config,
+            room.document_id,
+            crate::log::sequencer::SnapshotMode::Shallow,
+        )
+        .await;
+        let _bytes = match result {
+            Ok(bytes) => bytes,
+            Err(message) => return write_json(503, &json!({"error": message})),
+        };
+        // Drop the attachment cache so comments re-resolve against the shallow document.
+        room.forget_comments().await;
+        write_json(
+            200,
+            &json!({"historyBytes": _bytes.unwrap_or(0)}),
+        )
+    }
+
     /* -------------------------------------------------------------- assets */
 }

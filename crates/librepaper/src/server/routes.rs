@@ -31,6 +31,7 @@ pub(super) fn api_router(server: Arc<Server>) -> Router {
             get(label_archive),
         )
         .route("/api/documents/{slug}/restore", post(restore))
+        .route("/api/documents/{slug}/history/trim", post(history_trim))
         .route("/api/documents/{slug}/rename", post(rename))
         .route("/api/documents/{slug}/fork", post(fork))
         .route("/api/trash", get(trash))
@@ -259,6 +260,15 @@ async fn restore(
     request: Request<Body>,
 ) -> Reply {
     server.handle_restore(request, &ctx.arrival, &slug).await
+}
+
+async fn history_trim(
+    State(server): State<Arc<Server>>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(slug): Path<String>,
+    request: Request<Body>,
+) -> Reply {
+    server.handle_history_trim(request, &ctx.arrival, &slug).await
 }
 
 async fn rename(

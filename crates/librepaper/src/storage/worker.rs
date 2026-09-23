@@ -208,6 +208,204 @@ fn enqueue_due_rescan(handle: &Handle, local: &mut VecDeque<Task>, rescan: bool)
     }
 }
 
+/// Compacts a document to a snapshot at its current state and deletes the log rows.
+///
+/// Admitted if it is not already resident, rather than skipped. Skipping was wrong
+/// in the one case that matters most: the startup scan. `pending_background_work`
+/// finds documents over the threshold from durable state, and right after a boot
+/// none of them is resident, so every single one was dropped on the floor and the
+/// only compaction that ever ran was on whatever happened to be open at that
+/// instant. A log over the quota then refuses updates "waiting to be compacted"
+/// and waits forever.
+///
+/// Admission itself is one head read; the document this then builds is the one
+/// compaction cannot avoid building, because a base is an export of it. Going
+/// through the registry rather than decoding privately here is what keeps there
+/// being exactly one sequencer for a document: the base this activates has to
+/// land in the accounting of whatever sequencer a reader may already be holding,
+/// and a private copy could not do that. It is retired again by the next
+/// housekeeping pass, which drops any sequencer with no subscribers and an
+/// empty buffer.
+pub async fn compact_document(
+    catalog: &Arc<PostgresCatalog>,
+    blobs: &Arc<dyn BlobStore>,
+    sequencers: &Arc<Registry>,
+    handle: &Handle,
+    config: &crate::config::Configuration,
+    document_id: Uuid,
+    mode: crate::log::sequencer::SnapshotMode,
+) -> Result<Option<u64>, String> {
+    let sequencer = match sequencers.resident(document_id).await {
+        Some(sequencer) => sequencer,
+        None => {
+            let Some(document) = catalog
+                .document(document_id)
+                .await
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(None);
+            };
+            if document.status != "active" {
+                // A document on its way out is `Task::Delete`'s, and
+                // compacting it would only write a base for the deletion
+                // to collect.
+                return Ok(None);
+            }
+            sequencers
+                .get(document_id, &document.slug)
+                .await
+                .map_err(|error| error.to_string())?
+        }
+    };
+
+    // 1. Flush, so the buffer is empty and `through` is a real row.
+    sequencer
+        .flush(FlushReason::Barrier)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // 2 and 3. An entry whose `oplog_vv()` equals the log vector, and the
+    //    snapshot exported from it. An entry that is ahead is not used.
+    let Some((through, snapshot, log_vector, changes)) = sequencer
+        .snapshot_at_log_vector(mode)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    if through <= 0 {
+        return Ok(None);
+    }
+
+    // 4. Prove coverage. Both halves: the snapshot's own header, and a
+    //    scratch document loaded from it. Because gaps are refused at
+    //    ingest the entry has no pending operations, so this is a check
+    //    and not a hope -- and a mismatch aborts rather than deleting
+    //    rows the base does not hold.
+    prove_coverage(&snapshot, &log_vector, changes, mode)?;
+
+    // 5a. Write the blob. No lock is held for this: it is compression
+    //     and an object-store round trip, and nothing references the
+    //     object until 5b activates it.
+    let storage = CollaborationStorage::new(catalog.clone(), blobs.clone());
+    let written = storage
+        .write_base(document_id, &snapshot, config.log_quota_bytes)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    // 5b. Activate the base, delete the rows it covers, reset the
+    //     counters, and move the sequencer's own copy of all three --
+    //     under the sequencer's compaction gate, so nothing reads the
+    //     base and the rows while they disagree. The gate is what makes
+    //     the catalogue transaction and the in-memory update one event
+    //     as far as a join or a cache build is concerned; see
+    //     `Sequencer::compaction_gate` for what each half would
+    //     otherwise return.
+    let mut gate = sequencer.compaction_gate().await;
+    let activation = catalog
+        .activate_log_base(
+            document_id,
+            through,
+            &log_vector,
+            written,
+            super::collaboration::superseded_base_deadline(),
+            mode == crate::log::sequencer::SnapshotMode::Shallow,
+        )
+        .await;
+    let activation = match activation {
+        Ok(activation) => activation,
+        Err(error) => {
+            // A commit error is ambiguous: PostgreSQL may have made the
+            // base durable before the connection failed. Reconcile while
+            // the compaction gate is still held. If durable state cannot
+            // be established, fence this sequencer so no join can observe
+            // stale base metadata after covered rows disappeared.
+            let recovered = async {
+                let base = catalog.log_base(document_id).await?;
+                let head = catalog.log_head(document_id).await?;
+                Ok::<_, crate::storage::postgres::Error>((base, head))
+            }
+            .await;
+            match recovered {
+                Ok((Some(base), head))
+                    if base.through_update_sequence == through && base.vector == log_vector =>
+                {
+                    gate.note_compacted(
+                        through,
+                        &base.vector,
+                        base.snapshot_bytes.max(0) as u64,
+                        head.uncompacted_bytes.max(0) as u64,
+                        head.uncompacted_count.max(0),
+                    );
+                    drop(gate);
+                    handle.ask(Task::SweepSupersededBases);
+                    return Ok(None);
+                }
+                Ok(_) => return Err(error.to_string()),
+                Err(reconcile_error) => {
+                    gate.fence(format!(
+                        "compaction outcome is unknown after activation failed ({error}); durable state could not be reconciled ({reconcile_error})"
+                    ));
+                    return Err(error.to_string());
+                }
+            }
+        }
+    };
+    if let Some(activation) = activation {
+        let base = activation.base;
+        let base_bytes = base.snapshot_bytes.max(0) as u64;
+        let row_bytes = activation.uncompacted_bytes.max(0) as u64;
+        gate.note_compacted(
+            through,
+            &base.vector,
+            base_bytes,
+            row_bytes,
+            activation.uncompacted_count.max(0),
+        );
+        if mode == crate::log::sequencer::SnapshotMode::Shallow {
+            gate.reset_after_trim("history trimmed");
+        }
+        drop(gate);
+        // This compaction just superseded a base and started its grace.
+        // Nothing else will ever ask about that row, so the moment one
+        // is created is the moment to look at whether any earlier one
+        // has come due -- one indexed query, and only on a deployment
+        // that is compacting, which is not an idle one.
+        handle.ask(Task::SweepSupersededBases);
+        Ok(Some(base_bytes + row_bytes))
+    } else {
+        // A retry after an activation whose reply was lost reaches the
+        // monotonic upsert as a no-op. Re-read under the still-held gate
+        // so that retry repairs memory instead of silently leaving the
+        // sequencer behind the durable base.
+        match (
+            catalog.log_base(document_id).await,
+            catalog.log_head(document_id).await,
+        ) {
+            (Ok(Some(base)), Ok(head)) if base.through_update_sequence >= through => {
+                gate.note_compacted(
+                    base.through_update_sequence,
+                    &base.vector,
+                    base.snapshot_bytes.max(0) as u64,
+                    head.uncompacted_bytes.max(0) as u64,
+                    head.uncompacted_count.max(0),
+                );
+            }
+            (Ok(_), Ok(_)) => {}
+            (base, head) => {
+                let why = format!(
+                    "compaction retry could not reconcile durable state (base: {:?}; head: {:?})",
+                    base.err(),
+                    head.err()
+                );
+                gate.fence(why.clone());
+                return Err(why);
+            }
+        }
+        Ok(None)
+    }
+}
+
 pub struct Worker {
     catalog: Arc<PostgresCatalog>,
     blobs: Arc<dyn BlobStore>,
@@ -510,189 +708,17 @@ impl Worker {
 
     /// §8.4, all five steps. Coverage is proved before a row is deleted.
     async fn compact(&mut self, document_id: Uuid) -> Result<(), String> {
-        // Admitted if it is not already resident, rather than skipped.
-        //
-        // Skipping was wrong in the one case that matters most: the startup
-        // scan. `pending_background_work` finds documents over the threshold
-        // from durable state, and right after a boot none of them is
-        // resident, so every single one was dropped on the floor and the
-        // only compaction that ever ran was on whatever happened to be open
-        // at that instant. A log over §9.1's quota then refuses updates
-        // "waiting to be compacted" and waits for ever.
-        //
-        // Admission itself is one head read (§4.1); the document this then
-        // builds is the one compaction cannot avoid building, because a base
-        // is an export of it. Going through the registry rather than
-        // decoding privately here is what keeps there being exactly one
-        // sequencer for a document (§4.3): the base this activates has to
-        // land in the accounting of whatever sequencer a reader may already
-        // be holding, and a private copy could not do that. It is retired
-        // again by the next housekeeping pass, which drops any sequencer
-        // with no subscribers and an empty buffer.
-        let sequencer = match self.sequencers.resident(document_id).await {
-            Some(sequencer) => sequencer,
-            None => {
-                let Some(document) = self
-                    .catalog
-                    .document(document_id)
-                    .await
-                    .map_err(|error| error.to_string())?
-                else {
-                    return Ok(());
-                };
-                if document.status != "active" {
-                    // A document on its way out is `Task::Delete`'s, and
-                    // compacting it would only write a base for the deletion
-                    // to collect.
-                    return Ok(());
-                }
-                self.sequencers
-                    .get(document_id, &document.slug)
-                    .await
-                    .map_err(|error| error.to_string())?
-            }
-        };
-
-        // 1. Flush, so the buffer is empty and `through` is a real row.
-        sequencer
-            .flush(FlushReason::Barrier)
-            .await
-            .map_err(|error| error.to_string())?;
-
-        // 2 and 3. An entry whose `oplog_vv()` equals the log vector, and the
-        //    snapshot exported from it. An entry that is ahead is not used.
-        let Some((through, snapshot, log_vector, changes)) = sequencer
-            .snapshot_at_log_vector()
-            .await
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(());
-        };
-        if through <= 0 {
-            return Ok(());
-        }
-
-        // 4. Prove coverage. Both halves: the snapshot's own header, and a
-        //    scratch document loaded from it. Because gaps are refused at
-        //    ingest the entry has no pending operations, so this is a check
-        //    and not a hope -- and a mismatch aborts rather than deleting
-        //    rows the base does not hold.
-        prove_coverage(&snapshot, &log_vector, changes)?;
-
-        // 5a. Write the blob. No lock is held for this: it is compression
-        //     and an object-store round trip, and nothing references the
-        //     object until 5b activates it.
-        let storage = CollaborationStorage::new(self.catalog.clone(), self.blobs.clone());
-        let written = storage
-            .write_base(document_id, &snapshot, self.config.log_quota_bytes)
-            .await
-            .map_err(|error| error.to_string())?;
-
-        // 5b. Activate the base, delete the rows it covers, reset the
-        //     counters, and move the sequencer's own copy of all three --
-        //     under the sequencer's compaction gate, so nothing reads the
-        //     base and the rows while they disagree. The gate is what makes
-        //     the catalogue transaction and the in-memory update one event
-        //     as far as a join or a cache build is concerned; see
-        //     `Sequencer::compaction_gate` for what each half would
-        //     otherwise return.
-        let mut gate = sequencer.compaction_gate().await;
-        let activation = self
-            .catalog
-            .activate_log_base(
-                document_id,
-                through,
-                &log_vector,
-                written,
-                super::collaboration::superseded_base_deadline(),
-            )
-            .await;
-        let activation = match activation {
-            Ok(activation) => activation,
-            Err(error) => {
-                // A commit error is ambiguous: PostgreSQL may have made the
-                // base durable before the connection failed. Reconcile while
-                // the compaction gate is still held. If durable state cannot
-                // be established, fence this sequencer so no join can observe
-                // stale base metadata after covered rows disappeared.
-                let recovered = async {
-                    let base = self.catalog.log_base(document_id).await?;
-                    let head = self.catalog.log_head(document_id).await?;
-                    Ok::<_, crate::storage::postgres::Error>((base, head))
-                }
-                .await;
-                match recovered {
-                    Ok((Some(base), head))
-                        if base.through_update_sequence == through && base.vector == log_vector =>
-                    {
-                        gate.note_compacted(
-                            through,
-                            &base.vector,
-                            base.snapshot_bytes.max(0) as u64,
-                            head.uncompacted_bytes.max(0) as u64,
-                            head.uncompacted_count.max(0),
-                        );
-                        drop(gate);
-                        self.handle.ask(Task::SweepSupersededBases);
-                        return Ok(());
-                    }
-                    Ok(_) => return Err(error.to_string()),
-                    Err(reconcile_error) => {
-                        gate.fence(format!(
-                            "compaction outcome is unknown after activation failed ({error}); durable state could not be reconciled ({reconcile_error})"
-                        ));
-                        return Err(error.to_string());
-                    }
-                }
-            }
-        };
-        if let Some(activation) = activation {
-            let base = activation.base;
-            gate.note_compacted(
-                through,
-                &base.vector,
-                base.snapshot_bytes.max(0) as u64,
-                activation.uncompacted_bytes.max(0) as u64,
-                activation.uncompacted_count.max(0),
-            );
-            drop(gate);
-            // This compaction just superseded a base and started its grace.
-            // Nothing else will ever ask about that row, so the moment one
-            // is created is the moment to look at whether any earlier one
-            // has come due -- one indexed query, and only on a deployment
-            // that is compacting, which is not an idle one (§14.2).
-            self.handle.ask(Task::SweepSupersededBases);
-        } else {
-            // A retry after an activation whose reply was lost reaches the
-            // monotonic upsert as a no-op. Re-read under the still-held gate
-            // so that retry repairs memory instead of silently leaving the
-            // sequencer behind the durable base.
-            match (
-                self.catalog.log_base(document_id).await,
-                self.catalog.log_head(document_id).await,
-            ) {
-                (Ok(Some(base)), Ok(head)) if base.through_update_sequence >= through => {
-                    gate.note_compacted(
-                        base.through_update_sequence,
-                        &base.vector,
-                        base.snapshot_bytes.max(0) as u64,
-                        head.uncompacted_bytes.max(0) as u64,
-                        head.uncompacted_count.max(0),
-                    );
-                }
-                (Ok(_), Ok(_)) => {}
-                (base, head) => {
-                    let why = format!(
-                        "compaction retry could not reconcile durable state (base: {:?}; head: {:?})",
-                        base.err(),
-                        head.err()
-                    );
-                    gate.fence(why.clone());
-                    return Err(why);
-                }
-            }
-        }
-        Ok(())
+        compact_document(
+            &self.catalog,
+            &self.blobs,
+            &self.sequencers,
+            &self.handle,
+            &self.config,
+            document_id,
+            crate::log::sequencer::SnapshotMode::Full,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// §8.5. An archive is produced on request from the projection at the
@@ -1019,6 +1045,7 @@ pub(crate) fn prove_coverage(
     snapshot: &[u8],
     log_vector: &[u8],
     changes: usize,
+    mode: crate::log::sequencer::SnapshotMode,
 ) -> Result<(), String> {
     let expected = loro::VersionVector::decode(log_vector)
         .map_err(|error| format!("the log vector will not decode: {error}"))?;
@@ -1034,11 +1061,20 @@ pub(crate) fn prove_coverage(
     if scratch.oplog_vv() != expected {
         return Err("the loaded snapshot does not cover the log".into());
     }
-    if scratch.len_changes() != changes {
-        return Err(format!(
-            "the loaded snapshot holds {} changes and the entry held {changes}",
-            scratch.len_changes()
-        ));
+    match mode {
+        crate::log::sequencer::SnapshotMode::Full => {
+            if scratch.len_changes() != changes {
+                return Err(format!(
+                    "the loaded snapshot holds {} changes and the entry held {changes}",
+                    scratch.len_changes()
+                ));
+            }
+        }
+        crate::log::sequencer::SnapshotMode::Shallow => {
+            if !scratch.is_shallow() {
+                return Err("the snapshot is not shallow".into());
+            }
+        }
     }
     Ok(())
 }
@@ -1369,7 +1405,7 @@ mod tests {
         let doc = document_with("hello");
         let snapshot = doc.export(loro::ExportMode::Snapshot).unwrap();
         assert_eq!(
-            prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes()),
+            prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes(), crate::log::sequencer::SnapshotMode::Full),
             Ok(())
         );
     }
@@ -1381,7 +1417,7 @@ mod tests {
         // The log has moved on; the snapshot has not.
         doc.get_text("body").insert(5, " again").unwrap();
         doc.commit();
-        let error = prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes())
+        let error = prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes(), crate::log::sequencer::SnapshotMode::Full)
             .expect_err("a short snapshot must not pass");
         assert!(
             error.contains("does not cover"),
@@ -1393,18 +1429,34 @@ mod tests {
     fn coverage_rejects_a_fabricated_snapshot() {
         let doc = document_with("hello");
         let vector = doc.oplog_vv().encode();
-        assert!(prove_coverage(b"not a snapshot at all", &vector, 1).is_err());
+        assert!(prove_coverage(b"not a snapshot at all", &vector, 1, crate::log::sequencer::SnapshotMode::Full).is_err());
         let mut truncated = doc.export(loro::ExportMode::Snapshot).unwrap();
         truncated.truncate(truncated.len() / 2);
-        assert!(prove_coverage(&truncated, &vector, doc.len_changes()).is_err());
+        assert!(prove_coverage(&truncated, &vector, doc.len_changes(), crate::log::sequencer::SnapshotMode::Full).is_err());
     }
 
     #[test]
     fn coverage_rejects_a_snapshot_with_the_wrong_change_count() {
         let doc = document_with("hello");
         let snapshot = doc.export(loro::ExportMode::Snapshot).unwrap();
-        let error = prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes() + 1)
+        let error = prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes() + 1, crate::log::sequencer::SnapshotMode::Full)
             .expect_err("a change count that disagrees must not pass");
         assert!(error.contains("changes"), "unexpected refusal: {error}");
+    }
+
+    #[test]
+    fn shallow_snapshot_proves_coverage_when_shallow() {
+        let doc = document_with("hello world");
+        let snapshot = doc.export(loro::ExportMode::ShallowSnapshot(std::borrow::Cow::Owned(
+            doc.oplog_frontiers(),
+        )))
+        .unwrap();
+        // Shallow mode should accept a shallow snapshot
+        assert_eq!(
+            prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes(), crate::log::sequencer::SnapshotMode::Shallow),
+            Ok(())
+        );
+        // Full mode should reject a shallow snapshot
+        assert!(prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes(), crate::log::sequencer::SnapshotMode::Full).is_err());
     }
 }

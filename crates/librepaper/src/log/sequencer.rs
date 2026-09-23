@@ -117,6 +117,15 @@ pub enum Role {
     Reader,
 }
 
+/// What snapshot a compaction exports: full history or shallow state only.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotMode {
+    /// A full snapshot with complete history.
+    Full,
+    /// A shallow snapshot keeping the state at the frontier and no history before it.
+    Shallow,
+}
+
 struct Subscriber {
     tx: Sender,
     role: Role,
@@ -2418,7 +2427,7 @@ impl Sequencer {
     /// warm entry at head with an empty buffer -- and the snapshot exported
     /// from it. An entry that is ahead is not used; the caller waits for the
     /// next opportunity.
-    pub async fn snapshot_at_log_vector(&self) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize)>> {
+    pub async fn snapshot_at_log_vector(&self, mode: SnapshotMode) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize)>> {
         let mut inner = self.inner.lock().await;
         inner.writable()?;
         if !inner.buffer.is_empty() {
@@ -2446,10 +2455,19 @@ impl Sequencer {
         // nothing can import into this entry until this returns.
         let doc = cache.doc.clone();
         let _turn = super::admission::heavy().await;
-        let snapshot = tokio::task::spawn_blocking(move || doc.export(ExportMode::Snapshot))
-            .await
-            .map_err(|error| SequencerError::Loro(error.to_string()))?
-            .map_err(|error| SequencerError::Loro(error.to_string()))?;
+        let snapshot = tokio::task::spawn_blocking(move || {
+            match mode {
+                SnapshotMode::Full => doc.export(ExportMode::Snapshot),
+                SnapshotMode::Shallow => {
+                    doc.export(ExportMode::ShallowSnapshot(std::borrow::Cow::Owned(
+                        doc.oplog_frontiers(),
+                    )))
+                }
+            }
+        })
+        .await
+        .map_err(|error| SequencerError::Loro(error.to_string()))?
+        .map_err(|error| SequencerError::Loro(error.to_string()))?;
         Ok(Some((through, snapshot, log_vector.encode(), changes)))
     }
 
@@ -2561,6 +2579,21 @@ impl CompactionGate<'_> {
     /// have committed but its durable result cannot be read back.
     pub(crate) fn fence(&mut self, why: String) {
         self.inner.fence(why);
+    }
+
+    /// Rebuilds the resident document from a shallow base, dropping the cache
+    /// and closing every subscriber so it rejoins from that base.
+    ///
+    /// The resident document still holds the history the base no longer has,
+    /// so it is dropped and rebuilt from the shallow base, and every subscriber
+    /// rejoins from that base.
+    pub(crate) fn reset_after_trim(&mut self, why: &str) {
+        self.inner.cache = None;
+        self.inner.projection = None;
+        let payload = format!("{why}; reconnect");
+        for (_, subscriber) in self.inner.subscribers.drain() {
+            let _ = subscriber.tx.force_close(payload.clone());
+        }
     }
 }
 
