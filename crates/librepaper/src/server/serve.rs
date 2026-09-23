@@ -471,10 +471,6 @@ pub async fn serve(options: ServeOptions) {
             "  storage: {} total bytes; {} bytes per owner",
             config.storage.total, config.storage.per_owner
         );
-        println!(
-            "  documents: {} source bytes; {} input-asset bytes",
-            config.max_document, config.max_assets
-        );
     }
     if let Some(library) = &instance.fonts {
         println!("  fonts: {}", library.describe());

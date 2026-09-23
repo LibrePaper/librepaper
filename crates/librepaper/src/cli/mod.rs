@@ -77,20 +77,6 @@ pub(crate) struct ServiceFlags {
     /// No public front page: the examples are listed only to their owner
     #[arg(long, env = "LIBREPAPER_NO_LISTING")]
     no_listing: bool,
-    /// Largest document accepted, in megabytes (default 4, maximum 8)
-    #[arg(
-        long = "document-size-limit",
-        env = "LIBREPAPER_MAX_SIZE",
-        value_name = "MB"
-    )]
-    max_size: Option<usize>,
-    /// Combined input assets one document may hold, in MiB (default 32).
-    #[arg(
-        long = "document-assets-limit",
-        env = "LIBREPAPER_BUDGET_DOCUMENT_ASSETS",
-        value_name = "MIB"
-    )]
-    budget_document_assets: Option<usize>,
     /// Most one publisher may store across their documents, in megabytes (default 100)
     #[arg(
         long = "publisher-storage-limit",
@@ -229,12 +215,6 @@ impl ServiceFlags {
                 die(format!("invalid advanced memory budget: {error}"));
             }
         }
-        if let Err(err) = config.set_budget_document_assets(self.budget_document_assets) {
-            die(err);
-        }
-        if let Err(err) = config.set_max_document(self.max_size) {
-            die(err);
-        }
         if let Err(err) = config.set_storage(self.quota, self.storage) {
             die(err);
         }
@@ -244,16 +224,7 @@ impl ServiceFlags {
         if let Err(err) = config.cost.validate() {
             die(err);
         }
-        // The one place a deployment learns that its ceilings cannot be
-        // durably saved: before anything opens a socket, not at the first
-        // oversized document.
-        if let Err(err) = config.persistence().validate() {
-            die(err);
-        }
-        // Checked after `set_max_document`, because the largest row a
-        // semantic command can write depends on it: a deployment that raised
-        // its document ceiling without raising its scratch ceiling would
-        // admit work it could not persist.
+        // Checked after all configuration overrides are applied.
         if let Err(err) = config.validate_pending() {
             die(err);
         }

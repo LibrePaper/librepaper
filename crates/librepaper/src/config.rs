@@ -47,12 +47,6 @@ impl DeploymentPaths {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Configuration {
-    /// The sum of every text in a document and of every key naming one. A
-    /// paper split into thirty files is allowed exactly what a paper in one
-    /// file is allowed, which is why this bounds the sum rather than each
-    /// text. It bounds a rendering too, now that a document may store one, so
-    /// it is named for the document rather than for the HTML it once was.
-    pub max_document: usize,
     /// How many files one document may hold, across its texts and its assets.
     /// A paper has a dozen; a directory of two hundred is somebody using a
     /// document as a filesystem.
@@ -88,13 +82,6 @@ pub struct Configuration {
     /// Its own pool, so a deployment whose buffers are full can still drain
     /// them.
     pub pending_scratch_bytes: u64,
-    /// What the figures of one document may come to, and what one of them may
-    /// be. Assets are where the bytes of a paper actually go -- a directory of
-    /// figures is an order of magnitude larger than its text -- so they get
-    /// ceilings of their own beside `max_document` rather than sharing it, and
-    /// they count against the owner's quota like everything else stored.
-    pub max_assets: i64,
-    pub max_asset: i64,
     /// Which extensions name a file a person edits, which name bytes nobody
     /// edits in place, and which name what a compiler wrote -- and a document
     /// keeps what a person wrote. Rules rather than constants, so a deployment
@@ -106,8 +93,9 @@ pub struct Configuration {
 
     /// Storage is what keeps a deployment's bill bounded no matter who shows
     /// up: a ceiling on everything stored, a ceiling per publisher, and a cap
-    /// on how many uploads an hour one publisher gets.
-    /// Sizes are bytes of stored HTML; every index entry records its own.
+    /// on how many uploads an hour one publisher gets. Sizes are bytes; retained
+    /// storage counts label archives, figures, and each document's editing log
+    /// (compaction base plus rows).
     pub storage: StorageLimit,
 
     /// The deployment-wide cost envelope: implementation guardrails with
@@ -160,14 +148,6 @@ pub struct Configuration {
     /// survives being read aloud or retyped.
     pub suffix_alphabet: String,
     pub suffix_length: usize,
-
-    /// The persistence policy: what a source may be and what its encoded CRDT
-    /// snapshot may be. Not part of the shell configuration -- a
-    /// browser has no use for the server's storage ceilings -- so it is
-    /// skipped rather than injected. `max_source_bytes` follows
-    /// `max_document`; read the pair through [`Configuration::persistence`].
-    #[serde(skip)]
-    pub persistence: PersistenceLimits,
 }
 
 /// Bounds what a deployment will hold. `total` and `per_owner` are bytes;
@@ -276,8 +256,6 @@ pub struct CostPolicy {
     pub artifact_transfers: usize,
     /// Concurrent HTTP handlers performing origin work.
     pub work_concurrency: usize,
-    /// Deployment-wide request body parsing/decoded-payload memory ceiling.
-    pub request_body_memory_bytes: usize,
     /// TCP peers whose X-Forwarded-For header may be used for client identity.
     /// An empty list means the TCP peer address is authoritative.
     pub trusted_proxies: Vec<String>,
@@ -285,9 +263,6 @@ pub struct CostPolicy {
 
 pub const DEFAULT_REQUESTS_PER_PRINCIPAL_MINUTE: usize = 6_000;
 pub const DEFAULT_ARTIFACT_TRANSFERS: usize = 64;
-/// Maximum decoded/request parsing memory reserved across concurrent HTTP
-/// handlers. Four times the incoming body estimate is admitted before reads.
-pub const DEFAULT_REQUEST_BODY_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 
 impl Default for CostPolicy {
     fn default() -> Self {
@@ -295,7 +270,6 @@ impl Default for CostPolicy {
             requests_per_principal_minute: DEFAULT_REQUESTS_PER_PRINCIPAL_MINUTE,
             artifact_transfers: DEFAULT_ARTIFACT_TRANSFERS,
             work_concurrency: 64,
-            request_body_memory_bytes: DEFAULT_REQUEST_BODY_MEMORY_BYTES,
             trusted_proxies: Vec::new(),
         }
     }
@@ -305,12 +279,6 @@ impl CostPolicy {
     pub fn validate(&self) -> Result<(), String> {
         if self.work_concurrency == 0 {
             return Err("cost.work_concurrency must be positive".into());
-        }
-        if self.request_body_memory_bytes == 0 || self.request_body_memory_bytes > u32::MAX as usize
-        {
-            return Err(
-                "cost.request_body_memory_bytes must be between 1 and 4294967295 bytes".into(),
-            );
         }
         if self.requests_per_principal_minute == 0 || self.artifact_transfers == 0 {
             return Err("cost request and concurrency guardrails must be positive".into());
@@ -392,7 +360,6 @@ pub struct CapLimit {
 impl Default for Configuration {
     fn default() -> Self {
         Configuration {
-            max_document: DEFAULT_MAX_SOURCE_BYTES,
             max_files: 200,
             max_path: 200,
             log_quota_bytes: 32 * 1024 * 1024,
@@ -400,8 +367,6 @@ impl Default for Configuration {
             cache_expansion: crate::log::budget::DEFAULT_EXPANSION,
             pending_bytes: DEFAULT_PENDING_BYTES,
             pending_scratch_bytes: DEFAULT_PENDING_SCRATCH_BYTES,
-            max_assets: 32 * 1024 * 1024,
-            max_asset: 8 * 1024 * 1024,
             text_extensions: [
                 ".tex",
                 ".typ",
@@ -497,7 +462,6 @@ impl Default for Configuration {
             slug_max: 80,
             suffix_alphabet: "abcdefghijkmnpqrstuvwxyz23456789".to_string(),
             suffix_length: 10,
-            persistence: PersistenceLimits::default(),
         }
     }
 }
@@ -518,60 +482,6 @@ impl Configuration {
     /// separate question, answered by `renderers`.
     pub fn storable_source(&self, format: &str) -> bool {
         self.source_formats.iter().any(|known| known == format)
-    }
-
-    /// The persistence policy this configuration implies: the source ceiling
-    /// an operator set, and the encoded and memory ceilings the collaboration
-    /// storage format supports. One value, so admission, bundle, append
-    /// and compaction cannot drift apart.
-    pub fn persistence(&self) -> PersistenceLimits {
-        PersistenceLimits {
-            max_source_bytes: self.max_document,
-            ..self.persistence
-        }
-    }
-
-    /// Overrides the document size ceiling, in megabytes. `None` leaves the
-    /// default alone.
-    ///
-    /// The supported maximum is whatever [`PersistenceLimits::validate`]
-    /// accepts for collaboration recovery and bounded transient memory.
-    pub fn set_max_document(&mut self, megabytes: Option<usize>) -> Result<(), String> {
-        let Some(megabytes) = megabytes else {
-            return Ok(());
-        };
-        let bytes = megabytes
-            .checked_mul(1024 * 1024)
-            .ok_or_else(|| "--document-size-limit is too large".to_string())?;
-        let candidate = PersistenceLimits {
-            max_source_bytes: bytes,
-            ..self.persistence
-        };
-        candidate
-            .validate()
-            .map_err(|why| format!("--document-size-limit: {why}"))?;
-        self.max_document = bytes;
-        Ok(())
-    }
-
-    /// Overrides what the figures of one document may come to, in megabytes.
-    /// `None` leaves the default alone.
-    ///
-    /// Worth setting low on a deployment anybody may publish to. Figures are
-    /// where the bytes of a paper actually go, and while they count against
-    /// `--publisher-storage-limit` like everything else, this is what stops one document from
-    /// spending a publisher's whole allowance on images.
-    pub fn set_budget_document_assets(&mut self, megabytes: Option<usize>) -> Result<(), String> {
-        let Some(megabytes) = megabytes else {
-            return Ok(());
-        };
-        if !(1..=1024).contains(&megabytes) {
-            return Err("--document-assets-limit must be between 1 and 1024 MiB".into());
-        }
-        self.max_assets = (megabytes * 1024 * 1024) as i64;
-        // One figure may never be more than all of them.
-        self.max_asset = self.max_asset.min(self.max_assets);
-        Ok(())
     }
 
     /// Apply the optional operator-declared backup policy.
@@ -663,12 +573,12 @@ impl Configuration {
     /// number near `u64::MAX` gets a configuration error rather than a
     /// comparison that wrapped.
     pub fn validate_pending(&self) -> Result<(), String> {
-        use crate::log::sequencer::{BUFFER_CEILING_BYTES, MAX_PENDING_CHARGE, MAX_ROW_BYTES};
+        use crate::log::sequencer::{BUFFER_CEILING_BYTES, max_pending_charge, max_row_bytes};
 
         if self.pending_bytes == 0 || self.pending_scratch_bytes == 0 {
             return Err("the pending-source ceilings must be positive".into());
         }
-        if self.pending_bytes < MAX_PENDING_CHARGE as u64 {
+        if self.pending_bytes < max_pending_charge(self.log_quota_bytes) as u64 {
             return Err(format!(
                 "the deployment pending-source ceiling ({} MB) cannot hold one document's \
                  buffer, which this deployment allows to reach {} MB",
@@ -676,12 +586,9 @@ impl Configuration {
                 BUFFER_CEILING_BYTES >> 20,
             ));
         }
-        // The largest row any path writes: a full buffer, plus a source-sized command update. This is a startup sizing floor;
-        // actual CRDT exports may exceed plain source size and are admitted
-        // against their actual encoded length in the command path.
-        let largest_row = (MAX_ROW_BYTES as u64)
-            .checked_add(self.max_document as u64)
-            .ok_or_else(|| "the largest persistence row overflows".to_string())?;
+        // A row past the log quota is refused, so the quota is the largest row
+        // any path writes.
+        let largest_row = max_row_bytes(self.log_quota_bytes) as u64;
         let needed = crate::log::pending::scratch_for(largest_row);
         if self.pending_scratch_bytes < needed {
             return Err(format!(
@@ -704,10 +611,12 @@ impl Configuration {
     }
 
     /// Overrides the per-document log ceiling, in megabytes. `None` leaves the
-    /// default alone. Refuses zero or a quota smaller than the largest row any
-    /// path writes. Does not check the memory budget, because the two are
-    /// checked together by `validate_budgets` once every override is applied.
+    /// default alone. Refuses zero or a quota smaller than the buffer ceiling.
+    /// Does not check the memory budget, because the two are checked together
+    /// by `validate_budgets` once every override is applied.
     pub fn set_log_quota(&mut self, megabytes: Option<u64>) -> Result<(), String> {
+        use crate::log::sequencer::BUFFER_CEILING_BYTES;
+
         let Some(megabytes) = megabytes else {
             return Ok(());
         };
@@ -717,8 +626,11 @@ impl Configuration {
         let bytes = megabytes
             .checked_mul(1024 * 1024)
             .ok_or_else(|| "log quota is too large".to_string())?;
-        if (bytes as usize) < crate::log::sequencer::MAX_ROW_BYTES {
-            return Err("the log quota cannot hold one maximum-size row".to_string());
+        if (bytes as usize) < BUFFER_CEILING_BYTES {
+            return Err(format!(
+                "the log quota cannot be below the buffer ceiling of {} bytes",
+                BUFFER_CEILING_BYTES
+            ));
         }
         self.log_quota_bytes = bytes as usize;
         Ok(())
@@ -748,13 +660,13 @@ impl Configuration {
     /// reserves the resident expansion plus the transient one, and Budget::reserve
     /// refuses a request larger than the whole limit, so the budget must cover both.
     pub fn validate_budgets(&self) -> Result<(), String> {
-        use crate::log::sequencer::MAX_ROW_BYTES;
+        use crate::log::sequencer::BUFFER_CEILING_BYTES;
 
-        if self.log_quota_bytes < MAX_ROW_BYTES {
+        if self.log_quota_bytes < BUFFER_CEILING_BYTES {
             return Err(format!(
-                "the log quota ({} MB) cannot hold one maximum-size row, which is {} bytes",
+                "the log quota ({} MB) cannot be below the buffer ceiling of {} bytes",
                 self.log_quota_bytes >> 20,
-                MAX_ROW_BYTES,
+                BUFFER_CEILING_BYTES,
             ));
         }
 
@@ -781,9 +693,6 @@ impl Configuration {
     }
 }
 
-/// The source ceiling a deployment gets without saying otherwise.
-pub const DEFAULT_MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
-
 /// How much unsaved source the whole deployment will hold at once.
 ///
 /// Conservative on purpose, for the small VPS this targets. One document may
@@ -808,119 +717,9 @@ pub const DEFAULT_PENDING_BYTES: u64 = 64 * 1024 * 1024;
 /// its buffer and charges untouched; it is not a loss.
 pub const DEFAULT_PENDING_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
 
-/// The supported source ceiling, in bytes. `--document-size-limit` may not exceed it.
-///
-/// It is a policy, not a theorem: nothing proves that eight megabytes of text
-/// can never encode past [`PersistenceLimits::max_encoded_snapshot_bytes`].
-/// The 8 MiB policy leaves room inside the 16 MiB snapshot ceiling for history
-/// and metadata.
-pub const SUPPORTED_MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
-
-/// `E`: the largest encoded CRDT snapshot this deployment will write.
-pub const DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
-
-/// The relationship between visible source and encoded collaboration state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PersistenceLimits {
-    /// `S`: the configured source-byte ceiling, which is `max_document`.
-    pub max_source_bytes: usize,
-    /// `E`: the supported encoded CRDT snapshot ceiling.
-    pub max_encoded_snapshot_bytes: usize,
-}
-
-impl Default for PersistenceLimits {
-    fn default() -> Self {
-        Self {
-            max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
-            max_encoded_snapshot_bytes: DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES,
-        }
-    }
-}
-
-impl PersistenceLimits {
-    /// Refuse a configuration that cannot durably save the work it advertises.
-    ///
-    /// Every derived bound is checked arithmetic: an operator who sets a
-    /// ceiling near `usize::MAX` gets a configuration error rather than a
-    /// wrapped comparison that silently admits everything.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.max_source_bytes == 0 {
-            return Err("the document size ceiling must be positive".into());
-        }
-        if self.max_source_bytes > SUPPORTED_MAX_SOURCE_BYTES {
-            return Err(format!(
-                "a document source ceiling of {} MB is not supported; the maximum is {} MB, \
-                 because a larger source cannot be guaranteed to encode inside the {} MB \
-                 collaboration snapshot ceiling this deployment can save",
-                self.max_source_bytes >> 20,
-                SUPPORTED_MAX_SOURCE_BYTES >> 20,
-                self.max_encoded_snapshot_bytes >> 20,
-            ));
-        }
-        if self.max_source_bytes > self.max_encoded_snapshot_bytes {
-            return Err(format!(
-                "the document source ceiling ({} MB) cannot exceed the encoded snapshot \
-                 ceiling ({} MB)",
-                self.max_source_bytes >> 20,
-                self.max_encoded_snapshot_bytes >> 20,
-            ));
-        }
-        if self.max_encoded_snapshot_bytes == 0 {
-            return Err("the encoded snapshot ceiling must be positive".into());
-        }
-        Ok(())
-    }
-}
-
-/// Why a proposed write can never be saved as this deployment is configured.
-/// No retry helps; the work itself is past a ceiling.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SizeRefusal {
-    /// Past `S`: the visible source of the document.
-    Source { bytes: usize, ceiling: usize },
-    /// Past `E`: the encoded CRDT snapshot, which includes the history and
-    /// metadata that grow independently of the visible source.
-    Encoded { bytes: usize, ceiling: usize },
-}
-
-impl SizeRefusal {
-    pub fn message(&self) -> String {
-        match self {
-            Self::Source { bytes, ceiling } => format!(
-                "this document is {} MB of text, past the {} MB this deployment accepts",
-                bytes >> 20,
-                ceiling >> 20
-            ),
-            Self::Encoded { bytes, ceiling } => format!(
-                "this document's saved state would be {} MB, past the {} MB this deployment \
-                 can durably save; its edit history and metadata count towards that as well \
-                 as its text",
-                bytes >> 20,
-                ceiling >> 20
-            ),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn request_body_memory_default_and_bounds_are_validated() {
-        let mut config = Configuration::default();
-        assert_eq!(
-            config.cost.request_body_memory_bytes,
-            DEFAULT_REQUEST_BODY_MEMORY_BYTES
-        );
-        assert!(config.cost.validate().is_ok());
-        config.cost.request_body_memory_bytes = 0;
-        assert!(config.cost.validate().is_err());
-        if let Ok(value) = usize::try_from(u64::from(u32::MAX) + 1) {
-            config.cost.request_body_memory_bytes = value;
-            assert!(config.cost.validate().is_err());
-        }
-    }
 
     /// A configuration that cannot persist what it admits has to be refused
     /// at startup rather than discovered when the first document fills up.
@@ -952,20 +751,6 @@ mod tests {
         let mut nothing = config.clone();
         nothing.pending_bytes = 0;
         assert!(nothing.validate_pending().is_err());
-
-        // Raising the document ceiling raises the largest row a semantic
-        // command can write, so the two are checked together rather than
-        // separately.
-        config.max_document = SUPPORTED_MAX_SOURCE_BYTES;
-        config.pending_scratch_bytes = crate::log::pending::scratch_for(
-            (crate::log::sequencer::MAX_ROW_BYTES + SUPPORTED_MAX_SOURCE_BYTES) as u64,
-        );
-        assert!(config.validate_pending().is_ok());
-        config.pending_scratch_bytes -= 1;
-        assert!(
-            config.validate_pending().is_err(),
-            "the check is exact: one byte short of a maximum row is short",
-        );
     }
 
     /// The megabyte setters an operator reaches through the advanced
@@ -1039,10 +824,10 @@ mod tests {
         assert!(config.set_log_quota(Some(0)).is_err());
         assert_eq!(config.log_quota_bytes, 128 * 1024 * 1024);
 
-        // set_log_quota(Some(1)) errors because 1 MiB is below MAX_ROW_BYTES, and leaves 128 MiB
+        // set_log_quota(Some(1)) errors because 1 MiB is below BUFFER_CEILING_BYTES (4 MiB), and leaves 128 MiB
         assert!(
             config.set_log_quota(Some(1)).is_err(),
-            "1 MiB is below MAX_ROW_BYTES"
+            "1 MiB is below BUFFER_CEILING_BYTES"
         );
         assert_eq!(config.log_quota_bytes, 128 * 1024 * 1024);
 
