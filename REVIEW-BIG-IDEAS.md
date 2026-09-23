@@ -47,20 +47,25 @@ cache of where anchors resolved to. Page sizes, cursors, the consistency
 contract during concurrent change and the remaining aggregate limits are in
 [docs/protocol/comments-v1.md](docs/protocol/comments-v1.md).
 
-**Still to decide: comment admission.** Applying the comment/reply limits
-inside the existing authorized document transaction, across browser and agent
-entry points, makes a comment refusable, which is a product decision rather
-than a correctness fix and is not implemented. Whoever takes it must settle:
-what a caller at the cap is told and whether the refusal is retryable; that a
-retry of an already-created UUID at the cap still succeeds; that concurrent
-requests cannot both consume the last slot; and that an over-limit document
-from before the change is not made unwritable in a way that strands work.
-Rate limiting is a separate change again, once its principal, window and retry
-semantics are specified.
+**Decided against: comment admission.** Enforcing the comment and reply
+ceilings inside the authorized document transaction was implemented and
+tested on 2026-09-23 and then dropped in favour of the knob cull above: a
+comment stays unrefusable, and comments and replies remain bounded only by
+the general request bucket. Anyone revisiting it starts from the same four
+questions, none of which this decision answers: what a caller at the cap is
+told and whether the refusal is retryable; that a retry of an
+already-created UUID at the cap still succeeds; that concurrent requests
+cannot both consume the last slot; and that an over-limit document from
+before the change is not made unwritable in a way that strands work. Rate
+limiting is a separate change again, once its principal, window and retry
+semantics are specified. What remains unbounded is accumulated storage per
+document, which pagination bounds the reading of but not the growing of.
 
-**Lower-priority operator documentation:** retention is opt-in and performs an
-hourly catalogue read even when nothing expires. Clarify the exception to the idle-query promise in the
-operator-facing retention documentation. A new scheduler is not justified by
+**Done: operator documentation for retention.** Retention is opt-in and
+performs an hourly catalogue read even when nothing expires. The exception
+to the idle-query promise is now written down where an operator will meet
+it, in [docs/hosting.md](docs/hosting.md#resource-limits), with a cross
+reference from the resource inventory. A new scheduler is not justified by
 this observation alone.
 
 **Editing sweep improved; mixed-load capacity still unverified.**
@@ -78,17 +83,28 @@ nor background compaction is exercised, so whether twenty connections suffice
 for their combined load remains open. No numerical deployment envelope or
 pool-size recommendation follows from these isolated runs.
 
-**Next, on the same shape:** background maintenance is still one task, so one
-compaction at a time blocks every other document's compaction, deletion and
-archive, and a document past `log_quota_bytes` refuses edits until its turn
-comes. Document-open and reconnect bursts, which *are* under the work
-semaphore and do cost about six queries each, are the other unmeasured case.
-Both are named in section 8 of the capacity document.
+**Next, on the same shape: the harness now exists, the numbers do not.**
+Background maintenance is still one task, so one compaction at a time blocks
+every other document's compaction, deletion and archive, and a document past
+`log_quota_bytes` refuses edits until its turn comes. Document-open and
+reconnect bursts, which *are* under the work semaphore and do cost about six
+queries each, are the other unmeasured case. `storage::postgres::benchmarks`
+now carries a scenario for each of the three, plus mixed HTTP, editing and
+compaction traffic against one pool; each documents its own shape at the top
+of its function. None of them has been run, so every figure they print is a
+placeholder: measure before adding worker concurrency or raising the pool,
+which is the order this review asks for.
 
-**Remaining end-to-end coverage:** recovery after a background scan loses its
-database connection, and discovery of work created behind the cursor during a
-real database scan. The existing map and queue tests do not establish those
-end-to-end behaviors.
+**Done: end-to-end scan coverage.** Recovery after a background scan loses
+its database connection, and discovery of work sitting behind an advanced
+cursor, are both covered against PostgreSQL in
+`storage::worker_recovery_tests`. The second found a real gap. Ids are uuid
+v7, so a row created during a pass always sorts above the cursor, but a row
+created long before it can still become work while the pass runs, and its
+low id is then behind a page already consumed. Every write that creates such
+work also asks the worker directly, except during the very first scan after
+a restart, so the worker now runs one unconditional follow-up pass from a
+fresh cursor at startup and never scans on its own again.
 
 ### 2.2 Companion and agent interface cleanup (original 2.9)
 

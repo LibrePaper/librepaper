@@ -35,8 +35,12 @@ use std::time::{Duration, Instant};
 
 use futures_util::future::join_all;
 use serde_json::{json, Value};
+use tokio::net::TcpListener;
 
-use super::{Authority, NewAccount, NewDocument, PostgresCatalog, PostgresOptions, StoragePolicy};
+use super::{
+    AccountRecord, Authority, NewAccount, NewDocument, PostgresCatalog, PostgresOptions,
+    StoragePolicy, WriterLease,
+};
 use crate::document::session;
 use crate::log::{FlushReason, Registry};
 
@@ -2723,4 +2727,915 @@ async fn capacity_arrivals_keep_scheduling_when_the_consumer_stalls() {
     }
     assert_eq!(received + dropped, scheduled_edits(window, interval));
     assert!(dropped >= 4, "queue overload must be counted");
+}
+
+// ---------------------------------------------------------------------------
+// Capacity: HTTP traffic and background compaction running with editing
+// ---------------------------------------------------------------------------
+//
+// docs/postgres-capacity.md §8 names three gaps `active_document_capacity_
+// benchmark` above leaves open, because isolating socket-style editing is
+// what lets that benchmark attribute a number to editing alone: it never
+// goes through HTTP, and it puts compaction's thresholds out of reach on
+// purpose. REVIEW-BIG-IDEAS.md §2.1 asks the question that isolation cannot
+// answer -- whether the configured connections suffice under HTTP work,
+// background work and editing all contending for the same pool at once --
+// and this section is the harness for that question, not the answer: every
+// number this prints is a placeholder until somebody runs it.
+//
+// This starts a real `Server` behind a real loopback listener, the same
+// `axum::serve` shape `tests/writer_socket_bench.rs` already uses for a
+// different question, so an HTTP request actually takes the `work` permit
+// `server/cost.rs` hands out and releases it only when `next.run` returns.
+// A hand-built `tokio::sync::Semaphore` beside this test would not be the
+// thing REVIEW-BIG-IDEAS.md §2.1 asked about.
+
+/// One HTTP request's outcome. `status` is 0 for a request that never got a
+/// response at all (a connection error), which is kept apart from any real
+/// status code rather than folded into it.
+struct HttpSample {
+    micros: u64,
+    status: u16,
+}
+
+fn status_histogram(samples: &[HttpSample]) -> Value {
+    let mut counts: std::collections::BTreeMap<u16, u64> = std::collections::BTreeMap::new();
+    for sample in samples {
+        *counts.entry(sample.status).or_insert(0) += 1;
+    }
+    let map: serde_json::Map<String, Value> = counts
+        .into_iter()
+        .map(|(status, count)| (status.to_string(), Value::from(count)))
+        .collect();
+    Value::Object(map)
+}
+
+/// Starts a real `Server` behind a real loopback listener, wired to the
+/// given registry and worker handle so HTTP traffic, background compaction
+/// and whatever this file drives through the sequencer directly all land on
+/// the same pool. Returns the server itself (for `cost_snapshot`, which is
+/// the exact `http_work`/`database` instrumentation docs/postgres-
+/// capacity.md §3 describes), the base URL, a client, and a signed session
+/// cookie for `owner` -- so a GET is actually answered rather than turned
+/// away at the door, which would time an authorization refusal instead of
+/// the document-open path §2.3 describes.
+async fn start_http_harness(
+    blobs: Arc<dyn crate::storage::blob::BlobStore>,
+    config: Arc<crate::config::Configuration>,
+    catalog: Arc<PostgresCatalog>,
+    registry: Arc<Registry>,
+    background: crate::storage::worker::Handle,
+    writer: WriterLease,
+    owner: &AccountRecord,
+) -> (Arc<crate::server::Server>, String, reqwest::Client, String) {
+    let rooms = crate::room::Rooms::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        registry.clone(),
+    );
+    let store = crate::document::store::Store::open_with_catalog(
+        blobs.clone(),
+        config.clone(),
+        catalog.clone(),
+        registry.clone(),
+    );
+    let key = vec![7_u8; 32];
+    let mut server = crate::server::Server::new(
+        store,
+        rooms,
+        background,
+        std::collections::HashMap::new(),
+        crate::auth::GithubApp {
+            client_id: "benchmark".into(),
+            ..crate::auth::GithubApp::default()
+        },
+        key.clone(),
+        config.clone(),
+        crate::auth::Policy::parse_publishers(&owner.handle).expect("benchmark publisher policy"),
+        crate::auth::Policy::parse(""),
+    );
+    server.install_writer(writer);
+    let server = Arc::new(server);
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind benchmark listener");
+    let addr = listener.local_addr().expect("read benchmark address");
+    let service = server
+        .clone()
+        .router()
+        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, service).await;
+    });
+
+    let identity = crate::auth::Identity {
+        provider: "github".into(),
+        id: owner.id.to_string(),
+        handle: owner.handle.clone(),
+        name: owner.display_name.clone(),
+        picture: String::new(),
+        session_generation: owner.session_generation.to_string(),
+    };
+    let cookie = crate::auth::sign_session(&key, &identity, crate::util::now_unix() + 3600);
+    let cookie_header = format!("{}={}", crate::auth::SESSION_COOKIE, cookie);
+    (
+        server,
+        format!("http://{addr}"),
+        reqwest::Client::new(),
+        cookie_header,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+#[ignore = "capacity benchmark; destroys every row in its configured database"]
+async fn mixed_traffic_capacity_benchmark() {
+    let Ok(url) = std::env::var("LIBREPAPER_BENCHMARK_POSTGRES_URL") else {
+        return;
+    };
+    // The dimensions this run shares with `active_document_capacity_
+    // benchmark` are read from the same variables it reads, so the two are
+    // set up once and compared like for like. Only the HTTP requester count
+    // is new, because it is the dimension that benchmark has no equivalent
+    // for; the think time between one requester's requests is a constant.
+    let documents = env_usize("LIBREPAPER_CAPACITY_DOCUMENTS", 32);
+    let seconds = env_usize("LIBREPAPER_CAPACITY_SECONDS", 60) as u64;
+    let connections = env_usize("LIBREPAPER_CAPACITY_CONNECTIONS", 20) as u32;
+    let interval = Duration::from_millis(env_usize("LIBREPAPER_CAPACITY_EDIT_MS", 1000) as u64);
+    let seed_bytes = env_usize("LIBREPAPER_CAPACITY_SEED_BYTES", 4096);
+    let http_concurrency = env_usize("LIBREPAPER_MIXED_HTTP_CONCURRENCY", 16);
+    let http_interval = Duration::from_millis(500);
+    // Compaction fires at `COMPACTION_UPDATE_THRESHOLD` and
+    // `COMPACTION_BYTE_THRESHOLD`, which are constants rather than policy,
+    // so this run reaches them by editing long enough rather than by
+    // lowering them. The pure editing benchmark deliberately stays under
+    // them to measure editing alone; compaction firing for real beside HTTP
+    // load is exactly what item 1 of the capacity document's open questions
+    // asks to see. Raise `LIBREPAPER_CAPACITY_SECONDS` if a run reports no
+    // compactions at all. See `maintenance_backlog_capacity_benchmark`
+    // below for the scenario where compaction's own queue is under test.
+    assert!(seconds > 0 && connections >= 2 && !interval.is_zero() && http_concurrency > 0);
+
+    let mut options = PostgresOptions::new(url);
+    options.max_connections = connections;
+    options.policy = StoragePolicy {
+        owner_bytes: i64::MAX / 4,
+        deployment_bytes: i64::MAX / 4,
+        asset_uploads_per_hour: 100_000,
+    };
+    let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
+    catalog.migrate().await.expect("migrate");
+    sqlx::query("TRUNCATE accounts CASCADE")
+        .execute(catalog.pool())
+        .await
+        .expect("empty disposable benchmark database");
+    let owner = catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some("benchmark".into()),
+            provider_subject: Some("owner".into()),
+            handle: "benchmark".into(),
+            display_name: "Benchmark".into(),
+            email: None,
+        })
+        .await
+        .expect("owner");
+    let principal = owner.id.to_string();
+    let writer = catalog.claim_writer().await.expect("writer lease");
+
+    let scratch = tempfile::tempdir().expect("scratch blob directory");
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
+        crate::storage::blob::FsStore::new(scratch.path().to_path_buf(), false),
+    );
+    let mut base_config = crate::config::Configuration {
+        memory_budget_bytes: u64::MAX / 4,
+        ..Default::default()
+    };
+    // The per-principal request-rate guardrail is a different question than
+    // the one this run asks; every HTTP request here carries the same
+    // benchmark owner's session, and 32 requesters at half a second apart
+    // would otherwise trip it before the pool ever felt anything.
+    base_config.cost.requests_per_principal_minute = 10_000_000;
+    let config = Arc::new(base_config);
+    let registry = Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        "benchmark".to_string(),
+    );
+    let (worker, background) = crate::storage::worker::Worker::new(
+        catalog.clone(),
+        blobs.clone(),
+        registry.clone(),
+        config.clone(),
+    );
+    // Wired, unlike the pure editing benchmark: a flush that crosses the
+    // (small, on purpose) thresholds above now really asks the worker for
+    // compaction, and that worker is the same one HTTP requests share a
+    // pool with.
+    registry.compacts_through(background.clone());
+    tokio::spawn(worker.run());
+
+    let (server, base_url, client, cookie_header) = start_http_harness(
+        blobs.clone(),
+        config.clone(),
+        catalog.clone(),
+        registry.clone(),
+        background,
+        writer,
+        &owner,
+    )
+    .await;
+
+    // One opening row per document, through the production ingest and flush
+    // path, exactly as `active_document_capacity_benchmark` seeds. This is
+    // setup and is not part of either latency distribution below.
+    let body = "x".repeat(seed_bytes);
+    let mut active = Vec::with_capacity(documents);
+    let mut slugs = Vec::with_capacity(documents);
+    for index in 0..documents {
+        let slug = format!("mixed-{index}");
+        let id = document(&catalog, owner.id, slug.clone()).await;
+        let sequencer = registry.get(id, &slug).await.expect("admit");
+        let seed = session::new_doc();
+        seed.set_peer_id(1).expect("peer id");
+        session::put_text(&seed, "paper.md", &body);
+        seed.commit();
+        let opening = session::encode_state(&seed);
+        assert!(matches!(
+            sequencer
+                .ingest(0, "seed", &principal, 0, opening.clone())
+                .await,
+            crate::log::Ingested::Accepted
+        ));
+        sequencer
+            .flush(FlushReason::Barrier)
+            .await
+            .expect("opening row");
+        active.push((sequencer, opening));
+        slugs.push(slug);
+    }
+
+    let housekeeping = tokio::spawn({
+        let registry = registry.clone();
+        async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                registry.housekeep().await;
+            }
+        }
+    });
+
+    let before_snapshot = server.cost_snapshot().await;
+    let started_at = Instant::now();
+    let deadline = started_at + Duration::from_secs(seconds);
+
+    let mut editors = Vec::new();
+    for (index, (sequencer, opening)) in active.iter().enumerate() {
+        let handle = tokio::spawn(capacity_editor(
+            sequencer.clone(),
+            (index as u64) + 1,
+            (index as u64) + 2,
+            principal.clone(),
+            opening.clone(),
+            "paper.md".to_string(),
+            seed_bytes,
+            started_at,
+            deadline,
+            interval,
+        ));
+        editors.push(handle);
+    }
+
+    // HTTP load: `http_concurrency` requesters, each opening a document over
+    // HTTP -- the same `/api/documents/{slug}` path §2.3's table calls "over
+    // HTTP", under the real `work` semaphore -- at its own steady cadence,
+    // for the same workload window the editors run for. Requesters share
+    // the seeded documents round-robin, so an HTTP reader is looking at
+    // exactly the documents the editors are typing into.
+    let mut http_tasks = Vec::with_capacity(http_concurrency);
+    for requester in 0..http_concurrency {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        let cookie_header = cookie_header.clone();
+        let slugs = slugs.clone();
+        http_tasks.push(tokio::spawn(async move {
+            let mut samples = Vec::new();
+            let mut sent = 0_usize;
+            while Instant::now() < deadline {
+                let slug = &slugs[(requester + sent) % slugs.len()];
+                let at = Instant::now();
+                let result = client
+                    .get(format!("{base_url}/api/documents/{slug}"))
+                    .header("cookie", &cookie_header)
+                    .send()
+                    .await;
+                let took = micros(at);
+                let status = result
+                    .map(|response| response.status().as_u16())
+                    .unwrap_or(0);
+                samples.push(HttpSample {
+                    micros: took,
+                    status,
+                });
+                sent += 1;
+                tokio::time::sleep_until((Instant::now() + http_interval).min(deadline).into())
+                    .await;
+            }
+            samples
+        }));
+    }
+
+    tokio::time::sleep_until(deadline.into()).await;
+    let rows_at_deadline: i64 = sqlx::query_scalar("SELECT count(*) FROM document_updates")
+        .fetch_one(catalog.pool())
+        .await
+        .expect("workload row count");
+    let workload_snapshot_seconds = started_at.elapsed().as_secs_f64();
+    let reports = join_all(editors).await;
+    let http_reports = join_all(http_tasks).await;
+    housekeeping.abort();
+    let after_snapshot = server.cost_snapshot().await;
+    let elapsed = started_at.elapsed().as_secs_f64();
+
+    let mut relay = Vec::new();
+    let mut durable = Vec::new();
+    let (mut offered, mut accepted, mut retried) = (0_u64, 0_u64, 0_u64);
+    let mut editor_terminals: Vec<String> = Vec::new();
+    for report in reports {
+        let report = report.expect("editor task");
+        relay.extend(report.relay);
+        durable.extend(report.durable);
+        offered += report.offered;
+        accepted += report.accepted;
+        retried += report.retried;
+        if let Some(reason) = report.terminal {
+            editor_terminals.push(reason);
+        }
+    }
+    let mut http_samples = Vec::new();
+    for samples in http_reports {
+        http_samples.extend(samples.expect("http requester task"));
+    }
+    let http_latency = percentiles(http_samples.iter().map(|sample| sample.micros).collect());
+    let http_status = status_histogram(&http_samples);
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM document_updates")
+        .fetch_one(catalog.pool())
+        .await
+        .expect("rows");
+    let compacted_documents: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM documents WHERE slug LIKE 'mixed-%' AND uncompacted_update_count = 0 AND status = 'active'",
+    )
+    .fetch_one(catalog.pool())
+    .await
+    .unwrap_or(-1);
+
+    let report = json!({
+        "measurement": "mixed_traffic",
+        "note": "docs/postgres-capacity.md §8 item 1: HTTP load and background \
+                 compaction running concurrently with editing, against one pool. \
+                 Numbers here are not yet measured; see the doc for the placeholder note.",
+        "workload": {
+            "active_documents": documents,
+            "editor_interval_ms": interval.as_millis() as u64,
+            "seed_bytes": seed_bytes,
+            "seconds": seconds,
+            "http_requesters": http_concurrency,
+            "http_interval_ms": http_interval.as_millis() as u64,
+            "compaction_count_threshold": catalog.compaction_thresholds().0,
+            "compaction_byte_threshold": catalog.compaction_thresholds().1,
+        },
+        "editing": {
+            "offered": offered,
+            "accepted": accepted,
+            "retried": retried,
+            "not_accepted": offered - accepted,
+            "editor_terminals": editor_terminals,
+            "relay_latency_us": percentiles(relay),
+            "scheduled_to_durable_ack_us": percentiles(durable),
+        },
+        "http": {
+            "requests": http_samples.len(),
+            "latency_us": http_latency,
+            "status": http_status,
+        },
+        "durability": {
+            "durable_rows_at_workload_snapshot": rows_at_deadline,
+            "rows_per_second_at_workload_snapshot": rows_at_deadline as f64 / workload_snapshot_seconds,
+            "durable_rows_after_drain": rows,
+            "rows_per_second_including_drain": rows as f64 / elapsed,
+            "documents_compacted_during_run": compacted_documents,
+        },
+        "database_before": before_snapshot.get("database").cloned().unwrap_or(Value::Null),
+        "database_after": after_snapshot.get("database").cloned().unwrap_or(Value::Null),
+        "http_work_before": before_snapshot.get("http_work").cloned().unwrap_or(Value::Null),
+        "http_work_after": after_snapshot.get("http_work").cloned().unwrap_or(Value::Null),
+        "background_after": after_snapshot.get("background").cloned().unwrap_or(Value::Null),
+    });
+    println!(
+        "mixed_traffic_capacity_benchmark {}",
+        serde_json::to_string_pretty(&report).expect("report")
+    );
+
+    assert!(
+        accepted > 0 && !http_samples.is_empty(),
+        "no edit was accepted or no HTTP request completed; the run measured nothing: {report}"
+    );
+    catalog.close().await;
+}
+
+// ---------------------------------------------------------------------------
+// Capacity: a burst of document-open / reconnect requests
+// ---------------------------------------------------------------------------
+//
+// docs/postgres-capacity.md §8 item 2: document-open and reconnect bursts run
+// under the work semaphore and cost about six queries each (§2.3's table),
+// and "a reconnect storm after a restart is the workload most likely to make
+// the pool matter". This fires `LIBREPAPER_RECONNECT_BURST` HTTP opens at
+// once against `LIBREPAPER_CAPACITY_DOCUMENTS` seeded documents, through a
+// registry that has never touched any of them -- a second, cold `Registry`
+// sharing nothing but the catalogue with the one that seeded them -- so every
+// open pays the real cold-admission cost §2.3 describes rather than finding
+// an already-resident sequencer, which is what a restart actually produces.
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+#[ignore = "capacity benchmark; destroys every row in its configured database"]
+async fn reconnect_burst_capacity_benchmark() {
+    let Ok(url) = std::env::var("LIBREPAPER_BENCHMARK_POSTGRES_URL") else {
+        return;
+    };
+    // Shared dimensions come from the same variables the other capacity
+    // runs read. Only the burst size is this scenario's own, since it is
+    // the thing being varied.
+    let documents = env_usize("LIBREPAPER_CAPACITY_DOCUMENTS", 16);
+    let burst = env_usize("LIBREPAPER_RECONNECT_BURST", 128);
+    let connections = env_usize("LIBREPAPER_CAPACITY_CONNECTIONS", 20) as u32;
+    let seed_bytes = env_usize("LIBREPAPER_CAPACITY_SEED_BYTES", 4096);
+    assert!(documents > 0 && burst > 0 && connections >= 2);
+
+    let mut options = PostgresOptions::new(url);
+    options.max_connections = connections;
+    options.policy = StoragePolicy {
+        owner_bytes: i64::MAX / 4,
+        deployment_bytes: i64::MAX / 4,
+        asset_uploads_per_hour: 100_000,
+    };
+    let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
+    catalog.migrate().await.expect("migrate");
+    sqlx::query("TRUNCATE accounts CASCADE")
+        .execute(catalog.pool())
+        .await
+        .expect("empty disposable benchmark database");
+    let owner = catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some("benchmark".into()),
+            provider_subject: Some("owner".into()),
+            handle: "benchmark".into(),
+            display_name: "Benchmark".into(),
+            email: None,
+        })
+        .await
+        .expect("owner");
+    let writer = catalog.claim_writer().await.expect("writer lease");
+
+    let scratch = tempfile::tempdir().expect("scratch blob directory");
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
+        crate::storage::blob::FsStore::new(scratch.path().to_path_buf(), false),
+    );
+    let mut base_config = crate::config::Configuration {
+        memory_budget_bytes: u64::MAX / 4,
+        ..Default::default()
+    };
+    base_config.cost.requests_per_principal_minute = 10_000_000;
+    let config = Arc::new(base_config);
+
+    // Seeding uses its own registry, retired once every document is durable:
+    // nothing seeded here is ever resident in the registry the burst below
+    // opens against.
+    let seed_registry = Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        "benchmark-seed".to_string(),
+    );
+    let body = "x".repeat(seed_bytes);
+    let mut slugs = Vec::with_capacity(documents);
+    for index in 0..documents {
+        let slug = format!("reconnect-{index}");
+        let id = document(&catalog, owner.id, slug.clone()).await;
+        let sequencer = seed_registry.get(id, &slug).await.expect("admit");
+        let seed = session::new_doc();
+        seed.set_peer_id(1).expect("peer id");
+        session::put_text(&seed, "paper.md", &body);
+        seed.commit();
+        let opening = session::encode_state(&seed);
+        assert!(matches!(
+            sequencer
+                .ingest(0, "seed", &owner.id.to_string(), 0, opening)
+                .await,
+            crate::log::Ingested::Accepted
+        ));
+        sequencer
+            .flush(FlushReason::Barrier)
+            .await
+            .expect("opening row");
+        slugs.push(slug);
+    }
+    drop(seed_registry);
+
+    // A second, never-touched registry and a worker nothing asks: the burst
+    // below is the first thing that ever calls `Registry::get` for any of
+    // these documents on this registry, which is the point.
+    let registry = Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        "benchmark-burst".to_string(),
+    );
+    let (worker, background) = crate::storage::worker::Worker::new(
+        catalog.clone(),
+        blobs.clone(),
+        registry.clone(),
+        config.clone(),
+    );
+    tokio::spawn(worker.run());
+
+    let (server, base_url, client, cookie_header) = start_http_harness(
+        blobs.clone(),
+        config.clone(),
+        catalog.clone(),
+        registry.clone(),
+        background,
+        writer,
+        &owner,
+    )
+    .await;
+
+    let before_snapshot = server.cost_snapshot().await;
+    let started = Instant::now();
+    let requests = join_all((0..burst).map(|index| {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        let cookie_header = cookie_header.clone();
+        let slug = slugs[index % slugs.len()].clone();
+        tokio::spawn(async move {
+            let at = Instant::now();
+            let result = client
+                .get(format!("{base_url}/api/documents/{slug}"))
+                .header("cookie", &cookie_header)
+                .send()
+                .await;
+            let took = micros(at);
+            let status = result
+                .map(|response| response.status().as_u16())
+                .unwrap_or(0);
+            HttpSample {
+                micros: took,
+                status,
+            }
+        })
+    }))
+    .await;
+    let burst_wall_us = micros(started);
+    let after_snapshot = server.cost_snapshot().await;
+
+    let mut samples = Vec::with_capacity(requests.len());
+    for request in requests {
+        samples.push(request.expect("burst request task"));
+    }
+    let latency = percentiles(samples.iter().map(|sample| sample.micros).collect());
+    let status = status_histogram(&samples);
+
+    let report = json!({
+        "measurement": "reconnect_burst",
+        "note": "docs/postgres-capacity.md §8 item 2: a burst of document-open \
+                 requests through a registry that has never touched any of \
+                 them, the way a restart's reconnect storm would. Numbers \
+                 here are not yet measured; see the doc for the placeholder note.",
+        "workload": {
+            "documents": documents,
+            "burst": burst,
+            "seed_bytes": seed_bytes,
+        },
+        "burst_wall_us": burst_wall_us,
+        "latency_us": latency,
+        "status": status,
+        "database_before": before_snapshot.get("database").cloned().unwrap_or(Value::Null),
+        "database_after": after_snapshot.get("database").cloned().unwrap_or(Value::Null),
+        "http_work_before": before_snapshot.get("http_work").cloned().unwrap_or(Value::Null),
+        "http_work_after": after_snapshot.get("http_work").cloned().unwrap_or(Value::Null),
+    });
+    println!(
+        "reconnect_burst_capacity_benchmark {}",
+        serde_json::to_string_pretty(&report).expect("report")
+    );
+
+    assert!(
+        !samples.is_empty() && samples.iter().any(|sample| sample.status != 0),
+        "no burst request got any response; the run measured nothing: {report}"
+    );
+    catalog.close().await;
+}
+
+// ---------------------------------------------------------------------------
+// Capacity: a maintenance backlog across several documents
+// ---------------------------------------------------------------------------
+//
+// docs/postgres-capacity.md §8 item 3: the background worker is one task, so
+// a cohort of documents crossing the compaction threshold together queues
+// behind each other, and a document whose log passes `log_quota_bytes`
+// refuses edits until its own compaction runs. This is deliberately not a
+// concurrency fix -- REVIEW-BIG-IDEAS.md is explicit that measurement comes
+// first -- it seeds `LIBREPAPER_BACKLOG_DOCUMENTS` documents so their
+// compactions are asked for at nearly the same moment, then reports, per
+// document, how long its compaction actually waited behind the others and
+// whether ordinary edits were refused with `log_quota` while it waited.
+//
+// The threshold and quota constants below are starting points, not derived
+// from a run -- this file is forbidden from running anything, per the task
+// that added this benchmark. `log_bytes_before_push` and `log_bytes_final`
+// are reported raw for every document
+// specifically so a reader does not have to trust that the quota margin
+// chosen here was right: if a document never drops back under quota after
+// its compaction runs, that is this benchmark's answer, not its bug, and it
+// means the fixed quota margin should be widened for the next
+// run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+#[ignore = "capacity benchmark; destroys every row in its configured database"]
+async fn maintenance_backlog_capacity_benchmark() {
+    let Ok(url) = std::env::var("LIBREPAPER_BENCHMARK_POSTGRES_URL") else {
+        return;
+    };
+    // Queue depth is this scenario's own dimension, so it is the one thing
+    // a run varies. Everything else is fixed: the seed is past
+    // `COMPACTION_BYTE_THRESHOLD` on its own so compaction is asked for the
+    // moment every document's opening row lands, and the quota is set just
+    // above the seed so the push edit below is refused until compaction
+    // makes room. Those two move together, which is why neither is a knob.
+    let backlog = env_usize("LIBREPAPER_BACKLOG_DOCUMENTS", 8);
+    let seed_kib = 20 * 1024;
+    let push_bytes = 131_072;
+    let connections = env_usize("LIBREPAPER_CAPACITY_CONNECTIONS", 20) as u32;
+    let log_quota_bytes = seed_kib * 1024 + push_bytes / 2;
+    let poll_interval = Duration::from_millis(100);
+    let timeout = Duration::from_secs(120);
+    assert!(backlog >= 2 && connections >= 2);
+
+    let mut options = PostgresOptions::new(url);
+    options.max_connections = connections;
+    options.policy = StoragePolicy {
+        owner_bytes: i64::MAX / 4,
+        deployment_bytes: i64::MAX / 4,
+        asset_uploads_per_hour: 100_000,
+    };
+    let catalog = Arc::new(PostgresCatalog::connect(options).await.expect("connect"));
+    catalog.migrate().await.expect("migrate");
+    sqlx::query("TRUNCATE accounts CASCADE")
+        .execute(catalog.pool())
+        .await
+        .expect("empty disposable benchmark database");
+    let owner = catalog
+        .create_account(NewAccount {
+            kind: "registered".into(),
+            provider: Some("benchmark".into()),
+            provider_subject: Some("owner".into()),
+            handle: "benchmark".into(),
+            display_name: "Benchmark".into(),
+            email: None,
+        })
+        .await
+        .expect("owner");
+    let authority = Authority {
+        principal_key: owner.id.to_string(),
+        account_id: Some(owner.id),
+        link_hash: None,
+    };
+    let _writer = catalog.claim_writer().await.expect("writer lease");
+
+    let scratch = tempfile::tempdir().expect("scratch blob directory");
+    let blobs: Arc<dyn crate::storage::blob::BlobStore> = Arc::new(
+        crate::storage::blob::FsStore::new(scratch.path().to_path_buf(), false),
+    );
+    let mut base_config = crate::config::Configuration {
+        memory_budget_bytes: u64::MAX / 4,
+        ..Default::default()
+    };
+    base_config.log_quota_bytes = log_quota_bytes;
+    let config = Arc::new(base_config);
+    let registry = Registry::new(
+        catalog.clone(),
+        blobs.clone(),
+        config.clone(),
+        "benchmark".to_string(),
+    );
+    let (worker, background) = crate::storage::worker::Worker::new(
+        catalog.clone(),
+        blobs.clone(),
+        registry.clone(),
+        config.clone(),
+    );
+    registry.compacts_through(background);
+    tokio::spawn(worker.run());
+
+    // Seed every document concurrently, so their opening flushes -- and the
+    // `Task::Compact` asks those flushes carry (§8.4, `log/sequencer.rs`
+    // around line 1574) -- land in the worker's queue within the same
+    // instant rather than spread out by however long seeding one document
+    // takes. That instant, not the moment any one compaction starts
+    // running, is "queued at" for every document below.
+    let seeded = join_all((0..backlog).map(|index| {
+        let catalog = catalog.clone();
+        let registry = registry.clone();
+        let authority = authority.clone();
+        async move {
+            let slug = format!("backlog-{index}");
+            let seeded = seed_concurrent_document(
+                &catalog,
+                &registry,
+                &authority,
+                slug.clone(),
+                seed_kib,
+                0,
+                1,
+            )
+            .await;
+            (index, slug, Instant::now(), seeded)
+        }
+    }))
+    .await;
+
+    // Push one more edit into every document that seeded cleanly, sized to
+    // carry it past `log_quota_bytes` on its own: the seed alone is under
+    // quota (see the constant above), so this is what starts the "refusing
+    // edits while it waits" half of the measurement. Written by hand rather
+    // than through `seed_concurrent_document`'s edit loop, which asserts
+    // every edit is accepted -- crossing the quota here is the point, not a
+    // failure to tolerate.
+    let push_text = "p".repeat(push_bytes);
+    let mut watchers = Vec::with_capacity(backlog);
+    for (index, slug, queued_at, seeded) in seeded {
+        let (document_id, sequencer, seed_len) = match seeded {
+            Ok(seeded) => seeded,
+            Err(refusal) => {
+                watchers.push(tokio::spawn(async move {
+                    json!({"slug": slug, "seed_refused": refusal})
+                }));
+                continue;
+            }
+        };
+        let opening = sequencer
+            .with_head(session::encode_state)
+            .await
+            .expect("the seeded document's opening state");
+        let log_bytes_before_push = sequencer.log_state().await.log_bytes;
+        let principal = authority.principal_key.clone();
+        let catalog = catalog.clone();
+        let peer = 1000_u64 + index as u64;
+        let push_text = push_text.clone();
+        watchers.push(tokio::spawn(async move {
+            let doc = session::new_doc();
+            doc.set_peer_id(peer).expect("peer id");
+            doc.import(&opening).expect("import the opening state");
+            let vector = session::encode_vector(&doc);
+            let len = seed_len;
+            assert!(
+                session::apply_edits_at(
+                    &doc,
+                    "paper.md",
+                    &[wasm_helpers::text::Edit {
+                        at: len,
+                        delete: 0,
+                        insert: push_text.clone(),
+                    }],
+                ),
+                "the push edit for {} was rejected locally",
+                sequencer.slug,
+            );
+            doc.commit();
+            let push_seq = 1_i64;
+            let push_update =
+                session::encode_diff(&doc, &vector).expect("encode the push edit's diff");
+
+            // Retry the SAME edit, at the SAME client sequence number, the
+            // way `capacity_editor` above retries a `Retryable` outcome:
+            // this is one logical edit whose fate is being watched, not a
+            // stream of them, so there is no client-sequence gap to create.
+            // A `log_quota` refusal has no side effect on the document (the
+            // check in `Sequencer::ingest` runs before the batch would be
+            // buffered), so retrying it costs nothing but the round trip.
+            let deadline = Instant::now() + timeout;
+            let mut refusals = 0_u64;
+            let mut first_refusal_us: Option<u64> = None;
+            let mut last_refusal_us: Option<u64> = None;
+            let mut push_landed_us: Option<u64> = None;
+            let mut push_outcome = "pending";
+            let mut compacted_after_us: Option<u64> = None;
+            loop {
+                let remaining: i64 = sqlx::query_scalar(
+                    "SELECT uncompacted_update_count FROM documents WHERE id = $1",
+                )
+                .bind(document_id)
+                .fetch_one(catalog.pool())
+                .await
+                .unwrap_or(-1);
+                if remaining == 0 {
+                    compacted_after_us.get_or_insert_with(|| micros(queued_at));
+                }
+                if push_outcome == "pending" {
+                    match sequencer
+                        .ingest(peer, &principal, &principal, push_seq, push_update.clone())
+                        .await
+                    {
+                        crate::log::Ingested::Accepted => {
+                            let _ = sequencer.flush(FlushReason::Barrier).await;
+                            push_landed_us = Some(micros(queued_at));
+                            push_outcome = "accepted";
+                        }
+                        crate::log::Ingested::Retryable(retry) if retry.reason == "log_quota" => {
+                            refusals += 1;
+                            let now_us = micros(queued_at);
+                            first_refusal_us.get_or_insert(now_us);
+                            last_refusal_us = Some(now_us);
+                        }
+                        crate::log::Ingested::Retryable(_) => {}
+                        _ => push_outcome = "refused_structural",
+                    }
+                }
+                // Once the push has landed (or failed for a reason retrying
+                // will not fix) and this document's own compaction has been
+                // seen to finish, there is nothing further to watch.
+                if push_outcome != "pending" && compacted_after_us.is_some() {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    if push_outcome == "pending" {
+                        push_outcome = "still_refused_at_timeout";
+                    }
+                    break;
+                }
+                tokio::time::sleep(poll_interval).await;
+            }
+            let log_bytes_final = sequencer.log_state().await.log_bytes;
+
+            json!({
+                "index": index,
+                "slug": sequencer.slug.clone(),
+                "document_id": document_id.to_string(),
+                "push_outcome": push_outcome,
+                "push_landed_after_us": push_landed_us,
+                "compacted_after_us": compacted_after_us,
+                "timed_out_waiting_for_compaction": compacted_after_us.is_none(),
+                "log_quota_refusals_before_push_landed": refusals,
+                "first_log_quota_refusal_us": first_refusal_us,
+                "last_log_quota_refusal_us": last_refusal_us,
+                "refused_edits_while_waiting": refusals > 0,
+                "log_bytes_before_push": log_bytes_before_push,
+                "log_bytes_final": log_bytes_final,
+                "log_quota_bytes": log_quota_bytes,
+            })
+        }));
+    }
+
+    let mut per_document = Vec::with_capacity(watchers.len());
+    for watcher in watchers {
+        per_document.push(watcher.await.expect("backlog watcher task"));
+    }
+    per_document.sort_by_key(|entry| entry["compacted_after_us"].as_u64().unwrap_or(u64::MAX));
+    let back_of_queue = per_document.last().cloned().unwrap_or(Value::Null);
+
+    let report = json!({
+        "measurement": "maintenance_backlog",
+        "note": "docs/postgres-capacity.md §8 item 3: one background worker, \
+                 a cohort of documents crossing the compaction threshold \
+                 together. Numbers here are not yet measured; see the doc \
+                 for the placeholder note, and see this benchmark's own \
+                 module comment for why the quota constants are starting \
+                 points rather than derived ones.",
+        "workload": {
+            "documents": backlog,
+            "seed_kib": seed_kib,
+            "push_bytes": push_bytes,
+            "compaction_byte_threshold": catalog.compaction_thresholds().1,
+            "log_quota_bytes": log_quota_bytes,
+            "poll_interval_ms": poll_interval.as_millis() as u64,
+            "timeout_seconds": timeout.as_secs(),
+        },
+        "back_of_queue": back_of_queue,
+        "documents": per_document,
+    });
+    println!(
+        "maintenance_backlog_capacity_benchmark {}",
+        serde_json::to_string_pretty(&report).expect("report")
+    );
+
+    assert!(
+        per_document
+            .iter()
+            .any(|entry| entry["compacted_after_us"].is_u64()),
+        "not one document in the backlog ever compacted; the run measured nothing: {report}"
+    );
+    catalog.close().await;
 }

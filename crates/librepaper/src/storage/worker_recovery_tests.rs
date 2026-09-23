@@ -9,14 +9,15 @@
 //!
 //! What this file proves: that the bounded channel overflowing, the same
 //! task being asked for over and over, a grace period not yet up, a cold
-//! restart with no wake-up at all, and a restoration racing the purge, each
-//! still end with the durable row in the state it should be in. What this
-//! file does not prove: the exact shape of `Deadlines` itself (its
-//! doubling, its dedup, its pruning) -- that is `schedule_tests.rs`, pure
-//! and deterministic. This file cannot freeze the clock (it drives a real
-//! worker against a real database over real IO), so every wait here is a
-//! bounded poll loop with a generous but finite timeout, never a bare sleep
-//! for the deletion grace period itself.
+//! restart with no wake-up at all, a restoration racing the purge, a
+//! severed database connection, and a document written behind the scan's
+//! own cursor, each still end with the durable row in the state it should
+//! be in. What this file does not prove: the exact shape of `Deadlines`
+//! itself (its doubling, its dedup, its pruning) -- that is
+//! `schedule_tests.rs`, pure and deterministic. This file cannot freeze the
+//! clock (it drives a real worker against a real database over real IO), so
+//! every wait here is a bounded poll loop with a generous but finite
+//! timeout, never a bare sleep for the deletion grace period itself.
 //!
 //! Every test needs `LIBREPAPER_TEST_POSTGRES_URL` and is `#[ignore]`d
 //! without it, the same convention as `log/recovery.rs` and
@@ -28,19 +29,26 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use sqlx::Connection;
 use uuid::Uuid;
 
 use crate::config::Configuration;
 use crate::log::Registry;
 use crate::storage::blob::{BlobStore, FsStore};
-use crate::storage::postgres::{NewAccount, NewDocument, PostgresCatalog, PostgresOptions};
+use crate::storage::postgres::{
+    NewAccount, NewDocument, PendingWorkCursor, PostgresCatalog, PostgresOptions,
+};
 use crate::storage::worker::{Handle, Task, Worker};
 
 const TRUNCATE: &str = "TRUNCATE documents,accounts CASCADE";
 
 async fn connect(url: String) -> Arc<PostgresCatalog> {
+    connect_with(PostgresOptions::new(url)).await
+}
+
+async fn connect_with(options: PostgresOptions) -> Arc<PostgresCatalog> {
     let catalog = Arc::new(
-        PostgresCatalog::connect(PostgresOptions::new(url))
+        PostgresCatalog::connect(options)
             .await
             .expect("connect to the throwaway database"),
     );
@@ -67,7 +75,29 @@ struct Deployment {
 
 async fn deployment(slug: &str) -> Option<Deployment> {
     let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
-    let catalog = connect(url).await;
+    Some(deployment_over(connect(url).await, slug).await)
+}
+
+/// [`deployment`], but over a catalogue whose pool holds at most two
+/// physical connections, and with the working one's backend pid handed back
+/// so a test can sever it. Two rather than one because `claim_writer` holds
+/// a pooled connection for the life of the lease and never returns it, so a
+/// pool of one would leave nothing for any other query to run on. That
+/// leaves exactly one connection doing every scan, which is what makes
+/// severing it deterministic.
+async fn deployment_with_one_connection(slug: &str) -> Option<(Deployment, i32)> {
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").ok()?;
+    let mut options = PostgresOptions::new(url);
+    options.max_connections = 2;
+    let deployment = deployment_over(connect_with(options).await, slug).await;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(deployment.catalog.pool())
+        .await
+        .expect("the sole pooled connection's backend pid");
+    Some((deployment, pid))
+}
+
+async fn deployment_over(catalog: Arc<PostgresCatalog>, slug: &str) -> Deployment {
     let writer = catalog
         .claim_writer()
         .await
@@ -85,14 +115,14 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         .expect("create the owner account");
     let objects = tempfile::tempdir().expect("a temp directory for this test's blob store");
     let blobs: Arc<dyn BlobStore> = Arc::new(FsStore::new(objects.path(), false));
-    Some(Deployment {
+    Deployment {
         catalog,
         blobs,
         config: Arc::new(Configuration::default()),
         account_id: account.id,
         _writer: writer,
         _objects: objects,
-    })
+    }
 }
 
 impl Deployment {
@@ -133,6 +163,17 @@ impl Deployment {
             .await
             .expect("backdate the deletion so the grace boundary can be tested precisely");
         document.id
+    }
+
+    /// Teardown. The writer lease holds a pooled connection for as long as
+    /// the deployment is alive and never returns it, while `close` waits for
+    /// every connection to come back, so the lease goes first and the pool
+    /// second. On a deployment sized for one working connection that
+    /// ordering is the difference between closing and waiting forever.
+    async fn close(self) {
+        let catalog = self.catalog.clone();
+        drop(self);
+        catalog.close().await;
     }
 
     /// A fresh `Worker` and `Handle` over this deployment's catalogue and
@@ -234,7 +275,7 @@ async fn a_saturated_channel_still_purges_every_document_once_the_worker_runs() 
         );
     }
 
-    deployment.catalog.close().await;
+    deployment.close().await;
 }
 
 /// Asking for the same document's deletion many times over purges it once
@@ -280,7 +321,7 @@ async fn duplicate_wake_ups_for_one_document_purge_it_once_and_leave_the_deploym
         "asking again after the purge must not bring the row back"
     );
 
-    deployment.catalog.close().await;
+    deployment.close().await;
 }
 
 /// A document still inside its seven-day grace is not purged no matter how
@@ -335,7 +376,7 @@ async fn a_document_inside_its_grace_is_not_purged_and_one_past_it_is() {
         "the document inside its grace period is still exactly where it was"
     );
 
-    deployment.catalog.close().await;
+    deployment.close().await;
 }
 
 /// The other half of the grace period, and the claim the unit tests cannot
@@ -380,7 +421,7 @@ async fn a_deferred_deletion_runs_when_its_grace_ends_without_being_asked_again(
         "the deferred deletion never ran; its grace deadline was lost"
     );
 
-    deployment.catalog.close().await;
+    deployment.close().await;
 }
 
 /// An owner can choose "delete forever" while the worker is holding the
@@ -443,7 +484,7 @@ async fn hastened_deletion_overrides_grace(rescan: bool) {
     );
 
     running.abort();
-    deployment.catalog.close().await;
+    deployment.close().await;
 }
 
 /// Durable rows with no wake-up asked for at all -- the state after a crash
@@ -472,7 +513,7 @@ async fn a_fresh_worker_finds_and_purges_durable_rows_with_no_wake_up_at_all() {
         "the startup scan never found a document with an overdue deletion and no wake-up"
     );
 
-    deployment.catalog.close().await;
+    deployment.close().await;
 }
 
 /// A document restored to `active` before the worker gets to it must not be
@@ -519,5 +560,185 @@ async fn a_document_restored_before_the_worker_gets_to_it_is_not_purged() {
         "a restored document must not be purged, however it was asked for"
     );
 
-    deployment.catalog.close().await;
+    deployment.close().await;
+}
+
+/// A background scan's own connection can be severed underneath it -- the
+/// backend restarted, a firewall reset the socket, an operator terminated
+/// it by hand -- without the scan it was running being lost. This
+/// deployment's pool holds exactly one physical connection (`max_connections
+/// = 1`), so terminating that connection's backend pid before the worker
+/// ever touches it forces every query the startup scan makes to go through
+/// a connection whose old backend is already gone.
+///
+/// What happens next is not pinned down on purpose: `sqlx`'s pool validates
+/// an idle connection before handing it out, so it may reopen a fresh one
+/// silently and the scan simply succeeds; or the scan's own query may be the
+/// one to discover the severed connection and fail, in which case
+/// `Worker::failed` schedules the ordinary backoff retry and a later attempt
+/// succeeds instead. Either way is a correct recovery, and this test proves
+/// the property both paths share: the worker does not wedge, does not
+/// silently drop the scan, and the document it was scanning for is still
+/// found and purged. The pid comparison at the end additionally proves a
+/// real severance happened, not a connection that coincidentally survived.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn a_scan_recovers_after_its_pooled_connection_is_severed() {
+    let Some((deployment, pid)) = deployment_with_one_connection("worker-connection-loss").await
+    else {
+        return;
+    };
+    let id = deployment
+        .document_deleted(
+            "worker-connection-loss",
+            DELETION_GRACE + Duration::from_secs(60),
+        )
+        .await;
+
+    let url = std::env::var("LIBREPAPER_TEST_POSTGRES_URL").expect("test database URL");
+    let mut admin = sqlx::PgConnection::connect(&url)
+        .await
+        .expect("a second connection to terminate the first from");
+    let terminated: bool = sqlx::query_scalar("SELECT pg_terminate_backend($1)")
+        .bind(pid)
+        .fetch_one(&mut admin)
+        .await
+        .expect("terminate the deployment's only connection");
+    assert!(
+        terminated,
+        "the connection to sever must still have existed"
+    );
+
+    let (worker, _handle) = deployment.worker();
+    tokio::spawn(worker.run());
+
+    // A generous patience: if the severed connection surfaces as a genuine
+    // failure rather than being healed silently, the worker's ordinary
+    // backoff (60s on a first failure) is what stands between here and the
+    // retry that succeeds.
+    assert!(
+        purged_within(&deployment.catalog, id, Duration::from_secs(90)).await,
+        "the worker never recovered from its severed connection"
+    );
+
+    let replacement: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(deployment.catalog.pool())
+        .await
+        .expect("a working connection after recovery");
+    assert_ne!(
+        pid, replacement,
+        "the severed backend must actually have been replaced, not merely alive by chance"
+    );
+
+    admin.close().await.expect("close the admin connection");
+    deployment.close().await;
+}
+
+/// The startup scan pages through `documents` (and the other three
+/// categories) with a keyset cursor over `id`, and `id` is a random uuid --
+/// nothing about it tracks insertion order. So once a page returns, its
+/// cursor only ever moves forward, and a row written afterward whose id
+/// sorts below that cursor can never be seen by the rest of that pass: the
+/// query is `id > cursor`.
+///
+/// In this deployment that is normally harmless, because everything that
+/// writes this kind of durable state also asks the worker for it directly
+/// (`Handle::ask`, independent of any cursor -- see `delete_document` and
+/// its siblings). The one case with no such ask standing behind it is the
+/// very first scan after a restart, racing whatever else touches durable
+/// state at that moment. `Worker::run`'s one-shot follow-up pass (armed by
+/// its `startup` flag, cleared the first time a full scan completes) is
+/// what closes that window: once the very first scan finishes, it always
+/// runs one more, from a fresh cursor, before settling into pure wake-up
+/// driven idling.
+///
+/// This proves the underlying phenomenon directly against PostgreSQL rather
+/// than through `Worker::run`'s own timing: making a real insert land
+/// between two of its page fetches is not something a test can force
+/// without slowing the scan down for production too.
+/// `pending_background_work` is the same query the scan runs, and a
+/// hand-built cursor is exactly the state pagination leaves behind after a
+/// page returns, so calling it directly proves the same claim a slower,
+/// flakier race would -- a document behind an already-advanced cursor is
+/// invisible to it, and a fresh cursor, what the follow-up pass always
+/// uses, finds it anyway. The last section then confirms a real, running
+/// `Worker`, over its own ordinary startup scan and with no wake-up at all
+/// for this document, still finds and purges it.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn work_created_behind_an_advanced_cursor_is_found_by_a_fresh_pass() {
+    let Some(deployment) = deployment("worker-behind-cursor").await else {
+        return;
+    };
+
+    // The document that must not be missed is created *first*, so its id
+    // sorts below the anchor's. Document ids are uuid v7
+    // (`postgres::new_id`), which is time ordered, so a row written after a
+    // page cannot hide behind that page's cursor. What can is a row written
+    // long before it that only *becomes* work later: an old document whose
+    // `deleted_at` is set while the pass is already past its id. That is the
+    // case here, and it is why a single pass is not enough on its own.
+    let hidden = deployment
+        .document_deleted(
+            "worker-behind-cursor-hidden",
+            DELETION_GRACE + Duration::from_secs(60),
+        )
+        .await;
+    let anchor = deployment
+        .document_deleted(
+            "worker-behind-cursor-anchor",
+            DELETION_GRACE + Duration::from_secs(60),
+        )
+        .await;
+    assert!(
+        hidden < anchor,
+        "uuid v7 orders ids by creation time, so the first document sorts first",
+    );
+
+    // A cursor already sitting at the anchor -- exactly what `next.deleting`
+    // holds once a real page's last row was the anchor itself -- cannot see
+    // a document whose id sorts below it, no matter when that document was
+    // written.
+    let advanced = deployment
+        .catalog
+        .pending_background_work(
+            PendingWorkCursor {
+                deleting: anchor,
+                compaction_done: true,
+                archives_done: true,
+                erasing_done: true,
+                ..Default::default()
+            },
+            64,
+        )
+        .await
+        .expect("scan with an advanced cursor");
+    assert!(
+        !advanced.deleting.contains(&hidden),
+        "a document behind an already-advanced cursor must not be visible to it"
+    );
+
+    // The same query, from a fresh cursor, finds it: this is what makes
+    // `Worker::run`'s follow-up pass a real fix rather than a no-op.
+    let fresh = deployment
+        .catalog
+        .pending_background_work(PendingWorkCursor::default(), 64)
+        .await
+        .expect("scan with a fresh cursor");
+    assert!(
+        fresh.deleting.contains(&hidden),
+        "a fresh cursor must find a document an advanced one could not"
+    );
+
+    // And the worker itself, over its own real startup scan, still finds
+    // and purges it -- there is no wake-up for `hidden` here at all, only
+    // durable state.
+    let (worker, _handle) = deployment.worker();
+    tokio::spawn(worker.run());
+    assert!(
+        purged_within(&deployment.catalog, hidden, Duration::from_secs(30)).await,
+        "the worker never purged a document reachable only through its scan"
+    );
+
+    deployment.close().await;
 }

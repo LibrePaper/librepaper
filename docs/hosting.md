@@ -187,6 +187,26 @@ synchronous work cannot be interrupted once it starts. A limit here is
 therefore a limit on what gets scheduled, not a way to reclaim a thread that
 is already running.
 
+**Measuring a deployment.** `storage::postgres::benchmarks` holds ignored
+capacity runs that destroy every row in whatever database they are pointed
+at, so give them a throwaway one through
+`LIBREPAPER_BENCHMARK_POSTGRES_URL`. Beside the editing run there are three
+that answer questions isolated editing cannot: mixed HTTP, editing and
+compaction against one pool; a cold reconnect burst; and a maintenance
+backlog, which is where a document waits for its turn behind other
+documents' compactions. Each one documents its own shape and what it
+reports at the top of its function. None has been run yet, so treat their
+numbers as unmeasured until somebody does.
+
+**Document expiry** is opt-in: pass `--document-expire-after` and the server
+deletes documents older than that age, checking once at start-up and then
+every hour. An idle deployment otherwise issues no database query on its own
+clock, but this is the stated exception -- once expiry is configured, the
+hourly tick reads the whole document catalogue every time, whether or not
+anything is actually due to expire, because there is no other way to know
+that nothing expired yet. Leave `--document-expire-after` unset and the
+exception does not apply.
+
 ## Containers
 
 `deploy/docker` holds a compose file for the whole of the above: PostgreSQL,

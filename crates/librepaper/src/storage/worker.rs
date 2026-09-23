@@ -14,7 +14,13 @@
 //! | superseded bases | a `document_snapshots.delete_after` in the past |
 //!
 //! At startup the worker scans those in bounded pages and enqueues what
-//! it finds.
+//! it finds, then runs exactly one more full pass from a fresh cursor before
+//! settling into steady state. The scan walks a keyset cursor over `id`, and
+//! what a row's id cannot say is when it became work: a document written
+//! long ago carries a low id, and its `deleted_at` may be set while the pass
+//! is already past that id, which leaves the work invisible to the rest of
+//! the pass. The unconditional second pass, from a fresh cursor, sees it.
+//! Once both are done, the worker never runs a bare scan again on its own.
 //! Afterwards it is woken by the events that create the state: an idle
 //! deployment issues no queries beyond the lease connection, which is the
 //! last test in §14.2. A full bounded queue sets one coalesced overflow bit;
@@ -417,6 +423,11 @@ pub struct Worker {
     /// grace period, and a superseded base's grace, all in the one place
     /// the worker's `select!` sleeps on.
     deadlines: Deadlines,
+    /// Whether the one-time startup verification pass (below) is still
+    /// owed. Set to `false` the first time a full scan (every category's
+    /// cursor reaching its own end) completes, so it fires at most once per
+    /// process rather than chaining forever.
+    startup: bool,
 }
 
 impl Worker {
@@ -441,6 +452,7 @@ impl Worker {
                 rx,
                 handle: handle.clone(),
                 deadlines: Deadlines::new(),
+                startup: true,
             },
             handle,
         )
@@ -488,6 +500,35 @@ impl Worker {
                             local.extend(page.tasks);
                             if let Some(next) = page.next {
                                 local.push_back(Task::Scan(next));
+                            } else if self.startup {
+                                // A full pass just reached the end of every
+                                // category's keyset in id order. Ids are uuid
+                                // v7, so id order is creation order, and a row
+                                // created during the pass always sorts above
+                                // the cursor. What does not is a row created
+                                // long before it that only *becomes* work
+                                // while the pass runs: an old document marked
+                                // deleting, a label whose archive falls due.
+                                // Its id sorts below a page this pass already
+                                // consumed, so the rest of the pass cannot see
+                                // it. Ordinarily that is harmless: every
+                                // write that creates this kind of durable work
+                                // also asks this worker for it directly,
+                                // independent of any cursor. The one
+                                // window with no such ask is the very first
+                                // scan after a restart, racing whatever wrote
+                                // durable state just before or during it. One
+                                // unconditional follow-up pass, from a fresh
+                                // cursor, closes that window: anything the
+                                // first pass could not see because it sorted
+                                // behind an already-visited page is, by
+                                // definition, not behind the second pass's own
+                                // starting cursor. This fires at most once per
+                                // process -- `startup` is cleared right here --
+                                // so an idle deployment still settles back to
+                                // issuing no queries at all once it is done.
+                                self.startup = false;
+                                local.push_back(Task::Scan(PendingWorkCursor::default()));
                             }
                         }
                         Err(error) => self.failed(task, error),
