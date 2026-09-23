@@ -111,7 +111,7 @@ started against the same database refuses to start.
 
 The server keeps a document's collaborative state as one compressed base
 plus a log of updates, and a document is only ever fully decoded in memory
-while something needs it -- an editor typing, a reader's projection, a
+while something needs it, an editor typing, a reader's projection, a
 compaction. Three limits protect a deployment from a document that asks for
 more of that than it should get, and from every document asking at once.
 
@@ -121,12 +121,17 @@ past its quota is refused with a retryable reason; the document's existing
 log is untouched and semantic commands (restore, comment, label) still work
 against it. This is the real bound on how long a cache rebuild for that
 document can occupy a thread, which is why it is a per-document ceiling and
-not a deployment-wide one.
+not a deployment-wide one. The base and rows count toward the owner's retained
+storage.
 
 **The memory budget** is one process-wide figure, 512 MiB by default, shared
 by every resident cache entry, in-flight build, temporary fork and
-projection output buffer across every document the process is holding. A
-request that cannot reserve its share waits briefly and then fails with
+projection output buffer across every document the process is holding. It is
+also what request bodies and outgoing state transfers reserve from. A mutation
+must declare its content length, a request without one is refused with 411.
+Four times the content length is reserved from the budget before the body is
+read; a request that cannot reserve is refused with a retryable 429. A request
+that cannot reserve its decoded share waits briefly and then fails with
 `busy`. Alongside it there is a second, separate bound on how many documents
 may be decoded at once: `min(cores, 4)`. Memory and CPU run out
 independently, and a machine with room for a hundred small documents can
@@ -149,7 +154,7 @@ by default, plus a separate 64 MiB for what writing a row costs while the write
 is in flight. It is deliberately separate from the memory budget above, because
 a decoded document is a cache that can be dropped to make room and somebody's
 unsent typing is not. It is also deliberately two pools rather than one, so
-that a deployment whose buffers are full can still write them out -- with a
+that a deployment whose buffers are full can still write them out, with a
 single pool there would be no room left to encode the row that would free the
 room. A document's own 4 MiB buffer ceiling still applies on top, so one
 document cannot spend the whole allowance.
@@ -171,9 +176,9 @@ running underneath, so an editor can keep typing and the log keeps growing,
 but nobody, including the document's own editors, can read a rendered
 projection of it until someone shrinks it. Recovery happens automatically
 the next time a build for that document succeeds, which an editor can
-trigger by exporting, trimming the document's size, and re-importing it, or
-an operator can trigger after raising `log_quota_mb` or `memory_budget_mb`
-in the configuration file.
+trigger by trimming the document's history from the settings page, or by
+exporting, shrinking and re-importing the document, or an operator can trigger
+after raising `log_quota_mb` or `memory_budget_mb` in the configuration file.
 
 These limits exist because encoded bytes bound ingress and storage, but they
 do not bound the CPU and memory a decode of those bytes costs, and Loro's
