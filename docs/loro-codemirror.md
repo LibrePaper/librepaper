@@ -117,8 +117,8 @@ It is not worth a breaking change to someone else's package -- removing
 `undoEffect` and `redoEffect` is what carrying it upstream would cost -- and
 it does not need to be in the package at all, because this build constructs the
 `UndoManager` itself and hands it to `LoroExtensions`. `lib/loro-undo.js`
-keeps it in a `StateField` of ours and binds the keys at `Prec.highest`, above
-the `Prec.high` `LoroExtensions` binds its own Mod-z at. Nothing in that file
+keeps it in a `StateField` of ours, and the editors bind its commands at
+`Prec.highest`, above the `Prec.high` `LoroExtensions` binds its own Mod-z at. Nothing in that file
 refers to `web/vendor`, so it survives the switch back to the package.
 
 ## The tests
@@ -146,19 +146,16 @@ than bundled output.
 
 ## What to do with it
 
-The four faults are on the fork's `fix-multi-container-events`, one commit
-each plus a changeset, at `1c6f377`. That branch is what this build fetches,
-so the thing the editor runs and the thing waiting to be offered upstream are
-the same bytes -- which is the point of fetching rather than vendoring.
+The four faults are on the fork's `fix-multi-container-events`, in three
+commits (one and two share one) plus a changeset, at `1c6f377`. That branch is
+what this build fetches, so the thing the editor runs and the thing offered
+upstream are the same bytes -- which is the point of fetching rather than
+vendoring.
 
-The fifth commit is not on it. It lives on `fix-undo-redo-commands`, is not
-fetched by anything, and is kept only so the reasoning is not lost;
-`lib/loro-undo.js` is what this build actually runs.
+The fifth change is not on it; `lib/loro-undo.js` is what this build runs.
 
-**The pull request has not been opened.** The branch is ready; opening it is a
-decision about putting your name on the claim, and upstream is alive enough
-for it to matter: an outside issue filed 2026-09-02 was fixed and released by
-2026-09-13.
+The pull request is open upstream as
+<https://github.com/loro-dev/loro-codemirror/pull/27>, from that branch.
 
 Fault five is not going upstream. The two undo cases that fail against
 upstream's `queueMicrotask` fail on the command contract -- a synchronous
@@ -170,9 +167,11 @@ depends on them for.
 
 When a release contains the fixes: delete `loro-codemirror.lock`, the two
 tools under `web/tools`, the `loro-codemirror` and `loro-update` targets and
-the `$(LCM)` prerequisite in the Makefile, and the gitignore entry; restore
-the dependency in `web/package.json`; point the `LoroExtensions` imports in
-`Editor.svelte` and `MergeEditor.svelte`, and the two plugin-value imports in
-the test, at the package name. `lib/loro-undo.js` and everything importing it
+the `LCM` variables and the `$(LCM)` prerequisites in the Makefile, and the
+gitignore entry; restore the dependency in `web/package.json`; point the
+`LoroExtensions` imports in `Editor.svelte` and `MergeEditor.svelte`, the two
+plugin-value imports in the test, and the `undo.ts` imports in
+`tests/browser/editor-browser.mjs` and `tests/browser/insert-browser.mjs`, at
+the package name. `lib/loro-undo.js` and everything importing it
 stay as they are -- that is why the manager sits in a field of ours. Keep the
 test, since it is the only thing that checks any of this.

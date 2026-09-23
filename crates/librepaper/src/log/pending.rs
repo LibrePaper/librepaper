@@ -39,8 +39,7 @@
 //! `server::socket_budget`'s; inbound request bodies are
 //! `cost.request_body_memory_bytes`'; one assembling socket update is
 //! `socket.rs`' `update_ceiling`. Allocator fragmentation and the runtime's
-//! own overhead are nobody's. `docs/resource-bounds.md` states the whole
-//! division.
+//! own overhead are nobody's.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

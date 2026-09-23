@@ -147,8 +147,7 @@ impl PostgresCatalog {
     /// One transaction, timed, with a note of whether the pool had anything
     /// free when it was asked. Every write path opens its transaction here.
     /// Single-statement reads go straight to the pool as an executor and are
-    /// not counted; `docs/postgres-capacity.md` says so rather than letting
-    /// the snapshot imply a coverage it does not have.
+    /// not counted, so the snapshot does not cover them.
     async fn begin_metered(&self) -> Result<sqlx::Transaction<'static, Postgres>> {
         let contended = self.pool.num_idle() == 0 && self.pool.size() >= self.max_connections;
         let attempt = meter::PoolMeter::attempt(contended);

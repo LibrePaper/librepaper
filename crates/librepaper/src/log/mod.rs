@@ -217,7 +217,7 @@ impl Registry {
         // untouched -- each sequencer still takes its own transaction gate,
         // and one pass asks each sequencer at most once. The bound limits
         // this sweep's demand; other pool consumers can still cause waits
-        // or acquisition timeouts. See docs/postgres-capacity.md.
+        // or acquisition timeouts.
         let concurrency = self.catalog.flush_concurrency();
         futures_util::stream::iter(due)
             .for_each_concurrent(concurrency, |(sequencer, reason)| async move {

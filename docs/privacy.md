@@ -31,11 +31,10 @@ answers are to distribute a PDF, or to require that documents are published
 with every resource embedded, which is what `embed-resources` does for Quarto
 and what LibrePaper's own pandoc path already does.
 
-What a document may **not** do is fetch code from another host. Its own inline
-and embedded scripts run normally; a `<script>` tag pointing at another server
-does not load. That keeps a document's behavior fixed at the moment it was
-published, so what a reviewer read is what runs later, and it keeps a
-compromise of some third-party host out of every reader's browser.
+A document may also fetch code from another host. The policy the document
+routes serve admits `https:` in `script-src`, so a `<script>` tag pointing at
+another server loads, what runs later need not be what a reviewer read, and a
+compromise of that host reaches every reader's browser.
 
 ## Documents rendered elsewhere may already be reaching out
 
@@ -46,8 +45,7 @@ who is reading it, on every open, whoever hosts LibrePaper.
 LibrePaper renders Quarto with every resource embedded, so documents built
 through the companion do not have this dependency and make no network request
 at all. A document rendered somewhere else and uploaded can still carry one.
-Publishing reports the hosts it finds, and the fix is to re-render with
-`embed-resources: true`.
+The fix is to re-render with `embed-resources: true`.
 
 ## Reading is not invisible
 
@@ -60,9 +58,10 @@ being visible this way.
 
 ## What a pseudonym does and does not hide
 
-A comment can carry a display pseudonym instead of an account name. It hides
-who you are from other readers. It does not hide you from the operator: the
-account id travels with the write and is stored beside the comment. Treat a
+A comment from a reader who is not signed in carries a pseudonym instead of an
+account name. It hides who you are from other readers. It does not hide you
+from the operator: a digest of your visitor credential travels with the write
+and is stored beside the comment. Treat a
 pseudonymous comment as pseudonymous to the room and attributable to whoever
 runs the server.
 

@@ -18,10 +18,9 @@ live source projections; there is no longer a published rendered-bundle system.
 Local builds and agent interfaces remain supported. Removing or simplifying
 those workflows is a product decision, not an assumption this spec can make.
 
-Read this alongside the [simplification audit](../simplification-audit.md),
-[architecture recommendations](../../REVIEW-BIG-IDEAS.md),
-[frugal scaling proposals](../../SPEC-frugal.md) and
-[resource inventory](../resource-bounds.md). The latter two inform the
+Read this alongside the
+[architecture recommendations](../../REVIEW-BIG-IDEAS.md) and
+[frugal scaling proposals](../../SPEC-frugal.md). The latter informs the
 availability work below; they are not evidence that every proposed bound or
 optimization already exists. Source references below are relative to
 `crates/librepaper/src/` unless they name another root.
@@ -232,9 +231,8 @@ Retain these protections whichever assistant entry points survive simplification
 ## 8. Availability and authorization under frugal scaling
 
 These concerns were missing from the earlier spec and belong in its security
-scope. The detailed implementation inventory lives in
-[resource-bounds.md](../resource-bounds.md); keep that as the source for exact
-limits rather than duplicating a second table here.
+scope. Exact limits live in the code and the
+[operator cost policy](../cost-policy.md); do not duplicate them here.
 
 **Deployment bounds.** Per-document pending-update ceilings do not establish
 a global pending-write bound. Audit pending and in-flight byte ownership,
