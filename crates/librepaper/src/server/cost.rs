@@ -114,6 +114,10 @@ impl Server {
         // pools with different rules -- decoded documents can be evicted to
         // make room and pending typing cannot (SPEC-frugal §2).
         snapshot["pending_budget"] = self.rooms.registry().pending().snapshot();
+        // The coarse half of the owner storage check: what each owner and the
+        // deployment are charged for figures, archives and logs as this
+        // process believes, rebuilt from the catalogue at every admission.
+        snapshot["storage_ledger"] = self.rooms.registry().ledger().snapshot();
         snapshot["filesystem"] = self
             .store
             .blobs
