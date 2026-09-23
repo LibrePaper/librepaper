@@ -532,46 +532,35 @@ impl PostgresCatalog {
     }
 
     pub async fn complete_asset(&self, input: NewAsset) -> Result<(AssetRecord, bool)> {
-        self.complete_asset_with_limit(input, i64::MAX).await
-    }
-
-    pub async fn complete_asset_with_limit(
-        &self,
-        input: NewAsset,
-        retained_byte_limit: i64,
-    ) -> Result<(AssetRecord, bool)> {
-        self.complete_assets_with_limit(vec![input], retained_byte_limit)
+        self.complete_assets_inner(vec![input], None)
             .await?
             .pop()
             .ok_or_else(|| Error::Invalid("asset batch was empty".into()))
     }
 
-    pub async fn complete_assets_with_limit(
+    pub async fn complete_assets(
         &self,
         inputs: Vec<NewAsset>,
-        retained_byte_limit: i64,
     ) -> Result<Vec<(AssetRecord, bool)>> {
-        self.complete_assets_with_limit_inner(inputs, retained_byte_limit, None)
+        self.complete_assets_inner(inputs, None)
             .await
     }
 
-    pub async fn complete_asset_authorized_with_limit(
+    pub async fn complete_asset_authorized(
         &self,
         input: NewAsset,
-        retained_byte_limit: i64,
         actor: &super::MutationAuthorization,
     ) -> Result<(AssetRecord, bool)> {
-        self.complete_assets_with_limit_inner(vec![input], retained_byte_limit, Some(actor))
+        self.complete_assets_inner(vec![input], Some(actor))
             .await?
             .into_iter()
             .next()
             .ok_or_else(|| Error::Invalid("asset batch was empty".into()))
     }
 
-    async fn complete_assets_with_limit_inner(
+    async fn complete_assets_inner(
         &self,
         inputs: Vec<NewAsset>,
-        retained_byte_limit: i64,
         actor: Option<&super::MutationAuthorization>,
     ) -> Result<Vec<(AssetRecord, bool)>> {
         if inputs.is_empty() || inputs.len() > 4096 {
@@ -592,9 +581,6 @@ impl PostgresCatalog {
             .collect();
         if unique.len() != inputs.len() {
             return Err(Error::Invalid("duplicate asset in completion batch".into()));
-        }
-        if retained_byte_limit < 0 {
-            return Err(Error::Invalid("invalid retained asset limit".into()));
         }
         let mut tx = self.begin_writer_transaction().await?;
         if let Some(actor) = actor {
@@ -661,21 +647,9 @@ impl PostgresCatalog {
         if uploads.saturating_add(new_inputs.len() as i64) > self.policy.asset_uploads_per_hour {
             return Err(Error::Conflict("account asset upload rate exceeded".into()));
         }
-        let retained = sqlx::query_scalar!(
-            r#"SELECT COALESCE(sum(byte_length),0)::bigint AS "total!"
-               FROM document_assets WHERE document_id=$1"#,
-            document_id,
-        )
-        .fetch_one(&mut *tx)
-        .await?;
         let incoming_bytes = new_inputs.iter().fold(0_i64, |total, input| {
             total.saturating_add(input.byte_length)
         });
-        if retained.saturating_add(incoming_bytes) > retained_byte_limit {
-            return Err(Error::Conflict(
-                "retained document asset quota exceeded".into(),
-            ));
-        }
         let owner_usage = owner_usage_bytes(&mut *tx, document.owner_id).await?;
         let deployment_usage =
             sqlx::query_scalar!("SELECT bytes FROM storage_usage WHERE singleton FOR UPDATE",)

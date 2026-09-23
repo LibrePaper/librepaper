@@ -584,7 +584,7 @@ impl Worker {
         //     object until 5b activates it.
         let storage = CollaborationStorage::new(self.catalog.clone(), self.blobs.clone());
         let written = storage
-            .write_base(document_id, &snapshot)
+            .write_base(document_id, &snapshot, self.config.log_quota_bytes)
             .await
             .map_err(|error| error.to_string())?;
 
@@ -798,7 +798,7 @@ impl Worker {
                 files,
             },
             super::source_archive::ArchiveLimits {
-                source_bytes: self.config.max_document,
+                source_bytes: self.config.log_quota_bytes,
                 files: self.config.max_files,
                 ..Default::default()
             },

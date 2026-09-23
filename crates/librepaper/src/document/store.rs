@@ -1079,7 +1079,6 @@ impl Store {
                 self.catalog.clone(),
                 self.blobs.clone(),
             )
-            .with_retained_asset_limit(self.config.max_assets)
             .write_assets(document_id, asset_files.iter())
             .await
             .map_err(|error| PutError::Storage(error.to_string()))?;

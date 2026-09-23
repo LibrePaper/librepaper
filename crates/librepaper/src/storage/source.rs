@@ -66,21 +66,11 @@ impl From<source_archive::ArchiveError> for Error {
 pub struct SourceStorage {
     catalog: Arc<PostgresCatalog>,
     blobs: Arc<dyn BlobStore>,
-    retained_asset_bytes: i64,
 }
 
 impl SourceStorage {
     pub fn new(catalog: Arc<PostgresCatalog>, blobs: Arc<dyn BlobStore>) -> Self {
-        Self {
-            catalog,
-            blobs,
-            retained_asset_bytes: 32 * 1024 * 1024,
-        }
-    }
-
-    pub fn with_retained_asset_limit(mut self, bytes: i64) -> Self {
-        self.retained_asset_bytes = bytes;
-        self
+        Self { catalog, blobs }
     }
 
     pub async fn write_assets<'a>(
@@ -138,7 +128,7 @@ impl SourceStorage {
         if !pending.is_empty() {
             for (asset, _) in self
                 .catalog
-                .complete_assets_with_limit(pending, self.retained_asset_bytes)
+                .complete_assets(pending)
                 .await?
             {
                 let digest: [u8; 32] = asset

@@ -9,6 +9,9 @@
 //! because §8.4 step 4 proves coverage against the snapshot's own header
 //! before deleting the rows behind it -- and a snapshot is what a cold build
 //! wants to load anyway.
+//!
+//! The compressed base is bounded by the log quota. The expanded base is
+//! bounded by the memory reservation the reader holds for it.
 
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read};
@@ -18,9 +21,6 @@ use uuid::Uuid;
 
 use super::blob::{BlobError, BlobStore};
 use super::postgres::{NewSnapshot, PostgresCatalog};
-
-const MAX_BASE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_EXPANDED_BASE_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum Error {
@@ -71,7 +71,7 @@ impl CollaborationStorage {
     /// a cache build starts from, and what a join sends to a client that
     /// covers none of it (§4.3, §6.2). Empty when the document has no base,
     /// which is every document that has never been compacted.
-    pub async fn read_document_base(&self, document_id: Uuid) -> Result<Vec<u8>, Error> {
+    pub async fn read_document_base(&self, document_id: Uuid, expanded_limit: u64) -> Result<Vec<u8>, Error> {
         let Some(base) = self.catalog.log_base(document_id).await? else {
             return Ok(Vec::new());
         };
@@ -83,7 +83,7 @@ impl CollaborationStorage {
                 "collaboration base failed integrity verification".into(),
             ));
         }
-        decompress(encoded)
+        decompress(encoded, expanded_limit)
     }
 
     /// §8.4 step 5, first half: compress the proven snapshot and put it in
@@ -91,7 +91,7 @@ impl CollaborationStorage {
     ///
     /// Separate from the activation that will reference it, because the two
     /// have to be held differently. This is compression and an object-store
-    /// round trip over as much as 32 MiB, and the caller runs it with no
+    /// round trip over as much as the log quota, and the caller runs it with no
     /// lock held so typing is not stalled behind it; the activation is a
     /// short transaction the caller runs under the sequencer's compaction
     /// gate, so nothing can read the base and the rows in disagreement
@@ -105,14 +105,12 @@ impl CollaborationStorage {
         &self,
         document_id: Uuid,
         snapshot: &[u8],
+        compressed_limit: usize,
     ) -> Result<NewSnapshot, Error> {
-        if snapshot.len() > MAX_EXPANDED_BASE_BYTES {
-            return Err(Error::Invalid("collaboration base exceeds limit".into()));
-        }
         let encoded = zstd::stream::encode_all(Cursor::new(snapshot), 3)?;
-        if encoded.len() > MAX_BASE_BYTES {
+        if encoded.len() > compressed_limit {
             return Err(Error::Invalid(
-                "compressed collaboration base exceeds limit".into(),
+                "collaboration base exceeds the log quota".into(),
             ));
         }
         let digest: [u8; 32] = Sha256::digest(&encoded).into();
@@ -140,14 +138,14 @@ pub fn superseded_base_deadline() -> OffsetDateTime {
     OffsetDateTime::now_utc() + Duration::days(7)
 }
 
-fn decompress(encoded: Vec<u8>) -> Result<Vec<u8>, Error> {
+fn decompress(encoded: Vec<u8>, expanded_limit: u64) -> Result<Vec<u8>, Error> {
     let mut decoded = Vec::new();
     zstd::stream::Decoder::new(Cursor::new(encoded))?
-        .take((MAX_EXPANDED_BASE_BYTES + 1) as u64)
+        .take(expanded_limit + 1)
         .read_to_end(&mut decoded)?;
-    if decoded.len() > MAX_EXPANDED_BASE_BYTES {
+    if decoded.len() as u64 > expanded_limit {
         return Err(Error::Invalid(
-            "expanded collaboration base exceeds limit".into(),
+            "expanded collaboration base exceeds its memory reservation".into(),
         ));
     }
     Ok(decoded)

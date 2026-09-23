@@ -60,13 +60,12 @@ impl Drop for AssetUpload<'_> {
 /// lists none for a label) and produces no source: the document's own
 /// `assets` map is what names a digest from a path, and that is an ordinary
 /// edit, not this command. What this command owns is `document_assets` --
-/// the quota, the rate limit and the row itself -- which is why it still
+/// the rate limit and the row itself -- which is why it still
 /// goes through the sequencer's single command lock: without that, this
 /// write could land while a restore or a whole-project replacement is mid
 /// flight against the same document.
 struct AttachAsset {
     input: NewAsset,
-    max_assets: i64,
     authorization: MutationAuthorization,
     catalog: Arc<PostgresCatalog>,
 }
@@ -91,17 +90,15 @@ impl Command for AttachAsset {
         _evidence: &'a Evidence,
     ) -> BoxFuture<'a, std::result::Result<Self::Output, CommandError>> {
         Box::pin(async move {
-            // `complete_asset_authorized_with_limit` proves the quota and the
-            // upload rate under its own `FOR UPDATE` lock on the document row
-            // (repository.rs), which is the atomicity this write needs. It
-            // does not take `_tx`, the fenced transaction the sequencer opened
-            // for whatever source this command might have produced: since it
-            // produces none, that transaction stays empty and nothing here
-            // needs to share it.
+            // `complete_asset_authorized` proves the upload rate under its own
+            // `FOR UPDATE` lock on the document row (repository.rs), which is
+            // the atomicity this write needs. It does not take `_tx`, the
+            // fenced transaction the sequencer opened for whatever source this
+            // command might have produced: since it produces none, that
+            // transaction stays empty and nothing here needs to share it.
             self.catalog
-                .complete_asset_authorized_with_limit(
+                .complete_asset_authorized(
                     self.input.clone(),
-                    self.max_assets,
                     &self.authorization,
                 )
                 .await
@@ -125,18 +122,11 @@ impl Room {
     pub(crate) async fn put_asset_authorized(
         &self,
         body: Vec<u8>,
-        ceilings: (i64, i64),
         actor: &crate::document::store::MutationActor,
     ) -> Result<(String, i64), WriteError> {
-        let (max_asset, max_assets) = ceilings;
         let size = body.len() as i64;
         if size == 0 {
             return Err(WriteError::Invalid("that file is empty".into()));
-        }
-        if size > max_asset {
-            return Err(WriteError::Figure(FigureLimit::OneFile {
-                ceiling: max_asset,
-            }));
         }
         let sha = crate::document::store::digest_of_bytes(&body);
         let digest: [u8; 32] = Sha256::digest(&body).into();
@@ -207,7 +197,6 @@ impl Room {
                 media_type: "application/octet-stream".into(),
                 original_name: None,
             },
-            max_assets,
             authorization,
             catalog: self.catalog().clone(),
         };

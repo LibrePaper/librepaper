@@ -581,7 +581,6 @@ struct AgentPatchCommand<'a> {
     document_id: Uuid,
     author_account_id: Option<Uuid>,
     author_label: String,
-    max_document: usize,
     operation_receipt: Option<crate::storage::postgres::OperationReceipt>,
 }
 
@@ -623,12 +622,6 @@ impl Command for AgentPatchCommand<'_> {
         // Validation only: the source this produces is built once, by
         // `head.prepare` below, straight into the draft document.
         validate_patches(&tree, self.request).map_err(to_conflict)?;
-        let after_bytes = source_size_after(&tree, self.request).map_err(to_conflict)?;
-        if after_bytes > self.max_document {
-            return Err(CommandError::Conflict(
-                "document size limit exceeded".into(),
-            ));
-        }
         let request = self.request;
         let client_seq = client_seq_of(self.request_id);
         head.prepare(client_seq, |draft| apply_patch_edits(draft, &tree, request))
@@ -818,7 +811,6 @@ impl Room {
             document_id: self.document_id,
             author_account_id: document_authority.account_id,
             author_label: authority.owner_key.clone(),
-            max_document: self.config().max_document,
             operation_receipt,
         };
 

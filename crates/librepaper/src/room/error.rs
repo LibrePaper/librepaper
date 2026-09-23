@@ -7,35 +7,7 @@
 //! refusal is for the person reading it, so rewording one must not silently
 //! move a route from 507 to 413 or turn a permanent refusal into a retry.
 
-use crate::config::SizeRefusal;
 use crate::storage::postgres::Error as CatalogError;
-
-/// Which figure ceiling a figure upload ran into. Separate from
-/// [`SizeRefusal`], which is about the document's own text and snapshot: the
-/// wording a person reads has to name the right ceiling, and the two are
-/// configured independently.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FigureLimit {
-    /// Past `max_asset`: this one file is too large.
-    OneFile { ceiling: i64 },
-    /// Past `max_assets`: the document keeps as many figure bytes as it may.
-    Document { ceiling: i64 },
-}
-
-impl FigureLimit {
-    fn message(self) -> String {
-        match self {
-            Self::OneFile { ceiling } => format!(
-                "that figure is larger than the {} MB one file may be",
-                ceiling >> 20
-            ),
-            Self::Document { ceiling } => format!(
-                "this document has reached the {} MB it may keep in figures",
-                ceiling >> 20
-            ),
-        }
-    }
-}
 
 /// A bound this deployment puts on one document's log.
 ///
@@ -87,10 +59,6 @@ pub enum WriteError {
     /// The memory budget had no room to read this document just now
     /// (§9.2). Purely about this moment.
     Busy,
-    /// Past a configured ceiling on what may be stored. No retry helps.
-    Size(SizeRefusal),
-    /// Past one of the figure ceilings.
-    Figure(FigureLimit),
     /// A ceiling on the shared document itself, refused on the socket.
     Document(DocumentLimit),
     /// The peer wrote faster than a person can. Temporary by nature.
@@ -126,7 +94,6 @@ impl WriteError {
             // trying again, unlike a refusal about the work itself.
             Self::Unreadable(_) | Self::Fenced(_) | Self::Busy => Retry::Later,
             Self::NotFound | Self::Invalid(_) | Self::UpgradeRequired { .. } => Retry::No,
-            Self::Size(_) | Self::Figure(_) => Retry::No,
             // The log quota is cleared by compaction, which is already
             // scheduled; the storage quota is not cleared by waiting.
             Self::Document(DocumentLimit::LogQuota) => Retry::Later,
@@ -146,7 +113,6 @@ impl WriteError {
         match self {
             Self::NotFound => 404,
             Self::Unreadable(_) | Self::Fenced(_) | Self::Busy => 503,
-            Self::Size(_) | Self::Figure(_) => 413,
             Self::Document(DocumentLimit::Quota) => 507,
             Self::Document(DocumentLimit::LogQuota) => 503,
             Self::RateLimited => 429,
@@ -168,8 +134,6 @@ impl WriteError {
                     .into()
             }
             Self::Busy => "this deployment is busy; try again in a moment".into(),
-            Self::Size(refusal) => refusal.message(),
-            Self::Figure(limit) => limit.message(),
             Self::Document(limit) => limit.message().to_string(),
             Self::RateLimited => "too many updates".into(),
             Self::NotFound => "not found".into(),

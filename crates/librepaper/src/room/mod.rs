@@ -67,7 +67,7 @@ pub(crate) mod text;
 pub use annotation::{AnchorStatus, CommentTarget, OriginalAnchor};
 pub use command::Command as RoomCommand;
 pub use comments::*;
-pub use error::{FigureLimit, WriteError};
+pub use error::WriteError;
 pub use label::Attribution;
 pub use message::Message;
 pub use outgoing::{Outgoing, Sender};
