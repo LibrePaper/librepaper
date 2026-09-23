@@ -342,6 +342,10 @@ pub struct JobRequest {
     pub options: JobOptions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
+    /// Semantic revision authorized when this job was admitted. Persisted
+    /// legacy jobs may omit it, but runners must refuse to execute them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_revision: Option<u64>,
 }
 
 /// The only workspace forms protocol v2 accepts. A path is never represented

@@ -250,6 +250,33 @@ impl BindingStore {
             .collect()
     }
 
+    /// Revalidate the grant and root at each boundary that can follow a queue
+    /// delay. Hosted previews may choose their entrypoint; snapshot builds
+    /// retain the binding's fixed entrypoint rule. File inventory and symlink
+    /// checks remain with the caller, before it reads or executes those files.
+    pub(crate) fn validate_scoped_entrypoint(
+        &self,
+        id: &str,
+        origin: &str,
+        project: &str,
+        entrypoint: &str,
+        allow_hosted_entrypoint: bool,
+    ) -> Result<ProjectBinding, String> {
+        let binding = self.resolve_scoped(id, origin, project)?;
+        if !protocol::safe_relative_path(entrypoint) {
+            return Err("entrypoint must be a safe project-relative path".into());
+        }
+        if !(allow_hosted_entrypoint && Self::is_hosted(&binding))
+            && entrypoint != binding.entrypoint
+        {
+            return Err("entrypoint does not match the scoped binding".into());
+        }
+        match std::fs::canonicalize(&binding.root) {
+            Ok(root) if root == binding.root && root.is_dir() => Ok(binding),
+            _ => Err("scoped binding root is unavailable or changed".into()),
+        }
+    }
+
     /// Public metadata for the management API. Absolute roots intentionally
     /// stay inside the companion and are never serialized onto the wire.
     pub fn summaries_scoped(
@@ -266,5 +293,95 @@ impl BindingStore {
                 created_at: binding.created_at,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    #[test]
+    fn each_validation_rechecks_scope_entrypoint_and_revocation() {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("paper.qmd"), "# Paper").unwrap();
+        let store = BindingStore::new(state.path());
+        let binding = store
+            .grant("https://example.test", "paper", root.path(), "paper.qmd")
+            .unwrap();
+        let validate = |origin, project, main| {
+            store.validate_scoped_entrypoint(&binding.id, origin, project, main, false)
+        };
+        assert!(validate("https://example.test", "paper", "paper.qmd").is_ok());
+        assert!(validate("https://other.test", "paper", "paper.qmd").is_err());
+        assert!(validate("https://example.test", "other", "paper.qmd").is_err());
+        assert!(validate("https://example.test", "paper", "other.qmd").is_err());
+        assert!(store.revoke_scoped(&binding.id, "https://example.test", "paper"));
+        assert!(validate("https://example.test", "paper", "paper.qmd").is_err());
+        let replacement = store
+            .grant("https://example.test", "paper", root.path(), "paper.qmd")
+            .unwrap();
+        assert_ne!(replacement.id, binding.id);
+        assert!(validate("https://example.test", "paper", "paper.qmd").is_err());
+    }
+
+    #[test]
+    fn only_hosted_previews_choose_an_entrypoint() {
+        let state = tempfile::tempdir().unwrap();
+        let hosted = tempfile::tempdir().unwrap();
+        let store = BindingStore::new(state.path()).with_hosted_workspaces(hosted.path().into());
+        assert!(store
+            .validate_scoped_entrypoint(
+                HOSTED_BINDING,
+                "https://example.test",
+                "paper",
+                "paper.qmd",
+                true
+            )
+            .is_ok());
+        assert!(store
+            .validate_scoped_entrypoint(
+                HOSTED_BINDING,
+                "https://example.test",
+                "paper",
+                "../paper.qmd",
+                true
+            )
+            .is_err());
+        assert!(store
+            .validate_scoped_entrypoint(
+                HOSTED_BINDING,
+                "https://example.test",
+                "paper",
+                "paper.qmd",
+                false
+            )
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_the_granted_root_with_a_symlink_is_refused() {
+        let state = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("paper.qmd"), "# Paper").unwrap();
+        let store = BindingStore::new(state.path());
+        let binding = store
+            .grant("https://example.test", "paper", &root, "paper.qmd")
+            .unwrap();
+        let moved = directory.path().join("moved");
+        std::fs::rename(&root, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &root).unwrap();
+        assert!(store
+            .validate_scoped_entrypoint(
+                &binding.id,
+                "https://example.test",
+                "paper",
+                "paper.qmd",
+                false
+            )
+            .is_err());
     }
 }

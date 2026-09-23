@@ -300,6 +300,19 @@ pub fn visible_to_reader(comment: &Comment) -> bool {
     comment.motivation != "editing"
 }
 
+/// The broadcast's reader row. Keep the same field redactions as an ordinary
+/// reader page while retaining the already-enriched reply preview and totals.
+fn reader_safe_comment(document_id: Uuid, comment: &Comment) -> Result<Comment, WriteError> {
+    let mut reader = CommentView::for_viewer(comment, "", false).comment;
+    if let Some(cursor) = &comment.reply_cursor {
+        let id = Uuid::parse_str(&comment.id)
+            .map_err(|_| WriteError::Invalid("invalid stored comment id".into()))?;
+        let at = decode_cursor(cursor, document_id, Some(id), true)?;
+        reader.reply_cursor = Some(encode_cursor(document_id, Some(id), false, at));
+    }
+    Ok(reader)
+}
+
 /// Rule H's authorization test: the document's owner may delete anything on
 /// it, and everyone else only their own.
 pub fn deletable(item: &Comment, author: &str, is_owner: bool) -> bool {
@@ -2387,11 +2400,11 @@ impl Room {
     /// for two distinct answers, and the number grew with the number of
     /// audiences rather than with what they need to be told apart by.
     ///
-    /// What genuinely differs between audiences is the *query*: a reader's
-    /// comment lookup and collection count do not include suggestions at
-    /// all, so those are two reads and not one read seen two ways. What does
-    /// not differ is the caller: `author` only decides `mine` and
-    /// `deletable`, which are derived from the row already in hand.
+    /// Read the editor's enriched row once; a reader view is derived from it
+    /// with suggestion filtering and the same anchor redactions as a page.
+    /// Collection counts remain two independent reads because each describes
+    /// that audience's whole visible collection. `author` only decides `mine`
+    /// and `deletable`, which are derived from the row already in hand.
     pub async fn prepare_comment_event(&self, payload: &Value) -> CommentEvent {
         let kind = payload.get("type").and_then(Value::as_str);
         if !matches!(
@@ -2405,8 +2418,7 @@ impl Room {
                 self.attachments.lock().await.remove(id);
             }
         }
-        // The row, for each audience that reads a different query. Only the
-        // three kinds that carry one need it at all.
+        // Only the three kinds that carry a comment row need it at all.
         let id = match kind {
             Some("comment" | "refine") => payload
                 .get("comment")
@@ -2418,8 +2430,22 @@ impl Room {
         let mut event = CommentEvent::bare(payload.clone());
         event.carries_comment = id.is_some();
         if let Some(id) = id {
-            event.editor = self.event_comment(id, true).await;
-            event.reader = self.event_comment(id, false).await;
+            event.editor = self.event_comment(id).await;
+            event.reader = event.editor.as_ref().and_then(|comment| {
+                if !visible_to_reader(comment) {
+                    return None;
+                }
+                match reader_safe_comment(self.document_id, comment) {
+                    Ok(reader) => Some(reader),
+                    Err(error) => {
+                        log::warn!(
+                            "could not prepare reader comment event for {}: {error}",
+                            self.slug
+                        );
+                        None
+                    }
+                }
+            });
         }
         // Counts describe the viewer's entire collection, including rows
         // outside their loaded prefix. Never derived from a client delta,
@@ -2438,12 +2464,15 @@ impl Room {
         event
     }
 
-    /// One audience's comment row, or nothing when there is no row to send
-    /// them.
-    async fn event_comment(&self, id: &str, is_owner: bool) -> Option<Comment> {
-        match self.comment_by_id(id, is_owner).await {
-            Ok(Some(comment)) if is_owner || visible_to_reader(&comment) => Some(comment),
-            Ok(_) => None,
+    /// The editor's fully enriched row, or nothing when it is missing.
+    /// Reader visibility is derived from this value above, so every reply,
+    /// proposal and attachment read is shared between both audience views.
+    async fn event_comment(&self, id: &str) -> Option<Comment> {
+        #[cfg(test)]
+        self.event_comment_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match self.comment_by_id(id, true).await {
+            Ok(comment) => comment,
             Err(error) => {
                 // A read failure is not "there is no such comment". A
                 // broadcast has nowhere to put a reason, so the peer gets

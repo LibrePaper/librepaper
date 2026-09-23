@@ -1139,7 +1139,41 @@ impl Server {
                 }),
             ));
         }
-        let id = match self.authenticated_identity(headers, arrival).await {
+        self.publisher_authenticated(
+            headers,
+            arrival,
+            self.authenticated_identity(headers, arrival).await,
+        )
+        .await
+    }
+
+    /// Ordinary list requests reuse the authentication result already
+    /// resolved by the request middleware. Publishing mutations keep using
+    /// `publisher` so they can recheck credentials at the mutation boundary.
+    #[allow(clippy::result_large_err)]
+    async fn publisher_in(
+        &self,
+        headers: &HeaderMap,
+        context: &RequestContext,
+    ) -> Result<Caller, Reply> {
+        if Self::is_automation(headers) {
+            return Err(write_json(
+                403,
+                &json!({"error": "automation mode cannot publish, delete, or list documents"}),
+            ));
+        }
+        self.publisher_authenticated(headers, &context.arrival, context.authentication.clone())
+            .await
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn publisher_authenticated(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        authentication: Result<Identity, AuthenticationFailure>,
+    ) -> Result<Caller, Reply> {
+        let id = match authentication {
             Ok(id) => id,
             Err(AuthenticationFailure::Invalid) => {
                 let mut response = write_json(

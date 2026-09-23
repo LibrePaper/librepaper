@@ -146,7 +146,7 @@ async fn list(
         return server.not_found(request.headers());
     }
     server
-        .handle_list(request.headers(), &ctx.arrival, request.uri().query())
+        .handle_list(request.headers(), &ctx, request.uri().query())
         .await
 }
 
@@ -1195,13 +1195,14 @@ impl Server {
     pub(super) async fn handle_list(
         &self,
         headers: &HeaderMap,
-        arrival: &Arrival,
+        context: &RequestContext,
         query: Option<&str>,
     ) -> Reply {
+        let arrival = &context.arrival;
         if cross_site_refused(headers, arrival) {
             return write_json(403, &cross_site_refusal());
         }
-        let who = match self.publisher(headers, arrival).await {
+        let who = match self.publisher_in(headers, context).await {
             Ok(who) => who,
             Err(response) => return response,
         };

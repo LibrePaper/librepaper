@@ -51,14 +51,6 @@ struct Deployment {
 /// proving, which `comment_http_tests.rs`'s fixture never exercises.
 async fn deployment(slug: &str) -> Option<Deployment> {
     let catalog = crate::tests::catalog().await?;
-    sqlx::query(
-        "TRUNCATE document_updates,document_snapshots,document_proposal_hunks,document_proposals,\
-         replies,annotations,document_labels,document_assets,share_links,grants,documents,\
-         accounts CASCADE",
-    )
-    .execute(catalog.pool())
-    .await
-    .unwrap();
     let writer = catalog.claim_writer().await.unwrap();
     let owner = catalog
         .create_account(NewAccount {

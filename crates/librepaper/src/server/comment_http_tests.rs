@@ -35,6 +35,8 @@ struct Deployment {
     server: Server,
     catalog: Arc<PostgresCatalog>,
     slug: String,
+    owner_id: Uuid,
+    owner_session_generation: String,
     commenter_id: Uuid,
     _writer: crate::storage::postgres::WriterLease,
     _objects: tempfile::TempDir,
@@ -145,6 +147,8 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         server,
         catalog,
         slug: slug.into(),
+        owner_id: owner.id,
+        owner_session_generation: owner.session_generation.to_string(),
         commenter_id: commenter.id,
         _writer: writer,
         _objects: objects,
@@ -614,4 +618,143 @@ async fn get_comment_page(deployment: &Deployment, query: &str) -> super::Reply 
         .server
         .handle_comments(request, peer, &context, &deployment.slug)
         .await
+}
+
+#[tokio::test]
+async fn snapshot_comment_storage_errors_hide_database_context() {
+    let Some(mut deployment) = deployment("http-snapshot-storage-error").await else {
+        return;
+    };
+    // Make the comment-state query fail with a recognizable PostgreSQL
+    // message. The response must keep its temporary-storage contract without
+    // disclosing that internal relation name to the caller.
+    sqlx::query("ALTER TABLE annotations RENAME TO annotations_hidden_for_snapshot_test")
+        .execute(deployment.catalog.pool())
+        .await
+        .unwrap();
+    deployment.server.app.client_id = "test-client".into();
+    let identity = Identity {
+        provider: "github".into(),
+        id: deployment.owner_id.to_string(),
+        handle: "owner".into(),
+        name: "Owner".into(),
+        picture: String::new(),
+        session_generation: deployment.owner_session_generation.clone(),
+    };
+    let request = axum::http::Request::builder()
+        .uri(format!("/api/documents/{}/snapshot", deployment.slug))
+        .header("x-librepaper-client", "test")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let arrival = super::origins::Origins::loopback_only()
+        .resolve("127.0.0.1:8080")
+        .unwrap();
+    let peer = "127.0.0.1:4321".parse().unwrap();
+    let context = crate::server::RequestContext {
+        arrival,
+        peer,
+        authentication: Ok(identity),
+    };
+    let response = deployment
+        .server
+        .handle_snapshot(request.headers(), &context, &deployment.slug, None)
+        .await;
+    sqlx::query("ALTER TABLE annotations_hidden_for_snapshot_test RENAME TO annotations")
+        .execute(deployment.catalog.pool())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(payload["retryable"], json!(true));
+    assert!(
+        !body.contains("annotations"),
+        "leaked storage context: {body}"
+    );
+    assert!(
+        !body.contains("does not exist"),
+        "leaked storage context: {body}"
+    );
+    deployment.catalog.close().await;
+}
+
+#[tokio::test]
+async fn listing_publisher_uses_cached_authentication_and_keeps_its_gates() {
+    let Some(mut deployment) = deployment("http-list-publisher-context").await else {
+        return;
+    };
+    deployment.server.app.client_id = "test-client".into();
+    let arrival = super::origins::Origins::loopback_only()
+        .resolve("127.0.0.1:8080")
+        .unwrap();
+    let peer = "127.0.0.1:4321".parse().unwrap();
+    let owner = Identity {
+        provider: "github".into(),
+        id: deployment.owner_id.to_string(),
+        handle: "owner".into(),
+        name: "Owner".into(),
+        picture: String::new(),
+        session_generation: deployment.owner_session_generation.clone(),
+    };
+    let context = |authentication| crate::server::RequestContext {
+        arrival: arrival.clone(),
+        peer,
+        authentication,
+    };
+    let headers = axum::http::HeaderMap::new();
+
+    let caller = deployment
+        .server
+        .publisher_in(&headers, &context(Ok(owner.clone())))
+        .await
+        .expect("the configured owner may publish");
+    assert_eq!(caller.id, deployment.owner_id.to_string());
+
+    let disallowed = Identity {
+        id: "other-account".into(),
+        handle: "stranger".into(),
+        ..owner.clone()
+    };
+    let response = deployment
+        .server
+        .publisher_in(&headers, &context(Ok(disallowed)))
+        .await
+        .unwrap_err();
+    assert_eq!(response.status(), 403);
+
+    let response = deployment
+        .server
+        .publisher_in(
+            &headers,
+            &context(Err(super::AuthenticationFailure::Invalid)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(response.status(), 401);
+
+    let response = deployment
+        .server
+        .publisher_in(
+            &headers,
+            &context(Err(super::AuthenticationFailure::Unavailable)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(response.status(), 503);
+
+    let mut automation = axum::http::HeaderMap::new();
+    automation.insert(
+        super::AUTOMATION_HEADER,
+        axum::http::HeaderValue::from_static("1"),
+    );
+    let response = deployment
+        .server
+        .publisher_in(&automation, &context(Ok(owner)))
+        .await
+        .unwrap_err();
+    assert_eq!(response.status(), 403);
+    deployment.catalog.close().await;
 }

@@ -110,6 +110,13 @@ pub async fn run(
             Ok(value) => value,
             Err(error) => return failed(&request, &id, &error),
         };
+        if request.preset_revision != Some(preset.semantic_revision) {
+            return failed(
+                &request,
+                &id,
+                "preset changed or was not pinned at admission",
+            );
+        }
         if preset.base_adapter != builder_name {
             return failed(&request, &id, "preset adapter does not match request");
         }
@@ -195,6 +202,25 @@ pub async fn run(
     let _ = progress.send(status.clone());
     let deadline =
         Instant::now() + Duration::from_secs(request.options.deadline_seconds.clamp(1, 3600));
+    if let Some(preset_id) = request.preset.as_deref() {
+        let still_authorized = store
+            .resolve_scoped(
+                &request.origin,
+                &request.project,
+                preset_id,
+                presets::WorkspaceMode::Snapshot,
+                presets::Operation::Build,
+                entrypoint,
+            )
+            .is_ok_and(|(_, current)| request.preset_revision == Some(current.semantic_revision));
+        if !still_authorized {
+            return failed(
+                &request,
+                &status.id,
+                "preset changed or was revoked before execution",
+            );
+        }
+    }
     let (outcome, log) = run_plan_logged(&plan, &workspace.root, cancel, deadline).await;
     status.stage = "finished".into();
     status.log_tail = String::from_utf8_lossy(&log).into_owned();
@@ -295,7 +321,7 @@ mod tests {
         let program = root.path().join("typst");
         std::fs::write(
             &program,
-            "#!/bin/sh\nprintf '%s' '%PDF-fixture' > out/main.pdf\nprintf 'compiler log'\n",
+            "#!/bin/sh\ntouch spawn-marker\nprintf '%s' '%PDF-fixture' > out/main.pdf\nprintf 'compiler log'\n",
         )
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -308,7 +334,7 @@ mod tests {
             "origin": "https://example.test", "snapshot": "s", "generation": 1,
             "builder": "typst", "workspace": {"mode": "snapshot"},
             "entrypoint": "main.typ", "output": "pdf", "inputs": {"engine": "native"},
-            "preset": "test", "manifest": [],
+            "preset": "test", "preset_revision": 1, "manifest": [],
         }))
         .unwrap();
         let stage = |name: &str| {
@@ -332,6 +358,7 @@ mod tests {
         .await;
         assert_eq!(refused.status.status, "failed");
         assert!(refused.files.is_empty());
+        assert!(!root.path().join("refused/project/spawn-marker").exists());
         let grant = store
             .grant(
                 "https://example.test",
@@ -343,6 +370,23 @@ mod tests {
                 1,
             )
             .unwrap();
+        let mut recovered_legacy = request.clone();
+        recovered_legacy.preset_revision = None;
+        let legacy = run(
+            recovered_legacy,
+            stage("legacy-without-revision"),
+            tools.clone(),
+            rx.clone(),
+            tx.clone(),
+            &store,
+        )
+        .await;
+        assert_eq!(legacy.status.status, "failed");
+        assert!(legacy.files.is_empty());
+        assert!(!root
+            .path()
+            .join("legacy-without-revision/project/spawn-marker")
+            .exists());
         let built = run(
             request.clone(),
             stage("built"),
@@ -354,6 +398,7 @@ mod tests {
         .await;
         assert_eq!(built.status.status, "done", "{:?}", built.status);
         assert_eq!(built.files["pdf"], b"%PDF-fixture");
+        assert!(root.path().join("built/project/spawn-marker").exists());
         assert_eq!(
             built.status.outputs["pdf"].sha256,
             hex::encode(Sha256::digest(b"%PDF-fixture"))
@@ -362,11 +407,51 @@ mod tests {
         assert_eq!(built.files["log"], b"compiler log");
         store.revoke(&grant.id).unwrap();
         assert_eq!(
-            run(request, stage("revoked"), tools, rx, tx, &store)
-                .await
-                .status
-                .status,
+            run(
+                request.clone(),
+                stage("revoked"),
+                tools.clone(),
+                rx.clone(),
+                tx.clone(),
+                &store
+            )
+            .await
+            .status
+            .status,
             "failed"
         );
+        assert!(!root.path().join("revoked/project/spawn-marker").exists());
+        let mut updated = store.get("test").unwrap();
+        updated.display_name = "Updated".into();
+        let updated = store.update("test", updated).unwrap();
+        assert_eq!(updated.semantic_revision, 2);
+        store
+            .grant(
+                "https://example.test",
+                "p",
+                "test",
+                presets::WorkspaceMode::Snapshot,
+                presets::Operation::Build,
+                "main.typ",
+                2,
+            )
+            .unwrap();
+        let changed_after_admission = run(
+            request.clone(),
+            stage("changed-after-admission"),
+            tools,
+            rx,
+            tx,
+            &store,
+        )
+        .await;
+        assert_eq!(changed_after_admission.status.status, "failed");
+        assert_eq!(changed_after_admission.status.snapshot, "s");
+        assert_eq!(changed_after_admission.status.generation, 1);
+        assert!(changed_after_admission.files.is_empty());
+        assert!(!root
+            .path()
+            .join("changed-after-admission/project/spawn-marker")
+            .exists());
     }
 }

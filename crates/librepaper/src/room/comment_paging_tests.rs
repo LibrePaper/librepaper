@@ -1313,3 +1313,42 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
     );
     deployment.catalog.close().await;
 }
+
+/// An event reuses the enriched row, but its reply cursor belongs to the
+/// audience receiving it, just like a cursor from a normal comment page.
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn event_reply_cursors_continue_for_their_own_audience() {
+    let Some(deployment) = deployment("event-reply-cursors").await else {
+        return;
+    };
+    let room = deployment.room().await;
+    let id = deployment.seed_comments(room.document_id, 1).await[0];
+    deployment
+        .seed_replies(room.document_id, id, comments::REPLY_PREVIEW + 3)
+        .await;
+    let payload = serde_json::json!({"type": "reply", "comment_id": id.to_string()});
+    let event = room.prepare_comment_event(&payload).await;
+    for suggestions in [true, false] {
+        let view = event.view_for("", suggestions);
+        let cursor = view["comment"]["reply_cursor"].as_str().unwrap();
+        let at = comments::decode_cursor(cursor, room.document_id, Some(id), suggestions).unwrap();
+        assert!(comments::decode_cursor(cursor, room.document_id, Some(id), !suggestions).is_err());
+        let page = room
+            .reply_page(id, Some(at), 10, suggestions)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(page.complete);
+        assert_eq!(page.replies.len(), 3);
+        let prefix = view["comment"]["replies"].as_array().unwrap();
+        assert_eq!(prefix.len(), comments::REPLY_PREVIEW);
+        for reply in &page.replies {
+            assert!(prefix
+                .iter()
+                .all(|old| old["id"].as_str() != Some(reply.id.as_str())));
+        }
+    }
+    assert_eq!(room.event_comment_read_count(), 1);
+    deployment.catalog.close().await;
+}

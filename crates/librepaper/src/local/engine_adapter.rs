@@ -43,23 +43,14 @@ pub async fn run(
         binding_id: Some(binding_id),
     } = &request.workspace
     {
-        let binding = match bindings.resolve_scoped(binding_id, &request.origin, &request.project) {
-            Ok(binding) => binding,
-            Err(error) => return unsupported(&request, &job_id, &error),
-        };
-        let root = match std::fs::canonicalize(&binding.root) {
-            Ok(root) if root.is_dir() => root,
-            _ => return unsupported(&request, &job_id, "bound workspace root is unavailable"),
-        };
-        if root != binding.root {
-            return unsupported(&request, &job_id, "bound workspace root changed");
-        }
-        if request.entrypoint != binding.entrypoint {
-            return unsupported(
-                &request,
-                &job_id,
-                "entrypoint no longer matches the scoped binding",
-            );
+        if let Err(error) = bindings.validate_scoped_entrypoint(
+            binding_id,
+            &request.origin,
+            &request.project,
+            &request.entrypoint,
+            false,
+        ) {
+            return unsupported(&request, &job_id, &error);
         }
     }
     if request.builder == "quarto" {

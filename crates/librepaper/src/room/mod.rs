@@ -226,6 +226,10 @@ pub struct Room {
     /// metadata yet. The count lets same-digest uploads share one quota claim
     /// while each cancelled future releases its own claim.
     asset_uploads: std::sync::Mutex<HashMap<String, (i64, usize)>>,
+    /// Counts the enriched row reads performed by comment event preparation.
+    /// This guards against reintroducing an audience-specific second lookup.
+    #[cfg(test)]
+    event_comment_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl Room {
@@ -513,6 +517,12 @@ impl Room {
         Ok(Some(one.into_iter().next().expect("one comment")))
     }
 
+    #[cfg(test)]
+    pub(crate) fn event_comment_read_count(&self) -> usize {
+        self.event_comment_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The collection's authoritative shape: how many comments this caller
     /// may see, how many are open, how many replies there are, and a token
     /// that changes whenever any of it does.
@@ -635,6 +645,8 @@ impl Rooms {
             reattached_digest: tokio::sync::Mutex::new(None),
             peers: Mutex::new(HashMap::new()),
             asset_uploads: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            event_comment_reads: std::sync::atomic::AtomicUsize::new(0),
         });
         let mut open = self.open.lock().await;
         // Somebody may have opened it while the two reads above were in

@@ -75,7 +75,6 @@ pub(crate) fn plan(
         bindings,
         &options.binding_id,
         &options.main,
-        "calepin",
     )?;
     verify_bound_manifest(&binding.root, &request.manifest)?;
     super::refuse_escaping_entrypoint(&binding.root, &entrypoint)?;

@@ -494,6 +494,13 @@ pub async fn run_job_with_bindings(
             Ok(value) => value,
             Err(error) => return failed(&request, &job_id, &error),
         };
+        if request.preset_revision != Some(preset.semantic_revision) {
+            return failed(
+                &request,
+                &job_id,
+                "preset changed or was not pinned at admission",
+            );
+        }
         if preset.base_adapter != "quarto" {
             return failed(&request, &job_id, "preset is not a Quarto preset");
         }
@@ -843,7 +850,7 @@ pub async fn run_job_with_bindings(
                 &options.main,
             )
             .map_or(true, |(_, current)| {
-                current.semantic_revision != preset.semantic_revision
+                request.preset_revision != Some(current.semantic_revision)
             })
         {
             return failed(

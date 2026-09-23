@@ -11,6 +11,48 @@
 //! rest of the module uses, and nothing about the routing changed.
 
 use super::*;
+use crate::local::presets;
+
+fn pin_preset_revision(
+    job: &mut JobRequest,
+    store: &presets::PresetStore,
+) -> Result<(), (u16, String)> {
+    let Some(preset_id) = job.preset.as_deref() else {
+        return Ok(());
+    };
+    let (_, preset) = store
+        .resolve_scoped(
+            &job.origin,
+            &job.project,
+            preset_id,
+            presets::WorkspaceMode::Snapshot,
+            presets::Operation::Build,
+            &job.entrypoint,
+        )
+        .map_err(|error| (403, error))?;
+    if preset.base_adapter != job.builder {
+        return Err((400, "preset adapter does not match request".into()));
+    }
+    let mut overrides = BTreeMap::new();
+    for (key, value) in job.inputs.options() {
+        let value = if job.kind == "quarto" {
+            match value {
+                Value::String(value) => value.clone(),
+                _ => value.to_string(),
+            }
+        } else {
+            match value {
+                Value::String(value) => value.clone(),
+                Value::Bool(value) => value.to_string(),
+                _ => return Err((400, "unsupported typed builder option".into())),
+            }
+        };
+        overrides.insert(key.clone(), value);
+    }
+    presets::PresetStore::effective_options(&preset, &overrides).map_err(|error| (400, error))?;
+    job.preset_revision = Some(preset.semantic_revision);
+    Ok(())
+}
 
 /* ------------------------------------------------------------ workspace */
 
@@ -234,6 +276,7 @@ pub(super) async fn handle_jobs_post(
             entrypoint: request.entrypoint,
             output: request.output,
             preset: request.preset,
+            preset_revision: None,
         }
     };
     // Bound local reads must follow authentication and inventory limits.
@@ -244,6 +287,11 @@ pub(super) async fn handle_jobs_post(
             403,
             &json!({"error": "job scope does not match the connected token"}),
         );
+    }
+    if let Err((status, error)) =
+        pin_preset_revision(&mut job, &inner.quarto_bindings.preset_store())
+    {
+        return write_json(status, &json!({"error": error}));
     }
     if let Err(response) = validate_manifest_shape(&job.manifest) {
         return response;
@@ -287,27 +335,19 @@ pub(super) async fn handle_jobs_post(
             binding_id: Some(binding_id),
         } = workspace
         {
-            let Some(binding) = inner
+            let binding = match inner
                 .quarto_bindings
-                .get_scoped(binding_id, &origin, &project)
-            else {
-                return write_json(
-                    403,
-                    &json!({"error": "workspace binding is not granted for this origin and project"}),
-                );
-            };
-            if binding.entrypoint != entrypoint {
-                return write_json(
-                    403,
-                    &json!({"error": "entrypoint does not match the scoped binding"}),
-                );
-            }
-            let authorized_root = match std::fs::canonicalize(&binding.root) {
-                Ok(root) if root.is_dir() && root == binding.root => root,
-                _ => {
-                    return write_json(403, &json!({"error": "scoped binding root is unavailable"}))
+                .validate_scoped_entrypoint(binding_id, &origin, &project, entrypoint, false)
+            {
+                Ok(binding) => binding,
+                Err(_) => {
+                    return write_json(
+                        403,
+                        &json!({"error": "workspace binding is not granted for this origin and project"}),
+                    );
                 }
             };
+            let authorized_root = binding.root.clone();
             // A bound snapshot contributes only files explicitly named by
             // the manifest. Copying happens into this request's fresh job
             // workspace below; the binding root itself is never executed.
@@ -719,4 +759,100 @@ pub(super) async fn handle_job_delete(
     inner.queue.lock().await.retain(|qid| qid != id);
     let _ = std::fs::remove_dir_all(&root);
     write_json(200, &json!({"ok": true}))
+}
+
+#[cfg(test)]
+mod preset_admission_tests {
+    use super::*;
+
+    fn job() -> JobRequest {
+        serde_json::from_value(json!({
+            "protocol": 2,
+            "kind": "build",
+            "project": "paper",
+            "origin": "https://example.test",
+            "snapshot": "tree",
+            "generation": 7,
+            "builder": "typst",
+            "workspace": {"mode": "snapshot"},
+            "entrypoint": "paper.typ",
+            "output": "pdf",
+            "inputs": {"engine": "native", "options": {}},
+            "manifest": [],
+            "preset": "paper-preset"
+        }))
+        .unwrap()
+    }
+
+    fn store(path: &std::path::Path) -> presets::PresetStore {
+        let store = presets::PresetStore::new(path);
+        store
+            .create(
+                serde_json::from_value(json!({
+                    "id": "paper-preset",
+                    "display_name": "Paper",
+                    "semantic_revision": 1,
+                    "base_adapter": "typst",
+                    "source_formats": ["typst"]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn admission_pins_revision_and_refuses_mismatched_or_revoked_presets() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(directory.path());
+        let grant = store
+            .grant(
+                "https://example.test",
+                "paper",
+                "paper-preset",
+                presets::WorkspaceMode::Snapshot,
+                presets::Operation::Build,
+                "paper.typ",
+                1,
+            )
+            .unwrap();
+        let mut admitted = job();
+        pin_preset_revision(&mut admitted, &store).unwrap();
+        assert_eq!(admitted.preset_revision, Some(1));
+
+        let mut wrong_adapter = job();
+        wrong_adapter.builder = "quarto".into();
+        assert_eq!(
+            pin_preset_revision(&mut wrong_adapter, &store)
+                .unwrap_err()
+                .0,
+            400
+        );
+
+        store.revoke(&grant.id).unwrap();
+        let mut revoked = job();
+        assert_eq!(
+            pin_preset_revision(&mut revoked, &store).unwrap_err().0,
+            403
+        );
+
+        let mut updated = store.get("paper-preset").unwrap();
+        updated.display_name = "Paper 2".into();
+        store.update("paper-preset", updated).unwrap();
+        store
+            .grant(
+                "https://example.test",
+                "paper",
+                "paper-preset",
+                presets::WorkspaceMode::Snapshot,
+                presets::Operation::Build,
+                "paper.typ",
+                2,
+            )
+            .unwrap();
+        assert_eq!(admitted.preset_revision, Some(1));
+        let mut fresh = job();
+        pin_preset_revision(&mut fresh, &store).unwrap();
+        assert_eq!(fresh.preset_revision, Some(2));
+    }
 }

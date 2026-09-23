@@ -108,12 +108,7 @@ impl Server {
         // neither holds a connection past its own answer.
         let state = match room.comment_state(may_edit).await {
             Ok(state) => state,
-            Err(error) => {
-                return write_json(
-                    503,
-                    &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
-                )
-            }
+            Err(error) => return refused("read comment state", &error),
         };
         match room.comment_page(after, limit, author, may_edit).await {
             Ok((views, page)) => write_json(
@@ -129,10 +124,7 @@ impl Server {
                     "state": crate::room::comments::comment_state_json(&state),
                 }),
             ),
-            Err(error) => write_json(
-                error.status(),
-                &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
-            ),
+            Err(error) => refused("read comments", &error),
         }
     }
 
@@ -215,10 +207,7 @@ impl Server {
                     "total": page.total,
                 }),
             ),
-            Err(error) => write_json(
-                error.status(),
-                &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
-            ),
+            Err(error) => refused("read replies", &error),
         }
     }
 
@@ -1173,12 +1162,7 @@ impl Server {
         // wants the rest walks `GET .../comments?cursor=`.
         let state = match room.comment_state(may_edit).await {
             Ok(state) => state,
-            Err(error) => {
-                return write_json(
-                    503,
-                    &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
-                )
-            }
+            Err(error) => return refused("read snapshot comment state", &error),
         };
         let (comments, page) = match room
             .comment_page(
@@ -1190,12 +1174,7 @@ impl Server {
             .await
         {
             Ok(both) => both,
-            Err(error) => {
-                return write_json(
-                    error.status(),
-                    &json!({"error": error.to_string(), "retryable": error.is_temporary()}),
-                )
-            }
+            Err(error) => return refused("read snapshot comments", &error),
         };
         let mut comment_state = crate::room::comments::comment_state_json(&state);
         comment_state["complete"] = json!(page.complete);

@@ -109,7 +109,6 @@ pub(crate) fn plan(
         bindings,
         &options.binding_id,
         &options.main,
-        "quarto",
     )?;
     // Quarto's own half: the data files it declares are part of what a
     // render reads, so they are verified with the rest of the inventory.

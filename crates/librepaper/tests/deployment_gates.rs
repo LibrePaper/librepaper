@@ -1,14 +1,14 @@
-//! SPEC-server-is-a-log §14.2's three deployment-shaped tests, plus the
+//! SPEC-server-is-a-log §14.2's deployment-shaped tests, plus the
 //! comment traversal over the same real router: the items
 //! that are about the DEPLOYMENT rather than about one document, and so
 //! cannot be answered by a fake `LogCatalog` (see the header of
 //! `src/log/tests.rs`, which explains why they live here instead). The
-//! third of these -- "revocation mid-buffer flushes and closes" -- also
+//! revocation gates -- "revocation mid-buffer flushes and closes" -- also
 //! needs a real `Server` behind a real socket and the real sharing route
 //! that revokes a link, none of which the fake catalogue has either: it has
 //! no sharing, no sockets and no authority to revoke.
 //!
-//! All three need a real PostgreSQL and are gated behind
+//! All of these need a real PostgreSQL and are gated behind
 //! `LIBREPAPER_TEST_POSTGRES_URL`, the same variable the rest of the
 //! catalogue coverage uses (`grep -rl LIBREPAPER_TEST_POSTGRES_URL
 //! crates/librepaper/src`). Point it at a throwaway database, not
@@ -21,17 +21,17 @@
 //! cargo test -p librepaper --test deployment_gates -- --ignored --test-threads=1
 //! ```
 //!
-//! `--test-threads=1` is mandatory for all three, for reasons that do not
+//! `--test-threads=1` is mandatory for all of these, for reasons that do not
 //! all match: the lease test TRUNCATEs the database it is pointed at, like
 //! every other catalogue test; the idle test counts every commit PostgreSQL
 //! records against that database, so a second test running concurrently
-//! would be indistinguishable from a real regression; the revocation test
-//! also TRUNCATEs and, on top of that, binds a real loopback listener and
-//! runs a real websocket handshake, neither of which needs isolation from a
+//! would be indistinguishable from a real regression; the revocation gates
+//! also TRUNCATE and bind real loopback listeners with websocket handshakes.
+//! The socket operations do not need isolation from a
 //! neighbour but both of which are simply not worth paying to parallelize
-//! for three tests.
+//! for the gates in this file.
 //!
-//! All three build the real production types (`storage::postgres::
+//! All gates build the real production types (`storage::postgres::
 //! PostgresCatalog`, `log::Registry`, `room::Rooms`, `storage::worker::
 //! Worker`, and now `server::Server` behind its own `axum::serve`) rather
 //! than a hand-made subset, per the brief for this file. Reaching them from
@@ -889,13 +889,70 @@ mod revocation {
             .expect("count document_updates rows")
     }
 
+    /// An INSERT trigger whose nontransactional sequence records that the
+    /// flush reached PostgreSQL even though the transaction is rolled back.
+    async fn inject_update_insert_failure(catalog: &PostgresCatalog, document_id: Uuid) {
+        clear_update_insert_failure(catalog).await;
+        sqlx::query("CREATE SEQUENCE deployment_gate_flush_attempts")
+            .execute(catalog.pool())
+            .await
+            .expect("create the failed-flush attempt counter");
+        sqlx::query(
+            "CREATE FUNCTION deployment_gate_reject_update() RETURNS trigger \
+             LANGUAGE plpgsql AS $$ BEGIN \
+             PERFORM nextval('deployment_gate_flush_attempts'); \
+             RAISE EXCEPTION 'injected deployment gate update failure'; \
+             END $$",
+        )
+        .execute(catalog.pool())
+        .await
+        .expect("create the temporary failing trigger function");
+        let trigger = format!(
+            "CREATE TRIGGER deployment_gate_reject_update BEFORE INSERT ON document_updates \
+             FOR EACH ROW WHEN (NEW.document_id = '{document_id}') \
+             EXECUTE FUNCTION deployment_gate_reject_update()"
+        );
+        sqlx::query(&trigger)
+            .execute(catalog.pool())
+            .await
+            .expect("install the document-scoped update failure");
+    }
+
+    /// Idempotent cleanup also runs before installing the injection, so a
+    /// prior interrupted run cannot poison the next deployment-gate run.
+    async fn clear_update_insert_failure(catalog: &PostgresCatalog) {
+        sqlx::query("DROP TRIGGER IF EXISTS deployment_gate_reject_update ON document_updates")
+            .execute(catalog.pool())
+            .await
+            .expect("remove the temporary update trigger");
+        sqlx::query("DROP FUNCTION IF EXISTS deployment_gate_reject_update()")
+            .execute(catalog.pool())
+            .await
+            .expect("remove the temporary update trigger function");
+        sqlx::query("DROP SEQUENCE IF EXISTS deployment_gate_flush_attempts")
+            .execute(catalog.pool())
+            .await
+            .expect("remove the temporary flush attempt counter");
+    }
+
+    async fn failed_flush_attempts(catalog: &PostgresCatalog) -> i64 {
+        sqlx::query_scalar(
+            "SELECT CASE WHEN is_called THEN last_value ELSE 0 END \
+             FROM deployment_gate_flush_attempts",
+        )
+        .fetch_one(catalog.pool())
+        .await
+        .expect("read the nontransactional failed-flush attempt counter")
+    }
+
     /// One whole deployment: a real catalogue, a real `Server` on a real
     /// loopback port, an owner and a second signed-in editor with bearers
-    /// for both. Shared by the two revocation gates below because the setup
+    /// for both. Shared by the revocation gates below because the setup
     /// really is identical -- what differs is only which code path notices
     /// that the second editor's authority has gone.
     pub(super) struct Deployed {
         pub catalog: Arc<PostgresCatalog>,
+        pub registry: Arc<Registry>,
         pub base: String,
         pub addr: std::net::SocketAddr,
         pub http: reqwest::Client,
@@ -1049,6 +1106,7 @@ mod revocation {
 
         Deployed {
             catalog,
+            registry,
             base,
             addr,
             http,
@@ -1060,7 +1118,7 @@ mod revocation {
     }
 
     /// Opens one socket and takes it as far as `doc-state`, which is where
-    /// both gates below start from. The `doc-state` frame comes back for the
+    /// revocation gates below start from. The `doc-state` frame comes back for the
     /// caller that wants to look at it.
     async fn join(addr: std::net::SocketAddr, path: &str, bearer: &str) -> (WsStream, Value) {
         let mut request = format!("ws://{addr}{path}")
@@ -1101,6 +1159,7 @@ mod revocation {
             second_editor_bearer,
             edit_key,
             document_id,
+            ..
         } = deploy(&url, slug, "deployment-revoke").await;
 
         // -- the owner's own socket: never revoked by anything below ---------
@@ -1366,6 +1425,132 @@ mod revocation {
             document_update_rows(&catalog, document_id).await,
             1,
             "no further ingest from a socket whose authority is gone"
+        );
+    }
+
+    /// A failed authority-revoked flush must not undo the authority change
+    /// or strand the revoked socket in the room. The buffer remains resident
+    /// and a later ordinary flush can make it durable.
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1"]
+    async fn inbound_revocation_closes_and_departs_after_flush_failure_then_retries_buffer() {
+        let Ok(url) = std::env::var("LIBREPAPER_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let slug = "authority-revoked-flush-retry";
+        let Deployed {
+            catalog,
+            registry,
+            addr,
+            owner_bearer,
+            second_editor_bearer,
+            edit_key,
+            document_id,
+            ..
+        } = deploy(&url, slug, "deployment-revoke-retry").await;
+
+        let (mut owner_ws, _) = join(addr, &format!("/ws/{slug}"), &owner_bearer).await;
+        let (mut editor_ws, _) = join(
+            addr,
+            &format!("/ws/{slug}?k={edit_key}"),
+            &second_editor_bearer,
+        )
+        .await;
+        let mut outbox = Outbox::new();
+        let batch = outbox.edit("retain this buffered text through a failed revocation flush");
+        editor_ws
+            .send(WsMessage::Text(
+                json!({"type": "doc-update", "update": base64_encode(&batch), "seq": 1})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .expect("send the buffered update");
+        wait_for_type(&mut owner_ws, "doc-update", Duration::from_secs(5)).await;
+        assert_eq!(document_update_rows(&catalog, document_id).await, 0);
+
+        sqlx::query(
+            "UPDATE share_links SET revoked_at=now(),generation=generation+1 WHERE document_id=$1",
+        )
+        .bind(document_id)
+        .execute(catalog.pool())
+        .await
+        .expect("revoke the edit link without running the all-socket sweep");
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        inject_update_insert_failure(&catalog, document_id).await;
+        // The ping reaches the real per-frame authorization check. The close
+        // and room departure must proceed even while its flush transaction is
+        // failing in the trigger.
+        let _ = editor_ws
+            .send(WsMessage::Text(json!({"type": "ping"}).to_string().into()))
+            .await;
+        let editor_closed = wait_for_close(&mut editor_ws, Duration::from_secs(5)).await;
+
+        let sequencer = registry
+            .resident(document_id)
+            .await
+            .expect("the joined document remains resident");
+        let departure_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut subscribers = sequencer.subscribers().await;
+        while subscribers != 1 && tokio::time::Instant::now() < departure_deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            subscribers = sequencer.subscribers().await;
+        }
+        let buffered_after_failure = sequencer.log_state().await.buffered;
+        let attempted_failed_writes = failed_flush_attempts(&catalog).await;
+        let rows_after_failure = document_update_rows(&catalog, document_id).await;
+
+        // Remove the injection before any assertions or the retry so even a
+        // failed assertion cannot leave a poisoned database for the next run.
+        clear_update_insert_failure(&catalog).await;
+
+        let retry_result = sequencer.flush(FlushReason::MaxAge).await;
+        let rows_after_retry = document_update_rows(&catalog, document_id).await;
+        let buffered_after_retry = sequencer.log_state().await.buffered;
+
+        // The owner was the second subscriber throughout and remains usable.
+        let owner_ping_sent = owner_ws
+            .send(WsMessage::Text(json!({"type": "ping"}).to_string().into()))
+            .await
+            .is_ok();
+        let owner_pong = if owner_ping_sent {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                wait_for_type(&mut owner_ws, "pong", Duration::from_secs(5)),
+            )
+            .await
+            .is_ok()
+        } else {
+            false
+        };
+
+        assert!(
+            editor_closed,
+            "revocation still closes the failed-flush socket"
+        );
+        assert_eq!(
+            subscribers, 1,
+            "the revoked socket departs while the owner remains subscribed"
+        );
+        assert!(
+            attempted_failed_writes >= 1,
+            "the trigger's nontransactional sequence proves flush attempted an INSERT"
+        );
+        assert_eq!(rows_after_failure, 0, "the injected INSERT did not persist");
+        assert_eq!(
+            buffered_after_failure, 1,
+            "a failed flush retains the update in the sequencer buffer"
+        );
+        assert!(retry_result.is_ok(), "the later ordinary flush succeeds");
+        assert_eq!(rows_after_retry, 1, "the retry makes the edit durable");
+        assert_eq!(
+            buffered_after_retry, 0,
+            "the successful retry drains the buffer"
+        );
+        assert!(
+            owner_pong,
+            "the owner's still-authorized socket remains usable"
         );
     }
 }

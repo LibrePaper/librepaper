@@ -467,6 +467,11 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
         .unwrap();
     let payload = json!({"type": "comment", "comment": comment});
     room.broadcast_comment_event(Some(1), &payload).await;
+    assert_eq!(
+        room.event_comment_read_count(),
+        1,
+        "editor and reader views share one enriched row read"
+    );
 
     let relayed = received(&mut editor_rx);
     assert_eq!(
@@ -479,6 +484,7 @@ async fn a_comment_reaches_the_other_editor_and_the_public_channel_live() {
     let public = received(&mut reader_rx);
     assert_eq!(public.len(), 1);
     assert_eq!(public[0]["comment"]["body"], "A remark.");
+    assert!(relayed[0]["comment"]["original_anchor"].is_object());
     assert!(
         public[0]["comment"]["original_anchor"].is_null(),
         "a reader is never sent a range in a source file: {}",
@@ -602,6 +608,11 @@ async fn a_suggestion_stays_out_of_the_public_channel() {
     );
     let payload = json!({"type": "comment", "comment": comment});
     room.broadcast_comment_event(None, &payload).await;
+    assert_eq!(
+        room.event_comment_read_count(),
+        1,
+        "a suggestion is read once before its reader view is redacted"
+    );
 
     let editors = received(&mut editor_rx);
     assert_eq!(editors.len(), 1);

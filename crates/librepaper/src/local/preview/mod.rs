@@ -64,7 +64,6 @@ pub(crate) fn bind_scope(
     bindings: &BindingStore,
     binding_id: &str,
     main: &str,
-    engine: &str,
 ) -> Result<BoundScope, String> {
     // A session in this same scope is this caller's own previous watcher,
     // which `start` replaces. Every exclusion below is about somebody else's.
@@ -79,9 +78,13 @@ pub(crate) fn bind_scope(
     if existing.values().filter(other_scope).count() >= MAX_OTHER_PREVIEWS {
         return Err("Too many active previews".into());
     }
-    let binding = bindings
-        .resolve_scoped(binding_id, &request.origin, &request.project)
-        .map_err(|_| "Preview binding is not authorized")?;
+    let binding = bindings.validate_scoped_entrypoint(
+        binding_id,
+        &request.origin,
+        &request.project,
+        main,
+        true,
+    )?;
     if existing
         .values()
         .filter(other_scope)
@@ -93,22 +96,9 @@ pub(crate) fn bind_scope(
     // own, already validated as a safe relative path by the adapter's
     // option validation. A granted binding still refuses any entrypoint but
     // the one it was granted for.
-    let hosted = BindingStore::is_hosted(&binding);
-    if !hosted && main != binding.entrypoint {
-        return Err(format!(
-            "{engine} entrypoint does not match the granted project binding"
-        ));
-    }
-    let entrypoint = if hosted {
-        main.to_string()
-    } else {
-        binding.entrypoint.clone()
-    };
+    let entrypoint = main.to_string();
     if !request.manifest.iter().any(|f| f.path == entrypoint) {
         return Err("Preview inventory must contain the bound entrypoint".into());
-    }
-    if std::fs::canonicalize(&binding.root).map_err(|e| e.to_string())? != binding.root {
-        return Err("Bound root changed".into());
     }
     Ok(BoundScope {
         binding,
