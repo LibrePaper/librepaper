@@ -191,13 +191,13 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
     let expired = now - Duration::hours(1);
     let grace = now + Duration::days(7);
     let first = catalog
-        .activate_log_base(document.id, 1, &snapshots[0].3, snapshot(0), grace)
+        .activate_log_base(document.id, 1, &snapshots[0].3, snapshot(0), grace, false)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(first.uncompacted_count, 2);
     let second = catalog
-        .activate_log_base(document.id, 2, &snapshots[1].3, snapshot(1), expired)
+        .activate_log_base(document.id, 2, &snapshots[1].3, snapshot(1), expired, false)
         .await
         .unwrap()
         .unwrap();
@@ -205,7 +205,7 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
     // A duplicate key fails after retirement would have started. The whole
     // transaction must roll back, leaving the current base and log untouched.
     assert!(catalog
-        .activate_log_base(document.id, 3, &snapshots[2].3, snapshot(1), grace)
+        .activate_log_base(document.id, 3, &snapshots[2].3, snapshot(1), grace, false)
         .await
         .is_err());
     assert_eq!(
@@ -222,7 +222,7 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
         1
     );
     let third = catalog
-        .activate_log_base(document.id, 3, &snapshots[2].3, snapshot(2), grace)
+        .activate_log_base(document.id, 3, &snapshots[2].3, snapshot(2), grace, false)
         .await
         .unwrap()
         .unwrap();
@@ -230,13 +230,13 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
     assert_eq!(third.uncompacted_bytes, 0);
     for through in [2, 3] {
         assert!(catalog
-            .activate_log_base(document.id, through, &snapshots[2].3, snapshot(2), expired)
+            .activate_log_base(document.id, through, &snapshots[2].3, snapshot(2), expired, false)
             .await
             .unwrap()
             .is_none());
     }
     assert!(catalog
-        .activate_log_base(document.id, 4, &snapshots[2].3, snapshot(2), grace)
+        .activate_log_base(document.id, 4, &snapshots[2].3, snapshot(2), grace, false)
         .await
         .is_err());
     let retired: (Uuid, i64, Vec<u8>, Vec<u8>, i64, OffsetDateTime) = sqlx::query_as(

@@ -304,6 +304,7 @@ mod tests {
                 vector,
                 written,
                 crate::storage::collaboration::superseded_base_deadline(),
+                false,
             )
             .await
             .unwrap()
@@ -1618,7 +1619,7 @@ mod tests {
             Arc::new(std::sync::OnceLock::new()),
         );
 
-        let outcome = sequencer.snapshot_at_log_vector().await.unwrap();
+        let outcome = sequencer.snapshot_at_log_vector(crate::log::sequencer::SnapshotMode::Full).await.unwrap();
         assert!(
             outcome.is_none(),
             "an entry built from the rows does not match the fabricated log vector, so it is not used",

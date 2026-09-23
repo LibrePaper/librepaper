@@ -838,15 +838,11 @@ impl Server {
         }
         // Check if another editor has the document open. The caller's own tab
         // may hold one editor socket, which is why the bound is 1, not 0.
-        match room.editors().await {
-            Ok(count) if count > 1 => {
-                return write_json(
-                    409,
-                    &json!({"error": "another editor has this document open; ask them to close it first"}),
-                );
-            }
-            Err(error) => return sequencer_reply(&error),
-            _ => {}
+        if room.editors().await > 1 {
+            return write_json(
+                409,
+                &json!({"error": "another editor has this document open; ask them to close it first"}),
+            );
         }
         // Compact to a shallow snapshot and delete the log.
         let result = crate::storage::worker::compact_document(
@@ -859,7 +855,7 @@ impl Server {
             crate::log::sequencer::SnapshotMode::Shallow,
         )
         .await;
-        let _bytes = match result {
+        let after = match result {
             Ok(bytes) => bytes,
             Err(message) => return write_json(503, &json!({"error": message})),
         };
@@ -867,7 +863,7 @@ impl Server {
         room.forget_comments().await;
         write_json(
             200,
-            &json!({"historyBytes": _bytes.unwrap_or(0)}),
+            &json!({"historyBytes": after.unwrap_or(0)}),
         )
     }
 

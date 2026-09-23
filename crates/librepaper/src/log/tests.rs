@@ -1868,7 +1868,7 @@ async fn every_sequencer_read_refuses_after_compaction_fence() {
         Err(SequencerError::Fenced(_))
     ));
     assert!(matches!(
-        sequencer.snapshot_at_log_vector().await,
+        sequencer.snapshot_at_log_vector(SnapshotMode::Full).await,
         Err(SequencerError::Fenced(_))
     ));
     assert!(matches!(

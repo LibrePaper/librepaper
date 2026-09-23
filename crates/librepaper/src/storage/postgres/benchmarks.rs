@@ -1085,7 +1085,7 @@ async fn compaction_cost_release_benchmark() {
                 .expect("a flush before the snapshot");
             let at = Instant::now();
             let taken = sequencer
-                .snapshot_at_log_vector()
+                .snapshot_at_log_vector(crate::log::sequencer::SnapshotMode::Full)
                 .await
                 .expect("a snapshot attempt");
             if let Some(taken) = taken {
@@ -1102,7 +1102,7 @@ async fn compaction_cost_release_benchmark() {
 
         // Step 4.
         let at = Instant::now();
-        crate::storage::worker::prove_coverage(&snapshot, &log_vector, changes)
+        crate::storage::worker::prove_coverage(&snapshot, &log_vector, changes, crate::log::sequencer::SnapshotMode::Full)
             .expect("the snapshot covers the log");
         let verification_us = micros(at);
 
@@ -1136,6 +1136,7 @@ async fn compaction_cost_release_benchmark() {
                 &log_vector,
                 written,
                 crate::storage::collaboration::superseded_base_deadline(),
+                false,
             )
             .await
             .expect("activate the base");
@@ -1423,7 +1424,7 @@ async fn compact_seeded_document(
             .expect("a flush before the snapshot");
         let at = Instant::now();
         let taken = sequencer
-            .snapshot_at_log_vector()
+            .snapshot_at_log_vector(crate::log::sequencer::SnapshotMode::Full)
             .await
             .expect("a snapshot attempt");
         if let Some(taken) = taken {
@@ -1443,7 +1444,7 @@ async fn compact_seeded_document(
 
     // Step 4.
     let at = Instant::now();
-    crate::storage::worker::prove_coverage(&snapshot, &log_vector, changes)
+    crate::storage::worker::prove_coverage(&snapshot, &log_vector, changes, crate::log::sequencer::SnapshotMode::Full)
         .expect("the snapshot covers the log");
     let verification_us = micros(at);
 
@@ -1471,6 +1472,7 @@ async fn compact_seeded_document(
             &log_vector,
             written,
             crate::storage::collaboration::superseded_base_deadline(),
+            false,
         )
         .await
         .expect("activate the base");
