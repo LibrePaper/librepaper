@@ -12,7 +12,9 @@ const editor = ({ mayEdit }) => mayEdit;
 const build = ({ format, mayEdit }) => ["latex", "typst", "markdown", "quarto"].includes(format) && mayEdit;
 const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
 const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
-const local = ({ format, mayEdit }) => ["typst", "markdown", "quarto"].includes(format) && mayEdit;
+const local = () => true;
+const remote = () => true;
+const projectBinding = ({ format }) => ["typst", "markdown", "quarto"].includes(format);
 // The account is the deployment's, not the document's: whoever is signed in
 // is offered it whatever they happen to have open.
 const account = ({ signedIn }) => Boolean(signedIn);
@@ -50,15 +52,23 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "local", says: "Local app", offered: local,
+    id: "local", says: "Local", offered: local,
     note: "The LibrePaper app running on this computer.",
     entries: [
       { id: "local-status", says: "Connection", terms: "connect disconnect retry status" },
+      { id: "local-install-help", says: "About and installation", terms: "install installer setup linux macos windows agent claude codex pi opencode zotero quarto backup sync local folder" },
       { id: "local-pairing", says: "Pairing code", terms: "pair code allow site" },
       { id: "local-address", says: "Address", terms: "port url localhost host" },
-      { id: "local-binding", says: "Project folder", terms: "quarto typst folder binding hosted", offered: quarto },
+      { id: "local-binding", says: "Project folder", terms: "quarto typst markdown folder binding hosted", offered: projectBinding },
       { id: "local-tools", says: "Available tools", terms: "versions latex quarto biber" },
       { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
+    ],
+  },
+  {
+    id: "remote", says: "Remote", offered: remote,
+    note: "The LibrePaper server for this project.",
+    entries: [
+      { id: "remote-status", says: "Connection", terms: "connected offline server address sync status" },
     ],
   },
   {

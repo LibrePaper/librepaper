@@ -14,6 +14,7 @@
   import RenderingSettings from "./RenderingSettings.svelte";
   import LocalAppSettings from "./LocalAppSettings.svelte";
   import AccountSettings from "./AccountSettings.svelte";
+  import RemoteSettings from "./RemoteSettings.svelte";
 
   let {
     open = $bindable(false),
@@ -40,6 +41,8 @@
     // Who is signed in, which is what the account category is about. `{}`
     // when nobody is, and then that category is not offered at all.
     account = {},
+    remoteConnected = false,
+    remoteNote = "",
   } = $props();
 
   const context = $derived({ format: sourceFormat, mayEdit, signedIn: Boolean(account.provider) });
@@ -94,7 +97,9 @@
         {:else if shown.id === "rendering"}
           <RenderingSettings {options} {onapplyoptions} />
         {:else if shown.id === "local"}
-          <LocalAppSettings {main} {sourceFormat} {onbindingid} />
+          <LocalAppSettings {main} {sourceFormat} {mayEdit} {onbindingid} />
+        {:else if shown.id === "remote"}
+          <RemoteSettings {remoteConnected} {remoteNote} />
         {:else if shown.id === "account"}
           <AccountSettings {account} />
         {/if}

@@ -1,13 +1,11 @@
 <script>
   // The LibrePaper app on this computer: whether this browser is connected to
-  // it, how to connect, and what it can do. Offered for the formats that have
-  // a local tool -- Typst, Markdown, Quarto -- and never for LaTeX, which
-  // builds in the browser alone.
+  // it, how to connect, and what it can do, whatever format is open.
   import SettingRow from "./SettingRow.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
-  let { sourceFormat = "", main = "", onbindingid } = $props();
+  let { sourceFormat = "", main = "", mayEdit = false, onbindingid } = $props();
   const quarto = $derived(sourceFormat === "quarto");
   const projectBinding = $derived(["quarto", "typst", "markdown"].includes(sourceFormat));
 
@@ -87,19 +85,27 @@
   function openCompanion() { return pair(); }
 </script>
 
+<section id="local-install-help" class="setting-description local-install-help" aria-label="About and install the LibrePaper Companion">
+  <p>The LibrePaper Companion runs on your computer and connects this browser to local services. It can make installed coding agents such as Claude Code, Codex, pi, and OpenCode available to work with a project, search your Zotero library, and run local tools such as Quarto. Those tools must be installed separately.</p>
+  <p>For a live Quarto preview, LibrePaper sends current project files from the browser to the companion's preview workspace as the project changes. This is not a general backup or continuous sync into a chosen local folder. A selected project folder is used only by local operations that explicitly use that binding.</p>
+  <p>Install the companion on this computer, then start it once. These download links remain available while connected:</p>
+  <ul>
+    <li>Linux: save and run the <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/install-companion.sh">Linux installer</a> with <code>sh install-companion.sh</code>; it adds LibrePaper to the applications menu.</li>
+    <li>macOS: download the <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper_darwin_arm64.app.zip">Apple silicon</a> or <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper_darwin_amd64.app.zip">Intel</a> app, unzip it, move it to <code>~/Applications</code>, and open it. Quit the current app before replacing it with an update.</li>
+    <li>Windows: run <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/install-companion.cmd">install-companion.cmd</a>; it installs the companion and creates a settings shortcut.</li>
+  </ul>
+  <p>Use <strong>Start at login</strong> in companion settings if you want it to launch automatically. <a href="https://github.com/LibrePaper/librepaper/blob/main/deploy/README.md" target="_blank" rel="noreferrer">Full installation instructions</a>.</p>
+</section>
+
 <div id="local-status" class="setting-status" data-tone={tone}>
   <span class="setting-status-dot" aria-hidden="true"></span>
   <div class="setting-status-words">
     <div class="setting-title">{WORDS[local?.state] || WORDS.unknown}</div>
     <div class="setting-description">
       {#if connected}
-        {#if quarto && local?.capabilities?.quarto?.tool?.available === false}
-          Quarto was not found on this computer. Install Quarto, then check the local setup below.
-        {:else}
-          {quarto ? "Renders run on this computer, with your installed Quarto and packages." : "PDF builds can use the LaTeX installed on this computer."}
-        {/if}
+        The companion is paired with this project. It can use tools installed on this computer, including Quarto, R, Python, TeX, and Zotero.
       {:else if local?.state === "unreachable"}
-        Start the companion once; this page will reconnect automatically when it is available.
+        Start the companion, then retry the connection here.
       {:else if local?.state === "denied"}
         Allow local-network access for this site, then retry. The browser is preventing the connection.
       {:else if local?.state === "unauthorized" || local?.state === "reachable"}
@@ -118,17 +124,6 @@
     <button type="button" class="btn btn-sm preset-outlined-surface-300-700" onclick={() => void localBridge.retry()}>Retry</button>
   </div>
 </div>
-
-{#if !connected}
-  <p class="setting-description local-install-help">
-    Install the companion once, then return here:
-    <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/install-companion.sh">Linux installer</a>,
-    <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper_darwin_arm64.app.zip">macOS Apple silicon</a>,
-    <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper_darwin_amd64.app.zip">macOS Intel</a>, or
-    <a href="https://github.com/LibrePaper/librepaper/releases/latest/download/install-companion.cmd">Windows setup</a>.
-    <a href="https://github.com/LibrePaper/librepaper/blob/main/deploy/README.md" target="_blank" rel="noreferrer">Installation instructions</a>.
-  </p>
-{/if}
 
 {#if !connected}
   <details id="local-pairing" class="setting-advanced">
@@ -154,8 +149,8 @@
 
 {#if projectBinding}
   <SettingRow id="local-binding" title="Project folder" description="Use this folder for local project builds and previews. Selecting a folder does not upload its contents.">
-    <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} />
-    <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!connected || choosingFolder || !entrypoint.trim()} onclick={() => chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose project folder…"}</button>
+    <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} disabled={!mayEdit} />
+    <button type="button" class="btn btn-sm preset-outlined-surface-300-700" disabled={!mayEdit || !connected || choosingFolder || !entrypoint.trim()} onclick={() => chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose project folder…"}</button>
   </SettingRow>
 {/if}
 

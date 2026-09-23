@@ -3,19 +3,30 @@ import { readFile } from "node:fs/promises";
 
 const read = (name) => readFile(new URL(`../../src/components/settings/${name}`, import.meta.url), "utf8");
 const registry = await read("registry.js");
+const { offered, search } = await import("../../src/components/settings/registry.js");
 const local = await read("LocalAppSettings.svelte");
 const storage = await read("StorageSettings.svelte");
 const rendering = await read("RenderingSettings.svelte");
 const build = await read("BuildSettings.svelte");
 const reader = await readFile(new URL("../../src/components/Reader.svelte", import.meta.url), "utf8");
 
-// The local pairing surface is shared by the formats that have a local
-// builder. Keep this check close to the components because a LaTeX-only gate
-// silently makes Quarto's local renderer impossible to configure from the
-// browser, and because LaTeX itself must stay out: it builds in the browser,
-// and its native fallback is routed by `latex.js` rather than configured here.
-assert.match(registry, /const local = \(\{ format, mayEdit \}\) => \["typst", "markdown", "quarto"\]\.includes\(format\) && mayEdit;/);
-assert.match(registry, /id: "local", says: "Local app", offered: local,/);
+// Local and remote connection information is available regardless of format
+// or edit rights, so users can connect and understand their project anywhere.
+for (const format of ["latex", "typst", "markdown", "quarto", "html", ""]) {
+  for (const mayEdit of [true, false]) {
+    const ids = offered({ format, mayEdit, signedIn: false }).map((item) => item.id);
+    assert.ok(ids.includes("local"), `${format} (mayEdit=${mayEdit}) offers Local`);
+    assert.ok(ids.includes("remote"), `${format} (mayEdit=${mayEdit}) offers Remote`);
+  }
+}
+assert.match(registry, /id: "local", says: "Local", offered: local,/);
+assert.match(registry, /id: "remote", says: "Remote", offered: remote,/);
+for (const query of ["windows setup", "macos", "claude", "zotero", "backup", "server address"]) {
+  const matches = search(query, { format: "html", mayEdit: false, signedIn: false }) || [];
+  assert.ok(matches.length, `settings search finds ${query}`);
+}
+assert.match(registry, /id: "local-install-help"/);
+assert.match(registry, /id: "remote-status"/);
 assert.match(local, /import \* as localBridge from "\.\.\/\.\.\/lib\/companion\/client\.js"/);
 // The panel shows the status rather than keeping its own copy of it: the
 // shared module owns that state, and this panel is one of its watchers.
