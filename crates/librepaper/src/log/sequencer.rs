@@ -43,29 +43,46 @@ use crate::room::outgoing::{Outgoing, Sender};
 use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{self, Authority, FlushRow, PostgresCatalog};
 
-/// One update as it arrives. 4 MiB is a large paste of a whole file, and
-/// several times any keystroke.
+/// The log quota is the one bound on a document's bytes. The two expansion
+/// factors in budget.rs are measurements applied to it.
+/// `budget::DEFAULT_EXPANSION` bounds what a decoded document costs
+/// RESIDENT once cached, as a multiple of its log bytes.
+/// `budget::BUILD_TRANSIENT_EXPANSION` bounds the extra a cold build
+/// costs while it is PRODUCING that resident document -- a different
+/// number because a build's peak and a cache's steady state are
+/// different things, not two measurements of one thing.
 ///
-/// This is one of three size bounds that have to agree, because each is
-/// stated in a different currency and nothing forces a change to one to be
-/// reflected in the others (SPEC-server-is-a-log Priority 3, "make the
-/// three size limits agree"):
+/// One update as it arrives is limited by `max_update_bytes(log_quota_bytes)`,
+/// which is 4 MiB at any standard quota. This is a large paste of a whole file,
+/// and several times any keystroke.
+
+/// The maximum size of one update as it arrives, derived from the log quota.
+pub fn max_update_bytes(log_quota_bytes: usize) -> usize {
+    log_quota_bytes
+}
+
+/// The most one document's pending charge can come to.
 ///
-/// - `MAX_UPDATE_BYTES` here bounds one update on the wire.
-/// - `budget::DEFAULT_EXPANSION` bounds what a decoded document costs
-///   RESIDENT once cached, as a multiple of its log bytes.
-///   `budget::BUILD_TRANSIENT_EXPANSION` bounds the extra a cold build
-///   costs while it is PRODUCING that resident document -- a different
-///   number because a build's peak and a cache's steady state are
-///   different things, not two measurements of one thing.
-/// - `storage::collaboration::MAX_EXPANDED_BASE_BYTES` (128 MiB) bounds the
-///   compacted base a log is allowed to grow to, which is what sets the
-///   worst case for both of the above: a full base at that ceiling, times
-///   `DEFAULT_EXPANSION` plus `BUILD_TRANSIENT_EXPANSION`, is the largest
-///   single reservation the budget will ever be asked to grant, and
-///   `admission::concurrency()` (`min(cores, 4)`) is what bounds how many
-///   of those can be asked for at once.
-pub const MAX_UPDATE_BYTES: usize = 4 * 1024 * 1024;
+/// [`BUFFER_CEILING_BYTES`] is the ordinary ceiling, but an empty buffer
+/// always admits one update whatever it weighs -- otherwise a single
+/// maximum-size update would be refused forever the moment its framing
+/// pushed it one byte past the ceiling. So the true per-document maximum
+/// is the larger of the two.
+pub fn max_pending_charge(log_quota_bytes: usize) -> usize {
+    let ceiling = BUFFER_CEILING_BYTES;
+    let single = max_update_bytes(log_quota_bytes) + frame::BATCH_HEADER_BYTES + frame::MAX_PEER_KEY;
+    if single > ceiling {
+        single
+    } else {
+        ceiling
+    }
+}
+
+/// The largest row an ordinary flush can write: one version byte over a
+/// document's whole pending charge.
+pub fn max_row_bytes(log_quota_bytes: usize) -> usize {
+    frame::ROW_HEADER_BYTES + max_pending_charge(log_quota_bytes)
+}
 
 /// A buffer non-empty for this long flushes even while somebody is still
 /// typing, so the log is never further behind the screen than this.
@@ -85,32 +102,6 @@ pub const FLUSH_TRIGGER_BYTES: usize = 1024 * 1024;
 /// framing (`frame::overhead` per batch), and a ceiling that ignored it
 /// bounded the payload while letting the row grow several times past it.
 pub const BUFFER_CEILING_BYTES: usize = FLUSH_TRIGGER_BYTES * 4;
-
-/// The most one document's pending charge can come to.
-///
-/// [`BUFFER_CEILING_BYTES`] is the ordinary ceiling, but an empty buffer
-/// always admits one update whatever it weighs -- otherwise a single
-/// maximum-size update, which [`MAX_UPDATE_BYTES`] says this deployment
-/// accepts, would be refused forever the moment its framing pushed it one
-/// byte past the ceiling. So the true per-document maximum is the larger of
-/// the two, and this states it once for the configuration check and the
-/// pending accounting to share.
-pub const MAX_PENDING_CHARGE: usize = {
-    let ceiling = BUFFER_CEILING_BYTES;
-    let single = MAX_UPDATE_BYTES + frame::BATCH_HEADER_BYTES + frame::MAX_PEER_KEY;
-    if single > ceiling {
-        single
-    } else {
-        ceiling
-    }
-};
-
-/// The largest row an ordinary flush can write: one version byte over a
-/// document's whole pending charge. A semantic command's row can be larger by
-/// the server-authored update it adds, which is why
-/// `Configuration::validate_pending` adds `max_document` to this rather than
-/// treating it as the last word.
-pub const MAX_ROW_BYTES: usize = frame::ROW_HEADER_BYTES + MAX_PENDING_CHARGE;
 /// At most one `source-changed` per document per second (§4.5).
 pub const SOURCE_CHANGED_INTERVAL: Duration = Duration::from_secs(1);
 /// How long a build may run before the document is marked unreadable (§9.3).
@@ -617,10 +608,13 @@ pub(crate) trait LogCatalog: Send + Sync {
     ) -> BoxFuture<'a, postgres::Result<i64>>;
     /// The compaction base, read through the object store (§4.3). Returns a
     /// plain string error because that is all any caller here does with it.
+    /// The base expands in memory while it is being sent, and the budget is
+    /// what bounds that expansion.
     fn read_base(
         &self,
         document_id: Uuid,
         blobs: Arc<dyn BlobStore>,
+        expanded_limit: u64,
     ) -> BoxFuture<'_, std::result::Result<Vec<u8>, String>>;
     /// §8.4's two compaction triggers, as rows and as bytes.
     ///
@@ -697,12 +691,13 @@ impl LogCatalog for PostgresCatalog {
         &self,
         document_id: Uuid,
         blobs: Arc<dyn BlobStore>,
+        expanded_limit: u64,
     ) -> BoxFuture<'_, std::result::Result<Vec<u8>, String>> {
         // `CollaborationStorage` wants an owned `Arc<PostgresCatalog>`.
         // Cloning one is cheap: the pool inside is itself reference counted.
         Box::pin(async move {
             crate::storage::collaboration::CollaborationStorage::new(Arc::new(self.clone()), blobs)
-                .read_document_base(document_id)
+                .read_document_base(document_id, expanded_limit)
                 .await
                 .map_err(|error| error.to_string())
         })
@@ -959,6 +954,8 @@ impl Inner {
 pub struct Sequencer {
     pub document_id: Uuid,
     pub slug: String,
+    owner_id: Uuid,
+    ledger: Arc<super::ledger::StorageLedger>,
     inner: tokio::sync::Mutex<Inner>,
     catalog: Arc<dyn LogCatalog>,
     blobs: Arc<dyn BlobStore>,
@@ -1026,6 +1023,7 @@ impl Sequencer {
         budget: Arc<Budget>,
         pending: Arc<super::pending::PendingBudget>,
         deployment_peer_key: String,
+        ledger: Arc<super::ledger::StorageLedger>,
         compaction: Arc<std::sync::OnceLock<crate::storage::worker::Handle>>,
     ) -> Result<Self> {
         // Admission's own two reads, made against the concrete catalogue.
@@ -1034,6 +1032,10 @@ impl Sequencer {
         // every test double had to answer and nothing else ever called.
         let head = catalog.log_head(document_id).await?;
         let base = catalog.log_base(document_id).await?;
+        ledger
+            .refresh(&catalog, head.owner_id)
+            .await
+            .map_err(|error| SequencerError::Catalog(error))?;
         // Upcast once, here: every other method sees only the questions and
         // writes in `LogCatalog`, not the concrete catalog, which is what
         // lets `from_parts` build a sequencer without one (§14.2).
@@ -1046,12 +1048,14 @@ impl Sequencer {
         Ok(Self::from_parts(
             document_id,
             slug,
+            head.owner_id,
             catalog,
             blobs,
             config,
             budget,
             pending,
             deployment_peer_key,
+            ledger,
             head.update_sequence + 1,
             log_vector,
             base.as_ref()
@@ -1073,12 +1077,14 @@ impl Sequencer {
     pub(crate) fn from_parts(
         document_id: Uuid,
         slug: String,
+        owner_id: Uuid,
         catalog: Arc<dyn LogCatalog>,
         blobs: Arc<dyn BlobStore>,
         config: Arc<Configuration>,
         budget: Arc<Budget>,
         pending: Arc<super::pending::PendingBudget>,
         deployment_peer_key: String,
+        ledger: Arc<super::ledger::StorageLedger>,
         next_sequence: i64,
         log_vector: VersionVector,
         base_bytes: u64,
@@ -1091,6 +1097,8 @@ impl Sequencer {
         Self {
             document_id,
             slug,
+            owner_id,
+            ledger,
             inner: tokio::sync::Mutex::new(Inner {
                 next_sequence,
                 head_vector: log_vector.clone(),
@@ -1174,7 +1182,7 @@ impl Sequencer {
         if bytes.is_empty() {
             return Ingested::Invalid("an update with no bytes".into());
         }
-        if bytes.len() > MAX_UPDATE_BYTES {
+        if bytes.len() > max_update_bytes(self.config.log_quota_bytes) {
             return Ingested::Refused("that update is larger than this deployment accepts");
         }
         // A peer key wider than the frame can carry would encode a length
@@ -1272,6 +1280,14 @@ impl Sequencer {
         // What this batch will cost the deployment if it is accepted: its
         // payload and the framing the row will spend on it.
         let charge = bytes.len().saturating_add(frame::overhead(peer_key));
+        if let Some(reason) = self.ledger.would_exceed(
+            self.owner_id,
+            charge as i64,
+            self.config.storage.per_owner,
+            self.config.storage.total,
+        ) {
+            return retryable(&inner, "this account's storage is full", reason, false);
+        }
         // The per-document ceiling, on the charge rather than the payload.
         // An empty buffer always admits one update whatever it weighs
         // (`MAX_PENDING_CHARGE`), or a single maximum-size update would be
@@ -1446,7 +1462,7 @@ impl Sequencer {
         ) {
             Some(
                 self.pending
-                    .reserve_scratch(super::pending::scratch_for(MAX_ROW_BYTES as u64))
+                    .reserve_scratch(super::pending::scratch_for(max_row_bytes(self.config.log_quota_bytes) as u64))
                     .await
                     .map_err(|_| SequencerError::Busy)?,
             )
@@ -1540,6 +1556,7 @@ impl Sequencer {
         drop(scratch);
         let mut inner = self.inner.lock().await;
         inner.retire(take, written, vector, row_bytes);
+        self.ledger.charge(self.owner_id, row_bytes as i64);
         let compaction_due = inner.compaction_due(self.catalog.compaction_thresholds());
         acknowledge(&mut inner, &acknowledged);
         notify_durable(&mut inner);
@@ -1726,6 +1743,7 @@ impl Sequencer {
             .iter()
             .map(|pending| pending.bytes.clone())
             .collect();
+        let base_bytes = inner.base_bytes;
         drop(inner);
 
         let mut batches: Vec<Vec<u8>> = Vec::new();
@@ -1754,7 +1772,14 @@ impl Sequencer {
         let base = if base_covered {
             None
         } else {
-            Some(self.read_base().await?)
+            let estimate = super::budget::estimate(
+                base_bytes,
+                super::budget::BUILD_TRANSIENT_EXPANSION,
+            );
+            let transient_reservation = self.budget.reserve(estimate, RESERVE_PATIENCE).await.map_err(|Busy| SequencerError::Busy)?;
+            let base_result = self.read_base(transient_reservation.bytes()).await?;
+            drop(transient_reservation);
+            Some(base_result)
         };
         Ok(Joined {
             vector,
@@ -2231,13 +2256,13 @@ impl Sequencer {
             inner.log_bytes().saturating_add(inner.buffer_bytes as u64),
             super::budget::BUILD_TRANSIENT_EXPANSION,
         );
-        let _transient_reservation = self
+        let transient_reservation = self
             .budget
             .reserve(transient_estimate, RESERVE_PATIENCE)
             .await
             .map_err(|Busy| SequencerError::Busy)?;
         let base = if inner.has_base {
-            Some(self.read_base().await?)
+            Some(self.read_base(reservation.bytes() + transient_reservation.bytes()).await?)
         } else {
             None
         };
@@ -2479,12 +2504,14 @@ impl Sequencer {
             _transaction: transaction,
             inner,
             slug: &self.slug,
+            owner_id: self.owner_id,
+            ledger: self.ledger.clone(),
         }
     }
 
-    async fn read_base(&self) -> Result<Vec<u8>> {
+    async fn read_base(&self, expanded_limit: u64) -> Result<Vec<u8>> {
         self.catalog
-            .read_base(self.document_id, self.blobs.clone())
+            .read_base(self.document_id, self.blobs.clone(), expanded_limit)
             .await
             .map_err(SequencerError::Loro)
     }
@@ -2496,6 +2523,8 @@ pub(crate) struct CompactionGate<'a> {
     _transaction: tokio::sync::MutexGuard<'a, ()>,
     inner: tokio::sync::MutexGuard<'a, Inner>,
     slug: &'a str,
+    owner_id: Uuid,
+    ledger: Arc<super::ledger::StorageLedger>,
 }
 
 impl CompactionGate<'_> {
@@ -2525,6 +2554,8 @@ impl CompactionGate<'_> {
         row_bytes: u64,
         uncompacted_count: i64,
     ) {
+        let before = self.inner.base_bytes.saturating_add(self.inner.row_bytes);
+        let after = base_bytes.saturating_add(row_bytes);
         if let Ok(vector) = decode_vector(vector) {
             self.inner.base_vector = vector;
         }
@@ -2532,6 +2563,10 @@ impl CompactionGate<'_> {
         self.inner.base_bytes = base_bytes;
         self.inner.row_bytes = row_bytes;
         self.inner.uncompacted_count = uncompacted_count;
+        self.ledger.charge(
+            self.owner_id,
+            after as i64 - before as i64,
+        );
         ::log::debug!("{} compacted through {through}", self.slug);
     }
 

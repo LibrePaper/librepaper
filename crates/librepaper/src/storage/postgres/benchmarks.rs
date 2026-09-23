@@ -858,7 +858,7 @@ async fn compaction_cost_release_benchmark() {
             )
             .await;
         // A seed ingest can be refused on its own terms: §5 caps one update
-        // at `MAX_UPDATE_BYTES`, so a large enough document cannot be
+        // at max_update_bytes, so a large enough document cannot be
         // uploaded in one batch at all. That is a boundary worth recording
         // rather than a harness fault, and the shapes after it still run.
         if !matches!(admitted, crate::log::Ingested::Accepted) {
@@ -868,7 +868,7 @@ async fn compaction_cost_release_benchmark() {
                 "seed_bytes_actual": seed_len,
                 "opening_update_bytes": opening.len(),
                 "seed_refused": format!("{admitted:?}"),
-                "max_update_bytes": crate::log::sequencer::MAX_UPDATE_BYTES,
+                "max_update_bytes": crate::log::sequencer::max_update_bytes(config.log_quota_bytes),
             }));
             continue;
         }
@@ -1322,7 +1322,7 @@ async fn seed_concurrent_document(
             "seed_bytes_actual": seed_len,
             "opening_update_bytes": opening.len(),
             "seed_refused": format!("{admitted:?}"),
-            "max_update_bytes": crate::log::sequencer::MAX_UPDATE_BYTES,
+            "max_update_bytes": crate::log::sequencer::max_update_bytes(crate::config::Configuration::default().log_quota_bytes),
         }));
     }
     sequencer

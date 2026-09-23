@@ -41,7 +41,7 @@ use crate::config::Configuration;
 use crate::log::budget::DEFAULT_EXPANSION;
 use crate::log::sequencer::{
     ack_targets, FlushReason, Ingested, LogCatalog, Role, Sequencer, SequencerError, FLUSH_MAX_AGE,
-    FLUSH_QUIET, FLUSH_TRIGGER_BYTES, MAX_UPDATE_BYTES,
+    FLUSH_QUIET, FLUSH_TRIGGER_BYTES, max_update_bytes,
 };
 use crate::log::{frame, Budget};
 use crate::room::outgoing::{Outgoing, Receiver, Sender};
@@ -238,6 +238,7 @@ impl LogCatalog for FakeCatalog {
         &self,
         _document_id: Uuid,
         _blobs: Arc<dyn BlobStore>,
+        _expanded_limit: u64,
     ) -> BoxFuture<'_, std::result::Result<Vec<u8>, String>> {
         let base = self.base.lock().unwrap().clone();
         Box::pin(async move { base.ok_or_else(|| "no base configured for this fake".to_string()) })
@@ -282,12 +283,14 @@ fn sequencer_sharing_pending(
     Sequencer::from_parts(
         Uuid::new_v4(),
         "test-doc".to_string(),
+        Uuid::nil(),
         catalog,
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
         pending,
         "deployment.peer.test".to_string(),
+        crate::log::ledger::StorageLedger::new(),
         1,
         VersionVector::default(),
         0,
@@ -751,13 +754,13 @@ async fn a_single_update_at_the_byte_trigger_flushes_alone_because_the_trigger_i
     let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
     let mut outbox = Outbox::new();
     // Comfortably past FLUSH_TRIGGER_BYTES (1 MiB) and comfortably under
-    // MAX_UPDATE_BYTES (4 MiB): large enough that a real deployment would
-    // see it as the "single large paste" case §5 step 6 describes, without
-    // this test's runtime being dominated by generating a full 4 MiB of
-    // random filler.
+    // the max update bytes (4 MiB by default): large enough that a real
+    // deployment would see it as the "single large paste" case §5 step 6
+    // describes, without this test's runtime being dominated by generating
+    // a full 4 MiB of random filler.
     let big = outbox.edit_at_least(FLUSH_TRIGGER_BYTES + FLUSH_TRIGGER_BYTES / 4);
     assert!(
-        big.len() < MAX_UPDATE_BYTES,
+        big.len() < max_update_bytes(Arc::new(Configuration::default()).log_quota_bytes),
         "sanity: still under the hard cap"
     );
     let outcome = sequencer
@@ -2126,7 +2129,7 @@ async fn the_transient_reservation_is_released_once_the_entry_is_cached() {
 // cap would pass every case below except the ones that add a second document.
 
 use crate::log::pending::{scratch_for, PendingBudget};
-use crate::log::sequencer::{BUFFER_CEILING_BYTES, MAX_ROW_BYTES};
+use crate::log::sequencer::{BUFFER_CEILING_BYTES, max_row_bytes};
 
 /// The reason a retryable refusal names, or a panic saying what came back
 /// instead. Written once because nearly every case here asserts on it, and a
@@ -2619,7 +2622,7 @@ async fn work_can_still_be_flushed_with_the_pending_pool_completely_full() {
     let catalog = Arc::new(FakeCatalog::empty());
     // Scratch sized as the configuration check requires: enough for one
     // maximum row. Retained deliberately tiny, and then filled.
-    let pending = PendingBudget::new(64 * 1024, scratch_for(MAX_ROW_BYTES as u64));
+    let pending = PendingBudget::new(64 * 1024, scratch_for(max_row_bytes(Configuration::default().log_quota_bytes) as u64));
     let sequencer = sequencer_sharing_pending(catalog.clone(), pending.clone());
     let mut outbox = Outbox::new();
     let (refused, sent) = type_until_refused(&sequencer, &mut outbox, "account:a", 4096).await;
@@ -2665,7 +2668,7 @@ async fn work_can_still_be_flushed_with_the_pending_pool_completely_full() {
 /// operator actually sees.
 #[tokio::test]
 async fn every_document_drains_once_the_pressure_clears() {
-    let pending = PendingBudget::new(128 * 1024, scratch_for(MAX_ROW_BYTES as u64) * 2);
+    let pending = PendingBudget::new(128 * 1024, scratch_for(max_row_bytes(Configuration::default().log_quota_bytes) as u64) * 2);
     let catalogs: Vec<Arc<FakeCatalog>> = (0..3).map(|_| Arc::new(FakeCatalog::empty())).collect();
     let sequencers: Vec<Sequencer> = catalogs
         .iter()
@@ -2953,7 +2956,7 @@ async fn an_ambiguous_commit_that_resolves_releases_each_charge_exactly_once() {
 /// edits while it waits, then persist the complete buffer before returning.
 #[tokio::test]
 async fn shutdown_waits_for_scratch_and_drains_instead_of_reporting_empty() {
-    let pending = PendingBudget::new(1024 * 1024, scratch_for(MAX_ROW_BYTES as u64));
+    let pending = PendingBudget::new(1024 * 1024, scratch_for(max_row_bytes(Configuration::default().log_quota_bytes) as u64));
     let catalog = Arc::new(FakeCatalog::empty());
     let sequencer = Arc::new(sequencer_sharing_pending(catalog.clone(), pending.clone()));
     let mut outbox = Outbox::new();

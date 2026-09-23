@@ -36,8 +36,7 @@
 //!
 //! It is not a process-RSS limit and must not be read as one. Decoded CRDT
 //! memory is [`super::budget`]'s; outbound socket queues are
-//! `server::socket_budget`'s; inbound request bodies are
-//! `cost.request_body_memory_bytes`'; one assembling socket update is
+//! `server::socket_budget`'s; one assembling socket update is
 //! `socket.rs`' `update_ceiling`. Allocator fragmentation and the runtime's
 //! own overhead are nobody's.
 

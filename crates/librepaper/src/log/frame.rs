@@ -16,8 +16,7 @@ pub const VERSION: u8 = 0x01;
 
 /// Bounds on what a frame may claim, so a corrupt or hostile row cannot make
 /// the decoder allocate. Both are far above anything a flush produces: a
-/// single batch is capped at `MAX_UPDATE_BYTES` on the way in, and a peer key
-/// is an account id or a deployment marker.
+/// peer key is an account id or a deployment marker.
 pub const MAX_PEER_KEY: usize = 256;
 const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 

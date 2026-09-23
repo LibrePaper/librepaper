@@ -74,6 +74,7 @@ pub struct NewSnapshot {
 /// it, and the backlog that decides whether compaction is due.
 #[derive(Clone, Debug)]
 pub struct LogHead {
+    pub owner_id: Uuid,
     pub update_sequence: i64,
     /// The log vector: empty when the document has neither a base nor a row,
     /// which is a document nobody has typed into yet.
@@ -102,7 +103,7 @@ impl PostgresCatalog {
     /// admitted; every later answer comes from the sequencer's own state.
     pub async fn log_head(&self, document_id: Uuid) -> Result<LogHead> {
         let document = sqlx::query!(
-            "SELECT update_sequence,uncompacted_update_count,uncompacted_update_bytes
+            "SELECT owner_id,update_sequence,uncompacted_update_count,uncompacted_update_bytes
              FROM documents WHERE id=$1",
             document_id,
         )
@@ -135,6 +136,7 @@ impl PostgresCatalog {
                 .unwrap_or_default(),
         };
         Ok(LogHead {
+            owner_id: document.owner_id,
             update_sequence: document.update_sequence,
             vector,
             base_through: base.map_or(0, |base| base.through_update_sequence),
@@ -396,9 +398,6 @@ impl PostgresCatalog {
     ) -> Result<i64> {
         if row.update_bytes.is_empty() {
             return Err(Error::Invalid("a flush row holds no batches".into()));
-        }
-        if row.update_bytes.len() > crate::config::DEFAULT_MAX_ENCODED_SNAPSHOT_BYTES {
-            return Err(Error::Invalid("a flush row is past the row ceiling".into()));
         }
         if row.source_format.is_some_and(|format| {
             !matches!(format, "markdown" | "html" | "typst" | "latex" | "quarto")
