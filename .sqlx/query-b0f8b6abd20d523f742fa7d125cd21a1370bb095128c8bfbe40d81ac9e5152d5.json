@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (\n                     (SELECT bytes FROM storage_usage WHERE singleton) +\n                     COALESCE((SELECT sum(snapshot_bytes)::bigint FROM document_snapshots WHERE delete_after IS NULL), 0) +\n                     COALESCE((SELECT sum(uncompacted_update_bytes)::bigint FROM documents), 0)\n                   )::bigint AS \"total!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b0f8b6abd20d523f742fa7d125cd21a1370bb095128c8bfbe40d81ac9e5152d5"
+}
