@@ -573,7 +573,7 @@ impl Configuration {
     /// number near `u64::MAX` gets a configuration error rather than a
     /// comparison that wrapped.
     pub fn validate_pending(&self) -> Result<(), String> {
-        use crate::log::sequencer::{BUFFER_CEILING_BYTES, max_pending_charge, max_row_bytes};
+        use crate::log::sequencer::{max_pending_charge, max_row_bytes, BUFFER_CEILING_BYTES};
 
         if self.pending_bytes == 0 || self.pending_scratch_bytes == 0 {
             return Err("the pending-source ceilings must be positive".into());
@@ -739,7 +739,7 @@ mod tests {
     /// at startup rather than discovered when the first document fills up.
     #[test]
     fn pending_ceilings_that_could_not_save_what_they_admit_are_refused() {
-        let mut config = Configuration::default();
+        let config = Configuration::default();
         assert!(
             config.validate_pending().is_ok(),
             "the defaults must be sane"
@@ -773,16 +773,16 @@ mod tests {
     #[test]
     fn the_pending_overrides_validate_what_they_are_given() {
         let mut config = Configuration::default();
-        assert!(config.set_pending(Some(128), Some(64)).is_ok());
+        assert!(config.set_pending(Some(128), Some(256)).is_ok());
         assert_eq!(config.pending_bytes, 128 * 1024 * 1024);
-        assert_eq!(config.pending_scratch_bytes, 64 * 1024 * 1024);
+        assert_eq!(config.pending_scratch_bytes, 256 * 1024 * 1024);
         assert!(
             config.set_pending(None, Some(1)).is_err(),
             "one megabyte of scratch is too small for the largest row",
         );
         assert_eq!(
             config.pending_scratch_bytes,
-            64 * 1024 * 1024,
+            256 * 1024 * 1024,
             "a refused override left the configuration half applied",
         );
         assert!(config.set_pending(Some(u64::MAX), None).is_err());
@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     fn log_quota_change_updates_scratch_default() {
-        let config = Configuration::default();
+        let mut config = Configuration::default();
         let old_scratch = config.pending_scratch_bytes;
 
         // When scratch is at the old default and log quota changes,
@@ -802,8 +802,10 @@ mod tests {
         assert_ne!(old_scratch, new_scratch);
 
         // But if scratch was set explicitly, it should stay unchanged.
-        let mut config2 = Configuration::default();
-        config2.pending_scratch_bytes = 100 * 1024 * 1024;  // explicitly set
+        let mut config2 = Configuration {
+            pending_scratch_bytes: 100 * 1024 * 1024,
+            ..Default::default()
+        };
         let explicit_scratch = config2.pending_scratch_bytes;
         assert!(config2.set_log_quota(Some(128)).is_ok());
         assert_eq!(config2.pending_scratch_bytes, explicit_scratch);

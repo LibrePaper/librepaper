@@ -230,7 +230,14 @@ async fn compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_g
     assert_eq!(third.uncompacted_bytes, 0);
     for through in [2, 3] {
         assert!(catalog
-            .activate_log_base(document.id, through, &snapshots[2].3, snapshot(2), expired, false)
+            .activate_log_base(
+                document.id,
+                through,
+                &snapshots[2].3,
+                snapshot(2),
+                expired,
+                false
+            )
             .await
             .unwrap()
             .is_none());

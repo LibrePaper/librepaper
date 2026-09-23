@@ -47,10 +47,8 @@ impl StorageLedger {
     /// Moves both figures by delta (which may be negative; floor at zero).
     pub fn charge(&self, owner: Uuid, delta: i64) {
         let mut owners = self.owners.lock().unwrap();
-        owners
-            .entry(owner)
-            .and_modify(|bytes| *bytes = bytes.saturating_add(delta).max(0))
-            .or_insert(0);
+        let bytes = owners.entry(owner).or_insert(0);
+        *bytes = bytes.saturating_add(delta).max(0);
 
         if let Ok(mut deployment) = self.deployment.lock() {
             if let Some(bytes) = &mut *deployment {
@@ -131,10 +129,7 @@ mod tests {
 
         ledger.charge(owner, 100);
         ledger.charge(owner, -200);
-        assert_eq!(
-            ledger.owners.lock().unwrap().get(&owner).copied(),
-            Some(0)
-        );
+        assert_eq!(ledger.owners.lock().unwrap().get(&owner).copied(), Some(0));
     }
 
     #[test]

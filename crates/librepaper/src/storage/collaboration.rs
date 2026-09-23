@@ -71,7 +71,11 @@ impl CollaborationStorage {
     /// a cache build starts from, and what a join sends to a client that
     /// covers none of it (§4.3, §6.2). Empty when the document has no base,
     /// which is every document that has never been compacted.
-    pub async fn read_document_base(&self, document_id: Uuid, expanded_limit: u64) -> Result<Vec<u8>, Error> {
+    pub async fn read_document_base(
+        &self,
+        document_id: Uuid,
+        expanded_limit: u64,
+    ) -> Result<Vec<u8>, Error> {
         let Some(base) = self.catalog.log_base(document_id).await? else {
             return Ok(Vec::new());
         };

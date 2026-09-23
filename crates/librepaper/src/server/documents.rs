@@ -551,7 +551,10 @@ impl Server {
             let Some(ceiling) = header_of(request.headers(), "content-length")
                 .and_then(|v| v.parse::<usize>().ok())
             else {
-                return Err(write_json(411, &json!({"error": "a multipart upload must declare its content length"})));
+                return Err(write_json(
+                    411,
+                    &json!({"error": "a multipart upload must declare its content length"}),
+                ));
             };
             let (parts, body) = request.into_parts();
             let limited = Request::from_parts(parts, Body::new(Limited::new(body, ceiling)));
@@ -599,8 +602,7 @@ impl Server {
             if sent.len() == 1 && main.is_empty() {
                 let (at, bytes) = &sent[0];
                 filename = at.clone();
-                html = String::from_utf8_lossy(&bytes)
-                    .to_string();
+                html = String::from_utf8_lossy(bytes).to_string();
                 sent.clear();
             } else if !sent.is_empty() {
                 let wanted = if main.is_empty() {
@@ -617,8 +619,7 @@ impl Server {
                 let (path, bytes) = sent.remove(at);
                 main = path.clone();
                 filename = path;
-                html = String::from_utf8_lossy(&bytes)
-                    .to_string();
+                html = String::from_utf8_lossy(&bytes).to_string();
             }
             // Markdown dropped on the page is stored as markdown. It is not
             // rendered here and never was worth rendering here: the browser
@@ -656,7 +657,10 @@ impl Server {
             let Some(declared_length) = header_of(request.headers(), "content-length")
                 .and_then(|v| v.parse::<usize>().ok())
             else {
-                return Err(write_json(411, &json!({"error": "a JSON upload must declare its content length"})));
+                return Err(write_json(
+                    411,
+                    &json!({"error": "a JSON upload must declare its content length"}),
+                ));
             };
             #[derive(Deserialize, Default)]
             struct Body_ {
@@ -803,10 +807,7 @@ impl Server {
     ///
     /// `main_path` is where the upload's main file will live.
     #[allow(clippy::result_large_err)] // as read_upload: the error is a response
-    pub(super) fn preflight_directory(
-        &self,
-        parsed: &Upload,
-    ) -> Result<(), Reply> {
+    pub(super) fn preflight_directory(&self, parsed: &Upload) -> Result<(), Reply> {
         for (path, bytes) in &parsed.files {
             match crate::document::paths::check(&self.config.paths(), path) {
                 Ok(crate::document::paths::Kind::Text) => {
@@ -817,8 +818,7 @@ impl Server {
                         ));
                     }
                 }
-                Ok(crate::document::paths::Kind::Asset) => {
-                }
+                Ok(crate::document::paths::Kind::Asset) => {}
                 Err(why) => return Err(write_json(400, &json!({"error": why}))),
             }
         }
@@ -866,10 +866,15 @@ impl Server {
             let mut transfers = self.state_transfers.lock().await;
             // Only what the response needs leaves the lock: the entry itself
             // holds a memory reservation and cannot be cloned.
-            let Some((transfer_slug, bytes, digest, expires_at)) = transfers
-                .entries
-                .get(&transfer_id)
-                .map(|t| (t.slug.clone(), t.bytes.clone(), t.digest.clone(), t.expires_at))
+            let Some((transfer_slug, bytes, digest, expires_at)) =
+                transfers.entries.get(&transfer_id).map(|t| {
+                    (
+                        t.slug.clone(),
+                        t.bytes.clone(),
+                        t.digest.clone(),
+                        t.expires_at,
+                    )
+                })
             else {
                 return plain(410, "that baseline has expired; reconnect for a newer one");
             };

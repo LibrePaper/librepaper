@@ -97,10 +97,7 @@ impl Command for AttachAsset {
             // command might have produced: since it produces none, that
             // transaction stays empty and nothing here needs to share it.
             self.catalog
-                .complete_asset_authorized(
-                    self.input.clone(),
-                    &self.authorization,
-                )
+                .complete_asset_authorized(self.input.clone(), &self.authorization)
                 .await
                 .map_err(CommandError::from)
         })

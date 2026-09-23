@@ -861,10 +861,7 @@ impl Server {
         };
         // Drop the attachment cache so comments re-resolve against the shallow document.
         room.forget_comments().await;
-        write_json(
-            200,
-            &json!({"historyBytes": after.unwrap_or(0)}),
-        )
+        write_json(200, &json!({"historyBytes": after.unwrap_or(0)}))
     }
 
     /* -------------------------------------------------------------- assets */

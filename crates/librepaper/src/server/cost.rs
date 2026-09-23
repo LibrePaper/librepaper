@@ -219,12 +219,7 @@ pub(super) async fn middleware(
     // declared length is reserved from the memory budget -- the same budget
     // decoded documents live in -- and released when the request ends.
     let _incoming = if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
-        let Some(length) = request
-            .body()
-            .size_hint()
-            .exact()
-            .and_then(|n| u64::try_from(n).ok())
-        else {
+        let Some(length) = request.body().size_hint().exact() else {
             return plain(411, "a mutation must declare its content length");
         };
         let reservation = length.saturating_mul(4);

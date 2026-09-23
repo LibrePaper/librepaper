@@ -126,11 +126,7 @@ impl SourceStorage {
             });
         }
         if !pending.is_empty() {
-            for (asset, _) in self
-                .catalog
-                .complete_assets(pending)
-                .await?
-            {
+            for (asset, _) in self.catalog.complete_assets(pending).await? {
                 let digest: [u8; 32] = asset
                     .digest
                     .as_slice()

@@ -2013,6 +2013,19 @@ mod automation_authority_tests {
         assert_eq!(transfers.entries["first"].bytes, "baseline-r1");
         assert_eq!(transfers.entries["second"].bytes, "baseline-r2");
 
+        // Bytes are the memory budget's business now: the store bounds only
+        // how many baselines it holds, and the oldest goes when it is full.
+        for n in 0..62 {
+            assert!(transfers.insert(
+                format!("filler-{n}"),
+                "paper".into(),
+                Bytes::from_static(b"baseline"),
+                format!("digest-{n}"),
+                12,
+                budget.try_reserve(8).expect("room"),
+            ));
+        }
+        assert_eq!(transfers.entries.len(), 64);
         assert!(transfers.insert(
             "large".into(),
             "paper".into(),
@@ -2022,7 +2035,9 @@ mod automation_authority_tests {
             budget.try_reserve(40).expect("room"),
         ));
         assert!(!transfers.entries.contains_key("first"));
+        assert!(transfers.entries.contains_key("second"));
         assert_eq!(transfers.entries["large"].slug, "paper");
+        assert_eq!(transfers.entries.len(), 64);
     }
 
     fn ceiling() -> Ceiling {

@@ -40,8 +40,8 @@ use uuid::Uuid;
 use crate::config::Configuration;
 use crate::log::budget::DEFAULT_EXPANSION;
 use crate::log::sequencer::{
-    ack_targets, FlushReason, Ingested, LogCatalog, Role, Sequencer, SequencerError, FLUSH_MAX_AGE,
-    FLUSH_QUIET, FLUSH_TRIGGER_BYTES, max_update_bytes,
+    ack_targets, max_update_bytes, FlushReason, Ingested, LogCatalog, Role, Sequencer,
+    SequencerError, FLUSH_MAX_AGE, FLUSH_QUIET, FLUSH_TRIGGER_BYTES,
 };
 use crate::log::{frame, Budget};
 use crate::room::outgoing::{Outgoing, Receiver, Sender};
@@ -1868,7 +1868,9 @@ async fn every_sequencer_read_refuses_after_compaction_fence() {
         Err(SequencerError::Fenced(_))
     ));
     assert!(matches!(
-        sequencer.snapshot_at_log_vector(SnapshotMode::Full).await,
+        sequencer
+            .snapshot_at_log_vector(crate::log::sequencer::SnapshotMode::Full)
+            .await,
         Err(SequencerError::Fenced(_))
     ));
     assert!(matches!(
@@ -2135,7 +2137,7 @@ async fn the_transient_reservation_is_released_once_the_entry_is_cached() {
 // cap would pass every case below except the ones that add a second document.
 
 use crate::log::pending::{scratch_for, PendingBudget};
-use crate::log::sequencer::{BUFFER_CEILING_BYTES, max_row_bytes};
+use crate::log::sequencer::{max_row_bytes, BUFFER_CEILING_BYTES};
 
 /// The reason a retryable refusal names, or a panic saying what came back
 /// instead. Written once because nearly every case here asserts on it, and a
@@ -2628,7 +2630,10 @@ async fn work_can_still_be_flushed_with_the_pending_pool_completely_full() {
     let catalog = Arc::new(FakeCatalog::empty());
     // Scratch sized as the configuration check requires: enough for one
     // maximum row. Retained deliberately tiny, and then filled.
-    let pending = PendingBudget::new(64 * 1024, scratch_for(max_row_bytes(Configuration::default().log_quota_bytes) as u64));
+    let pending = PendingBudget::new(
+        64 * 1024,
+        scratch_for(max_row_bytes(Configuration::default().log_quota_bytes) as u64),
+    );
     let sequencer = sequencer_sharing_pending(catalog.clone(), pending.clone());
     let mut outbox = Outbox::new();
     let (refused, sent) = type_until_refused(&sequencer, &mut outbox, "account:a", 4096).await;
@@ -2674,7 +2679,10 @@ async fn work_can_still_be_flushed_with_the_pending_pool_completely_full() {
 /// operator actually sees.
 #[tokio::test]
 async fn every_document_drains_once_the_pressure_clears() {
-    let pending = PendingBudget::new(128 * 1024, scratch_for(max_row_bytes(Configuration::default().log_quota_bytes) as u64) * 2);
+    let pending = PendingBudget::new(
+        128 * 1024,
+        scratch_for(max_row_bytes(Configuration::default().log_quota_bytes) as u64) * 2,
+    );
     let catalogs: Vec<Arc<FakeCatalog>> = (0..3).map(|_| Arc::new(FakeCatalog::empty())).collect();
     let sequencers: Vec<Sequencer> = catalogs
         .iter()
@@ -2962,7 +2970,10 @@ async fn an_ambiguous_commit_that_resolves_releases_each_charge_exactly_once() {
 /// edits while it waits, then persist the complete buffer before returning.
 #[tokio::test]
 async fn shutdown_waits_for_scratch_and_drains_instead_of_reporting_empty() {
-    let pending = PendingBudget::new(1024 * 1024, scratch_for(max_row_bytes(Configuration::default().log_quota_bytes) as u64));
+    let pending = PendingBudget::new(
+        1024 * 1024,
+        scratch_for(max_row_bytes(Configuration::default().log_quota_bytes) as u64),
+    );
     let catalog = Arc::new(FakeCatalog::empty());
     let sequencer = Arc::new(sequencer_sharing_pending(catalog.clone(), pending.clone()));
     let mut outbox = Outbox::new();

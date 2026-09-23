@@ -296,7 +296,14 @@ mod tests {
         vector: &[u8],
         snapshot: &[u8],
     ) -> Option<document_log::LogBase> {
-        let written = storage.write_base(document_id, snapshot, crate::config::Configuration::default().log_quota_bytes).await.unwrap();
+        let written = storage
+            .write_base(
+                document_id,
+                snapshot,
+                crate::config::Configuration::default().log_quota_bytes,
+            )
+            .await
+            .unwrap();
         catalog
             .activate_log_base(
                 document_id,
@@ -1619,7 +1626,10 @@ mod tests {
             Arc::new(std::sync::OnceLock::new()),
         );
 
-        let outcome = sequencer.snapshot_at_log_vector(crate::log::sequencer::SnapshotMode::Full).await.unwrap();
+        let outcome = sequencer
+            .snapshot_at_log_vector(crate::log::sequencer::SnapshotMode::Full)
+            .await
+            .unwrap();
         assert!(
             outcome.is_none(),
             "an entry built from the rows does not match the fabricated log vector, so it is not used",

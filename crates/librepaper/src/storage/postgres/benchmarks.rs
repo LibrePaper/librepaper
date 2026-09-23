@@ -1102,8 +1102,13 @@ async fn compaction_cost_release_benchmark() {
 
         // Step 4.
         let at = Instant::now();
-        crate::storage::worker::prove_coverage(&snapshot, &log_vector, changes, crate::log::sequencer::SnapshotMode::Full)
-            .expect("the snapshot covers the log");
+        crate::storage::worker::prove_coverage(
+            &snapshot,
+            &log_vector,
+            changes,
+            crate::log::sequencer::SnapshotMode::Full,
+        )
+        .expect("the snapshot covers the log");
         let verification_us = micros(at);
 
         // Step 5a, in two halves. The compression is the same call at the
@@ -1120,7 +1125,11 @@ async fn compaction_cost_release_benchmark() {
         );
         let at = Instant::now();
         let written = storage
-            .write_base(document_id, &snapshot, crate::config::Configuration::default().log_quota_bytes)
+            .write_base(
+                document_id,
+                &snapshot,
+                crate::config::Configuration::default().log_quota_bytes,
+            )
             .await
             .expect("write the base");
         let write_base_us = micros(at);
@@ -1444,8 +1453,13 @@ async fn compact_seeded_document(
 
     // Step 4.
     let at = Instant::now();
-    crate::storage::worker::prove_coverage(&snapshot, &log_vector, changes, crate::log::sequencer::SnapshotMode::Full)
-        .expect("the snapshot covers the log");
+    crate::storage::worker::prove_coverage(
+        &snapshot,
+        &log_vector,
+        changes,
+        crate::log::sequencer::SnapshotMode::Full,
+    )
+    .expect("the snapshot covers the log");
     let verification_us = micros(at);
 
     // Step 5a, in the same two halves the sibling benchmark uses.
@@ -1456,7 +1470,11 @@ async fn compact_seeded_document(
     let storage = crate::storage::collaboration::CollaborationStorage::new(catalog.clone(), blobs);
     let at = Instant::now();
     let written = storage
-        .write_base(document_id, &snapshot, crate::config::Configuration::default().log_quota_bytes)
+        .write_base(
+            document_id,
+            &snapshot,
+            crate::config::Configuration::default().log_quota_bytes,
+        )
         .await
         .expect("write the base");
     let write_base_us = micros(at);

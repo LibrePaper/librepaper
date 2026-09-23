@@ -60,7 +60,8 @@ pub fn max_update_bytes(log_quota_bytes: usize) -> usize {
 /// is the larger of the two.
 pub fn max_pending_charge(log_quota_bytes: usize) -> usize {
     let ceiling = BUFFER_CEILING_BYTES;
-    let single = max_update_bytes(log_quota_bytes) + frame::BATCH_HEADER_BYTES + frame::MAX_PEER_KEY;
+    let single =
+        max_update_bytes(log_quota_bytes) + frame::BATCH_HEADER_BYTES + frame::MAX_PEER_KEY;
     if single > ceiling {
         single
     } else {
@@ -1458,7 +1459,9 @@ impl Sequencer {
         ) {
             Some(
                 self.pending
-                    .reserve_scratch(super::pending::scratch_for(max_row_bytes(self.config.log_quota_bytes) as u64))
+                    .reserve_scratch(super::pending::scratch_for(max_row_bytes(
+                        self.config.log_quota_bytes,
+                    ) as u64))
                     .await
                     .map_err(|_| SequencerError::Busy)?,
             )
@@ -1768,11 +1771,13 @@ impl Sequencer {
         let base = if base_covered {
             None
         } else {
-            let estimate = super::budget::estimate(
-                base_bytes,
-                super::budget::BUILD_TRANSIENT_EXPANSION,
-            );
-            let transient_reservation = self.budget.reserve(estimate, RESERVE_PATIENCE).await.map_err(|Busy| SequencerError::Busy)?;
+            let estimate =
+                super::budget::estimate(base_bytes, super::budget::BUILD_TRANSIENT_EXPANSION);
+            let transient_reservation = self
+                .budget
+                .reserve(estimate, RESERVE_PATIENCE)
+                .await
+                .map_err(|Busy| SequencerError::Busy)?;
             let base_result = self.read_base(transient_reservation.bytes()).await?;
             drop(transient_reservation);
             Some(base_result)
@@ -2258,7 +2263,10 @@ impl Sequencer {
             .await
             .map_err(|Busy| SequencerError::Busy)?;
         let base = if inner.has_base {
-            Some(self.read_base(reservation.bytes() + transient_reservation.bytes()).await?)
+            Some(
+                self.read_base(reservation.bytes() + transient_reservation.bytes())
+                    .await?,
+            )
         } else {
             None
         };
@@ -2427,7 +2435,10 @@ impl Sequencer {
     /// warm entry at head with an empty buffer -- and the snapshot exported
     /// from it. An entry that is ahead is not used; the caller waits for the
     /// next opportunity.
-    pub async fn snapshot_at_log_vector(&self, mode: SnapshotMode) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize)>> {
+    pub async fn snapshot_at_log_vector(
+        &self,
+        mode: SnapshotMode,
+    ) -> Result<Option<(i64, Vec<u8>, Vec<u8>, usize)>> {
         let mut inner = self.inner.lock().await;
         inner.writable()?;
         if !inner.buffer.is_empty() {
@@ -2455,15 +2466,11 @@ impl Sequencer {
         // nothing can import into this entry until this returns.
         let doc = cache.doc.clone();
         let _turn = super::admission::heavy().await;
-        let snapshot = tokio::task::spawn_blocking(move || {
-            match mode {
-                SnapshotMode::Full => doc.export(ExportMode::Snapshot),
-                SnapshotMode::Shallow => {
-                    doc.export(ExportMode::ShallowSnapshot(std::borrow::Cow::Owned(
-                        doc.oplog_frontiers(),
-                    )))
-                }
-            }
+        let snapshot = tokio::task::spawn_blocking(move || match mode {
+            SnapshotMode::Full => doc.export(ExportMode::Snapshot),
+            SnapshotMode::Shallow => doc.export(ExportMode::ShallowSnapshot(
+                std::borrow::Cow::Owned(doc.oplog_frontiers()),
+            )),
         })
         .await
         .map_err(|error| SequencerError::Loro(error.to_string()))?
@@ -2568,10 +2575,8 @@ impl CompactionGate<'_> {
         self.inner.base_bytes = base_bytes;
         self.inner.row_bytes = row_bytes;
         self.inner.uncompacted_count = uncompacted_count;
-        self.ledger.charge(
-            self.owner_id,
-            after as i64 - before as i64,
-        );
+        self.ledger
+            .charge(self.owner_id, after as i64 - before as i64);
         ::log::debug!("{} compacted through {through}", self.slug);
     }
 

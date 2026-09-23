@@ -268,7 +268,9 @@ async fn history_trim(
     Path(slug): Path<String>,
     request: Request<Body>,
 ) -> Reply {
-    server.handle_history_trim(request, &ctx.arrival, &slug).await
+    server
+        .handle_history_trim(request, &ctx.arrival, &slug)
+        .await
 }
 
 async fn rename(

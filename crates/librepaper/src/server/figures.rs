@@ -51,10 +51,13 @@ impl Server {
             }
             seen.1 += 1;
         }
-        let Some(length) = header_of(&headers, "content-length")
-            .and_then(|v| v.parse::<usize>().ok())
+        let Some(length) =
+            header_of(&headers, "content-length").and_then(|v| v.parse::<usize>().ok())
         else {
-            return write_json(411, &json!({"error": "a figure upload must declare its content length"}));
+            return write_json(
+                411,
+                &json!({"error": "a figure upload must declare its content length"}),
+            );
         };
         let Ok(body) = to_bytes(request.into_body(), length).await else {
             return write_json(413, &json!({"error": "that figure is too large"}));
@@ -81,10 +84,7 @@ impl Server {
             unowned_publisher: false,
         };
         let stored = room
-            .put_asset_authorized(
-                body.to_vec(),
-                &mutation_actor,
-            )
+            .put_asset_authorized(body.to_vec(), &mutation_actor)
             .await;
         match stored {
             Ok((sha, size)) => write_json(200, &json!({"sha": sha, "size": size})),

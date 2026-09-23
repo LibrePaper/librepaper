@@ -1063,6 +1063,11 @@ pub(crate) fn prove_coverage(
     }
     match mode {
         crate::log::sequencer::SnapshotMode::Full => {
+            // A full compaction that accepted a shallow base would delete
+            // rows whose history the base does not hold.
+            if scratch.is_shallow() {
+                return Err("the snapshot is shallow and this compaction is not".into());
+            }
             if scratch.len_changes() != changes {
                 return Err(format!(
                     "the loaded snapshot holds {} changes and the entry held {changes}",
@@ -1405,7 +1410,12 @@ mod tests {
         let doc = document_with("hello");
         let snapshot = doc.export(loro::ExportMode::Snapshot).unwrap();
         assert_eq!(
-            prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes(), crate::log::sequencer::SnapshotMode::Full),
+            prove_coverage(
+                &snapshot,
+                &doc.oplog_vv().encode(),
+                doc.len_changes(),
+                crate::log::sequencer::SnapshotMode::Full
+            ),
             Ok(())
         );
     }
@@ -1417,8 +1427,13 @@ mod tests {
         // The log has moved on; the snapshot has not.
         doc.get_text("body").insert(5, " again").unwrap();
         doc.commit();
-        let error = prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes(), crate::log::sequencer::SnapshotMode::Full)
-            .expect_err("a short snapshot must not pass");
+        let error = prove_coverage(
+            &snapshot,
+            &doc.oplog_vv().encode(),
+            doc.len_changes(),
+            crate::log::sequencer::SnapshotMode::Full,
+        )
+        .expect_err("a short snapshot must not pass");
         assert!(
             error.contains("does not cover"),
             "unexpected refusal: {error}"
@@ -1429,34 +1444,63 @@ mod tests {
     fn coverage_rejects_a_fabricated_snapshot() {
         let doc = document_with("hello");
         let vector = doc.oplog_vv().encode();
-        assert!(prove_coverage(b"not a snapshot at all", &vector, 1, crate::log::sequencer::SnapshotMode::Full).is_err());
+        assert!(prove_coverage(
+            b"not a snapshot at all",
+            &vector,
+            1,
+            crate::log::sequencer::SnapshotMode::Full
+        )
+        .is_err());
         let mut truncated = doc.export(loro::ExportMode::Snapshot).unwrap();
         truncated.truncate(truncated.len() / 2);
-        assert!(prove_coverage(&truncated, &vector, doc.len_changes(), crate::log::sequencer::SnapshotMode::Full).is_err());
+        assert!(prove_coverage(
+            &truncated,
+            &vector,
+            doc.len_changes(),
+            crate::log::sequencer::SnapshotMode::Full
+        )
+        .is_err());
     }
 
     #[test]
     fn coverage_rejects_a_snapshot_with_the_wrong_change_count() {
         let doc = document_with("hello");
         let snapshot = doc.export(loro::ExportMode::Snapshot).unwrap();
-        let error = prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes() + 1, crate::log::sequencer::SnapshotMode::Full)
-            .expect_err("a change count that disagrees must not pass");
+        let error = prove_coverage(
+            &snapshot,
+            &doc.oplog_vv().encode(),
+            doc.len_changes() + 1,
+            crate::log::sequencer::SnapshotMode::Full,
+        )
+        .expect_err("a change count that disagrees must not pass");
         assert!(error.contains("changes"), "unexpected refusal: {error}");
     }
 
     #[test]
     fn shallow_snapshot_proves_coverage_when_shallow() {
         let doc = document_with("hello world");
-        let snapshot = doc.export(loro::ExportMode::ShallowSnapshot(std::borrow::Cow::Owned(
-            doc.oplog_frontiers(),
-        )))
-        .unwrap();
+        let snapshot = doc
+            .export(loro::ExportMode::ShallowSnapshot(std::borrow::Cow::Owned(
+                doc.oplog_frontiers(),
+            )))
+            .unwrap();
         // Shallow mode should accept a shallow snapshot
         assert_eq!(
-            prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes(), crate::log::sequencer::SnapshotMode::Shallow),
+            prove_coverage(
+                &snapshot,
+                &doc.oplog_vv().encode(),
+                doc.len_changes(),
+                crate::log::sequencer::SnapshotMode::Shallow
+            ),
             Ok(())
         );
         // Full mode should reject a shallow snapshot
-        assert!(prove_coverage(&snapshot, &doc.oplog_vv().encode(), doc.len_changes(), crate::log::sequencer::SnapshotMode::Full).is_err());
+        assert!(prove_coverage(
+            &snapshot,
+            &doc.oplog_vv().encode(),
+            doc.len_changes(),
+            crate::log::sequencer::SnapshotMode::Full
+        )
+        .is_err());
     }
 }
