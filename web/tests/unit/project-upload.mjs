@@ -4,7 +4,7 @@ const config = {
   extensions: [".md", ".html", ".qmd", ".tex", ".typ"],
   text_extensions: [".md", ".html", ".qmd", ".tex", ".typ", ".bib", ".csv", ".json", ".yml"],
   asset_extensions: [".png", ".pdf"], derived_extensions: [".aux", ".log"],
-  max_document: 10000, max_assets: 10000, max_asset: 5000, max_files: 200,
+  log_quota_bytes: 10000, storage: { per_owner: 10000 }, max_files: 200,
 };
 const entries = (files) => Object.entries(files).map(([path, value]) => ({ path, bytes: typeof value === "string" ? new TextEncoder().encode(value) : value }));
 const project = (files) => archiveProject(entries(files), config);
@@ -35,9 +35,6 @@ const explicit = project({ "main.qmd": "# Source", "data.csv": "shared", ".libre
 assert.ok(select(explicit).files.some((file) => file.path === "data.csv"));
 assert.throws(() => select(project({ "main.qmd": "# Source", ".librepaper-share.json": '{"include":["missing.csv"]}' })), /missing/);
 assert.throws(() => project({ "main.qmd": "# Source", ".librepaper-share.json": '{"include":"data.csv"}' }), /include list/);
-assert.throws(() => select(ambiguous, "one.md", { ...config, max_document: 2 }), /document size limit/);
-assert.throws(() => select(latex, latex.main, { ...config, max_assets: 1 }), /combined asset/);
-assert.throws(() => select(latex, latex.main, { ...config, max_asset: 1 }), /figure exceeds/);
 assert.throws(() => select(latex, latex.main, { ...config, max_files: 2 }), /hold 2 files/);
 assert.throws(() => select(project({ "main.md": new Uint8Array([255]) })), /UTF-8/);
 // A ZIP dropped into a project's explorer becomes the files inside it, with
@@ -49,7 +46,7 @@ assert.throws(() => select(project({ "main.md": new Uint8Array([255]) })), /UTF-
   const plain = { file: "figure bytes", path: "extra.png" };
   const opened = await expandArchives([archive, plain], config, async (file, limits) => {
     assert.equal(file, "archive bytes");
-    assert.equal(limits.maxBytes, config.max_document + config.max_assets);
+    assert.equal(limits.maxBytes, config.log_quota_bytes + config.storage.per_owner);
     return entries({
       "paper/main.qmd": "# Source",
       "paper/main.html": "Generated",

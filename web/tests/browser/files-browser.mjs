@@ -42,7 +42,7 @@ import { join as joinSession } from ${JSON.stringify(join(root, "web/src/lib/col
 import { createClassComponent } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/legacy/legacy-client.js"))};
 const session = joinSession({ send() {}, mayEdit: true });
 const rules = { extensions: [".tex", ".md", ".qmd"], text_extensions: [".tex", ".md", ".qmd"], asset_extensions: [".png"],
-  derived_extensions: [], max_path: 200, max_files: 200, max_document: 1000000, max_assets: 1000000, max_asset: 500000 };
+  derived_extensions: [], max_path: 200, max_files: 200, log_quota_bytes: 1000000, storage: { per_owner: 1000000 } };
 const main = session.addText("main.tex", "main");
 session.setMain(main);
 const child = session.addText("chapters/one.tex", "chapter");

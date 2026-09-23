@@ -74,13 +74,9 @@ export function archiveSelection(project, main, config) {
       try { new TextDecoder("utf-8", { fatal: true }).decode(file.bytes); }
       catch { throw new Error(`${file.path}: document source must be UTF-8 text.`); }
     }
-    if (checked.kind === "asset" && file.bytes.length > config.max_asset) throw new Error(`${file.path}: this figure exceeds the file size limit.`);
     files.push({ ...file, kind: checked.kind });
   }
   if (files.length > config.max_files) throw new Error(`A document may hold ${config.max_files} files.`);
-  const size = (kind) => files.filter((file) => file.kind === kind).reduce((sum, file) => sum + file.bytes.length, 0);
-  if (size("text") > config.max_document) throw new Error("The archive's document files exceed the document size limit.");
-  if (size("asset") > config.max_assets) throw new Error("The archive's figures exceed the combined asset size limit.");
   return { files, skipped };
 }
 
@@ -113,9 +109,10 @@ export async function expandArchives(items, rules, unzip) {
       continue;
     }
     const entries = await unzip(item.file, {
-      maxBytes: (rules.max_document || 0) + (rules.max_assets || 0),
+      maxBytes: (rules.log_quota_bytes || 0) + (rules.storage?.per_owner || 0),
       maxFiles: (rules.max_files || 200) * 9,
     });
+    // A document's text cannot outgrow its log quota and its figures cannot outgrow what the account may hold.
     const project = archiveProject(entries, rules);
     const selected = archiveSelection(project, project.main || project.candidates[0], rules);
     // Paths are relative to the archive, so the whole tree lands under

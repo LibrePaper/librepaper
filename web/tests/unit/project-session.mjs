@@ -140,7 +140,7 @@ assert.throws(() => assertSameProject(first, recreated), { code: "project-identi
 // kept its old name on screen until the page was reloaded.
 {
   const rules = { extensions: [".md"], text_extensions: [".md"], asset_extensions: [], derived_extensions: [],
-    max_path: 200, max_files: 200, max_document: 1000000, max_assets: 1000000, max_asset: 500000 };
+    max_path: 200, max_files: 200, log_quota_bytes: 1000000, storage: { per_owner: 1000000 } };
   const directory = createProjectSession({ send: () => {}, onState: () => {} });
   try {
     const main = directory.addText("paper.md", "hello");

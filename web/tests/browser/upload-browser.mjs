@@ -17,7 +17,7 @@ const temp = mkdtempSync(join(tmpdir(), "librepaper-upload-browser-"));
 const entry = join(temp, "entry.js"), out = join(temp, "build");
 let server, tab;
 try {
-  const config = { max_document: 4 * 1024 * 1024, max_assets: 32 * 1024 * 1024, max_asset: 16 * 1024 * 1024,
+  const config = { log_quota_bytes: 4 * 1024 * 1024, storage: { per_owner: 32 * 1024 * 1024 },
     max_files: 200, max_path: 200, extensions: [".html", ".htm", ".md", ".markdown", ".qmd", ".typ", ".tex"],
     text_extensions: [".html", ".htm", ".md", ".markdown", ".qmd", ".typ", ".tex", ".bib", ".csl", ".yml", ".yaml"],
     asset_extensions: [".png", ".jpg", ".jpeg", ".gif", ".svg", ".pdf"] , derived_extensions: [] };
