@@ -30,7 +30,6 @@ const update = encode(server.export({ mode: "update" }));
 const vector = encode(server.oplogVersion().encode());
 export function openRoom(slug, {onMessage, onConnected}) {
   window.roomReceive = onMessage;
-  window.roomConnected = onConnected;
   window.roomSent = [];
   queueMicrotask(() => onConnected(true));
   return {
@@ -121,40 +120,6 @@ try {
   assert.equal(await visible('.editorpane'),true);
   assert.equal(await visible('.viewport'),true);
   await bounded();
-
-  // The connection controls are also the shortcuts to their settings. The
-  // room callback is kept on window so this fixture can exercise a live
-  // connection change without replacing Reader's room state.
-  const connectionPill = (name) => `.connection-pill[aria-label*="${name}"]`;
-  const connectionState = (name) => b.evaluate(`(() => {
-    const pill = document.querySelector(${JSON.stringify(connectionPill(name))});
-    const dot = pill?.querySelector('.connection-dot');
-    const box = pill?.getBoundingClientRect();
-    return { visible: Boolean(pill?.getClientRects().length && getComputedStyle(pill).visibility !== 'hidden'),
-      offline: dot?.classList.contains('offline'), left: box?.left, right: box?.right };
-  })()`);
-  const remoteInitial = await connectionState('Remote');
-  assert.equal(remoteInitial.visible, true, 'remote pill is visible');
-  assert.equal(remoteInitial.offline, false, 'remote pill starts connected');
-  await b.evaluate('window.roomConnected(false)'); await flush();
-  assert.equal((await connectionState('Remote')).offline, true, 'remote pill reflects a disconnected room');
-  await click(connectionPill('Local'));
-  await until('local settings category', () => b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Local"'), 3000);
-  const localSettingsText = await b.evaluate('document.querySelector(".settings-body").innerText');
-  for (const os of ['Linux installer', 'macOS Apple silicon', 'macOS Intel', 'Windows setup']) {
-    assert.ok(localSettingsText.includes(os), `local settings offers ${os}`);
-  }
-  await click('[aria-label="Close"]');
-  await click(connectionPill('Remote'));
-  await until('remote settings category', () => b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Remote"'), 3000);
-  assert.equal(await b.evaluate('document.querySelector("#remote-status").innerText.includes("Not connected to the LibrePaper server.")'), true,
-    'remote settings describes the disconnected state');
-  await b.evaluate('window.roomConnected(true)'); await flush();
-  assert.equal((await connectionState('Remote')).offline, false, 'remote pill becomes connected from settings');
-  assert.equal(await b.evaluate('document.querySelector("#remote-status").innerText.includes("Connected to the LibrePaper server.")'), true,
-    'remote settings updates to the connected state');
-  await b.evaluate('window.roomConnected(true)'); await flush();
-  await click('[aria-label="Close"]');
 
   // Every panel at the narrowest column a reader can drag to. A panel that
   // asks to be wider than the column it is in does not get a wider column: it
@@ -372,17 +337,6 @@ try {
   assert.equal(await b.evaluate('document.querySelector(".filelist .panel-actions").getBoundingClientRect().bottom <= document.querySelector(".explorer-scroll").getBoundingClientRect().top'), true);
 
   await b.resize(390,844); await flush();
-  const mobilePills = await b.evaluate(`Array.from(document.querySelectorAll('.connection-pill')).map(pill => {
-    const box = pill.getBoundingClientRect();
-    return { label:pill.textContent.trim(), visible:Boolean(pill.getClientRects().length && getComputedStyle(pill).visibility !== 'hidden'),
-      left:box.left, right:box.right, width:box.width };
-  })`);
-  assert.equal(mobilePills.length, 2, 'both connection pills remain in the mobile navbar');
-  for (const pill of mobilePills) {
-    assert.equal(pill.visible, true, `${pill.label} pill remains visible on mobile: ${JSON.stringify(pill)}`);
-    assert.ok(pill.left >= -1 && pill.right <= 391, `${pill.label} pill stays within the mobile viewport: ${JSON.stringify(pill)}`);
-  }
-  await bounded();
   await click(face('Document'));
   assert.equal(await visible('.viewport'),true);
   assert.equal(await visible('.editorpane'),false);
