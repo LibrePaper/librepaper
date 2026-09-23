@@ -108,11 +108,11 @@ export async function expandArchives(items, rules, unzip) {
       files.push(item);
       continue;
     }
+    // A document's text cannot outgrow its log quota and its figures cannot outgrow what the account may hold.
     const entries = await unzip(item.file, {
       maxBytes: (rules.log_quota_bytes || 0) + (rules.storage?.per_owner || 0),
       maxFiles: (rules.max_files || 200) * 9,
     });
-    // A document's text cannot outgrow its log quota and its figures cannot outgrow what the account may hold.
     const project = archiveProject(entries, rules);
     const selected = archiveSelection(project, project.main || project.candidates[0], rules);
     // Paths are relative to the archive, so the whole tree lands under
