@@ -86,6 +86,9 @@ struct Active {
     id: String,
     /// ACP streams the answer in chunks, so it accumulates here.
     answer: String,
+    answer_truncated: bool,
+    answer_dirty: bool,
+    last_answer_emit: tokio::time::Instant,
     pending: VecDeque<PendingInput>,
     cancelling: bool,
     cancel_deadline: Option<tokio::time::Instant>,
@@ -100,6 +103,7 @@ struct PendingInput {
     options: Vec<String>,
     message: String,
     option_values: Value,
+    details: Value,
     received_at: tokio::time::Instant,
     deadline: tokio::time::Instant,
 }
@@ -118,7 +122,7 @@ async fn report(transport: &Transport, task: &Task) -> Result<(), String> {
     emit(transport, task.frame()).await?;
     if let Some(answer) = &task.answer {
         if !answer.is_empty() {
-            emit(transport,json!({"type":"message","id":event_id(),"text":answer,"context":{"task_id":task.id,"results":task.results}})).await?;
+            emit(transport,json!({"type":"answer","id":event_id(),"task_id":task.id,"seq":task.event_seq,"text":answer,"truncated":task.answer_truncated})).await?;
         }
     }
     Ok(())
@@ -179,6 +183,81 @@ async fn reachable_or_refuse(peer: &AutomationPeer) -> Result<(), String> {
         401 | 403 => Err("the document refused this link. Choose the access again to mint a fresh one.".into()),
         other => Err(format!("the document service answered {other} when checking access; the assistant was not started.")),
     }
+}
+
+/// A successful `session/new` only proves that the ACP agent started. Wait for
+/// the actual child MCP bridge to answer `tools/list` before calling the runner
+/// ready. Each launch gets a fresh marker token so a stale file cannot satisfy
+/// a later agent restart.
+async fn start_agent_with_bridge(
+    config: &Config,
+    lease: &Lease,
+    base_environment: &[(String, String)],
+    executable: &Path,
+    connection: &str,
+) -> Result<acp::Agent, String> {
+    lease.write_status("starting", None, Some("Starting agent session"))?;
+    let token = event_id();
+    let marker = lease
+        .location
+        .directory
+        .join(format!("bridge-ready-{token}"));
+    let mut environment = base_environment.to_vec();
+    environment.push((
+        "LIBREPAPER_RUNNER_BRIDGE_READY_FILE".into(),
+        marker.to_string_lossy().into_owned(),
+    ));
+    environment.push(("LIBREPAPER_RUNNER_BRIDGE_READY_TOKEN".into(), token.clone()));
+    let _ = std::fs::remove_file(&marker);
+    let mut agent = acp::Agent::start(
+        &config.agent,
+        &lease.location.directory,
+        &environment,
+        &lease.location.directory.join("agent.log"),
+        executable,
+        connection,
+    )
+    .await?;
+    lease.write_status("starting", None, Some("Checking document bridge tools"))?;
+    let ready = tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            if lease.stop_requested() {
+                return Err(
+                    "assistant startup was stopped before the document bridge connected".into(),
+                );
+            }
+            match tokio::fs::read_to_string(&marker).await {
+                Ok(found)
+                    if crate::automation::mcp::readiness_marker_matches(
+                        &token,
+                        Some(found.as_str()),
+                    ) =>
+                {
+                    return Ok::<(), String>(())
+                }
+                Ok(_) => {
+                    return Err("the document bridge returned an invalid readiness marker".into())
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!("could not read document bridge readiness: {error}"))
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    let result = match ready {
+        Ok(result) => result,
+        Err(_) => Err("agent session started, but its document bridge did not discover the required LibrePaper tools within 25 seconds".into()),
+    };
+    let _ = tokio::fs::remove_file(&marker).await;
+    if let Err(error) = result {
+        agent.shutdown().await;
+        return Err(error);
+    }
+    lease.write_status("starting", None, Some("Document bridge connected"))?;
+    Ok(agent)
 }
 
 /// Resolve a browser selection against one bounded immutable read before the
@@ -276,6 +355,45 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
     let mut output = String::with_capacity(value.len().min(max_bytes));
     push_bounded_utf8(&mut output, value, max_bytes);
     output
+}
+
+fn bounded_answer(value: &str, truncated: bool) -> String {
+    const MAX: usize = super::protocol::MAX_ANSWER_BYTES;
+    const MARKER: &str = "… [answer truncated at 32 KiB]";
+    if !truncated {
+        return truncate_utf8(value, MAX);
+    }
+    let mut output = truncate_utf8(value, MAX.saturating_sub(MARKER.len()));
+    output.push_str(MARKER);
+    output
+}
+
+fn retain_partial_answer(state: &mut State, id: &str, active: &Active) {
+    if let Some(task) = state.task_mut(id) {
+        if !active.answer.is_empty() {
+            task.answer = Some(bounded_answer(&active.answer, active.answer_truncated));
+            task.answer_truncated = active.answer_truncated;
+        }
+    }
+}
+
+async fn publish_answer(
+    transport: &Transport,
+    state: &mut State,
+    id: &str,
+    state_path: &Path,
+) -> Result<(), String> {
+    let task = state
+        .task_mut(id)
+        .ok_or("task disappeared while publishing answer")?;
+    task.event_seq = task.event_seq.saturating_add(1);
+    let snapshot = task.clone();
+    state.sync_admission(id);
+    state.save(state_path)?;
+    if let Some(text) = snapshot.answer.as_ref().filter(|text| !text.is_empty()) {
+        emit(transport, json!({"type":"answer","id":event_id(),"task_id":snapshot.id,"seq":snapshot.event_seq,"text":text,"truncated":snapshot.answer_truncated})).await?;
+    }
+    Ok(())
 }
 
 async fn reconcile(
@@ -386,7 +504,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // prove execution or safely replay a mutation.
     state.save(&lease.location.state)?;
     let executable = crate::local::paths::current_executable()?;
-    let mut environment = adapter_environment(&journal_path, &epoch_path);
+    let environment = adapter_environment(&journal_path, &epoch_path);
     let connection = internal_connection(peer, config)?;
     // Prove the document is reachable at this access level before starting an
     // agent against it. The tools are handed to the agent as an MCP server it
@@ -396,21 +514,15 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // not starting. A reader link is the case that made this necessary, since
     // the document's MCP surface admits a commenter at minimum and answers a
     // reader with a flat 404.
+    lease.write_status("starting", None, Some("Checking document access"))?;
     reachable_or_refuse(peer).await?;
     // Said out loud, into the runner's own log, because every failure from
     // here on is invisible otherwise: the assistant answers happily with no
     // document tools and nothing anywhere says which of the agent, the
     // adapter or the connection was at fault.
     eprintln!("agent command: {:?}", config.agent);
-    let mut agent = acp::Agent::start(
-        &config.agent,
-        &lease.location.directory,
-        &environment,
-        &lease.location.directory.join("agent.log"),
-        &executable,
-        &connection,
-    )
-    .await?;
+    let mut agent =
+        start_agent_with_bridge(config, lease, &environment, &executable, &connection).await?;
     // Always a new session, never `session/load`. A resumed session keeps the
     // MCP servers it was created with and does not take the ones handed to
     // `session/load`, so resuming produced an assistant that could hold a
@@ -484,6 +596,9 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 active = Some(Active {
                                     id: id.clone(),
                                     answer: String::new(),
+                                    answer_truncated: false,
+                                    answer_dirty: false,
+                                    last_answer_emit: tokio::time::Instant::now(),
                                     pending: VecDeque::new(),
                                     cancelling: false,
                                     cancel_deadline: None,
@@ -513,6 +628,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
             runner_journal::set_execution_epoch(&epoch_path, None)?;
             agent.shutdown().await;
             if let Some(current) = &active {
+                retain_partial_answer(&mut state, &current.id, current);
                 finish(
                     &mut state,
                     &current.id,
@@ -526,10 +642,21 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
         tokio::select! {
             _=tick.tick()=> {
                 let now=tokio::time::Instant::now();
+                if let Some(current) = active.as_ref().filter(|current| current.answer_dirty && current.last_answer_emit.elapsed() >= Duration::from_millis(500)) {
+                    let id = current.id.clone();
+                    let text = bounded_answer(&current.answer, current.answer_truncated);
+                    let truncated = current.answer_truncated;
+                    if let Some(task) = state.task_mut(&id) { task.answer = Some(text); task.answer_truncated = truncated; }
+                    publish_answer(&transport, &mut state, &id, &lease.location.state).await?;
+                    if let Some(current) = active.as_mut() { current.answer_dirty = false; current.last_answer_emit = now; }
+                }
                 let timed_out = active.as_ref().filter(|current| {
                     current.cancel_deadline.is_some_and(|deadline| deadline <= now)
                 }).map(|current| current.id.clone());
                 if let Some(id) = timed_out {
+                    if let Some(current) = active.as_ref().filter(|current| current.id == id) {
+                        retain_partial_answer(&mut state, &id, current);
+                    }
                     journal.append(&id, "cancel_timeout", "", None, Vec::new(), "interrupted")?;
                     // Fence the adapter before publishing any terminal state.
                     // The old ACP task must be fully stopped before a new
@@ -543,14 +670,9 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     if stopping.is_some() { return Ok(()); }
                     epoch_path = runner_journal::execution_epoch_path(&journal_path);
                     _epoch_file = EpochFileGuard(epoch_path.clone());
-                    environment = adapter_environment(&journal_path, &epoch_path);
-                    agent = acp::Agent::start(
-                        &config.agent,
-                        &lease.location.directory,
-                        &environment,
-                        &lease.location.directory.join("agent.log"),
-                        &executable,
-                        &connection,
+                    let environment = adapter_environment(&journal_path, &epoch_path);
+                    agent = start_agent_with_bridge(
+                        config, lease, &environment, &executable, &connection,
                     ).await?;
                     if connected && stopping.is_none() { runner_journal::set_execution_epoch(&_epoch_file.0, current_epoch.as_deref())?; }
                     session_id = agent.session_id().to_string();
@@ -617,6 +739,13 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     }
                     Some(Event::Offline)=> { relay_connected=false;connected=false; current_epoch=None; runner_journal::set_execution_epoch(&epoch_path, None)?; }
                     Some(Event::Fatal(error))=> {
+                        if let Some(current) = active.as_ref() {
+                            let id = current.id.clone();
+                            if let Some(task) = state.task_mut(&id) {
+                                task.answer = (!current.answer.is_empty()).then(|| bounded_answer(&current.answer, current.answer_truncated));
+                                task.answer_truncated = current.answer_truncated;
+                            }
+                        }
                         runner_journal::set_active_task(&journal_path, None)?;
                         for task in &mut state.tasks { if !terminal(&task.status) { journal.append(&task.id, "transport_lost", "", None, Vec::new(), "interrupted")?; task.interrupt("Connection ended before completion was confirmed. Inspect the document before submitting new work.");} }
                         state.save(&lease.location.state)?;return Err(error);
@@ -674,7 +803,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                             current.deadline+=waited;
                                             if let Some(task)=state.task_mut(&current.id){
                                                 if let Some(next)=current.pending.front(){
-                                                    task.require_input(&next.request_id, &next.message, &next.option_values);
+                                                    task.require_input(&next.request_id, &next.message, &next.option_values, &next.details);
                                                 } else {
                                                     task.resume();
                                                 }
@@ -690,14 +819,33 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                 }
             }
             event=agent.recv()=> {
-                let Some(event)=event else {return Err("the agent exited; unconfirmed work will not be replayed".into());};
+                let Some(event)=event else {
+                    if let Some(current) = active.as_ref() {
+                        let id = current.id.clone();
+                        retain_partial_answer(&mut state, &id, current);
+                        finish(&mut state, &id, "failed", "The agent exited; unconfirmed work will not be replayed.");
+                        report_task(&transport, &mut state, &id, &lease.location.state).await?;
+                    }
+                    return Err("the agent exited; unconfirmed work will not be replayed".into());
+                };
                 match event {
-                    acp::Event::Exited(error) => return Err(format!("the agent exited: {error}")),
+                    acp::Event::Exited(error) => {
+                        if let Some(current) = active.as_ref() {
+                            let id = current.id.clone();
+                            retain_partial_answer(&mut state, &id, current);
+                            finish(&mut state, &id, "failed", &format!("The agent exited: {error}"));
+                            report_task(&transport, &mut state, &id, &lease.location.state).await?;
+                        }
+                        return Err(format!("the agent exited: {error}"));
+                    }
                     acp::Event::Update(update) => {
                         let Some(current)=active.as_mut() else { continue; };
                         match update {
                             acp::Update::Answer(chunk) => {
-                                push_bounded_utf8(&mut current.answer, &chunk, 32 * 1024);
+                                let before = current.answer.len();
+                                push_bounded_utf8(&mut current.answer, &chunk, super::protocol::MAX_ANSWER_BYTES);
+                                current.answer_truncated |= current.answer.len() - before < chunk.len();
+                                current.answer_dirty = true;
                             }
                             acp::Update::Activity(detail) => {
                                 let id=current.id.clone();
@@ -707,10 +855,12 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                             acp::Update::Ignored => {}
                         }
                     }
-                    acp::Event::Permission { handle, message, options, option_ids } => {
+                    acp::Event::Permission { handle, message, options, details, option_ids } => {
                         let Some(current)=active.as_mut() else { (*handle).respond(None)?; continue; };
+                        let base_size = message.len()+serde_json::to_vec(&options).map_err(|e|e.to_string())?.len();
+                        let details = if base_size.saturating_add(serde_json::to_vec(&details).map_err(|e|e.to_string())?.len()) > 12*1024 { Value::Null } else { details };
                         if option_ids.is_empty()
-                            || message.len()+serde_json::to_vec(&options).map_err(|e|e.to_string())?.len()>12*1024
+                            || base_size>12*1024
                             || current.pending.len()>=MAX_PENDING_INPUT
                         {
                             (*handle).respond(None)?;
@@ -724,12 +874,13 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                             options:option_ids,
                             message:message.clone(),
                             option_values:options.clone(),
+                            details:details.clone(),
                             received_at:tokio::time::Instant::now(),
                             deadline:tokio::time::Instant::now()+INPUT_TIMEOUT,
                         });
                         if show_now {
                             if let Some(task)=state.task_mut(&current.id){
-                                task.require_input(&request_id, &message, &options);
+                                task.require_input(&request_id, &message, &options, &details);
                             }
                             report_task(&transport,&mut state,&current.id,&lease.location.state).await?;
                         }
@@ -737,7 +888,8 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     acp::Event::TurnEnded(outcome) => {
                         let Some(current)=active.as_mut() else { continue; };
                         let id=current.id.clone();
-                        let answer=std::mem::take(&mut current.answer);
+                        retain_partial_answer(&mut state, &id, current);
+                        let answer=current.answer.clone();
                         while let Some(pending)=current.pending.pop_front() { pending.handle.respond(None)?; }
                         runner_journal::set_active_task(&journal_path, None)?;
                         journal.refresh()?;
@@ -754,7 +906,8 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 let refused = results["effects"]["counts"]["refused"].as_u64().unwrap_or(0);
                                 let answer=answer.trim().to_string();
                                 if let Some(task)=state.task_mut(&id){
-                                    task.answer=Some(if answer.is_empty() {"Finished.".into()} else {truncate_utf8(&answer, 32 * 1024)});
+                                    task.answer=Some(if answer.is_empty() {"Finished.".into()} else {bounded_answer(answer.trim(), current.answer_truncated)});
+                                    task.answer_truncated=current.answer_truncated;
                                     task.results=results;
                                 }
                                 journal.append(&id, "turn_completed", "", None, Vec::new(), if refused == 0 {"completed"} else {"refused"})?;
@@ -958,5 +1111,28 @@ mod tests {
         assert_eq!(output, "aaaaaé");
         assert_eq!(output.len(), 7);
         assert_eq!(truncate_utf8("ééé", 5), "éé");
+        let truncated = bounded_answer(&"a".repeat(32 * 1024 + 1), true);
+        assert!(truncated.ends_with("… [answer truncated at 32 KiB]"));
+        assert!(truncated.len() <= crate::assistant::protocol::MAX_ANSWER_BYTES);
+    }
+
+    #[test]
+    fn partial_answer_and_truncation_survive_restart_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runner.json");
+        let mut state = State::default();
+        let mut task =
+            Task::from_message(&json!({"id":"streamed","role":"user","text":"Explain"})).unwrap();
+        task.start(None);
+        task.answer = Some("partial answer".into());
+        task.answer_truncated = true;
+        state.admit(task).unwrap();
+        state.save(&path).unwrap();
+        let recovered = recover_state(&path).unwrap();
+        let task = recovered.task("streamed").unwrap();
+        assert_eq!(task.status, "interrupted");
+        assert_eq!(task.answer.as_deref(), Some("partial answer"));
+        assert!(task.answer_truncated);
+        assert!(task.event_seq > 0);
     }
 }

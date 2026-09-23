@@ -30,6 +30,8 @@ pub(crate) struct Task {
     pub(crate) status: String,
     pub(crate) detail: String,
     pub(crate) answer: Option<String>,
+    #[serde(default)]
+    pub(crate) answer_truncated: bool,
     pub(crate) results: Value,
     pub(crate) input: Value,
     pub(crate) cancel_requested: bool,
@@ -64,6 +66,7 @@ impl Task {
             status: "queued".into(),
             detail: String::new(),
             answer: None,
+            answer_truncated: false,
             results: Value::Null,
             input: Value::Null,
             cancel_requested: false,
@@ -112,13 +115,19 @@ impl Task {
         }
     }
 
-    pub(crate) fn require_input(&mut self, request_id: &str, message: &str, options: &Value) {
+    pub(crate) fn require_input(
+        &mut self,
+        request_id: &str,
+        message: &str,
+        options: &Value,
+        details: &Value,
+    ) {
         if terminal(&self.status) {
             return;
         }
         self.status = "needs_input".into();
         self.detail = message.into();
-        self.input = json!({"request_id":request_id,"kind":"permission","message":message,"options":options});
+        self.input = json!({"request_id":request_id,"kind":"permission","message":message,"options":options,"details":details});
     }
 
     pub(crate) fn resume(&mut self) {

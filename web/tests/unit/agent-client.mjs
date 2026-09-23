@@ -194,6 +194,31 @@ try {
   const replay = reconnected.sent.find((frame) => frame.type === "message" && frame.id === uncertain.id);
   assert.ok(replay, "the same request is retried after reconnect");
   assert.equal(replay.task_id, uncertain.task_id);
+
+  // Full snapshots update one transcript entry. Task and answer sequences
+  // share a revision but have separate payloads, so equality is allowed.
+  const answer = (seq, text, truncated = false) => reconnected.emit({
+    type: "answer", id: `answer-${seq}`, task_id: "streamed", seq, text, truncated,
+  });
+  answer(3, "First words");
+  answer(4, "A longer answer");
+  assert.equal(client.current.messages.filter((message) => message.context?.streamed_answer && message.context.task_id === "streamed").length, 1);
+  const streamed = () => client.current.messages.find((message) => message.context?.streamed_answer && message.context.task_id === "streamed");
+  const results = { effects: { confirmed: [{ kind: "suggestion", id: "s1" }] } };
+  reconnected.emit({ type: "task", task_id: "streamed", seq: 6, status: "interrupted", text: "Task interrupted", context: { results } });
+  answer(5, "Stale answer");
+  assert.equal(streamed().text, "A longer answer");
+  answer(6, "Partial answer… [answer truncated at 32 KiB]", true);
+  assert.equal(streamed().context.truncated, true);
+  assert.deepEqual(streamed().context.results, results);
+  assert.equal(client.current.tasks.streamed.status, "interrupted");
+  answer(6, "Duplicate with changed text");
+  answer(7, "x".repeat(32769));
+  assert.match(streamed().text, /Partial answer/);
+  // A completion arriving after an answer still attaches receipt effects.
+  reconnected.emit({ type: "answer", id: "complete-answer", task_id: "stream-complete", seq: 2, text: "Done", truncated: false });
+  reconnected.emit({ type: "task", task_id: "stream-complete", seq: 2, status: "completed", context: { results } });
+  assert.deepEqual(client.current.messages.find((message) => message.context?.task_id === "stream-complete").context.results, results);
 } finally { client.dispose(); }
 
 const fresh = createAgentClient(options);
@@ -201,6 +226,7 @@ try {
   await fresh.resume();
   assert.equal(fresh.current.id, "conversation-1");
   assert.deepEqual(fresh.current.messages, client.current.messages);
+  assert.equal(fresh.current.tasks.streamed.answer_seq, 6);
   const resumedSocket = FakeWebSocket.instances.at(-1);
   resumedSocket.emit({ type: "error", id: "expired", status: 404, message: "channel not found" });
   assert.equal(fresh.current.id, "", "an expired channel is discarded locally");

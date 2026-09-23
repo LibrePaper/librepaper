@@ -40,6 +40,8 @@ window.sockets = [];
 // is now a conversation between the browser and this computer, so the panel
 // cannot be exercised at all without one.
 window.localCalls = [];
+window.activeRunner = null;
+window.delayedAssistantStatuses = [];
 window.localAgents = [
   {id:'claude',label:'Claude Code',path:'/usr/bin/claude',configurable:true,assistant:true,assistant_fetches:false,assistant_blocked:'',assistant_note:'',restart:'Restart Claude Code'},
   {id:'pi',label:'Pi',path:'/usr/bin/pi',configurable:false,assistant:true,assistant_fetches:true,assistant_blocked:'',assistant_note:"Pi's ACP adapter has incomplete MCP support, so the document tools may not reach it",restart:'Restart Pi'},
@@ -53,7 +55,7 @@ window.fetch = async (url, init) => {
     if (route === 'health') return Response.json({service:'librepaper-local',protocol:[2],version:'test',instance:'one'});
     if (route === 'capabilities') return Response.json({builders:[]});
     if (route === 'agents') return Response.json({agents:window.localAgents,connections:[]});
-    if (route === 'connections') return Response.json({connection:'paper'}, {status:201});
+    if (route === 'connections') { window.connectionAccess=body.access; return Response.json({connection:'paper'}, {status:201}); }
     if (route === 'connect') {
       // The real app rejects a null project as a malformed body, which is
       // what an unconfigured client sends. Fail loudly here rather than
@@ -64,8 +66,21 @@ window.fetch = async (url, init) => {
         ? Response.json({token:'pair-token',expires:Date.now()/1000+3600,instance:'one'})
         : Response.json({error:'invalid pairing code'}, {status:403});
     }
-    if (route === 'assistant') return Response.json({running:true,agent:body.agent});
-    if (route === 'assistant/stop') return Response.json({stopped:true});
+    if (route === 'assistant') {
+      window.activeRunner={connection:body.connection,conversation:body.conversation,agent:body.agent,access:window.connectionAccess,nonce:'runner-nonce',config_hash:'runner-hash'};
+      return Response.json({running:true,agent:body.agent});
+    }
+    if (route === 'assistant/status') {
+      if (window.delayAssistantStatus) {
+        window.delayAssistantStatus=false;
+        return new Promise(resolve=>window.delayedAssistantStatuses.push({body,resolve}));
+      }
+      const runner=window.activeRunner;
+      return Response.json(runner && runner.connection===body.connection && runner.conversation===body.conversation
+        ? {running:true,connection:runner.connection,agent:runner.agent,access:runner.access,status:{nonce:runner.nonce,config_hash:runner.config_hash,state:'ready'}}
+        : {running:false,connection:body.connection});
+    }
+    if (route === 'assistant/stop') { window.activeRunner=null; return Response.json({stopped:true}); }
     throw new Error('unexpected local app request: ' + route);
   }
   if (pathname === '/api/documents/paper/agent/candidates/candidate-large') {
@@ -205,7 +220,6 @@ try {
   assert.equal(await page.evaluate('Array.from(document.querySelectorAll(".agent-task button")).some(b => b.textContent.trim().startsWith("Stop"))'), true);
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'}); window.sockets[0].emit({type:'task',task_id:'activity',status:'completed'})");
   await until("waiting after completion", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent === "Waiting" && !document.querySelector(".working-dots")'), 1000);
-
   await page.evaluate("window.setProps({diagnostics:[{severity:'warning',file:'librepaper.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]})");
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='Explain this';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
   await until("agent reply",()=>page.evaluate('document.querySelector("[role=log]")?.textContent.includes("<img")'),10000);
@@ -214,6 +228,12 @@ try {
   assert.equal(posted.context.file,"paper.md");
   assert.deepEqual(posted.context.diagnostics, [{severity:'warning',file:'librepaper.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]);
   assert.deepEqual(posted.context.selection,{path:"paper.md",exact:"A passage",prefix:"",suffix:"",position:null});
+  assert.equal(await page.evaluate(`document.querySelector('.chat-form button[type=submit]')?.textContent.trim()`), "Send",
+    "the composer exposes a visible Send button");
+  await page.evaluate(`(()=>{const field=document.querySelector('.chat-form textarea');field.value='Send button request';field.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await until("draft enables Send", () => page.evaluate(`!document.querySelector('.chat-form button[type=submit]').disabled`), 1000);
+  await page.evaluate(`document.querySelector('.chat-form button[type=submit]').click()`);
+  await until("Send button submits the draft", () => page.evaluate(`window.sockets[0].sent.some(frame=>frame.type==='message'&&frame.text==='Send button request')`), 1000);
 
   await page.evaluate("window.sockets[0].emit({type:'preview_request',id:'preview-1',task_id:'task-1',base_revision:'base-revision',revision:'candidate-revision',candidate_id:'candidate-large',candidate_token:'candidate-token'})");
   await until("preview response", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.type==='preview_result')"), 1000);
@@ -233,14 +253,16 @@ try {
   // A permission request stays visible until the runner reports that it
   // resumed. The sidebar offers exactly the options the agent named, and
   // never treats a missing response as consent.
-  await page.evaluate(`window.sockets[0].emit({type:'task',task_id:'input-task',status:'needs_input',context:{input:{request_id:'approval-1',kind:'permission',message:'Run the command?',options:[{id:'allow-once',label:'Allow once'},{id:'reject',label:'Reject'}]}}})`);
+  await page.evaluate(`window.sockets[0].emit({type:'task',task_id:'input-task',status:'needs_input',context:{input:{request_id:'approval-1',kind:'permission',message:'Run the command?',options:[{id:'allow-once',label:'Allow this run',kind:'allow_once'},{id:'reject',label:'Reject',kind:'reject_once'}],details:{command:'git status',files:['paper.md'],diff:'-old\\n+new'}}}})`);
   await until("permission request", () => page.evaluate('document.querySelector(".input-request")?.textContent.includes("Run the command?")'), 1000);
   assert.equal(
     await page.evaluate(`Array.from(document.querySelectorAll('.input-request button')).map(b=>b.textContent.trim()).join('|')`),
-    "Allow once|Reject|Cancel",
+    "Allow once Allow this run|Reject once Reject|Cancel",
     "the sidebar shows the agent's own options and nothing it invented",
   );
-  await page.evaluate('Array.from(document.querySelectorAll(".input-request button")).find(b=>b.textContent.trim()==="Reject").click()');
+  assert.match(await page.evaluate('document.querySelector(".permission-details")?.textContent'), /git status.*paper\.md/s);
+  assert.match(await page.evaluate('document.querySelector(".permission-details pre")?.textContent'), /-old.*\+new/s);
+  await page.evaluate('document.querySelector(".input-request button[data-option-kind=reject_once]").click()');
   await until("permission response", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.type==='input'&&frame.response?.option==='reject')"), 1000);
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'input-task',status:'working',text:'Continuing'})");
   await until("permission cleared", () => page.evaluate('!document.querySelector(".input-request")'), 1000);
@@ -322,7 +344,7 @@ try {
   await until("draft while away", () => page.evaluate('!document.querySelector(".chat-form textarea").disabled && document.querySelector(".chat-form").dataset.cansend==="false"'), 1000);
   await page.evaluate(`(()=>{const input=document.querySelector(".chat-form textarea");input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',shiftKey:true,bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
   assert.equal(await page.evaluate(`document.querySelector(".chat-form textarea").value`), "First\n\n");
-  assert.equal(await page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='message').length"), 2);
+  assert.equal(await page.evaluate("window.sockets[0].sent.filter(frame=>frame.type==='message').length"), 3);
 
   // Browser loss triggers automatic socket recovery; credentials, transcript
   // and locally drafted requests remain in the browser session.
@@ -330,7 +352,7 @@ try {
   await until("automatic recovery", () => page.evaluate('window.sockets.length===2'), 3000);
   await until("fresh recovered channel", () => page.evaluate("window.sockets.length===2"), 1000);
   assert.equal(await page.evaluate(`document.querySelector(".chat-form textarea").value`), "First\n\n");
-  assert.equal(await page.evaluate("window.sockets[1].sent.filter(frame=>frame.type==='message').length"), 2,
+  assert.equal(await page.evaluate("window.sockets[1].sent.filter(frame=>frame.type==='message').length"), 3,
     "relay acknowledgements are replayed until a task event confirms runner admission");
 
   // Explicitly replacing a request discards its old draft and binds the new
@@ -528,6 +550,29 @@ try {
     "claude",
     "the chosen agent is what the control shows",
   );
+
+  // A remounted panel reads the local status for its saved connection and
+  // restores the agent and access that are actually running.
+  await choose("Access", "commenter");
+  await until("restored test access chosen", () => page.evaluate(`document.querySelector('.access-detail[data-access=commenter]') !== null`), 1000);
+  await page.evaluate(`document.querySelector('.access-detail[data-access=commenter] button').click()`);
+  await until("restoration test assistant started", () => page.evaluate("window.activeRunner !== null"), 2000);
+  await page.evaluate("window.remount()");
+  await until("running configuration restored", () => page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value==='claude' && document.querySelector('select[aria-label=Access]')?.value==='commenter' && document.querySelector('.access-detail')?.querySelector('button')?.textContent.trim()==='Running'`), 3000);
+
+  // A delayed status response from the old conversation must not overwrite a
+  // newer conversation after its component has remounted again.
+  await page.evaluate("window.delayAssistantStatus=true; window.remount()");
+  await until("delayed assistant status is pending", () => page.evaluate("window.delayedAssistantStatuses.length===1"), 2000);
+  await page.evaluate("window.conversationCreatesBeforePending=window.calls.filter(call=>call.suffix==='').length");
+  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(".agent-actions button").click()');
+  await until("conversation changed while status was pending", () => page.evaluate("window.calls.filter(call=>call.suffix==='').length === window.conversationCreatesBeforePending+1"), 3000);
+  await page.evaluate("window.delayedAssistantStatuses[0].resolve(Response.json({running:true,connection:'paper',agent:'pi',access:'editor',status:{nonce:'old',config_hash:'old',state:'ready'}}))");
+  await new Promise(resolve=>setTimeout(resolve,50));
+  assert.notEqual(await page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value`), "pi",
+    "an older runner status cannot replace the configuration of a newer conversation");
+  assert.notEqual(await page.evaluate(`document.querySelector('select[aria-label=Access]')?.value`), "editor",
+    "an older runner status cannot replace the access choice of a newer conversation");
 
   console.log("agent-browser: context, recovery, draft, keyboard, short layout, pairing and local session persistence passed");
 } finally {

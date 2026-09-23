@@ -640,6 +640,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn answer_snapshots_are_bounded_and_agent_only() {
+        let (hub, id, token) = channel().await;
+        let (user_tx, mut user_rx) = mpsc::channel(8);
+        let (agent_tx, _agent_rx) = mpsc::channel(8);
+        hub.attach("paper", &id, &token, "user", 1, user_tx)
+            .await
+            .unwrap();
+        hub.attach("paper", &id, &token, "agent", 2, agent_tx)
+            .await
+            .unwrap();
+        while user_rx.try_recv().is_ok() {}
+        let frame = json!({"type":"answer","id":"answer-1","task_id":"task-1","seq":1,"text":"A partial answer","truncated":false});
+        assert_eq!(
+            hub.relay("paper", &id, &token, 1, "user", frame.clone())
+                .await
+                .unwrap_err()
+                .0,
+            403
+        );
+        for (field, invalid) in [
+            ("text", json!("x".repeat(MAX_EVENT_TEXT + 1))),
+            ("text", json!(null)),
+            ("seq", json!(0)),
+            ("seq", json!(9_007_199_254_740_992_u64)),
+            ("truncated", json!("yes")),
+            ("task_id", json!("")),
+            ("context", json!({"extra":"x".repeat(MAX_CONTEXT)})),
+        ] {
+            let mut invalid_frame = frame.clone();
+            invalid_frame[field] = invalid;
+            assert_eq!(
+                hub.relay("paper", &id, &token, 2, "agent", invalid_frame)
+                    .await
+                    .unwrap_err()
+                    .0,
+                400,
+                "{field}"
+            );
+        }
+        hub.relay("paper", &id, &token, 2, "agent", frame.clone())
+            .await
+            .unwrap();
+        let Outgoing::Text(delivered) = user_rx.recv().await.unwrap() else {
+            panic!("expected answer")
+        };
+        assert_eq!(serde_json::from_str::<Value>(&delivered).unwrap(), frame);
+        hub.relay("paper", &id, &token, 2, "agent", frame.clone())
+            .await
+            .unwrap();
+        assert!(user_rx.try_recv().is_err());
+        let mut next = frame;
+        next["id"] = json!("answer-2");
+        next["seq"] = json!(2);
+        next["text"] = json!("The full answer");
+        hub.relay("paper", &id, &token, 2, "agent", next)
+            .await
+            .unwrap();
+        assert!(
+            matches!(user_rx.recv().await.unwrap(), Outgoing::Text(text) if text.contains("The full answer"))
+        );
+    }
+
+    #[tokio::test]
     async fn task_and_preview_events_are_bounded_and_role_checked() {
         let (hub, id, token) = channel().await;
         let (user_tx, mut user_rx) = mpsc::channel(8);

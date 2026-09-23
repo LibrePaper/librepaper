@@ -97,8 +97,23 @@ Supported task kinds are `proofread`, `tighten`, `rewrite`, `explain`,
 `file`, and `document`. The server validates the vocabulary and forwards the
 request without interpreting document content.
 
-The runner sends assistant output using `message` with the same shape. It
-reports task lifecycle separately:
+The runner streams full answer snapshots with a stable `task_id` and a new
+event `id` for each snapshot:
+
+```json
+{
+  "type": "answer", "id": "answer-event-1", "task_id": "request-1",
+  "seq": 3, "text": "The passage argues…", "truncated": false
+}
+```
+
+`seq` is a positive JavaScript-safe integer from the persisted task revision.
+The browser replaces the task's answer only with a newer snapshot; reconnects
+can replay the last snapshot without duplicating the transcript entry. Answer
+text has the same 32 KiB limit as message text. A capped answer includes an
+explicit truncation notice and sets `truncated`. Interrupted tasks retain their
+partial answer; task status indicates whether it finished. Legacy `message`
+output remains supported. Task lifecycle is reported separately:
 
 ```json
 {
@@ -115,6 +130,15 @@ and `unresolved` contains operations whose outcome needs receipt
 reconciliation. A refusal by itself does not change a normally ended turn into
 a failed task.
 
+Lost MCP responses can be reconciled with `document_result` using the original
+operation identity. Compact mutation outcomes are stored in the mutation's own
+transaction and are scoped to document, actor, request digest, and operation
+epoch. Expired or missing evidence remains unknown; lookup never reexecutes a
+mutation. Independent batches retain the existing aggregate `committed` status
+for processed batch requests: only each item's status establishes whether that
+item committed, was refused, or remains unknown. A recovered batch can therefore
+report confirmed effects while still requiring reconciliation of other items.
+
 The browser requests cancellation with:
 
 ```json
@@ -127,8 +151,10 @@ result. Cancellation does not undo edits already accepted by the user.
 
 A `needs_input` task carries `context.input` with `request_id`, `kind` set to
 `permission`, a `message`, and permission `options` normalized for the browser
-as `{ "id": "...", "label": "..." }`. The browser responds with one offered
-option ID or cancels the request:
+as `{ "id": "...", "label": "...", "kind": "allow_once" }`. Bounded
+`details` can provide a command, file paths, or a diff. These details are
+displayed as text, and option kinds distinguish approval from rejection. The
+browser responds with one offered option ID or cancels the request:
 
 ```json
 {

@@ -211,6 +211,46 @@ impl Room {
             .map_err(WriteError::from)
     }
 
+    /// MCP variant that stores compact recovery evidence in the label's own
+    /// transaction. The retained value is a receipt, not the label's source
+    /// snapshot or any comment text.
+    pub(crate) async fn take_label_reporting_receipt(
+        &self,
+        reason: &str,
+        label: Option<String>,
+        by: impl Into<Attribution>,
+        authority: &Authority,
+        request_id: Option<Uuid>,
+        receipt: crate::storage::postgres::OperationReceipt,
+    ) -> Result<(LabelRecord, bool), WriteError> {
+        let mut command = TakeLabel {
+            document_id: self.document_id,
+            reason: reason.into(),
+            label,
+            by: by.into(),
+            request_id,
+            catalog: self.catalog().clone(),
+            vector: Vec::new(),
+            frontier: Vec::new(),
+            digest: [0; 32],
+        };
+        let mut command = crate::log::recorded::RecordedCommand::new(
+            &mut command,
+            receipt,
+            |record: &LabelRecord| {
+                serde_json::json!({
+                    "tool":"document_comment",
+                    "status":"committed",
+                    "action":"label",
+                    "source_sequence":record.source_sequence
+                })
+            },
+        );
+        self.command_reporting_replay(authority, &mut command)
+            .await
+            .map_err(WriteError::from)
+    }
+
     /// One page of the timeline, newest first.
     pub async fn label_page(
         &self,

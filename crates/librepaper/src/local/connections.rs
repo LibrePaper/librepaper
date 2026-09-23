@@ -47,6 +47,11 @@ pub struct Connection {
     /// Human label for the sidebar and `librepaper local connections`.
     #[serde(default)]
     pub title: String,
+    /// Sidebar runner configuration by conversation. A connection may be
+    /// shared by several browser conversations, so each record is bound to
+    /// the runner nonce and configuration hash that made it current.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assistant_sessions: BTreeMap<String, AssistantConfiguration>,
     pub created: i64,
     /// Last time an agent resolved this connection.
     #[serde(default)]
@@ -64,6 +69,14 @@ pub struct Connection {
     /// connections a person made.
     #[serde(default)]
     pub internal: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AssistantConfiguration {
+    pub agent: String,
+    pub access: String,
+    pub nonce: String,
+    pub config_hash: String,
 }
 
 #[derive(Clone)]
@@ -224,6 +237,7 @@ impl ConnectionStore {
                     origin: origin.to_string(),
                     access: access.to_string(),
                     title: title.to_string(),
+                    assistant_sessions: BTreeMap::new(),
                     created: now,
                     used: now,
                     conversation: None,
@@ -253,6 +267,7 @@ impl ConnectionStore {
                 origin: "local-runner".into(),
                 access: String::new(),
                 title: String::new(),
+                assistant_sessions: BTreeMap::new(),
                 created: now,
                 used: now,
                 conversation: Some(conversation.to_string()),
@@ -281,6 +296,35 @@ impl ConnectionStore {
 
     pub fn get(&self, name: &str) -> Option<Connection> {
         self.load().get(name).cloned()
+    }
+
+    /// Retain non-secret sidebar configuration for the matching runner. A
+    /// later start in another conversation keeps its own identity separate.
+    pub fn set_assistant_configuration(
+        &self,
+        name: &str,
+        conversation: &str,
+        configuration: AssistantConfiguration,
+    ) -> Result<(), String> {
+        self.update(|all| {
+            let entry = all
+                .get_mut(name)
+                .ok_or("no such connection on this computer")?;
+            entry.assistant_sessions.remove(conversation);
+            while entry.assistant_sessions.len() >= 32 {
+                let Some(evicted_key) = entry.assistant_sessions.keys().next().cloned() else {
+                    break;
+                };
+                entry.assistant_sessions.remove(&evicted_key);
+            }
+            // Conversation IDs are random, not chronological. Evict before
+            // insertion so the configuration being saved always survives.
+            entry
+                .assistant_sessions
+                .insert(conversation.to_string(), configuration);
+            entry.used = now_unix();
+            Ok(())
+        })
     }
 
     /// Every connection a person made, newest first, for the sidebar and the
@@ -364,6 +408,68 @@ mod tests {
         // the sidebar does not leave the stale role on display.
         assert_eq!(store.get(&first).unwrap().access, "editor");
         assert_eq!(store.list().len(), 1);
+    }
+
+    #[test]
+    fn newest_configuration_survives_bounded_history_even_with_a_smaller_id() {
+        let (_dir, store) = store();
+        let name = store
+            .register("Thesis", "https://d.example/docs/a#k=s", "o", "editor")
+            .unwrap();
+        let configuration = AssistantConfiguration {
+            agent: "claude".into(),
+            access: "editor".into(),
+            nonce: "n".into(),
+            config_hash: "h".into(),
+        };
+        for index in 0..32 {
+            store
+                .set_assistant_configuration(&name, &format!("z-{index}"), configuration.clone())
+                .unwrap();
+        }
+        store
+            .set_assistant_configuration(&name, "a-newest", configuration)
+            .unwrap();
+        let retained = store.get(&name).unwrap();
+        assert_eq!(retained.assistant_sessions.len(), 32);
+        assert!(retained.assistant_sessions.contains_key("a-newest"));
+    }
+
+    #[test]
+    fn selected_sidebar_configuration_is_bound_to_a_runner_identity() {
+        let (_dir, store) = store();
+        let name = store
+            .register("Thesis", "https://d.example/docs/a#k=s", "o", "editor")
+            .unwrap();
+        store
+            .set_assistant_configuration(
+                &name,
+                "conversation-1",
+                AssistantConfiguration {
+                    agent: "claude-code".into(),
+                    access: "editor".into(),
+                    nonce: "nonce-1".into(),
+                    config_hash: "hash-1".into(),
+                },
+            )
+            .unwrap();
+        let retained = store.get(&name).unwrap();
+        assert_eq!(
+            retained
+                .assistant_sessions
+                .get("conversation-1")
+                .unwrap()
+                .agent,
+            "claude-code"
+        );
+        assert_eq!(
+            retained
+                .assistant_sessions
+                .get("conversation-1")
+                .unwrap()
+                .nonce,
+            "nonce-1"
+        );
     }
 
     #[test]

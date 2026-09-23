@@ -21,7 +21,8 @@ use crate::storage::postgres::{PostgresCatalog, PostgresOptions};
 /// and days later. `document_marks` is named explicitly rather than left to
 /// cascade from `documents` and `accounts`, so this does not quietly depend
 /// on a foreign key's `ON DELETE` staying what it is.
-const SCHEMA_TABLES: &str = "document_proposal_hunks,document_proposals,document_labels,\
+const SCHEMA_TABLES: &str =
+    "operation_outcomes,document_proposal_hunks,document_proposals,document_labels,\
      document_updates,document_snapshots,document_assets,replies,annotations,\
      document_marks,share_links,grants,documents,accounts";
 

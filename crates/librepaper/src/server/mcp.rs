@@ -7,6 +7,8 @@ use serde::Serialize;
 mod cancel;
 pub(crate) mod comments;
 mod operations;
+#[cfg(test)]
+mod recovery_tests;
 mod render;
 mod schema;
 
@@ -249,7 +251,7 @@ impl Server {
         match method {
             "server/discover" => rpc_result(
                 &id,
-                json!({"supportedVersions":[PROTOCOL],"capabilities":{"tools":{}},"instructions":"Read bounded source, then reuse view and range handles. Every mutation needs an operation: copy operation_epoch verbatim from your most recent document_read response and pair it with an id you mint once per mutation. An epoch cannot be invented or carried over, and authorization_epoch is a different value that will be refused; read again when yours expires. Suggestions are inert. An admitted operation key is single-use: if its outcome is unknown, inspect the document and do not evade the guard with a new id. Apply only when authorized. Multiple published suggestions are independent items; only private staging may combine patches atomically. These tools are the only way to reach this document. A refused read may be repeated after a bounded reread that preserves the selected occurrence; follow supplied render recovery instructions when appropriate. An unknown mutation outcome must not be replayed or retried under a new id. If access is revoked or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.","ttlMs":300000,"cacheScope":"private"}),
+                json!({"supportedVersions":[PROTOCOL],"capabilities":{"tools":{}},"instructions":"Read bounded source, then reuse view and range handles. Every mutation needs an operation: copy operation_epoch verbatim from your most recent document_read response and pair it with an id you mint once per mutation. An epoch cannot be invented or carried over, and authorization_epoch is a different value that will be refused; read again when yours expires. Suggestions are inert. If a response is lost, use document_result with kind=operation and target_operation to retrieve its retained transaction outcome when available; outcomes without authoritative evidence remain unknown. An admitted operation key is single-use: if lookup remains unknown, inspect the document and do not evade the guard with a new id. Apply only when authorized. Multiple published suggestions are independent items; only private staging may combine patches atomically. These tools are the only way to reach this document. A refused read may be repeated after a bounded reread that preserves the selected occurrence; follow supplied render recovery instructions when appropriate. An unknown mutation outcome must not be replayed or retried under a new id. If access is revoked or the service is unreachable, report that and stop. A file in the working directory is not this document, and answering from one is a false report even when its text matches.","ttlMs":300000,"cacheScope":"private"}),
             ),
             "ping" => rpc_result(&id, json!({})),
             "tools/list" => rpc_result(

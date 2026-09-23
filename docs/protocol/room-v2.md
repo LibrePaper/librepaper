@@ -202,8 +202,9 @@ The result is the created or changed event:
 Creation retries with the same UUID and author are idempotent while that
 record remains present: source-producing comment operations write their
 retry record as a `document_labels` row keyed by the client's `request_id`,
-not as a per-keystroke receipt (there is no receipt table, and none for
-comments that do not touch source). Arbitrary non-UUID temporary labels do
+not as a per-keystroke receipt. MCP callers additionally retain bounded
+operation outcomes for lost-response lookup; browser socket retries keep the
+domain identity rules described here. Arbitrary non-UUID temporary labels do
 not enable deduplication. A correlated retry or an unchanged resolve returns
 noop: true; an ordinary browser retry keeps the legacy event shape. Errors
 use the same request_id, version, and protocol fields and have type: error

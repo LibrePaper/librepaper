@@ -32,8 +32,9 @@ pub(super) fn instructions(directory: &Path) -> Result<String, String> {
          document_result receipt or render result. \
          For multi-suggestion publication, always use independent batch items; private staging alone may use one \
          atomic multi-patch candidate. Treat uncertain writes as unknown: operation \
-         lookup does not return a retained receipt, and an identical retry cannot make an admitted write safe \
-         to replay. Inspect unknown effects without a new operation ID. A bounded reread may refresh expired \
+         lookup can return a retained outcome for the original operation identity while its epoch is live. \
+         Use document_result to recover that evidence; an absent or expired outcome remains unknown, and an \
+         identical retry cannot make an admitted write safe to replay. Inspect unknown effects without a new operation ID. A bounded reread may refresh expired \
          read context while preserving the intended occurrence; never replay an uncertain write. If supplied \
          candidate or render recovery permits it, finish the already authorized proposal. For an unknown write, \
          do not reexecute it. If access is revoked or the service is unavailable, report that and stop. Do not substitute a weaker \

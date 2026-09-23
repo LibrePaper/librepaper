@@ -278,7 +278,8 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     if (!message?.id) return;
     const taskId = message.role === "agent" ? message.context?.task_id : null;
     const existing = view.messages.findIndex((item) =>
-      (taskId && item.role === "agent" && item.context?.task_id === taskId) ||
+      (taskId && message.context?.task_status !== true && item.role === "agent" && item.context?.task_id === taskId &&
+        (message.context?.streamed_answer !== true || item.context?.streamed_answer === true)) ||
       (item.id === message.id && item.role === message.role));
     if (existing >= 0) {
       const messages = [...view.messages];
@@ -388,6 +389,21 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       addMessage(frame.message);
       return;
     }
+    if (frame.type === "answer") {
+      const taskId = frame.task_id;
+      const previous = view.tasks[taskId];
+      if (typeof taskId !== "string" || !taskId || !Number.isSafeInteger(frame.seq) || frame.seq <= 0 ||
+          typeof frame.text !== "string" || new TextEncoder().encode(frame.text).byteLength > 32 * 1024 ||
+          typeof frame.truncated !== "boolean" || frame.seq <= (previous?.answer_seq || 0) ||
+          frame.seq < (previous?.seq || 0)) return;
+      updateTask(taskId, { answer_seq: frame.seq });
+      addMessage({
+        id: `task-answer-${taskId}`, role: "agent", text: frame.text,
+        context: { task_id: taskId, truncated: frame.truncated, streamed_answer: true,
+          ...(previous?.result ? { results: previous.result } : {}) },
+      });
+      return;
+    }
     if (frame.type === "capabilities" && frame.capabilities) {
       publish({ connected: true, runnerConnected: true, capabilities: frame.capabilities, status: "ready", error: "" });
       return;
@@ -404,13 +420,17 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       }
       const context = frame.context && typeof frame.context === "object" ? frame.context : {};
       updateTask(taskId, { seq: frame.seq, status: frame.status, message: frame.text, input: context.input, result: context.results });
+      const answerMessage = view.messages.find((item) => item.role === "agent" && item.context?.streamed_answer === true && item.context?.task_id === taskId);
+      if (answerMessage && context.results) {
+        addMessage({ ...answerMessage, context: { ...answerMessage.context, results: context.results } });
+      }
       confirmDelivery(taskId, frame);
       if (["failed", "cancelled", "interrupted"].includes(frame.status)) {
         addMessage({
-          id: frame.id || `task-${taskId}`,
+          id: `task-${taskId}`,
           role: "agent",
           text: frame.text || (frame.status === "cancelled" ? "Task cancelled." : frame.status === "interrupted" ? "Task interrupted; reconcile its document operations before retrying." : "Task failed."),
-          context: { task_id: taskId, ...(context.results ? { results: context.results } : {}) },
+          context: { task_id: taskId, task_status: true, ...(context.results ? { results: context.results } : {}) },
         });
       }
       return;

@@ -380,6 +380,26 @@ impl Hub {
                 }
                 self.deliver(slug, id, token, socket, role, frame).await
             }
+            "answer" => {
+                if role != "agent" {
+                    return Err((403, "only the agent can stream answers"));
+                }
+                bounded_string(&value, "task_id")?;
+                if !value["seq"]
+                    .as_u64()
+                    .is_some_and(|seq| seq > 0 && seq <= 9_007_199_254_740_991)
+                    || !value["text"]
+                        .as_str()
+                        .is_some_and(|text| text.len() <= MAX_EVENT_TEXT)
+                    || !value["truncated"].is_boolean()
+                    || value
+                        .get("context")
+                        .is_some_and(|context| !valid_context(context))
+                {
+                    return Err((400, "invalid bounded answer"));
+                }
+                self.deliver(slug, id, token, socket, role, value).await
+            }
             "task" => {
                 if role != "agent" {
                     return Err((403, "only the agent can report task status"));

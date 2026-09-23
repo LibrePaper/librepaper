@@ -69,6 +69,10 @@ impl Maintenance {
         if !(1..=1000).contains(&batch) || grace < Duration::days(7) {
             return Err("orphan cleanup bounds are invalid".into());
         }
+        // Recovery receipts have the operation epoch's lifetime. Sweep a
+        // bounded page even when the document never receives another write.
+        sqlx::query("DELETE FROM operation_outcomes WHERE (document_id,actor,request_id) IN (SELECT document_id,actor,request_id FROM operation_outcomes WHERE expires_at <= extract(epoch FROM now())::bigint ORDER BY expires_at LIMIT $1)")
+            .bind(batch as i64).execute(self.catalog.pool()).await.map_err(|error| error.to_string())?;
         let mut removed = 0;
         for (name, prefix, retention) in [
             ("document_objects", "documents/", grace),

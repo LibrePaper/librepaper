@@ -37,6 +37,14 @@ pub(super) struct Candidate {
 #[derive(Serialize, Deserialize)]
 struct Admission {
     digest: String,
+    /// The command family is part of recovery identity. Old admissions have
+    /// no family and deliberately remain unresolved.
+    #[serde(default)]
+    tool: String,
+    /// Small server-selected recovery handles only; mutation arguments and
+    /// document text are never retained in this transport record.
+    #[serde(default)]
+    context: Value,
 }
 
 pub(super) fn failure(error: agent::AgentError) -> Failure {
@@ -88,6 +96,42 @@ pub(super) fn operation_digest(name: &str, args: &Value) -> String {
     hex::encode(Sha256::digest(
         json!({"tool": name, "arguments": canonical(args)}).to_string(),
     ))
+}
+
+fn independent_child_digests(
+    actor: &str,
+    key: &OperationKey,
+    args: &Value,
+    tool: &str,
+) -> Vec<String> {
+    if tool != "document_propose" || args["batch"] != "independent" {
+        return Vec::new();
+    }
+    args["patches"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(index, patch)| {
+            let mut child = args.clone();
+            child["batch"] = json!("atomic");
+            child["patches"] = json!([patch]);
+            child["operation"] = json!(key.batch_child(actor, index));
+            operation_digest(tool, &child)
+        })
+        .collect()
+}
+
+fn definite_noncommit_code(code: &str) -> bool {
+    matches!(
+        code,
+        "invalid_params"
+            | "invalid_range"
+            | "not_found"
+            | "conflict"
+            | "permission_changed"
+            | "budget_exceeded"
+    )
 }
 
 pub(super) fn tree_of_view(view: &View) -> Result<SourceTree, Failure> {
@@ -175,16 +219,39 @@ pub(super) fn candidate_source(
 }
 
 impl Server {
+    pub(super) fn mcp_operation_receipt(
+        &self,
+        actor: &str,
+        key: &OperationKey,
+        digest: &str,
+        tool: &str,
+        document_id: uuid::Uuid,
+    ) -> Result<crate::storage::postgres::OperationReceipt, Failure> {
+        let expires_at = self.mcp_epoch(actor, key, true)?;
+        Ok(crate::storage::postgres::OperationReceipt {
+            document_id,
+            actor: actor.to_owned(),
+            request_id: key.scoped_request_id(actor),
+            digest: digest.to_owned(),
+            tool: tool.to_owned(),
+            expires_at,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn mcp_admit(
         &self,
         slug: &str,
         actor: &str,
         who: &Viewer,
         key: &OperationKey,
+        tool: &str,
+        args: &Value,
         digest: &str,
     ) -> Result<(), Failure> {
         let expiry = self.mcp_epoch(actor, key, false)?;
         let id = key.scoped_request_id(actor);
+        let child_digests = independent_child_digests(actor, key, args, tool);
         if let Err(error) = self
             .mcp_store(
                 slug,
@@ -194,6 +261,20 @@ impl Server {
                 "admission",
                 &Admission {
                     digest: digest.to_owned(),
+                    tool: tool.to_owned(),
+                    context: json!({
+                        "candidate_id": args.get("candidate_id").cloned().unwrap_or_else(|| {
+                            if tool == "document_propose" {
+                                json!(format!("candidate_{}", hex::encode(Sha256::digest(format!("{actor}\0{}\0{digest}", key.request_id())))))
+                            } else { Value::Null }
+                        }),
+                        "action": args.get("action").cloned().unwrap_or(Value::Null),
+                        "batch": args.get("batch").cloned().unwrap_or(Value::Null),
+                        "batch_count": args.get("patches").and_then(Value::as_array).map_or(0, Vec::len),
+                        "publish": args.get("publish").cloned().unwrap_or(Value::Null),
+                        "validation": args.get("validation").cloned().unwrap_or(Value::Null),
+                        "child_digests": child_digests,
+                    }),
                 },
                 expiry,
                 false,
@@ -241,11 +322,9 @@ impl Server {
         Ok(expiry)
     }
 
-    /// The admission guard: an operation key that was already admitted is
-    /// refused rather than run a second time. No committed result is
-    /// retained, so a repeat can only be told that the outcome is unknown;
-    /// the domain commands carry their own replay records. Passing `digest`
-    /// additionally refuses a key reused for different arguments.
+    /// The admission guard refuses to run an admitted key a second time.
+    /// `document_result` separately reads a transaction-bound outcome when
+    /// one exists. Passing `digest` also refuses reuse for changed arguments.
     pub(super) async fn mcp_refuse_if_admitted(
         &self,
         slug: &str,
@@ -268,7 +347,7 @@ impl Server {
             ),
             Ok(_) => Err(Failure::new(
                 "outcome_unknown",
-                "this operation was admitted previously, but no committed result is retained; inspect the document before submitting a new operation",
+                "this operation was admitted previously; query document_result with its original identity for retained outcome evidence, and do not reexecute an uncertain write",
             )),
             Err(error) if error.code == "view_expired" => Ok(()),
             Err(error) => Err(error),
@@ -287,8 +366,62 @@ impl Server {
         name: &str,
         args: &Value,
     ) -> Result<Value, Failure> {
-        self.mcp_operation_inner(slug, actor, who, headers, arrival, peer, name, args, "")
-            .await
+        let result = self
+            .mcp_operation_inner(slug, actor, who, headers, arrival, peer, name, args, "")
+            .await;
+        if let Err(error) = &result {
+            if name != "document_result" && definite_noncommit_code(error.code) {
+                if let Ok(key) = serde_json::from_value::<OperationKey>(args["operation"].clone()) {
+                    let digest = operation_digest(name, args);
+                    let admission = self
+                        .mcp_load::<Admission>(
+                            slug,
+                            actor,
+                            who,
+                            &key.scoped_request_id(actor),
+                            "admission",
+                        )
+                        .await;
+                    let Ok(admission) = admission else {
+                        return result;
+                    };
+                    if admission.tool != name || admission.digest != digest {
+                        return result;
+                    }
+                    if name == "document_propose"
+                        && self
+                            .has_private_candidate(
+                                slug,
+                                actor,
+                                who,
+                                &key,
+                                &digest,
+                                admission.context["candidate_id"]
+                                    .as_str()
+                                    .unwrap_or_default(),
+                            )
+                            .await
+                    {
+                        // Candidate storage is itself this operation's
+                        // durable effect. Preserve it for document_result;
+                        // compilation still requires verified render evidence.
+                        return result;
+                    }
+                    let room = self
+                        .rooms
+                        .get(slug)
+                        .await
+                        .map_err(|failure| Failure::new("unavailable", failure.to_string()))?;
+                    let receipt =
+                        self.mcp_operation_receipt(actor, &key, &digest, name, room.document_id)?;
+                    room.catalog()
+                        .store_operation_refusal(&receipt, error.code, &error.message)
+                        .await
+                        .map_err(|failure| Failure::new("unavailable", failure.to_string()))?;
+                }
+            }
+        }
+        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -316,7 +449,8 @@ impl Server {
         let current = self.mcp_recheck(slug, headers, arrival, actor).await?;
         self.mcp_refuse_if_admitted(slug, actor, who, &key, Some(&digest))
             .await?;
-        self.mcp_admit(slug, actor, who, &key, &digest).await?;
+        self.mcp_admit(slug, actor, who, &key, name, args, &digest)
+            .await?;
         match name {
             "document_propose" => {
                 if args["batch"] == "independent" {
@@ -324,10 +458,11 @@ impl Server {
                     for (index, patch) in
                         args["patches"].as_array().into_iter().flatten().enumerate()
                     {
+                        let child_operation = key.batch_child(actor, index);
                         let mut child = args.clone();
                         child["batch"] = json!("atomic");
                         child["patches"] = json!([patch]);
-                        child["operation"]["id"] = json!(key.batch_child(actor, index).id);
+                        child["operation"] = json!(child_operation);
                         let outcome = Box::pin(self.mcp_operation_inner(
                             slug,
                             actor,
@@ -340,7 +475,76 @@ impl Server {
                             &key.scoped_request_id(actor),
                         ))
                         .await;
-                        items.push(match outcome {Ok(result)=>json!({"index":index,"status":result["status"],"candidate_id":result["candidate_id"],"effects":result["effects"],"replay":result["replay"]}),Err(error)=>json!({"index":index,"error":{"code":error.code,"message":error.message}})});
+                        if let Err(error) = &outcome {
+                            if definite_noncommit_code(error.code) {
+                                let child_digest = operation_digest(name, &child);
+                                let child_admission = self
+                                    .mcp_load::<Admission>(
+                                        slug,
+                                        actor,
+                                        who,
+                                        &child_operation.scoped_request_id(actor),
+                                        "admission",
+                                    )
+                                    .await;
+                                let Ok(child_admission) = child_admission else {
+                                    items.push(json!({"index":index,"error":{"code":error.code,"message":error.message}}));
+                                    continue;
+                                };
+                                if child_admission.tool != name
+                                    || child_admission.digest != child_digest
+                                {
+                                    items.push(json!({"index":index,"error":{"code":error.code,"message":error.message}}));
+                                    continue;
+                                }
+                                if name == "document_propose"
+                                    && self
+                                        .has_private_candidate(
+                                            slug,
+                                            actor,
+                                            who,
+                                            &child_operation,
+                                            &child_digest,
+                                            child_admission.context["candidate_id"]
+                                                .as_str()
+                                                .unwrap_or_default(),
+                                        )
+                                        .await
+                                {
+                                    match self.mcp_recover_private_candidate(
+                                        slug,
+                                        actor,
+                                        who,
+                                        &child_operation,
+                                        &child_admission,
+                                    ).await {
+                                        Ok(outcome) => items.push(json!({"index":index,"status":"committed","candidate_id":outcome["candidate_id"],"effects":outcome["effects"],"replay":true})),
+                                        Err(recovery) => items.push(json!({"index":index,"status":"outcome_unknown","error":{"code":"outcome_unknown","message":recovery.message}})),
+                                    }
+                                    continue;
+                                }
+                                let room = self.rooms.get(slug).await.map_err(|failure| {
+                                    Failure::new("unavailable", failure.to_string())
+                                })?;
+                                let receipt = self.mcp_operation_receipt(
+                                    actor,
+                                    &child_operation,
+                                    &child_digest,
+                                    name,
+                                    room.document_id,
+                                )?;
+                                room.catalog()
+                                    .store_operation_refusal(&receipt, error.code, &error.message)
+                                    .await
+                                    .map_err(|failure| {
+                                        Failure::new("unavailable", failure.to_string())
+                                    })?;
+                            }
+                        }
+                        items.push(match outcome {
+                            Ok(result) => json!({"index":index,"status":result["status"],"candidate_id":result["candidate_id"],"effects":result["effects"],"replay":result["replay"]}),
+                            Err(error) => json!({"index":index,"status":if definite_noncommit_code(error.code){"refused"}else{"outcome_unknown"},"error":{"code":error.code,"message":error.message}}),
+                        });
                     }
                     // `independent` means each patch is its own command with
                     // its own retry record, so "did this batch replay" has
@@ -439,8 +643,15 @@ impl Server {
                     .get(slug)
                     .await
                     .map_err(|e| Failure::new("unavailable", e.to_string()))?;
+                let operation_receipt = self.mcp_operation_receipt(
+                    actor,
+                    &request.operation,
+                    &request.request_digest,
+                    name,
+                    room.document_id,
+                )?;
                 let receipt = room
-                    .apply_agent_request(request, authority, || async {
+                    .apply_agent_request(request, authority, Some(operation_receipt), || async {
                         self.mcp_recheck(slug, headers, arrival, actor)
                             .await
                             .map(|_| ())
@@ -495,7 +706,7 @@ impl Server {
         _peer: SocketAddr,
         args: &Value,
         key: &OperationKey,
-        _digest: &str,
+        digest: &str,
     ) -> Result<Value, Failure> {
         if !who.at_least(Role::Editor) {
             return Err(Failure::new(
@@ -562,6 +773,24 @@ impl Server {
             authorization,
             request_id,
         );
+        let operation_receipt =
+            self.mcp_operation_receipt(actor, key, digest, "document_comment", room.document_id)?;
+        let key_for_receipt = key.clone();
+        let mut cmd = crate::log::recorded::RecordedCommand::new(
+            &mut cmd,
+            operation_receipt,
+            move |accepted: &room::Accepted| {
+                json!({
+                    "tool":"document_comment",
+                    "operation":key_for_receipt,
+                    "status":"committed",
+                    "action":"accept",
+                    "comment_id":accepted.comment.id,
+                    "resolved_in":accepted.resolved_in,
+                    "replay":false
+                })
+            },
+        );
         let authority = who.document_authority();
         let (accepted, replay) = room
             .command_reporting_replay(&authority, &mut cmd)
@@ -585,7 +814,7 @@ impl Server {
         who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
-        (args, key, _digest): (&Value, &OperationKey, &str),
+        (args, key, digest): (&Value, &OperationKey, &str),
     ) -> Result<Value, Failure> {
         if !who.at_least(Role::Editor) {
             return Err(Failure::new(
@@ -628,8 +857,17 @@ impl Server {
             &super::comments::comment_uuid(&key.scoped_request_id(actor)),
             "operation id",
         )?;
+        let operation_receipt =
+            self.mcp_operation_receipt(actor, key, digest, "document_comment", room.document_id)?;
         let (recorded, replay) = room
-            .take_label_reporting_replay("agent", None, by, &authority, Some(request_id))
+            .take_label_reporting_receipt(
+                "agent",
+                None,
+                by,
+                &authority,
+                Some(request_id),
+                operation_receipt,
+            )
             .await
             .map_err(|error| Failure::new("conflict", error.to_string()))?;
         Ok(json!({
@@ -744,11 +982,36 @@ impl Server {
             patches: patches.clone(),
             request_digest: digest.clone(),
         };
-        let applied = agent::apply_patches(&tree, &request).map_err(failure)?;
+        agent::validate_patches(&tree, &request).map_err(failure)?;
+        // Candidate/base digests name the complete document projection,
+        // which `document_apply` checks against the head. Update the
+        // captured projection's changed text entries and use its canonical
+        // digest so the later apply sees the same identity.
+        let mut candidate_texts = view.snapshot.texts.clone();
+        apply_candidate_patches(&mut candidate_texts, patches.iter())?;
+        let mut candidate_projection = view.snapshot.projection.clone();
+        for patch in &patches {
+            let Some(entry) = candidate_projection.files.get_mut(&patch.path) else {
+                return Err(Failure::new(
+                    "conflict",
+                    "candidate file missing from projection",
+                ));
+            };
+            let Some(text) = candidate_texts.get(&patch.path) else {
+                return Err(Failure::new(
+                    "conflict",
+                    "candidate text missing from projection",
+                ));
+            };
+            entry.digest = hex::encode(Sha256::digest(text.as_bytes()));
+            entry.bytes = text.len() as u64;
+        }
+        let base_tree_digest = view.snapshot.tree_digest.clone();
+        let tree_digest = candidate_projection.digest();
         let candidate = Candidate {
             view_id: view_id.to_string(),
-            base_tree_digest: applied.before,
-            tree_digest: applied.after,
+            base_tree_digest,
+            tree_digest,
             patches,
             dependencies,
             operation: key.clone(),
@@ -929,6 +1192,51 @@ impl Server {
             )
             .map_err(|error| Failure::new("invalid_params", error))?;
             let authority = who.document_authority();
+            let operation_receipt = self.mcp_operation_receipt(
+                actor,
+                key,
+                &candidate.digest,
+                "document_propose",
+                room.document_id,
+            )?;
+            let operation = key.clone();
+            let retained_candidate_id = candidate_id.to_owned();
+            let mut cmd = crate::log::recorded::RecordedCommand::new(
+                &mut cmd,
+                operation_receipt,
+                move |outcomes: &Vec<room::BatchItemResult>| {
+                    let effects = outcomes
+                        .iter()
+                        .filter_map(|outcome| match outcome {
+                            room::BatchItemResult::Created(comment) => {
+                                Some(json!({"kind":"suggestion","id":comment.id}))
+                            }
+                            room::BatchItemResult::Refused(_) => None,
+                        })
+                        .collect::<Vec<_>>();
+                    let items = outcomes
+                        .iter()
+                        .enumerate()
+                        .map(|(index, outcome)| match outcome {
+                            room::BatchItemResult::Created(_) => {
+                                json!({"index":index,"status":"committed"})
+                            }
+                            room::BatchItemResult::Refused(reason) => {
+                                json!({"index":index,"error":{"code":"conflict","message":reason}})
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let refusal = outcomes.iter().find_map(|outcome| match outcome {
+                        room::BatchItemResult::Refused(reason) => Some(reason.as_str()),
+                        room::BatchItemResult::Created(_) => None,
+                    });
+                    if let Some(message) = refusal {
+                        json!({"tool":"document_propose","operation":operation,"status":"refused","error":{"code":"conflict","message":message},"candidate_id":retained_candidate_id,"effects":effects,"items":items,"published":false})
+                    } else {
+                        json!({"tool":"document_propose","operation":operation,"status":"committed","candidate_id":retained_candidate_id,"effects":effects,"items":items,"published":true})
+                    }
+                },
+            );
             // `AgentSuggestionBatch` is idempotent by each item's own
             // primary key (§7.2's create rule), not by a `document_labels`
             // retry record, so this is honestly always `false`: dedup on
@@ -993,15 +1301,57 @@ impl Server {
                         .unwrap_or(Value::Null),
                 )
                 .map_err(|_| Failure::new("invalid_params", "operation identity required"))?;
-                // An admitted key reports that its outcome is unknown; an
-                // unknown one reports that nothing is retained. Neither can
-                // return a result, because no receipt is kept.
-                self.mcp_refuse_if_admitted(slug, actor, &who, &key, None)
-                    .await?;
-                Err(Failure::new(
-                    "outcome_unknown",
-                    "no retained operation receipt; absence does not prove nonexecution",
-                ))
+                self.mcp_epoch(actor, &key, true)?;
+                let admission = self
+                    .mcp_load::<Admission>(
+                        slug,
+                        actor,
+                        &who,
+                        &key.scoped_request_id(actor),
+                        "admission",
+                    )
+                    .await;
+                match admission {
+                    Ok(admission) => {
+                        let room = self
+                            .rooms
+                            .get(slug)
+                            .await
+                            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+                        if admission.tool == "document_propose"
+                            && admission.context["batch"] == "independent"
+                        {
+                            // The parent has no atomic mutation of its own;
+                            // child receipts are the only complete account of
+                            // what happened, even if finalization was refused.
+                            return self
+                                .mcp_recover_independent_batch(slug, actor, &who, &key, &admission)
+                                .await;
+                        }
+                        let request_id = key.scoped_request_id(actor);
+                        match room.catalog().operation_outcome(room.document_id, actor, &request_id).await
+                            .map_err(|error| Failure::new("unavailable", error.to_string()))? {
+                            Some(receipt) if receipt.digest == admission.digest
+                                && receipt.tool == admission.tool
+                                && !receipt.tool.is_empty() => {
+                                    let mut outcome = receipt.outcome;
+                                    outcome["operation"] = json!(key);
+                                    Ok(outcome)
+                                }
+                            Some(_) => Err(Failure::new("operation_key_reused", "operation receipt does not match the admitted request")),
+                            None if admission.tool == "document_propose"
+                                && admission.context["publish"] == "private" => {
+                                self.mcp_recover_private_candidate(slug, actor, &who, &key, &admission).await
+                            }
+                            None => Err(Failure::new("outcome_unknown", "no authoritative transaction receipt is available; inspect the document and do not retry this operation")),
+                        }
+                    }
+                    Err(error) if error.code == "view_expired" => Err(Failure::new(
+                        "outcome_unknown",
+                        "no retained operation record; absence does not prove nonexecution",
+                    )),
+                    Err(error) => Err(error),
+                }
             }
             "candidate" | "render" => {
                 let candidate: Candidate = self
@@ -1038,6 +1388,170 @@ impl Server {
             }
             _ => Err(Failure::new("invalid_params", "unknown result kind")),
         }
+    }
+
+    async fn mcp_recover_private_candidate(
+        &self,
+        slug: &str,
+        actor: &str,
+        who: &Viewer,
+        key: &OperationKey,
+        admission: &Admission,
+    ) -> Result<Value, Failure> {
+        let candidate_id = admission.context["candidate_id"]
+            .as_str()
+            .unwrap_or_default();
+        let candidate: Candidate = self
+            .mcp_load(slug, actor, who, candidate_id, "candidate")
+            .await?;
+        if candidate.validation == "compile" {
+            let render = self
+                .load_render_receipt(slug, actor, who, candidate_id)
+                .await?;
+            if render.status != "verified" || render.tree_digest != candidate.tree_digest {
+                return Err(Failure::new(
+                    "outcome_unknown",
+                    "candidate compilation has no successful retained receipt",
+                ));
+            }
+            return Ok(
+                json!({"tool":"document_propose","operation":key,"status":"committed","candidate_id":candidate_id,"tree_digest":candidate.tree_digest,"base_tree_digest":candidate.base_tree_digest,"validation":{"source":"passed","compile":"passed"},"effects":[],"published":false}),
+            );
+        }
+        Ok(
+            json!({"tool":"document_propose","operation":key,"status":"committed","candidate_id":candidate_id,"tree_digest":candidate.tree_digest,"base_tree_digest":candidate.base_tree_digest,"validation":{"source":"passed","compile":"not_requested"},"effects":[],"published":false}),
+        )
+    }
+
+    async fn has_private_candidate(
+        &self,
+        slug: &str,
+        actor: &str,
+        who: &Viewer,
+        key: &OperationKey,
+        digest: &str,
+        candidate_id: &str,
+    ) -> bool {
+        if candidate_id.is_empty() {
+            return false;
+        }
+        self.mcp_load::<Candidate>(slug, actor, who, candidate_id, "candidate")
+            .await
+            .is_ok_and(|candidate| {
+                &candidate.operation == key
+                    && candidate.digest == digest
+                    && candidate.publish == "private"
+            })
+    }
+
+    async fn mcp_recover_independent_batch(
+        &self,
+        slug: &str,
+        actor: &str,
+        who: &Viewer,
+        key: &OperationKey,
+        admission: &Admission,
+    ) -> Result<Value, Failure> {
+        let count = admission.context["batch_count"]
+            .as_u64()
+            .unwrap_or_default() as usize;
+        if count == 0 || count > 100 {
+            return Err(Failure::new(
+                "outcome_unknown",
+                "batch child outcomes are not retained",
+            ));
+        }
+        let room = self
+            .rooms
+            .get(slug)
+            .await
+            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        let mut items = Vec::with_capacity(count);
+        let mut effects = Vec::new();
+        let expected_child_digests = admission.context["child_digests"].as_array();
+        if expected_child_digests.map_or(0, Vec::len) != count {
+            return Err(Failure::new(
+                "outcome_unknown",
+                "the parent batch has no complete child request identities",
+            ));
+        }
+        for index in 0..count {
+            let child = key.batch_child(actor, index);
+            let child_request = child.scoped_request_id(actor);
+            let expected_digest = expected_child_digests
+                .and_then(|digests| digests.get(index))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    Failure::new(
+                        "outcome_unknown",
+                        "a batch child request identity is unavailable",
+                    )
+                })?;
+            let child_admission: Admission = match self
+                .mcp_load(slug, actor, who, &child_request, "admission")
+                .await
+            {
+                Ok(admission) => admission,
+                Err(error) => {
+                    items.push(json!({"index":index,"status":"outcome_unknown","error":{"code":"outcome_unknown","message":error.message}}));
+                    continue;
+                }
+            };
+            if child_admission.digest != expected_digest
+                || child_admission.tool != "document_propose"
+            {
+                items.push(json!({"index":index,"status":"outcome_unknown","error":{"code":"outcome_unknown","message":"a child operation key was already used for a different request; this parent batch cannot claim its outcome"}}));
+                continue;
+            }
+            let stored = room
+                .catalog()
+                .operation_outcome(room.document_id, actor, &child_request)
+                .await
+                .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+            let Some(stored) = stored else {
+                if child_admission.tool == "document_propose"
+                    && child_admission.context["publish"] == "private"
+                {
+                    match self
+                        .mcp_recover_private_candidate(slug, actor, who, &child, &child_admission)
+                        .await
+                    {
+                        Ok(outcome) => {
+                            effects.extend(
+                                outcome["effects"].as_array().into_iter().flatten().cloned(),
+                            );
+                            items.push(json!({"index":index,"status":"committed","candidate_id":outcome["candidate_id"],"effects":outcome["effects"],"replay":true}));
+                        }
+                        Err(error) => {
+                            items.push(json!({"index":index,"status":"outcome_unknown","error":{"code":"outcome_unknown","message":error.message}}));
+                        }
+                    }
+                } else {
+                    items.push(json!({"index":index,"status":"outcome_unknown","error":{"code":"outcome_unknown","message":"no retained outcome for this batch item"}}));
+                }
+                continue;
+            };
+            if child_admission.digest != expected_digest
+                || stored.digest != expected_digest
+                || stored.tool != "document_propose"
+            {
+                items.push(json!({"index":index,"status":"outcome_unknown","error":{"code":"outcome_unknown","message":"a child receipt does not match the request recorded by the parent batch"}}));
+                continue;
+            }
+            if stored.outcome["status"] == "refused" {
+                items.push(
+                    json!({"index":index,"status":"refused","error":stored.outcome["error"]}),
+                );
+                continue;
+            }
+            for effect in stored.outcome["effects"].as_array().into_iter().flatten() {
+                effects.push(effect.clone());
+            }
+            items.push(json!({"index":index,"status":"committed","candidate_id":stored.outcome["candidate_id"],"effects":stored.outcome["effects"],"replay":true}));
+        }
+        Ok(
+            json!({"tool":"document_propose","operation":key,"status":"committed","batch":"independent","items":items,"effects":effects,"recovered":true}),
+        )
     }
 }
 
@@ -1095,5 +1609,26 @@ mod digest_tests {
             "an array's order is part of its value",
         );
         assert_ne!(digest, operation_digest("document_apply", &base));
+    }
+
+    #[test]
+    fn independent_batch_child_identity_binds_the_original_patch() {
+        let key = OperationKey {
+            epoch: "epoch".into(),
+            id: "batch".into(),
+        };
+        let first = json!({
+            "operation": key.clone(),
+            "batch": "independent",
+            "patches": [{"range_id":"r1","replacement":"first"}, {"range_id":"r2","replacement":"second"}],
+        });
+        let mut changed = first.clone();
+        changed["patches"][1]["replacement"] = json!("different");
+        let original_digests = independent_child_digests("actor", &key, &first, "document_propose");
+        let changed_digests =
+            independent_child_digests("actor", &key, &changed, "document_propose");
+        assert_eq!(original_digests.len(), 2);
+        assert_eq!(original_digests[0], changed_digests[0]);
+        assert_ne!(original_digests[1], changed_digests[1]);
     }
 }

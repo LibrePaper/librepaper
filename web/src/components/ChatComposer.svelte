@@ -80,9 +80,6 @@
   }
 </script>
 
-<!-- No Send button: Enter sends and Shift+Enter breaks the line, the way every
-     messaging app now works. The form is still a form so that a submit event
-     is what sends, whichever key or assistive tool raised it. -->
 <form class="chat-form" onsubmit={submit} data-cansend={canSend && !disabled && !sending}>
   <div class="composer-input">
     <textarea bind:this={input} class="textarea" rows="4" style:height={height === null ? undefined : `${height}px`} value={draft} {placeholder} aria-label="Message" title="Enter to send · Shift+Enter for a new line"
@@ -93,9 +90,17 @@
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 2h7v7M5 2l5 5M8 2l2 2" /></svg>
     </button>
   </div>
+  <div class="composer-actions">
+    <span class="panel-meta">Enter to send · Shift+Enter for a new line</span>
+    <button class="btn btn-sm preset-filled-primary-500" type="submit"
+            disabled={disabled || !canSend || sending || !draft.trim()}>
+      {sending ? "Sending…" : "Send"}
+    </button>
+  </div>
 </form>
 <style>
   .chat-form { display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); }
+  .composer-actions { display: flex; align-items: center; justify-content: space-between; gap: calc(var(--spacing) * 2); }
   .composer-input { position: relative; }
   .composer-input textarea { display: block; width: 100%; min-height: 80px; max-height: 60dvh; resize: none; padding-right: 36px; }
   .resize-handle { position: absolute; top: 1px; right: 1px; width: 24px; height: 24px; display: grid; place-items: center; cursor: ns-resize; touch-action: none; color: var(--color-surface-600-400); border-radius: 3px; }

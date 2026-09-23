@@ -18,7 +18,9 @@ mod document_log;
 mod labels;
 mod marks;
 mod meter;
+mod operation_outcomes;
 mod ownership;
+pub(crate) use operation_outcomes::OperationReceipt;
 mod persistence;
 pub(crate) use persistence::PersistenceConnection;
 mod proposals;
@@ -330,6 +332,102 @@ mod tests {
             })
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+    async fn operation_outcomes_commit_atomically_and_remain_actor_scoped() {
+        let catalog = crate::tests::catalog().await.expect("test database");
+        let account = seed_account(&catalog, "outcome").await;
+        let document = seed_document(&catalog, account.id, "outcome").await;
+        let receipt = OperationReceipt {
+            document_id: document.id,
+            actor: "actor-one".into(),
+            request_id: "request-one".into(),
+            digest: "a".repeat(64),
+            tool: "document_comment".into(),
+            expires_at: OffsetDateTime::now_utc().unix_timestamp() + 3600,
+        };
+        let outcome = json!({"status":"committed","action":"delete","comment_id":"removed"});
+        let mut tx = catalog.pool().begin().await.unwrap();
+        PostgresCatalog::record_operation_outcome(&mut tx, &receipt, &outcome)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        assert!(catalog
+            .operation_outcome(document.id, "actor-one", "request-one")
+            .await
+            .unwrap()
+            .is_none());
+        let mut tx = catalog.pool().begin().await.unwrap();
+        PostgresCatalog::record_operation_outcome(&mut tx, &receipt, &outcome)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let retained = catalog
+            .operation_outcome(document.id, "actor-one", "request-one")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.outcome, outcome);
+        assert_eq!(retained.digest, receipt.digest);
+        assert_eq!(retained.tool, receipt.tool);
+        catalog
+            .store_operation_refusal(
+                &receipt,
+                "permission_changed",
+                "access revoked after commit",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog
+                .operation_outcome(document.id, "actor-one", "request-one")
+                .await
+                .unwrap()
+                .unwrap()
+                .outcome,
+            outcome
+        );
+        assert!(catalog
+            .operation_outcome(document.id, "actor-two", "request-one")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(catalog
+            .operation_outcome(uuid::Uuid::new_v4(), "actor-one", "request-one")
+            .await
+            .unwrap()
+            .is_none());
+        // A reused key cannot replace the original evidence.
+        let mut tx = catalog.pool().begin().await.unwrap();
+        assert!(PostgresCatalog::record_operation_outcome(
+            &mut tx,
+            &receipt,
+            &json!({"status":"different"})
+        )
+        .await
+        .is_err());
+        tx.rollback().await.unwrap();
+        assert_eq!(
+            catalog
+                .operation_outcome(document.id, "actor-one", "request-one")
+                .await
+                .unwrap()
+                .unwrap()
+                .outcome,
+            outcome
+        );
+        sqlx::query("UPDATE operation_outcomes SET expires_at=0 WHERE document_id=$1")
+            .bind(document.id)
+            .execute(catalog.pool())
+            .await
+            .unwrap();
+        assert!(catalog
+            .operation_outcome(document.id, "actor-one", "request-one")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     async fn seed_document(

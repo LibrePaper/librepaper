@@ -25,6 +25,7 @@ pub mod admission;
 pub mod budget;
 pub mod frame;
 pub mod pending;
+pub(crate) mod recorded;
 #[cfg(test)]
 mod recovery;
 pub mod sequencer;

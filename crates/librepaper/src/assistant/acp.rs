@@ -37,10 +37,136 @@ fn browser_permission_options(options: &[PermissionOption]) -> serde_json::Value
                 serde_json::json!({
                     "id": option.option_id.to_string(),
                     "label": option.name,
+                    "kind": serde_json::to_value(option.kind).unwrap_or(serde_json::Value::Null),
                 })
             })
             .collect(),
     )
+}
+
+fn bounded_text(value: Option<&str>, max_bytes: usize) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let mut end = value.len().min(max_bytes);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(value[..end].to_owned())
+}
+
+fn permission_details(
+    tool_call: &agent_client_protocol::schema::v1::ToolCallUpdate,
+) -> serde_json::Value {
+    let raw = tool_call.fields.raw_input.as_ref();
+    let mut details = serde_json::Map::new();
+    if let Some(command) = raw
+        .and_then(|value| value.get("command"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| bounded_text(Some(value), 2 * 1024))
+    {
+        details.insert("command".into(), serde_json::Value::String(command));
+    }
+    let raw_files = raw
+        .and_then(|value| value.get("files"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let located_files = tool_call
+        .fields
+        .locations
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|location| location.path.to_string_lossy().into_owned());
+    let files = raw_files.chain(located_files).collect::<Vec<_>>();
+    if !files.is_empty() {
+        let files = files
+            .iter()
+            .take(8)
+            .filter_map(|file| bounded_text(Some(file), 512))
+            .map(serde_json::Value::String)
+            .collect::<Vec<_>>();
+        if !files.is_empty() {
+            details.insert("files".into(), serde_json::Value::Array(files));
+        }
+    }
+    let diff = raw
+        .and_then(|value| value.get("diff"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            tool_call
+                .fields
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find_map(|content| {
+                    if let agent_client_protocol::schema::v1::ToolCallContent::Diff(diff) = content
+                    {
+                        Some(format!(
+                            "--- {}\n+++ {}\n{}+{}",
+                            diff.path.display(),
+                            diff.path.display(),
+                            diff.old_text
+                                .as_deref()
+                                .map(|text| format!(
+                                    "-{}\n",
+                                    text.lines().collect::<Vec<_>>().join("\n-")
+                                ))
+                                .unwrap_or_default(),
+                            diff.new_text.lines().collect::<Vec<_>>().join("\n+")
+                        ))
+                    } else {
+                        None
+                    }
+                })
+        });
+    if let Some(diff) = diff
+        .as_deref()
+        .and_then(|value| bounded_text(Some(value), 8 * 1024))
+    {
+        details.insert("diff".into(), serde_json::Value::String(diff));
+    }
+    while serde_json::to_vec(&serde_json::Value::Object(details.clone()))
+        .map_or(true, |bytes| bytes.len() > 8 * 1024)
+    {
+        if let Some(serde_json::Value::String(diff)) = details.get_mut("diff") {
+            if !diff.is_empty() {
+                let mut end = diff.len().saturating_sub(256);
+                while end > 0 && !diff.is_char_boundary(end) {
+                    end -= 1;
+                }
+                diff.truncate(end);
+                continue;
+            }
+        }
+        if let Some(serde_json::Value::Array(files)) = details.get_mut("files") {
+            if files.pop().is_some() {
+                continue;
+            }
+        }
+        if let Some(serde_json::Value::String(command)) = details.get_mut("command") {
+            if !command.is_empty() {
+                let mut end = command.len().saturating_sub(256);
+                while end > 0 && !command.is_char_boundary(end) {
+                    end -= 1;
+                }
+                command.truncate(end);
+                continue;
+            }
+        }
+        break;
+    }
+    if details.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Object(details)
+    }
 }
 
 pub(super) struct Permission {
@@ -67,6 +193,7 @@ pub(super) enum Event {
         handle: Box<Permission>,
         message: String,
         options: serde_json::Value,
+        details: serde_json::Value,
         option_ids: Vec<String>,
     },
     TurnEnded(Result<StopReason, String>),
@@ -181,11 +308,13 @@ impl Agent {
                             .map(|option| option.option_id.to_string())
                             .collect::<Vec<_>>();
                         let options = browser_permission_options(&request.options);
+                        let details = permission_details(&request.tool_call);
                         permission_events
                             .send(Event::Permission {
                                 handle: Box::new(Permission { responder }),
                                 message,
                                 options,
+                                details,
                                 option_ids,
                             })
                             .await
@@ -264,7 +393,7 @@ impl Agent {
         });
 
         let session_id =
-            match tokio::time::timeout(std::time::Duration::from_secs(60), ready_rx).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(40), ready_rx).await {
                 Ok(Ok(Ok(session_id))) => session_id,
                 Ok(Ok(Err(error))) => {
                     task.abort();
@@ -390,7 +519,31 @@ mod tests {
         )];
         assert_eq!(
             browser_permission_options(&options),
-            serde_json::json!([{"id":"allow-once","label":"Allow once"}])
+            serde_json::json!([{"id":"allow-once","label":"Allow once","kind":"allow_once"}])
         );
+    }
+
+    #[test]
+    fn permission_details_include_bounded_standard_diff_and_locations() {
+        use agent_client_protocol::schema::v1::{
+            Diff, ToolCallContent, ToolCallLocation, ToolCallUpdate, ToolCallUpdateFields,
+        };
+        let update = ToolCallUpdate::new(
+            "call-1",
+            ToolCallUpdateFields::default()
+                .title("Apply patch".to_owned())
+                .locations(vec![ToolCallLocation::new("src/main.rs")])
+                .content(vec![ToolCallContent::Diff(
+                    Diff::new("src/main.rs", "new").old_text("old".to_owned()),
+                )])
+                .raw_input(serde_json::json!({"command":"cargo test"})),
+        );
+        let details = permission_details(&update);
+        assert_eq!(details["command"], "cargo test");
+        assert_eq!(details["files"], serde_json::json!(["src/main.rs"]));
+        assert!(details["diff"]
+            .as_str()
+            .is_some_and(|diff| diff.contains("-old") && diff.contains("+new")));
+        assert!(serde_json::to_vec(&details).unwrap().len() <= 8 * 1024);
     }
 }

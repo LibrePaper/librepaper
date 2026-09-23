@@ -37,6 +37,17 @@ pub(super) async fn handle_assistant_start(
         );
     };
     let link = connection.link;
+    let access = connection.access;
+    let connection_name = body.connection.clone();
+    let selected_agent = body.agent.clone();
+    let store = super::connections::ConnectionStore::new(&inner.state_home);
+    let expected_config_hash = match crate::automation::peer::DocumentLink::parse(&link, "") {
+        Ok(parsed) => crate::assistant::lifecycle::configuration_hash(&parsed, &command),
+        Err(error) => return write_json(409, &json!({"error": error})),
+    };
+    let status_link = link.clone();
+    let status_conversation = body.conversation.clone();
+    let conversation_for_status = status_conversation.clone();
     let conversation = body.conversation;
     let chat_token = body.chat_token;
     let result = tokio::task::spawn_blocking(move || {
@@ -49,7 +60,65 @@ pub(super) async fn handle_assistant_start(
             &json!({"error": format!("assistant startup task failed: {error}")}),
         ),
         Ok(result) => match result {
-            Ok(()) => write_json(200, &json!({"running": true, "agent": body.agent})),
+            Ok(()) => {
+                let status = match tokio::task::spawn_blocking(move || {
+                    crate::assistant::status(&status_link, &conversation_for_status)
+                })
+                .await
+                {
+                    Ok(Ok(status)) => status,
+                    Ok(Err(error)) => {
+                        return write_json(
+                            500,
+                            &json!({"error": format!("assistant started but status could not be read: {error}")}),
+                        )
+                    }
+                    Err(error) => {
+                        return write_json(
+                            500,
+                            &json!({"error": format!("assistant started but status task failed: {error}")}),
+                        )
+                    }
+                };
+                let Some(nonce) = status["nonce"].as_str().filter(|value| !value.is_empty()) else {
+                    return write_json(
+                        500,
+                        &json!({"error": "assistant started but runner identity is unavailable"}),
+                    );
+                };
+                let Some(config_hash) = status["config_hash"]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                else {
+                    return write_json(
+                        500,
+                        &json!({"error": "assistant started but runner configuration identity is unavailable"}),
+                    );
+                };
+                if config_hash != expected_config_hash {
+                    return write_json(
+                        409,
+                        &json!({"error": "assistant configuration changed while it was starting; inspect its current status before retrying"}),
+                    );
+                }
+                let configuration = super::connections::AssistantConfiguration {
+                    agent: selected_agent.clone(),
+                    access,
+                    nonce: nonce.to_string(),
+                    config_hash: config_hash.to_string(),
+                };
+                if let Err(error) = store.set_assistant_configuration(
+                    &connection_name,
+                    &status_conversation,
+                    configuration,
+                ) {
+                    return write_json(
+                        500,
+                        &json!({"error": format!("assistant started but configuration could not be retained: {error}")}),
+                    );
+                }
+                write_json(200, &json!({"running": true, "agent": selected_agent}))
+            }
             Err(error) => write_json(409, &json!({"error": error})),
         },
     }
@@ -74,7 +143,10 @@ pub(super) async fn handle_assistant_status(
         Err(response) => return *response,
     };
     let link = connection.link;
-    let conversation = body.conversation;
+    let connection_name = body.connection;
+    let conversation_id = body.conversation;
+    let conversation = conversation_id.clone();
+    let configurations = connection.assistant_sessions;
     match tokio::task::spawn_blocking(move || crate::assistant::status(&link, &conversation)).await
     {
         Err(error) => write_json(
@@ -84,7 +156,24 @@ pub(super) async fn handle_assistant_status(
         Ok(result) => match result {
             Ok(status) => {
                 let running = !matches!(status["state"].as_str(), Some("stopped" | "failed"));
-                write_json(200, &json!({"running": running, "status": status}))
+                let configuration = configurations
+                    .get(&conversation_id)
+                    .filter(|configuration| {
+                        running
+                            && status["nonce"].as_str() == Some(configuration.nonce.as_str())
+                            && status["config_hash"].as_str()
+                                == Some(configuration.config_hash.as_str())
+                    });
+                write_json(
+                    200,
+                    &json!({
+                        "running": running,
+                        "connection": connection_name,
+                        "access": configuration.map(|value| value.access.as_str()),
+                        "agent": configuration.map(|value| value.agent.as_str()),
+                        "status": status
+                    }),
+                )
             }
             Err(crate::assistant::lifecycle::Error::NotRunning) => {
                 write_json(200, &json!({"running": false}))

@@ -308,6 +308,8 @@ impl Server {
             .then(|| parse_uuid(comment_id, "comment_id"))
             .transpose()?;
         let named_comment = || comment_uuid_value.expect("validated above");
+        let operation_receipt =
+            self.mcp_operation_receipt(actor, key, _digest, "document_comment", room.document_id)?;
 
         let result = match action {
             "create" => {
@@ -334,6 +336,17 @@ impl Server {
                     None,
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;
+                let operation = key.clone();
+                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                    &mut cmd,
+                    operation_receipt.clone(),
+                    move |comment: &room::Comment| {
+                        json!({
+                            "tool":"document_comment", "operation":operation,
+                            "status":"committed", "action":"create", "comment_id":comment.id
+                        })
+                    },
+                );
                 let comment = room
                     .command(&authority, &mut cmd)
                     .await
@@ -359,6 +372,18 @@ impl Server {
                     &writer,
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;
+                let operation = key.clone();
+                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                    &mut cmd,
+                    operation_receipt.clone(),
+                    move |outcome: &room::ReplyOutcome| {
+                        json!({
+                            "tool":"document_comment", "operation":operation,
+                            "status":"committed", "action":"reply",
+                            "comment_id":outcome.comment_id, "reply":{"id":outcome.reply.id}
+                        })
+                    },
+                );
                 let outcome = room
                     .command(&authority, &mut cmd)
                     .await
@@ -373,6 +398,17 @@ impl Server {
                     named_comment(),
                     resolved,
                     &writer,
+                );
+                let operation = key.clone();
+                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                    &mut cmd,
+                    operation_receipt.clone(),
+                    move |outcome: &room::ResolveOutcome| {
+                        json!({
+                            "tool":"document_comment", "operation":operation,
+                            "status":"committed", "action":"resolve", "comment_id":outcome.comment_id
+                        })
+                    },
                 );
                 let outcome = room
                     .command(&authority, &mut cmd)
@@ -410,6 +446,17 @@ impl Server {
                     None,
                 )
                 .map_err(|error| Failure::new("invalid_params", error))?;
+                let operation = key.clone();
+                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                    &mut cmd,
+                    operation_receipt.clone(),
+                    move |comment: &room::Comment| {
+                        json!({
+                            "tool":"document_comment", "operation":operation,
+                            "status":"committed", "action":"refine", "comment_id":comment.id
+                        })
+                    },
+                );
                 let comment = room
                     .command(&authority, &mut cmd)
                     .await
@@ -426,6 +473,17 @@ impl Server {
                     stored.id,
                     stored.tip_frontiers,
                     &writer,
+                );
+                let operation = key.clone();
+                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                    &mut cmd,
+                    operation_receipt.clone(),
+                    move |comment: &room::Comment| {
+                        json!({
+                            "tool":"document_comment", "operation":operation,
+                            "status":"committed", "action":"reject", "comment_id":comment.id
+                        })
+                    },
                 );
                 let comment = room
                     .command(&authority, &mut cmd)
@@ -444,6 +502,17 @@ impl Server {
                 }
                 let mut cmd =
                     room::DeleteComment::new(catalog, document_id, named_comment(), &writer);
+                let operation = key.clone();
+                let mut cmd = crate::log::recorded::RecordedCommand::new(
+                    &mut cmd,
+                    operation_receipt,
+                    move |_: &()| {
+                        json!({
+                            "tool":"document_comment", "operation":operation,
+                            "status":"committed", "action":"delete", "comment_id":comment_id
+                        })
+                    },
+                );
                 room.command(&authority, &mut cmd)
                     .await
                     .map_err(command_failure)?;

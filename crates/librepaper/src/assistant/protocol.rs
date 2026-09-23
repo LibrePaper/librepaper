@@ -5,6 +5,7 @@ use serde_json::Value;
 
 pub(crate) const MAX_CONTEXT_BYTES: usize = 16 * 1024;
 pub(crate) const MAX_EVENT_TEXT_BYTES: usize = 32 * 1024;
+pub(crate) const MAX_ANSWER_BYTES: usize = MAX_EVENT_TEXT_BYTES;
 pub(crate) const MAX_ID_BYTES: usize = 128;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

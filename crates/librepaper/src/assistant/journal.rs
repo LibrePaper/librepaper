@@ -472,7 +472,9 @@ impl Journal {
             let mut has_refusal = false;
             for effect in &event.effects {
                 let mut effect = effect.clone();
-                effect["tool"] = Value::String(event.tool.clone());
+                if effect.get("tool").is_none() {
+                    effect["tool"] = Value::String(event.tool.clone());
+                }
                 if let Some(operation) = &event.operation {
                     effect["operation"] = serde_json::json!(operation);
                 }
@@ -622,7 +624,7 @@ fn result_ids(tool: &str, response: &Value) -> Vec<String> {
 
 pub(crate) fn response_settled(response: &Value) -> bool {
     fn has_unknown(value: &Value) -> bool {
-        value.get("error").is_some()
+        (value.get("error").is_some() && value["status"] != "refused")
             || value
                 .get("items")
                 .and_then(Value::as_array)
@@ -642,6 +644,7 @@ pub(crate) fn response_settled(response: &Value) -> bool {
                 | "cancel_requested"
                 | "cancelled"
                 | "aborted"
+                | "refused"
         )
     )
 }
@@ -704,7 +707,24 @@ fn typed_effects(tool: &str, response: &Value) -> Vec<Value> {
         }
     }
     let mut out = Vec::new();
-    walk(tool, structured_response(response), 0, &mut out);
+    let body = structured_response(response);
+    let effect_tool = if tool == "document_result" {
+        body["tool"]
+            .as_str()
+            .filter(|name| {
+                matches!(
+                    *name,
+                    "document_apply" | "document_comment" | "document_propose"
+                )
+            })
+            .unwrap_or(tool)
+    } else {
+        tool
+    };
+    walk(effect_tool, body, 0, &mut out);
+    for effect in &mut out {
+        effect["tool"] = Value::String(effect_tool.to_owned());
+    }
     out
 }
 
@@ -1051,6 +1071,81 @@ mod tests {
             .unwrap()
             .pending_operations()
             .is_empty());
+    }
+
+    #[test]
+    fn recovered_outcomes_preserve_application_and_comment_effects() {
+        for (tool, metadata, kind) in [
+            (
+                "document_apply",
+                json!({"tree_digest_before":"before","tree_digest_after":"after"}),
+                "application",
+            ),
+            (
+                "document_comment",
+                json!({"action":"delete","comment_id":"removed-comment"}),
+                "comment",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("journal.json");
+            let key = json!({"epoch":"epoch","id":"lost-response"});
+            record_tool_call(
+                &path,
+                "task",
+                tool,
+                &json!({"params":{"arguments":{"operation":key}}}),
+            )
+            .unwrap();
+            let mut outcome = metadata;
+            outcome["status"] = json!("committed");
+            outcome["tool"] = json!(tool);
+            outcome["operation"] = key.clone();
+            record_tool_result(
+                &path,
+                "task",
+                "document_result",
+                &json!({"params":{"arguments":{"target_operation":key}}}),
+                &json!({"structuredContent":outcome}),
+            )
+            .unwrap();
+            let journal = Journal::open(&path).unwrap();
+            assert!(journal.pending_operations().is_empty());
+            let results = journal.task_results("task");
+            assert_eq!(results["effects"]["counts"]["confirmed"], 1);
+            assert_eq!(results["effects"]["confirmed"][0]["kind"], kind);
+        }
+    }
+
+    #[test]
+    fn retained_refusal_settles_lookup_without_claiming_an_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.json");
+        let operation = json!({"epoch":"epoch","id":"refused"});
+        record_tool_call(
+            &path,
+            "task",
+            "document_comment",
+            &json!({"params":{"arguments":{"operation":operation}}}),
+        )
+        .unwrap();
+        let response = json!({"structuredContent":{"tool":"document_comment","status":"refused","error":{"code":"conflict","message":"comment changed"}}});
+        record_tool_result(
+            &path,
+            "task",
+            "document_result",
+            &json!({"params":{"arguments":{"target_operation":operation}}}),
+            &response,
+        )
+        .unwrap();
+        let journal = Journal::open(&path).unwrap();
+        assert!(journal.pending_operations().is_empty());
+        let results = journal.task_results("task");
+        assert_eq!(results["effects"]["counts"]["confirmed"], 0);
+        assert_eq!(results["effects"]["counts"]["refused"], 1);
+        assert!(!response_settled(
+            &json!({"structuredContent":{"status":"committed","items":[{"error":{"code":"outcome_unknown"}}]}})
+        ));
     }
 
     #[test]

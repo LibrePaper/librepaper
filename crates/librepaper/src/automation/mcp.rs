@@ -23,6 +23,26 @@ use crate::assistant::journal as runner_journal;
 use crate::automation::peer::AutomationPeer;
 
 pub(crate) const MCP_PROTOCOL_VERSION: &str = "2026-07-28";
+const REQUIRED_ASSISTANT_TOOLS: [&str; 5] = [
+    "document_read",
+    "document_propose",
+    "document_apply",
+    "document_comment",
+    "document_result",
+];
+
+fn missing_assistant_tools<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<&'static str> {
+    let names = names.into_iter().collect::<std::collections::HashSet<_>>();
+    REQUIRED_ASSISTANT_TOOLS
+        .iter()
+        .filter(|name| !names.contains(**name))
+        .copied()
+        .collect()
+}
+
+pub(crate) fn readiness_marker_matches(expected: &str, found: Option<&str>) -> bool {
+    !expected.is_empty() && expected.len() <= 128 && found == Some(expected)
+}
 
 #[derive(Clone)]
 struct Bridge {
@@ -116,7 +136,20 @@ impl ServerHandler for Bridge {
             .transpose()
             .map_err(internal_error)?
             .unwrap_or_else(|| json!({}));
-        self.forward("tools/list", params, None).await
+        let result: ListToolsResult = self.forward("tools/list", params, None).await?;
+        let names = result.tools.iter().map(|tool| tool.name.as_ref());
+        let missing = missing_assistant_tools(names);
+        if !missing.is_empty() {
+            return Err(McpError::internal_error(
+                format!(
+                    "LibrePaper document bridge is missing required tools: {}",
+                    missing.join(", ")
+                ),
+                None,
+            ));
+        }
+        publish_bridge_readiness()?;
+        Ok(result)
     }
 
     async fn call_tool(
@@ -134,6 +167,24 @@ impl ServerHandler for Bridge {
             .await?;
         Ok(result.into())
     }
+}
+
+fn publish_bridge_readiness() -> Result<(), McpError> {
+    let (Some(path), Some(token)) = (
+        std::env::var_os("LIBREPAPER_RUNNER_BRIDGE_READY_FILE"),
+        std::env::var("LIBREPAPER_RUNNER_BRIDGE_READY_TOKEN").ok(),
+    ) else {
+        return Ok(());
+    };
+    if token.len() > 128 {
+        return Err(internal_error("invalid bridge readiness token"));
+    }
+    crate::private_files::publish(
+        Path::new(&path),
+        token.as_bytes(),
+        "runner bridge readiness",
+    )
+    .map_err(internal_error)
 }
 
 pub(crate) async fn stdio(peer: &AutomationPeer) -> Result<(), String> {
@@ -286,6 +337,29 @@ fn rpc_error(id: Value, code: i64, message: impl Into<String>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assistant_readiness_requires_every_document_tool_and_the_current_nonce() {
+        let all = [
+            "document_read",
+            "document_propose",
+            "document_apply",
+            "document_comment",
+            "document_result",
+        ];
+        assert!(missing_assistant_tools(all).is_empty());
+        assert_eq!(
+            missing_assistant_tools(all.into_iter().filter(|name| *name != "document_apply")),
+            ["document_apply"]
+        );
+        assert!(readiness_marker_matches("fresh-nonce", Some("fresh-nonce")));
+        assert!(!readiness_marker_matches(
+            "fresh-nonce",
+            Some("stale-nonce")
+        ));
+        assert!(!readiness_marker_matches("fresh-nonce", None));
+        assert!(!readiness_marker_matches("", Some("")));
+    }
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;

@@ -40,9 +40,11 @@ candidate revision verifies that candidate.
 
 If the source changed, read fresh evidence and reconcile the intended change
 with it. Do not substitute the latest revision silently. A lost response leaves
-the write unknown: inspect it without inventing a new operation ID. The service
-does not retain committed receipts for operation lookup, so lookup cannot make
-an admitted write safe to replay. Retry only through a supported idempotent
+the write unknown: query `document_result` with the original operation identity.
+The service retains bounded outcomes for the operation epoch, committed with
+document mutations. A returned outcome confirms only the effects it names;
+missing, legacy, or expired evidence remains unknown. Lookup never authorizes
+reexecution. Retry only through a supported idempotent
 path with the exact original identity and arguments. A bounded reread can
 refresh expired read context but cannot assume the same passage or revision or
 replay an uncertain write.

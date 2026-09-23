@@ -187,6 +187,7 @@ impl SourceTree {
         self.revision.clone()
     }
 
+    #[cfg(test)]
     pub fn main_file(&self) -> Option<&SourceFile> {
         self.files.get(&self.main)
     }
@@ -232,6 +233,7 @@ pub struct AgentAuthority {
 /// matters is the projection digest `head.prepare` computes from the fork
 /// (§7.3), not a hash this validator produces independently.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub struct AppliedSource {
     pub before: String,
     pub after: String,
@@ -252,6 +254,7 @@ pub struct AgentReceipt {
 /// Validate and apply a request to a source tree. No input is normalized:
 /// offsets address raw UTF-8 bytes and the captured `exact` text must match
 /// byte-for-byte.
+#[cfg(test)]
 pub fn apply_patches(
     tree: &SourceTree,
     request: &PatchRequest,
@@ -339,6 +342,7 @@ pub fn validate_patches(tree: &SourceTree, request: &PatchRequest) -> Result<(),
 
 /// The source a validated patch request produces. Callers that only need to
 /// know whether it would be admitted use [`validate_patches`].
+#[cfg(test)]
 fn build_patched(tree: &SourceTree, request: &PatchRequest) -> Result<AppliedSource, AgentError> {
     let mut files = tree.files.clone();
     // Group by path and apply from the end. A path with several edits gets one
@@ -578,6 +582,7 @@ struct AgentPatchCommand<'a> {
     author_account_id: Option<Uuid>,
     author_label: String,
     max_document: usize,
+    operation_receipt: Option<crate::storage::postgres::OperationReceipt>,
 }
 
 impl Command for AgentPatchCommand<'_> {
@@ -665,13 +670,25 @@ impl Command for AgentPatchCommand<'_> {
                     },
                 )
                 .await?;
-            Ok(AgentReceipt {
+            let receipt = AgentReceipt {
                 operation: self.request.operation.clone(),
                 status: "committed".into(),
                 tree_digest_before: evidence.before_digest.clone(),
                 tree_digest_after: label.tree_digest.map(hex::encode).unwrap_or(after_digest),
                 replay: false,
-            })
+            };
+            if let Some(operation_receipt) = &self.operation_receipt {
+                let outcome = serde_json::json!({
+                    "tool": "document_apply",
+                    "operation": receipt.operation,
+                    "status": receipt.status,
+                    "tree_digest_before": receipt.tree_digest_before,
+                    "tree_digest_after": receipt.tree_digest_after,
+                    "replay": receipt.replay
+                });
+                PostgresCatalog::record_operation_outcome(tx, operation_receipt, &outcome).await?;
+            }
+            Ok(receipt)
         })
     }
 }
@@ -725,10 +742,11 @@ fn receipt_from_label(request: &PatchRequest, label: &LabelRecord) -> AgentRecei
 }
 
 impl Room {
-    pub async fn apply_agent_request<F, Fut>(
+    pub(crate) async fn apply_agent_request<F, Fut>(
         &self,
         request: PatchRequest,
         authority: AgentAuthority,
+        operation_receipt: Option<crate::storage::postgres::OperationReceipt>,
         recheck: F,
     ) -> Result<AgentReceipt, AgentError>
     where
@@ -801,6 +819,7 @@ impl Room {
             author_account_id: document_authority.account_id,
             author_label: authority.owner_key.clone(),
             max_document: self.config().max_document,
+            operation_receipt,
         };
 
         // The replay check that used to run here, before the command, is

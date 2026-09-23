@@ -47,6 +47,7 @@
   // panel says so rather than guessing.
   let installed = $state([]);
   let connectionName = $state("");
+  let restoredConversation = "";
   let chosenAgent = $state("");
   let assistant = $state({ running: false, agent: "", access: "" });
   let pairingCode = $state("");
@@ -137,6 +138,8 @@
         : interrupted ? "Interrupted" : "Waiting",
   );
   const inputTask = $derived(Object.values(connection.tasks || {}).find((item) => item?.status === "needs_input" && item.input) || null);
+  const permissionKindLabel = (kind) => ({ allow_once: "Allow once", allow_always: "Allow always",
+    reject_once: "Reject once", reject_always: "Reject always" }[kind] || "");
 
   function validDocumentLink() {
     try {
@@ -188,6 +191,7 @@
     if (!chosenAgent) chosenAgent = installed.find((entry) => entry.assistant)?.id || installed[0]?.id || "";
   }
   $effect(() => { if (paired) void act(refreshAgents); });
+  $effect(() => { if (paired && connection.id) void restoreAssistant(); });
 
   async function pair() {
     pairProblem = "";
@@ -237,16 +241,44 @@
         assistant = { running: false, agent: "", access: "" };
       }
       const name = await registerConnection(mode);
+      rememberAssistantConnection(connection.id, name);
       const answer = await local.startAssistant({
         connection: name, conversation: connection.id,
         chatToken: connection.token, agent: chosenAgent,
       });
       if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
       assistant = { running: true, agent: chosenAgent, access: mode };
+      rememberAssistantConnection(connection.id, name);
       // The work happens in the chat, so go there rather than leaving the
       // reader on a settings pane that has nothing more to say.
       tab = "chat";
     });
+  }
+
+  function assistantConnectionKey(conversationId) {
+    return `librepaper:assistant:${slug}:${conversationId}`;
+  }
+
+  function rememberAssistantConnection(conversationId, name) {
+    if (!conversationId || !name) return;
+    try { localStorage.setItem(assistantConnectionKey(conversationId), name); } catch { /* storage can be disabled */ }
+  }
+
+  async function restoreAssistant() {
+    if (!paired || !connection.id || restoredConversation === connection.id) return;
+    const conversationId = connection.id;
+    restoredConversation = conversationId;
+    let name = "";
+    try { name = localStorage.getItem(assistantConnectionKey(conversationId)) || ""; } catch { /* storage can be disabled */ }
+    if (!name) return;
+    try {
+      const answer = await local.assistantStatus({ connection: name, conversation: conversationId });
+      if (connection.id !== conversationId || restoredConversation !== conversationId || !answer?.running) return;
+      connectionName = answer.connection || name;
+      assistant = { running: true, agent: answer.agent || "", access: answer.access || "" };
+      if (assistant.access) access = assistant.access;
+      if (answer.agent) chosenAgent = answer.agent;
+    } catch { /* the saved connection may have been revoked or removed */ }
   }
 
   async function stopAssistant() {
@@ -724,11 +756,23 @@
            a question the agent did not ask. -->
       <div class="setup-actions">
         {#each inputTask.input.options || [] as option, index (option.id || `option-${index}`)}
-          <button class="btn btn-sm {index === 0 ? "preset-filled-primary-500" : ""}" disabled={busy}
-                  onclick={() => void answerInput(option.id)}>{option.label}</button>
+          {@const kind = String(option.kind || "other").toLowerCase()}
+          <button class="btn btn-sm" data-option-kind={kind} disabled={busy}
+                  onclick={() => void answerInput(option.id)}>
+            {#if permissionKindLabel(kind)}<span class="permission-kind">{permissionKindLabel(kind)}</span>{/if}
+            {option.label}
+          </button>
         {/each}
         <button class="btn btn-sm" disabled={busy} onclick={() => void answerInput(null)}>Cancel</button>
       </div>
+      {#if inputTask.input.details}
+        {@const details = inputTask.input.details}
+        <div class="permission-details">
+          {#if details.command}<p><strong>Command</strong><code>{details.command.slice(0, 2048)}{#if details.command.length > 2048}…{/if}</code></p>{/if}
+          {#if details.files?.length}<p><strong>Files</strong><span>{details.files.slice(0, 8).map((path) => String(path).slice(0, 512)).join(", ")}{#if details.files.length > 8} and {details.files.length - 8} more{/if}</span></p>{/if}
+          {#if details.diff}<details><summary>Review changes</summary><pre>{details.diff.slice(0, 2048)}{#if details.diff.length > 2048}…{/if}</pre></details>{/if}
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -912,6 +956,11 @@
   .request-warning { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); background:var(--color-warning-100-900); overflow-wrap:anywhere; }
   .input-request { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); border-left:3px solid var(--color-warning-500); background:var(--color-surface-100-900); }
   .input-request p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .permission-kind { display:inline-block; margin-right:.35rem; font-size:.7em; font-weight:700; text-transform:uppercase; opacity:.75; }
+  .permission-details { display:flex; flex-direction:column; gap:var(--spacing); overflow:hidden; }
+  .permission-details p { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
+  .permission-details code, .permission-details pre { max-height:14rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .permission-details pre { margin:0; padding:var(--spacing); background:var(--color-surface-200-800); }
   .agent-panel :global(.chat-transcript-wrap) { flex:1 0 8rem; min-height:8rem; }
   @media (max-height:600px) { .attachment blockquote { max-height:4rem; } }
 </style>
