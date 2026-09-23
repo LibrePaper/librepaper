@@ -47,10 +47,28 @@ edit unsaved.
 | Live sockets per document | 256 (32 editors) | fixed |
 
 Deployment storage counts the same three kinds as retained storage. The memory
-budget is also what request bodies and outgoing state transfers reserve from,
-a mutation must declare its content length, a request without one is refused with
+budget is also what request bodies and outgoing state transfers reserve from.
+A mutation must declare its content length; a request without one is refused with
 411. Four times the content length is reserved from the budget before the body is
 read; a request that cannot reserve is refused with a retryable 429.
+
+An archive is produced on request, not written for every label, so it is not
+counted until something has actually asked for one. Dereferencing a figure does
+not restore quota; the figure remains until its document is deleted. Reusing
+identical bytes later reuses the existing document asset and does not issue
+another object-store PUT.
+
+Compaction, archiving and deletion run on an in-process bounded queue, not a
+polled table. The two numbers that actually bound server-side cost per document
+are the log quota, which is what limits how long a cache rebuild can occupy a
+thread, and the memory budget, which is shared by every resident document's cache
+entries, in-flight builds, projection buffers, request bodies and state transfers.
+The memory budget must cover a cold build at the quota, fourteen times the log
+bytes at the measured expansion factors, and the server refuses to start otherwise.
+A document that exceeds either limit becomes unreadable until its history is
+trimmed from the settings page, or an editor exports, shrinks and re-imports it,
+or an operator raises `log_quota_mb` or `memory_budget_mb`; ingest and typing
+continue while it is unreadable. See [self-managed hosting](hosting.md#resource-limits).
 
 LibrePaper checks coarse owner and deployment thresholds before blob writes and
 again in the PostgreSQL transaction that commits metadata. Concurrent writers
@@ -72,6 +90,17 @@ Fetch `/api/status` over loopback for operational state, for example
 database size and object-bucket byte/request metrics should come from their
 respective providers and alerts. Do not use object listings to reconstruct
 permissions or current heads; those live in PostgreSQL.
+
+## What a person sees
+
+A signed-in account's settings page shows retained storage against the quota and,
+under it, storage by document in three segments (figures, versions, history) with
+a "Trim history" button per document. Trimming compacts the document to a shallow
+snapshot at its current state and discards the rows; the document keeps its
+content, named versions survive because they are source archives, comments whose
+passage can still be found are re-attached by text and otherwise shown detached,
+every live editor must rejoin, and the command refuses while another editor is
+connected. Nothing trims on a schedule.
 
 Backups are outside primary storage admission. A filesystem backup copies only
 keys referenced by one exported PostgreSQL snapshot and verifies their lengths
