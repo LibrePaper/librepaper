@@ -754,10 +754,10 @@ async fn a_single_update_at_the_byte_trigger_flushes_alone_because_the_trigger_i
     let sequencer = bare_sequencer(Arc::new(FakeCatalog::empty()));
     let mut outbox = Outbox::new();
     // Comfortably past FLUSH_TRIGGER_BYTES (1 MiB) and comfortably under
-    // the max update bytes (4 MiB by default): large enough that a real
+    // the log quota (32 MiB by default): large enough that a real
     // deployment would see it as the "single large paste" case §5 step 6
     // describes, without this test's runtime being dominated by generating
-    // a full 4 MiB of random filler.
+    // data close to the quota.
     let big = outbox.edit_at_least(FLUSH_TRIGGER_BYTES + FLUSH_TRIGGER_BYTES / 4);
     assert!(
         big.len() < max_update_bytes(Arc::new(Configuration::default()).log_quota_bytes),
@@ -1397,12 +1397,14 @@ fn join_fixture() -> JoinFixture {
     let sequencer = Sequencer::from_parts(
         Uuid::new_v4(),
         "join-fixture".to_string(),
+        Uuid::nil(),
         catalog,
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
         generous_pending(),
         "deployment.peer.test".to_string(),
+        crate::log::ledger::StorageLedger::new(),
         3,
         v2.clone(),
         0,
@@ -1618,12 +1620,14 @@ fn compaction_fixture(
     let sequencer = Arc::new(Sequencer::from_parts(
         Uuid::new_v4(),
         "compaction-fixture".to_string(),
+        Uuid::nil(),
         catalog.clone(),
         blobs(),
         Arc::new(Configuration::default()),
         Budget::new(u64::MAX / 2, DEFAULT_EXPANSION),
         generous_pending(),
         "deployment.peer.test".to_string(),
+        crate::log::ledger::StorageLedger::new(),
         3,
         v2.clone(),
         0,
@@ -2047,12 +2051,14 @@ fn sequencer_with_logged_weight(log_bytes: u64, budget: Arc<Budget>) -> Sequence
     Sequencer::from_parts(
         Uuid::new_v4(),
         "test-doc".to_string(),
+        Uuid::nil(),
         Arc::new(FakeCatalog::empty()),
         blobs(),
         Arc::new(Configuration::default()),
         budget,
         generous_pending(),
         "deployment.peer.test".to_string(),
+        crate::log::ledger::StorageLedger::new(),
         1,
         VersionVector::default(),
         log_bytes,

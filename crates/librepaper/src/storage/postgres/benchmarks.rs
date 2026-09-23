@@ -1455,7 +1455,7 @@ async fn compact_seeded_document(
     let storage = crate::storage::collaboration::CollaborationStorage::new(catalog.clone(), blobs);
     let at = Instant::now();
     let written = storage
-        .write_base(document_id, &snapshot)
+        .write_base(document_id, &snapshot, crate::config::Configuration::default().log_quota_bytes)
         .await
         .expect("write the base");
     let write_base_us = micros(at);
