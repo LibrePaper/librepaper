@@ -12,8 +12,8 @@ const editor = ({ mayEdit }) => mayEdit;
 const build = ({ format, mayEdit }) => ["latex", "typst", "markdown", "quarto"].includes(format) && mayEdit;
 const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
 const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
-const local = () => true;
-const remote = () => true;
+const local = (_context) => true;
+const remote = (_context) => true;
 const projectBinding = ({ format }) => ["typst", "markdown", "quarto"].includes(format);
 // The account is the deployment's, not the document's: whoever is signed in
 // is offered it whatever they happen to have open.
