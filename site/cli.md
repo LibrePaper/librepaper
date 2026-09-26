@@ -152,21 +152,12 @@ librepaper local preset create NAME ADAPTER --format typst --option engine=luala
 
 ## Agents
 
-Which agents this computer offers the document sidebar, and what they can
-reach:
+Which agents this computer offers the document sidebar:
 
 ```sh
 librepaper local agent list       # add <id> -- <command> teaches it another
-librepaper local connections      # which documents agents here can reach
-librepaper local connections --remove NAME
 ```
 
-An agent's own configuration points at a document through a named connection,
-so the document key never sits in a config file or a shell history:
-
-```sh
-librepaper agent mcp --connection thesis
-```
-
-The [agents page](agents.html) covers how connections are made and what the
-tools can do.
+Agents are driven from the document sidebar only; there is no command line
+for connecting one to a document by hand. The [agents page](agents.html)
+covers what the sidebar assistant can do.
