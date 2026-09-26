@@ -5,7 +5,7 @@ title: "The CLI"
 LibrePaper is a server and a web app, and the command line is deliberately
 small. Four commands are for a person at a terminal: `login`, `logout`,
 `list`, and `export`. Three namespaces are for particular jobs: `admin` runs
-a deployment, `local` runs the companion on your own computer, and `agent`
+a deployment, `local` runs the companion on your own computer, and `mcp`
 connects an agent to a document. Publishing, review, and document management
 happen in the browser.
 
@@ -73,30 +73,27 @@ librepaper list
 
 ## Export
 
-Export a document's comments, as W3C Web Annotation JSON-LD by default or as
-Markdown, using the short ID from `list` (a full slug also works):
+Export a complete independent copy of the document using the short ID from
+`list` (a full slug also works):
 
 ```sh
-librepaper export c9k --format markdown --output comments.md
+librepaper export c9k ./paper-copy
 ```
 
-`--format response` writes a reply template listing each comment with room
-under it, and `--since <checkpoint>` limits that to comments made after a given
-moment:
-
-```sh
-librepaper export c9k --format response --since 4f2a91c --output response.md
-```
-
-`--project` takes a complete independent copy of the document instead:
-
-```sh
-librepaper export c9k --project --output ./paper-copy
-```
-
-An exported project is a snapshot. Editing it does not update the hosted
+The export is an immutable snapshot. Editing it does not update the hosted
 document. `--key` reads as the holder of a share link rather than as your
-sign-in, for a document you can open but do not own.
+sign-in, for a document you can open but do not own:
+
+```sh
+librepaper export c9k ./paper-copy --key https://librepaper.example/s/abc123
+```
+
+`--at` exports the project as it stood at a given label instead of its current
+state. Requesting a historical export waits for the server to build its archive:
+
+```sh
+librepaper export c9k ./paper-copy --at "Draft v1"
+```
 
 ## Operating a deployment
 
@@ -165,7 +162,7 @@ An agent's own configuration points at a document through a named connection,
 so the document key never sits in a config file or a shell history:
 
 ```sh
-librepaper agent mcp --connection thesis
+librepaper mcp --connection thesis
 ```
 
 The [agents page](agents.html) covers how connections are made and what the

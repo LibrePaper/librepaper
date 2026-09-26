@@ -308,7 +308,7 @@ pub(crate) fn start_background(
     let mut command = Command::new(executable);
     // Keep the document key out of the child process command line. `-` is an
     // internal argv sentinel resolved from this short lived environment.
-    command.args(["agent", "connect", "-", conversation]);
+    command.args(["run-agent", "-", conversation]);
     for part in agent {
         command.args(["--agent", part]);
     }
