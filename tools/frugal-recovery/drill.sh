@@ -49,12 +49,15 @@ cleanup() {
 trap cleanup EXIT
 mkdir -m 700 "$work/source-data" "$work/restored-data"
 
-# Seed a synthetic current-schema deployment with real source history and
-# bundled assets. No production data or existing deployment directory is read.
-"$LIBREPAPER_BIN" admin seed \
-  --database-url "$LIBREPAPER_SOURCE_URL" \
-  --data-directory "$work/source-data" \
-  --simulate-activity 7
+# Populate a fresh deployment with starter documents and simulated activity by
+# starting a server, signing in an account, triggering onboarding, and waiting
+# for documents to be created. No production data or existing deployment
+# directory is read.
+node "$(dirname "$0")/fixture.mjs" \
+  "$LIBREPAPER_BIN" \
+  "$LIBREPAPER_SOURCE_URL" \
+  "$work/source-data" \
+  7
 
 signature_sql="SELECT jsonb_build_object(
   'documents',(SELECT count(*) FROM documents),

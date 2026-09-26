@@ -266,9 +266,9 @@
 
   const hereSelected = $derived(shown.filter((doc) => selected.has(doc.slug)).length);
   const selectable = $derived(shown.filter(mine).length);
-  // A project of your own that is not one of the starters. What the onboarding
-  // strip watches: once there are real projects here, it has done its job.
-  const ownWork = $derived(documents.filter((doc) => mine(doc) && !doc.example).length);
+  // A project of your own. What the onboarding strip watches: once there is
+  // work here, it has done its job.
+  const ownWork = $derived(documents.filter((doc) => mine(doc)).length);
 
   function sortColumn(column) {
     // Clicking the column already sorted reverses it; a new column starts in
