@@ -118,22 +118,19 @@ the jobs the browser cannot do: Quarto renders, and Typst to self-contained
 HTML. It also holds the agents the document sidebar can drive.
 
 ```sh
-librepaper local launch           # run in the background
-librepaper local start            # run in a terminal; prints a fallback pairing code
-librepaper local stop             # stop the background companion
-librepaper local startup enable   # optional: start when you log in
-librepaper local startup disable
-librepaper local status           # exits non-zero when nothing is answering
-librepaper local doctor           # which tools it found, and whether it can confine them
-librepaper local manage           # open the companion's settings page
-librepaper local disconnect --all # revoke every paired site
+librepaper local start            # run in the background (default) or in this process with --foreground
+librepaper local stop             # stop the companion
+librepaper local status           # service state, address, code, pairings, tools, and agent connections
+librepaper local settings         # open the companion's settings page
+librepaper local agent list       # add <id> -- <command> teaches it another
 ```
 
 `start --code` fixes the pairing code instead of rotating it per run, which is
 what `make deploy` uses so that connecting an agent in development does not
-mean reading a fresh code off a terminal after every restart. `--tex-path`
-(colon-separated directories) points `start` and `doctor` at a TeX
-installation they would not otherwise find.
+mean reading a fresh code off a terminal after every restart. `--foreground`
+runs the companion in this process instead of the background. `--tex-path`
+(colon-separated directories) points to a TeX installation they would not
+otherwise find.
 
 A Quarto or Typst document renders in a workspace of its own, written from the
 files the browser sends. To render against a project folder on your disk
@@ -141,28 +138,16 @@ instead, because it keeps data the document does not share, choose the folder
 under *Settings*, *Local app*, *Project folder* in the browser. The companion
 never receives a path from a website; the choice is made on this machine.
 
-Build presets are how the companion offers a configured adapter, wrapper, or
-environment to the browser's build settings without any of it crossing the
-wire:
-
-```sh
-librepaper local preset list
-librepaper local preset create NAME ADAPTER --format typst --option engine=lualatex
-```
+Build presets are configured and managed in the settings page opened by
+`librepaper local settings`, or through the web interface at
+`http://127.0.0.1:8763/librepaper/local/v1/manage` when it is running.
 
 ## Agents
 
-Which agents this computer offers the document sidebar, and what they can
-reach:
-
-```sh
-librepaper local agent list       # add <id> -- <command> teaches it another
-librepaper local connections      # which documents agents here can reach
-librepaper local connections --remove NAME
-```
-
-An agent's own configuration points at a document through a named connection,
-so the document key never sits in a config file or a shell history:
+Which agents this computer offers the document sidebar, and what they can reach,
+are shown in the settings page at `librepaper local settings`. An agent's own
+configuration points at a document through a named connection, so the document
+key never sits in a config file or a shell history:
 
 ```sh
 librepaper agent mcp --connection thesis

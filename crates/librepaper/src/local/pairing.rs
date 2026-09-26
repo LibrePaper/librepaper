@@ -210,7 +210,7 @@ impl PairingStore {
     }
 
     /// Revokes every project under `origin`, or -- with `None` -- every
-    /// pairing this store holds. What `librepaper local disconnect` does.
+    /// pairing this store holds. Managed through the settings page.
     /// Returns how many were removed.
     pub fn revoke(&self, origin: Option<&str>) -> usize {
         let mut pairings = self.load();

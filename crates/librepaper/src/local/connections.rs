@@ -44,7 +44,7 @@ pub struct Connection {
     /// display only; the link itself is what actually bounds access.
     #[serde(default)]
     pub access: String,
-    /// Human label for the sidebar and `librepaper local connections`.
+    /// Human label for the sidebar and the settings page.
     #[serde(default)]
     pub title: String,
     /// Sidebar runner configuration by conversation. A connection may be
