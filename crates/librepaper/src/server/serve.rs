@@ -34,7 +34,6 @@ pub struct ServeOptions {
     pub google_client_id: Option<String>,
     pub publishers: Option<String>,
     pub commenters: Option<String>,
-    pub no_listing: bool,
     /// Write each new account's starter documents as though they had been
     /// typed over this many days, so the history panel has something in it on a
     /// demonstration deployment. The operations are real; only the clock is
@@ -424,9 +423,6 @@ pub async fn serve(options: ServeOptions) {
     );
     instance.install_writer(writer);
     instance.google = google;
-    // An operator who wants no public front page at all: the examples stop
-    // being listed to people who hold nothing on them.
-    instance.listing = !options.no_listing;
     instance.simulate_activity = options.simulate_activity;
     instance.origins = origins.clone();
     instance.latex = Some(latex);

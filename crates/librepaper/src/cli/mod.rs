@@ -77,9 +77,6 @@ pub(crate) struct ServiceFlags {
     /// Who may comment: 'anyone' (default), 'any' signed-in account, or a list of accounts
     #[arg(long, env = "LIBREPAPER_COMMENTERS", value_name = "WHO")]
     commenters: Option<String>,
-    /// No public front page: the examples are listed only to their owner
-    #[arg(long, env = "LIBREPAPER_NO_LISTING")]
-    no_listing: bool,
     /// Most one publisher may store across their documents, in megabytes (default 100)
     #[arg(
         long = "publisher-storage-limit",
@@ -556,7 +553,6 @@ async fn run_admin(command: AdminCommand) {
                 google_client_id: service.google_client_id,
                 publishers: service.publishers,
                 commenters: service.commenters,
-                no_listing: service.no_listing,
                 simulate_activity: service.simulate_activity,
                 origin: service.origin,
                 docs_origin: service.docs_origin,
