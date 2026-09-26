@@ -56,12 +56,11 @@
 <div class="chat-transcript-wrap">
   <div class="chat-transcript" bind:this={transcript} onscroll={scrolled} role="log" aria-label={label} aria-live="polite" aria-relevant="additions text">
     {#each rows as { message, key, starts, name } (`${message.role || "chat"}:${message.id}`)}
-      {@const refused = message.context?.results?.effects?.refused || []}
-      {@const unresolved = message.context?.results?.effects?.unresolved || []}
-      {@const effects = message.context?.results?.effects}
-      {@const refusedCount = effects?.counts?.refused ?? refused.length}
-      {@const unresolvedCount = effects?.counts?.unresolved ?? unresolved.length}
-      {@const confirmed = effects?.confirmed || []}
+      {@const results = message.context?.results}
+      {@const refusedCount = results?.refused || 0}
+      {@const unresolvedCount = results?.unresolved || 0}
+      {@const confirmed = results?.confirmed || []}
+      {@const confirmedOmitted = results?.confirmed_omitted || 0}
       <article class="chat-message" class:starts class:from-user={message.role === "user"} class:from-agent={message.role === "agent"} data-id={message.id}>
         <span class="chat-gutter">
           {#if starts}<Avatar {name} {key} icon={message.role === "agent" ? "bot" : ""} />{/if}
@@ -72,8 +71,8 @@
           {#each confirmed.filter(effect => effect.kind === "application" || effect.kind === "comment") as effect}
             <p>{effect.kind === "application" ? "Source changes applied." : `Comment action confirmed: ${effect.action}.`}</p>
           {/each}
-          {#if effects?.omitted?.confirmed}
-            <p>{effects.omitted.confirmed} additional confirmed effects omitted from this summary.</p>
+          {#if confirmedOmitted}
+            <p>{confirmedOmitted} additional confirmed effects omitted from this summary.</p>
           {/if}
           {#if refusedCount || unresolvedCount}
             <p class="effect-warning" role="alert">

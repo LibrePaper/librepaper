@@ -54,6 +54,13 @@ pub(crate) struct Event {
     /// journal files omit this field, which defaults to zero.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub refused: u32,
+    /// Committed or replayed document changes this call's response
+    /// confirmed, as `{"kind":"application"}` or
+    /// `{"kind":"comment","action":<action>}`. Bounded by the same walk
+    /// that produces it; carries no digests, ids, or suggestion entries,
+    /// since suggestions already travel through `result_ids`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub confirmed: Vec<Value>,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -353,7 +360,17 @@ impl Journal {
         result_ids: Vec<String>,
         status: &str,
     ) -> Result<u64, String> {
-        self.append_detailed(task_id, kind, tool, operation, result_ids, status, None, 0)
+        self.append_detailed(
+            task_id,
+            kind,
+            tool,
+            operation,
+            result_ids,
+            status,
+            None,
+            0,
+            Vec::new(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -367,12 +384,16 @@ impl Journal {
         status: &str,
         detail: Option<String>,
         refused: u32,
+        confirmed: Vec<Value>,
     ) -> Result<u64, String> {
         if task_id.len() > 128 || kind.len() > 64 || tool.len() > 128 || status.len() > 64 {
             return Err("runner journal event field exceeds its limit".into());
         }
         if result_ids.len() > 100 || result_ids.iter().any(|id| id.is_empty() || id.len() > 128) {
             return Err("runner journal result identifiers exceed their limit".into());
+        }
+        if confirmed.len() > 100 {
+            return Err("runner journal confirmed effects exceed their limit".into());
         }
         let task_id = task_id.to_string();
         let kind = kind.to_string();
@@ -395,6 +416,7 @@ impl Journal {
                 status: status.clone(),
                 detail: detail.clone(),
                 refused,
+                confirmed: confirmed.clone(),
             });
             while disk.events.len() > MAX_EVENTS {
                 let unresolved = unresolved_keys(&disk.events);
@@ -463,10 +485,14 @@ impl Journal {
     }
 
     /// What a task achieved, as the sidebar and the runner actually use it:
-    /// the receipt-bound suggestion ids the browser renders, and the refused
-    /// and unresolved counts the runner reports in its own summary.
+    /// the receipt-bound suggestion ids the browser renders, a bounded list
+    /// of confirmed document changes (applications and comment actions),
+    /// and the refused and unresolved counts the runner reports in its own
+    /// summary.
     pub(crate) fn task_results(&self, task_id: &str) -> Value {
         let mut suggestions = BTreeSet::new();
+        let mut confirmed: Vec<Value> = Vec::new();
+        let mut confirmed_omitted: u64 = 0;
         let mut refused: u64 = 0;
         for event in self
             .disk
@@ -479,6 +505,13 @@ impl Journal {
             }
             suggestions.extend(event.result_ids.iter().cloned());
             refused += u64::from(event.refused);
+            for effect in &event.confirmed {
+                if confirmed.len() < 32 {
+                    confirmed.push(effect.clone());
+                } else {
+                    confirmed_omitted += 1;
+                }
+            }
         }
         let unresolved = self
             .pending_operations()
@@ -491,7 +524,13 @@ impl Journal {
                     )
             })
             .count();
-        serde_json::json!({"suggestions":suggestions,"refused":refused,"unresolved":unresolved})
+        serde_json::json!({
+            "suggestions":suggestions,
+            "confirmed":confirmed,
+            "confirmed_omitted":confirmed_omitted,
+            "refused":refused,
+            "unresolved":unresolved
+        })
     }
 }
 
@@ -560,6 +599,56 @@ fn result_ids(tool: &str, response: &Value) -> Vec<String> {
     let mut ids = BTreeSet::new();
     collect(structured_response(response), 0, &mut ids);
     ids.into_iter().collect()
+}
+
+/// Committed or replayed document changes a response confirmed, walked the
+/// way `main`'s `typed_effects` did: through a batch's `items` and through
+/// an `already_committed` outcome, with `document_result` naming the
+/// original tool. Unlike `typed_effects`, this carries no digests, ids, or
+/// suggestion entries; suggestions already travel through `result_ids`.
+fn confirmed_effects(tool: &str, response: &Value) -> Vec<Value> {
+    fn field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+        value
+            .get(key)?
+            .as_str()
+            .filter(|value| !value.is_empty() && value.len() <= 128)
+    }
+    fn walk(tool: &str, value: &Value, depth: usize, out: &mut Vec<Value>) {
+        if depth > 4 || out.len() >= 100 {
+            return;
+        }
+        if matches!(value["status"].as_str(), Some("committed" | "replayed"))
+            && value.get("error").is_none()
+        {
+            match tool {
+                "document_apply" => out.push(serde_json::json!({"kind":"application"})),
+                "document_comment" => {
+                    if let Some(action) = field(value, "action") {
+                        out.push(serde_json::json!({"kind":"comment","action":action}));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for child in value["items"].as_array().into_iter().flatten().take(100) {
+            walk(tool, child, depth + 1, out);
+        }
+        if value["status"] == "already_committed" {
+            walk(tool, &value["outcome"], depth + 1, out);
+        }
+    }
+    let body = structured_response(response);
+    let effect_tool = if tool == "document_result" {
+        body["tool"]
+            .as_str()
+            .filter(|name| matches!(*name, "document_apply" | "document_comment"))
+            .unwrap_or(tool)
+    } else {
+        tool
+    };
+    let mut out = Vec::new();
+    walk(effect_tool, body, 0, &mut out);
+    out
 }
 
 pub(crate) fn response_settled(response: &Value) -> bool {
@@ -643,6 +732,11 @@ pub(crate) fn record_tool_result(
     } else {
         Vec::new()
     };
+    let confirmed = if owned_lookup {
+        confirmed_effects(tool, response)
+    } else {
+        Vec::new()
+    };
     let detail = format_refusals(&refusals);
     let result_id = identity
         .as_ref()
@@ -661,6 +755,7 @@ pub(crate) fn record_tool_result(
         status,
         detail,
         refusals.len() as u32,
+        confirmed,
     )?;
     if tool == "document_result" && response_settled(response) {
         if let Some(target) = target {
@@ -700,8 +795,81 @@ mod tests {
         record_tool_result(&path, "task", "document_propose", &request, &response).unwrap();
         let summary = Journal::open(&path).unwrap().task_results("task");
         assert_eq!(summary["suggestions"], json!(["kept"]));
+        assert_eq!(summary["confirmed"], json!([]));
+        assert_eq!(summary["confirmed_omitted"], 0);
         assert_eq!(summary["refused"], 2);
         assert_eq!(summary["unresolved"], 1);
+    }
+
+    #[test]
+    fn task_results_confirms_applications_and_comment_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.json");
+
+        let apply_request = json!({"params":{"arguments":{"operation":{"epoch":"e","id":"apply"}}}});
+        let apply_response =
+            json!({"result":{"structuredContent":{"status":"committed"}}});
+        record_tool_call(&path, "task", "document_apply", &apply_request).unwrap();
+        record_tool_result(&path, "task", "document_apply", &apply_request, &apply_response)
+            .unwrap();
+
+        let comment_request =
+            json!({"params":{"arguments":{"operation":{"epoch":"e","id":"comment"}}}});
+        let comment_response = json!({"result":{"structuredContent":{
+            "status":"replayed","action":"resolve"
+        }}});
+        record_tool_call(&path, "task", "document_comment", &comment_request).unwrap();
+        record_tool_result(
+            &path,
+            "task",
+            "document_comment",
+            &comment_request,
+            &comment_response,
+        )
+        .unwrap();
+
+        let summary = Journal::open(&path).unwrap().task_results("task");
+        assert_eq!(
+            summary["confirmed"],
+            json!([{"kind":"application"}, {"kind":"comment","action":"resolve"}])
+        );
+        assert_eq!(summary["confirmed_omitted"], 0);
+    }
+
+    #[test]
+    fn confirmed_effects_walk_batch_items_and_document_result_names_the_original_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.json");
+        let request = json!({"params":{"arguments":{"operation":{"epoch":"e","id":"batch"}}}});
+        let response = json!({"result":{"structuredContent":{"status":"committed","items":[
+            {"status":"committed","action":"resolve"},
+            {"status":"replayed","action":"reopen"}
+        ]}}});
+        record_tool_call(&path, "task", "document_comment", &request).unwrap();
+        record_tool_result(&path, "task", "document_comment", &request, &response).unwrap();
+        let summary = Journal::open(&path).unwrap().task_results("task");
+        assert_eq!(
+            summary["confirmed"],
+            json!([
+                {"kind":"comment","action":"resolve"},
+                {"kind":"comment","action":"reopen"}
+            ])
+        );
+
+        // A `document_result` lookup names the original tool from the
+        // response body, so a recovered apply still reports as an
+        // application rather than as an untyped "document_result".
+        let apply_operation = json!({"epoch":"epoch","id":"lookup"});
+        let apply_call = json!({"params":{"arguments":{"operation":apply_operation}}});
+        record_tool_call(&path, "other", "document_apply", &apply_call).unwrap();
+        let lookup = json!({
+            "params":{"arguments":{"target_operation":{"epoch":"epoch","id":"lookup"}}}
+        });
+        let lookup_response =
+            json!({"structuredContent":{"tool":"document_apply","status":"committed"}});
+        record_tool_result(&path, "other", "document_result", &lookup, &lookup_response).unwrap();
+        let other_summary = Journal::open(&path).unwrap().task_results("other");
+        assert_eq!(other_summary["confirmed"], json!([{"kind":"application"}]));
     }
 
     #[test]
@@ -755,6 +923,7 @@ mod tests {
                     status: "working".into(),
                     detail: None,
                     refused: 0,
+                    confirmed: Vec::new(),
                 })
                 .collect(),
         };

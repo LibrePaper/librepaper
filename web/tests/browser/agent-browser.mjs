@@ -54,8 +54,7 @@ window.fetch = async (url, init) => {
     window.localCalls.push({route, body});
     if (route === 'health') return Response.json({service:'librepaper-local',protocol:[2],version:'test',instance:'one'});
     if (route === 'capabilities') return Response.json({builders:[]});
-    if (route === 'agents') return Response.json({agents:window.localAgents,connections:[]});
-    if (route === 'connections') { window.connectionAccess=body.access; return Response.json({connection:'paper'}, {status:201}); }
+    if (route === 'agents') return Response.json({agents:window.localAgents});
     if (route === 'connect') {
       // The real app rejects a null project as a malformed body, which is
       // what an unconfigured client sends. Fail loudly here rather than
@@ -67,8 +66,10 @@ window.fetch = async (url, init) => {
         : Response.json({error:'invalid pairing code'}, {status:403});
     }
     if (route === 'assistant') {
-      window.activeRunner={connection:body.connection,conversation:body.conversation,agent:body.agent,access:window.connectionAccess,nonce:'runner-nonce',config_hash:'runner-hash'};
-      return Response.json({running:true,agent:body.agent});
+      // Runners are located by server, document and conversation, not by a
+      // separate connection name, so the mock keys the same way.
+      window.activeRunner={link:body.link,conversation:body.conversation,agent:body.agent};
+      return Response.json({running:true});
     }
     if (route === 'assistant/status') {
       if (window.delayAssistantStatus) {
@@ -76,9 +77,9 @@ window.fetch = async (url, init) => {
         return new Promise(resolve=>window.delayedAssistantStatuses.push({body,resolve}));
       }
       const runner=window.activeRunner;
-      return Response.json(runner && runner.connection===body.connection && runner.conversation===body.conversation
-        ? {running:true,connection:runner.connection,agent:runner.agent,access:runner.access,status:{nonce:runner.nonce,config_hash:runner.config_hash,state:'ready'}}
-        : {running:false,connection:body.connection});
+      return Response.json(runner && runner.conversation===body.conversation
+        ? {running:true,state:'ready'}
+        : {running:false});
     }
     if (route === 'assistant/stop') { window.activeRunner=null; return Response.json({stopped:true}); }
     throw new Error('unexpected local app request: ' + route);
@@ -99,7 +100,7 @@ window.fetch = async (url, init) => {
   if (new URL(url, location.href).pathname.endsWith('/assistant/capabilities')) {
     if(window.delayedCapabilities) return new Promise(resolve=>window.delayedCapabilities.push({key:init.headers['X-LibrePaper-Key'],resolve:value=>resolve(Response.json(value))}));
     const key=init.headers['X-LibrePaper-Key'];
-    return Response.json({can_read:true,can_comment:key!=='reader',can_edit:key==='editor'});
+    return Response.json({can_read:true,can_comment:key!=='reader',can_edit:key==='editor',can_suggest:key==='editor',can_reply:key!=='reader'});
   }
   const suffix = new URL(url, location.href).pathname.split('/chat')[1];
   window.calls.push({ suffix, body:init.body ? JSON.parse(init.body) : {}, headers:{...init.headers} });
@@ -308,13 +309,14 @@ try {
   await until("assistant started", () => page.evaluate("window.localCalls.some(call=>call.route==='assistant')"), 2000);
   const started = await page.evaluate("window.localCalls.find(call=>call.route==='assistant')");
   assert.equal(started.body.agent, "claude");
-  assert.equal(started.body.connection, "paper");
   assert.equal(started.body.chat_token, "secret-token");
-  // The link crosses loopback exactly once, to register the connection.
-  // Everything afterwards refers to the document by name.
-  const registration = await page.evaluate("window.localCalls.find(call=>call.route==='connections')");
-  assert.match(registration.body.link, /#k=commenter/);
-  assert.equal(registration.body.access, "commenter");
+  assert.equal(started.body.connection, undefined, "the assistant call carries no separate connection name");
+  // The link crosses loopback exactly once, in the assistant call itself.
+  // Everything afterwards refers to the document by conversation and link.
+  assert.match(started.body.link, /#k=commenter/);
+  // There is no separate route to register a connection; the sidebar never
+  // calls one.
+  assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='connections')"), false);
   // The work happens in the chat, so starting goes there rather than leaving
   // the reader on a settings pane with nothing more to say.
   assert.equal(await page.evaluate(`document.querySelector("#agent-pane-chat").hidden`), false);
@@ -403,15 +405,15 @@ try {
   const rendered = await page.evaluate("window.sockets[1].sent.find(frame=>frame.context?.render_digest==='rendered-tree')");
   assert.equal(rendered.context.selection.exact,"Rendered passage");
   assert.equal(rendered.context.revision,undefined);
-  await page.evaluate("window.sockets[1].emit({type:'task',task_id:'partial',status:'cancelled',context:{results:{suggestions:['kept'],effects:{confirmed:[{kind:'application'}],counts:{refused:120,unresolved:3},refused:[],unresolved:[]}}}})");
+  await page.evaluate("window.sockets[1].emit({type:'task',task_id:'partial',status:'cancelled',context:{results:{suggestions:['kept'],confirmed:[{kind:'application'}],refused:120,unresolved:3}}})");
   await until("partial effects visible",()=>page.evaluate("document.querySelector('[role=log]').textContent.includes('Source changes applied.') && document.querySelector('[role=log]').textContent.includes('120 document operations were refused')"),1000);
   await page.evaluate("window.sockets[1].emit({type:'capabilities',session_id:'replacement-session',capabilities:{cancel:true}})");
   await until("session boundary visible",()=>page.evaluate("document.querySelector('[role=log]').textContent.includes('does not remember earlier messages')"),1000);
 
-  // Every role registers a real bounded link, and reuses existing share
-  // links. The connection is what carries the access, so getting the key
-  // right here is what actually bounds the agent.
-  const linkFor = (role) => page.evaluate(`window.localCalls.filter(call=>call.route==='connections').at(-1).body.link.includes('#k=${role}')`);
+  // Every role starts with a real bounded link, and reuses existing share
+  // links. The link itself carries the access, so getting the key right in
+  // the `assistant` call body is what actually bounds the agent.
+  const linkFor = (role) => page.evaluate(`window.localCalls.filter(call=>call.route==='assistant').at(-1).body.link.includes('#k=${role}')`);
   const connectAs = async (role) => {
     await page.evaluate('document.querySelector("#agent-tab-connection").click()');
     // Starting the combination already running is correctly refused, so stop
@@ -426,7 +428,7 @@ try {
     await until(role + " chosen", () => page.evaluate(`Boolean(document.querySelector('.access-detail[data-access=${role}] button'))`), 1000);
     await page.evaluate("window.localCalls=[]");
     await page.evaluate(`document.querySelector('.access-detail[data-access=${role}] button').click()`);
-    await until(role + " registered", () => page.evaluate("window.localCalls.some(call=>call.route==='connections')"), 2000);
+    await until(role + " started", () => page.evaluate("window.localCalls.some(call=>call.route==='assistant')"), 2000);
   };
   // No read-only level is offered: the document's MCP surface admits a
   // commenter at minimum, so an assistant on a read link gets no tools at all.
@@ -567,7 +569,7 @@ try {
   await page.evaluate("window.conversationCreatesBeforePending=window.calls.filter(call=>call.suffix==='').length");
   await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(".agent-actions button").click()');
   await until("conversation changed while status was pending", () => page.evaluate("window.calls.filter(call=>call.suffix==='').length === window.conversationCreatesBeforePending+1"), 3000);
-  await page.evaluate("window.delayedAssistantStatuses[0].resolve(Response.json({running:true,connection:'paper',agent:'pi',access:'editor',status:{nonce:'old',config_hash:'old',state:'ready'}}))");
+  await page.evaluate("window.delayedAssistantStatuses[0].resolve(Response.json({running:true,state:'ready'}))");
   await new Promise(resolve=>setTimeout(resolve,50));
   assert.notEqual(await page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value`), "pi",
     "an older runner status cannot replace the configuration of a newer conversation");
