@@ -1,0 +1,14 @@
+\section{An undefined control sequence, and a line too long}
+
+The command on the next line does not exist in any format, so \TeX{} stops
+on it and reports the line: this is the case the parser has to place in the
+chapter rather than in the main file.
+
+\thiscommanddoesnotexist
+
+And the paragraph below is set in a box far narrower than its one unbreakable
+word, so \TeX{} reports an overfull hbox rather than a hyphenation.
+
+\noindent\hbox to 2cm{Supercalifragilisticexpialidociousandthensome}
+
+\noindent Nothing after this line is wrong.

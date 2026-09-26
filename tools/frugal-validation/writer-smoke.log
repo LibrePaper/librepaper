@@ -1,0 +1,7 @@
+
+running 1 test
+writer_socket_bench version=dev base=ws://127.0.0.1:37107
+{"documents":2,"rounds":4,"target_updates_per_second":2,"database_stall_seconds":0,"updates":8,"elapsed_ms":2001.550351,"tail_drain_ms":5200.639774,"updates_per_second":3.9969016997264633,"p50_ms":4.812893000000001,"p95_ms":28.431344,"p99_ms":28.431344,"max_ms":28.431344,"scheduled_p95_ms":28.929881,"scheduled_p99_ms":28.929881,"scheduled_max_ms":28.929881,"select_one_delta":8,"durable_observed_p95_ms":5612.120996,"durable_observed_max_ms":5612.120996,"max_pending_retained_bytes":33604,"max_pending_scratch_bytes":116783,"pending_retained_limit_bytes":67108864,"pending_scratch_limit_bytes":67108864,"refused_retained":0,"refused_scratch":0,"refused_updates":0,"recovered_updates":0,"baseline_rss_bytes":19283968,"max_rss_bytes":21065728,"update_payload_bytes":4096,"durable_documents":2,"rep":1}
+test writer_socket_end_to_end_benchmark ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.41s

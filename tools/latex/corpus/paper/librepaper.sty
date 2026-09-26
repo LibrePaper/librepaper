@@ -1,0 +1,14 @@
+% A package of the author's own, in the document's own directory.
+%
+% It exists so that a compile fails outright unless the worker wrote every
+% path of the tree into the engine's filesystem: no TeX Live has a
+% `librepaper.sty`, so a distribution that only ever sees the main file cannot
+% fetch its way out of this one.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{librepaper}[2026/01/01 v1.0 the corpus's own package]
+
+% A heading style, so the package does something visible.
+\newcommand{\librepapernote}[1]{%
+  \par\noindent\textbf{Note.}\ \emph{#1}\par}
+
+\endinput

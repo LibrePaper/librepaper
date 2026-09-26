@@ -1,0 +1,268 @@
+<script>
+  // The icons the shell uses, from Lucide, drawn as shapes rather than fetched
+  // as a font or a sprite: a few small paths cost less than either, and an
+  // icon that is part of the bundle cannot arrive after the button it belongs
+  // to. See styles/lucide-LICENSE.txt.
+  //
+  // The geometry is Lucide's own, rounded corners included. Redrawing a
+  // rounded rectangle as a square-cornered path is what made these look like
+  // icons from two different sets.
+  const ICONS = {
+    home: [
+      ["path", "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"],
+      ["path", "M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
+    ],
+    eye: [["path", "M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"], ["circle", { cx: 12, cy: 12, r: 3 }]],
+    bot: [["path", "M12 8V4H8"], ["rect", { width: 16, height: 12, x: 4, y: 8, rx: 2 }], ["path", "M2 14h2"], ["path", "M20 14h2"], ["path", "M15 13v2"], ["path", "M9 13v2"]],
+    "chevrons-up": [["path", "m17 11-5-5-5 5"], ["path", "m17 18-5-5-5 5"]],
+    "chevrons-down": [["path", "m7 6 5 5 5-5"], ["path", "m7 13 5 5 5-5"]],
+    copy: [["rect", { width: 14, height: 14, x: 8, y: 8, rx: 2, ry: 2 }], ["path", "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"]],
+    // Lucide git-fork, for making a project of your own from somebody else's.
+    // A copy icon said the wrong thing: the new project is a branch off this
+    // one, not a second window onto it.
+    "git-fork": [
+      ["circle", { cx: 12, cy: 18, r: 3 }],
+      ["circle", { cx: 6, cy: 6, r: 3 }],
+      ["circle", { cx: 18, cy: 6, r: 3 }],
+      ["path", "M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"],
+      ["path", "M12 12v3"],
+    ],
+    github: [
+      ["path", "M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"],
+      ["path", "M9 18c-4.51 2-5-2-7-2"],
+    ],
+    "folder-input": [["path", "M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1"], ["path", "M2 13h10"], ["path", "m9 16 3-3-3-3"]],
+
+    "triangle-alert": [
+      ["path", "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"],
+      ["path", "M12 9v4"],
+      ["path", "M12 17h.01"],
+    ],
+    "chevron-down": [["path", "m6 9 6 6 6-6"]],
+    "chevron-up": [["path", "m18 15-6-6-6 6"]],
+    // Lucide's diff, for "compare since this label" in the timeline.
+    diff: [["path", "M12 3v14"], ["path", "M5 10h14"], ["path", "M5 21h14"]],
+    "chevron-right": [["path", "m9 6 6 6-6 6"]],
+    "chevron-left": [["path", "m15 18-6-6 6-6"]],
+    // Lucide's chevrons-left and -right, for stepping the history calendar a
+    // whole year at a time beside the single chevrons that step a month.
+    "chevrons-left": [["path", "m11 17-5-5 5-5"], ["path", "m18 17-5-5 5-5"]],
+    "chevrons-right": [["path", "m6 17 5-5-5-5"], ["path", "m13 17 5-5-5-5"]],
+    x: [["path", "M18 6 6 18"], ["path", "m6 6 12 12"]],
+    "folder-plus": [["path", "M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2"], ["path", "M12 10v6"], ["path", "M9 13h6"]],
+    book: [["path", "M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"]],
+    "panel-left": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M9 3v18"]],
+    "panel-right": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M15 3v18"]],
+    "columns-2": [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }], ["path", "M12 3v18"]],
+    // Lucide's panel-left-open, for the column at the left of the window. Not
+    // panel-left, which is the "source only" arrangement's and would say the
+    // wrong thing beside it.
+    "panel-left-open": [
+      ["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }],
+      ["path", "M9 3v18"],
+      ["path", "m14 9 3 3-3 3"],
+    ],
+    // Lucide's folder, image and download, for the files panel: the panel
+    // itself, a figure to add to it, and the directory as a zip.
+    folder: [
+      ["path", "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"],
+    ],
+    image: [
+      ["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2, ry: 2 }],
+      ["circle", { cx: 9, cy: 9, r: 2 }],
+      ["path", "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"],
+    ],
+    download: [
+      ["path", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"],
+      ["path", "m7 10 5 5 5-5"],
+      ["path", "M12 15V3"],
+    ],
+    "message-square": [["path", "M22 17a2 2 0 0 1-2 2H6l-4 4V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"]],
+    "file-text": [
+      ["path", "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"],
+      ["path", "M14 2v4a2 2 0 0 0 2 2h4"],
+      ["path", "M10 9H8"],
+      ["path", "M16 13H8"],
+      ["path", "M16 17H8"],
+    ],
+    // Lucide's bookmark, for the versions somebody marked to find again. It
+    // is drawn filled where the mark is set and hollow where it is not, which
+    // is the whole of the state it has to show.
+    bookmark: [["path", "m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"]],
+    // Lucide's pencil, for renaming a file in the directory.
+    pencil: [
+      ["path", "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"],
+      ["path", "m15 5 4 4"],
+    ],
+    // Lucide's file-plus, for adding one.
+    "file-plus": [
+      ["path", "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"],
+      ["path", "M14 2v4a2 2 0 0 0 2 2h4"],
+      ["path", "M9 15h6"],
+      ["path", "M12 18v-6"],
+    ],
+    lock: [["rect", { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ["path", "M7 11V7a5 5 0 0 1 10 0v4"]],
+    unlock: [["rect", { width: 18, height: 11, x: 3, y: 11, rx: 2, ry: 2 }], ["path", "M7 11V7a5 5 0 0 1 9.9-1"]],
+    help: [
+      ["circle", { cx: 12, cy: 12, r: 10 }],
+      ["path", "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"],
+      ["path", "M12 17h.01"],
+    ],
+    save: [
+      ["path", "M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"],
+      ["path", "M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"],
+      ["path", "M7 3v4a1 1 0 0 0 1 1h7"],
+    ],
+    link: [
+      ["path", "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"],
+      ["path", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"],
+    ],
+    check: [["path", "M20 6 9 17l-5-5"]],
+    // Lucide keyboard, for the shortcut help the bar offers.
+    keyboard: [
+      ["path", "M10 8h.01"], ["path", "M12 12h.01"], ["path", "M14 8h.01"], ["path", "M16 12h.01"],
+      ["path", "M18 8h.01"], ["path", "M6 8h.01"], ["path", "M7 16h10"], ["path", "M8 12h.01"],
+      ["rect", { width: 20, height: 16, x: 2, y: 4, rx: 2 }],
+    ],
+    // Lucide's refresh-cw, for minting a share link's key again. The two arrows
+    // chasing each other say "same link, new key", which is what a rotation
+    // is; an undo arrow would say the opposite.
+    "refresh-cw": [
+      ["path", "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"],
+      ["path", "M21 3v5h-5"],
+      ["path", "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"],
+      ["path", "M8 16H3v5"],
+    ],
+    reply: [["path", "M7 17 2 12l5-5"], ["path", "M2 12h12a8 8 0 0 1 8 8"]],
+    // Lucide's history, for the timeline.
+    history: [
+      ["path", "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"],
+      ["path", "M3 3v5h5"],
+      ["path", "M12 7v5l4 2"],
+    ],
+    comment: [
+      ["path", "M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"],
+      ["path", "M7 11h10"],
+      ["path", "M7 15h6"],
+      ["path", "M7 7h8"],
+    ],
+    highlight: [
+      ["path", "m9 11-6 6v3h9l3-3"],
+      ["path", "m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"],
+    ],
+    box: [
+      ["path", "M5 3a2 2 0 0 0-2 2"], ["path", "M19 3a2 2 0 0 1 2 2"], ["path", "M5 21a2 2 0 0 1-2-2"],
+      ["path", "M9 3h1"], ["path", "M9 21h2"], ["path", "M14 3h1"],
+      ["path", "M3 9v1"], ["path", "M21 9v2"], ["path", "M3 14v1"],
+      ["path", "m21 15-3 3-2-2-3 3v-8z"],
+    ],
+    star: [["path", "M11.5 2.5a.6.6 0 0 1 1 0l2.5 5.1 5.6.8a.6.6 0 0 1 .3 1l-4 4 1 5.6a.6.6 0 0 1-.9.6L12 17l-5 2.6a.6.6 0 0 1-.9-.6l1-5.6-4-4a.6.6 0 0 1 .3-1l5.6-.8z"]],
+    upload: [
+      ["path", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"],
+      ["path", "m17 8-5-5-5 5"],
+      ["path", "M12 3v12"],
+    ],
+    search: [["circle", { cx: 11, cy: 11, r: 8 }], ["path", "m21 21-4.3-4.3"]],
+    // Lucide's list icon, from https://github.com/lucide-icons/lucide/blob/main/icons/list.svg.
+    list: [
+      ["path", "M3 12h.01"], ["path", "M3 18h.01"], ["path", "M3 6h.01"],
+      ["path", "M8 12h13"], ["path", "M8 18h13"], ["path", "M8 6h13"],
+    ],
+    // Lucide's sliders-horizontal, for the settings panel: preferences are
+    // things set along a line, not a machine to open up.
+    sliders: [
+      ["path", "M21 4h-7"], ["path", "M10 4H3"],
+      ["path", "M21 12h-9"], ["path", "M8 12H3"],
+      ["path", "M21 20h-5"], ["path", "M12 20H3"],
+      ["path", "M14 2v4"], ["path", "M8 10v4"], ["path", "M16 18v4"],
+    ],
+    // Sharing is about people rather than about a URL, so the control that
+    // opens the dialog wears people; copying the link is a `link` inside it.
+    users: [
+      ["path", "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"],
+      ["circle", { cx: 9, cy: 7, r: 4 }],
+      ["path", "M22 21v-2a4 4 0 0 0-3-3.87"],
+      ["path", "M16 3.13a4 4 0 0 1 0 7.75"],
+    ],
+    trash: [
+      ["path", "M3 6h18"],
+      ["path", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"],
+      ["path", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"],
+    ],
+    // Lucide's undo-2, for putting a project back out of the trash. An arrow
+    // that turns back on itself says "undo the deletion"; a folder or a
+    // circular arrow would say "move" or "reload" instead.
+    "undo-2": [
+      ["path", "M9 14 4 9l5-5"],
+      ["path", "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"],
+    ],
+    // The PDF controls, which used to be a set of their own inside the frame.
+    // They sit in the preview header now, so they are drawn from here like
+    // every other control in the application rather than from four SVG files
+    // masked into a shadow root. Lucide's zoom-in, zoom-out, hand and
+    // text-cursor, with their `line` elements written as paths: rect, circle
+    // and path are the only shapes this component draws.
+    "zoom-in": [
+      ["circle", { cx: 11, cy: 11, r: 8 }],
+      ["path", "m21 21-4.35-4.35"],
+      ["path", "M11 8v6"],
+      ["path", "M8 11h6"],
+    ],
+    "zoom-out": [
+      ["circle", { cx: 11, cy: 11, r: 8 }],
+      ["path", "m21 21-4.35-4.35"],
+      ["path", "M8 11h6"],
+    ],
+    hand: [
+      ["path", "M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"],
+      ["path", "M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"],
+      ["path", "M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"],
+      ["path", "M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"],
+    ],
+    "text-cursor": [
+      ["path", "M17 22h-1a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4h1"],
+      ["path", "M7 22h1a4 4 0 0 0 4-4"],
+      ["path", "M7 2h1a4 4 0 0 1 4 4"],
+    ],
+  };
+
+  // Skeleton's button sizes the icon inside it, so the default here is only
+  // for an icon that stands on its own.
+  //
+  // A few of these say whether something is on -- a star is either a favourite
+  // or it is not -- and an outline that only changes colour reads as a click
+  // that did not register. Those are drawn solid instead.
+  let { name, size = null, filled = false } = $props();
+</script>
+
+<svg
+  viewBox="0 0 24 24"
+  width={size}
+  height={size}
+  fill={filled ? "currentColor" : "none"}
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  aria-hidden="true"
+>
+  {#each ICONS[name] ?? [] as [shape, geometry]}
+    {#if shape === "rect"}
+      <rect {...geometry} />
+    {:else if shape === "circle"}
+      <circle {...geometry} />
+    {:else}
+      <path d={geometry} />
+    {/if}
+  {/each}
+</svg>
+
+<style>
+  /* An inline SVG sits on the text baseline, which leaves a few pixels of
+     descender space under it and pushes it off centre in a button that is
+     otherwise square. */
+  svg {
+    display: block;
+    flex: none;
+  }
+</style>

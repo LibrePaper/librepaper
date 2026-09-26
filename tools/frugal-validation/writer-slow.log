@@ -1,0 +1,8 @@
+
+running 1 test
+writer_socket_bench version=dev base=ws://127.0.0.1:42327
+test writer_socket_end_to_end_benchmark has been running for over 60 seconds
+{"documents":1000,"rounds":120,"target_updates_per_second":2,"database_stall_seconds":45,"updates":120000,"elapsed_ms":122504.36167099999,"tail_drain_ms":6675.117966,"updates_per_second":979.5569591413753,"p50_ms":97.116062,"p95_ms":282.424864,"p99_ms":6322.211462,"max_ms":38420.523713,"scheduled_p95_ms":62010.69393,"scheduled_p99_ms":63521.492068,"scheduled_max_ms":63818.353211,"select_one_delta":140853,"durable_observed_p95_ms":6538.594486,"durable_observed_max_ms":6676.252518,"max_pending_retained_bytes":67108278,"max_pending_scratch_bytes":4942567,"pending_retained_limit_bytes":67108864,"pending_scratch_limit_bytes":67108864,"refused_retained":20853,"refused_scratch":0,"refused_updates":20853,"recovered_updates":3482,"baseline_rss_bytes":648749056,"max_rss_bytes":1885720576,"update_payload_bytes":4096,"durable_documents":1000,"rep":1}
+test writer_socket_end_to_end_benchmark ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 131.90s

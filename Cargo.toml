@@ -1,0 +1,51 @@
+# LibrePaper's workspace contains the application crate. Renderer implementations
+# and the shared text algorithms live in the sibling wasm-* repositories and are
+# consumed here through their pinned releases.
+#
+# The renderers themselves, and the word diff both sides share, live in
+# LibrePaper/wasm-* and are pinned by tag. See wasm-modules.lock for the
+# browser modules, which are fetched rather than built.
+[workspace]
+resolver = "2"
+members = ["crates/librepaper", "crates/librepaper-document-core"]
+# The fuzz targets need libFuzzer and a nightly compiler, so they build on
+# their own: `make fuzz`, or `cargo fuzz --fuzz-dir tools/fuzz run <target>`.
+exclude = ["tools/fuzz", "tools/measure"]
+
+# Release packaging is managed by cargo-dist. Only the application package is
+# published as a downloadable binary; the document-core crate remains an
+# internal workspace dependency.
+[workspace.metadata.dist]
+cargo-dist-version = "0.33.0"
+ci = ["github"]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+installers = ["shell", "powershell"]
+install-updater = true
+github-build-setup = "../dist-build-setup.yml"
+install-success-msg = "LibrePaper Companion is installed. In a new terminal, run: librepaper local settings. Then return to your browser."
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 4
+
+# cargo-dist builds and packages release artifacts with this profile.
+[profile.dist]
+inherits = "release"
+
+# The edit-test loop rebuilds one very large test binary, and full debuginfo
+# is the bulk of what it writes and links. Line tables keep backtraces
+# pointing at file and line -- which is all a failing assertion needs -- and
+# leave out the variable and type descriptions only a debugger reads.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"

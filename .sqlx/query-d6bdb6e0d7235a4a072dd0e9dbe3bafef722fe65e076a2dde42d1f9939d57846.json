@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id,document_id,storage_key,digest,byte_length,media_type,original_name,\n                    created_at\n             FROM document_assets WHERE document_id=$1 AND digest=ANY($2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "document_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "storage_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "digest",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "byte_length",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "media_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "original_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "ByteaArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "d6bdb6e0d7235a4a072dd0e9dbe3bafef722fe65e076a2dde42d1f9939d57846"
+}

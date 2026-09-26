@@ -1,0 +1,16 @@
+  learn-librepaper-with-markdown-stujjmxwur Learn LibrePaper with Markdown
+                               written in 37 steps and 14 labels over 7257 minutes, from 2026-09-18
+  learn-librepaper-with-typst-8ft3tbtada Learn LibrePaper with Typst
+                               written in 40 steps and 19 labels over 8621 minutes, from 2026-09-17
+  learn-librepaper-with-html-89xt4yy5js Learn LibrePaper with HTML
+                               written in 32 steps and 18 labels over 8036 minutes, from 2026-09-17
+  learn-librepaper-with-latex-22pnt9rakw Learn LibrePaper with LaTeX
+                               written in 41 steps and 15 labels over 8626 minutes, from 2026-09-17
+  learn-librepaper-with-quarto-vda6mhwid5 Learn LibrePaper with Quarto
+                               written in 36 steps and 16 labels over 8438 minutes, from 2026-09-17
+created verified backup /tmp/librepaper-frugal-recovery.HID6zi/backup
+{"event":"backup_sizes","database_dump_bytes":81323,"manifest_bytes":1519,"compressed_plaintext_bytes":49187,"encrypted_bytes":49387}
+encrypted recovery point decrypted and verified: 5 referenced objects
+restored verified backup frugal-recovery-drill
+restore verification passed: database history signatures and all object bytes match
+preserved synthetic fixture at /tmp/librepaper-frugal-recovery.HID6zi (source-data=/tmp/librepaper-frugal-recovery.HID6zi/source-data, restored-data=/tmp/librepaper-frugal-recovery.HID6zi/restored-data)

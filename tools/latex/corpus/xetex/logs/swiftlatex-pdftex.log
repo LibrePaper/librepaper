@@ -1,0 +1,24 @@
+This is pdfTeX, Version 3.14159265-2.6-1.40.21 (SwiftLaTeX PDFTeX 0.3.0) (preloaded format=swiftlatexpdftex)
+entering extended mode
+(main.tex
+LaTeX2e <2020-02-02> patch level 2
+L3 programming layer <2020-02-14> (/tex/b20a30ef79872ed1adb42bb47bf86332
+Document Class: article 2019/12/20 v1.4l Standard LaTeX document class
+(/tex/d3fa3ed15375c8f01c53581e1d26134e)) (/tex/ef26107b179df0be5a0ca01f3e4be487
+ (/tex/4f7e05b80964048c825a4dd3f74557f4 (/tex/9fdf92101fe3fc44c6b008dc097d5df6
+(/tex/2d8863a9c3d4424a5d0f562cbf79f8d1)))
+
+! Fatal Package fontspec Error: The fontspec package requires either XeTeX or
+(fontspec)                      LuaTeX.
+(fontspec)                      
+(fontspec)                      You must change your typesetting engine to,
+(fontspec)                      e.g., "xelatex" or "lualatex"instead of
+(fontspec)                      "latex" or "pdflatex".
+
+Type <return> to continue.
+ ...                                              
+                                                  
+l.45 \msg_fatal:nn {fontspec} {cannot-use-pdftex}
+                                                 
+!  ==> Fatal error occurred, no output PDF file produced!
+Transcript written on main.log.

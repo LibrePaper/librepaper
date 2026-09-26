@@ -1,0 +1,126 @@
+@import "@radix-ui/colors/sage.css";
+@import "@radix-ui/colors/green.css";
+@import "@radix-ui/colors/amber.css";
+@import "@radix-ui/colors/red.css";
+
+/* The LibrePaper theme. Radix supplies the neutral and status scales; this
+   file assigns those steps to the roles used by the application. */
+[data-theme="librepaper"] {
+	color-scheme: light;
+
+	/* Brand */
+	--color-brand: #2b5748;
+	--color-brand-hover: #24483c;
+	--color-brand-pressed: #1c3930;
+	--color-on-brand: #ffffff;
+
+	/* Workspace surfaces */
+	--color-shell: var(--sage-1);
+	--color-sidebar: var(--sage-2);
+	--color-preview: var(--sage-3);
+	--color-document: #ffffff;
+	--color-raised: #ffffff;
+	--color-subtle: var(--sage-3);
+
+	/* Separators, borders, and row states */
+	--color-divider: var(--sage-6);
+	--color-pane-edge: var(--sage-8);
+	--color-border: var(--sage-7);
+	--color-border-strong: var(--sage-8);
+	--color-row-hover: var(--sage-4);
+	--color-row-selected: var(--sage-5);
+
+	/* Text and interaction */
+	--color-text: var(--sage-12);
+	--color-text-secondary: var(--sage-11);
+	--color-text-muted: var(--sage-11);
+	--color-text-inverse: #ffffff;
+	--color-line-number: var(--sage-11);
+	--color-link: var(--color-brand);
+	--color-focus: var(--color-brand);
+	--color-disabled-bg: var(--sage-3);
+	--color-disabled-text: var(--sage-9);
+
+	/* Avatar fills keep white initials readable at normal text size. */
+	--color-avatar-1: var(--color-brand);
+	--color-avatar-2: var(--sage-11);
+	--color-avatar-3: var(--green-11);
+	--color-avatar-4: var(--green-12);
+	--color-avatar-5: var(--amber-12);
+	--color-avatar-6: var(--red-11);
+
+	/* Status colors: steps 3, 7, 11, and 9 respectively. Amber uses its
+	   darkest text step on the solid control for readable contrast. */
+	--color-success-bg: var(--green-3);
+	--color-success-border: var(--green-7);
+	--color-success-text: var(--green-12);
+	--color-success-solid: var(--green-11);
+	--color-success-on-solid: #ffffff;
+
+	--color-warning-bg: var(--amber-3);
+	--color-warning-border: var(--amber-7);
+	--color-warning-text: var(--amber-12);
+	--color-warning-solid: var(--amber-9);
+	--color-warning-on-solid: var(--amber-12);
+
+	--color-error-bg: var(--red-3);
+	--color-error-border: var(--red-7);
+	--color-error-text: var(--red-11);
+	--color-error-solid: var(--red-11);
+	--color-error-on-solid: #ffffff;
+
+	/* Narrow compatibility values for Skeleton base and form styles. */
+	--color-primary-500: var(--color-brand);
+	--color-primary-600: var(--color-brand-hover);
+	--color-primary-700: var(--color-brand-pressed);
+	--color-brand-light: var(--color-brand);
+	--color-brand-dark: var(--color-brand);
+	--color-surface-50: var(--color-shell);
+	--color-surface-100: var(--color-sidebar);
+	--color-surface-200: var(--color-divider);
+	--color-surface-200-800: var(--color-divider);
+	--color-surface-300: var(--color-border);
+	--color-surface-300-700: var(--color-border);
+	--color-surface-50-950: var(--color-shell);
+	--color-surface-600: var(--color-text-secondary);
+	--color-surface-700: var(--color-text);
+	--color-surface-700-300: var(--color-text);
+	--color-surface-950-50: var(--color-text);
+	--color-root-bg-light: var(--color-shell);
+	--color-root-bg-dark: var(--color-shell);
+	--typo-base--color-light: var(--color-text);
+	--typo-base--color-dark: var(--color-text);
+
+	/* Interface and source typography. A framed document keeps its own type. */
+	--typo-base--font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+	--typo-heading--font-family: var(--typo-base--font-family);
+	--typo-heading--font-weight: 650;
+	--typo-anchor--color-light: var(--color-link);
+	--typo-anchor--text-decoration-line: none;
+	--typo-anchor--hover--text-decoration-line: underline;
+	--panel-font-size: var(--text-sm);
+	--panel-line-height: 1.5;
+	--panel-title-size: var(--text-base);
+	--panel-title-weight: 600;
+	--panel-meta-size: var(--text-xs);
+	--panel-padding: calc(var(--spacing) * 4);
+	--panel-section-gap: calc(var(--spacing) * 6);
+	--panel-muted: var(--color-text-muted);
+	--font-editor: "JetBrains Mono", "IBM Plex Mono", "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+	/* Workspace bar, spacing, and corners */
+	--librepaper-bar: 3.5rem;
+	--spacing: 0.25rem;
+	--radius-base: 0.375rem;
+	--radius-container: 0.5rem;
+	--text-scaling: 1;
+}
+
+/* Skeleton declares its edge widths as `var(--default-ring-width, 1px)` on
+   the same property, which forms a cycle. Declare the widths directly so
+   text fields render their inset ring. */
+:root, :host {
+  --default-border-width: 1px;
+  --default-ring-width: 1px;
+  --default-outline-width: 1px;
+}

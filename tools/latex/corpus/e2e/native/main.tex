@@ -1,0 +1,11 @@
+\documentclass{article}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\begin{document}
+A plot the mirror cannot draw: Über.
+\begin{tikzpicture}
+\begin{axis}
+\addplot coordinates {(0,0) (1,1) (2,4)};
+\end{axis}
+\end{tikzpicture}
+\end{document}

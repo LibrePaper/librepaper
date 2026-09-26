@@ -1,0 +1,1462 @@
+// The local LibrePaper app, as a browser client.
+//
+// The browser can discover a reachable local service; it cannot enumerate
+// installed applications or prove one is absent (SPEC "What detection
+// means"). So this file never tries harder than one bounded probe of one
+// documented endpoint, remembers the outcome for a while, and lets the
+// controller decide what to try next -- this module answers "is local
+// available" and "run this job on it", nothing about routing or fallback
+// order (that is `route.js`, package B2).
+//
+// State that must survive a reload lives in `localStorage`, plain and
+// unencrypted, because the token it stores is scoped to loopback and to one
+// project/origin pair (see SPEC "Connection boundary") -- it is not a secret
+// worth more protection than that, and pretending otherwise would not change
+// what a script running on this origin can already do.
+//
+// Every dependency this file needs from the ambient browser -- fetch,
+// storage, wall clock, the wait between polls -- is reached through `deps`
+// rather than the global directly, so `web/tests/integration/latex-local.mjs` can run
+// this exact code under Node with no browser at all. `_testing.inject`
+// overrides them; `_testing.reset` restores the defaults and clears every
+// module-level variable so checks do not leak into each other.
+
+import { bytesOf, toArrayBuffer } from "../bytes.js";
+import { named } from "../latex/errors.js";
+
+export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
+export const QUARTO_JOB_KINDS = Object.freeze(["render", "refresh", "frozen"]);
+
+// Every route lives under this one path, on the companion's own address.
+const LOCAL_BASE = "librepaper/local/";
+
+const ADDRESS_KEY = "librepaper-local-address";
+const PAIRINGS_KEY = "librepaper-local-pairings";
+const BINDINGS_KEY = "librepaper-local-quarto-bindings";
+const PENDING_KEY = "librepaper-local-pending";
+const PENDING_TTL_MS = 10 * 60 * 1000;
+
+// Module-level advertised address from the server: not persisted, not leaked.
+let advertisedAddress = null;
+
+const NEGATIVE_MIN_MS = 60 * 1000;
+const NEGATIVE_MAX_MS = 10 * 60 * 1000;
+const HEALTH_TIMEOUT_MS = 2000;
+const POLL_FAST_MS = 500;
+const POLL_SLOW_MS = 1000;
+const POLL_SLOW_AFTER_MS = 10 * 1000;
+const RECONNECT_INTERVAL_MS = 15 * 1000;
+
+function realWait(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+  });
+}
+
+function defaultDeps() {
+  return {
+    fetch: (...args) => globalThis.fetch(...args),
+    storage: typeof localStorage !== "undefined" ? localStorage : null,
+    now: () => Date.now(),
+    wait: realWait,
+    location: () => (typeof location !== "undefined" ? location : null),
+    replaceHash(hash) {
+      if (typeof history === "undefined" || typeof location === "undefined") return;
+      const url = new URL(location.href);
+      url.hash = hash;
+      history.replaceState(null, "", url.href);
+    },
+    openPopup: (url, name, features) => (typeof window !== "undefined" ? window.open(url, name, features) : null),
+    launchLink(url) {
+      if (typeof window === "undefined" || !window.document?.body) {
+        throw named("Unreachable", "Open LibrePaper in a browser to launch the companion.");
+      }
+      const frame = window.document.createElement("iframe");
+      frame.hidden = true;
+      frame.src = url;
+      window.document.body.appendChild(frame);
+      const timer = setTimeout(() => frame.remove(), 3000);
+      timer.unref?.();
+    },
+  };
+}
+
+let deps = defaultDeps();
+
+export const _testing = {
+  inject(overrides) { Object.assign(deps, overrides); },
+  reset() {
+    deps = defaultDeps();
+    negative = null;
+    current = { project: null, origin: "", active: true };
+    lastInstance = null;
+    addressSpaceSupported = true;
+    listeners.clear();
+    subscriberCount = 0;
+    engaged = false;
+    currentStatus = initialStatus();
+    connectionAttempt = null;
+    advertisedAddress = null;
+    cancelAutoReconnect();
+  },
+  intakeFragment,
+};
+
+// -------------------------------------------------------------- storage
+
+function store() {
+  return deps.storage || null;
+}
+
+function readRaw(key) {
+  const s = store();
+  if (!s) return null;
+  // Only a string is a stored value: a storage shim that answers with a
+  // promise or an object would otherwise be read as an address.
+  try {
+    const value = s.getItem(key);
+    return typeof value === "string" ? value : null;
+  } catch { return null; }
+}
+
+function writeRaw(key, value) {
+  const s = store();
+  if (!s) return;
+  try { s.setItem(key, value); } catch { /* quota or a disabled store; not fatal */ }
+}
+
+function removeRaw(key) {
+  const s = store();
+  if (!s) return;
+  try { s.removeItem(key); } catch { /* a disabled store; not fatal */ }
+}
+
+function readJSON(key, fallback) {
+  const raw = readRaw(key);
+  if (!raw) return fallback;
+  try { return JSON.parse(raw); } catch { return fallback; }
+}
+
+function writeJSON(key, value) {
+  writeRaw(key, JSON.stringify(value));
+}
+
+// A stored address is used only when it is one: an http(s) URL with a host,
+// ending in a slash so paths append to it. Anything else -- including the
+// "[object Promise]" an earlier Settings panel once saved after rendering an
+// async facade into its field -- is ignored, and the default stands.
+function validAddress(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (!/^https?:$/.test(url.protocol) || !url.host) return null;
+    return url.pathname.endsWith("/") ? url.href : `${url.href}/`;
+  } catch {
+    return null;
+  }
+}
+
+function randomUrlToken(bytes = 18) {
+  const values = new Uint8Array(bytes);
+  crypto.getRandomValues(values);
+  return btoa(String.fromCharCode(...values)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+async function sha256Hex(value) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function address() {
+  return validAddress(readRaw(ADDRESS_KEY)) || validAddress(advertisedAddress) || DEFAULT_ADDRESS;
+}
+
+// Shared by an explicit `setAddress` and the `storage` listener that notices
+// another tab wrote a new one through the fragment mechanism: either way,
+// a probe against the old address is stale and the status is unknown again
+// until the next one.
+function addressChanged() {
+  resetNegativeCache();
+  setStatus({ address: address(), state: "unknown", checkedAt: null, error: null, instructions: instructionsFor("unknown") });
+}
+
+export function setAddress(url) {
+  const value = validAddress(url);
+  if (value) writeRaw(ADDRESS_KEY, value);
+  else removeRaw(ADDRESS_KEY);
+  addressChanged();
+}
+
+export function setAdvertisedAddress(url) {
+  if (!url) {
+    if (advertisedAddress) {
+      advertisedAddress = null;
+      addressChanged();
+    }
+    return;
+  }
+  // Only accept if it is a loopback URL and the page itself is served from loopback.
+  const loopback = loopbackAddress(url);
+  if (!loopback) return;
+  const loc = deps.location();
+  if (!loc || !["127.0.0.1", "localhost", "[::1]"].includes(loc.hostname)) return;
+  if (loopback !== advertisedAddress) {
+    advertisedAddress = loopback;
+    addressChanged();
+  }
+}
+
+// -------------------------------------------------------------- pending connection
+//
+// The one request this page is mid-connection for, written when `connectApp`
+// starts and read back by the fragment the link handler or the consent
+// result page hands back through a top-level navigation (see
+// `intakeFragment`). It is never a secret -- the request id only tells this
+// page which of possibly several outstanding attempts an address belongs to.
+
+function writePending(request) {
+  writeJSON(PENDING_KEY, { request, expires: deps.now() + PENDING_TTL_MS });
+}
+
+function clearPending() {
+  removeRaw(PENDING_KEY);
+}
+
+function readPending() {
+  const pending = readJSON(PENDING_KEY, null);
+  if (!pending || typeof pending.request !== "string" || !pending.request) return null;
+  if (!Number.isFinite(pending.expires) || pending.expires <= deps.now()) return null;
+  return pending;
+}
+
+// A stored address is only ever written by this same-origin page (through
+// `setAddress`) or by this fragment, so the loopback shape it demands here is
+// a promise about what a legitimate companion port looks like, not a defence
+// against a malicious one -- the request id match is what stops a third
+// party's address from being accepted at all.
+function loopbackAddress(value) {
+  let parsed;
+  try { parsed = new URL(value); } catch { return null; }
+  if (parsed.protocol !== "http:") return null;
+  if (!["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname)) return null;
+  if (!parsed.port) return null;
+  if (parsed.pathname !== "/") return null;
+  if (parsed.search || parsed.hash) return null;
+  if (parsed.username || parsed.password) return null;
+  return parsed.href;
+}
+
+// Read at module init, and only then: the fragment is how the OS link
+// handler tells the page the companion's real port, since a top-level
+// navigation is the only channel back from it. The two params are stripped
+// from the hash whatever they say, so a stale or forged pair never lingers
+// in the address bar.
+function intakeFragment() {
+  const loc = deps.location();
+  const hash = String(loc?.hash || "").replace(/^#/, "");
+  if (!hash) return;
+  const params = new URLSearchParams(hash);
+  const encodedAddress = params.get("librepaper-local");
+  const requestId = params.get("librepaper-request");
+  if (encodedAddress == null && requestId == null) return;
+  params.delete("librepaper-local");
+  params.delete("librepaper-request");
+  const remaining = params.toString();
+  deps.replaceHash(remaining);
+  if (encodedAddress == null || requestId == null) return;
+  const pending = readPending();
+  if (!pending || pending.request !== requestId) return;
+  const decoded = loopbackAddress(encodedAddress);
+  if (!decoded) return;
+  writeRaw(ADDRESS_KEY, decoded);
+  clearPending();
+}
+
+// The binding every document has without anyone granting one: the local app
+// renders it in a workspace of its own, written from the files the browser
+// sends with each job. A project folder chosen in the local app settings
+// replaces it for a project that keeps data the document does not share.
+export const HOSTED_BINDING = "hosted";
+
+export function bindingId() {
+  const all = readJSON(BINDINGS_KEY, {});
+  return String(all[pairingKey()] || HOSTED_BINDING);
+}
+
+export function setBindingId(id) {
+  const all = readJSON(BINDINGS_KEY, {});
+  const value = String(id || "").trim();
+  if (value) all[pairingKey()] = value;
+  else delete all[pairingKey()];
+  writeJSON(BINDINGS_KEY, all);
+  return value;
+}
+
+/** Whether this browser should quietly re-use an existing project pairing. */
+// -------------------------------------------------------------- pairings
+
+let current = { project: null, origin: "", active: true };
+
+export function configure({ project, origin, active = true } = {}) {
+  const previous = pairingKey();
+  cancelAutoReconnect();
+  current = {
+    project: project !== undefined ? project : current.project,
+    origin: origin !== undefined ? origin : current.origin,
+    active,
+  };
+  if (previous !== pairingKey()) { lastInstance = null; negative = null; engaged = false; setStatus(initialStatus()); }
+  scheduleAutoReconnect();
+}
+
+function pairingKey() {
+  return `${current.origin}|${current.project}`;
+}
+
+export function hasPairing() { return Boolean(getPairing()?.token); }
+
+function getPairing() {
+  const all = readJSON(PAIRINGS_KEY, {});
+  return all[pairingKey()] || null;
+}
+
+function setPairing(entry) {
+  const all = readJSON(PAIRINGS_KEY, {});
+  all[pairingKey()] = entry;
+  writeJSON(PAIRINGS_KEY, all);
+}
+
+function dropPairing() {
+  const all = readJSON(PAIRINGS_KEY, {});
+  if (!(pairingKey() in all)) return;
+  delete all[pairingKey()];
+  writeJSON(PAIRINGS_KEY, all);
+}
+
+function requirePairing() {
+  const pairing = getPairing();
+  if (!pairing || !pairing.token) {
+    throw named("Unauthorized", "No local pairing for this project");
+  }
+  return pairing;
+}
+
+// -------------------------------------------------------------- status
+
+function instructionsFor(state) {
+  switch (state) {
+    case "unreachable":
+      return `No local LibrePaper at ${address()}. Start it with \`librepaper local start\`, or fix the address in Settings.`;
+    case "denied":
+      return "Your browser blocked access to the local app. Allow local network access for this site and retry.";
+    case "unauthorized":
+      return "Local LibrePaper is running but has not allowed this site yet. Click Connect and allow it in the window that opens, or enter the pairing code it printed.";
+    case "connected":
+      return "Local LibrePaper is connected.";
+    case "reachable":
+      return "Local LibrePaper responded but could not be verified yet. Retry the connection.";
+    case "incompatible":
+      return "The local LibrePaper app speaks a protocol this browser does not support. Update LibrePaper and retry.";
+    default:
+      return "";
+  }
+}
+
+function initialStatus() {
+  return {
+    state: "unknown",
+    address: address(),
+    protocol: null,
+    version: null,
+    capabilities: null,
+    checkedAt: null,
+    error: null,
+    instructions: instructionsFor("unknown"),
+  };
+}
+
+let currentStatus = initialStatus();
+const listeners = new Set();
+let lastInstance = null;
+let autoReconnectTimer = null;
+let subscriberCount = 0;
+// Whether this page session has deliberately reached for the local app.
+//
+// A loopback request is what makes a browser ask the person for local
+// network access -- "allow this site to access other apps and services" --
+// and that question is only fair once they have asked for something the
+// local app does: a local build, a Zotero lookup, the local-app settings,
+// the connect ceremony. Opening a document must not provoke it, not even a
+// document this browser already holds a pairing for. So nothing here probes
+// on its own: `probe()` and `send()` mark the session engaged, and only a
+// session that is engaged keeps its status fresh in the background.
+let engaged = false;
+
+function cancelAutoReconnect() {
+  if (autoReconnectTimer) clearTimeout(autoReconnectTimer);
+  autoReconnectTimer = null;
+}
+
+// Called by the two things that are a person asking for the local app: a
+// probe and a real request. The first one also starts the background
+// reconnect, so a companion started after this page was opened is still
+// found without another click.
+function engage() {
+  if (engaged) return;
+  engaged = true;
+  scheduleAutoReconnect();
+}
+
+function scheduleAutoReconnect() {
+  if (autoReconnectTimer || !engaged || !current.active || subscriberCount === 0 || !getPairing()) return;
+  autoReconnectTimer = setTimeout(async () => {
+    autoReconnectTimer = null;
+    if (!engaged || !current.active || subscriberCount === 0 || !getPairing()) return;
+    await probe().catch(() => {});
+    scheduleAutoReconnect();
+  }, RECONNECT_INTERVAL_MS);
+  autoReconnectTimer.unref?.();
+}
+
+export function status() {
+  return currentStatus;
+}
+
+export function subscribe(listener) {
+  listeners.add(listener);
+  subscriberCount = listeners.size;
+  listener(currentStatus);
+  scheduleAutoReconnect();
+  return () => {
+    if (!listeners.delete(listener)) return;
+    subscriberCount = Math.max(0, subscriberCount - 1);
+    if (!subscriberCount) cancelAutoReconnect();
+  };
+}
+
+function setStatus(patch) {
+  currentStatus = { ...currentStatus, ...patch };
+  for (const listener of listeners) listener(currentStatus);
+  return currentStatus;
+}
+
+// -------------------------------------------------------------- negative cache
+//
+// A failed probe (unreachable or denied) is not retried on every keystroke --
+// SPEC "Do not repeatedly probe or launch the app on every keystroke." The
+// backoff starts at a minute and doubles, capped at ten minutes, until an
+// explicit retry/connect or a successful probe clears it.
+
+let negative = null; // { until, backoffMs }
+
+function resetNegativeCache() {
+  negative = null;
+}
+
+function noteNegative(nowMs) {
+  const backoffMs = negative ? Math.min(negative.backoffMs * 2, NEGATIVE_MAX_MS) : NEGATIVE_MIN_MS;
+  negative = { until: nowMs + backoffMs, backoffMs };
+}
+
+// -------------------------------------------------------------- wire helpers
+
+let addressSpaceSupported = true;
+
+async function healthFetch(addr) {
+  const url = addr + LOCAL_BASE + "health";
+  const init = {
+    method: "GET",
+    mode: "cors",
+    credentials: "omit",
+    signal: typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(HEALTH_TIMEOUT_MS) : undefined,
+  };
+  if (addressSpaceSupported) {
+    try {
+      return await deps.fetch(url, { ...init, targetAddressSpace: "loopback" });
+    } catch (error) {
+      // Chrome's Local Network Access option is not yet universal; a
+      // `TypeError` naming the option means this browser predates it, and we
+      // fall back below rather than treat every browser as unsupported.
+      if (error instanceof TypeError && /targetAddressSpace/i.test(String(error?.message || ""))) {
+        addressSpaceSupported = false;
+      } else {
+        throw error;
+      }
+    }
+  }
+  return deps.fetch(url, init);
+}
+
+async function sha256hex(bytes) {
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Shared by `send()` and `localPreviewPage()`: a 401 drops the stored
+// pairing and is `Unauthorized`; any other non-2xx is `Refused`, carrying the
+// server's own JSON `error` message when it gave one. A caller that must
+// recognise a 404 specially (`localPreviewPage`'s "not rendered yet") checks
+// that before calling this, since a 404 would otherwise land in `Refused`.
+async function throwOnFailure(response) {
+  if (response.status === 401) {
+    dropPairing();
+    throw named("Unauthorized", "Local LibrePaper rejected the stored pairing");
+  }
+  if (!response.ok) {
+    let message = `Local LibrePaper refused the request (${response.status})`;
+    try {
+      const data = await response.clone().json();
+      if (data && typeof data.error === "string") message = data.error;
+    } catch { /* not a JSON body; keep the generic message */ }
+    throw named("Refused", message, { status: response.status });
+  }
+}
+
+/// The one place a request is sent to the bridge once paired. Classifies
+/// every failure the SPEC names: a network failure is `Unreachable`, a 401
+/// drops the pairing and is `Unauthorized`, any other non-2xx is `Refused`
+/// with the server's own message when it gave one.
+async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
+  engage();
+  const scope = pairingKey();
+  const addr = address();
+  const url = addr + LOCAL_BASE + path;
+  const headers = { Accept: "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let body;
+  if (formBody !== undefined) {
+    body = formBody;
+  } else if (jsonBody !== undefined) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(jsonBody);
+  }
+  let response;
+  try {
+    response = await deps.fetch(url, { method, mode: "cors", credentials: "omit", headers, body, signal });
+  } catch (error) {
+    if (signal?.aborted) {
+      throw named("Canceled", "Canceled");
+    }
+    throw named("Unreachable", String(error?.message || error));
+  }
+  if (scope !== pairingKey() || addr !== address()) throw named("Canceled", "The local project changed.");
+  await throwOnFailure(response);
+  return response;
+}
+
+async function bytesOfResponse(response) {
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+// -------------------------------------------------------------- probe
+
+export async function probe({ force = false } = {}) {
+  const scope = pairingKey();
+  const scopedStatus = (patch) => scope === pairingKey() ? setStatus(patch) : currentStatus;
+  const startMs = deps.now();
+  if (!force && negative && startMs < negative.until) {
+    return currentStatus;
+  }
+  engage();
+  const addr = address();
+  // Every "no usable local app yet" outcome below shares this shape -- only
+  // the message and (once the health body has been read) the reported
+  // version vary -- so it is noted in the backoff cache and reported once.
+  const markUnreachable = (error, version = null) => {
+    noteNegative(deps.now());
+    return scopedStatus({
+      state: "unreachable", address: addr, protocol: null, version, capabilities: null,
+      checkedAt: deps.now(), error, instructions: instructionsFor("unreachable"),
+    });
+  };
+  let response;
+  try {
+    response = await healthFetch(addr);
+  } catch (error) {
+    const message = String(error?.message || error);
+    const denied = /permission|blocked|private network/i.test(message);
+    const state = denied ? "denied" : "unreachable";
+    noteNegative(deps.now());
+    return scopedStatus({
+      state, address: addr, protocol: null, version: null, capabilities: null,
+      checkedAt: deps.now(), error: message, instructions: instructionsFor(state),
+    });
+  }
+  if (scope !== pairingKey() || addr !== address()) return currentStatus;
+  if (!response.ok) {
+    return markUnreachable(`health responded ${response.status}`);
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return markUnreachable("malformed health response");
+  }
+  if (scope !== pairingKey() || addr !== address()) return currentStatus;
+  if (body?.service !== "librepaper-local" || !Array.isArray(body?.protocol)) {
+    return markUnreachable("unrecognised local service", body?.version || null);
+  }
+  if (lastInstance && body.instance && lastInstance !== body.instance) {
+    setStatus({ state: "reachable", capabilities: null, instance: body.instance });
+  }
+  lastInstance = body.instance || null;
+  // Protocol 2 is the floor: it is the version that reports adapter-oriented
+  // `builders` capabilities, the only capability schema this browser reads.
+  // An older companion is reported as incompatible rather than as toolless.
+  if (!body.protocol.includes(2)) {
+    resetNegativeCache();
+    return scopedStatus({
+      state: "incompatible", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
+      checkedAt: deps.now(), error: "protocol mismatch", instructions: instructionsFor("incompatible"),
+    });
+  }
+  resetNegativeCache();
+  // Both an unpaired app and a pairing the bridge no longer honours report
+  // the same "unauthorized" status once the health check itself succeeded.
+  const markUnauthorized = () => scopedStatus({
+    state: "unauthorized", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
+    checkedAt: deps.now(), error: null, instructions: instructionsFor("unauthorized"),
+  });
+  const pairing = getPairing();
+  if (!pairing || !pairing.token) {
+    return markUnauthorized();
+  }
+  try {
+    const capsResponse = await send("GET", "capabilities", { token: pairing.token });
+    const caps = await capsResponse.json();
+    const connectedStatus = scopedStatus({
+      state: "connected", address: addr, protocol: body.protocol, version: body.version || null, capabilities: caps, instance: lastInstance,
+      checkedAt: deps.now(), error: null, instructions: instructionsFor("connected"),
+    });
+    scheduleAutoReconnect();
+    return connectedStatus;
+  } catch (error) {
+    if (error?.name === "Unauthorized") {
+      return markUnauthorized();
+    }
+    // The health check just succeeded, so the service is up; a hiccup
+    // verifying the token is not the same claim as "unreachable".
+    return scopedStatus({
+      state: "reachable", address: addr, protocol: body.protocol, version: body.version || null, capabilities: null,
+      checkedAt: deps.now(), error: String(error?.message || error), instructions: instructionsFor("reachable"),
+    });
+  }
+}
+
+export async function retry() {
+  resetNegativeCache();
+  return probe({ force: true });
+}
+
+// -------------------------------------------------------------- connect/disconnect
+
+export async function connect(code) {
+  // A pairing is granted per (origin, project), so pairing before `configure`
+  // named the document would ask for a pairing belonging to nothing. The
+  // local app rejects it as a malformed body, which reads as a mystery three
+  // layers away from the cause; say it here instead.
+  if (typeof current.project !== "string" || !current.project) {
+    throw named("InvalidRequest", "The page has not said which document this pairing is for.");
+  }
+  const addr = address();
+  const healthResponse = await healthFetch(addr);
+  if (healthResponse.ok) {
+    try {
+      const body = await healthResponse.json();
+      lastInstance = body?.instance || null;
+    } catch { /* connect still proceeds; probe() will report the real state */ }
+  }
+  const response = await send("POST", "connect", {
+    jsonBody: { origin: current.origin, project: current.project, code },
+  });
+  const data = await response.json();
+  setPairing({ token: data.token, expires: data.expires, instance: lastInstance });
+  resetNegativeCache();
+  return probe({ force: true });
+}
+
+// The one connection entrypoint: paired already, this fires a launch link and
+// waits for the probe to see it; unpaired, it opens the consent page (a popup
+// when this address is one the browser can already reach, the
+// `librepaper://connect` link otherwise, with the link as the popup's own
+// fallback when the browser blocks it) and claims the token once the person
+// allows it. Single-flight: a second call while one is in flight joins it.
+let connectionAttempt = null;
+
+export function connectApp(options = {}) {
+  if (connectionAttempt) return connectionAttempt;
+  connectionAttempt = runConnectApp(options).finally(() => { connectionAttempt = null; });
+  return connectionAttempt;
+}
+
+async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal } = {}) {
+  const { origin, project } = current;
+  if (!origin || !project) throw named("Unauthorized", "Open a document before enabling local rendering.");
+  const scope = pairingKey();
+  // The address may legitimately change mid-attempt -- the fragment this very
+  // attempt is waiting on rewrites it -- so only a change of document scope
+  // cancels; every address read below goes through `address()` fresh.
+  const checkScope = () => {
+    if (signal?.aborted || scope !== pairingKey()) {
+      throw named("Canceled", "The document changed. Connect again in the current document.");
+    }
+  };
+  const request = randomUrlToken(24);
+  const verifier = randomUrlToken(32);
+  const challenge = await sha256Hex(verifier);
+  const loc = deps.location();
+  const returnUrl = String(loc?.href || "").split("#")[0];
+  writePending(request);
+  checkScope();
+
+  if (getPairing()) {
+    if (currentStatus.state !== "connected") {
+      deps.launchLink(`librepaper://launch?${new URLSearchParams({ origin, request, return: returnUrl })}`);
+    }
+    const started = deps.now();
+    while (deps.now() - started < timeoutMs) {
+      await deps.wait(pollMs, signal);
+      checkScope();
+      const status = await probe({ force: true });
+      checkScope();
+      if (status.state === "connected") { clearPending(); return status; }
+      if (status.state === "unauthorized") throw named("Unauthorized", "This document's permission expired or was revoked. Enable local rendering again to approve it.");
+      if (status.state === "denied" || status.state === "incompatible") throw named("Refused", status.instructions);
+    }
+    throw named("Unreachable", "The companion did not connect. Install or open it, approve the local permission window, then retry.");
+  }
+
+  let popup = null;
+  if (["unauthorized", "reachable"].includes(currentStatus.state)) {
+    const url = `${address()}${LOCAL_BASE}pair/request?${new URLSearchParams({ origin, project, request, challenge, return: returnUrl })}`;
+    popup = deps.openPopup(url, "librepaper-local-pair", "popup,width=480,height=400");
+  }
+  if (!popup) {
+    deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, project, request, challenge, return: returnUrl })}`);
+  }
+
+  const started = deps.now();
+  let popupClosedAt = null;
+  while (deps.now() - started < timeoutMs) {
+    await deps.wait(pollMs, signal);
+    checkScope();
+    if (popup?.closed) {
+      popupClosedAt ??= deps.now();
+      if (deps.now() - popupClosedAt > 1000) { clearPending(); return currentStatus; }
+    }
+    let response;
+    try {
+      response = await deps.fetch(`${address()}${LOCAL_BASE}connect/claim`, {
+        method: "POST", mode: "cors", credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
+        body: JSON.stringify({ request, origin, project, verifier }),
+      });
+    } catch (error) {
+      checkScope();
+      if (/permission|blocked|private network/i.test(String(error?.message || error))) {
+        throw named("Refused", "Allow this site's local-network permission in your browser, then retry.");
+      }
+      continue; // The installed companion may still be starting.
+    }
+    checkScope();
+    if (response.status === 202 || response.status === 404) continue;
+    if (response.status === 403) throw named("Unauthorized", "This connection request expired or was refused. Enable local rendering again.");
+    if (!response.ok) throw named("Refused", `The companion could not connect (${response.status}). Retry or open companion settings.`);
+    const data = await response.json();
+    checkScope();
+    if (typeof data.token !== "string" || !data.token || !Number.isFinite(data.expires)) {
+      throw named("Refused", "The companion returned an invalid connection response.");
+    }
+    setPairing({ token: data.token, expires: data.expires, instance: data.instance || null });
+    resetNegativeCache();
+    clearPending();
+    return probe({ force: true });
+  }
+  clearPending();
+  throw named("Unreachable", "The companion did not connect. Install or open it, approve the local permission window, then retry.");
+}
+
+export async function disconnect() {
+  const pairing = getPairing();
+  if (pairing?.token) {
+    try { await send("POST", "disconnect", { token: pairing.token }); } catch { /* revoking a dead pairing is not an error */ }
+  }
+  dropPairing();
+  resetNegativeCache();
+  return probe({ force: true });
+}
+
+// Reads the last probed capabilities rather than fetching -- callers that
+// need a fresh answer call `capabilities()` first, the same way the rest of
+// this module treats `status()` as a cache of the last probe.
+export function calepinAvailable() {
+  const calepin = status().capabilities?.calepin;
+  return !!(calepin && calepin.found);
+}
+
+export async function capabilities({ rescan = false } = {}) {
+  const pairing = requirePairing();
+  const method = rescan ? "POST" : "GET";
+  const path = rescan ? "capabilities/rescan" : "capabilities";
+  const response = await send(method, path, { token: pairing.token });
+  const data = await response.json();
+  setStatus({ capabilities: data });
+  return data;
+}
+
+/** Search the running Zotero desktop library through the paired companion.
+ * Results remain transient: this client does not place queries or metadata in
+ * browser storage. */
+export async function searchZotero(query) {
+  const pairing = requirePairing();
+  const path = `zotero/search?${new URLSearchParams({ q: String(query || "") })}`;
+  const response = await send("GET", path, { token: pairing.token });
+  return response.json();
+}
+
+/** Fetch one Zotero item as deterministic BibTeX. */
+export async function zoteroItem(key) {
+  const pairing = requirePairing();
+  const value = String(key || "");
+  if (!/^[A-Za-z0-9]{1,32}$/.test(value)) throw named("InvalidRequest", "Invalid Zotero item key");
+  const response = await send("GET", `zotero/items/${value}`, { token: pairing.token });
+  return response.json();
+}
+
+/** Ask the companion to open its native directory chooser and bind the
+ * selected project folder. The absolute path never crosses the wire. */
+export async function chooseFolderBinding({ entrypoint = "" } = {}) {
+  const pairing = requirePairing();
+  const response = await send("POST", "bindings/folder", {
+    token: pairing.token,
+    jsonBody: { project: current.project, entrypoint: String(entrypoint || "") },
+  });
+  const data = await response.json();
+  if (data?.id) setBindingId(data.id);
+  return data;
+}
+
+// -------------------------------------------------------------- multipart job bodies
+
+function formOf(jobRequest, files) {
+  const form = new FormData();
+  form.append("job", new Blob([JSON.stringify(jobRequest)], { type: "application/json" }), "job.json");
+  for (const [path, bytes] of files) {
+    form.append("file", new Blob([toArrayBuffer(bytes)]), path);
+  }
+  return form;
+}
+
+function relativePath(path) {
+  const value = String(path || "").replaceAll("\\", "/");
+  const parts = value.split("/");
+  if (!value || value.startsWith("/") || /^[A-Za-z]:/.test(value) ||
+      /[\u0000-\u001f\u007f]/.test(value) || parts.some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`invalid project path: ${path}`);
+  }
+  return value;
+}
+
+function boundedString(value, name, max) {
+  const text = String(value || "");
+  if (text.length < 1 || text.length > max) throw new Error(`invalid Quarto ${name}`);
+  return text;
+}
+
+function safeSha256(value, name = "digest") {
+  const text = String(value || "");
+  if (!/^[0-9a-f]{64}$/i.test(text)) throw new Error(`invalid Quarto ${name}`);
+  return text.toLowerCase();
+}
+
+function safeSize(value) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 64 * 1024 * 1024) {
+    throw new Error("invalid Quarto file size");
+  }
+  return value;
+}
+
+function quartoPolicy(kind, policy) {
+  if (!QUARTO_JOB_KINDS.includes(kind)) throw new Error(`unsupported Quarto job kind: ${kind}`);
+  const allowed = ["project-defaults", "refresh-computations", "frozen"];
+  const value = policy || (kind === "refresh" ? "refresh-computations" : kind === "frozen" ? "frozen" : "project-defaults");
+  if (!allowed.includes(value)) throw new Error(`unsupported Quarto render policy: ${value}`);
+  return value;
+}
+
+// Same top-level envelope the bridge expects for every preview/render request
+// on either engine (`protocol`, `kind`, `project`, `origin`, `snapshot`,
+// `generation`, `manifest`, `options`) -- `quartoRequest` layers `quarto`
+// alongside it, `buildCalepinForm` layers `engine`/`calepin` the same way,
+// and `kind` stays the value the Rust `JobRequest` already deserializes
+// today for both.
+function jobEnvelope({ job, manifest, inputRevision }) {
+  return {
+    protocol: 2,
+    kind: "quarto",
+    project: current.project,
+    origin: current.origin,
+    snapshot: String(inputRevision || job.inputRevision || ""),
+    generation: Number.isFinite(job.generation) ? Math.max(0, Math.floor(job.generation)) : 0,
+    manifest,
+    // No `max_passes`: it bounded latexmk's reruns, and LaTeX is built in
+    // the browser now. Nothing on either side has read it since.
+    options: {
+      deadline_seconds: Number.isFinite(job.deadlineSeconds) ? Math.max(1, Math.floor(job.deadlineSeconds)) : 300,
+    },
+  };
+}
+
+/** Build the JSON part of a Quarto request without accepting shell fragments. */
+export function quartoRequest({ job = {}, entrypoint, format = "html", profile = null, parameters = {}, policy, kind = "render", inputRevision = "", inputDigest = "", files = [] } = {}) {
+  const main = relativePath(entrypoint || job.entrypoint || "");
+  if (!main.endsWith(".qmd") && !main.endsWith(".md")) throw new Error("Quarto entrypoint must be a .qmd or .md file");
+  if (!["html", "pdf", "docx", "revealjs"].includes(String(format))) throw new Error("invalid Quarto output format");
+  const binding = boundedString(job.binding || job.bindingId || "", "binding");
+  if (!/^[A-Za-z0-9._:-]+$/.test(binding)) throw new Error("invalid Quarto binding");
+  if (profile != null && (!/^[A-Za-z0-9._-]+$/.test(String(profile)) || String(profile).length > 128)) {
+    throw new Error("invalid Quarto profile");
+  }
+  const idempotency = String(job.idempotencyKey || job.id || "");
+  if (idempotency && (idempotency.length > 256 || !/^[A-Za-z0-9._:-]+$/.test(idempotency))) {
+    throw new Error("invalid Quarto idempotency key");
+  }
+  const sourceDigest = inputDigest || job.inputDigest || "";
+  if (sourceDigest) safeSha256(sourceDigest, "shared tree digest");
+  if (Object.keys(parameters || {}).length > 128) throw new Error("too many Quarto parameters");
+  const publicParameters = {};
+  for (const [key, value] of Object.entries(parameters || {})) {
+    if (key.length > 128 || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(key)) throw new Error(`invalid Quarto parameter: ${key}`);
+    if (typeof value === "number" && (!Number.isFinite(value) || Object.is(value, -0) || (Number.isInteger(value) && !Number.isSafeInteger(value)))) {
+      throw new Error(`Quarto parameter number is outside the portable range: ${key}`);
+    }
+    if (["string", "number", "boolean"].includes(typeof value) || value === null) {
+      if (new TextEncoder().encode(String(value)).byteLength > 16 * 1024) throw new Error(`Quarto parameter is too long: ${key}`);
+      Object.defineProperty(publicParameters, key, { value, enumerable:true, configurable:true, writable:true });
+    } else throw new Error(`invalid Quarto parameter: ${key}`);
+  }
+  const manifest = [];
+  const seen = new Set();
+  for (const file of files) {
+    const path = relativePath(file.path);
+    if (seen.has(path)) throw new Error(`duplicate Quarto project path: ${path}`);
+    seen.add(path);
+    manifest.push({ path, sha256: safeSha256(file.sha256, "file digest"), size: safeSize(file.size) });
+  }
+  return {
+    ...jobEnvelope({ job, manifest, inputRevision }),
+    quarto: {
+      binding_id: binding,
+      main,
+      format: String(format),
+      profile: profile == null ? null : String(profile),
+      // Preserve scalar JSON types. Rust serializes these exact values for
+      // Quarto's -P arguments and hashes the typed map, so 1, true, null and
+      // the string "1" remain distinct cache identities.
+      parameters: publicParameters,
+      policy: quartoPolicy(kind, policy),
+      idempotency_key: idempotency || null,
+      shared_tree_sha256: sourceDigest ? safeSha256(sourceDigest, "shared tree digest") : null,
+      execution_mode: "working-tree",
+      render_scope: "document",
+      data_inputs: [],
+      shared_inventory_complete: false,
+    },
+  };
+}
+
+// Turn a shared tree's `texts`/`assets` maps into `[relativePath, bytes]`
+// pairs, validating and de-duplicating paths the same way for every caller
+// that walks a tree -- the Quarto job/preview form, and `syncWorkspace`.
+function collectTreeFiles(tree) {
+  const files = [];
+  const seen = new Set();
+  const add = (path, bytes) => {
+    const safe = relativePath(path);
+    if (seen.has(safe)) throw new Error(`duplicate Quarto project path: ${safe}`);
+    seen.add(safe);
+    files.push([safe, bytes]);
+  };
+  for (const [path, text] of Object.entries(tree?.texts || {})) add(path, bytesOf(text));
+  for (const [path, bytes] of Object.entries(tree?.assets || {})) add(path, bytesOf(bytes));
+  return files;
+}
+
+export const CALEPIN_FORMATS = Object.freeze(["html", "pdf"]);
+
+/** Validate the Calepin-specific options (`entrypoint`, `format`), the same
+ * way `quartoRequest` validates a Quarto job's shape before anything is
+ * built from the tree. */
+function calepinOptions({ entrypoint, format = "html" } = {}) {
+  const main = relativePath(entrypoint || "");
+  if (!main.endsWith(".typ")) throw new Error("Calepin entrypoint must be a .typ file");
+  if (!CALEPIN_FORMATS.includes(String(format))) throw new Error("invalid Calepin output format");
+  return { main, format: String(format) };
+}
+
+async function buildCalepinForm({ job = {}, tree, options = {} }) {
+  const files = collectTreeFiles(tree);
+  const manifest = await manifestOf(files);
+  const { main, format } = calepinOptions(options);
+  if (!manifest.some((file) => file.path === main)) {
+    throw new Error(`Calepin project is missing its entrypoint: ${main}`);
+  }
+  const binding = boundedString(job.binding || job.bindingId || "", "binding");
+  if (!/^[A-Za-z0-9._:-]+$/.test(binding)) throw new Error("invalid Calepin binding");
+  const request = {
+    ...jobEnvelope({ job, manifest, inputRevision: options.inputRevision }),
+    engine: "calepin",
+    calepin: { binding_id: binding, main, format },
+  };
+  request.workspace = options.livePreview
+    ? { mode: "bound", binding_id: binding }
+    : { mode: "snapshot", binding_id: binding };
+  return formOf(request, files);
+}
+
+async function buildQuartoForm({ job, tree, options = {} }) {
+  if (options.renderScope === "project") {
+    throw new Error("Quarto website and book project renders are not supported; render one document instead");
+  }
+  const files = collectTreeFiles(tree);
+  const manifest = await manifestOf(files);
+  const request = quartoRequest({
+    job, entrypoint: options.entrypoint || tree?.main, format: options.format || "html",
+    profile: options.profile, parameters: options.parameters, policy: options.policy,
+    kind: options.kind || "render", inputRevision: options.inputRevision, inputDigest: options.inputDigest,
+    files: manifest,
+  });
+  const source = await sourceSnapshot(
+    request.snapshot,
+    request.quarto.main,
+    manifest,
+  );
+  if (source) request.source = source;
+  // One-shot renders use a fresh temporary project copy. The binding
+  // authorizes which local inputs may be copied; only live previews run in
+  // the bound working directory.
+  request.workspace = options.livePreview
+    ? { mode: "bound", binding_id: request.quarto.binding_id }
+    : { mode: "snapshot", binding_id: request.quarto.binding_id };
+  request.quarto.execution_mode = options.livePreview ? "working-tree" : "temporary-copy";
+  if (!manifest.some((file) => file.path === request.quarto.main)) {
+    throw new Error(`Quarto project is missing its entrypoint: ${request.quarto.main}`);
+  }
+  if (options.executionMode === "isolated-snapshot") {
+    request.quarto.execution_mode = "isolated-snapshot";
+    request.quarto.shared_inventory_complete = true;
+    request.quarto.data_inputs = (options.dataInputs || []).map(relativePath);
+  }
+  return formOf(request, files);
+}
+
+async function manifestOf(files) {
+  const manifest = [];
+  for (const [path, bytes] of files) {
+    manifest.push({ path, sha256: await sha256hex(bytes), size: bytes.byteLength });
+  }
+  return manifest;
+}
+
+// Identity of the immutable project materialized for a runner. The CRDT tree
+// digest and exact byte inventory have different meanings and travel as such.
+async function sourceSnapshot(treeDigest, main, manifest) {
+  const digest = String(treeDigest || "");
+  if (!/^[0-9a-f]{64}$/.test(digest)) return null;
+  const canonical = [...manifest].sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    tree_sha256: digest,
+    main_path: relativePath(main),
+    manifest_sha256: await sha256hex(new TextEncoder().encode(JSON.stringify(canonical))),
+  };
+}
+
+// -------------------------------------------------------------- job polling
+
+async function pollJob(id, token, signal) {
+  const start = deps.now();
+  for (;;) {
+    if (signal?.aborted) {
+      throw named("Canceled", "Canceled");
+    }
+    const response = await send("GET", `jobs/${id}`, { token, signal });
+    const status = await response.json();
+    if (status.status === "done" || status.status === "failed" || status.status === "canceled") return status;
+    const waitMs = deps.now() - start > POLL_SLOW_AFTER_MS ? POLL_SLOW_MS : POLL_FAST_MS;
+    await deps.wait(waitMs, signal);
+  }
+}
+
+async function submitAndAwait(pairing, form, signal) {
+  const submitted = await send("POST", "jobs", { token: pairing.token, formBody: form }).then((r) => r.json());
+  let status;
+  try {
+    status = await pollJob(submitted.id, pairing.token, signal);
+  } catch (error) {
+    if (signal?.aborted) {
+      await send("POST", `jobs/${submitted.id}/cancel`, { token: pairing.token }).catch(() => {});
+    }
+    throw error;
+  }
+  if (status.status === "canceled") {
+    throw named("Canceled", "Canceled");
+  }
+  return { id: submitted.id, status };
+}
+
+async function fetchOutput(id, token, name, status) {
+  if (!status.outputs?.[name]) return null;
+  const response = await send("GET", `jobs/${id}/files/${encodeURIComponent(name)}`, { token });
+  return bytesOfResponse(response);
+}
+
+async function fetchVerifiedOutput(id, token, name, status) {
+  const descriptor = status.outputs?.[name];
+  if (!descriptor) return null;
+  const expectedSize = safeSize(Number(descriptor.size));
+  const expectedDigest = safeSha256(descriptor.sha256, `${name} output digest`);
+  const bytes = await fetchOutput(id, token, name, status);
+  if (!bytes || bytes.byteLength !== expectedSize) {
+    throw named("Refused", `Local builder returned the wrong size for ${name}`);
+  }
+  if (await sha256hex(bytes) !== expectedDigest) {
+    throw named("Refused", `Local builder returned the wrong digest for ${name}`);
+  }
+  return bytes;
+}
+
+function base64Of(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return typeof btoa === "function" ? btoa(binary) : Buffer.from(bytes).toString("base64");
+}
+
+// -------------------------------------------------------------- jobs
+
+export async function runBuild({ job = {}, tree, builder, engine, output = "pdf", options = {}, bindingId = "", preset = "" }, { signal, onProgress } = {}) {
+  // A pairing only exists after a health check that refused anything below
+  // protocol 2 (see `probe`), so the build request needs no version guard.
+  const pairing = requirePairing();
+  const files = collectTreeFiles(tree);
+  const manifest = await manifestOf(files);
+  const request = {
+    protocol: 2, kind: "build", project: current.project, origin: current.origin,
+    snapshot: String(job.snapshot || ""), generation: Number(job.generation || 0),
+    builder, workspace: { mode: "snapshot", ...(bindingId ? { binding_id: bindingId } : {}) }, entrypoint: relativePath(tree.main), output,
+    ...(preset ? { preset } : {}), options: { ...options, ...(engine ? { engine } : {}) }, manifest,
+  };
+  const source = await sourceSnapshot(job.snapshot, tree.main, manifest);
+  if (source) request.source = source;
+  onProgress?.({ done: 0, total: 1, scope: `local ${builder}` });
+  const { id, status: jobStatus } = await submitAndAwait(pairing, formOf(request, files), signal);
+  if (builder === "quarto") return collectQuartoOutputs(id, jobStatus, pairing, { format: output }, { onProgress }, job);
+  const artifact = await fetchVerifiedOutput(id, pairing.token, output, jobStatus) || await fetchVerifiedOutput(id, pairing.token, `artifact.${output}`, jobStatus);
+  const log = await fetchVerifiedOutput(id, pairing.token, "log", jobStatus);
+  onProgress?.({ done: 1, total: 1, scope: `local ${builder}` });
+  return { ok: jobStatus.status === "done" && jobStatus.exit === 0 && artifact != null, kind: output, pdf: output === "pdf" ? artifact : null, artifact, log: log ? new TextDecoder().decode(log) : "", diagnostics: jobStatus.diagnostics || [], exit: jobStatus.exit, error: jobStatus.error, provenance: { ...(jobStatus.provenance || {}), backend: "local", builder } };
+}
+
+async function collectQuartoOutputs(id, status, pairing, options, { onProgress, onLog } = {}, job = {}) {
+  if (status.log_tail) for (const line of String(status.log_tail).split("\n")) onLog?.(line);
+  const format = options.format || "html";
+  const artifactName = `artifact.${format}`;
+  const manifestBytes = await fetchOutput(id, pairing.token, "manifest.json", status) ||
+    await fetchOutput(id, pairing.token, "quarto-bundle.json", status);
+  const logBytes = await fetchOutput(id, pairing.token, "log", status);
+  let manifest = null;
+  if (manifestBytes) {
+    try { manifest = JSON.parse(new TextDecoder().decode(manifestBytes)); } catch { onLog?.("Quarto collector returned an invalid manifest"); }
+  }
+  const blobs = new Map();
+  let artifact = null;
+  let closureError = null;
+  if (manifest) {
+    if (!manifest.artifact || typeof manifest.artifact !== "object") {
+      closureError = "Quarto bundle is missing its artifact descriptor";
+    }
+    const descriptors = [];
+    if (!closureError) {
+      try {
+        const artifactPath = relativePath(manifest.artifact.entrypoint);
+        const artifactDigest = safeSha256(manifest.artifact.sha256, "artifact digest");
+        const expectedKind = format === "pdf" ? "pdf" : format === "docx" ? "docx" : "html";
+        if (String(manifest.artifact.kind || "").toLowerCase() !== expectedKind) throw new Error("Quarto artifact kind does not match its requested format");
+        descriptors.push({ artifact: true, path: artifactPath, sha256: artifactDigest, size: safeSize(Number(manifest.artifact.size)), mime: manifest.artifact.mime || (format === "pdf" ? "application/pdf" : format === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "text/html; charset=utf-8") });
+        if (!Array.isArray(manifest.assets)) throw new Error("Quarto bundle assets must be an array");
+        const descriptorPaths = new Set([artifactPath]);
+        for (const asset of manifest.assets) {
+          const path = relativePath(asset?.path);
+          if (descriptorPaths.has(path)) throw new Error(`duplicate Quarto bundle path: ${path}`);
+          descriptorPaths.add(path);
+          descriptors.push({ ...asset, path, artifact: false, sha256: safeSha256(asset?.sha256, "asset digest"), size: safeSize(Number(asset?.size)) });
+        }
+      } catch (error) {
+        closureError = error.message;
+      }
+    }
+    const totalLimit = 64 * 1024 * 1024;
+    let totalBytes = 0;
+    for (const descriptor of descriptors) {
+      if (closureError) break;
+      const outputName = descriptor.artifact ? artifactName : `asset:${descriptor.path}`;
+      const output = status.outputs?.[outputName];
+      if (!output) {
+        closureError = `Quarto bundle is missing required output: ${outputName}`;
+        break;
+      }
+      const advertisedSize = Number(output.size);
+      if (!Number.isSafeInteger(advertisedSize) || advertisedSize < 0 || advertisedSize > totalLimit || totalBytes + advertisedSize > totalLimit) {
+        closureError = `Quarto bundle output exceeds the size limit: ${outputName}`;
+        break;
+      }
+      const bytes = await fetchOutput(id, pairing.token, outputName, status);
+      if (!bytes) {
+        closureError = `Quarto bundle output could not be downloaded: ${outputName}`;
+        break;
+      }
+      if (bytes.byteLength !== advertisedSize) {
+        closureError = `Quarto bundle output has the wrong size: ${outputName}`;
+        break;
+      }
+      if (bytes.byteLength !== descriptor.size) {
+        closureError = `Quarto bundle descriptor has the wrong size: ${outputName}`;
+        break;
+      }
+      totalBytes += bytes.byteLength;
+      if (descriptor.sha256) {
+        const actual = await sha256hex(bytes);
+        if (actual !== descriptor.sha256) {
+          closureError = `Quarto bundle output has the wrong digest: ${outputName}`;
+          break;
+        }
+        if (descriptor.artifact) artifact = bytes;
+        const mime = descriptor.mime || "application/octet-stream";
+        const existing = blobs.get(descriptor.sha256);
+        if (existing && existing.mime !== mime) {
+          closureError = `Quarto bundle digest has conflicting MIME types: ${descriptor.sha256}`;
+          break;
+        }
+        if (!existing) blobs.set(descriptor.sha256, { sha256: descriptor.sha256, mime, data: base64Of(bytes) });
+      }
+    }
+  }
+  if (!manifest && status.status === "done" && status.exit === 0) closureError = "Quarto render did not return a bundle manifest";
+  if (closureError) onLog?.(closureError);
+  onProgress?.({ done: 1, total: 1, scope: "local Quarto render", stage: "collecting" });
+  return {
+    id,
+    ok: status.status === "done" && status.exit === 0 && artifact != null && !closureError,
+    artifact,
+    kind: format === "pdf" ? "pdf" : format === "docx" ? "docx" : "html",
+    manifest,
+    publish: manifest && !closureError ? { manifest, blobs: [...blobs.values()], select: true } : null,
+    diagnostics: status.diagnostics || [],
+    logs: logBytes ? new TextDecoder().decode(logBytes) : status.log_tail || "",
+    exit: status.exit,
+    stage: status.stage || (status.status === "done" ? "published" : status.status),
+    provenance: {
+      ...(status.provenance || {}),
+      backend: "local",
+      policy: options.policy || "project-defaults",
+      input_revision: options.inputRevision || job.inputRevision || null,
+    },
+    ...(status.error ? { error: status.error } : {}),
+    ...(closureError ? { error: closureError } : {}),
+  };
+}
+
+/** Start a live preview on either engine. For `quarto` this produces the
+ * Quarto preview JSON; for `calepin`, `options` is the
+ * `{ entrypoint, format }` pair validated by `calepinOptions`. */
+export async function startLocalPreview({ engine = "quarto", job = {}, tree, options = {} } = {}) {
+  const pairing = requirePairing();
+  const form = engine === "calepin"
+    ? await buildCalepinForm({ job, tree, options: { ...options, livePreview: true } })
+    : await buildQuartoForm({ job, tree, options: { ...options, livePreview: true } });
+  const built = JSON.parse(await form.get("job").text());
+  // Unconditionally protocol 2, like `runBuild`: a pairing only exists after
+  // a health check that refused anything below it (see `probe`), and the
+  // bridge has no other shape to decode a preview from. The version guard
+  // this replaced defaulted to 1 when the status was unset, which produced a
+  // request nothing could answer.
+  const details = built.quarto || built.calepin || {};
+  const builder = engine === "calepin" ? "calepin" : "quarto";
+  const output = details.format || options.format || "html";
+  const entrypoint = details.main || options.entrypoint;
+  const request = {
+    protocol: 2, kind: "preview", project: built.project, origin: built.origin,
+    snapshot: built.snapshot, generation: built.generation, builder,
+    workspace: { mode: "bound", binding_id: details.binding_id }, entrypoint, output,
+    manifest: built.manifest,
+    options: engine === "quarto" ? { ...(details.profile ? { profile: details.profile } : {}), parameters: details.parameters || {}, policy: details.policy || "project-defaults" } : {},
+  };
+  const source = await sourceSnapshot(built.snapshot, entrypoint, built.manifest);
+  if (source) request.source = source;
+  const response = await send("POST", "previews", { token:pairing.token, jsonBody:request });
+  return response.json();
+}
+export async function stopLocalPreview(id) {
+  const pairing = requirePairing();
+  await send("DELETE", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
+}
+export async function localPreviewStatus(id) {
+  const pairing = requirePairing();
+  const response = await send("GET", `previews/${encodeURIComponent(id)}`, { token:pairing.token });
+  return response.json();
+}
+
+// Every response on this route -- 200, 304 and 404 alike -- carries
+// `x-librepaper-rendering: true|false` saying whether Quarto is currently
+// re-rendering (the intermediate output itself is never served; this header
+// is the only signal a poller has that a newer page is on the way). Read the
+// header name case-insensitively since callers may hand this a plain object
+// rather than a real `Headers` instance; a missing header is `null` rather
+// than a guessed boolean.
+function headerOf(response, name) {
+  const headers = response?.headers;
+  if (!headers || typeof headers.get !== "function") return null;
+  let raw = headers.get(name);
+  if (raw == null) {
+    // Fall back to scanning for a differently-cased key when the shim's
+    // `get` is not itself case-insensitive.
+    const variants = [name, name.toLowerCase(), name.toUpperCase(),
+      name.replace(/(^|-)([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase())];
+    for (const variant of variants) {
+      raw = headers.get(variant);
+      if (raw != null) break;
+    }
+  }
+  return raw == null ? null : String(raw);
+}
+
+function renderingHeaderOf(response) {
+  const raw = headerOf(response, "x-librepaper-rendering");
+  if (raw == null) return null;
+  const value = raw.trim().toLowerCase();
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
+}
+
+function kindHeaderOf(response) {
+  const raw = headerOf(response, "x-librepaper-kind");
+  if (raw == null) return null;
+  const value = raw.trim().toLowerCase();
+  return value === "pdf" || value === "html" ? value : null;
+}
+
+// The live preview's own rendered page. `etag`, when given, is sent as
+// `If-None-Match`: a 304 (nothing new since that version) resolves `null`
+// rather than re-fetching bytes nothing needs. A 404 means the preview has
+// not produced a first render yet, which the poller treats as "not yet" --
+// distinguished by `name` from every other failure, none of which are.
+export async function localPreviewPage(id, { etag } = {}) {
+  const pairing = requirePairing();
+  const addr = address();
+  const url = `${addr}${LOCAL_BASE}previews/${encodeURIComponent(id)}/page`;
+  const headers = { Accept: "text/html, application/pdf", Authorization: `Bearer ${pairing.token}` };
+  if (etag) headers["If-None-Match"] = etag;
+  let response;
+  try {
+    response = await deps.fetch(url, { method: "GET", mode: "cors", credentials: "omit", headers });
+  } catch (error) {
+    throw named("Unreachable", String(error?.message || error));
+  }
+  const rendering = renderingHeaderOf(response);
+  if (response.status === 304) return { rendering };
+  if (response.status === 404) {
+    throw named("NotRendered", "not rendered yet", { rendering });
+  }
+  await throwOnFailure(response);
+  const etagOut = response.headers?.get?.("etag") || null;
+  const contentType = response.headers?.get?.("content-type") || "";
+  const isPdf = kindHeaderOf(response) === "pdf" || /application\/pdf/i.test(contentType);
+  if (isPdf) {
+    const bytes = await bytesOfResponse(response);
+    return { kind: "pdf", bytes, etag: etagOut, rendering };
+  }
+  const html = await response.text();
+  return { kind: "html", html, etag: etagOut, rendering };
+}
+// -------------------------------------------------------------- workspace sync
+
+async function buildWorkspaceForm(tree) {
+  const files = collectTreeFiles(tree);
+  const manifest = await manifestOf(files);
+  const form = new FormData();
+  form.append("manifest", new Blob([JSON.stringify(manifest)], { type: "application/json" }), "manifest.json");
+  for (const [path, bytes] of files) form.append("file", new Blob([toArrayBuffer(bytes)]), path);
+  return form;
+}
+
+// Pushes the shared tree into the local app's hosted workspace so a
+// `quarto preview` running there sees the current files, without going
+// through the job queue. Same file layout as a job's multipart body, but the
+// JSON part is named `manifest` (a bare array) rather than `job`.
+export async function syncWorkspace({ tree } = {}) {
+  const pairing = requirePairing();
+  const form = await buildWorkspaceForm(tree);
+  const response = await send("PUT", "workspace", { token: pairing.token, formBody: form });
+  return response.json();
+}
+
+/* --------------------------------------------------- Connecting an agent */
+
+/** One pairing-scoped call to the local app's assistant surface, JSON in and
+ * out. `agents`, `startAssistant`, `assistantStatus` and `stopAssistant` are
+ * all this same shape; only the method, path and body differ. */
+async function assistantCall(method, path, jsonBody) {
+  const pairing = requirePairing();
+  const response = await send(method, path, { token: pairing.token, ...(jsonBody ? { jsonBody } : {}) });
+  return response.json();
+}
+
+/** Which coding agents this computer has, and which documents are already
+ * connected. The browser cannot read a PATH, so this is the only way the
+ * sidebar can offer a real choice instead of setup instructions. */
+export async function agents() {
+  return assistantCall("GET", "agents");
+}
+
+/** Start the sidebar assistant, driving the chosen installed agent directly
+ * against the document link. The link crosses loopback once, here: no
+ * connection name, config file, command line or transcript holds the key. */
+export async function startAssistant({ link = "", conversation = "", chatToken = "", agent = "" } = {}) {
+  return assistantCall("POST", "assistant", {
+    link: String(link || ""), conversation: String(conversation || ""),
+    chat_token: String(chatToken || ""), agent: String(agent || ""),
+  });
+}
+
+/** Whether the sidebar assistant is attached to this conversation. Not
+ * running is an answer, not an error: it is the ordinary state before the
+ * first start. Which agent and access level that is does not come back
+ * here; the browser already remembers its own choice. */
+export async function assistantStatus({ link = "", conversation = "" } = {}) {
+  return assistantCall("POST", "assistant/status", { link: String(link || ""), conversation: String(conversation || "") });
+}
+
+/** Detach the sidebar assistant. Document changes already made are not
+ * undone by stopping; only the attachment ends. */
+export async function stopAssistant({ link = "", conversation = "" } = {}) {
+  return assistantCall("POST", "assistant/stop", { link: String(link || ""), conversation: String(conversation || "") });
+}
+
+// -------------------------------------------------------------- module init
+//
+// Only in a real browser: a Node test drives `intakeFragment` directly
+// through `_testing`, with its own injected `location`/`storage`, rather than
+// relying on this running at import time.
+if (typeof window !== "undefined") {
+  intakeFragment();
+  window.addEventListener("storage", (event) => {
+    if (event.key === ADDRESS_KEY) addressChanged();
+  });
+}

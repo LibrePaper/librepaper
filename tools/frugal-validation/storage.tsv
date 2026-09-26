@@ -1,0 +1,29 @@
+Output format is unaligned.
+Field separator is "	".
+BEGIN
+database	frugal_fixture	PostgreSQL 17.11 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit	9139891
+documents	5	5	0
+updates_source_history	186	52296	66648
+assets	5	5	58470	58470	0
+snapshots_live_retired	0	0	0	0	0	0	0
+labels_archives	0	0	0	0	0
+generated_artifact_payloads	0	0	0	52296
+accounted_object_bytes	58470
+postgres_relation_sizes	public	document_labels	32768	81920	147456
+postgres_relation_sizes	public	document_updates	90112	16384	139264
+postgres_relation_sizes	public	documents	8192	90112	139264
+postgres_relation_sizes	public	document_assets	8192	49152	65536
+postgres_relation_sizes	public	document_snapshots	0	40960	49152
+postgres_relation_sizes	public	accounts	8192	24576	40960
+postgres_relation_sizes	public	annotations	0	32768	40960
+postgres_relation_sizes	public	_sqlx_migrations	8192	16384	32768
+postgres_relation_sizes	public	replies	0	24576	32768
+postgres_relation_sizes	public	server_runtime_state	8192	16384	32768
+postgres_relation_sizes	public	share_links	0	24576	32768
+postgres_relation_sizes	public	deployment_writer	8192	16384	24576
+postgres_relation_sizes	public	document_proposals	0	16384	24576
+postgres_relation_sizes	public	grants	0	16384	24576
+postgres_relation_sizes	public	storage_usage	8192	16384	24576
+postgres_relation_sizes	public	document_marks	0	16384	16384
+postgres_relation_sizes	public	document_proposal_hunks	0	8192	16384
+COMMIT

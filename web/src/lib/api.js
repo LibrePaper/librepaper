@@ -1,0 +1,100 @@
+// Talking to the server.
+//
+// A browser cannot set a custom header on a cross-origin request without a
+// CORS preflight, which the server never grants -- so this header is proof, to
+// the server, that a state-changing request came from this page and not from a
+// hostile document on the sibling documents host. It goes on every write and
+// on the listing, never on plain navigation.
+export const SHELL_HEADERS = { "X-LibrePaper-Client": "shell" };
+
+async function json(response) {
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `${response.status}`);
+  }
+  return response.json();
+}
+
+// The link key a reader arrived with, presented on every request for that
+// document. A header rather than a query parameter, so it never reaches an
+// access log; a browser cannot set one cross-origin without a preflight the
+// server never grants, so this is proof it came from this page.
+export const KEY_HEADER = "X-LibrePaper-Key";
+
+export const keyHeaders = (key) => (key ? { [KEY_HEADER]: key } : {});
+
+/// The headers a keyed call to the server carries: the shell marker always,
+/// the link key when there is one, and -- when the call has a JSON body --
+/// a content-type. Header names are case-insensitive on the wire, so this
+/// is safe to use wherever a site built the same three headers by hand,
+/// whatever case or order it happened to spell them in.
+export const authHeaders = (key, contentType) => ({
+  ...(contentType ? { "content-type": contentType } : {}),
+  ...SHELL_HEADERS,
+  ...keyHeaders(key),
+});
+
+export const get = (path) => fetch(path).then(json);
+
+export const getPrivate = (path) => fetch(path, { headers: SHELL_HEADERS }).then(json);
+
+export const post = (path, body) =>
+  fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...SHELL_HEADERS },
+    body: JSON.stringify(body ?? {}),
+  }).then(json);
+
+export const upload = (form) =>
+  fetch("/api/documents", { method: "POST", headers: SHELL_HEADERS, body: form });
+
+/// The limits both this page and the server enforce, so the two never
+/// disagree about what will be refused.
+export const config = () => get("/api/config");
+
+/// Who you are, which decides what every page is: what you may publish, what
+/// you may comment on, and which providers there are to sign in with. The
+/// answer carries `provider`, `handle` and `name`: the handle is what the
+/// deployment's switches match and is your own to see, the name is what other
+/// readers see, and for a Google account those are deliberately not the same
+/// string. `providers` is empty on a deployment with no sign-in at all.
+export const me = () => get("/api/me").catch(() => ({}));
+
+/// Signs out and leaves. `site` is what `/api/me` answered with: the
+/// marketing site in front of this deployment, when there is one. A
+/// deployment that is its own front page answers with nothing, and the
+/// signed-out reader lands there instead.
+export async function signOut(site = "") {
+  // A GET can be forced onto a signed-in reader cross-site, so signing out is
+  // a POST carrying the same header every other state change does.
+  await fetch("/auth/logout", { method: "POST", headers: SHELL_HEADERS }).catch(() => {});
+  // The landing page, not this one. Reloading left you wherever you happened
+  // to be signing out from -- a project you can no longer open, a panel with
+  // nothing in it -- and somebody who has just signed out is a stranger
+  // again, so they get what a stranger gets. `replace`, so Back does not
+  // return to a page that is now somebody else's.
+  location.replace(site || "/");
+}
+
+/// Asks the server to erase the signed-in account: what it owns is queued for
+/// deletion, its authorship elsewhere is unlinked, and the session is
+/// invalidated on the spot -- so this is the last request this browser makes
+/// as that account. A POST carrying the same header every state change does.
+export const eraseAccount = () => post("/api/account/erase");
+
+/// The one door. Which providers this deployment has is the server's business:
+/// this address is a redirect when there is one and a choice when there are
+/// two, so no page has to render a button per provider.
+export const signInHref = () => `/auth/login?next=${encodeURIComponent(location.pathname)}`;
+
+/// Puts a figure on the server and answers with its digest and size. The bytes
+/// go up as they are -- a figure is not JSON and wrapping it in base64 would
+/// cost a third of its size on the wire -- and the name is not sent at all:
+/// the server keeps the bytes under their digest, and the shared document is
+/// where the name is written, by whoever uploaded it, a moment later.
+export const uploadAsset = (slug, file, key) =>
+  fetch(`/api/documents/${slug}/assets`, {
+    method: "PUT",
+    headers: authHeaders(key),
+    body: file,
+  }).then(json);

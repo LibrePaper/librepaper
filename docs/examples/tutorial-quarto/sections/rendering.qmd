@@ -1,0 +1,7 @@
+### Where rendering happens
+
+| Client or service | Role | Trade-off |
+| --- | --- | --- |
+| Browser client | Edit, collaborate, and render an execution-free Markdown draft | No installation; does not run code |
+| Local companion | Run installed Quarto, R, and Python | Full local toolchain; requires pairing |
+| Server | Synchronize source, history, and shared assets | Stable shared state; performs no execution |

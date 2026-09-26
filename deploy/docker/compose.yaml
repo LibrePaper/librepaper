@@ -1,0 +1,113 @@
+# A whole small deployment: PostgreSQL, LibrePaper, and a proxy that holds the
+# certificates for both of its origins.
+#
+#   cp .env.example .env   # and fill it in
+#   docker compose up -d
+#
+# The two origins are the thing to get right. A published document is code, and
+# what keeps it out of a reader's session is that the browser sees the reader
+# and the documents as different sites. So DOMAIN and docs.DOMAIN both need a
+# DNS record pointing here, and the proxy holds a certificate for each. The
+# server answers on those two names and on loopback, and refuses every other
+# with 421 -- which is also why the proxy must pass Host through unchanged.
+
+name: librepaper
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: librepaper
+      POSTGRES_USER: librepaper
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Initialises the cluster with a real password rather than trust.
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    # LibrePaper migrates the schema at start-up, so it must not start against
+    # a cluster that is still initialising.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U librepaper -d librepaper"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # Nothing outside this network ever talks to it.
+    networks: [internal]
+
+  librepaper:
+    build:
+      context: .
+      args:
+        LIBREPAPER_VERSION: ${LIBREPAPER_VERSION:?set LIBREPAPER_VERSION in .env}
+    # Or drop `build:` and pull a published image instead:
+    # image: ghcr.io/librepaper/librepaper:${LIBREPAPER_VERSION}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - admin
+      - serve
+      - --port=8080
+      - --data-directory=/var/lib/librepaper
+      # The public origin. Documents go to docs.<this host> unless
+      # --docs-origin says otherwise. This also fixes the scheme the server
+      # believes it is on, which is what marks session cookies Secure.
+      - --origin=https://${DOMAIN:?set DOMAIN in .env}
+      # The loopback companion renders Quarto with the tools on the editor's
+      # own machine. In a container there are none, and nobody's browser is on
+      # this host.
+      - --no-local
+      # trusted_proxies: without it every visitor shares the proxy's address
+      # for rate limiting.
+      - --config=/etc/librepaper/config.yaml
+    # Every LIBREPAPER_* setting written in .env reaches the server as it
+    # stands, which is how the optional ones stay optional: a line that is
+    # commented out is a variable that is absent, and an absent variable is
+    # what the documented default answers to. Naming them here instead would
+    # hand the server an empty string, which is a value, and a bad one. The
+    # OAuth secrets travel this way rather than in `command:` above, because
+    # an argument is visible in `ps` to every process on the host.
+    env_file: .env
+    environment:
+      LIBREPAPER_DATABASE_URL: postgresql://librepaper:${POSTGRES_PASSWORD}@postgres/librepaper
+      # Who may publish has no default: the server insists you say.
+      LIBREPAPER_PUBLISHERS: ${LIBREPAPER_PUBLISHERS:?set LIBREPAPER_PUBLISHERS in .env}
+    volumes:
+      - data:/var/lib/librepaper
+      - backups:/var/backups/librepaper
+      - ./config.yaml:/etc/librepaper/config.yaml:ro
+    networks: [internal, edge]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [librepaper]
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge]
+
+networks:
+  # Fixed subnet so config.yaml can name it as a trusted proxy.
+  edge:
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
+  internal:
+    internal: true
+
+volumes:
+  postgres:
+  data:
+  backups:
+  caddy-data:
+  caddy-config:

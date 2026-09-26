@@ -1,0 +1,24 @@
+# Rebuilding this workspace is dominated by one link, not by codegen: the
+# librepaper test binary is a single crate with the whole suite inside it, and
+# relinking it after a one-line edit is the slowest thing in the edit-test
+# loop. The default `ld` does that work on one thread. `mold` does it on all
+# of them, which is most of the wait.
+#
+# Cargo has no "use it if present" switch, so this is a requirement in
+# practice: a machine without mold fails to link, and gcc says "cannot find
+# 'ld'" when it means mold. Install it (`apt install mold`, or the package
+# manager's equivalent; CI does) or drop the two lines below.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# The SQL in this workspace is checked against a real schema at compile time by
+# sqlx's `query!` macros. The answers are cached in `.sqlx/`, which is checked
+# in, so an ordinary build needs no database and no network -- that is what
+# offline means here.
+#
+# `force = false` lets the environment win, so re-checking against a live
+# server is `SQLX_OFFLINE=false DATABASE_URL=... cargo check`. After changing
+# any query or migration, regenerate the cache with `make sqlx-prepare`; CI
+# fails on a stale one (`make sqlx-check`).
+[env]
+SQLX_OFFLINE = { value = "true", force = false }

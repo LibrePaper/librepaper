@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE documents SET status='active',deleted_at=NULL,updated_at=now()\n             WHERE id=$1 AND status='deleting'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "68bd74e7a66d30e3c5be9393c5fb45413a5f6a94fb15b74cefb5219780dc196b"
+}

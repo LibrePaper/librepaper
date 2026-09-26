@@ -1,0 +1,1189 @@
+/* What LibrePaper is, that no framework has anything to say about.
+ *
+ * Skeleton dresses the ordinary furniture -- buttons, inputs, dialogs, tables,
+ * cards -- and the theme beside this file colours all of it. What is left here
+ * is the application's own shape: a window split into resizable panes, an
+ * editor bound to a shared document, a frame holding somebody else's HTML, and
+ * a column of annotations beside it. None of that is furniture.
+ *
+ * Every colour and every step of space below is a theme token. Nothing here
+ * writes a colour down; the theme is the only place that does.
+ */
+
+/* ------------------------------------------------------------------ header */
+
+/* The bar, and the page under it. Skeleton colours the html element and the
+   text; the bar is ours because its height is what the reader measures
+   against. */
+body {
+  background: var(--color-shell);
+}
+body > nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--librepaper-bar);
+  padding-inline: --spacing(4);
+  border-bottom: 1px solid var(--color-pane-edge);
+  background: color-mix(in srgb, var(--color-shell) 94%, transparent);
+  backdrop-filter: blur(12px);
+}
+.nav-identity > a { flex-shrink: 0; }
+.share-panel { font-family: var(--typo-base--font-family); font-size: var(--panel-font-size); line-height: var(--panel-line-height); }
+
+/* ------------------------------------------------------------------ reader */
+
+/* The two pages that are one place: a project, and the account it lives in.
+   Both are the bar, then a rail of the same width at the same left edge, then
+   whatever that rail is a rail of. Sharing the rule is what makes the
+   furniture hold still across the navigation between them -- the rail must
+   not move by a pixel when a project is opened, and the surest way to get
+   that is for there to be one declaration of where it is. */
+main.reader,
+main.workspace {
+  /* Each pane's width is a variable so the separator beside it can move it,
+     clamped so nothing can be squeezed out of existence. */
+  /* Until the Reader has measured the window, in the same rem the limits in
+     panes.js are written in. */
+  --librepaper-activity: 3rem;
+  --librepaper-sidebar: 22.5rem;
+  --librepaper-editor: 30rem;
+  height: calc(100dvh - var(--librepaper-bar));
+  /* Flex rather than a grid of named columns: any pane can be folded away, and
+     a row that simply has one fewer item needs no template for each of the
+     arrangements that produces. */
+  display: flex;
+  max-width: none;
+  padding: 0;
+  margin: 0;
+  /* Each pane scrolls inside itself, so nothing it cannot fit is allowed to
+     push the row past the window: a document that scrolled the page would take
+     the navigation and the comment column with it. */
+  overflow: hidden;
+}
+/* The landing page's rail carries places rather than panels, so the gap
+   before the last of them -- the trash -- is what says it is not one of the
+   four you move between all day. */
+main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
+
+/* Cross-document view transitions, where the browser has them. Going into a
+   project is a change of contents inside furniture that does not move, and
+   this is what lets the browser animate it that way instead of as two
+   unrelated page loads. Chrome does it today; Firefox ignores the at-rule and
+   navigates normally, which is the behaviour this page had anyway. Nothing
+   here is load-bearing: it is the difference between a page arriving and
+   having gone somewhere. */
+@view-transition { navigation: auto; }
+@media (prefers-reduced-motion: reduce) {
+  @view-transition { navigation: none; }
+}
+
+.editorpane {
+  flex: 0 0 var(--librepaper-editor);
+  /* min-height: 0 is what lets a grid item be shorter than its contents, which
+     is what makes the editor scroll rather than the page. */
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  /* One row, which the editor -- or the figure standing in for it -- fills. A
+     grid rather than a block so that min-height: 0 reaches what is in it. */
+  grid-template-rows: minmax(0, 1fr);
+  border-right: 1px solid var(--color-pane-edge);
+}
+
+/* ------------------------------------------------------------- the files */
+
+.filelist .name {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding-block: --spacing(1);
+  border: 0;
+  border-bottom: 1px solid var(--color-brand);
+  background: none;
+  color: inherit;
+}
+.filelist .refusal {
+  margin: 0;
+  font-size: var(--panel-font-size);
+  color: var(--color-error-text);
+}
+
+/* Skeleton owns tree semantics; these rules give it the project's compact rows. */
+.explorer, .explorer-menu {
+  font-family: var(--typo-base--font-family);
+  font-size: var(--panel-font-size);
+  line-height: var(--panel-line-height);
+}
+.explorer-row {
+  display: flex;
+  align-items: center;
+  gap: --spacing(2);
+  min-height: --spacing(8);
+  width: 100%;
+  padding-block: --spacing(1);
+  padding-inline: --spacing(2);
+  border-radius: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.explorer-row { padding-left: calc(--spacing(2) + (var(--depth, 1) - 1) * --spacing(4)); }
+.explorer-row:hover, .explorer-open { background: var(--color-row-hover); }
+.explorer-row[data-selected] { background: var(--color-row-selected); box-shadow: inset 2px 0 var(--color-brand); }
+.explorer [data-part="branch"][data-selected] > [data-part="context-trigger"] .explorer-row { background: var(--color-row-selected); box-shadow: inset 2px 0 var(--color-brand); }
+.explorer-row:focus-visible, .explorer [data-part="branch"]:focus-visible > [data-part="context-trigger"] .explorer-row {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+.explorer .drop-target { background: var(--color-row-selected); outline: 2px dashed var(--color-brand); outline-offset: -2px; }
+.explorer-drop { box-shadow: inset 0 0 0 2px var(--color-brand); }
+.explorer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-row svg { width: --spacing(4); height: --spacing(4); flex-shrink: 0; }
+/* One chevron, turned, rather than two icons swapped: what it points at is
+   the same thing either way, and `data-state` is the machine's own answer
+   about whether the folder is open -- not a second copy kept beside it. */
+.explorer-chevron { width: --spacing(3); flex-shrink: 0; color: var(--color-text-secondary); transition: transform 120ms ease; }
+.explorer-chevron[data-state="open"] { transform: rotate(90deg); }
+.explorer-chevron svg { width: --spacing(3); height: --spacing(3); }
+@media (prefers-reduced-motion: reduce) { .explorer-chevron { transition: none; } }
+/* The guide sits at its folder's chevron and runs the height of what the
+   folder holds. `--depth` is Zag's, published on each node it draws. */
+.explorer [data-part="branch-content"] { position: relative; }
+.explorer-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(--spacing(2) + (var(--depth, 1) - 1) * --spacing(4) + --spacing(1.5));
+  width: 1px;
+  background: var(--color-divider);
+  pointer-events: none;
+}
+.viewport {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--color-preview);
+}
+.viewport iframe {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* The document takes whatever the grip leaves it: the reader sets the split,
+     and the pane fills its side of it. */
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--color-shell);
+}
+/* The controls for whatever is in the frame. A paged document has zoom and a
+   cursor tool, a flowing one has neither, and a format with none is a pane
+   with nothing over it.
+
+   They float over the top of the pane rather than standing in a band above
+   it: a row of its own took a strip of the document's height on every format
+   to hold two buttons on one of them, while floating them costs nothing to a
+   format with no controls. Top-trailing is where every other viewer puts
+   them, and the pane is the positioning context, so they ride the split
+   rather than the window.
+
+   These were drawn inside the PDF frame in the operating system's button
+   colours, which is why the paged preview and the flowing one looked like two
+   applications. Everything here is the shell's own vocabulary -- the icon
+   button, the divider, the radius -- so they are the same controls as the rest
+   of the workspace's. */
+.preview-controls {
+  position: absolute;
+  z-index: 2;
+  inset-block-start: --spacing(4);
+  inset-inline-end: --spacing(4);
+  display: flex;
+  align-items: center;
+  gap: --spacing(1);
+  padding: --spacing(1);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-container);
+  background: var(--color-shell);
+  box-shadow: var(--shadow-lg);
+}
+/* The rail between "how large" and "what the pointer does": two groups of
+   controls, one row, and a line rather than a gap to say they are two. */
+.preview-controls .preview-tools {
+  display: flex;
+  align-items: center;
+  gap: --spacing(1);
+  margin-inline-start: --spacing(1);
+  padding-inline-start: --spacing(2);
+  border-inline-start: 1px solid var(--color-divider);
+}
+.preview-zoom {
+  height: --spacing(7);
+  padding-inline: --spacing(2);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-base);
+  background: var(--color-shell);
+  color: var(--color-text);
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+.preview-zoom:hover { background: var(--color-row-hover); }
+.preview-zoom:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+/* A narrow pane is the frame's room before it is the controls': the zoom
+   modes have their own buttons beside them, so the select is what goes. */
+@media (max-width: 900px) {
+  .preview-zoom { display: none; }
+}
+/* The column, at the left of the window: the tabs, then whichever panel they
+   chose. The panel is what scrolls, so the tabs stay where they are, and a
+   sticky row inside a panel has the panel to stick to.
+
+   `--librepaper-sidebar` is the panel's own width, and the rail of icons is
+   added to it here. The reader drags the panel, so the minimum they can drag
+   it to is a minimum for the part with the words in: a column that counted the
+   rail gave a 240px minimum 192px of panel, and the panels were written for
+   the number on the label. */
+.sidebar {
+  background: var(--color-sidebar);
+  flex: 0 0 calc(var(--librepaper-sidebar) + var(--librepaper-activity));
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--color-pane-edge);
+}
+.panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--panel-padding);
+  font-family: var(--typo-base--font-family);
+  font-size: var(--panel-font-size);
+  line-height: var(--panel-line-height);
+}
+/* A panel is as wide as the column the reader left it at, and the column can
+   be dragged to its minimum at any moment. A control that insists on being
+   wider than that does not get a wider column: it gets a panel scrolling
+   sideways under a sidebar that clips, which is how a menu ends up half
+   outside the window. Nothing in here may be wider than what it is in, and a
+   select is told it may shrink -- left alone it is as wide as its longest
+   option, whatever that option turns out to say. */
+.panel :where(select, input, textarea, button) { max-width: 100%; }
+.panel :where(select) { min-width: 0; }
+
+.panel-status { margin-bottom: --spacing(3); }
+.panel-actions { display: flex; align-items: center; flex-wrap: wrap; gap: --spacing(1); margin-bottom: --spacing(4); }
+.panel-intro { margin-bottom: var(--panel-section-gap); }
+.panel-intro:empty { display: none; }
+.panel-section-title { font: inherit; font-weight: var(--panel-title-weight); }
+.panel-muted { color: var(--panel-muted); }
+.panel-meta { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
+.panel :where(input, textarea, select) { font-family: inherit; font-size: inherit; }
+/* A panel whose whole body is a tab strip. The strip is flush to the top and
+   runs the full width -- a rule that stops short of both edges reads as a box
+   floating in the panel rather than as the panel's own head -- so the panel
+   gives up its padding and each pane carries it instead. Both panels with a
+   strip say `panel panel-tabbed` and get the same arrangement; see
+   PanelTabs.svelte, which is the only thing that draws the row. */
+.panel-tabbed { display: flex; min-height: 0; flex-direction: column; overflow: hidden; padding: 0; }
+.panel-tabs-root { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; overflow: hidden; }
+/* A pane is a column that fills the strip and keeps its own overflow: what
+   scrolls inside it is the panel's business, so nothing here scrolls. */
+.panel-tabs-root :where([role="tabpanel"]) {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  padding: var(--panel-padding);
+}
+.panel-tabs-root :where([role="tabpanel"][hidden]) { display: none; }
+/* Two sidebar panels head themselves with a row of tabs, and the sidebar
+   narrows to PANES.sidebar.min (240px), so the row has to survive there:
+   equal shares that are allowed to shrink, one line, and an ellipsis once a
+   label outgrows its share. At that minimum the longer labels do still clip,
+   which is why each tab carries its own text as a title. The query below
+   measures the tab row, not the sidebar, so keep the gutters here as well --
+   a panel that adds its own inset would compress at a different width. Keep
+   the whole recipe here rather than in each panel: written twice it drifts,
+   and note the query only ever resolves for descendants of the container,
+   never for the tab row that declares it. */
+.panel-tabs {
+  container-type: inline-size;
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-divider);
+}
+.panel-tabs > :where([role="tab"]) {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: --spacing(2) --spacing(1);
+  cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@container (max-width: 15rem) {
+  .panel-tabs > :where([role="tab"]) { padding-inline: 2px; font-size: 0.8125rem; }
+}
+/* Selected and unselected read the same in every panel that uses this row --
+   an underline in the primary colour and nothing else -- so the recipe lives
+   here beside the layout rather than once per panel, where it drifted. */
+.panel-tabs > :where([role="tab"]) {
+  color: var(--color-text-secondary);
+  border-bottom: 2px solid transparent;
+}
+.panel-tabs > :where([role="tab"][data-selected]) {
+  color: var(--color-brand);
+  border-color: var(--color-brand);
+}
+/* The unread mark a tab wears when its pane has something in it nobody has
+   read yet. */
+.panel-tabs .unread {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--color-brand);
+}
+/* A dropdown needs the same room between its words and its edge that every
+   button and text field has. Skeleton leaves a select's inline padding unset
+   deliberately -- the padding is also what the native arrow is drawn in, and
+   it would rather leave that alone than guess -- so a select's text sat flush
+   against the left of its own background everywhere one appears. The start
+   matches the space Skeleton gives an input; the end is wider, to leave the
+   arrow room of its own. */
+@utility select { padding-inline: calc((var(--field-size) - --spacing(0.5)) / 2 + var(--spacing)) --spacing(6); }
+/* Skeleton's text fields draw their edge as an inset ring and only make the
+   native focus outline transparent; Safari paints an `auto` outline in its
+   own blue regardless, and a scrolling ancestor clips it to a few sides. The
+   ring is the focus indicator, so the outline goes. Controls the browser
+   draws itself keep theirs. */
+textarea:focus-visible, select:focus-visible,
+input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]):focus-visible { outline: none; }
+
+/* ---------------------------------------------------------------- timeline */
+
+/* The history, in the column the comments otherwise have. The panel wears the
+   shared strip (`panel-tabbed`) and its three views -- the day, the month, the
+   bookmarks -- are its own, in its own file. What is left here is the one
+   thing every selectable moment in it shares: which one is being looked at. */
+/* The moment being looked at. A tinted ground and nothing else: the row was
+   also carrying a left stripe, which is a second way of saying the one thing
+   the background already says, and in a list of revisions two devices for
+   "this one" is one too many. */
+.timeline-here,
+.timeline-here:hover {
+  background: var(--color-row-selected);
+  border-radius: 4px;
+}
+
+/* Whatever is left when the document is not showing takes the room it would
+   have had: the source if it is there, the comments otherwise. */
+main.reader.no-preview .editorpane,
+main.reader.no-preview:not(.editing) .sidebar {
+  flex: 1 1 auto;
+}
+.viewport.away {
+  /* Keep the frame's viewport intact while it is out of the layout. Giving
+     an iframe zero dimensions can reset its document scroll position. */
+  position: fixed;
+  visibility: hidden;
+  pointer-events: none;
+  top: 0;
+  left: 0;
+  width: var(--held-width);
+  height: var(--held-height);
+}
+.editorpane.away {
+  display: none;
+}
+
+/* What stands where the document would be, before there is one to show. The
+   card, for an editor who has not chosen a compiler; "not yet rendered", for
+   a reader who is never asked to fetch one. It takes the room the frame would
+   have had and sits on the same ground, so the pane does not change shape
+   when the first page arrives. */
+.latexpane {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  background: var(--color-shell);
+}
+.latexpane .notyet {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: --spacing(3);
+  padding: --spacing(8);
+  max-width: 40rem;
+}
+/* The card's own actions sit on one line and wrap rather than stack, so a
+   narrow pane does not turn three buttons into three rows. */
+.latexpane .notyet .notyet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: --spacing(2);
+}
+main.reader.source-right .latexpane {
+  order: 1;
+}
+
+/* A compile is the one thing in this application that takes seconds, so it is
+   the one thing with a spinner. */
+.spinner {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin-right: 0.4em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: librepaper-spin 700ms linear infinite;
+}
+@keyframes librepaper-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
+/* Which side the source is on is an order, not a different tree: moving the
+   frame between parents would reload the document and lose the reader's place
+   in it. The column stays first whichever way round the other two are. */
+main.reader.source-right .viewport {
+  order: 1;
+}
+main.reader.source-right .editorpane {
+  order: 3;
+  border-right: 0;
+  border-left: 1px solid var(--color-pane-edge);
+}
+
+/* ------------------------------------------------------------------- grips */
+
+/* The separator between two panes. Dragging it moves the split; while it is
+   dragged only the guide line follows the pointer, and the real width -- with
+   the iframe reflow that comes with it -- is applied once, on release. */
+.grip {
+  position: relative;
+  /* The width the layout counts (`GRIP` in panes.js); the hand gets more
+     than the eye does, below. Stacked above its neighbours so that the extra
+     reach lands on the grip and not on the frame or the editor beside it. */
+  flex: 0 0 0.375rem;
+  z-index: 5;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+}
+/* Twenty-four pixels to take hold of, centred on the six that are drawn: the
+   target size WCAG asks for, and a separator that has to be hit exactly is one
+   that gets missed. The reach does overlap the last few pixels of whatever
+   scrollbar sits against it, which is the trade: a scrollbar is dragged by a
+   thumb with room either side of it, a separator is a line. */
+.grip::before {
+  content: "";
+  position: absolute;
+  inset: 0 -9px;
+}
+/* A short bar in the middle says there is something here to drag before the
+   pointer has found it. It gives way to the full-height highlight on hover. */
+.grip::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 40px;
+  translate: -50% -50%;
+  border-radius: 1px;
+  background: var(--color-border-strong);
+  pointer-events: none;
+  transition: background 0.15s;
+}
+.grip:hover,
+.grip:focus-visible {
+  background: var(--color-brand);
+  outline: none;
+}
+.grip:hover::after,
+.grip:focus-visible::after {
+  background: transparent;
+}
+.grip-guide {
+  position: fixed;
+  top: var(--librepaper-bar);
+  bottom: 0;
+  width: 2px;
+  background: var(--color-brand);
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* ---------------------------------------------------------------- the source
+ *
+ * CodeMirror brings its own layout and no opinion about how it should look, so
+ * this is where it is dressed as part of the application: the monospace the
+ * rest of the shell uses, on the page's own background, with the chrome an
+ * editor needs and nothing else.
+ */
+.editorhost {
+  min-height: 0;
+  display: grid;
+}
+.cm-editor {
+  height: 100%;
+  min-height: 0;
+  background: var(--color-shell);
+  color: var(--color-text);
+  font-family: var(--font-editor);
+  font-size: 14px;
+  line-height: 1.6;
+}
+/* The pane already has a border, and the focus ring belongs to the window
+   rather than to a column that fills it. */
+.cm-editor.cm-focused {
+  outline: none;
+}
+/* The scroller is the editor's own scrolling box: this is the pane that
+   scrolls, and it is why the window does not. */
+.cm-editor .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  line-height: inherit;
+}
+.cm-editor .cm-content {
+  padding: --spacing(4) --spacing(4) --spacing(4) --spacing(2);
+  caret-color: var(--color-brand);
+}
+/* Line numbers are furniture: present, and quieter than the text. */
+.cm-editor .cm-gutters {
+  background: var(--color-shell);
+  border: 0;
+  padding-left: --spacing(3);
+  color: var(--color-line-number);
+}
+.cm-editor .cm-lineNumbers .cm-gutterElement {
+  padding-inline: --spacing(2);
+}
+.cm-editor .cm-activeLineGutter,
+.cm-editor .cm-activeLine {
+  background: color-mix(in srgb, var(--color-brand) 5%, transparent);
+}
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground,
+.cm-editor .cm-content ::selection {
+  background: color-mix(in srgb, var(--color-brand) 18%, transparent);
+}
+.cm-editor .cm-searchMatch {
+  background: color-mix(in srgb, var(--color-brand) 14%, transparent);
+}
+.cm-editor .cm-panels {
+  background: var(--color-subtle);
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+/* The Vim status line -- `-- INSERT --`, a pending count, `:` and `/` as they
+ * are typed -- is a panel like the search and lint ones, and sits in the same
+ * `.cm-panels` box, so it has their colours already. The field a command is
+ * typed in is an input, and an input does not inherit its colour on its own. */
+.cm-editor .cm-vim-panel input {
+  color: inherit;
+  font: inherit;
+}
+/* Vim's block cursor in normal mode: a block the size of the letter it sits
+ * on, in the caret's colour, with the letter shown in the page's background
+ * colour on top of it. The package's own pink is a theme it injects ahead of
+ * this stylesheet, so at equal specificity these win; the letter's colour it
+ * writes on the element itself, which is what the one `!important` is for. */
+.cm-editor .cm-fat-cursor {
+  background: var(--color-brand);
+  color: var(--color-on-brand) !important;
+}
+.cm-editor:not(.cm-focused) .cm-fat-cursor {
+  background: none;
+  outline: solid 1px var(--color-brand);
+}
+
+/* Somebody else's caret, and their name beside it.
+ *
+ * The binding draws the caret as an absolutely positioned element, hands the
+ * name through a `--name` custom property, and puts a colour class on it. What
+ * is left to the page is the shape of it, and where the name goes: above the
+ * line rather than in it, so that nobody's name pushes anyone's text around.
+ * The binding's own base theme puts the label below the line, which these
+ * rules override.
+ *
+ * The class names are generated from the palette in `lib/collab.js`, one per
+ * colour somebody can be given when they join. They are written out rather
+ * than injected at runtime because the palette is fixed and short: a person's
+ * colour is chosen from six, not from anywhere. Adding a colour there means
+ * adding a rule here, which is the coupling worth having -- the alternative is
+ * building stylesheets in JavaScript to serve six values. */
+.user-color-2f5bd0 { --presence: #2f5bd0; }
+.user-color-c2410c { --presence: #c2410c; }
+.user-color-15803d { --presence: #15803d; }
+.user-color-7c3aed { --presence: #7c3aed; }
+.user-color-be123c { --presence: #be123c; }
+.user-color-0e7490 { --presence: #0e7490; }
+
+.loro-cursor {
+  background: var(--presence, var(--color-brand));
+  box-sizing: border-box;
+}
+/* The label takes its background from `--presence` rather than `currentColor`,
+ * because the rule below sets `color` to white for the name itself: read in
+ * the other order, the label would be white on white. */
+.loro-cursor::before {
+  content: var(--name);
+  position: absolute;
+  top: -1.4em;
+  left: -2px;
+  padding-inline: --spacing(1.5);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  font-family: var(--typo-base--font-family);
+  color: var(--color-text-inverse);
+  background: var(--presence, var(--color-brand));
+  white-space: nowrap;
+  border-radius: var(--radius-base);
+  opacity: 0.85;
+  transition: opacity 0.2s;
+  user-select: none;
+  pointer-events: none;
+  z-index: 5;
+}
+.loro-cursor:hover::before {
+  opacity: 1;
+}
+
+/* The run of text somebody else has selected. Kept faint: it sits behind
+ * prose that has to stay readable while they are choosing what to do with
+ * it. */
+.loro-selection {
+  background: var(--presence, var(--color-brand));
+  opacity: 0.25;
+}
+
+/* -------------------------------------------------------------- annotating */
+
+/* Every annotation acts on a selection, so the bar over that selection is
+   the whole of the interface for making one: there is no armed mode and no
+   tool strip to keep a palette in step with.
+
+   The bar that appears over a selection in the document, offering the verbs
+   that can act on it. Hidden until a selection places it: the inline style is
+   what shows it, so a bar with nowhere to be is never on the screen. */
+#selectionbar {
+  position: fixed;
+  z-index: 20;
+  display: none;
+}
+
+/* A resolved annotation is settled business: one line, clipped to the width of
+   the column rather than to a number of characters, so how much of it shows is
+   the reader's choice of column width. */
+/* A collapsed note opens from the keyboard as well as the mouse, so this is
+   a button where it is the only thing in the card. It keeps the card's own
+   type and colour: what it looks like is one line of text, which is what it
+   is. */
+button.summary {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.summary {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+/* ------------------------------------------------------------------- brand */
+
+/* The mark is a page in two puzzle pieces, pine and ink, and the word beside
+   it on the landing page is Gotham HTF outlined into paths in the file, so
+   there is no brand font to serve: a page still reaches out to nobody. The
+   editable sources are in assets/brand/; see Logo.svelte. */
+
+/* The documentation layout, table of contents and prose rules moved to
+   documentation.css: the static docs site pulls in exactly that file, and
+   none of the reader chrome around it. */
+
+/* ------------------------------------------------------------- the phone */
+
+main.reader.adapted {
+  position: relative;
+  padding-bottom: calc(var(--spacing) * 14 + env(safe-area-inset-bottom));
+}
+.mobile-pane-nav { display: none; }
+main.reader.adapted .mobile-pane-nav {
+  position: absolute;
+  z-index: 8;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing);
+  overflow-x: auto;
+  overscroll-behavior: contain;
+  height: calc(var(--spacing) * 14 + env(safe-area-inset-bottom));
+  padding: var(--spacing) calc(var(--spacing) * 2) max(var(--spacing), env(safe-area-inset-bottom));
+  border-top: 1px solid var(--color-pane-edge);
+  background: var(--color-shell);
+}
+.mobile-pane-nav > * { flex-shrink: 0; }
+/* The row of panels a phone gets in place of the rail beside the column. It
+   is only ever touched, so it is sized for a finger rather than for a
+   pointer: the 44px a thumb needs, where the rail beside a mouse gets the
+   32px that reads better in a column. Which face the main area wears is not
+   in here: that is the pair in the bar at the top. */
+.mobile-pane-nav :where(.icon-control) { width: 2.75rem; height: 2.75rem; }
+main.reader .sidebar, main.reader .editorpane, main.reader .viewport, main.reader .latexpane {
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+main.reader .cm-scroller, main.reader .panel { overscroll-behavior: contain; }
+
+@media (max-width: 760px) {
+  /* Keep the workspace inside the viewport. The bottom navigation chooses
+     which full-height pane is active; the page itself never becomes a stack
+     of independently scrolling documents. */
+  main.reader {
+    position: relative;
+    height: calc(100dvh - var(--librepaper-bar));
+    overflow: hidden;
+  }
+  main.reader .sidebar,
+  main.reader .editorpane,
+  main.reader .viewport,
+  main.reader .latexpane {
+    min-height: 0;
+  }
+  main.reader .sidebar { display: none; }
+  main.reader.mobile-sidebar .sidebar {
+    display: flex;
+    flex: 1 1 100%;
+    order: 0;
+    border-right: 0;
+  }
+  main.reader.mobile-sidebar .grip,
+  main.reader.mobile-sidebar .editorpane,
+  main.reader.mobile-sidebar .latexpane { display: none; }
+  main.reader.mobile-document .sidebar,
+  main.reader.mobile-document .editorpane,
+  main.reader.mobile-document .grip { display: none; }
+  main.reader.mobile-document .viewport:not(.away),
+  main.reader.mobile-document .latexpane {
+    display: flex;
+    flex: 1 1 100%;
+    order: 0;
+  }
+  main.reader.mobile-source .sidebar,
+  main.reader.mobile-source .latexpane,
+  main.reader.mobile-source .grip { display: none; }
+  main.reader.mobile-source .editorpane {
+    display: grid;
+    flex: 1 1 100%;
+    order: 0;
+    border: 0;
+  }
+  #selectionbar {
+    left: 50% !important;
+    right: auto;
+    top: auto !important;
+    bottom: calc(var(--spacing) * 16 + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+  }
+}
+
+/* --------------------------------------------------------------- menus */
+
+/* A line in one of the menus. The shape is a desktop menu's: a gutter on the
+   left wide enough for a tick, the name, and whatever the line has to say on
+   the right -- the keyboard shortcut, or why the item is unavailable. The
+   gutter is there whether or not this menu has anything to tick, so the names
+   in a menu start at one place rather than two. */
+.menuitem {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: --spacing(3);
+  width: 100%;
+  padding: --spacing(1.5) --spacing(2.5) --spacing(1.5) --spacing(7);
+  border-radius: calc(var(--radius-base) - 2px);
+  font-size: var(--text-sm);
+  line-height: var(--panel-line-height);
+  white-space: nowrap;
+  cursor: default;
+}
+.menuitem-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The tick sits in the gutter rather than in the line, so a checked item and
+   an unchecked one are the same width and nothing shifts when it changes. */
+.menuitem-check {
+  position: absolute;
+  left: --spacing(2);
+  width: --spacing(3.5);
+  text-align: center;
+  color: var(--color-link);
+}
+/* What the keyboard already does. Quiet, right-aligned, and never the reason
+   the line is as wide as it is. */
+.menuitem-keys {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.menuitem:hover:not([data-disabled]),
+.menuitem[data-highlighted]:not([data-disabled]) {
+  background: var(--color-brand);
+  color: var(--color-on-brand);
+}
+/* Everything the highlighted line carries goes white with it, including the
+   tick and the shortcut, which are otherwise tinted against the panel. */
+.menuitem:hover:not([data-disabled]) .menuitem-check,
+.menuitem[data-highlighted]:not([data-disabled]) .menuitem-check,
+.menuitem:hover:not([data-disabled]) .menuitem-keys,
+.menuitem[data-highlighted]:not([data-disabled]) .menuitem-keys {
+  color: inherit;
+  opacity: 0.85;
+}
+/* An option that is not available now says so by going pale, so the reason a
+   click does nothing can be seen before the click. */
+.menuitem[data-disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* A separator holding one of the named ratios says so, so the split can be
+   felt as well as seen. */
+.grip-guide.held {
+  width: 3px;
+  background: var(--color-brand);
+}
+
+/* The quiet sign that clicking in one pane no longer takes the other along.
+   Not a control: the toolbar is not where a preference set once belongs. */
+.grip-aside {
+  position: absolute;
+  top: --spacing(2);
+  left: 50%;
+  translate: -50% 0;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+.grip-aside svg {
+  width: --spacing(3);
+  height: --spacing(3);
+}
+
+/* A figure, where the editor would be. An image is shown as itself and a PDF
+   through the browser's own viewer, which gives the first page without this
+   application carrying a PDF renderer of its own. */
+.figureview {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  overflow: auto;
+  padding: --spacing(4);
+  background: var(--color-subtle);
+}
+.figureview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.figureview object {
+  width: 100%;
+  height: 100%;
+  min-height: --spacing(96);
+  border: 0;
+}
+
+.filelist .chooser {
+  display: none;
+}
+
+/* Shared controls use the same shape; ordinary icon actions stay quiet. */
+.icon-standard { --btn-size: 1.0625rem; }
+.icon-plain:hover:not(:disabled) { background: var(--color-row-hover); }
+.icon-control:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+
+/* ------------------------------------------------------------- menubar */
+
+/* The row of menus in the bar reads like the File, Edit, View row of a
+   desktop window: words with air around them and nothing else, until one is
+   pointed at or opened. The row is one control rather than five buttons --
+   see lib/menubar.svelte.js -- so the open word is the one that looks
+   pressed, and hovering the next one moves there. */
+.menubar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: --spacing(0.5);
+}
+.menubar-item {
+  padding: --spacing(1) --spacing(2);
+  border: 0;
+  border-radius: calc(var(--radius-base) - 2px);
+  background: transparent;
+  font-size: var(--text-sm);
+  line-height: var(--panel-line-height);
+  color: var(--color-text);
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+/* Pointing at a word is a hint; opening it is a state. Neither borrows the
+   accent colour: that belongs to the line you are about to choose inside the
+   panel, and a bar that lights up as brightly as its own menu reads as five
+   buttons again. */
+.menubar-item:hover:not(:disabled):not([data-disabled]) {
+  background: var(--color-row-hover);
+  color: var(--color-text);
+}
+.menubar-item[data-state="open"] {
+  background: var(--color-row-selected);
+  color: var(--color-text);
+}
+.menubar-item:disabled,
+.menubar-item[data-disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+.menubar-item:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -1px;
+}
+
+/* ------------------------------------------------------------- switches */
+/* The skin for Skeleton's switch, which is Zag's: a track and a thumb, and
+   every state read off a `data-` attribute rather than off the input, which
+   the machine hides. Written here rather than in either panel because the
+   changes panel and the settings dialog both wear it, and a switch that
+   differed between them would be two switches. */
+.switch { position: relative; flex: none; width: 1.8rem; height: 1rem; border-radius: 1rem; background: var(--color-border-strong); transition: background .15s; }
+.switch[data-state="checked"] { background: var(--color-brand); }
+.switch[data-focus-visible] { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.switch-thumb { position: absolute; width: .75rem; height: .75rem; left: .125rem; top: .125rem; border-radius: 50%; background: var(--color-on-brand); transition: transform .15s; }
+.switch-thumb[data-state="checked"] { transform: translateX(.8rem); }
+[data-scope="switch"][data-part="root"] { cursor: pointer; }
+[data-scope="switch"][data-part="root"][data-disabled] { cursor: default; opacity: .6; }
+
+/* ------------------------------------------------------------- settings */
+/* The settings dialog: a page-sized card (see Modal's `full`) holding a
+   navigation column and a body that scrolls on its own, and inside the
+   body one shape of row for every setting. */
+.modal-page { height: calc(100dvh - var(--spacing) * 12); }
+.settings {
+  display: grid;
+  grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
+  gap: --spacing(6);
+  flex: 1 1 auto;
+  min-height: 0;
+  font-family: var(--typo-base--font-family);
+  font-size: var(--panel-font-size);
+  line-height: var(--panel-line-height);
+}
+.settings-nav { display: flex; flex-direction: column; gap: --spacing(0.5); min-height: 0; overflow-y: auto; padding-right: --spacing(2); border-right: 1px solid var(--color-divider); }
+.settings-search { margin-bottom: --spacing(2); }
+.settings-nav-item, .settings-nav-entry { display: block; width: 100%; padding: --spacing(1.5) --spacing(2); border-radius: var(--radius-base); text-align: left; font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.settings-nav-item:hover, .settings-nav-entry:hover { background-color: var(--color-row-hover); }
+.settings-nav-item.current { background-color: var(--color-row-hover); font-weight: var(--panel-title-weight); }
+.settings-nav-entry { padding-left: --spacing(5); font-size: var(--panel-meta-size); color: var(--panel-muted); }
+.settings-nav-empty { padding: --spacing(2); color: var(--panel-muted); }
+.settings-body { min-height: 0; overflow-y: auto; padding-right: --spacing(2); overscroll-behavior: contain; }
+.settings-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: --spacing(3); padding-bottom: --spacing(3); margin-bottom: --spacing(1); border-bottom: 1px solid var(--color-divider); }
+.settings-category { margin: 0; margin-right: auto; font: inherit; font-size: var(--panel-title-size); font-weight: var(--panel-title-weight); }
+.settings-scope { color: var(--panel-muted); font-size: var(--panel-meta-size); }
+
+/* A row: the words at the left, the control at the right, a line under each. */
+.setting-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: --spacing(6); row-gap: --spacing(2); padding: --spacing(3) 0; border-bottom: 1px solid var(--color-divider); }
+.setting-row.stacked { grid-template-columns: minmax(0, 1fr); }
+.setting-row:last-child { border-bottom: 0; }
+.setting-title { font-weight: 500; }
+.setting-description { color: var(--panel-muted); font-size: var(--panel-meta-size); line-height: var(--panel-line-height); }
+.setting-description code { font-size: inherit; }
+.setting-control { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: --spacing(2); min-width: 0; }
+.setting-row.stacked .setting-control { justify-content: flex-start; flex-direction: column; align-items: stretch; }
+.setting-value { color: var(--panel-muted); }
+.setting-select { border: 0; background-color: var(--color-row-hover); font: inherit; border-radius: var(--radius-base); max-width: 100%; }
+/* A text field on the card has to be seen to be a field: Skeleton's input is
+   the card's own colour, so its ring takes the divider's colour until focus. */
+.setting-input, .settings-search { background-color: var(--color-row-hover); --tw-ring-color: var(--color-divider); }
+.setting-input { width: 14rem; max-width: 100%; }
+.setting-textarea { width: 100%; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); font-size: var(--panel-meta-size); background-color: var(--color-row-hover); --tw-ring-color: var(--color-divider); }
+.setting-error { margin: 0; color: var(--color-error-text); font-size: var(--panel-meta-size); }
+.setting-table { font-size: var(--panel-meta-size); border-collapse: collapse; }
+.setting-table th, .setting-table td { text-align: left; padding: --spacing(1) --spacing(4) --spacing(1) 0; }
+.setting-log { font-size: var(--panel-meta-size); max-height: 12rem; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+
+/* The local app's status: the one card in the settings, because it is a
+   state and its action rather than a preference. */
+.setting-status { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: --spacing(3); padding: --spacing(3) --spacing(4); margin: --spacing(2) 0 --spacing(3); border: 1px solid var(--color-divider); border-radius: var(--radius-container); }
+.setting-status-dot { width: --spacing(2.5); height: --spacing(2.5); border-radius: 50%; background-color: var(--color-border-strong); }
+.setting-status[data-tone="good"] .setting-status-dot { background-color: var(--color-success-solid); }
+.setting-status[data-tone="warn"] .setting-status-dot { background-color: var(--color-warning-solid); }
+.setting-status[data-tone="good"] { background: var(--color-success-bg); border-color: var(--color-success-border); color: var(--color-success-text); }
+.setting-status[data-tone="warn"] { background: var(--color-warning-bg); border-color: var(--color-warning-border); color: var(--color-warning-text); }
+.setting-status[data-tone="error"] { background: var(--color-error-bg); border-color: var(--color-error-border); color: var(--color-error-text); }
+
+@media (max-width: 600px) {
+  .settings { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .settings-nav { flex-direction: row; flex-wrap: wrap; align-items: center; gap: --spacing(1); overflow: visible; padding-right: 0; padding-bottom: --spacing(2); border-right: 0; border-bottom: 1px solid var(--color-divider); }
+  .settings-search { width: 100%; margin-bottom: --spacing(1); }
+  .settings-nav-item, .settings-nav-entry { width: auto; }
+  .setting-row { grid-template-columns: minmax(0, 1fr); }
+  .setting-control { justify-content: flex-start; }
+  .setting-status { grid-template-columns: auto minmax(0, 1fr); }
+  .setting-status .setting-control { grid-column: 1 / -1; }
+}
+
+/* ------------------------------------------------------- forced colours */
+
+/* Windows High Contrast and its kin replace every colour on the page with the
+   pair the reader chose, and drop most shadows with them. Everything here
+   says "this one is the current one" with a tint or an inset bar, so in
+   forced colours it said nothing at all. A border is the one thing that
+   survives, so that is what these become. */
+@media (forced-colors: active) {
+  .explorer-row[data-selected],
+  .timeline-here,
+  .panel-tabs > [role="tab"][aria-selected="true"],
+  .icon-control[aria-pressed="true"] {
+    outline: 2px solid;
+    outline-offset: -2px;
+  }
+  /* A highlight colour is the content, not decoration: these swatches are
+     the only place in the application where the colour itself is the
+     information, so they keep their own. */
+  .color-swatch { forced-color-adjust: none; }
+  .color-swatch.selected { outline: 3px solid; outline-offset: 1px; }
+}
+
+/* ---------------------------------------------------------------- toasts */
+
+/* Twenty rem of message, or the window if the window is narrower than that:
+   at 320px the fixed width stood off the right-hand edge with the end of
+   every sentence past it. Skeleton owns the toast element, so this is a
+   global class rather than a scoped one. */
+.toast-card {
+  width: 20rem;
+  max-width: calc(100vw - var(--spacing) * 8);
+}
+
+/* ------------------------------------------------------- proposed changes */
+
+/* A change somebody has offered, drawn in the text it would change.
+ *
+ * Neither of these is the document: the words are a drawing over text that
+ * still says what it said, and they stay that way until the proposal resolves.
+ * So they are marked as insertions and deletions rather than coloured, which
+ * is also what a screen reader announces them as. */
+.proposal-added {
+  text-decoration: underline;
+  text-decoration-style: solid;
+  text-underline-offset: 2px;
+  background: color-mix(in srgb, var(--presence, var(--color-brand)) 12%, transparent);
+}
+
+/* Struck through but still readable. A reviewer deciding whether to lose a
+ * sentence has to be able to read the sentence. */
+.proposal-removed {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+/* The author's own draft, while track changes is on.
+ *
+ * Coloured, where a coauthor's proposal is tinted by who they are: the
+ * presence colour answers "whose change is this", and here there is nobody to
+ * tell apart. The colour is added to the insertion and deletion marks rather
+ * than used instead of them -- it is the second cue, so that the marks still
+ * read without it. */
+.proposal-added.proposal-mine {
+  background: color-mix(in srgb, var(--color-success-solid) 18%, transparent);
+  text-decoration-color: var(--color-success-text);
+}
+
+.proposal-removed.proposal-mine {
+  color: var(--color-error-text);
+  text-decoration-color: var(--color-error-text);
+  opacity: 1;
+}
+
+/* The hunk being looked at, so that a decision taken in the margin is visibly
+ * about this passage and not the one below it. */
+.proposal-selected {
+  outline: 2px solid var(--presence, var(--color-brand));
+  outline-offset: 1px;
+  border-radius: var(--radius-base);
+}
+
+/* Shared control and status classes used by application components. */
+.lp-control-brand { background: var(--color-brand); color: var(--color-on-brand); border-color: var(--color-brand); }
+.lp-control-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-brand-hover); }
+.lp-control-brand:active:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-brand-pressed); }
+.lp-control-danger { background: var(--color-error-solid); color: var(--color-error-on-solid); border-color: var(--color-error-solid); }
+.lp-control-danger:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { filter: brightness(.94); }
+.lp-control-success { background: var(--color-success-solid); color: var(--color-success-on-solid); border-color: var(--color-success-solid); }
+.lp-control-success:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { filter: brightness(.94); }
+.lp-control-neutral { background: var(--color-subtle); color: var(--color-text); border-color: var(--color-border); }
+.lp-control-neutral:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
+.lp-control-outline { background: transparent; color: var(--color-text); border-color: var(--color-border-strong); }
+.lp-control-outline:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
+.lp-control-outline-brand { background: transparent; color: var(--color-brand); border-color: var(--color-brand); }
+.lp-control-outline-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-selected); }
+.lp-control-tonal { background: var(--color-subtle); color: var(--color-text); border-color: transparent; }
+.lp-control-tonal:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
+.lp-control-tonal-brand { background: var(--color-row-selected); color: var(--color-brand); border-color: transparent; }
+.lp-control-tonal-brand:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) { background: var(--color-row-hover); }
+:where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-outline, .lp-control-outline-brand, .lp-control-tonal, .lp-control-tonal-brand):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+:where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-outline, .lp-control-outline-brand, .lp-control-tonal, .lp-control-tonal-brand):disabled,
+:where(.lp-control-brand, .lp-control-danger, .lp-control-success, .lp-control-neutral, .lp-control-outline, .lp-control-outline-brand, .lp-control-tonal, .lp-control-tonal-brand)[aria-disabled="true"] {
+  background: var(--color-disabled-bg);
+  color: var(--color-disabled-text);
+  border-color: var(--color-border);
+  cursor: not-allowed;
+  opacity: 1;
+}
+.lp-tone-warning { color: var(--color-warning-text); background: var(--color-warning-bg); border: 1px solid var(--color-warning-border); }
+.lp-tone-error { color: var(--color-error-text); background: var(--color-error-bg); border: 1px solid var(--color-error-border); }
+.lp-tone-neutral { color: var(--color-text-secondary); background: var(--color-subtle); border: 1px solid var(--color-border); }
+.lp-text-secondary { color: var(--color-text-secondary); }
+.lp-text-muted { color: var(--color-text-muted); }
+.lp-text-error { color: var(--color-error-text); }
+.lp-text-warning { color: var(--color-warning-text); }
+.lp-hover-brand:hover { color: var(--color-brand); }
+.lp-hover-error:hover { color: var(--color-error-text); }
+button.lp-tone-error:hover:not(:disabled):not([aria-disabled="true"]):not([data-disabled]) {
+  background: color-mix(in srgb, var(--color-error-bg), var(--color-error-border) 30%);
+}
+button.lp-tone-error:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }

@@ -1,0 +1,233 @@
+# Assistant channel protocol
+
+The assistant channel connects one LibrePaper browser to one local runner. It
+is a live relay, never a server queue or transcript. The runner owns model
+execution, local task queues, and reconciliation after reconnecting. The server
+keeps only socket handles and a bounded set of event digests for duplicate
+suppression.
+
+## Create and connect
+
+An authenticated reader creates a channel with:
+
+```http
+POST /api/documents/{slug}/chat
+```
+
+The response is `{ "id": ID, "token": TOKEN, "ephemeral": true }`. The token
+is a capability for this channel and is never put in a URL. The channel expires
+after one hour with both peers disconnected, or can be explicitly closed with:
+
+```http
+DELETE /api/documents/{slug}/chat/{id}
+X-LibrePaper-Chat-Token: TOKEN
+```
+
+Both peers connect to `/api/documents/{slug}/chat/{id}/socket`, pass the usual
+document authentication and same-origin checks, then send this first frame
+within ten seconds:
+
+```json
+{ "type": "join", "token": "TOKEN", "role": "user" }
+```
+
+`role` is `user` for the browser and `agent` for the local runner. There is one
+socket per role. A successful join receives `ready` and both connected peers
+receive `presence` whenever either socket connects or disconnects:
+
+```json
+{ "type": "ready", "browser": true, "agent": true }
+{ "type": "presence", "browser": true, "agent": false }
+```
+
+The runner also sends a private 48-character `binding_nonce` in its join. The
+first runner join binds that nonce to the channel; reconnects must present the
+same value. A different or missing runner binding is refused, so loss of the
+local task ledger cannot make an existing channel look like an empty new one.
+Deleting or expiring the channel clears the binding and requires a new browser
+conversation.
+
+An agent's `ready` also includes an opaque `execution_epoch`. The server keeps
+its document/conversation lease in the catalog, renews it every ten seconds,
+and expires it after sixty seconds without renewal. Replacement and disconnect
+fence the old epoch. Ordinary `presence` frames do not replace the epoch.
+The runner stores it outside model context and its MCP adapter sends
+`X-LibrePaper-Runner-Conversation` and `X-LibrePaper-Execution-Epoch` on calls.
+Mutations check the epoch again in their commit transaction; recovery uses the
+epoch captured when the effect was prepared. External MCP clients do not need
+these sidebar headers. Renderer routing uses separate conversation/token headers.
+
+Closing a socket temporarily detaches that peer and leaves the channel alive
+until expiry or explicit deletion. Events sent while the other peer is absent
+are rejected; the local runner queues and reconciles work itself. A document
+access revocation closes affected sockets. No event is replayed on reconnect.
+
+## Events
+
+Every event has an `id` (at most 128 bytes). The server relays accepted events
+to both peers and returns `{ "type": "ack", "id": ID }` to the sender. A retry
+with the same ID and identical content is acknowledged without another
+delivery during the current connection. Detaching either peer clears relay
+deduplication. The runner retains up to 4,096 compact admissions for the
+lifetime of the conversation, independently of its 256 full task snapshots,
+so eviction and reconnect cannot turn a retry into new execution. A legacy or
+missing admission ledger makes that conversation recovery-only; new work
+requires a new channel.
+An acknowledgment confirms relay delivery, while a task event confirms local admission. Reusing an ID for different content returns `409`. Events are
+bounded by the 64 KiB WebSocket frame limit; text is at most 32 KiB and context
+is at most 16 KiB. A channel accepts at most 600 new events per rolling minute;
+identical retries do not consume that budget.
+
+The browser sends an assistant request as `message`:
+
+```json
+{
+  "type": "message", "id": "request-1", "text": "Tighten this paragraph",
+  "task": { "kind": "tighten", "scope": "selection" },
+  "context": {
+    "file": "paper.typ",
+    "selection": { "path": "paper.typ", "exact": "...", "prefix": "...", "suffix": "...", "position": 120 },
+    "revision": "rev-7"
+  }
+}
+```
+
+Supported task kinds are `proofread`, `tighten`, `rewrite`, `explain`,
+`outline`, `respond`, `fix`, and `refine`. Supported scopes are `selection`,
+`file`, and `document`. The server validates the vocabulary and forwards the
+request without interpreting document content.
+
+The runner streams full answer snapshots with a stable `task_id` and a new
+event `id` for each snapshot:
+
+```json
+{
+  "type": "answer", "id": "answer-event-1", "task_id": "request-1",
+  "seq": 3, "text": "The passage argues…", "truncated": false
+}
+```
+
+`seq` is a positive JavaScript-safe integer from the persisted task revision.
+The browser replaces the task's answer only with a newer snapshot; reconnects
+can replay the last snapshot without duplicating the transcript entry. Answer
+text has the same 32 KiB limit as message text. A capped answer includes an
+explicit truncation notice and sets `truncated`. Interrupted tasks retain their
+partial answer; task status indicates whether it finished. Legacy `message`
+output remains supported. Task lifecycle is reported separately:
+
+```json
+{
+  "type": "task", "id": "event-2", "task_id": "request-1",
+  "status": "working", "text": "Reading the selected section"
+}
+```
+
+Valid statuses are `queued`, `working`, `needs_input`, `completed`, `failed`,
+`cancelled`, and `interrupted`. `text` and optional `context` explain a status
+or carry structured results. Completed results include an `effects` object:
+`confirmed` contains receipt-backed effects, `refused` contains tool refusals,
+and `unresolved` contains operations whose outcome needs receipt
+reconciliation. A refusal by itself does not change a normally ended turn into
+a failed task.
+
+Lost MCP responses can be reconciled with `document_result` using the original
+operation identity. Compact mutation outcomes are stored in the mutation's own
+transaction and are scoped to document, actor, request digest, and operation
+epoch. Expired or missing evidence remains unknown; lookup never reexecutes a
+mutation. Independent batches retain the existing aggregate `committed` status
+for processed batch requests: only each item's status establishes whether that
+item committed, was refused, or remains unknown. A recovered batch can therefore
+report confirmed effects while still requiring reconciliation of other items.
+
+The browser requests cancellation with:
+
+```json
+{ "type": "cancel", "id": "cancel-1", "task_id": "request-1" }
+```
+
+The runner reports `cancelled` when the model confirms interruption. If the
+model finishes before interruption takes effect, it reports the actual completed
+result. Cancellation does not undo edits already accepted by the user.
+
+A `needs_input` task carries `context.input` with `request_id`, `kind` set to
+`permission`, a `message`, and permission `options` normalized for the browser
+as `{ "id": "...", "label": "...", "kind": "allow_once" }`. Bounded
+`details` can provide a command, file paths, or a diff. These details are
+displayed as text, and option kinds distinguish approval from rejection. The
+browser responds with one offered option ID or cancels the request:
+
+```json
+{
+  "type": "input", "id": "input-1", "task_id": "request-1",
+  "request_id": "permission-1", "response": { "option": "allow_once" }
+}
+```
+
+Cancellation uses `"response":{"cancelled":true}`. The runner accepts only
+an option offered for the front pending request and binds the response to both
+task and request IDs. It queues at most eight overlapping permissions in
+arrival order. Each permission and each model turn has a 30-minute deadline;
+time spent waiting on an answered permission does not consume the turn limit.
+Completed assistant messages carry `context.task_id`; clients upsert by that
+identity so reconciliation does not duplicate answers.
+
+The runner advertises the controls it supports:
+
+```json
+{
+  "type": "capabilities", "id": "cap-1",
+  "capabilities": { "steer": false, "cancel": true, "preview": true, "input": true }
+}
+```
+
+For browser-side candidate rendering, the runner asks for a preview:
+
+```json
+{
+  "type": "preview_request", "id": "preview-1", "task_id": "request-1",
+  "base_revision": "base-tree-sha", "revision": "candidate-tree-sha",
+  "candidate_id": "candidate-1", "candidate_token": "renderer-token"
+}
+```
+
+The browser fetches the immutable candidate manifest and source files through
+authenticated same-origin requests:
+
+```
+GET /api/documents/{slug}/agent/candidates/{candidate_id}
+GET /api/documents/{slug}/agent/candidates/{candidate_id}/source?path=paper.typ
+```
+
+When a candidate is private to the agent actor, the browser sends its
+short-lived `candidate_token` as `X-LibrePaper-Candidate-Token`; it is never
+placed in a URL. Published candidates may omit this token.
+
+The manifest contains `base_revision`, `revision`, `tree_digest` (the same
+value as `revision`, under the name the rest of the MCP surface uses for a
+projection digest), `main`, `files`, and optional render `settings`. `files`
+includes every text and asset entry; source responses are exact UTF-8 text
+and assets continue to use their content digest. The browser returns
+diagnostics tied to that candidate revision:
+
+```json
+{
+  "type": "preview_result", "id": "preview-1-result",
+  "request_id": "preview-1", "task_id": "request-1",
+  "base_revision": "base-tree-sha", "revision": "candidate-tree-sha", "ok": true,
+  "diagnostics": []
+}
+```
+
+The browser pins the fetched candidate tree and computes its canonical digest.
+It renders only if that digest equals `revision`; it does not require the live
+editor to still equal `base_revision`. Verification never mutates the shared
+document. Unavailable candidate sources or assets cause a verification refusal.
+
+Only the runner may send `task`, `capabilities`, and `preview_request`. Only
+the browser may send `cancel`, `input`, and `preview_result`. `message` is permitted in
+both directions. The server rejects wrong-role events, malformed values,
+oversized payloads, and delivery when the recipient is disconnected.
+
+There are no HTTP message-post, polling, listen, cursor, or transcript
+endpoints. Document edits, comments, and suggestion acceptance continue to
+use their ordinary authenticated document operations.

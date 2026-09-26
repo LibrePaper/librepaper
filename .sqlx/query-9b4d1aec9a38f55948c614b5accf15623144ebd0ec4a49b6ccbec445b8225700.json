@@ -1,0 +1,93 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO accounts(id,kind,provider,provider_subject,handle,display_name,email,status)\n             VALUES($1,'registered',$2,$3,$4,$5,$6,'active')\n             ON CONFLICT(provider,provider_subject) WHERE kind='registered' DO UPDATE SET\n               handle=excluded.handle,display_name=excluded.display_name,email=excluded.email,last_seen_at=now()\n             WHERE accounts.status='active'\n             RETURNING accounts.id,accounts.kind,accounts.provider,accounts.provider_subject,\n                       accounts.handle,accounts.display_name,accounts.email,accounts.status,\n                       accounts.session_generation,accounts.preferences,accounts.created_at,\n                       accounts.last_seen_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "provider",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "provider_subject",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "handle",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "session_generation",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "preferences",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9b4d1aec9a38f55948c614b5accf15623144ebd0ec4a49b6ccbec445b8225700"
+}

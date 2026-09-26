@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO grants(document_id,account_id,role,source_link_hash) VALUES($1,$2,$3,$4)\n             ON CONFLICT(document_id,account_id) DO UPDATE SET\n               role=excluded.role,source_link_hash=excluded.source_link_hash",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8f5126ddb6064dd156de10aef7176a25aa736fc25d0b913f69e442ed2eab6cf9"
+}

@@ -1,0 +1,23 @@
+/* The application's styles, in the order they have to be in.
+ *
+ * Tailwind first, then Skeleton's utilities on top of it, then the theme that
+ * colours them, then the parts of LibrePaper that no framework has anything to
+ * say about: the resizable panes, the editor, the document frame, the comment
+ * column.
+ *
+ * A published document is styled by none of this. Its stylesheet lives in the
+ * engine crate and is inlined into the document itself, because a published
+ * document is a standalone file served from another origin and has to stand on
+ * its own.
+ */
+@import "tailwindcss";
+@import "@skeletonlabs/skeleton";
+@import "./theme.css";
+@import "./librepaper.css";
+
+/* Where to look for the classes actually used, since the pages are Svelte
+   components rather than files Tailwind scans by default. */
+@source "../**/*.{svelte,js,html}";
+
+/* The light theme must not follow the operating system's dark preference. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));

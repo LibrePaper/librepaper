@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT storage_key AS \"key!\" FROM document_assets WHERE storage_key=ANY($1)\n           UNION SELECT archive_key FROM document_labels WHERE archive_key=ANY($1)\n           UNION SELECT snapshot_key FROM document_snapshots WHERE snapshot_key=ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e14f84e993400d466675ec7c608c93618f1b6eb867d6511156145033777926c6"
+}

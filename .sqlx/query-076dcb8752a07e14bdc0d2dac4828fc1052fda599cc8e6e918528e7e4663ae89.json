@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM grants WHERE document_id=$1 AND source_link_hash IS NOT NULL\n             AND NOT (source_link_hash=ANY($2))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "ByteaArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "076dcb8752a07e14bdc0d2dac4828fc1052fda599cc8e6e918528e7e4663ae89"
+}

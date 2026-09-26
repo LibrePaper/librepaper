@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM document_snapshots\n                             WHERE snapshot_key=$1 AND delete_after<=now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fd8fba3ee12d9f48a5824a00eefba7641f3c3304bd8c93d7c024abbc8dc9aac7"
+}

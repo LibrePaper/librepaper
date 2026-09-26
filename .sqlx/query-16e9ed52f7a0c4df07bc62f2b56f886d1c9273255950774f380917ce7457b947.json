@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE replies SET author_account_id=NULL,author_key='erased',\n             author_label='Deleted user' WHERE author_account_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "16e9ed52f7a0c4df07bc62f2b56f886d1c9273255950774f380917ce7457b947"
+}

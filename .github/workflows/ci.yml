@@ -1,0 +1,164 @@
+# rustfmt, clippy and the tests, on every push and pull request.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # The pages are Svelte and Skeleton, bundled by vite; the binary embeds
+      # what that build produces, so the tests need it before they can read a
+      # page. The build also checks the pages against the design system.
+      - uses: oven-sh/setup-bun@v2
+      # The sync check reads the typst example the way a PDF reader does, by
+      # extracting its text with Poppler's pdftotext; check:typst-pdf needs
+      # pdfinfo from the same package. .cargo/config.toml links through mold,
+      # and gcc reports a missing mold as "cannot find 'ld'". The native
+      # LaTeX tests drive a real TeX Live -- pdflatex, xelatex, bibtex and
+      # biber, with what the paper corpus and a biblatex fixture load -- and
+      # skip themselves on a machine without one, so it is installed here
+      # rather than let them pass by doing nothing.
+      - run: >-
+          sudo apt-get install -y --no-install-recommends
+          poppler-utils mold
+          texlive-latex-base texlive-latex-recommended texlive-fonts-recommended
+          texlive-bibtex-extra texlive-xetex biber
+      - run: make test
+
+  # `.sqlx/` is the compile-time SQL cache: it is what lets an offline build
+  # verify every query against `crates/librepaper/migrations/postgres/
+  # 0001_catalog.sql` without a live database, and it goes stale the moment a
+  # query or that migration changes. This job is the thing that would
+  # otherwise let a stale cache merge: none of the jobs above build with
+  # SQLX_OFFLINE=false, so none of them would notice.
+  sqlx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install sqlx-cli --locked --no-default-features --features postgres
+      # make sqlx-check starts its own disposable PostgreSQL with
+      # `postgres-dev` (Docker is preinstalled on this runner) and fails if
+      # `cargo sqlx prepare --check` finds a query the checked-in cache does
+      # not cover.
+      - run: make sqlx-check
+
+  # SPEC-server-is-a-log.md §14.2: the idempotency and recovery contracts
+  # (the single-writer lease, compaction coverage proof, the two
+  # deployment-shaped gates) live only in these PostgreSQL-gated cases, which
+  # `make test` excludes on purpose because they TRUNCATE whatever database
+  # they are pointed at. --test-threads=1 is mandatory: several of them count
+  # every commit PostgreSQL records, and a concurrent case would look like a
+  # regression.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: librepaper-local
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGPASSWORD: librepaper-local
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y --no-install-recommends postgresql-client
+      # Each test file truncates the tables it uses, so it wants a database
+      # nobody else is writing to at the same time; a throwaway database per
+      # invocation below keeps that true without serializing the whole job
+      # into one process.
+      - run: |
+          for db in lp_lib lp_gates; do
+            createdb -h 127.0.0.1 -U postgres "$db"
+          done
+      # The recovery spike of 14.1 lives in `src/log/recovery.rs`, inside the
+      # library, and not in `tests/`: every one of its items is a claim about
+      # `Sequencer`'s internals, and an external test file cannot build a
+      # `Sequencer` at all. So it runs here, with the rest of `--lib`.
+      - run: >-
+          LIBREPAPER_TEST_POSTGRES_URL=postgresql://postgres:librepaper-local@127.0.0.1:5432/lp_lib
+          cargo test -p librepaper --lib -- --ignored --test-threads=1
+      - run: >-
+          LIBREPAPER_TEST_POSTGRES_URL=postgresql://postgres:librepaper-local@127.0.0.1:5432/lp_gates
+          cargo test -p librepaper --test deployment_gates -- --ignored --test-threads=1
+
+  quarto-toolchains:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: quarto-dev/quarto-actions/setup@v2
+      - uses: r-lib/actions/setup-r@v2
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::knitr
+            any::rmarkdown
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # mold for the same reason the test job installs it: .cargo/config.toml
+      # links through it, and a machine without it fails to link with gcc
+      # saying "cannot find 'ld'" when it means mold. This job builds the crate
+      # like any other, so it needs the linker like any other.
+      - run: >-
+          sudo apt-get install -y --no-install-recommends
+          mold bubblewrap texlive-latex-base texlive-latex-recommended
+      - run: python -m pip install jupyter ipython nbformat
+      - run: make test-external
+
+  # The components, in a real browser. Its own job because it is minutes rather
+  # than seconds, and because nothing else covers this: a substrate change once
+  # left three of these importing a library that had been uninstalled, and they
+  # stayed broken for as long as nobody looked, since every other check passed.
+  #
+  # The editor not mounting at all was invisible the same way. A suite that
+  # stays green while the editor cannot come up is measuring the wrong thing,
+  # which is the whole reason this job exists.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@v2
+      # Each test bundles its own page with vite and drives it through the
+      # Chrome DevTools Protocol, so chromium is the whole of what it needs --
+      # no binary, no database.
+      - run: sudo apt-get install -y --no-install-recommends chromium-browser
+      - run: cd web && bun install --frozen-lockfile
+      - run: make browser
+
+  # The fuzz targets, briefly: long enough to catch a regression on an
+  # invariant, not long enough to explore. `make fuzz` locally runs them for
+  # as long as FUZZ_SECONDS says.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            fuzz
+      - uses: oven-sh/setup-bun@v2
+      - run: cargo install cargo-fuzz --locked
+      - run: make fuzz FUZZ_SECONDS=20 FUZZ_TARGETS="paths document"

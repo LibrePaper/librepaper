@@ -1,0 +1,51 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{graphicx}
+
+\title{Learn LibrePaper with \LaTeX}
+\author{LibrePaper}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.22\linewidth]{librepaper-icon.png}
+  \caption{The LibrePaper icon, loaded from the project.}
+\end{figure}
+
+Welcome to LibrePaper. Edit this sentence in the browser and watch the preview update. Your \LaTeX{} source, comments, highlights, and labels travel with the document.
+
+\section{Source and preview}
+
+This file is \LaTeX. LibrePaper compiles PDF in the browser with a pinned WebAssembly engine and Biber. The server synchronizes the source and stores successful PDFs; it does not compile the document.
+
+\section{A small scientific example}
+
+For a sample of size $n$, the standard error of a mean is
+\begin{equation}
+  SE = \frac{s}{\sqrt{n}}.
+  \label{eq:standard-error}
+\end{equation}
+
+A formula is a rule a machine can be made to follow, the point Ada Lovelace made when she described the Analytical Engine weaving algebraic patterns \cite{lovelace1843}. Type \texttt{@} in the editor to cite another entry from \texttt{references.bib}.
+
+\input{sections/rendering.tex}
+
+Equation~\ref{eq:standard-error} shows how a labelled equation can be referenced from prose. Change the equation or its caption, then make a label so a collaborator can compare the edit with the previous version.
+
+\section{What \LaTeX{} adds}
+
+Packages make the document's capabilities explicit: \texttt{amsmath} provides the equation environment, \texttt{booktabs} improves tables, and \texttt{graphicx} loads the relative image asset. Try changing the estimate and leave a comment on this paragraph.
+
+\section{Working with other clients}
+
+A document previews as HTML by default; choose PDF in the Format menu for printed layout. Choose Automatic, pdfLaTeX, XeLaTeX, or LuaLaTeX in Settings; availability depends on the pinned browser release. A project export creates an independent local copy. Readers receive the stored PDF and do not need \LaTeX{} installed.
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

@@ -1,0 +1,25 @@
+This is XeTeX, Version 3.14159265-2.6-0.999992 (XeTeX WebAssembly 0.3.0) (preloaded format=swiftlatexxetex)
+entering extended mode
+(main.tex
+LaTeX2e <2020-02-02> patch level 2
+L3 programming layer <2020-02-14> (/tex/b20a30ef79872ed1adb42bb47bf86332
+Document Class: article 2019/12/20 v1.4l Standard LaTeX document class
+(/tex/d3fa3ed15375c8f01c53581e1d26134e)) (/tex/ef26107b179df0be5a0ca01f3e4be487
+ (/tex/4f7e05b80964048c825a4dd3f74557f4 (/tex/9fdf92101fe3fc44c6b008dc097d5df6
+(/tex/3152a0f1cad589c575ac7997f66b4f5d)))
+(/tex/60f8a6de5a88dfaf6ccc9467c37a21de (/tex/077c6ec1baafb4b622b3f7ea17c8a3db)
+(/tex/f31d038ca5322ef4fc3fbe391f42695b)))
+(/tex/843c4a4ee0404b93ea384acb44f137ec
+For additional information on amsmath, use the `?' option.
+(/tex/3c27d940d38027ca930d9ecefc615d81 (/tex/785f0b19d3ed9e5a94c5198c4400685e))
+ (/tex/4f806f0319e8e45acb2d0ea8052b7828) (/tex/1bde81ae4bb2198d3f99aa4f0e0b7bd3
+)) (main.aux) (/tex/0c41f180ac83d031cf99284624548e6a) [1] (main.aux) )
+(see the transcript file for additional information)
+Output written on main.xdv (1 page, 6228 bytes).
+Transcript written on main.log.
+I found no \citation commands---while reading file main.aux
+I found no \bibdata command---while reading file main.aux
+I found no \bibstyle command---while reading file main.aux
+(There were 3 error messages)
+
+[1dvipdfmx err: Cannot proceed without the font: /tex/ed048c80fb4b67663b80899b89fe5fba

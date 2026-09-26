@@ -1,0 +1,10 @@
+# Advanced guardrails. Everything here has a documented default; the file
+# exists for the one setting a container deployment cannot do without.
+#
+# Forwarded client identity is trusted only from networks listed here. The
+# proxy is the only thing that reaches LibrePaper, and it sits on the compose
+# `edge` network, whose subnet is fixed in compose.yaml so this can name it.
+# Without this, every visitor is seen as the proxy and they share one address's
+# rate limits.
+trusted_proxies:
+  - 172.29.0.0/16

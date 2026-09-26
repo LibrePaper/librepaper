@@ -1,0 +1,14 @@
+{"documents":1,"rounds":25,"updates":25,"elapsed_ms":5003.211737,"updates_per_second":4.996790324726566,"p50_ms":0.478006,"p95_ms":2.904735,"p99_ms":38.274929,"max_ms":38.274929,"scheduled_p95_ms":3.9787930000000005,"scheduled_p99_ms":38.356804000000004,"scheduled_max_ms":38.356804000000004,"select_one_delta":25,"rep":1}
+{"documents":10,"rounds":25,"updates":250,"elapsed_ms":5003.894367,"updates_per_second":49.96108663858211,"p50_ms":0.909554,"p95_ms":7.093283,"p99_ms":29.151689,"max_ms":34.115637,"scheduled_p95_ms":7.833661,"scheduled_p99_ms":29.503455000000002,"scheduled_max_ms":34.477231999999994,"select_one_delta":250,"rep":1}
+
+thread 'writer_socket_end_to_end_benchmark' (1212697) panicked at crates/librepaper/tests/writer_socket_bench.rs:155:10:
+connect to the live server: Http(Response { status: 429, version: HTTP/1.1, headers: {"content-type": "application/json; charset=utf-8", "cache-control": "no-store", "retry-after": "60", "content-length": "134", "date": "Mon, 21 Sep 2026 01:28:15 GMT"}, body: Some([123, 34, 101, 114, 114, 111, 114, 34, 58, 34, 100, 101, 112, 108, 111, 121, 109, 101, 110, 116, 32, 114, 101, 115, 111, 117, 114, 99, 101, 32, 97, 108, 108, 111, 119, 97, 110, 99, 101, 32, 101, 120, 104, 97, 117, 115, 116, 101, 100, 34, 44, 34, 114, 101, 97, 115, 111, 110, 34, 58, 34, 119, 111, 114, 107, 95, 99, 111, 110, 99, 117, 114, 114, 101, 110, 99, 121, 34, 44, 34, 115, 99, 111, 112, 101, 34, 58, 34, 100, 101, 112, 108, 111, 121, 109, 101, 110, 116, 34, 44, 34, 114, 101, 116, 114, 121, 97, 98, 108, 101, 34, 58, 116, 114, 117, 101, 44, 34, 114, 101, 116, 114, 121, 95, 97, 102, 116, 101, 114, 34, 58, 54, 48, 125]) })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    writer_socket_end_to_end_benchmark
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.60s

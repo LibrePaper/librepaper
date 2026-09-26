@@ -1,0 +1,269 @@
+//! The Quarto preview adapter: command construction, option validation and
+//! log-line recognition for a managed `quarto preview` watcher. Kept
+//! behaviorally identical to the pre-adapter implementation -- an existing
+//! Quarto preview client sees no difference on the wire.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use tokio::process::Command;
+
+use super::{ArtifactKind, Plan, Session, Watch};
+use crate::local::protocol::{
+    PreviewRequest, QuartoExecutionMode, QuartoRenderPolicy, QuartoRenderScope,
+};
+use crate::local::quarto::{find_quarto, verify_bound_manifest, BindingStore};
+
+pub(crate) struct QuartoWatch {
+    entrypoint: String,
+    kind: ArtifactKind,
+}
+
+fn require_embedded_html(command: &mut Command, kind: ArtifactKind) {
+    if kind == ArtifactKind::Html {
+        command.arg("--embed-resources");
+    }
+}
+
+impl Watch for QuartoWatch {
+    fn rendering_started(&self, line: &str) -> bool {
+        line.contains("processing file:")
+            || line.starts_with("pandoc")
+            || line.contains("Rendering")
+    }
+
+    fn render_finished(&self, line: &str) -> bool {
+        line.starts_with("Output created:")
+    }
+
+    fn output_path(&self, root: &Path) -> Option<PathBuf> {
+        resolve_rendered_page(root, &self.entrypoint, self.kind)
+    }
+
+    fn kind(&self) -> ArtifactKind {
+        self.kind
+    }
+}
+
+/// Candidate rendered outputs for a watched `.qmd`, checked in order and
+/// resolved to the first that exists as a regular file within `root`. Quarto
+/// may write the render next to the source, or under a project output
+/// directory; canonicalizing and checking `starts_with(root)` refuses a
+/// symlink or an entrypoint crafted to escape the bound root.
+pub(crate) fn resolve_rendered_page(
+    root: &Path,
+    entrypoint: &str,
+    kind: ArtifactKind,
+) -> Option<PathBuf> {
+    let rendered = Path::new(entrypoint).with_extension(kind.as_str());
+    let candidates = [
+        root.join(&rendered),
+        root.join("_site").join(&rendered),
+        root.join("_output").join(&rendered),
+        root.join("docs").join(&rendered),
+    ];
+    let root_canon = std::fs::canonicalize(root).ok()?;
+    for candidate in candidates {
+        if let Ok(canon) = std::fs::canonicalize(&candidate) {
+            if canon.starts_with(&root_canon) && canon.is_file() {
+                return Some(canon);
+            }
+        }
+    }
+    None
+}
+
+/// Validates a `POST previews` request naming the Quarto engine (the
+/// default) and builds the `quarto preview` command to run. `existing` is
+/// the live session map, consulted for the same one-binding/one-root
+/// exclusions the pre-adapter implementation enforced inline.
+pub(crate) fn plan(
+    existing: &HashMap<String, Session>,
+    request: &PreviewRequest,
+    bindings: &BindingStore,
+) -> Result<Plan, String> {
+    let crate::local::protocol::PreviewInputs::Quarto(options) = &request.inputs else {
+        return Err("quarto preview planned for another engine".into());
+    };
+    options.validate()?;
+    let kind = match options.format.as_str() {
+        "html" | "revealjs" => ArtifactKind::Html,
+        "pdf" => ArtifactKind::Pdf,
+        _ => return Err("managed Quarto preview supports html, revealjs, or pdf output".into()),
+    };
+    if options.execution_mode != QuartoExecutionMode::WorkingTree {
+        return Err("managed preview supports linked working-tree mode only".into());
+    }
+    if options.render_scope != QuartoRenderScope::Document {
+        return Err("managed preview supports document scope only".into());
+    }
+    if options.policy != QuartoRenderPolicy::ProjectDefaults {
+        return Err("managed preview uses project-default render policy".into());
+    }
+    let super::BoundScope {
+        binding,
+        entrypoint,
+    } = super::bind_scope(
+        existing,
+        request,
+        bindings,
+        &options.binding_id,
+        &options.main,
+    )?;
+    // Quarto's own half: the data files it declares are part of what a
+    // render reads, so they are verified with the rest of the inventory.
+    let mut inventory = request.manifest.clone();
+    crate::local::quarto::add_declared_inputs(&binding.root, &options.data_inputs, &mut inventory)?;
+    verify_bound_manifest(&binding.root, &inventory)?;
+    if let Some(expected) = options.shared_tree_sha256.as_deref() {
+        let actual =
+            crate::local::quarto::inventory_manifest(&binding.root, &request.manifest)?.tree_sha256;
+        if actual != expected {
+            return Err("preview source inventory is stale; synchronize before previewing".into());
+        }
+    }
+    super::refuse_escaping_entrypoint(&binding.root, &entrypoint)?;
+    let mut command = Command::new(find_quarto().ok_or("Quarto is not installed")?);
+    command
+        .current_dir(&binding.root)
+        .arg("preview")
+        .arg(&entrypoint)
+        .args(["--no-serve", "--no-browser", "--to", &options.format]);
+    if let Some(profile) = &options.profile {
+        command.args(["--profile", profile]);
+    }
+    for (key, value) in &options.parameters {
+        command.arg("-P").arg(format!(
+            "{key}:{}",
+            serde_json::to_string(value).map_err(|e| e.to_string())?
+        ));
+    }
+    // HTML must be one self-contained file because the preview endpoint
+    // serves one artifact. PDF already has that property.
+    require_embedded_html(&mut command, kind);
+    // Pairing is the trust boundary for local execution. Keep the inherited
+    // environment so Quarto sees the same runtimes and packages as it does
+    // when the user invokes it from a terminal.
+    let cache = binding.root.join(".quarto").join("preview-cache");
+    std::fs::create_dir_all(&cache).map_err(|error| error.to_string())?;
+    command.env("DENO_DIR", cache.join("deno"));
+    command.env("XDG_CACHE_HOME", &cache);
+    if let Some(path) = std::env::var_os("PATH") {
+        let paths: Vec<_> = std::env::split_paths(&path)
+            .filter(|path| path.is_absolute())
+            .collect();
+        if let Ok(path) = std::env::join_paths(paths) {
+            command.env("PATH", path);
+        }
+    }
+    Ok(Plan {
+        command,
+        adapter: Box::new(QuartoWatch {
+            entrypoint: entrypoint.clone(),
+            kind,
+        }),
+        entrypoint,
+        root: binding.root,
+        binding_id: options.binding_id.clone(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::preview::Previews;
+    use crate::local::protocol::{ManifestEntry, QuartoJobOptions};
+
+    #[test]
+    fn html_preview_uses_quartos_embedding_flag() {
+        let mut command = Command::new("quarto");
+        require_embedded_html(&mut command, ArtifactKind::Html);
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["--embed-resources"]);
+    }
+
+    #[test]
+    fn rendered_page_uses_the_artifact_kind_and_stays_inside_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("paper.html"), "<html></html>").unwrap();
+        std::fs::write(root.path().join("paper.pdf"), b"%PDF-1.7\n%%EOF\n").unwrap();
+
+        assert_eq!(
+            resolve_rendered_page(root.path(), "paper.qmd", ArtifactKind::Html),
+            Some(std::fs::canonicalize(root.path().join("paper.html")).unwrap())
+        );
+        assert_eq!(
+            resolve_rendered_page(root.path(), "paper.qmd", ArtifactKind::Pdf),
+            Some(std::fs::canonicalize(root.path().join("paper.pdf")).unwrap())
+        );
+        assert_eq!(
+            resolve_rendered_page(root.path(), "../paper.qmd", ArtifactKind::Pdf),
+            None
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires installed Quarto and a PDF engine"]
+    async fn real_quarto_pdf_preview_publishes_complete_pdf_bytes() {
+        let state = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let source = b"---\nformat: pdf\n---\n\n# PDF preview\n";
+        std::fs::write(project.path().join("paper.qmd"), source).unwrap();
+        let bindings = BindingStore::new(state.path());
+        let binding = bindings
+            .grant(
+                "https://paper.example",
+                "paper",
+                project.path(),
+                "paper.qmd",
+            )
+            .unwrap();
+        let request = PreviewRequest {
+            protocol: 2,
+            project: "paper".into(),
+            origin: "https://paper.example".into(),
+            snapshot: "revision".into(),
+            generation: 1,
+            inputs: crate::local::protocol::PreviewInputs::Quarto(QuartoJobOptions {
+                binding_id: binding.id.clone(),
+                main: "paper.qmd".into(),
+                format: "pdf".into(),
+                ..Default::default()
+            }),
+            manifest: vec![ManifestEntry {
+                path: "paper.qmd".into(),
+                sha256: crate::results::sha256(source),
+                size: source.len() as u64,
+            }],
+            source: None,
+            workspace: crate::local::protocol::WorkspaceRequest::Bound {
+                binding_id: binding.id,
+            },
+            builder: "quarto".into(),
+            output: "pdf".into(),
+            entrypoint: "paper.qmd".into(),
+        };
+        let mut previews = Previews::default();
+        let id = previews.start(&request, &bindings).await.unwrap();
+        let mut artifact = None;
+        for _ in 0..120 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            artifact = previews.0.get(&id).unwrap().latest.lock().await.clone();
+            if artifact.is_some() {
+                break;
+            }
+        }
+        previews.stop(&id).await;
+        let artifact = artifact.expect("Quarto preview did not publish a PDF");
+        assert_eq!(artifact.kind, ArtifactKind::Pdf);
+        assert!(super::super::looks_complete(
+            ArtifactKind::Pdf,
+            "paper.qmd",
+            &artifact.bytes
+        ));
+    }
+}

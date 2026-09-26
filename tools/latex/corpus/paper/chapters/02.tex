@@ -1,0 +1,22 @@
+\section{The second chapter}
+
+The second chapter carries the vector figure, because a PDF included into a
+PDF is a different path through \verb|graphicx| than a PNG is, and a
+distribution that can do one and not the other should say so in its log
+rather than in a stack trace.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.4\textwidth]{fig/two.pdf}
+  \caption{A vector figure, included by a relative path.}
+  \label{fig:two}
+\end{figure}
+
+Some mathematics, so the second chapter is not only pictures:
+\begin{equation}
+  \sum_{n=1}^{\infty} \frac{1}{n^{2}} = \frac{\pi^{2}}{6}.
+\end{equation}
+
+Figure~\ref{fig:two} and Figure~\ref{fig:one} are both referenced here, one
+of them backwards across a file boundary, which is the case that makes a
+one-pass compile wrong.

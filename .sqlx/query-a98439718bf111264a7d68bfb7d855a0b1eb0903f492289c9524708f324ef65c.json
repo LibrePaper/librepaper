@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n                 d.id,\n                 d.slug,\n                 d.title,\n                 COALESCE(SUM(a.byte_length), 0)::bigint AS \"figure_bytes!\",\n                 COALESCE((\n                   SELECT COALESCE(SUM(archive_bytes), 0)::bigint\n                   FROM (\n                     SELECT DISTINCT ON (archive_key) archive_bytes\n                     FROM document_labels\n                     WHERE document_id = d.id AND archive_key IS NOT NULL\n                   ) DISTINCT_labels\n                 ), 0)::bigint AS \"archive_bytes!\",\n                 (COALESCE(\n                   (SELECT snapshot_bytes FROM document_snapshots WHERE document_id = d.id AND delete_after IS NULL),\n                   0\n                 ) + d.uncompacted_update_bytes)::bigint AS \"history_bytes!\"\n               FROM documents d\n               LEFT JOIN document_assets a ON a.document_id = d.id\n               WHERE d.owner_id = $1 AND d.status = 'active'\n               GROUP BY d.id, d.slug, d.title, d.uncompacted_update_bytes\n               ORDER BY (\n                 COALESCE(SUM(a.byte_length), 0) +\n                 COALESCE((\n                   SELECT COALESCE(SUM(archive_bytes), 0)\n                   FROM (\n                     SELECT DISTINCT ON (archive_key) archive_bytes\n                     FROM document_labels\n                     WHERE document_id = d.id AND archive_key IS NOT NULL\n                   ) DISTINCT_labels\n                 ), 0) +\n                 COALESCE((SELECT snapshot_bytes FROM document_snapshots WHERE document_id = d.id AND delete_after IS NULL), 0) +\n                 d.uncompacted_update_bytes\n               ) DESC, d.title ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "slug",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "figure_bytes!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "archive_bytes!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "history_bytes!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "a98439718bf111264a7d68bfb7d855a0b1eb0903f492289c9524708f324ef65c"
+}

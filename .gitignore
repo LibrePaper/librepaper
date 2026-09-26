@@ -1,0 +1,51 @@
+dist/
+librepaper-data/
+docs/examples/*.html
+docs/examples/*_files/
+.envrc
+.env
+
+# The reader shell is built from web/ by bun and vite, and the README is
+# copied in beside it: everything under web/dist is a build output that the
+# binary embeds.
+web/dist/
+.claude
+
+# The docs site: site/.build is the markdown rendered by
+# web/tools/build-site.mjs, and site/_site is what vite.site.config.js builds
+# from it. Both are generated fresh by `make site`.
+site/.build/
+site/_site/
+
+# Cargo build output.
+target/
+
+# The Cargo lockfile is committed: this builds a binary, not a library.
+!Cargo.lock
+
+# Installed dependencies are generated; keep manifests and lockfiles tracked.
+node_modules/
+
+# The LaTeX distributions, mirrored locally by tools/latex/tools/mirror.mjs. Hundreds of
+# megabytes of somebody else's release; a manifest and a script rebuild it.
+tools/latex/mirror/
+
+# What a TeX run leaves beside a document in tools/latex/corpus. The corpus keeps
+# its sources and the logs the engines produced; everything else is remade by
+# `node tools/latex/tools/texlive.mjs`.
+tools/latex/corpus/*/main.aux
+tools/latex/corpus/*/main.bbl
+tools/latex/corpus/*/main.blg
+tools/latex/corpus/*/main.log
+tools/latex/corpus/*/main.pdf
+tools/latex/corpus/*/main.synctex.gz
+tools/latex/corpus/*/chapters/*.aux
+tools/latex/corpus/article/article.bib
+
+# What wrangler leaves beside deploy/latex/wrangler.toml when it deploys.
+deploy/latex/.wrangler/
+
+# The CodeMirror binding is fetched from its fork by `make loro-codemirror`
+# and verified against loro-codemirror.lock. The source lives in the fork, so
+# there is one copy of it rather than two to keep in step.
+web/vendor/loro-codemirror/

@@ -1,0 +1,618 @@
+   Compiling librepaper v0.1.0 (/tmp/librepaper.frugal-validation/crates/librepaper)
+    Finished `release` profile [optimized] target(s) in 5m 29s
+     Running unittests src/lib.rs (target/release/build/librepaper/70dda87749af1db1/out/librepaper-70dda87749af1db1)
+
+running 590 tests
+test agent_query::tests::a_manifest_carries_projection_digests_and_no_invented_asset_size ... ok
+test agent_query::tests::bibliography_fields_allow_spacing_and_commas_in_values ... ok
+test agent_query::tests::a_projection_query_reads_the_request_its_own_extras ... ok
+test agent_query::tests::bibliography_index_stops_at_each_balanced_entry ... ok
+test agent_query::tests::a_range_names_the_file_by_its_projected_digest ... ok
+test agent_query::tests::malformed_bibliography_tail_does_not_panic ... ok
+test agent_query::tests::search_reports_duplicate_unicode_matches ... ok
+test agent_query::tests::source_preserves_final_newline_and_byte_range ... ok
+test agent_query::tests::section_ignores_fenced_headings_and_rejects_duplicate_titles ... ok
+test agent_query::tests::pagination_cursor_is_bound_to_revision_and_query ... ok
+test assistant::acp::tests::acp_permission_options_match_the_sidebar_contract ... ok
+test agent_query::thread_pagination_tests::a_cursor_is_refused_once_the_collection_has_changed ... ok
+test agent_query::thread_pagination_tests::a_thread_listing_continues_in_the_catalogue ... ok
+test agent_query::thread_pagination_tests::a_trimmed_window_continues_at_the_last_row_returned ... ok
+test agent_query::thread_pagination_tests::one_thread_pages_its_replies_and_reports_a_missing_comment ... ok
+test assistant::acp::tests::shutdown_waits_for_connection_resources_to_drop ... ok
+test agent_query::tests::budget_marks_truncation_without_returning_a_whole_file ... ok
+test assistant::context::tests::instructions_ask_for_prose_and_never_for_a_result_schema ... ok
+test agent_query::tests::paragraph_pages_advance_without_reexpanding_to_the_start ... ok
+test agent_query::tests::structural_pages_keep_cursor_when_page_is_incomplete ... ok
+test assistant::lifecycle::tests::lock_probe_observes_flock_without_removing_the_inode ... ok
+test assistant::lifecycle::tests::state_location_is_private_and_scoped ... ok
+test assistant::context::tests::local_preferences_are_appended_and_bounded ... ok
+test assistant::lifecycle::tests::a_runner_that_died_is_explained_by_its_last_words ... ok
+test assistant::runtime::tests::an_agent_command_is_required_before_a_runner_can_start ... ok
+test assistant::runtime::tests::answer_bounds_are_bytes_and_preserve_utf8 ... ok
+test assistant::runtime::tests::interrupted_tasks_are_retained_without_reexecution ... ok
+test assistant::runtime::tests::pre_read_preserves_render_identity_and_uses_comment_identity ... ok
+test assistant::runtime::tests::queue_is_bounded_and_cancelled_ids_remain_known ... ok
+test agent_query::tests::repeated_queries_reuse_bounded_indexes_for_large_immutable_source ... ok
+test assistant::runtime::tests::the_adapter_environment_carries_paths_and_no_credential ... ok
+test assistant::task::tests::evicting_a_full_record_does_not_forget_admission ... ok
+test assistant::task::tests::request_fingerprint_is_independent_of_object_key_order ... ok
+test assistant::journal::tests::result_ids_are_receipt_bound_and_invented_ids_are_rejected ... ok
+test assistant::transport::tests::presence_without_epoch_retains_ready_epoch_until_socket_reset ... ok
+test assistant::journal::tests::lookup_from_other_task_cannot_claim_suggestion_ids ... ok
+test auth::core_tests::credentials_cannot_cross_purposes ... ok
+test auth::core_tests::corrupt_missing_or_unreadable_keys_are_not_replaced ... ok
+test auth::core_tests::established_catalog_account_uuid_survives_session_round_trip ... ok
+test auth::core_tests::pictures_travel_in_current_credentials ... ok
+test auth::core_tests::policy_public_description_hides_entries_and_anygithub_stays_restricted ... ok
+test auth::core_tests::publishing_policy_refuses_anonymous_spellings ... ok
+test auth::device::tests::approval_is_idempotent_for_the_same_account ... ok
+test auth::device::tests::cancelled_leader_does_not_leave_a_stale_flight ... ok
+test assistant::journal::tests::summaries_preserve_partial_effects_and_every_item_refusal ... ok
+test assistant::journal::tests::receipt_reconciliation_resolves_the_original_tool_operation ... ok
+test auth::device::tests::concurrent_transient_misses_share_one_error ... ok
+test auth::device::tests::concurrent_token_misses_are_coalesced ... ok
+test assistant::journal::tests::cancelled_proposal_keeps_independent_committed_suggestions ... ok
+test auth::device::tests::provider_rate_budget_fails_new_checks_without_queueing ... ok
+test auth::device::tests::rate_limit_sets_a_shared_cooldown_for_new_tokens ... ok
+test auth::device::tests::transient_provider_failure_is_not_cached ... ok
+test auth::device::tests::user_codes_use_only_the_declared_alphabet ... ok
+test auth::github::tests::account_lookup_uses_basic_auth_and_caches ... ok
+test auth::github::tests::debug_redacts_github_secret ... ok
+test auth::google::tests::debug_redacts_google_secret ... ok
+test auth::device::tests::full_source_limiter_refuses_unknown_keys_without_eviction ... ok
+test auth::github::tests::check_token_distinguishes_invalid_from_transient_failure ... ok
+test automation::mcp::tests::adds_endpoint_metadata_from_standard_initialize_params ... ok
+test automation::mcp::tests::event_stream_selects_matching_response ... ok
+test auth::google::tests::unverified_email_keeps_original_error ... ok
+test auth::google::tests::non_gmail_email_requires_matching_workspace_domain ... ok
+test automation::mcp::tests::normalizes_omitted_or_null_params_before_adding_metadata ... ok
+test automation::mcp::tests::response_errors_are_json_rpc_envelopes ... ok
+test assistant::journal::tests::epoch_files_are_unique_and_exact_path_operations_do_not_cross_delete ... ok
+test automation::peer::tests::automation_peer_debug_redacts_bearer ... ok
+test automation::peer::tests::credential_url_reconstructs_document_scope ... ok
+test automation::peer::tests::parses_pasted_link_without_exposing_key ... ok
+test automation::peer::tests::runner_provenance_is_only_claimed_with_a_lease_to_prove_it ... ok
+test cli::documents::lookup_tests::complete_slugs_and_duplicate_suffixes_cannot_shadow_handles ... ok
+test cli::documents::lookup_tests::failed_document_read_is_not_reported_as_missing_login ... ok
+test cli::documents::lookup_tests::listing_follows_cursors_before_resolving_handles ... ok
+test assistant::journal::tests::document_result_lookup_closes_original_pending_operation ... ok
+test assistant::journal::tests::reconciliation_does_not_leave_historical_unknown_duplicates ... ok
+test cli::documents::lookup_tests::named_reader_can_resolve_a_full_slug_without_listing_permission ... ok
+test cli::socket_policy_tests::export_modes_parse ... ok
+test cli::tokens::cache_tests::logout_reports_failure_to_remove_a_cache ... ok
+test assistant::runtime::tests::activity_is_durable_and_restart_supersedes_the_last_report ... ok
+test assistant::journal::tests::a_refusal_keeps_the_service_reason_it_used_to_discard ... ok
+test assistant::runtime::tests::restart_keeps_terminal_effects_after_journal_eviction ... ok
+test auth::core_tests::concurrent_file_key_creators_agree ... ok
+test config::tests::request_body_memory_default_and_bounds_are_validated ... ok
+test config::tests::backup_policy_overrides_are_bounded_and_reported ... ok
+test config::tests::pending_ceilings_that_could_not_save_what_they_admit_are_refused ... ok
+test config::tests::the_pending_overrides_validate_what_they_are_given ... ok
+test document::html::tests::detects_html_by_extension ... ok
+test document::html::tests::a_title_of_non_ascii_letters_survives ... ok
+test document::html::tests::a_document_is_named_by_its_own_title ... ok
+test document::html::tests::entities_that_are_not_entities_are_left_alone ... ok
+test document::hunks::tests::a_bridged_hunk_reports_the_words_it_bridged ... ok
+test document::hunks::tests::a_branch_diff_groups_into_one_hunk_per_decision ... ok
+test document::hunks::tests::accepting_every_hunk_is_the_merge_alone ... ok
+test document::hunks::tests::a_branch_whose_base_has_moved_on_still_merges ... ok
+test document::hunks::tests::accepting_one_hunk_keeps_the_other_authors_text_and_attribution ... ok
+test document::hunks::tests::declining_every_hunk_restores_the_base_exactly ... ok
+test document::render::tests::a_footnote_after_the_title_is_dropped_with_its_argument ... ok
+test document::hunks::tests::diff_offsets_are_code_points_on_this_side_of_the_wire ... ok
+test document::render::tests::a_footnotemark_after_the_title_is_dropped_whole ... ok
+test document::render::tests::a_thanks_after_the_title_is_still_dropped_with_its_argument ... ok
+test document::session::astral_tests::a_cursor_past_an_astral_character_resolves_to_the_same_utf16_offset ... ok
+test document::session::astral_tests::an_insert_between_two_astral_characters_splits_neither ... ok
+test document::session::astral_tests::an_astral_document_survives_a_round_trip_through_the_wire ... ok
+test document::session::astral_tests::an_edit_past_an_astral_character_lands_where_it_was_aimed ... ok
+test document::hunks::tests::eight_characters_apart_is_one_decision_and_nine_is_two ... ok
+test document::session::astral_tests::replacing_a_whole_body_keeps_astral_characters_intact ... ok
+test local::acp_agents::tests::a_known_adapter_limitation_travels_with_the_agent ... ok
+test local::acp_agents::tests::a_declaration_is_checked_when_it_is_made_not_when_start_is_pressed ... ok
+test local::acp_agents::tests::a_missing_adapter_falls_back_to_fetching_it_only_when_npx_exists ... ok
+test local::acp_agents::tests::an_installed_adapter_is_preferred_over_fetching_one ... ok
+test auth::device::tests::source_admission_is_bounded_without_eviction ... ok
+test local::acp_agents::tests::an_agent_that_cannot_be_driven_says_why ... ok
+test local::builders::diagnostics::tests::outside_paths_are_not_exposed ... ok
+test local::builders::diagnostics::tests::typst_location_is_kept_only_for_manifest_files ... ok
+test local::builders::tests::tex_builders_are_not_part_of_the_vocabulary ... ok
+test cli::tokens::cache_tests::corrupt_cache_is_preserved_when_login_writes ... ok
+test local::builders::tests::unknown_options_are_rejected_for_every_builder ... ok
+test cli::tokens::cache_tests::replacing_a_loose_file_does_not_write_secrets_into_its_inode ... ok
+test local::connections::tests::an_unknown_name_says_what_to_do_about_it ... ok
+test local::connections::tests::names_are_derived_readably_and_made_unique ... ok
+test local::acp_agents::tests::declaring_a_built_in_overrides_how_it_is_driven_without_duplicating_it ... ok
+test automation::mcp::tests::journal_keeps_unknown_transport_outcome_pending_for_reconciliation ... ok
+test auth::device::tests::provider_calls_never_exceed_the_concurrency_bound ... ok
+test automation::mcp::tests::journal_hooks_record_real_mcp_call_and_receipt ... ok
+test local::discovery::tests::a_missing_or_silent_tool_gets_a_setup_hint ... ok
+test local::discovery::tests::configured_paths_passes_the_given_directories_through ... ok
+test local::discovery::tests::tool_from_banner_keeps_the_version_line ... ok
+test local::credentials::tests::automation_environment_token_requires_configured_origin ... ok
+test local::engine_adapter::tests::invocation_plan_preserves_typed_policy_and_parameters ... ok
+test local::engine_adapter::tests::other_formats_are_left_alone ... ok
+test local::engine_adapter::tests::policy_capabilities_are_version_gated ... ok
+test local::engine_adapter::tests::web_output_is_rendered_self_contained ... ok
+test local::lifecycle::tests::deep_links_only_open_scoped_local_consent ... ok
+test local::acp_agents::tests::a_declared_agent_whose_command_vanished_is_not_offered ... ok
+test local::acp_agents::tests::a_declared_agent_is_offered_and_drives_its_own_command ... ok
+test local::native::tests::a_bounded_log_cut_inside_a_character_decodes_instead_of_panicking ... ok
+test assistant::runtime::tests::cancellation_and_recovery_retain_receipted_suggestions ... ok
+test local::connections::tests::an_idle_connection_expires_rather_than_keeping_a_key_forever ... ok
+test local::connections::tests::a_registered_document_resolves_to_its_protected_link ... ok
+test local::native::tests::canceled_and_expired_commands_do_not_spawn ... ok
+test local::native::tests::truncate_tail_keeps_the_end_and_leaves_a_short_log_untouched ... ok
+test assistant::journal::tests::summaries_include_applications_and_comment_actions_without_source ... ok
+test local::builders::runner::tests::preset_runtime_checks_scope_and_captures_verified_artifact ... ok
+test local::pairing::tests::origin_normalisation_ignores_case_and_matches_port ... ok
+test local::native::tests::a_descendant_holding_stdout_after_the_parent_exits_does_not_stall ... ok
+test local::management::tests::embedded_management_has_no_process_controls_and_escapes_document_names ... ok
+test local::connections::tests::the_same_document_from_one_origin_keeps_one_name ... ok
+test local::paths::tests::replaced_and_missing_executables_are_distinguished ... ok
+test local::presets::tests::a_preset_may_not_choose_what_code_an_engine_loads ... ok
+test local::presets::tests::an_option_is_not_an_environment_entry ... ok
+test local::presets::tests::browser_summary_does_not_include_local_command_details ... ok
+test local::pairing::tests::a_fixed_code_wins_over_service_json ... ok
+test local::presets::tests::ordinary_build_environment_is_still_allowed ... ok
+test local::preview::quarto::tests::html_preview_uses_quartos_embedding_flag ... ok
+test local::preview::quarto::tests::real_quarto_pdf_preview_publishes_complete_pdf_bytes ... ignored, requires installed Quarto and a PDF engine
+test local::preview::quarto::tests::rendered_page_uses_the_artifact_kind_and_stays_inside_the_root ... ok
+test local::protocol::tests::a_relative_path_is_safe_and_an_escaping_one_is_not ... ok
+test local::protocol::tests::job_options_default_when_absent ... ok
+test local::protocol::tests::only_the_supported_builders_are_nameable ... ok
+test local::protocol::tests::quarto_options_encode_the_current_schema_decode_legacy_and_gate_snapshots ... ok
+test local::protocol::tests::source_snapshot_distinguishes_tree_and_materialized_input_identity ... ok
+test local::protocol::tests::v2_build_rejects_command_selection_options ... ok
+test local::protocol::tests::v2_preview_workspace_round_trips_only_bound_binding ... ok
+test local::connections::tests::revoking_an_origin_takes_its_connections ... ok
+test local::pairing::tests::issued_token_authenticates_and_is_stored_hashed ... ok
+test local::quarto::tests::a_bounded_read_enforces_the_limit_when_the_stat_size_understates_the_file ... ok
+test local::management::tests::preset_permissions_can_only_be_granted_and_revoked_locally ... ok
+test local::quarto::tests::a_bounded_read_honours_a_limit_below_the_output_ceiling ... ok
+test local::quarto::tests::a_delayed_render_keeps_the_time_it_started ... ok
+test local::quarto::tests::computation_fingerprint_includes_declared_snapshot_inputs ... ok
+test local::quarto::tests::frozen_cache_identity_covers_profiles_parameters_and_dependencies ... ok
+test local::quarto::tests::collector_keeps_unlabelled_cells_distinct ... ok
+test local::quarto::tests::binding_store_accepts_typst_but_quarto_validation_remains_specific ... ok
+test local::quarto::tests::frozen_cache_md5_matches_rfc_vectors_and_multi_block_source ... ok
+test local::quarto::tests::binding_store_scopes_ids_to_origin_and_project ... ok
+test local::quarto::tests::frozen_document_metadata_rejects_quoted_and_flow_filters ... ok
+test local::quarto::tests::frozen_project_config_rejects_selected_environment_profile ... ok
+test local::pairing::tests::wrong_token_or_origin_does_not_authenticate ... ok
+test local::quarto::tests::imported_html_only_includes_referenced_assets ... ok
+test local::management::tests::management_requires_local_origin_and_nonce_before_mutation ... ok
+test local::lifecycle::tests::stop_request_is_tied_to_the_running_instance ... ok
+test local::quarto::tests::imported_html_follows_nested_css_dependencies ... ok
+test local::quarto::tests::isolated_snapshot_copies_only_verified_regular_inputs ... ok
+test local::quarto::tests::isolated_snapshot_root_is_canonicalized_before_use ... ok
+test local::quarto::tests::isolated_snapshot_rejects_symlink_inputs ... ok
+test local::quarto::tests::nested_document_entrypoint_selects_nested_html_artifact ... ok
+test local::quarto::tests::policies_match_quarto_minor_version ... ok
+test local::quarto::tests::managed_dependency_closure_does_not_publish_private_fallback_data ... ok
+test assistant::journal::tests::sequences_survive_reload_and_old_events_are_bounded ... ok
+test local::quarto::tests::real_quarto_render_reports_success_and_retains_a_failure_log ... ignored, requires installed Quarto
+test local::quarto::tests::managed_dependency_closure_skips_missing_or_unshared_navigation ... ok
+test local::quarto::tests::navigation_kind_is_taken_from_html_tag_not_file_extension ... ok
+test local::quarto::tests::managed_dependency_closure_still_requires_unshared_display_resources ... ok
+test local::quarto::tests::typed_options_reject_shell_and_path_injection ... ok
+test local::quarto::tests::typed_quarto_parameters_preserve_scalar_types ... ok
+test local::quarto::tests::required_resource_is_not_hidden_by_an_earlier_navigation_link ... ok
+test local::service::idempotency_tests::a_request_without_a_key_or_without_quarto_is_never_matched ... ok
+test local::service::idempotency_tests::a_key_is_scoped_to_its_origin_and_project_and_a_fresh_key_is_admitted ... ok
+test local::service::idempotency_tests::an_admitted_key_answers_a_repeat_and_refuses_a_different_request ... ok
+test local::service::recovery_tests::materialized_manifest_digest_matches_the_client_contract ... ok
+test local::service::recovery_tests::recovered_terminal_jobs_always_have_an_expiry_instant ... ok
+test local::quarto::tests::shared_dependency_hashes_change_computation_context ... ok
+test local::service::recovery_tests::recovery_does_not_hide_invalid_current_inputs_with_legacy_fields ... ok
+test local::quarto::tests::revealjs_bundle_preserves_format_and_freshness_context ... ok
+test local::service::supersession_tests::a_superseded_job_is_terminal_and_stops_holding_up_preview ... ok
+test local::service::supersession_tests::supersession_spares_other_projects_newer_generations_and_running_jobs ... ok
+test local::quarto::tests::project_scope_accepts_only_website_or_book ... ok
+test local::quarto::tests::frozen_project_config_parses_yaml_and_rejects_execution_variants ... ok
+test local::tools::tests::pipe_joins_are_bounded_even_when_the_writer_survives ... ok
+test local::zotero::tests::nullable_zotero_fields_are_empty_strings ... ok
+test local::zotero::tests::specified_keys ... ok
+test local::zotero::tests::spreadsheet_suffixes ... ok
+test local::tools::tests::a_tool_override_wins_over_the_search_path ... ok
+test log::admission::tests::the_bound_is_never_wider_than_the_spec_allows ... ok
+test log::budget::tests::a_reservation_is_given_back_when_it_is_dropped ... ok
+test log::budget::tests::a_reservation_larger_than_the_budget_is_never_granted ... ok
+test log::budget::tests::a_waiter_is_woken_by_a_release ... ok
+test local::pairing::tests::expired_grants_and_wrong_origin_or_project_scope_are_rejected ... ok
+test log::budget::tests::the_estimate_has_a_floor ... ok
+test local::pairing::tests::replacing_a_grant_invalidates_the_previous_token ... ok
+test local::quarto::tests::managed_render_persists_frozen_context_identity_atomically ... ok
+test local::presets::tests::editing_a_preset_invalidates_its_grant ... ok
+test log::frame::tests::a_fabricated_length_is_refused_before_it_allocates ... ok
+test log::frame::tests::a_row_round_trips_with_its_attribution ... ok
+test log::frame::tests::a_rows_length_is_exactly_what_the_overhead_helpers_predict ... ok
+test log::frame::tests::a_truncated_row_is_an_error_and_not_a_panic ... ok
+test log::frame::tests::an_empty_row_decodes_to_no_batches ... ok
+test log::frame::tests::an_unknown_version_is_named ... ok
+test log::frame::tests::appending_batches_one_at_a_time_produces_the_same_row ... ok
+test log::pending::tests::a_reservation_is_given_back_when_it_is_dropped ... ok
+test log::pending::tests::a_full_retained_pool_leaves_scratch_untouched ... ok
+test log::pending::tests::an_overflowing_size_refuses_rather_than_wrapping ... ok
+test log::pending::tests::scratch_covers_the_row_and_the_drivers_copy_of_it ... ok
+test log::pending::tests::the_two_pools_are_counted_and_refused_separately ... ok
+test log::recovery::a_command_retires_what_it_committed_and_keeps_what_it_rolled_back ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::a_command_that_produces_no_source_names_the_last_row_and_records_no_after_state ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::a_dependent_update_is_refused_alone_accepted_together_and_survives_compaction_and_restart ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::a_durable_projection_is_stable_and_command_bundles_or_writes_nothing ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::a_flush_over_the_threshold_compacts_without_waiting_for_a_restart ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::a_tab_killed_mid_relay_reconciles_on_reopening_with_no_row_skipped ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::housekeeping_re_asks_for_a_compaction_whose_ask_was_lost ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::offline_work_is_absent_from_a_join_reply_until_sent_and_durable_once_it_is ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::one_housekeeping_pass_flushes_every_due_document_exactly_once ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::opening_more_documents_than_the_budget_holds_evicts_a_subscribed_entry_and_rebuilds_on_demand ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::registry_shutdown_waits_for_scratch_before_retiring_documents ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::source_producing_evidence_matches_the_row_it_names ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test log::recovery::the_startup_scan_compacts_a_document_that_is_not_resident ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test local::service::recovery_tests::legacy_jobs_keep_outputs_and_interrupted_jobs_recover_without_reexecution ... ok
+test log::sequencer::prepare_budget_tests::a_no_op_edit_still_reserves_and_releases_rather_than_skipping_the_budget ... ok
+test log::sequencer::prepare_budget_tests::prepare_refuses_rather_than_forking_when_there_is_no_room_for_the_estimate ... ok
+test local::pairing::tests::revoke_one_leaves_other_projects_paired ... ok
+test log::sequencer::prepare_budget_tests::prepare_reserves_the_parents_estimate_and_releases_it_only_when_the_prepared_source_drops ... ok
+test log::tests::a_base_activated_with_nothing_serialising_it_answers_a_join_with_no_bytes_at_all ... ok
+test log::tests::a_batch_carrying_no_changes_is_acknowledged_without_becoming_a_row ... ok
+test log::tests::a_base_activation_waits_for_a_join_that_is_already_reading_the_log ... ok
+test log::tests::a_batch_whose_start_vector_is_not_covered_is_a_gap_not_an_append ... ok
+test assistant::journal::tests::summary_counts_survive_truncation_and_old_journals ... ok
+test log::tests::a_cancelled_flush_releases_its_scratch_and_keeps_the_work ... ok
+test log::frame::tests::prepared_source_does_not_double_a_large_prefix_allocation ... ok
+test log::tests::a_build_needs_more_than_the_resident_estimate_while_it_runs ... ok
+test log::pending::tests::concurrent_takes_cannot_oversubscribe_the_pool ... ok
+test log::tests::a_complete_batch_is_accepted_without_building_a_cache ... ok
+test log::tests::a_corrupted_batch_is_invalid_rather_than_imported ... ok
+test log::tests::a_failed_flush_does_not_advance_or_broadcast_durable_coverage ... ok
+test log::tests::a_fenced_flush_stops_ingest_and_closes_every_open_socket ... ok
+test log::tests::a_failed_flush_keeps_the_work_charged_and_releases_only_its_scratch ... ok
+test log::tests::a_flushed_row_acknowledges_each_peer_by_its_highest_client_seq_in_it ... ok
+test log::tests::a_flush_whose_response_was_lost_acknowledges_only_the_row_it_proves_is_its_own ... ok
+test local::tools::tests::a_torrential_tool_is_bounded ... ok
+test log::tests::a_join_covering_only_the_base_gets_every_row_as_doc_rows ... ok
+test log::tests::a_join_from_an_empty_vector_gets_the_base_and_every_row ... ok
+test log::tests::a_join_missing_only_the_newest_row_gets_just_that_row ... ok
+test log::tests::a_join_reports_head_and_durable_vectors_separately_while_a_flush_is_pending ... ok
+test cli::tokens::cache_tests::concurrent_logins_keep_every_origin ... ok
+test local::tools::tests::an_exited_wrapper_does_not_wait_for_its_descendants ... ok
+test log::tests::a_reader_on_a_cold_document_is_told_the_source_changed_without_a_digest ... ok
+test log::tests::a_sequencers_charges_live_exactly_as_long_as_the_sequencer_does ... ok
+test log::tests::a_stalled_flush_holds_its_scratch_while_the_buffer_stays_charged ... ok
+test log::tests::a_subscriber_too_slow_even_for_the_close_frame_is_still_closed ... ok
+test log::tests::a_subscriber_too_slow_for_relay_is_closed_rather_than_silently_detached ... ok
+test log::tests::a_successful_flush_notifies_every_editor_but_not_readers_of_the_committed_vector ... ok
+test log::tests::an_ambiguous_commit_that_resolves_releases_each_charge_exactly_once ... ok
+test log::tests::an_empty_catch_up_needs_no_pending_capacity_and_claims_no_durability ... ok
+test log::tests::a_refused_update_leaves_no_reservation_behind ... ok
+test local::tools::tests::a_version_is_read_from_either_stream_and_trimmed_to_one_line ... ok
+test log::tests::concurrent_admission_near_the_limit_cannot_oversubscribe ... ok
+test log::admission::tests::one_caller_past_the_bound_waits_until_a_permit_comes_back ... ok
+test log::tests::every_sequencer_read_refuses_after_compaction_fence ... ok
+test log::tests::no_batch_is_lost_between_a_join_reply_and_the_first_relay_under_concurrent_ingest ... ok
+test log::tests::a_command_with_no_scratch_is_refused_before_it_opens_a_transaction ... ok
+test log::budget::tests::every_way_of_refusing_for_memory_is_counted_once ... ok
+test log::tests::note_compacted_uses_the_row_bytes_it_is_given_rather_than_assuming_zero ... ok
+test log::tests::nothing_is_due_before_anything_arrives ... ok
+test log::tests::shutdown_waits_for_scratch_and_drains_instead_of_reporting_empty ... ok
+test log::tests::pending_is_charged_whether_or_not_the_document_is_warm ... ok
+test log::tests::documents_that_are_each_admissible_still_reach_one_shared_deployment_limit ... ok
+test log::tests::the_transient_reservation_is_released_once_the_entry_is_cached ... ok
+test log::tests::the_buffer_charge_is_exactly_the_row_the_flush_writes ... ok
+test private_files::tests::a_relative_target_publishes_into_the_current_directory ... ok
+test log::tests::work_can_still_be_flushed_with_the_pending_pool_completely_full ... ok
+test quarto::tests::bundle_requires_explicit_engine_and_asset_roles ... ok
+test quarto::tests::context_changes_when_code_or_options_change ... ok
+test quarto::tests::document_metadata_normalizes_quarto_to_markdown ... ok
+test quarto::tests::inline_execution_and_all_includes_invalidate_context ... ok
+test quarto::tests::inline_records_keep_occurrence_identity_and_location ... ok
+test log::tests::every_document_drains_once_the_pressure_clears ... ok
+test quarto::tests::parser_accepts_knitr_comma_options ... ok
+test quarto::tests::parser_preserves_nested_fence_and_labels ... ok
+test quarto::tests::paths_reject_traversal ... ok
+test quarto::tests::plain_code_fence_is_not_an_executable_cell ... ok
+test quarto::tests::typed_parameter_digest_matches_browser_vector ... ok
+test quarto::tests::option_labels_use_yaml_and_fences_consume_long_closers ... ok
+test quarto::tests::unsupported_bundle_engine_is_rejected ... ok
+test room::agent::tests::a_bad_operation_key_says_which_half_is_wrong ... ok
+test results::manifest_contract_tests::manifest_requires_and_roundtrips_engine_and_asset_role ... ok
+test room::agent::tests::applies_unicode_byte_ranges_without_splitting_scalars ... ok
+test room::agent::tests::operation_key_hash_is_injective_for_delimiter_like_inputs ... ok
+test room::agent::tests::rejects_stale_exact_text_and_overlapping_ranges ... ok
+test room::annotation::tests::a_document_anchor_has_a_kind_and_nothing_else ... ok
+test room::annotation::tests::an_anchor_is_one_object_on_the_wire ... ok
+test room::annotation::tests::cursors_do_not_travel_with_an_attachment ... ok
+test room::command::tests::a_refinement_without_it_is_refused ... ok
+test room::command::tests::a_refinement_carries_what_the_caller_last_read ... ok
+test room::command::tests::with_creator_leaves_other_commands_alone ... ok
+test room::comment_anchor_tests::a_comment_reaches_the_other_editor_and_the_public_channel_live ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::command::tests::with_creator_replaces_only_the_creator ... ok
+test room::comment_anchor_tests::a_passage_that_is_deleted_leaves_a_comment_that_says_so ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_anchor_tests::a_quotation_becomes_a_range_the_browser_never_sent ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_anchor_tests::a_refinement_of_a_suggestion_that_moved_is_refused ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_anchor_tests::a_remark_about_the_whole_document_needs_no_passage ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_anchor_tests::a_snapshot_states_the_list_each_peer_may_see ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_anchor_tests::a_suggestion_stays_out_of_the_public_channel ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_anchor_tests::editing_the_document_moves_where_a_comment_points_and_not_what_it_is_about ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_anchor_tests::mcp_validates_a_suggestion_as_it_is_actually_served ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_anchor_tests::repeated_refinements_preserve_intervening_source_edits ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_anchor_tests::version_checked_refinements_preserve_intervening_source_edits ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_anchor_tests::words_nowhere_in_the_document_are_refused_rather_than_placed ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::a_collection_past_the_old_snapshot_budget_is_still_readable ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::a_comment_beyond_the_first_page_is_readable_by_id ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::a_comment_id_from_another_document_is_not_reachable ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::a_concurrent_create_neither_duplicates_nor_drops_a_row ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::a_cursor_is_refused_outside_what_it_was_issued_for ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::a_document_past_the_aggregate_reply_ceiling_still_loads ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::a_reader_pages_only_what_a_reader_may_see ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::a_retried_create_past_the_page_size_stays_one_comment ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::a_row_wider_than_the_byte_budget_is_served_alone_rather_than_refused ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::an_agent_walks_threads_and_its_version_token_survives_paging ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::every_comment_past_the_page_size_is_still_read_back ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::many_short_reply_previews_stay_on_one_comment_page ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::one_thread_longer_than_a_reply_page_is_read_whole ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::one_thread_past_a_thousand_replies_does_not_widen_its_page ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::page_cost_does_not_grow_with_the_collection ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::page_sizing_snapshot_does_not_substitute_rows ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::resolve_reply_and_delete_reach_a_comment_past_the_page_size ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::the_page_boundary_is_exact_in_both_directions ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::the_room_cache_stays_bounded_while_a_large_document_is_paged ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::comment_paging_tests::tied_timestamps_traverse_exactly_once_at_every_page_size ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::label_replay_tests::a_retried_request_id_reports_replay_and_the_first_row ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::locate::html_whitespace_tests::a_decoded_space_collapses_like_any_other ... ok
+test room::locate::html_whitespace_tests::an_ampersand_before_a_wide_character_is_not_sliced_in_half ... ok
+test room::locate::tests::a_passage_broken_over_two_lines_is_still_one_range ... ok
+test room::locate::tests::a_plain_passage_is_found_where_it_is_written ... ok
+test room::locate::tests::a_selection_of_pure_markup_has_nothing_to_comment_on ... ok
+test room::locate::tests::a_selection_running_into_invented_text_keeps_the_words_that_are_real ... ok
+test room::locate::tests::a_selection_starting_in_invented_text_keeps_the_words_that_are_real ... ok
+test room::locate::tests::context_tells_two_identical_sentences_apart ... ok
+test room::locate::tests::context_that_agrees_only_by_a_space_decides_nothing ... ok
+test room::locate::tests::html_tags_and_entities_flatten_to_their_prose ... ok
+test room::locate::tests::identical_sentences_with_nothing_to_tell_them_apart_are_refused ... ok
+test room::locate::tests::markup_around_a_word_is_taken_with_it ... ok
+test room::locate::tests::offsets_are_utf16_so_astral_characters_do_not_shift_a_range ... ok
+test room::locate::tests::the_context_kept_is_the_source_around_the_range ... ok
+test room::locate::tests::the_longer_survival_is_the_one_kept ... ok
+test room::locate::tests::the_right_file_of_several_is_chosen ... ok
+test room::locate::tests::words_that_are_not_in_the_source_are_not_placed ... ok
+test room::message::tests::malformed_fields_on_a_known_tag_are_rejected ... ok
+test room::message::tests::unknown_frames_keep_correlation ... ok
+test room::message::tests::unrelated_fields_are_not_part_of_the_selected_payload ... ok
+test room::outgoing::budget_tests::aggregate_queue_is_reserved_once_and_released_when_receiver_drops ... ok
+test room::outgoing::budget_tests::benchmark_shared_fanout ... ignored
+test room::outgoing::budget_tests::queued_and_in_flight_bytes_release_on_every_drop ... ok
+test room::outgoing::budget_tests::shared_fanout_keeps_one_payload_and_reserves_each_queue ... ok
+test room::proposal_round_trip_tests::a_base_the_room_has_never_seen_is_refused ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::proposal_round_trip_tests::a_proposal_goes_open_update_decide_resolve ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::proposal_round_trip_tests::a_proposal_opens_at_the_base_its_author_forked_at ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::proposal_round_trip_tests::declining_a_proposal_does_not_revert_a_concurrent_writer ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::proposal_round_trip_tests::two_reviewers_deciding_at_once_still_apply_what_they_accepted ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test room::proposals::peer_tests::a_minted_peer_is_never_zero ... ok
+test log::budget::tests::waiting_gives_up_rather_than_hanging ... ok
+test room::proposals::suggestion_tests::a_suggestion_about_text_that_is_not_there_is_refused ... ok
+test room::proposals::suggestion_tests::a_suggestion_against_a_file_that_is_gone_is_refused ... ok
+test room::proposals::peer_tests::a_shared_peer_would_corrupt_two_proposals_into_neither ... ok
+test room::proposals::suggestion_tests::a_suggestion_is_one_decision ... ok
+test room::proposals::suggestion_tests::accepting_a_suggestion_keeps_it_the_suggesters_words ... ok
+test room::proposals::suggestion_tests::a_suggestion_proposing_nothing_cuts_the_passage ... ok
+test room::proposals::tests::a_decision_made_against_a_stale_tip_is_refused ... ok
+test room::proposals::suggestion_tests::declining_a_suggestion_leaves_the_passage_alone ... ok
+test room::proposals::tests::a_proposal_holds_only_its_authors_work_when_the_room_moves_under_it ... ok
+test room::proposals::tests::a_proposal_across_two_files_numbers_its_hunks_in_one_list ... ok
+test room::proposals::tests::accepting_everything_is_the_merge_alone ... ok
+test room::proposals::tests::accepting_one_file_and_declining_the_other_keeps_both_authorships ... ok
+test room::proposals::tests::frontier_bytes_are_what_the_browser_writes ... ok
+test private_files::tests::the_file_is_private_from_the_moment_it_exists ... ok
+test room::proposals::tests::declining_everything_leaves_the_document_where_it_was ... ok
+test room::resolve::cursor_caching_tests::a_passage_found_by_its_words_is_given_cursors_for_next_time ... ok
+test room::resolve::tests::a_comment_on_the_whole_document_is_always_attached ... ok
+test room::resolve::tests::a_file_that_is_gone_is_unresolved_and_says_why ... ok
+test room::resolve::tests::a_comment_on_the_loser_of_a_path_collision_reads_its_own_file ... ok
+test room::resolve::tests::a_passage_edited_in_place_is_modified_not_lost ... ok
+test private_files::tests::a_failed_publication_leaves_no_temporary_and_does_not_destroy_the_target ... ok
+test room::resolve::tests::a_passage_that_was_deleted_says_so_rather_than_moving_elsewhere ... ok
+test room::proposals::tests::main_moving_on_does_not_disturb_a_proposal ... ok
+test room::resolve::tests::an_untouched_passage_resolves_exactly_where_it_was ... ok
+test room::resolve::tests::without_cursors_the_words_are_looked_for ... ok
+test room::resolve::tests::two_equally_good_candidates_are_ambiguous_rather_than_the_first_one ... ok
+test room::resolve::tests::cursors_from_another_file_are_refused_and_the_words_are_used_instead ... ok
+test room::resolve::tests::text_inserted_before_a_passage_moves_it_without_changing_it ... ok
+test room::text::tests::a_combining_mark_stays_with_its_base ... ok
+test room::text::tests::a_cut_inside_a_surrogate_pair_keeps_the_half_as_a_replacement_char ... ok
+test room::text::tests::a_whole_surrogate_pair_comes_back_intact ... ok
+test room::text::tests::the_bounds_are_clamped_rather_than_checked ... ok
+test seed::activity::tests::the_pieces_reassemble_into_the_document ... ok
+test seed::activity::tests::some_steps_are_saved_and_a_few_of_those_are_named ... ok
+test seed::activity::tests::the_work_arrives_in_bursts_on_working_days ... ok
+test seed::activity::tests::the_writing_drafts_and_deletes_and_still_lands_on_the_paper ... ok
+test server::automation_authority_tests::an_agent_still_gets_what_its_link_actually_grants ... ok
+test server::automation_authority_tests::an_owner_session_does_not_widen_the_link_an_agent_was_given ... ok
+test server::automation_authority_tests::a_deployment_ceiling_can_lower_a_link_but_never_raise_one ... ok
+test server::automation_authority_tests::large_state_references_keep_exact_bounded_baseline_bytes ... ok
+test server::automation_authority_tests::mutation_authorization_carries_the_session_generation ... ok
+test server::automation_authority_tests::presenting_no_link_grants_nothing ... ok
+test server::automation_authority_tests::principal_key_is_the_same_on_every_transport ... ok
+test server::chat::tests::conversation_rejects_a_different_runner_binding ... ok
+test server::chat::tests::idle_disconnected_channel_expires_but_connected_channel_survives ... ok
+test server::chat::tests::failed_task_delivery_can_retry_same_sequence ... ok
+test server::chat::tests::invalid_sender_cannot_record_a_request ... ok
+test server::chat::tests::relay_requires_both_connected_peers_and_preserves_channel_on_detach ... ok
+test server::chat::tests::relay_enforces_event_direction_and_deduplicates_identical_retries ... ok
+test server::chat::tests::preview_request_accepts_candidate_reference_without_relaying_source ... ok
+test server::chat::tests::replacement_agent_epoch_fences_the_detached_runner ... ok
+test server::chat::tests::render_dispatch_waits_for_correlated_browser_result ... ok
+test server::comment_http_tests::a_commenter_who_cannot_edit_still_lands_a_comment_that_survives_and_reanchors ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test server::comment_http_tests::a_whole_document_remark_from_a_commenter_lands_too ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test server::comment_http_tests::an_empty_attribution_key_is_the_previous_agents_rejection_reproduced ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test server::comment_http_tests::the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test server::chat::tests::server_render_completes_without_agent_and_rejects_unknown_result ... ok
+test server::comment_lookup_tests::a_failed_read_is_not_an_unknown_comment ... ok
+test server::chat::tests::task_and_preview_events_are_bounded_and_role_checked ... ok
+test server::history_frontier_tests::a_comments_own_frontier_reads_back_through_the_history_route ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test server::comment_lookup_tests::a_refused_command_keeps_its_status_and_loses_its_storage_context ... ok
+test server::mcp::capacity::tests::anonymous_link_holders_share_capacity_and_accounts_have_a_separate_namespace ... ok
+test server::mcp::capacity::tests::aborting_a_request_releases_all_accounting ... ok
+test server::comment_lookup_tests::every_transport_reads_the_same_refusal_table ... ok
+test server::mcp::capacity::tests::saturated_principal_leaves_room_for_another_in_every_lane ... ok
+test server::mcp::capacity::tests::sessions_links_and_attribution_do_not_split_an_account_allowance ... ok
+test server::mcp::capacity::tests::overload_response_preserves_retry_contract ... ok
+test server::mcp::capacity::tests::work_saturation_preserves_result_and_cancellation_lanes ... ok
+test server::mcp::comments::tests::a_created_comment_gets_an_id_the_catalog_will_accept ... ok
+test server::mcp::comments::tests::a_plain_comment_is_not_a_suggestion ... ok
+test server::mcp::capacity::tests::global_limits_remain_and_rejections_do_not_leak_entries ... ok
+test server::mcp::comments::tests::a_stale_expected_version_is_a_conflict ... ok
+test server::mcp::comments::tests::missing_comment_id_is_a_validation_error ... ok
+test server::mcp::comments::tests::a_served_suggestion_passes_validation_for_its_author_and_an_editor ... ok
+test server::mcp::comments::tests::refine_requires_the_suggestion_author_or_editor ... ok
+test server::mcp::operations::digest_tests::a_real_difference_is_still_a_different_operation ... ok
+test server::mcp::comments::tests::reject_requires_an_editor_and_a_pending_suggestion ... ok
+test server::mcp::operations::digest_tests::reordering_keys_does_not_change_the_operation ... ok
+test server::mcp::capacity::tests::simultaneous_requests_cannot_overbook_a_principal ... ok
+test server::mcp::schema::tests::tool_schemas_reject_typos_and_wrong_preconditions ... ok
+test server::mcp::schema::tests::read_accepts_rendered_quotes_without_source_coordinates ... ok
+test server::mcp::selection_tests::a_quote_of_the_page_becomes_a_range_of_the_source ... ok
+test server::mcp::selection_tests::a_range_after_an_astral_character_is_counted_in_bytes ... ok
+test server::mcp::selection_tests::rendered_selections_must_match_every_supplied_identity ... ok
+test server::mcp::selection_tests::comment_selection_follows_its_resolved_range_and_original_file ... ok
+test server::origins::tests::a_deployment_without_origins_answers_on_nothing_else ... ok
+test server::mcp::selection_tests::words_in_no_file_are_refused ... ok
+test server::origins::tests::a_configured_deployment_answers_on_its_two_origins_and_refuses_the_rest ... ok
+test server::origins::tests::a_document_origin_need_not_begin_with_the_prefix ... ok
+test server::origins::tests::a_refused_host_cannot_name_its_own_redirect_or_frame_origin ... ok
+test server::origins::tests::a_scheme_is_the_deployments_own_rather_than_a_forwarded_header ... ok
+test server::origins::tests::an_origin_is_a_scheme_and_a_host_only ... ok
+test server::origins::tests::loopback_is_answered_whatever_the_configuration_says ... ok
+test server::origins::tests::one_host_for_both_origins_is_refused_with_the_record_to_create ... ok
+test server::origins::tests::nothing_but_the_document_origin_is_ever_the_document_side ... ok
+test server::origins::tests::the_document_origin_defaults_to_the_reader_behind_the_prefix ... ok
+test server::reply::proxy_tests::forwarding_walks_only_the_trusted_suffix ... ok
+test server::reply::asset_tests::renderer_keeps_identity_as_a_fallback ... ok
+test server::reply::proxy_tests::malformed_missing_oversized_and_all_trusted_use_tcp_peer ... ok
+test server::reply::asset_tests::renderer_negotiates_its_precompressed_representation ... ok
+test server::routes::served_policy_tests::both_document_routes_send_the_policy_they_are_supposed_to ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1
+test server::reply::proxy_tests::mapped_addresses_and_ipv6_prefixes_are_normalized ... ok
+test server::routes::frame_agent_tests::injected_agent_runs_as_a_classic_bundle ... ok
+test server::serve::policy_tests::the_version_budget_is_the_label_budget ... ok
+test server::serve::site_origin_tests::a_site_origin_is_an_origin_and_nothing_else ... ok
+test server::sharing::link_key_tests::a_sealed_key_comes_back_only_to_the_key_that_sealed_it ... ok
+test server::sharing::link_key_tests::sealing_the_same_key_twice_writes_down_two_different_things ... ok
+test room::locate_corpus_tests::selections_taken_off_the_tutorials_find_the_source_they_came_from ... ok
+test server::socket::multipart_update_tests::multipart_updates_reject_unbounded_incomplete_and_reordered_input ... ok
+test server::socket::outgoing_tests::a_full_peer_queue_does_not_block_a_critical_send ... ok
+test server::socket_budget::tests::auxiliary_sockets_share_the_document_ceiling_without_using_role_slots ... ok
+test server::socket_budget::tests::concurrent_admission_cannot_exceed_a_role_cap ... ok
+test server::socket_budget::tests::document_roles_have_independent_caps_and_release_slots ... ok
+test server::socket_budget::tests::socket_admission_releases_counts_with_the_transport_guard ... ok
+test storage::backup::connection_tests::postgres_tools_select_the_database_without_exposing_passwords_in_arguments ... ok
+test storage::backup::connection_tests::query_password_overrides_authority_and_is_removed_from_arguments ... ok
+test server::serve::tests::sigterm_enters_graceful_shutdown ... ok
+test log::tests::a_single_update_at_the_byte_trigger_flushes_alone_because_the_trigger_is_not_a_cap ... ok
+test storage::blob::tests::rejects_unsafe_keys ... ok
+test storage::postgres::annotations::tests::a_document_anchor_has_no_range_at_all ... ok
+test storage::blob::tests::filesystem_contract ... ok
+test storage::postgres::annotations::tests::a_source_anchor_round_trips_through_its_columns ... ok
+test storage::postgres::benchmarks::active_document_capacity_benchmark ... ignored, capacity benchmark; destroys every row in its configured database
+test storage::postgres::benchmarks::batched_import_cost_probe ... ignored, diagnostic probe; prints a table and asserts nothing about wall time
+test storage::postgres::annotations::tests::same_anchor_checks_the_evidence_too ... ok
+test storage::postgres::annotations::tests::the_presentation_is_whatever_the_page_said ... ok
+test storage::postgres::benchmarks::compaction_cost_release_benchmark ... ignored, release acceptance benchmark; destroys every row in its configured database
+test storage::postgres::benchmarks::concurrent_compaction_release_benchmark ... ignored, release acceptance benchmark; destroys every row in its configured database
+test storage::postgres::benchmarks::typing_throughput_release_benchmark ... ignored, release acceptance benchmark; destroys every row in its configured database
+test storage::postgres::benchmarks::update_import_cost_probe ... ignored, diagnostic probe; prints a table and asserts nothing about wall time
+test storage::postgres::benchmarks::capacity_demand_counts_arrivals_independently_of_delivery ... ok
+test storage::postgres::document_log::snapshot_regression_tests::compaction_retires_snapshots_atomically_and_cleanup_keeps_current_and_grace ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::document_log::snapshot_regression_tests::snapshot_constraints_cover_current_retired_and_legacy_rows ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::document_log::snapshot_regression_tests::snapshot_migration_preserves_current_evidence_and_legacy_deadlines ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::marks::listing_regression_tests::annotation_constraints_reject_incomplete_evidence ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::marks::listing_regression_tests::archive_accounting_counts_objects_across_bulk_changes_and_cascades ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::marks::listing_regression_tests::concurrent_archive_references_charge_once_after_waiting_for_the_counter ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::flush_concurrency_tests::it_is_never_zero_and_never_asks_for_the_whole_pool ... ok
+test storage::postgres::marks::listing_regression_tests::removing_an_unopened_favorite_preserves_the_mark_invariant ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::marks::listing_regression_tests::visible_listing_preserves_access_deduplication_and_tied_timestamp_paging ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::meter::tests::a_wait_lands_in_exactly_one_bucket_and_the_last_one_is_the_overflow ... ok
+test storage::postgres::persistence::tests::cancelling_a_write_destroys_its_connection_before_releasing_scratch ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::persistence::tests::completed_writes_release_scratch_and_reuse_the_connection ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::tests::a_compaction_entry_that_does_not_cover_the_log_leaves_every_row_in_place ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::tests::a_flush_writes_one_row_and_a_duplicate_attempt_writes_no_second_one ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::tests::a_join_receives_what_its_vector_does_not_cover_and_builds_no_cache ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::tests::a_label_records_the_vector_frontier_and_digest_of_the_moment_it_names ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::tests::a_link_kept_across_a_save_does_not_collide_with_its_own_revoked_row ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::tests::a_source_producing_command_records_matching_evidence_and_a_retry_returns_the_same_label ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::meter::tests::contention_and_failure_are_counted_apart_from_the_wait ... ok
+test storage::postgres::tests::a_superseded_compaction_base_is_deleted_once_its_grace_has_passed ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::tests::marks_are_private_and_the_trash_is_recoverable ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::tests::postgres_v3_contract ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::postgres::tests::two_labels_naming_the_same_archive_are_charged_once ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::schedule_tests::a_repeated_at_for_one_task_keeps_one_entry_and_the_earlier_deadline ... ok
+test storage::schedule_tests::an_unarmed_bookkeeping_entry_older_than_the_backoff_ceiling_is_pruned_by_due ... ok
+test storage::schedule_tests::at_arms_an_entry_whose_backoff_has_already_fired ... ok
+test storage::schedule_tests::at_never_shortens_a_failure_backoff ... ok
+test storage::schedule_tests::clear_keeps_a_deadline_the_task_armed_while_it_ran ... ok
+test storage::schedule_tests::consecutive_failures_grow_the_wait_survive_a_due_and_clear_resets_them ... ok
+test storage::schedule_tests::due_hands_out_a_task_at_most_once_per_arming ... ok
+test storage::schedule_tests::next_is_none_when_empty ... ok
+test storage::schedule_tests::a_full_map_refuses_rather_than_growing_and_rescans_once_the_refusal_is_due ... ok
+test storage::schedule_tests::the_backoff_doubles_and_then_stops_doubling ... ok
+test storage::schedule_tests::next_is_the_earliest_of_an_armed_deadline_and_a_refusal ... ok
+test storage::schedule_tests::waiting_is_true_before_the_deadline_and_false_after ... ok
+test storage::schedule_tests::the_refusal_time_is_the_earliest_refused_deadline_not_the_latest ... ok
+test storage::source_archive::tests::deterministic_round_trip_reuses_asset_reference ... ok
+test storage::source_archive::tests::rejects_paths_and_binary_inline_content ... ok
+test storage::source_archive::tests::round_trips_every_source_format ... ok
+test storage::worker::tests::a_full_queue_keeps_one_rescan_bit_without_waiting_senders ... ok
+test storage::worker::tests::an_erasing_account_is_finished_only_once_its_documents_are_gone ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL; run with --test-threads=1
+test storage::worker::tests::coverage_accepts_a_snapshot_of_exactly_the_log ... ok
+test storage::worker::tests::coverage_rejects_a_fabricated_snapshot ... ok
+test storage::worker::tests::coverage_rejects_a_snapshot_that_is_behind_the_log ... ok
+test storage::worker::tests::coverage_rejects_a_snapshot_with_the_wrong_change_count ... ok
+test storage::worker::tests::delete_wakeups_preserve_failure_backoff_without_querying_storage ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::worker::tests::due_rescan_is_enqueued_now_or_retained_behind_a_cursor ... ok
+test storage::worker::tests::overflow_rescan_waits_for_all_cursor_pages ... ok
+test storage::worker_recovery_tests::a_deferred_deletion_runs_when_its_grace_ends_without_being_asked_again ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::worker_recovery_tests::a_document_inside_its_grace_is_not_purged_and_one_past_it_is ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::worker_recovery_tests::a_document_restored_before_the_worker_gets_to_it_is_not_purged ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::worker_recovery_tests::a_durable_rescan_finds_hastened_deletion_behind_a_grace_deadline ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::worker_recovery_tests::a_fresh_worker_finds_and_purges_durable_rows_with_no_wake_up_at_all ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::worker_recovery_tests::a_hastened_deletion_overrides_grace_and_clears_its_deadline ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::worker_recovery_tests::a_saturated_channel_still_purges_every_document_once_the_worker_runs ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::worker_recovery_tests::duplicate_wake_ups_for_one_document_purge_it_once_and_leave_the_deployment_idle ... ignored, requires LIBREPAPER_TEST_POSTGRES_URL
+test storage::source_archive::tests::rejects_malformed_and_expanding_archives ... ok
+test server::shell::shell_tests::a_compressed_copy_is_never_a_route_of_its_own ... ok
+test storage::postgres::benchmarks::capacity_arrivals_keep_scheduling_when_the_consumer_stalls ... ok
+test log::tests::the_per_document_ceiling_still_applies_when_the_deployment_has_room ... ok
+test server::shell::shell_tests::the_bundled_assets_carry_a_compressed_copy ... ok
+test server::shell::shell_tests::pages_are_never_served_precompressed ... ok
+test log::tests::a_peer_past_its_minute_allowance_is_refused_retryably_and_others_are_not ... ok
+test log::tests::reconnecting_under_a_new_peer_key_does_not_refill_an_allowance ... ok
+test log::tests::a_refused_batch_is_never_acknowledged_and_its_peer_recovers_through_a_gap ... ok
+test log::tests::an_exhausted_allowance_comes_back_only_as_the_bucket_refills ... ok
+test automation::mcp::tests::stdio_dispatches_cancel_while_ordinary_request_is_slow_and_journals_it ... ok
+test local::tools::tests::a_hung_tool_is_bounded_and_reaped ... ok
+test local::native::tests::log_reader_drains_past_the_retention_limit ... ok
+test log::tests::a_buffer_flushes_at_the_quiet_period_even_while_small ... ok
+test log::tests::a_buffer_flushes_at_the_max_age_even_while_someone_keeps_typing ... ok
+
+test result: ok. 494 passed; 0 failed; 96 ignored; 0 measured; 0 filtered out; finished in 32.09s
+
+     Running tests/frugal_mixed_bench.rs (target/release/build/librepaper/6e72caf223c8143e/out/frugal_mixed_bench-6e72caf223c8143e)
+
+running 1 test
+test frugal_mixed_workload_benchmark ... ignored, requires LIBREPAPER_FRUGAL_DATABASE_URL pointing to disposable PostgreSQL
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/frugal_restore_verify.rs (target/release/build/librepaper/efe9f8882db50b5c/out/frugal_restore_verify-efe9f8882db50b5c)
+
+running 1 test
+test restored_heads_and_history_replay_identically ... ignored, requires the preserved synthetic source and restored recovery drill
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/writer_socket_bench.rs (target/release/build/librepaper/45552896f764adf7/out/writer_socket_bench-45552896f764adf7)
+
+running 1 test
+test writer_socket_end_to_end_benchmark ... ignored, requires LIBREPAPER_BENCH_POSTGRES_URL and a disposable database
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
