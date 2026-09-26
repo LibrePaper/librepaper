@@ -234,7 +234,7 @@ impl Server {
             let editor = who.at_least(Role::Editor);
             let current_version = existing
                 .as_ref()
-                .map(crate::room::agent_comments::comment_version);
+                .map(comment.version());
             validate_existing_action(
                 action,
                 comment_id,
@@ -565,7 +565,7 @@ mod tests {
             comment.proposed.is_none() && comment.outcome.is_empty(),
             "the served shape has no proposal projection; validation must not need one"
         );
-        let version = crate::room::agent_comments::comment_version(&comment);
+        let version = comment.version()(&comment);
         for (action, author, editor) in [
             ("refine", "author-a", false),
             ("refine", "someone-else", true),
@@ -589,7 +589,7 @@ mod tests {
         let mut comment = pending("author-a");
         comment.motivation = "commenting".into();
         comment.proposal.clear();
-        let version = crate::room::agent_comments::comment_version(&comment);
+        let version = comment.version()(&comment);
         let error = validate_existing_action(
             "reject",
             "c",
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn a_stale_expected_version_is_a_conflict() {
         let comment = pending("author-a");
-        let version = crate::room::agent_comments::comment_version(&comment);
+        let version = comment.version()(&comment);
         let error = validate_existing_action(
             "refine",
             "c",
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn refine_requires_the_suggestion_author_or_editor() {
         let comment = pending("author-a");
-        let version = crate::room::agent_comments::comment_version(&comment);
+        let version = comment.version()(&comment);
         let error = validate_existing_action(
             "refine",
             "c",
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn reject_requires_an_editor_and_a_pending_suggestion() {
         let comment = pending("author-a");
-        let version = crate::room::agent_comments::comment_version(&comment);
+        let version = comment.version()(&comment);
         let error = validate_existing_action(
             "reject",
             "c",
@@ -655,7 +655,7 @@ mod tests {
 
         let mut resolved = comment;
         resolved.resolved = true;
-        let resolved_version = crate::room::agent_comments::comment_version(&resolved);
+        let resolved_version = comment.version()(&resolved);
         let error = validate_existing_action(
             "reject",
             "c",

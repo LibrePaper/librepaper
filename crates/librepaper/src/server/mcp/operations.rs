@@ -2,7 +2,7 @@
 use super::*;
 use crate::room;
 use crate::room::agent::{
-    self, Affinity, AgentAuthority, OperationKey, Patch, PatchRequest, SourceFile, SourceTree,
+    self, AgentAuthority, OperationKey, Patch, PatchRequest, SourceFile, SourceTree,
 };
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -628,15 +628,11 @@ impl Server {
                     request_digest: digest,
                 };
                 let authority = AgentAuthority {
-                    automation: true,
-                    account_id: current.id.id.clone(),
+                    account_id: String::new(),
                     owner_key: current.key.clone(),
-                    generation: current.id.session_generation.clone(),
                     link_hash: current.link.clone(),
-                    policy_editor: self.publishers.allows(&current.id.handle),
-                    unowned_publisher: false,
+                    policy_editor: false,
                     operation_scope: actor.to_string(),
-                    execution_epoch: runner_execution_epoch(headers),
                 };
                 let room = self
                     .rooms
@@ -733,7 +729,7 @@ impl Server {
             .await
             .map_err(|error| Failure::new("unavailable", error.to_string()))?
             .ok_or_else(|| Failure::new("not_found", "suggestion unavailable"))?;
-        if crate::room::agent_comments::comment_version(&comment) != expected
+        if comment.version()(&comment) != expected
             || comment.motivation != "editing"
             || comment.resolved
             || !comment.outcome.is_empty()
@@ -955,7 +951,6 @@ impl Server {
                     .as_str()
                     .unwrap_or_default()
                     .to_string(),
-                affinity: Affinity::Before,
             });
         }
         for handle in args["dependencies"].as_array().into_iter().flatten() {

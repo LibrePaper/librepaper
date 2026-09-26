@@ -858,7 +858,7 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
     assert!(!served.proposal.is_empty(), "it does carry a proposal id");
 
     let author = format!("account:{}", deployment.account_id);
-    let version = crate::room::agent_comments::comment_version(&served);
+    let version = served.version();
     let check = |action: &str, caller: &str, editor: bool| {
         validate_existing_action(
             action,

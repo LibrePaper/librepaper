@@ -56,19 +56,17 @@ impl Room {
         after: Option<comments::Position>,
         limit: usize,
     ) -> Result<crate::agent_query::ThreadWindow, crate::room::agent::AgentError> {
-        let storage =
-            |error: WriteError| crate::room::agent::AgentError::Storage(error.to_string());
         let (_, page) = self
             .comment_page(after, limit, author, editor)
             .await
-            .map_err(storage)?;
+            .map_err(crate::room::agent::AgentError::from)?;
         let items = page
             .comments
             .iter()
             .map(|c| {
                 let mut view = serde_json::to_value(CommentView::for_viewer(c, author, editor))
                     .unwrap_or(Value::Null);
-                view["comment_version"] = json!(super::agent_comments::comment_version(c));
+                view["comment_version"] = json!(c.version());
                 if let Some(at) = c.at {
                     view["cursor"] =
                         json!(comments::encode_cursor(self.document_id, None, editor, at));
@@ -94,8 +92,6 @@ impl Room {
         after: Option<comments::Position>,
         limit: usize,
     ) -> Result<crate::agent_query::ThreadWindow, crate::room::agent::AgentError> {
-        let storage =
-            |error: WriteError| crate::room::agent::AgentError::Storage(error.to_string());
         let missing = crate::agent_query::ThreadWindow {
             missing: true,
             complete: true,
@@ -104,7 +100,7 @@ impl Room {
         let Some(comment) = self
             .comment_by_id(&comment_id.to_string(), editor)
             .await
-            .map_err(storage)?
+            .map_err(crate::room::agent::AgentError::from)?
         else {
             return Ok(missing);
         };
@@ -114,13 +110,13 @@ impl Room {
         let Some(page) = self
             .reply_page(comment_id, after, limit, editor)
             .await
-            .map_err(storage)?
+            .map_err(crate::room::agent::AgentError::from)?
         else {
             return Ok(missing);
         };
         let mut thread = serde_json::to_value(CommentView::for_viewer(&comment, author, editor))
             .unwrap_or(Value::Null);
-        thread["comment_version"] = json!(super::agent_comments::comment_version(&comment));
+        thread["comment_version"] = json!(comment.version());
         let items = page
             .replies
             .iter()
