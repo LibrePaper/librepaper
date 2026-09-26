@@ -502,13 +502,6 @@ pub enum LocalCommand {
     },
     /// Whether the service is running, its address, code and pairings
     Status,
-    /// Which agents on this computer can reach which documents, and revoke one
-    Connections {
-        /// Remove one connection by name. Agents configured against it stop
-        /// resolving immediately.
-        #[arg(long, value_name = "NAME")]
-        remove: Option<String>,
-    },
     /// Teach this computer an ACP agent the sidebar can drive
     Agent {
         #[command(subcommand)]

@@ -1,9 +1,8 @@
 //! Named connections: the indirection that keeps a document key out of an
 //! agent's configuration file.
 //!
-//! An agent's MCP entry names a connection (`librepaper agent mcp
-//! --connection dissertation`), never a link. This machine holds the mapping
-//! from that name to the protected document URL, in
+//! When the sidebar connects an agent, this machine establishes a named
+//! connection from a name to the protected document URL, stored in
 //! `<state_home>/librepaper/local/connections.json` at mode 0600, next to the
 //! pairing store that authorizes writing it.
 //!
@@ -44,7 +43,7 @@ pub struct Connection {
     /// display only; the link itself is what actually bounds access.
     #[serde(default)]
     pub access: String,
-    /// Human label for the sidebar and `librepaper local connections`.
+    /// Human label for the sidebar and the agent list.
     #[serde(default)]
     pub title: String,
     /// Sidebar runner configuration by conversation. A connection may be
@@ -278,7 +277,7 @@ impl ConnectionStore {
     }
 
     /// Resolve a name to its document link, renewing its idle clock. This is
-    /// the call `librepaper agent mcp --connection` makes on startup.
+    /// the call `agent mcp --connection` makes on startup.
     pub fn resolve(&self, name: &str) -> Result<Connection, String> {
         if !valid_name(name) {
             return Err("invalid connection name".into());
@@ -325,24 +324,6 @@ impl ConnectionStore {
             entry.used = now_unix();
             Ok(())
         })
-    }
-
-    /// Every connection a person made, newest first, for the sidebar and the
-    /// CLI listing. Internal runner records are bookkeeping, not choices, so
-    /// they never appear.
-    pub fn list(&self) -> Vec<(String, Connection)> {
-        let mut all: Vec<(String, Connection)> = self
-            .load()
-            .into_iter()
-            .filter(|(_, entry)| !entry.internal)
-            .collect();
-        all.sort_by(|a, b| b.1.created.cmp(&a.1.created).then(a.0.cmp(&b.0)));
-        all
-    }
-
-    pub fn remove(&self, name: &str) -> bool {
-        self.update(|all| Ok(all.remove(name).is_some()))
-            .unwrap_or(false)
     }
 
     /// Drop every connection registered by `origin`. Called when a pairing is
@@ -407,7 +388,6 @@ mod tests {
         // The later registration's access wins, so upgrading a connection in
         // the sidebar does not leave the stale role on display.
         assert_eq!(store.get(&first).unwrap().access, "editor");
-        assert_eq!(store.list().len(), 1);
     }
 
     #[test]
@@ -475,14 +455,15 @@ mod tests {
     #[test]
     fn revoking_an_origin_takes_its_connections() {
         let (_dir, store) = store();
-        store
+        let a = store
             .register("A", "https://d.example/docs/a#k=1", "one", "editor")
             .unwrap();
-        store
+        let b = store
             .register("B", "https://d.example/docs/b#k=2", "two", "editor")
             .unwrap();
         assert_eq!(store.remove_origin("one"), 1);
-        assert_eq!(store.list().len(), 1);
+        assert!(store.get(&a).is_none());
+        assert!(store.get(&b).is_some());
     }
 
     #[test]
