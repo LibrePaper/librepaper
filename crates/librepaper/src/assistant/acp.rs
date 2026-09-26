@@ -49,11 +49,7 @@ fn bounded_text(value: Option<&str>, max_bytes: usize) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    let mut end = value.len().min(max_bytes);
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    Some(value[..end].to_owned())
+    Some(super::protocol::truncate_utf8(value, max_bytes))
 }
 
 fn permission_details(
@@ -137,11 +133,8 @@ fn permission_details(
     {
         if let Some(serde_json::Value::String(diff)) = details.get_mut("diff") {
             if !diff.is_empty() {
-                let mut end = diff.len().saturating_sub(256);
-                while end > 0 && !diff.is_char_boundary(end) {
-                    end -= 1;
-                }
-                diff.truncate(end);
+                let target = diff.len().saturating_sub(256);
+                *diff = super::protocol::truncate_utf8(diff.as_str(), target);
                 continue;
             }
         }
@@ -152,11 +145,8 @@ fn permission_details(
         }
         if let Some(serde_json::Value::String(command)) = details.get_mut("command") {
             if !command.is_empty() {
-                let mut end = command.len().saturating_sub(256);
-                while end > 0 && !command.is_char_boundary(end) {
-                    end -= 1;
-                }
-                command.truncate(end);
+                let target = command.len().saturating_sub(256);
+                *command = super::protocol::truncate_utf8(command.as_str(), target);
                 continue;
             }
         }
@@ -448,6 +438,16 @@ impl Agent {
     }
 }
 
+fn tool_call_activity(title: Option<&str>) -> Update {
+    Update::Activity(
+        if title.is_some_and(|title| title.starts_with("document_")) {
+            "Using document tools"
+        } else {
+            "Working on your document"
+        },
+    )
+}
+
 fn translate_update(update: SessionUpdate) -> Update {
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
@@ -455,23 +455,8 @@ fn translate_update(update: SessionUpdate) -> Update {
             _ => Update::Ignored,
         },
         SessionUpdate::AgentThoughtChunk(_) => Update::Activity("Thinking"),
-        SessionUpdate::ToolCall(call) => Update::Activity(if call.title.starts_with("document_") {
-            "Using document tools"
-        } else {
-            "Working on your document"
-        }),
-        SessionUpdate::ToolCallUpdate(call) => Update::Activity(
-            if call
-                .fields
-                .title
-                .as_deref()
-                .is_some_and(|title| title.starts_with("document_"))
-            {
-                "Using document tools"
-            } else {
-                "Working on your document"
-            },
-        ),
+        SessionUpdate::ToolCall(call) => tool_call_activity(Some(call.title.as_str())),
+        SessionUpdate::ToolCallUpdate(call) => tool_call_activity(call.fields.title.as_deref()),
         SessionUpdate::Plan(_) => Update::Activity("Planning the change"),
         _ => Update::Ignored,
     }

@@ -196,31 +196,21 @@ fn manifest(
         entry.insert("sha".into(), json!(hex::encode(Sha256::digest(bytes))));
         entry.insert("size".into(), json!(bytes.len()));
     }
-    // A projection has no settings of its own, and never had: this was
-    // reading a key the capture does not carry. It stays null so the
-    // manifest and its `settings_hash` are unchanged.
-    let settings = Value::Null;
     let dependency_hash = hex::encode(Sha256::digest(
         serde_json::to_vec(&candidate.dependencies)
             .map_err(|_| boxed_error(500, "candidate not found"))?,
-    ));
-    let settings_hash = hex::encode(Sha256::digest(
-        serde_json::to_vec(&settings).map_err(|_| boxed_error(500, "candidate not found"))?,
     ));
     Ok(json!({
         "candidate_id": candidate_id,
         // "base_revision" and "revision" are the render-preview protocol's
         // wire keys (docs/protocol/chat.md), not this cutover's vocabulary;
-        // they stay as they are. "tree_digest" below is the same value as
-        // "revision" -- it used to be the redundant "source_revision" key.
+        // they stay as they are. There is no separate "tree_digest" key any
+        // more: it was always the same value as "revision".
         "base_revision": candidate.base_tree_digest,
         "revision": candidate.tree_digest,
-        "tree_digest": candidate.tree_digest,
         "main": view.snapshot.projection.main,
         "files": files,
-        "settings": settings,
         "dependency_hash": dependency_hash,
-        "settings_hash": settings_hash,
         "expires_at": candidate.expires_at,
     }))
 }
@@ -400,7 +390,8 @@ impl Server {
             .await
             .map_err(|(_, message)| Failure::new("renderer_unavailable", message))?;
         let receipt = Self::render_receipt(candidate_id, &candidate.tree_digest, &result)?;
-        self.mcp_recheck(slug, headers, arrival, actor).await?;
+        // Access was checked before dispatch above; `handle_mcp` rechecks
+        // once more before this receipt reaches the caller.
         self.store_render_receipt(slug, actor, who, candidate, receipt.clone())
             .await?;
         Ok(receipt)

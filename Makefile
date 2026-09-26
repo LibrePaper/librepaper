@@ -41,7 +41,7 @@ LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
 # rewrites every file in web/dist, which build.rs watches -- so editing the
 # landing page recompiled the whole crate. The site builds on its own: see the
 # site target at the bottom of this file.
-WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.agent.config.js)
+WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
 

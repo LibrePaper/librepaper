@@ -113,7 +113,7 @@ const server = createServer((request, response) => {
   if (path === "/viewer.html") {
     const page = readFileSync(file, "utf8").replace(
       "</body>",
-      `<script src="/agent.js?reader=${BASE}"></script></body>`,
+      `<script src="/frame.js?reader=${BASE}"></script></body>`,
     );
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(page);
@@ -422,7 +422,7 @@ async function run() {
   // three sentences of a fixture this suite no longer compiles, whose middle
   // sentence was the one that wrapped; the ordering here is the tutorial's.)
   //
-  // window.paint([]) mutates the still-showing document, which arms agent.js's
+  // window.paint([]) mutates the still-showing document, which arms frame.js's
   // own 250ms republish debounce (see the `pending = setTimeout(..., 250)` in
   // watch()'s republish). Switching PDFs before that debounce fires races it:
   // sendPdf empties window.seen.ready so window.text() can tell a fresh

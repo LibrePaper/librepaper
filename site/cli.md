@@ -159,5 +159,6 @@ librepaper local agent list       # add <id> -- <command> teaches it another
 librepaper local agent remove <id>
 ```
 
-The [agents page](agents.html) covers how agents reach documents and what the
-tools can do.
+Agents are driven from the document sidebar only; there is no command line
+for connecting one to a document by hand. The [agents page](agents.html)
+covers what the sidebar assistant can do.

@@ -3,12 +3,12 @@
 // Nine call sites derived this independently -- `projection-digest.js`,
 // `companion/client.js`, `latex/bibliography.js`, `latex/jobs.js`,
 // `latex/resources.js`, `latex/worker.js`, `results-hash.js` and
-// `agent/agent.js` -- each re-writing the same
+// `agent/frame.js` -- each re-writing the same
 // `digest -> Uint8Array -> map to padded hex` reduction. They all agreed;
 // there was simply no reason for nine of them.
 //
 // No imports: this is pulled in by the module worker, by the separately
-// bundled in-frame agent, and by the shell, and it must stay cheap for all
+// bundled in-frame script, and by the shell, and it must stay cheap for all
 // three.
 
 const encoder = new TextEncoder();

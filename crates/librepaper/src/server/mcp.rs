@@ -4,7 +4,6 @@ use crate::agent_query::{QueryBudget, QuerySnapshot};
 use hmac::{Hmac, Mac};
 use serde::Serialize;
 
-mod cancel;
 pub(crate) mod comments;
 mod operations;
 #[cfg(test)]
@@ -91,25 +90,48 @@ fn tool_result(id: &Value, result: Result<Value, Failure>) -> Reply {
     }
 }
 
-fn sign(key: &[u8], context: &str, payload: &str) -> String {
+fn mac_of(key: &[u8], context: &str, payload: &str) -> Hmac<Sha256> {
     let mut mac =
         <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts arbitrary key lengths");
     mac.update(context.as_bytes());
     mac.update(&[0]);
     mac.update(payload.as_bytes());
-    hex::encode(mac.finalize().into_bytes())
+    mac
+}
+
+fn sign(key: &[u8], context: &str, payload: &str) -> String {
+    hex::encode(mac_of(key, context, payload).finalize().into_bytes())
 }
 
 fn verify(key: &[u8], context: &str, payload: &str, signature: &str) -> bool {
     let Ok(bytes) = hex::decode(signature) else {
         return false;
     };
-    let mut mac =
-        <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts arbitrary key lengths");
-    mac.update(context.as_bytes());
-    mac.update(&[0]);
-    mac.update(payload.as_bytes());
-    mac.verify_slice(&bytes).is_ok()
+    mac_of(key, context, payload).verify_slice(&bytes).is_ok()
+}
+
+/// The blob key an agent object (view, admission, candidate, render) is
+/// stored and loaded under. `mcp_store` and `mcp_load` built this identically.
+fn agent_object_key(slug: &str, actor: &str, kind: &str, id: &str) -> String {
+    format!(
+        "temporary/agent/{}/{}",
+        hex::encode(Sha256::digest(
+            format!("{slug}\0{actor}\0{kind}").as_bytes()
+        )),
+        hex::encode(Sha256::digest(id.as_bytes()))
+    )
+}
+
+/// Agent objects are scoped to a live account or link, never to a bare
+/// anonymous session. `mcp_store` and `mcp_load` checked this identically.
+fn require_live_identity(who: &Viewer) -> Result<(), Failure> {
+    if who.id.id.is_empty() && who.link.is_empty() {
+        return Err(Failure::new(
+            "permission_changed",
+            "a live account or link is required",
+        ));
+    }
+    Ok(())
 }
 
 fn actor_scope(slug: &str, who: &Viewer, author: &str) -> String {
@@ -138,7 +160,7 @@ impl Server {
     pub(super) async fn handle_mcp(
         &self,
         request: Request<Body>,
-        peer: SocketAddr,
+        _peer: SocketAddr,
         arrival: &Arrival,
         slug: &str,
     ) -> Reply {
@@ -256,7 +278,7 @@ impl Server {
             "ping" => rpc_result(&id, json!({})),
             "tools/list" => rpc_result(
                 &id,
-                json!({"tools":schema::tools(),"ttlMs":300000,"cacheScope":"private"}),
+                json!({"tools":schema::served_tools(),"ttlMs":300000,"cacheScope":"private"}),
             ),
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or_default();
@@ -267,7 +289,7 @@ impl Server {
                 if let Err(error) = schema::validate(&tool["inputSchema"], args) {
                     return rpc_error(200, &id, -32602, &error, Value::Null);
                 }
-                let _permit = match self.mcp_capacity.acquire(&who, name, args) {
+                let _permit = match self.mcp_capacity.acquire(&who) {
                     Ok(permit) => permit,
                     Err(error) => return tool_result(&id, Err(error)),
                 };
@@ -295,7 +317,7 @@ impl Server {
                             .await
                     }
                     _ => {
-                        self.mcp_operation(slug, &actor, &who, &headers, arrival, peer, name, args)
+                        self.mcp_operation(slug, &actor, &who, &headers, arrival, name, args)
                             .await
                     }
                 };
@@ -336,12 +358,7 @@ impl Server {
                 "agent object expiry is invalid",
             ));
         }
-        if who.id.id.is_empty() && who.link.is_empty() {
-            return Err(Failure::new(
-                "permission_changed",
-                "a live account or link is required",
-            ));
-        }
+        require_live_identity(who)?;
         let payload = serde_json::to_value(object)
             .map_err(|e| Failure::new("budget_exceeded", e.to_string()))?;
         let envelope = json!({"version":1,"slug":slug,"actor":actor,"kind":kind,"expires":expiry,"payload":payload});
@@ -353,13 +370,7 @@ impl Server {
                 "agent payload is too large",
             ));
         }
-        let key = format!(
-            "temporary/agent/{}/{}",
-            hex::encode(Sha256::digest(
-                format!("{slug}\0{actor}\0{kind}").as_bytes()
-            )),
-            hex::encode(Sha256::digest(id.as_bytes()))
-        );
+        let key = agent_object_key(slug, actor, kind, id);
         match self
             .store
             .blobs
@@ -400,19 +411,8 @@ impl Server {
         id: &str,
         kind: &str,
     ) -> Result<T, Failure> {
-        if who.id.id.is_empty() && who.link.is_empty() {
-            return Err(Failure::new(
-                "permission_changed",
-                "a live account or link is required",
-            ));
-        }
-        let key = format!(
-            "temporary/agent/{}/{}",
-            hex::encode(Sha256::digest(
-                format!("{slug}\0{actor}\0{kind}").as_bytes()
-            )),
-            hex::encode(Sha256::digest(id.as_bytes()))
-        );
+        require_live_identity(who)?;
+        let key = agent_object_key(slug, actor, kind, id);
         let bytes = self.store.blobs.get(&key).await.map_err(|e| match e {
             crate::storage::blob::BlobError::NotFound => Failure::new(
                 "view_expired",
@@ -592,6 +592,7 @@ impl Server {
         arrival: &Arrival,
         queries: &[Value],
         view: &mut View,
+        room: Option<&crate::room::Room>,
     ) -> Result<(), Failure> {
         let wanted: Vec<&serde_json::Map<String, Value>> = queries
             .iter()
@@ -601,11 +602,20 @@ impl Server {
         if wanted.is_empty() {
             return Ok(());
         }
-        let room = self
-            .rooms
-            .get(slug)
-            .await
-            .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+        // Reuse the room `mcp_read_existing` already opened for a
+        // comment_id lookup, rather than opening it again here.
+        let fetched;
+        let room = match room {
+            Some(room) => room,
+            None => {
+                fetched = self
+                    .rooms
+                    .get(slug)
+                    .await
+                    .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+                &*fetched
+            }
+        };
         let author = self.mcp_author(headers, arrival, who, actor);
         let editor = who.at_least(Role::Editor);
         for query in wanted {
@@ -669,6 +679,10 @@ impl Server {
             .as_array()
             .ok_or_else(|| Failure::new("invalid_params", "queries required"))?
             .clone();
+        // Opened at most once per request and reused below for every
+        // comment_id lookup and for `prepare_thread_windows`, rather than
+        // reopening it per query.
+        let mut room: Option<std::sync::Arc<crate::room::Room>> = None;
         for query in &mut queries {
             if matches!(
                 query["kind"].as_str(),
@@ -678,11 +692,15 @@ impl Server {
             }
             if let Some(id) = query.get("comment_id").and_then(Value::as_str) {
                 comments::parse_uuid(id, "comment_id")?;
-                let room = self
-                    .rooms
-                    .get(slug)
-                    .await
-                    .map_err(|error| Failure::new("unavailable", error.to_string()))?;
+                if room.is_none() {
+                    room = Some(
+                        self.rooms
+                            .get(slug)
+                            .await
+                            .map_err(|error| Failure::new("unavailable", error.to_string()))?,
+                    );
+                }
+                let room = room.as_ref().expect("just populated above");
                 let comment = room
                     .comment_by_id(id, who.at_least(Role::Editor))
                     .await
@@ -729,15 +747,6 @@ impl Server {
                     Failure::new("invalid_query", "render queries require the candidate id")
                 })?;
                 let receipt = self.load_render_receipt(slug, actor, who, id).await?;
-                if query["tree_digest"]
-                    .as_str()
-                    .is_some_and(|digest| digest != receipt.tree_digest)
-                {
-                    return Err(Failure::new(
-                        "conflict",
-                        "render belongs to a different source revision",
-                    ));
-                }
                 let items = if kind == "diagnostics" {
                     receipt.diagnostics.as_array().into_iter().flatten().map(|d|json!({"diagnostic":d,"tree_digest":receipt.tree_digest,"candidate_id":id,"provenance":receipt.provenance})).collect::<Vec<_>>()
                 } else {
@@ -772,8 +781,17 @@ impl Server {
         // one bounded window read from the catalogue now. The revision
         // those windows were read at goes on the snapshot, which is what a
         // continuation cursor binds to.
-        self.prepare_thread_windows(slug, actor, who, headers, arrival, &queries, &mut view)
-            .await?;
+        self.prepare_thread_windows(
+            slug,
+            actor,
+            who,
+            headers,
+            arrival,
+            &queries,
+            &mut view,
+            room.as_deref(),
+        )
+        .await?;
         let budget = QueryBudget {
             max_bytes: args["budget"]["max_bytes"].as_u64().unwrap_or(12000) as usize,
             max_tokens: args["budget"]["max_tokens"].as_u64().unwrap_or(3000) as usize,
@@ -807,16 +825,22 @@ impl Server {
         result["schema_digest"] = json!(hex::encode(Sha256::digest(include_bytes!(
             "mcp/tools.json"
         ))));
-        let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
+        // `handle_mcp` rechecks access around every tool call already; a
+        // second recheck here only re-served the same permissions computed
+        // moments earlier from `who`.
         result["permissions"] = json!({"read":true,"suggest":who.at_least(Role::Commenter),"comment":who.at_least(Role::Commenter),"apply":who.at_least(Role::Editor)});
         result["limits"] = json!({"control_bytes":MAX_MESSAGE,"source_bytes":self.config.log_quota_bytes,"queries":8,"patches":100,"view_lifetime_seconds":3600,"concurrent_reads":8,"concurrent_effects":8,"concurrent_results":4});
         result
             .as_object_mut()
             .expect("read object")
             .remove("returned_tokens");
-        for _ in 0..3 {
-            result["returned_bytes"] = json!(result.to_string().len());
-            result["estimated_tokens"] = json!(result.to_string().len().div_ceil(4));
+        // Inserting `returned_bytes`/`estimated_tokens` changes the
+        // serialized size, so one pass sets a first estimate and a second
+        // captures the size with those fields already present.
+        for _ in 0..2 {
+            let bytes = result.to_string().len();
+            result["returned_bytes"] = json!(bytes);
+            result["estimated_tokens"] = json!(bytes.div_ceil(4));
         }
         if result.to_string().len() > budget.max_bytes {
             return Err(Failure::new(
@@ -867,20 +891,15 @@ fn decorate_ranges(value: &mut Value, snapshot: &QuerySnapshot, view_id: &str, k
 /// its words are -- so every file of the view is a candidate, and words that
 /// read the same in several places are refused rather than guessed at.
 fn validate_selection_revision(view: &View, query: &Value) -> Result<(), Failure> {
-    // Rendered project identity and source-view identity use the same
-    // projection digest today. Check every supplied identity so one alias
-    // cannot hide a stale value in another field.
-    for field in ["revision", "tree_digest", "render_digest"] {
-        if let Some(value) = query.get(field) {
-            let digest = value.as_str().ok_or_else(|| {
-                Failure::new("invalid_params", format!("{field} must be a string"))
-            })?;
-            if digest != view.snapshot.tree_digest {
-                return Err(Failure::new(
-                    "conflict",
-                    "captured selection belongs to another source revision",
-                ));
-            }
+    if let Some(value) = query.get("revision") {
+        let digest = value
+            .as_str()
+            .ok_or_else(|| Failure::new("invalid_params", "revision must be a string"))?;
+        if digest != view.snapshot.tree_digest {
+            return Err(Failure::new(
+                "conflict",
+                "captured selection belongs to another source revision",
+            ));
         }
     }
     Ok(())
@@ -941,9 +960,9 @@ fn locate_selection(view: &View, selection: &Value) -> Result<(String, usize, us
         .files
         .iter()
         .map(|(path, file)| crate::room::locate::Candidate {
-            file_id: &file.file_id,
+            file_id: file.file_id,
             path,
-            text: &file.text,
+            text: file.text,
         })
         .collect();
     let target = crate::room::locate::locate(&candidates, &quote).map_err(|failure| {
@@ -959,9 +978,9 @@ fn locate_selection(view: &View, selection: &Value) -> Result<(String, usize, us
         .iter()
         .find(|(_, file)| file.file_id == target.file_id.0)
         .ok_or_else(|| Failure::new("internal", "located file left the view"))?;
-    let start = operations::byte_of_utf16(&file.text, target.start_utf16 as usize)
+    let start = operations::byte_of_utf16(file.text, target.start_utf16 as usize)
         .ok_or_else(|| Failure::new("invalid_range", "selection splits a Unicode character"))?;
-    let end = operations::byte_of_utf16(&file.text, target.end_utf16 as usize)
+    let end = operations::byte_of_utf16(file.text, target.end_utf16 as usize)
         .ok_or_else(|| Failure::new("invalid_range", "selection splits a Unicode character"))?;
     Ok((path.clone(), start, end))
 }
@@ -1045,15 +1064,11 @@ mod selection_tests {
     }
 
     #[test]
-    fn rendered_selections_must_match_every_supplied_identity() {
+    fn rendered_selections_must_match_the_captured_revision() {
         let view = view_of("paper.typ", "Selected words.");
-        assert!(validate_selection_revision(&view, &json!({"render_digest":"rev"})).is_ok());
-        assert!(validate_selection_revision(
-            &view,
-            &json!({"revision":"rev","render_digest":"stale"})
-        )
-        .is_err());
-        assert!(validate_selection_revision(&view, &json!({"tree_digest":42})).is_err());
+        assert!(validate_selection_revision(&view, &json!({"revision":"rev"})).is_ok());
+        assert!(validate_selection_revision(&view, &json!({"revision":"stale"})).is_err());
+        assert!(validate_selection_revision(&view, &json!({"revision":42})).is_err());
         assert!(
             locate_selection(&view, &json!({"exact":"Selected words.","position":null})).is_ok()
         );

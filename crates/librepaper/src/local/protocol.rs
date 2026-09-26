@@ -1092,32 +1092,20 @@ fn validate_output_format(value: &str, allowed: &[&str], engine: &str) -> Result
 
 /* ------------------------------------------------- Connecting an agent */
 
-/// Register a document as a named connection on this computer. The browser
-/// sends the protected link once, over loopback, and afterwards refers to it
-/// by name; see `super::connections` for why the indirection exists.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ConnectionRequest {
-    /// The document title, used to derive a readable connection name.
-    #[serde(default)]
-    pub title: String,
-    /// The protected document URL, key fragment included.
-    pub link: String,
-    /// `reader`, `commenter` or `editor`, for display only.
-    #[serde(default)]
-    pub access: String,
-}
-
-/// Name one conversation's assistant, for status and stop.
+/// Name one conversation's assistant, for status and stop. The protected
+/// document link is the authority here -- it carries the document key -- so
+/// there is no separate connection name to resolve first.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AssistantQuery {
-    pub connection: String,
+    pub link: String,
     pub conversation: String,
 }
 
 /// Start, inspect or stop the sidebar assistant for one conversation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AssistantRequest {
-    pub connection: String,
+    /// The protected document URL, key fragment included.
+    pub link: String,
     /// The private sidebar conversation the runner attaches to.
     pub conversation: String,
     /// The conversation credential. It never leaves loopback and is stored

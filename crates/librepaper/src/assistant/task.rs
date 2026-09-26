@@ -1,6 +1,6 @@
 //! Durable assistant task identity and transitions.
 
-use super::protocol::{TaskKind, TaskScope};
+use super::protocol::{TaskKind, TaskScope, TaskStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -11,10 +11,6 @@ pub(crate) const MAX_FULL_TASKS: usize = 256;
 pub(crate) const MAX_UNFINISHED: usize = 32;
 pub(crate) const MAX_ADMISSIONS: usize = 4096;
 const FORMAT_VERSION: u32 = 1;
-
-pub(crate) fn terminal(status: &str) -> bool {
-    super::protocol::TaskStatus::parse(status).is_some_and(|status| status.terminal())
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Task {
@@ -27,7 +23,7 @@ pub(crate) struct Task {
     pub(crate) task: Option<TaskDescriptor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) prepared: Option<Value>,
-    pub(crate) status: String,
+    pub(crate) status: TaskStatus,
     pub(crate) detail: String,
     pub(crate) answer: Option<String>,
     #[serde(default)]
@@ -63,7 +59,7 @@ impl Task {
                 _ => None,
             },
             prepared: None,
-            status: "queued".into(),
+            status: TaskStatus::Queued,
             detail: String::new(),
             answer: None,
             answer_truncated: false,
@@ -93,23 +89,23 @@ impl Task {
 
     pub(crate) fn start(&mut self, prepared: Option<Value>) {
         self.prepared = prepared;
-        self.status = "working".into();
+        self.status = TaskStatus::Working;
         self.dispatched = true;
         self.detail = "Working on your document".into();
     }
 
-    pub(crate) fn finish(&mut self, status: &str, detail: &str) {
-        if terminal(&self.status) {
+    pub(crate) fn finish(&mut self, status: TaskStatus, detail: &str) {
+        if self.status.terminal() {
             return;
         }
-        self.status = status.into();
+        self.status = status;
         self.detail = detail.into();
         self.input = Value::Null;
         self.cancel_requested = false;
     }
 
     pub(crate) fn request_cancel(&mut self) {
-        if !terminal(&self.status) {
+        if !self.status.terminal() {
             self.cancel_requested = true;
             self.detail = "Cancellation requested".into();
         }
@@ -122,24 +118,24 @@ impl Task {
         options: &Value,
         details: &Value,
     ) {
-        if terminal(&self.status) {
+        if self.status.terminal() {
             return;
         }
-        self.status = "needs_input".into();
+        self.status = TaskStatus::NeedsInput;
         self.detail = message.into();
         self.input = json!({"request_id":request_id,"kind":"permission","message":message,"options":options,"details":details});
     }
 
     pub(crate) fn resume(&mut self) {
-        if self.status == "needs_input" {
-            self.status = "working".into();
+        if self.status == TaskStatus::NeedsInput {
+            self.status = TaskStatus::Working;
             self.detail = "Continuing with your response".into();
             self.input = Value::Null;
         }
     }
 
     pub(crate) fn set_activity(&mut self, detail: &str) -> bool {
-        if self.status != "working" || self.detail == detail {
+        if self.status != TaskStatus::Working || self.detail == detail {
             return false;
         }
         self.detail = detail.into();
@@ -147,35 +143,49 @@ impl Task {
     }
 
     pub(crate) fn interrupt(&mut self, detail: &str) {
-        self.finish("interrupted", detail);
+        self.finish(TaskStatus::Interrupted, detail);
+    }
+}
+
+/// A snapshot of the fields an evicted task's frame is rebuilt from, taken at
+/// the moment a full record is dropped from `tasks` so a later duplicate
+/// submission can still be answered.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct EvictionSnapshot {
+    status: TaskStatus,
+    detail: String,
+    event_seq: u64,
+    results: Value,
+}
+
+impl EvictionSnapshot {
+    fn from_task(task: &Task) -> Self {
+        Self {
+            status: task.status,
+            detail: task.detail.clone(),
+            event_seq: task.event_seq,
+            results: task.results.clone(),
+        }
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Admission {
     fingerprint: String,
-    status: String,
-    detail: String,
-    event_seq: u64,
-    results: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot: Option<EvictionSnapshot>,
 }
 
 impl Admission {
-    fn from_task(task: &Task) -> Self {
+    fn new(task: &Task) -> Self {
         Self {
             fingerprint: task.fingerprint(),
-            status: task.status.clone(),
-            detail: task.detail.clone(),
-            event_seq: task.event_seq,
-            results: task.results.clone(),
+            snapshot: None,
         }
     }
 
-    fn update(&mut self, task: &Task) {
-        self.status.clone_from(&task.status);
-        self.detail.clone_from(&task.detail);
-        self.event_seq = task.event_seq;
-        self.results.clone_from(&task.results);
+    fn record_eviction(&mut self, task: &Task) {
+        self.snapshot = Some(EvictionSnapshot::from_task(task));
     }
 
     pub(crate) fn matches(&self, task: &Task) -> bool {
@@ -183,16 +193,20 @@ impl Admission {
     }
 
     pub(crate) fn evicted_frame(&self, id: &str) -> Value {
-        json!({"type":"task","id":crate::util::new_id(),"seq":self.event_seq,"task_id":id,
-            "status":self.status,"text":format!("{} (answer no longer retained)",self.detail),
-            "context":{"results":self.results,"input":null,"answer_retained":false}})
+        let snapshot = self.snapshot.as_ref();
+        let status = snapshot.map_or(TaskStatus::Interrupted, |snapshot| snapshot.status);
+        let detail = snapshot.map_or("", |snapshot| snapshot.detail.as_str());
+        let seq = snapshot.map_or(0, |snapshot| snapshot.event_seq);
+        let results = snapshot.map_or(Value::Null, |snapshot| snapshot.results.clone());
+        json!({"type":"task","id":crate::util::new_id(),"seq":seq,"task_id":id,
+            "status":status,"text":format!("{detail} (answer no longer retained)"),
+            "context":{"results":results,"input":null,"answer_retained":false}})
     }
 }
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct State {
     format: u32,
-    pub(crate) thread_id: Option<String>,
     pub(crate) tasks: VecDeque<Task>,
     #[serde(default)]
     admissions: BTreeMap<String, Admission>,
@@ -202,7 +216,6 @@ impl Default for State {
     fn default() -> Self {
         Self {
             format: FORMAT_VERSION,
-            thread_id: None,
             tasks: VecDeque::new(),
             admissions: BTreeMap::new(),
         }
@@ -237,9 +250,9 @@ impl State {
             return Err("local runner history exceeds its retained limits".into());
         }
         for task in &mut state.tasks {
-            if !terminal(&task.status) {
+            if !task.status.terminal() {
                 task.event_seq = task.event_seq.saturating_add(1);
-                task.status = "interrupted".into();
+                task.status = TaskStatus::Interrupted;
                 task.detail = if task.dispatched {
                     "The runner stopped before completion was confirmed. Inspect the document before submitting new work."
                 } else {
@@ -250,7 +263,6 @@ impl State {
                 task.cancel_requested = false;
             }
         }
-        state.sync_admissions();
         Ok(state)
     }
 
@@ -289,42 +301,25 @@ impl State {
         if self
             .tasks
             .iter()
-            .filter(|task| !terminal(&task.status))
+            .filter(|task| !task.status.terminal())
             .count()
             >= MAX_UNFINISHED
         {
             return Err("The local task queue is full. Wait for a task to finish.".into());
         }
         while self.tasks.len() >= MAX_FULL_TASKS {
-            let Some(index) = self.tasks.iter().position(|task| terminal(&task.status)) else {
+            let Some(index) = self.tasks.iter().position(|task| task.status.terminal()) else {
                 return Err("The local task history is full.".into());
             };
-            self.tasks.remove(index);
+            let evicted = self.tasks.remove(index).expect("checked index");
+            if let Some(admission) = self.admissions.get_mut(&evicted.id) {
+                admission.record_eviction(&evicted);
+            }
         }
         self.admissions
-            .insert(task.id.clone(), Admission::from_task(&task));
+            .insert(task.id.clone(), Admission::new(&task));
         self.tasks.push_back(task);
         Ok(AdmissionResult::New)
-    }
-
-    pub(crate) fn sync_admission(&mut self, id: &str) {
-        let Some(task) = self.task(id).cloned() else {
-            return;
-        };
-        if let Some(admission) = self.admissions.get_mut(id) {
-            admission.update(&task);
-        }
-    }
-
-    fn sync_admissions(&mut self) {
-        let ids = self
-            .tasks
-            .iter()
-            .map(|task| task.id.clone())
-            .collect::<Vec<_>>();
-        for id in ids {
-            self.sync_admission(&id);
-        }
     }
 }
 
@@ -375,7 +370,19 @@ mod tests {
             state.admit(original.clone()),
             Ok(AdmissionResult::New)
         ));
-        state.tasks.clear();
+        state
+            .task_mut("same")
+            .unwrap()
+            .finish(TaskStatus::Completed, "done");
+        // Fill the history until "same" (the earliest terminal record) is
+        // evicted through the normal admission path, not by clearing state
+        // directly: eviction is now the only place a snapshot is taken.
+        for n in 0..MAX_FULL_TASKS {
+            let mut filler = task(&format!("filler-{n}"), json!({}));
+            filler.finish(TaskStatus::Completed, "done");
+            state.admit(filler).unwrap();
+        }
+        assert!(state.task("same").is_none());
         assert!(matches!(
             state.admit(original),
             Ok(AdmissionResult::ExistingEvicted(_))

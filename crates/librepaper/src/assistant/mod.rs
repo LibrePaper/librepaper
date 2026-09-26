@@ -23,20 +23,19 @@ pub(crate) fn start(
 ) -> Result<(), String> {
     let link = DocumentLink::parse(link, "")?;
     validate_conversation(conversation, chat_token)?;
-    lifecycle::start_or_replace(&link, conversation, chat_token, None, agent)
+    lifecycle::start_or_replace(&link, conversation, chat_token, agent)
         .map_err(|error| error.to_string())
 }
 
 pub(crate) fn status(
     link: &str,
     conversation: &str,
-) -> Result<serde_json::Value, lifecycle::Error> {
+) -> Result<lifecycle::Status, lifecycle::Error> {
     let link = DocumentLink::parse(link, "").map_err(lifecycle::Error::InvalidConfiguration)?;
-    serde_json::to_value(lifecycle::status(&link, conversation, None)?)
-        .map_err(|error| lifecycle::Error::Startup(error.to_string()))
+    lifecycle::status(&link, conversation)
 }
 
 pub(crate) fn stop(link: &str, conversation: &str) -> Result<(), lifecycle::Error> {
     let link = DocumentLink::parse(link, "").map_err(lifecycle::Error::InvalidConfiguration)?;
-    lifecycle::stop(&link, conversation, None)
+    lifecycle::stop(&link, conversation)
 }

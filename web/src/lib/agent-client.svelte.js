@@ -1,5 +1,6 @@
 import { SHELL_HEADERS, keyHeaders } from "./api.js";
 import { composeTaskMessage, checkContextSize, CONTEXT_LIMIT } from "./assistant.js";
+import { validPath } from "./assistant-preview.js";
 
 const REQUEST_TIMEOUT_MS = 15000;
 const ACK_TIMEOUT_MS = 10000;
@@ -9,6 +10,7 @@ const MAX_TASKS = 128;
 const MAX_CANDIDATE_SOURCE_BYTES = 32 * 1024 * 1024;
 const MAX_CANDIDATE_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_CANDIDATE_FILES = 512;
+const MAX_PREVIEW_RESPONSES = 8;
 
 function randomId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -47,6 +49,14 @@ function removeSession(storage, key) {
   try { storage?.removeItem(key); } catch { /* private browsing */ }
 }
 
+// The view's shape when no conversation is attached. Used both for the
+// client's initial state and whenever a conversation ends, so the shape is
+// defined once rather than written out twice.
+function emptyView() {
+  return { id: "", token: "", messages: [], tasks: {}, connected: false, runnerConnected: false,
+    status: "idle", error: "", capabilities: null, assistantAgent: "", assistantAccess: "" };
+}
+
 function compactDiagnostic(item) {
   if (!item || typeof item !== "object") return { severity: "error", message: String(item || "Candidate verification failed.") };
   const compact = {};
@@ -74,12 +84,12 @@ function boundedDiagnostics(value) {
 }
 
 /** Browser side of the persistent runner channel. The runner owns the model
- * session; this client owns socket lifetime, bounded local history, and task
- * state. */
+ * session; this client owns socket lifetime, bounded local history, task
+ * state, and dispatching the runner's preview requests to `onpreview`. */
 export function createAgentClient({ origin = globalThis.location?.origin || "", project,
   slug = project, link: initialLink = "", fetcher = globalThis.fetch,
   WebSocketImpl = globalThis.WebSocket, storage = globalThis.localStorage,
-  onChange = () => {} }) {
+  onpreview = null }) {
   if (!slug) throw new Error("A document slug is required.");
   let link = initialLink;
   let id = "";
@@ -90,7 +100,6 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   let reconnectAttempt = 0;
   let manuallyClosed = false;
   let generation = 0;
-  let previewArrival = 0;
   const sessionStorageKey = storageKey(origin, slug);
   const persisted = readSession(storage, sessionStorageKey);
   const requests = new Set();
@@ -103,15 +112,21 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       // every record restored from storage therefore needs reconciliation.
       uncertain: true, accepted: item.accepted === true,
     }]));
-  let view = {
-    id: persisted?.id || "", token: persisted?.token || "", messages: persisted?.messages || [],
-    tasks: persisted?.tasks || {}, connected: false, runnerConnected: false,
+  // A runner retries an unconfirmed preview with the same request ID after
+  // reconnecting. Reuse the immutable browser result rather than compiling
+  // the candidate twice, and never dispatch the same in-flight request twice.
+  const previewResponses = new Map();
+  const previewInFlight = new Set();
+  // Replaced wholesale on every change, never edited in place, so `.raw`
+  // avoids proxying the transcript and task map on every publish.
+  let view = $state.raw({ ...emptyView(),
+    id: persisted?.id || "", token: persisted?.token || "",
+    messages: persisted?.messages || [], tasks: persisted?.tasks || {},
     status: persisted?.id ? "reconnecting" : "idle",
-    error: "", capabilities: null,
-  };
+    assistantAgent: persisted?.assistantAgent || "", assistantAccess: persisted?.assistantAccess || "" });
   let runtimeSessionId = persisted?.runtimeSessionId || "";
-  id = view.id;
-  token = view.token;
+  id = persisted?.id || "";
+  token = persisted?.token || "";
   let saveQueued = false;
 
   function save() {
@@ -119,7 +134,8 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     writeSession(storage, sessionStorageKey, { id, token,
       messages: view.messages.slice(-MAX_MESSAGES),
       tasks: Object.fromEntries(Object.entries(view.tasks).slice(-MAX_TASKS)),
-      deliveries: [...deliveries.values()].slice(-MAX_TASKS), runtimeSessionId });
+      deliveries: [...deliveries.values()].slice(-MAX_TASKS), runtimeSessionId,
+      assistantAgent: view.assistantAgent, assistantAccess: view.assistantAccess });
   }
   function saveSoon() {
     if (saveQueued) return;
@@ -129,10 +145,10 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   function publish(patch) {
     if (disposed) return;
     view = { ...view, ...patch };
-    // Socket presence/status is transient. Only transcript/task/session
-    // changes rewrite the bounded durable record, coalesced per microtask.
-    if (["id", "token", "messages", "tasks"].some((key) => Object.prototype.hasOwnProperty.call(patch, key))) saveSoon();
-    onChange(view);
+    // Socket presence/status is transient. Only transcript/task/session/
+    // assistant changes rewrite the bounded durable record, coalesced per
+    // microtask.
+    if (["id", "token", "messages", "tasks", "assistantAgent", "assistantAccess"].some((key) => Object.prototype.hasOwnProperty.call(patch, key))) saveSoon();
   }
   function rejectSends(message) {
     for (const [eventId, pending] of sends) {
@@ -152,34 +168,39 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     }
     save();
   }
-  async function request(method, suffix = "", body, authorized = true, overrideLink = link, extraHeaders = {}) {
+  // Every browser->server request shares its abort controller, timeout and
+  // network-error translation; `request` and `requestText` differ only in
+  // what they do with the response.
+  async function withTimeout(run) {
     const controller = new AbortController();
     requests.add(controller);
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    const headers = { Accept: "application/json", ...SHELL_HEADERS, ...keyHeaders(documentKey(overrideLink)), ...extraHeaders };
-    if (authorized && token) headers["X-LibrePaper-Chat-Token"] = token;
-    if (body !== undefined) headers["Content-Type"] = "application/json";
     try {
-      const response = await fetcher(`/api/documents/${encodeURIComponent(slug)}${suffix}`, {
-        method, headers, body: body === undefined ? undefined : JSON.stringify(body),
-        credentials: "same-origin", cache: "no-store", signal: controller.signal });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) { const error = new Error(result.error || `Assistant request failed (${response.status}).`); error.status = response.status; throw error; }
-      return result;
+      return await run(controller.signal);
     } catch (error) {
       if (error.name === "AbortError") throw new Error("Assistant request timed out.");
       if (error instanceof TypeError) throw new Error("The server is unavailable. Your draft remains in the composer.");
       throw error;
     } finally { clearTimeout(timeout); requests.delete(controller); }
   }
+  async function request(method, suffix = "", body, authorized = true, overrideLink = link, extraHeaders = {}) {
+    return withTimeout(async (signal) => {
+      const headers = { Accept: "application/json", ...SHELL_HEADERS, ...keyHeaders(documentKey(overrideLink)), ...extraHeaders };
+      if (authorized && token) headers["X-LibrePaper-Chat-Token"] = token;
+      if (body !== undefined) headers["Content-Type"] = "application/json";
+      const response = await fetcher(`/api/documents/${encodeURIComponent(slug)}${suffix}`, {
+        method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+        credentials: "same-origin", cache: "no-store", signal });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) { const error = new Error(result.error || `Assistant request failed (${response.status}).`); error.status = response.status; throw error; }
+      return result;
+    });
+  }
   async function requestText(suffix, overrideLink = link, extraHeaders = {}) {
-    const controller = new AbortController();
-    requests.add(controller);
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    try {
+    return withTimeout(async (signal) => {
       const response = await fetcher(`/api/documents/${encodeURIComponent(slug)}${suffix}`, {
         method: "GET", headers: { Accept: "text/plain", ...SHELL_HEADERS, ...keyHeaders(documentKey(overrideLink)), ...extraHeaders },
-        credentials: "same-origin", cache: "no-store", signal: controller.signal,
+        credentials: "same-origin", cache: "no-store", signal,
       });
       if (!response.ok) {
         const body = await response.text().catch(() => "");
@@ -216,11 +237,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
       try { return new TextDecoder("utf-8", { fatal: true }).decode(body); }
       catch { throw new Error("Candidate source is not valid UTF-8."); }
-    } catch (error) {
-      if (error.name === "AbortError") throw new Error("Assistant request timed out.");
-      if (error instanceof TypeError) throw new Error("The server is unavailable. Your draft remains in the composer.");
-      throw error;
-    } finally { clearTimeout(timeout); requests.delete(controller); }
+    });
   }
   async function fetchCandidate(candidateId, overrideLink = link, candidateToken = "") {
     if (typeof candidateId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(candidateId)) {
@@ -229,7 +246,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     const prefix = `/agent/candidates/${encodeURIComponent(candidateId)}`;
     const candidateHeaders = candidateToken ? { "X-LibrePaper-Candidate-Token": candidateToken } : {};
     const metadata = await request("GET", prefix, undefined, false, overrideLink, candidateHeaders);
-    const manifest = metadata?.files || metadata?.manifest;
+    const manifest = metadata?.files;
     if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
       throw new Error("The server returned no candidate manifest.");
     }
@@ -254,9 +271,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
         const index = next++;
         if (index >= textEntries.length) return;
         const [path] = textEntries[index];
-        if (typeof path !== "string" || !path || path.startsWith("/") || path.includes("\\") || path.split("/").some((part) => !part || part === "." || part === "..")) {
-          throw new Error("The server returned an invalid candidate path.");
-        }
+        if (!validPath(path)) throw new Error("The server returned an invalid candidate path.");
         const query = `?path=${encodeURIComponent(path)}`;
         const text = await requestText(`${prefix}/source${query}`, overrideLink, candidateHeaders);
         fetchedBytes += new TextEncoder().encode(text).byteLength;
@@ -269,7 +284,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     return {
       ...metadata,
       base_revision: metadata.base_revision || "",
-      revision: metadata.revision || metadata.tree_digest || "",
+      revision: metadata.revision || "",
       files: manifest,
       texts,
     };
@@ -312,12 +327,10 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     return Boolean(socket && socket.readyState === WebSocketImpl?.OPEN
       && view.connected && view.runnerConnected);
   }
-  function deliveryTaskId(message) { return message.id; }
   function markDeliveryUncertain(message, detail) {
     const delivery = deliveries.get(message.id);
     if (delivery) delivery.uncertain = true;
-    const taskId = deliveryTaskId(message);
-    updateTask(taskId, { delivery: "uncertain", error: detail });
+    updateTask(message.id, { delivery: "uncertain", error: detail });
   }
   function confirmDelivery(taskId, result) {
     for (const [eventId, delivery] of deliveries) {
@@ -342,16 +355,21 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       void transmit(delivery.message).catch(() => {});
     }
   }
+  // Shared by `transmit` and `respond`: register a pending acknowledgement,
+  // time it out, and (when the frame carries a delivery) mark it uncertain.
+  function awaitAck(ackId, { message, timeoutMessage = "The assistant did not acknowledge the request." } = {}) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        sends.delete(ackId);
+        if (message) markDeliveryUncertain(message, "Delivery was not confirmed. Retry when the runner is connected.");
+        reject(new Error(timeoutMessage));
+      }, ACK_TIMEOUT_MS);
+      sends.set(ackId, { resolve, reject, timeout, message });
+    });
+  }
   function transmit(message) {
     if (!canTransmit()) throw new Error("Start the LibrePaper runner before sending a message.");
-    const accepted = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        sends.delete(message.id);
-        markDeliveryUncertain(message, "Delivery was not confirmed. Retry when the runner is connected.");
-        reject(new Error("The assistant did not acknowledge the request."));
-      }, ACK_TIMEOUT_MS);
-      sends.set(message.id, { resolve, reject, timeout, message });
-    });
+    const accepted = awaitAck(message.id, { message });
     try {
       socket.send(JSON.stringify(message));
     } catch (error) {
@@ -369,6 +387,48 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       ...(message.task ? { task: message.task } : {}),
       context: message.context || {},
     };
+  }
+  // Closing a socket is intentional in three places (a replaced conversation,
+  // ending one, and disposing the client): each time, its handlers must be
+  // cleared first so its own close event cannot schedule a reconnect.
+  function closeSocket(target) {
+    if (!target) return;
+    target.onopen = target.onmessage = target.onerror = target.onclose = null;
+    target.close();
+  }
+  async function handlePreviewRequest(frame) {
+    if (!frame?.id || !onpreview) return;
+    const conversationAtArrival = id;
+    const sendResult = (result) => id === conversationAtArrival && previewResult({
+      ...result,
+      id: `${frame.id}-result`, request_id: frame.id,
+      task_id: frame.task_id,
+      base_revision: frame.base_revision, revision: frame.revision,
+    });
+    const cached = previewResponses.get(frame.id);
+    if (cached) { await sendResult(cached); return; }
+    if (previewInFlight.has(frame.id)) return;
+    previewInFlight.add(frame.id);
+    let result;
+    try {
+      // The relay carries only an immutable candidate handle. Source files
+      // travel over authenticated same-origin requests, so a large file
+      // never consumes the chat frame's bounded context budget.
+      const candidate = frame.candidate_id
+        ? await fetchCandidate(frame.candidate_id, undefined, frame.candidate_token || "")
+        : null;
+      result = await onpreview(candidate ? { ...frame, candidate } : frame);
+    } catch (error) {
+      result = {
+        ok: false,
+        diagnostics: [{ severity: "error", message: error?.message || "Candidate verification failed." }],
+        output: "none",
+      };
+    }
+    previewResponses.set(frame.id, result);
+    while (previewResponses.size > MAX_PREVIEW_RESPONSES) previewResponses.delete(previewResponses.keys().next().value);
+    previewInFlight.delete(frame.id);
+    await sendResult(result);
   }
   function frameReceived(frame, current) {
     if (disposed || socket !== current) return;
@@ -436,7 +496,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       return;
     }
     if (frame.type === "preview_request") {
-      publish({ previewRequest: { ...frame, _arrival: ++previewArrival } });
+      void handlePreviewRequest(frame);
       return;
     }
     if (frame.type === "preview_result") { updateTask(frame.task_id, { preview: frame }); publish({ previewResult: frame }); return; }
@@ -521,20 +581,17 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     manuallyClosed = true;
     clearTimeout(reconnectTimer); reconnectTimer = undefined;
     generation++;
-    const previous = socket;
+    closeSocket(socket);
     socket = undefined;
-    if (previous) {
-      previous.onopen = previous.onmessage = previous.onerror = previous.onclose = null;
-      previous.close();
-    }
     deliveries.clear();
+    previewResponses.clear();
+    previewInFlight.clear();
     manuallyClosed = false;
     const result = await request("POST", "/chat", {}, false);
     if (!result.id || !result.token) throw new Error("The server returned an invalid assistant channel.");
     id = result.id; token = result.token;
     runtimeSessionId = "";
-    previewArrival = 0;
-    publish({ id, token, messages: [], tasks: {}, previewRequest: null, connected: false, runnerConnected: false, status: "connecting", error: "" });
+    publish({ ...emptyView(), id, token, status: "connecting" });
     connect();
     return result;
   }
@@ -560,8 +617,8 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     const message = view.messages.find((item) => item?.role === "user" && item.id === messageId);
     if (!message) return false;
     const wire = storedMessage(message);
-    deliveries.set(message.id, { message: wire, taskId: deliveryTaskId(wire), uncertain: false, accepted: false });
-    updateTask(deliveryTaskId(wire), { delivery: "pending", error: null });
+    deliveries.set(message.id, { message: wire, taskId: wire.id, uncertain: false, accepted: false });
+    updateTask(wire.id, { delivery: "pending", error: null });
     await transmit(wire);
     return true;
   }
@@ -573,15 +630,12 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   }
   async function respond(taskId, requestId, response) {
     if (!taskId || !requestId || !socket || socket.readyState !== WebSocketImpl.OPEN) return false;
-    const id = randomId();
-    const accepted = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => { sends.delete(id); reject(new Error("The assistant did not acknowledge the response.")); }, ACK_TIMEOUT_MS);
-      sends.set(id, { resolve, reject, timeout });
-    });
+    const ackId = randomId();
+    const accepted = awaitAck(ackId, { timeoutMessage: "The assistant did not acknowledge the response." });
     try {
-      socket.send(JSON.stringify({ type: "input", id, task_id: taskId, request_id: requestId, response }));
+      socket.send(JSON.stringify({ type: "input", id: ackId, task_id: taskId, request_id: requestId, response }));
     } catch (error) {
-      const pending = sends.get(id); clearTimeout(pending?.timeout); sends.delete(id); pending?.reject(error);
+      const pending = sends.get(ackId); clearTimeout(pending?.timeout); sends.delete(ackId); pending?.reject(error);
     }
     await accepted;
     return true;
@@ -599,33 +653,30 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   async function end() {
     manuallyClosed = true; generation++; clearTimeout(reconnectTimer); reconnectTimer = undefined;
     const oldId = id;
-    if (socket) {
-      const previous = socket; socket = undefined;
-      previous.onopen = previous.onmessage = previous.onerror = previous.onclose = null;
-      previous.close();
-    }
+    closeSocket(socket);
+    socket = undefined;
     rejectSends("The assistant channel was closed.");
     if (oldId && token) { try { await request("DELETE", `/chat/${encodeURIComponent(oldId)}`); } catch (error) { if (error.status !== 404) throw error; } }
-    deliveries.clear(); removeSession(storage, sessionStorageKey); id = ""; token = "";
+    deliveries.clear();
+    previewResponses.clear();
+    previewInFlight.clear();
+    removeSession(storage, sessionStorageKey); id = ""; token = "";
     runtimeSessionId = "";
-    previewArrival = 0;
-    publish({ id: "", token: "", messages: [], tasks: {}, previewRequest: null, connected: false, runnerConnected: false, status: "idle", error: "" });
+    publish(emptyView());
   }
   return {
     get current() { return view; }, setLink(next) { link = next || ""; },
     async resume() { if (id && token) { publish({ status: "reconnecting", error: "" }); connect(); } return view; },
     create, send, retry, cancel, respond, previewResult, end,
+    rememberAssistant({ agent = "", access = "" } = {}) { publish({ assistantAgent: agent, assistantAccess: access }); },
     capabilities: async (nextLink = link) => request("GET", "/assistant/capabilities", undefined, false, nextLink),
     fetchCandidate,
     reconnect() { manuallyClosed = false; reconnectAttempt = 0; connect(); return Promise.resolve(view); },
     dispose() {
       if (saveQueued) { saveQueued = false; save(); }
       disposed = true; manuallyClosed = true; generation++; clearTimeout(reconnectTimer);
-      if (socket) {
-        const previous = socket; socket = undefined;
-        previous.onopen = previous.onmessage = previous.onerror = previous.onclose = null;
-        previous.close();
-      }
+      closeSocket(socket);
+      socket = undefined;
       rejectSends("The assistant panel was closed.");
       for (const controller of requests) controller.abort();
     },

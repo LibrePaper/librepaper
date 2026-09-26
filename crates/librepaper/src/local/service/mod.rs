@@ -1008,9 +1008,6 @@ async fn dispatch(
         // route that acts on a document credential is a POST from a paired
         // origin, so a drive-by page cannot wire up an agent.
         ["agents"] if *method == Method::GET => handle_agents_list(inner, headers, origin).await,
-        ["connections"] if *method == Method::POST => {
-            handle_connection_create(inner, headers, origin, request).await
-        }
         ["assistant"] if *method == Method::POST => {
             super::assistant::handle_assistant_start(inner, headers, origin, request).await
         }
@@ -1070,33 +1067,11 @@ async fn dispatch(
 
 /* ------------------------------------------------- Connecting an agent */
 
-/// Resolve a connection this origin owns, or the refusal to send back. Every
-/// agent route goes through it: a connection is a document credential under
-/// another name, so one site may never act on another's.
-pub(super) fn owned_connection(
-    inner: &Inner,
-    origin: Option<&str>,
-    name: &str,
-) -> Result<super::connections::Connection, Box<Reply>> {
-    let store = super::connections::ConnectionStore::new(&inner.state_home);
-    let Some(connection) = store.get(name) else {
-        return Err(Box::new(write_json(
-            404,
-            &json!({"error": "no such connection on this computer"}),
-        )));
-    };
-    if connection.internal || Some(connection.origin.as_str()) != origin {
-        return Err(Box::new(write_json(
-            403,
-            &json!({"error": "that connection belongs to another site"}),
-        )));
-    }
-    Ok(connection)
-}
-
-/// The agents installed on this computer. This is what turns setup from a
-/// wall of pasted instructions into a list of choices: the browser cannot
-/// read a PATH, so only the local app can say what the user actually has.
+/// The agents installed on this computer. Agents are used only from the
+/// document sidebar, and the sidebar already holds the document link it
+/// would drive one against, so this route reports installed agents and
+/// nothing else: the browser cannot read a PATH, so only the local app can
+/// say what the user actually has.
 async fn handle_agents_list(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
     if let Err(response) = authenticate(inner, headers, origin) {
         return response;
@@ -1105,41 +1080,6 @@ async fn handle_agents_list(inner: &Inner, headers: &HeaderMap, origin: Option<&
         200,
         &json!({"agents": super::acp_agents::detect(&inner.state_home)}),
     )
-}
-
-/// Register a document so agents on this computer can reach it by name.
-async fn handle_connection_create(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return response;
-    }
-    let Some(origin) = origin else {
-        return write_json(403, &json!({"error": "a paired origin is required"}));
-    };
-    let body = match read_json_body::<protocol::ConnectionRequest>(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    if url::Url::parse(&body.link)
-        .ok()
-        .filter(|url| matches!(url.scheme(), "http" | "https"))
-        .is_none()
-    {
-        return write_json(400, &json!({"error": "a document link is required"}));
-    }
-    match super::connections::ConnectionStore::new(&inner.state_home).register(
-        &body.title,
-        &body.link,
-        origin,
-        &body.access,
-    ) {
-        Ok(name) => write_json(201, &json!({"connection": name})),
-        Err(error) => write_json(400, &json!({"error": error})),
-    }
 }
 /* -------------------------------------------------------------- Zotero */
 

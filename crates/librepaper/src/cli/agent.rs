@@ -3,7 +3,6 @@
 //! frames, so they suit a process with no shell parser of its own.
 
 use clap::Subcommand;
-use serde_json::json;
 
 use crate::automation::peer::{AutomationPeer, DocumentLink};
 
@@ -23,13 +22,6 @@ pub(crate) enum AgentCommand {
             hide_env_values = true
         )]
         chat_token: Option<String>,
-        /// Directory for the local thread id and completed task ids.
-        #[arg(
-            long = "state-directory",
-            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
-            value_name = "DIRECTORY"
-        )]
-        state_dir: Option<std::path::PathBuf>,
         /// Command line for an Agent Client Protocol implementation.
         /// `allow_hyphen_values` because an adapter's arguments are flags of
         /// its own: `gemini --experimental-acp`, `npx -y pi-acp`. Without it
@@ -43,9 +35,6 @@ pub(crate) enum AgentCommand {
             value_name = "COMMAND"
         )]
         agent: Vec<String>,
-        /// Start a detached runner and wait until it is ready.
-        #[arg(long)]
-        background: bool,
     },
     /// Serve the document MCP tools over stdio for an MCP host. The local app
     /// starts this; it is not listed because nobody types it.
@@ -82,9 +71,7 @@ pub(crate) async fn run(
             link,
             conversation,
             chat_token,
-            state_dir,
             agent,
-            background,
         } => {
             let link = if link == "-" {
                 std::env::var("LIBREPAPER_DOCUMENT").map_err(|_| {
@@ -95,26 +82,11 @@ pub(crate) async fn run(
             };
             let link = DocumentLink::parse(&link, server.as_deref().unwrap_or(""))?;
             let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
-            let config = crate::assistant::runtime::config(
-                conversation.clone(),
-                chat_token,
-                state_dir.clone(),
-                agent,
-            )?;
+            let config =
+                crate::assistant::runtime::config(conversation.clone(), chat_token, agent)?;
             std::env::remove_var("LIBREPAPER_DOCUMENT");
             std::env::remove_var("LIBREPAPER_CHAT_TOKEN");
-            if background {
-                crate::assistant::lifecycle::start_background(
-                    peer.link(),
-                    &conversation,
-                    &config.token,
-                    config.state_dir.as_deref(),
-                    &config.agent,
-                )?;
-                println!("{}", json!({"started":true,"conversation":conversation}));
-            } else {
-                crate::assistant::runtime::run(&peer, config).await?;
-            }
+            crate::assistant::runtime::run(&peer, config).await?;
         }
     }
     Ok(())

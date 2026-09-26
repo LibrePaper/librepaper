@@ -617,9 +617,9 @@
       title: headingOf, digest: renderers.snapshotDigest });
   }
 
-  async function reviewAssistantResults({ suggestions: ids = [], pass = "" }) {
+  async function reviewAssistantResults({ suggestions: ids = [] }) {
     const matches = comments.filter((comment) => comment.motivation === "editing" &&
-      (ids.includes(comment.id) || (pass && comment.pass === pass)));
+      ids.includes(comment.id));
     const first = matches.find((comment) => !comment.resolved) || matches[0];
     if (!first) {
       say("Those suggestions are no longer on the document. They were applied, rejected or withdrawn.", { kind: "problem", id: "reader:suggestions-gone" });

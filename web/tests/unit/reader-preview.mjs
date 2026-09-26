@@ -114,8 +114,8 @@ assert.match(viewerSource, /type: "viewer-state"[\s\S]*?readerOrigin/);
 // The frame answers the window that spoke to it, never "*".
 assert.doesNotMatch(viewerSource, /parent\.postMessage\([\s\S]*?"\*"\)/);
 
-const agentSource = await readFile(new URL("../../src/agent/agent.js", import.meta.url), "utf8");
-assert.match(agentSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*?height: auto;/);
+const frameSource = await readFile(new URL("../../src/agent/frame.js", import.meta.url), "utf8");
+assert.match(frameSource, /librepaper-flow img \{[\s\S]*?max-width: 100%;[\s\S]*?height: auto;/);
 
 // A known empty main file is distinct from the pre-hydration placeholder: it
 // clears the old payload/export and paints an explicit empty state.
