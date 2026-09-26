@@ -166,6 +166,17 @@ window.filesCheck = async () => {
   const upload = new DataTransfer(); upload.items.add(new File(['uploaded'], 'upload.tex', { type: 'text/plain' }));
   row('empty').dispatchEvent(new DragEvent('drop', { dataTransfer: upload, bubbles: true, cancelable: true }));
   await flush(); check(session.list().some((file) => file.path === 'empty/upload.tex'), 'external upload to folder');
+  const mixedUpload = new DataTransfer();
+  mixedUpload.items.add(new File(['valid'], 'mixed-valid.tex', { type: 'text/plain' }));
+  mixedUpload.items.add(new File(['generated'], 'snowflake.log', { type: 'text/plain' }));
+  row('empty').dispatchEvent(new DragEvent('drop', { dataTransfer: mixedUpload, bubbles: true, cancelable: true }));
+  await flush();
+  check(session.list().some((file) => file.path === 'empty/mixed-valid.tex'), 'valid file uploads beside an unsupported file');
+  check(!session.list().some((file) => file.path.endsWith('snowflake.log')), 'unsupported file is skipped');
+  const warning = document.querySelector('.upload-warning');
+  check(warning?.textContent.includes('snowflake.log') && warning.textContent.includes('.tex') && warning.textContent.includes('.png'),
+    'unsupported upload warning names the file and allowed extensions');
+  check(warning.classList.contains('upload-warning'), 'unsupported upload warning uses warning tone');
   row('empty').dispatchEvent(new DragEvent('drop', { dataTransfer: upload, bubbles: true, cancelable: true }));
   await flush();
   const both = [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Keep both' && button.getClientRects().length);

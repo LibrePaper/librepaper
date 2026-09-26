@@ -108,6 +108,11 @@ main.workspace .rail-item:last-child { margin-top: calc(var(--spacing) * 3); }
   font-size: var(--panel-font-size);
   color: var(--color-error-text);
 }
+.filelist .upload-warning {
+  margin: 0;
+  font-size: var(--panel-font-size);
+  color: var(--color-warning-text);
+}
 
 /* Skeleton owns tree semantics; these rules give it the project's compact rows. */
 .explorer, .explorer-menu {
