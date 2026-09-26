@@ -370,7 +370,10 @@ mod tests {
             state.admit(original.clone()),
             Ok(AdmissionResult::New)
         ));
-        state.task_mut("same").unwrap().finish(TaskStatus::Completed, "done");
+        state
+            .task_mut("same")
+            .unwrap()
+            .finish(TaskStatus::Completed, "done");
         // Fill the history until "same" (the earliest terminal record) is
         // evicted through the normal admission path, not by clearing state
         // directly: eviction is now the only place a snapshot is taken.

@@ -1,11 +1,11 @@
 //! Immediate admission: no waiters, and only active principals occupy memory.
 use super::{Failure, Viewer};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::{collections::HashMap, sync::Mutex};
 
-// One lane for every document tool call. A status lookup can wait briefly
-// behind a mutation under load; that is an acceptable trade for not tracking
-// which tool is which here at all.
+// One lane for every document tool call. A status lookup can be refused
+// while a principal's mutations fill its allowance; that is an acceptable
+// trade for not tracking which tool is which here at all.
 const GLOBAL: usize = 8;
 const PER_PRINCIPAL: usize = 2;
 
@@ -97,6 +97,7 @@ impl Drop for Permit<'_> {
 mod tests {
     use super::*;
     use crate::{auth::Identity, server::Role};
+    use serde_json::Value;
 
     fn viewer(account: &str, link: &str) -> Viewer {
         Viewer {
@@ -190,7 +191,9 @@ mod tests {
         let task_capacity = capacity.clone();
         let (ready, started) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let _permit = task_capacity.acquire(&viewer("alice", "")).unwrap();
+            let _permits: Vec<_> = (0..PER_PRINCIPAL)
+                .map(|_| task_capacity.acquire(&viewer("alice", "")).unwrap())
+                .collect();
             ready.send(()).unwrap();
             std::future::pending::<()>().await;
         });

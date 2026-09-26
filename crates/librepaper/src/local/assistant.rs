@@ -21,19 +21,17 @@ async fn accept<'a, T>(
     headers: &HeaderMap,
     origin: Option<&'a str>,
     request: Request<Body>,
-) -> Result<(T, crate::automation::peer::DocumentLink, &'a str), Reply>
+) -> Result<(T, crate::automation::peer::DocumentLink, &'a str), Box<Reply>>
 where
     T: for<'de> serde::Deserialize<'de> + AsLink,
 {
-    if let Err(response) = authenticate(inner, headers, origin) {
-        return Err(response);
-    }
+    authenticate(inner, headers, origin).map_err(Box::new)?;
     // `authenticate` above already refused a missing Origin header.
     let origin = origin.expect("authenticate requires an origin");
-    let body = read_json_body::<T>(request).await?;
+    let body = read_json_body::<T>(request).await.map_err(Box::new)?;
     let link = match crate::automation::peer::DocumentLink::parse(body.link(), "") {
         Ok(link) => link,
-        Err(error) => return Err(write_json(400, &json!({"error": error}))),
+        Err(error) => return Err(Box::new(write_json(400, &json!({"error": error})))),
     };
     Ok((body, link, origin))
 }
@@ -66,7 +64,7 @@ pub(super) async fn handle_assistant_start(
     let (body, parsed_link, origin) =
         match accept::<protocol::AssistantRequest>(inner, headers, origin, request).await {
             Ok(accepted) => accepted,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
     // An agent that cannot be driven is reported as such rather than silently
     // replaced by a different one. Which model runs is the user's choice, and
@@ -113,7 +111,7 @@ pub(super) async fn handle_assistant_status(
     let (body, _link, _origin) =
         match accept::<protocol::AssistantQuery>(inner, headers, origin, request).await {
             Ok(accepted) => accepted,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
     let link = body.link;
     let conversation = body.conversation;
@@ -152,7 +150,7 @@ pub(super) async fn handle_assistant_stop(
     let (body, _link, _origin) =
         match accept::<protocol::AssistantQuery>(inner, headers, origin, request).await {
             Ok(accepted) => accepted,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
     let link = body.link;
     let conversation = body.conversation;

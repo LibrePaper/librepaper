@@ -693,9 +693,12 @@ impl Server {
             if let Some(id) = query.get("comment_id").and_then(Value::as_str) {
                 comments::parse_uuid(id, "comment_id")?;
                 if room.is_none() {
-                    room = Some(self.rooms.get(slug).await.map_err(|error| {
-                        Failure::new("unavailable", error.to_string())
-                    })?);
+                    room = Some(
+                        self.rooms
+                            .get(slug)
+                            .await
+                            .map_err(|error| Failure::new("unavailable", error.to_string()))?,
+                    );
                 }
                 let room = room.as_ref().expect("just populated above");
                 let comment = room
@@ -957,9 +960,9 @@ fn locate_selection(view: &View, selection: &Value) -> Result<(String, usize, us
         .files
         .iter()
         .map(|(path, file)| crate::room::locate::Candidate {
-            file_id: &file.file_id,
+            file_id: file.file_id,
             path,
-            text: &file.text,
+            text: file.text,
         })
         .collect();
     let target = crate::room::locate::locate(&candidates, &quote).map_err(|failure| {
@@ -975,9 +978,9 @@ fn locate_selection(view: &View, selection: &Value) -> Result<(String, usize, us
         .iter()
         .find(|(_, file)| file.file_id == target.file_id.0)
         .ok_or_else(|| Failure::new("internal", "located file left the view"))?;
-    let start = operations::byte_of_utf16(&file.text, target.start_utf16 as usize)
+    let start = operations::byte_of_utf16(file.text, target.start_utf16 as usize)
         .ok_or_else(|| Failure::new("invalid_range", "selection splits a Unicode character"))?;
-    let end = operations::byte_of_utf16(&file.text, target.end_utf16 as usize)
+    let end = operations::byte_of_utf16(file.text, target.end_utf16 as usize)
         .ok_or_else(|| Failure::new("invalid_range", "selection splits a Unicode character"))?;
     Ok((path.clone(), start, end))
 }

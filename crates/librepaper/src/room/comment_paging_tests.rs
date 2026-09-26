@@ -1285,7 +1285,7 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
     let version = by_id.version();
     assert_eq!(
         version,
-        crate::room::agent_comments::comment_version(on_page),
+        on_page.version(),
         "a page's reply preview must not change the token",
     );
     assert_eq!(

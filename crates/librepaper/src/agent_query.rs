@@ -1194,15 +1194,17 @@ fn bibliography_query(
             .cloned()
             .collect()
     };
-    let requested: Option<BTreeSet<String>> = query.get("key").map(|key| {
-        std::iter::once(
-            key.as_str()
-                .map(str::to_string)
-                .ok_or("bibliography key must be a string"),
-        )
-        .collect::<Result<_, _>>()
-    })
-    .transpose()?;
+    let requested: Option<BTreeSet<String>> = query
+        .get("key")
+        .map(|key| {
+            std::iter::once(
+                key.as_str()
+                    .map(str::to_string)
+                    .ok_or("bibliography key must be a string"),
+            )
+            .collect::<Result<_, _>>()
+        })
+        .transpose()?;
     let mut entries = Vec::new();
     let mut all_keys = BTreeSet::new();
     let mut partial = false;
@@ -1838,7 +1840,7 @@ mod tests {
             .digest = "b".repeat(64);
         let result = read(
             &snapshot,
-            &[json!({"kind":"source","path":"main.md","range":{"start":0,"end":7}})],
+            &[json!({"kind":"source","path":"main.md","start":0,"end":7})],
             QueryBudget::default(),
         )
         .expect("source query");
@@ -1852,7 +1854,7 @@ mod tests {
         let result = read(
             &snapshot(),
             &[json!({"kind":"source","path":"main.md",
-            "range":{"start":0,"end":12}})],
+            "start":0,"end":12})],
             QueryBudget::default(),
         )
         .expect("source query");

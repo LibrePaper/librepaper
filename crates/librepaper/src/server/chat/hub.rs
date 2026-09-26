@@ -450,6 +450,9 @@ impl Hub {
                 if role != "agent"
                     || !valid_id(value["revision"].as_str().unwrap_or(""))
                     || !candidate_ref
+                    // Source never rides the relay: the browser fetches the
+                    // candidate by reference.
+                    || value.get("files").is_some()
                 {
                     return Err((400, "invalid preview request"));
                 }

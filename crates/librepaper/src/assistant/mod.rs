@@ -27,7 +27,10 @@ pub(crate) fn start(
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn status(link: &str, conversation: &str) -> Result<lifecycle::Status, lifecycle::Error> {
+pub(crate) fn status(
+    link: &str,
+    conversation: &str,
+) -> Result<lifecycle::Status, lifecycle::Error> {
     let link = DocumentLink::parse(link, "").map_err(lifecycle::Error::InvalidConfiguration)?;
     lifecycle::status(&link, conversation)
 }

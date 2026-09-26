@@ -353,16 +353,7 @@ impl Journal {
         result_ids: Vec<String>,
         status: &str,
     ) -> Result<u64, String> {
-        self.append_detailed(
-            task_id,
-            kind,
-            tool,
-            operation,
-            result_ids,
-            status,
-            None,
-            0,
-        )
+        self.append_detailed(task_id, kind, tool, operation, result_ids, status, None, 0)
     }
 
     #[allow(clippy::too_many_arguments)]

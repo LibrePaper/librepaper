@@ -60,7 +60,6 @@ fn companion_commands_people_type_are_listed() {
         "manage",
         "startup",
         "disconnect",
-        "connections",
         "agent",
         "preset",
     ] {

@@ -369,8 +369,7 @@ pub(crate) fn start_background(
                         .detail
                         .unwrap_or_else(|| format!("background runner {label}")));
                 }
-                if fresh && status.state == RunnerState::Starting && !lock_is_free(&location.lock)
-                {
+                if fresh && status.state == RunnerState::Starting && !lock_is_free(&location.lock) {
                     // The app-server may take a while to initialize; keep
                     // waiting while the child owns the lease.
                 } else if fresh && lock_is_free(&location.lock) {

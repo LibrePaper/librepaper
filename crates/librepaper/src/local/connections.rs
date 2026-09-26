@@ -251,7 +251,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(name, second);
-        assert_eq!(store.get(&name).unwrap().chat_token.as_deref(), Some("token-2"));
+        assert_eq!(
+            store.get(&name).unwrap().chat_token.as_deref(),
+            Some("token-2")
+        );
     }
 
     #[test]
@@ -264,7 +267,12 @@ mod tests {
             .put_runner("https://d.example/docs/b#k=2", "two", "c2", "t2")
             .unwrap();
         assert_eq!(store.remove_origin("one"), 1);
-        assert!(store.get(&runner_connection_name("https://d.example/docs/b#k=2", "c2")).is_some());
+        assert!(store
+            .get(&runner_connection_name(
+                "https://d.example/docs/b#k=2",
+                "c2"
+            ))
+            .is_some());
     }
 
     #[test]

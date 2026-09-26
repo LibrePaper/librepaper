@@ -520,7 +520,11 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // not starting. A reader link is the case that made this necessary, since
     // the document's MCP surface admits a commenter at minimum and answers a
     // reader with a flat 404.
-    lease.write_status(RunnerState::Starting, None, Some("Checking document access"))?;
+    lease.write_status(
+        RunnerState::Starting,
+        None,
+        Some("Checking document access"),
+    )?;
     reachable_or_refuse(peer).await?;
     // Said out loud, into the runner's own log, because every failure from
     // here on is invisible otherwise: the assistant answers happily with no
@@ -955,7 +959,10 @@ mod tests {
         let last = persist_report(&mut state, "one", &path).unwrap();
         assert!(last.event_seq > first.event_seq);
         let recovered = recover_state(&path).unwrap();
-        assert_eq!(recovered.task("one").unwrap().status, TaskStatus::Interrupted);
+        assert_eq!(
+            recovered.task("one").unwrap().status,
+            TaskStatus::Interrupted
+        );
         assert!(recovered.task("one").unwrap().event_seq > last.event_seq);
     }
 
@@ -968,7 +975,11 @@ mod tests {
         runner_journal::record_tool_call(&journal_path, "one", "document_propose", &request)
             .unwrap();
         runner_journal::record_tool_result(&journal_path,"one","document_propose",&request,&json!({"structuredContent":{"status":"committed","effects":[{"kind":"suggestion","id":"kept"}]}})).unwrap();
-        for status in [TaskStatus::Cancelled, TaskStatus::Failed, TaskStatus::Interrupted] {
+        for status in [
+            TaskStatus::Cancelled,
+            TaskStatus::Failed,
+            TaskStatus::Interrupted,
+        ] {
             let mut state = State::default();
             let mut task =
                 Task::from_message(&json!({"id":"one","role":"user","text":"Edit"})).unwrap();

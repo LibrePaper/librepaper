@@ -439,11 +439,13 @@ impl Agent {
 }
 
 fn tool_call_activity(title: Option<&str>) -> Update {
-    Update::Activity(if title.is_some_and(|title| title.starts_with("document_")) {
-        "Using document tools"
-    } else {
-        "Working on your document"
-    })
+    Update::Activity(
+        if title.is_some_and(|title| title.starts_with("document_")) {
+            "Using document tools"
+        } else {
+            "Working on your document"
+        },
+    )
 }
 
 fn translate_update(update: SessionUpdate) -> Update {

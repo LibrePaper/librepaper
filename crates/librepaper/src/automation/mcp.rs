@@ -448,8 +448,14 @@ mod tests {
             "result":{"structuredContent":{"status":"committed","effects":[{"kind":"suggestion","id":"suggestion-1"}]}}
         });
         runner_journal::record_tool_call(&path, "task-1", "document_propose", &request).unwrap();
-        runner_journal::record_tool_result(&path, "task-1", "document_propose", &request, &response)
-            .unwrap();
+        runner_journal::record_tool_result(
+            &path,
+            "task-1",
+            "document_propose",
+            &request,
+            &response,
+        )
+        .unwrap();
         let journal = runner_journal::Journal::open(&path).unwrap();
         assert!(journal.pending_operations().is_empty());
         assert!(journal.known_result_ids("task-1").contains("suggestion-1"));

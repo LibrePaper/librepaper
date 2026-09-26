@@ -277,7 +277,7 @@ impl Server {
                     context: json!({
                         "candidate_id": args.get("candidate_id").cloned().unwrap_or_else(|| {
                             if tool == "document_propose" {
-                                json!(format!("candidate_{}", hex::encode(Sha256::digest(format!("{actor}\0{}\0{digest}", key.request_id())))))
+                                json!(format!("candidate_{}", hex::encode(Sha256::digest(format!("{actor}\0{}\0{digest}", key.scoped_request_id(""))))))
                             } else { Value::Null }
                         }),
                         "action": args.get("action").cloned().unwrap_or(Value::Null),
@@ -366,6 +366,7 @@ impl Server {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn mcp_operation(
         &self,
         slug: &str,
@@ -398,6 +399,7 @@ impl Server {
     /// refusal itself as the retained outcome. Returns `Unrecorded` when the
     /// admission does not survive or names a different request, in which
     /// case the caller has nothing new to report either.
+    #[allow(clippy::too_many_arguments)]
     async fn mcp_record_definite_refusal(
         &self,
         slug: &str,
@@ -1011,7 +1013,7 @@ impl Server {
             "candidate_{}",
             hex::encode(Sha256::digest(format!(
                 "{actor}\0{}\0{digest}",
-                key.request_id()
+                key.scoped_request_id("")
             )))
         );
         self.mcp_store(
@@ -1025,8 +1027,17 @@ impl Server {
             true,
         )
         .await?;
-        self.mcp_finish_proposal(slug, actor, who, headers, arrival, &candidate_id, &candidate, &view)
-            .await
+        self.mcp_finish_proposal(
+            slug,
+            actor,
+            who,
+            headers,
+            arrival,
+            &candidate_id,
+            &candidate,
+            &view,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
