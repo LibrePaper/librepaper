@@ -27,7 +27,7 @@ Bring your own model is literal here: the agent you picked is already installed 
 The document reaches the session as an MCP server handed to the agent over ACP. The model uses `document_read`, `document_propose`, `document_apply`, `document_comment` and `document_result`; document links and tokens are never MCP tool arguments. The command names a connection rather than a link:
 
 ```
-librepaper agent mcp --connection thesis
+librepaper mcp --connection thesis
 ```
 
 This computer holds what the name means, so a document key never reaches a command line, a shell history or a transcript; a rotated link is repaired in one place; and `librepaper local connections` lists what agents here can reach, with `--remove` to take it back. Disconnecting the site from the app drops its connections too.

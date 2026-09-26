@@ -38,11 +38,10 @@ Its source is in [`site/`](site/), and `make site` builds it.
 
 The ordinary CLI covers `login`, `logout`, `list`, and one-shot `export`.
 `admin` operates a deployment, `local` operates the companion on your own
-computer, and `agent mcp` serves a document's tools to an agent.
+computer, and `mcp` serves a document's tools to an agent.
 
 ```sh
-librepaper export DOCUMENT --format markdown --output comments.md
-librepaper export DOCUMENT --project --output ./paper-copy
+librepaper export DOCUMENT ./paper-copy
 ```
 
 An exported project is a snapshot copy. Editing it does not update the hosted

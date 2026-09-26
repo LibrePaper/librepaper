@@ -34,10 +34,16 @@ To sign in from this terminal:
     librepaper login"
 )]
 pub(crate) struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+/// Deployment credentials: server URL and optional authentication token.
+#[derive(Args, Clone, Debug)]
+struct Deployment {
     /// Deployment to talk to
     #[arg(
         long,
-        global = true,
         env = "LIBREPAPER_SERVER",
         value_name = "URL",
         help_heading = "Deployment"
@@ -46,15 +52,12 @@ pub(crate) struct Cli {
     /// A credential to use instead of the one `login` stored
     #[arg(
         long,
-        global = true,
         env = "LIBREPAPER_TOKEN",
         value_name = "TOKEN",
         hide_env_values = true,
         help_heading = "Deployment"
     )]
     token: Option<String>,
-    #[command(subcommand)]
-    command: Command,
 }
 
 /// The options that describe a running service rather than where it runs:
@@ -266,7 +269,10 @@ struct AdvancedConfigFile {
 #[derive(Subcommand)]
 pub(crate) enum Command {
     /// Sign in through a deployment, in a browser
-    Login,
+    Login {
+        #[command(flatten)]
+        deployment: Deployment,
+    },
     /// Forget the stored sign-in
     Logout,
     /// Deployment administration and operator commands.
@@ -275,45 +281,87 @@ pub(crate) enum Command {
         command: AdminCommand,
     },
     /// List your documents
-    List,
-    /// Export comments or an independent copy of the complete project
+    List {
+        #[command(flatten)]
+        deployment: Deployment,
+    },
+    /// Export a complete independent copy of the project
     Export {
         /// A full slug, or one of the short handles `list` prints
         id: String,
-        /// jsonld (W3C Web Annotation), markdown, or response
-        #[arg(long, value_name = "FORMAT")]
-        format: Option<String>,
-        /// Only comments made at or after this label, by id (or a prefix of
-        /// it) or by the name somebody gave it
-        #[arg(long, value_name = "LABEL")]
-        since: Option<String>,
-        /// With --project, export the project as it stood at this label
-        /// instead of its live state; requesting a historical export waits
-        /// for the server to build it (SPEC-server-is-a-log §8.5)
+        /// A new directory to create
+        dir: PathBuf,
+        /// Export the project as it stood at this label instead of its live
+        /// state; requesting a historical export waits for the server to build
+        /// it (SPEC-server-is-a-log §8.5)
         #[arg(long, value_name = "LABEL")]
         at: Option<String>,
-        /// File for comments, or a new directory for a project
-        #[arg(long, value_name = "PATH")]
-        output: Option<String>,
         /// A share link, or the key from one: read as its holder rather than
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        /// Export every project source file and owned binary asset instead
-        /// of the comments
+        #[command(flatten)]
+        deployment: Deployment,
+    },
+    /// Serve the document MCP tools to an agent on this computer
+    Mcp {
+        #[arg(
+            required_unless_present = "connection",
+            conflicts_with = "connection",
+            default_value = ""
+        )]
+        link: String,
+        /// A connection registered by the browser on this computer.
+        #[arg(long, value_name = "NAME")]
+        connection: Option<String>,
+        #[command(flatten)]
+        deployment: Deployment,
+    },
+    /// Drive a local ACP agent against a private sidebar conversation. The
+    /// local app starts this; it is not listed because nobody types it.
+    #[command(hide = true)]
+    RunAgent {
+        link: String,
+        /// Private conversation identifier from the LibrePaper sidebar.
+        conversation: String,
+        /// Conversation credential.
+        #[arg(
+            long = "chat-token",
+            env = "LIBREPAPER_CHAT_TOKEN",
+            hide_env_values = true
+        )]
+        chat_token: Option<String>,
+        /// Directory for the local thread id and completed task ids.
+        #[arg(
+            long = "state-directory",
+            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
+            value_name = "DIRECTORY"
+        )]
+        state_dir: Option<std::path::PathBuf>,
+        /// Command line for an Agent Client Protocol implementation.
+        /// `allow_hyphen_values` because an adapter's arguments are flags of
+        /// its own: `gemini --experimental-acp`, `npx -y pi-acp`. Without it
+        /// clap claims the adapter's flag as one of ours and exits 2.
+        #[arg(
+            long = "agent",
+            env = "LIBREPAPER_AGENT",
+            value_delimiter = ' ',
+            allow_hyphen_values = true,
+            required = true,
+            value_name = "COMMAND"
+        )]
+        agent: Vec<String>,
+        /// Start a detached runner and wait until it is ready.
         #[arg(long)]
-        project: bool,
+        background: bool,
+        #[command(flatten)]
+        deployment: Deployment,
     },
     /// The local app: run native tools on this machine for the jobs the
     /// browser editor cannot do itself
     Local {
         #[command(subcommand)]
         command: LocalCommand,
-    },
-    /// Serve the document MCP tools to an agent on this computer
-    Agent {
-        #[command(subcommand)]
-        command: agent::AgentCommand,
     },
 }
 
@@ -581,58 +629,64 @@ pub struct LocalArgs {
 #[tokio::main]
 pub async fn main() {
     let cli = Cli::parse();
-    let server = cli.server;
-    let token = cli.token;
     match cli.command {
-        Command::Login => login(server).await,
+        Command::Login { deployment } => login(deployment.server).await,
         Command::Logout => logout(),
         Command::Admin { command } => run_admin(command).await,
-        Command::List => list_documents(server, token).await,
+        Command::List { deployment } => {
+            list_documents(deployment.server, deployment.token).await
+        }
         Command::Export {
             id,
-            format,
-            since,
+            dir,
             at,
-            output,
             key,
-            project,
+            deployment,
         } => {
-            if project {
-                if format.is_some() || since.is_some() {
-                    die("--format and --since apply only to comments export");
-                }
-                let output = output.unwrap_or_else(|| die("--project requires --output DIRECTORY"));
-                crate::cli::export::export_project(
-                    &id,
-                    server,
-                    token,
-                    &output,
-                    key.unwrap_or_default(),
-                    at.unwrap_or_default(),
-                )
-                .await
-            } else {
-                if at.is_some() {
-                    die("--at applies only to --project export");
-                }
-                crate::cli::export::export_document(
-                    &id,
-                    server,
-                    token,
-                    format.as_deref().unwrap_or("jsonld"),
-                    output.unwrap_or_default(),
-                    since.unwrap_or_default(),
-                    key.unwrap_or_default(),
-                )
-                .await
-            }
+            crate::cli::export::export_project(
+                &id,
+                deployment.server,
+                deployment.token,
+                dir.to_str().unwrap_or_else(|| die("directory path is not valid UTF-8")),
+                key.unwrap_or_default(),
+                at.unwrap_or_default(),
+            )
+            .await
         }
-        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
-        Command::Agent { command } => {
-            if let Err(err) = agent::run(command, server, token).await {
+        Command::Mcp {
+            link,
+            connection,
+            deployment,
+        } => {
+            if let Err(err) = agent::run_mcp(link, connection, deployment.server, deployment.token).await {
                 die(err);
             }
         }
+        Command::RunAgent {
+            link,
+            conversation,
+            chat_token,
+            state_dir,
+            agent,
+            background,
+            deployment,
+        } => {
+            if let Err(err) = agent::run_connect(
+                link,
+                conversation,
+                chat_token,
+                state_dir,
+                agent,
+                background,
+                deployment.server,
+                deployment.token,
+            )
+            .await
+            {
+                die(err);
+            }
+        }
+        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
     }
 }
 
@@ -751,18 +805,16 @@ mod socket_policy_tests {
     use super::*;
 
     #[test]
-    fn export_modes_parse() {
-        let comments =
-            Cli::try_parse_from(["librepaper", "export", "paper", "--format", "markdown"]);
-        assert!(comments.is_ok());
-        let project = Cli::try_parse_from([
-            "librepaper",
-            "export",
-            "paper",
-            "--project",
-            "--output",
-            "copy",
+    fn export_project_parse() {
+        let export = Cli::try_parse_from(["librepaper", "export", "paper", "copy"]);
+        assert!(export.is_ok());
+        let with_at = Cli::try_parse_from([
+            "librepaper", "export", "paper", "copy", "--at", "label",
         ]);
-        assert!(project.is_ok());
+        assert!(with_at.is_ok());
+        let old_format = Cli::try_parse_from([
+            "librepaper", "export", "paper", "--project", "--output", "copy",
+        ]);
+        assert!(old_format.is_err());
     }
 }

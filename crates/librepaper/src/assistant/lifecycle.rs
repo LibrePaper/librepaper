@@ -308,7 +308,7 @@ pub(crate) fn start_background(
     let mut command = Command::new(executable);
     // Keep the document key out of the child process command line. `-` is an
     // internal argv sentinel resolved from this short lived environment.
-    command.args(["agent", "connect", "-", conversation]);
+    command.args(["run-agent", "-", conversation]);
     for part in agent {
         command.args(["--agent", part]);
     }
@@ -552,7 +552,7 @@ mod tests {
             &path,
             "error: unexpected argument '--experimental-acp' found\n\n\
              tip: to pass it as a value, use '-- --experimental-acp'\n\
-             Usage: librepaper agent connect --agent <COMMAND>\n",
+             Usage: librepaper run-agent --agent <COMMAND>\n",
         )
         .unwrap();
         assert_eq!(

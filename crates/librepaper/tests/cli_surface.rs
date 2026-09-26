@@ -28,7 +28,7 @@ fn lists_command(help: &str, command: &str) -> bool {
 fn top_level_help_lists_the_retained_workflows() {
     let help = help_of(&["--help"]);
     for command in [
-        "login", "logout", "admin", "list", "export", "local", "agent",
+        "login", "logout", "admin", "list", "export", "local", "mcp",
     ] {
         assert!(
             lists_command(&help, command),
@@ -69,18 +69,18 @@ fn companion_commands_people_type_are_listed() {
             "companion command {command:?} is absent from local help:\n{help}"
         );
     }
-    assert!(lists_command(&help_of(&["agent", "--help"]), "mcp"));
+    assert!(lists_command(&help_of(&["mcp", "--help"]), "--connection"));
 }
 
 /// `local open` answers `librepaper://` links for the operating system and
-/// `agent connect` is spawned by the local app. Both parse, neither is
+/// `run-agent` is spawned by the local app. Both parse, neither is
 /// advertised.
 #[test]
 fn machine_invoked_commands_parse_but_are_not_listed() {
     assert!(!lists_command(&help_of(&["local", "--help"]), "open"));
-    assert!(!lists_command(&help_of(&["agent", "--help"]), "connect"));
+    assert!(!lists_command(&help_of(&["--help"]), "run-agent"));
     assert!(cli(&["local", "open", "--help"]).status.success());
-    assert!(cli(&["agent", "connect", "--help"]).status.success());
+    assert!(cli(&["run-agent", "--help"]).status.success());
 }
 
 #[test]

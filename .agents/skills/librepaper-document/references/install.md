@@ -4,10 +4,10 @@ Check what is present before installing anything:
 
 ```sh
 librepaper --version
-librepaper agent --help
+librepaper mcp --help
 ```
 
-If the binary is missing, or present but without `agent mcp`,
+If the binary is missing, or present but without `mcp`,
 install a release with the project's installer (Linux and macOS):
 
 ```sh
@@ -24,7 +24,7 @@ in every command rather than editing the user's shell configuration.
 - Windows: use the matching executable from the
   [release page](https://github.com/LibrePaper/librepaper/releases).
 
-Run `librepaper agent mcp --help` afterwards. If the installed release still
+Run `librepaper mcp --help` afterwards. If the installed release still
 does not provide the adapter, **report the version mismatch and stop.** Do
 not hand-roll HTTP requests against the server, and do not try to bypass the
 link's permission checks.
