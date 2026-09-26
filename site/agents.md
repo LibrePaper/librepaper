@@ -30,7 +30,7 @@ The document reaches the session as an MCP server handed to the agent over ACP. 
 librepaper mcp --connection thesis
 ```
 
-This computer holds what the name means, so a document key never reaches a command line, a shell history or a transcript; a rotated link is repaired in one place; and `librepaper local connections` lists what agents here can reach, with `--remove` to take it back. Disconnecting the site from the app drops its connections too.
+This computer holds what the name means, so a document key never reaches a command line, a shell history or a transcript; a rotated link is repaired in one place; and the settings page lists what agents here can reach and how to remove each. Disconnecting the site from the app drops its connections too.
 
 Agents differ in how they reach ACP, and the sidebar says which case yours is rather than leaving you to find out:
 

@@ -455,13 +455,11 @@ pub(crate) enum AdminCommand {
 /// `librepaper local <command>`. See `crate::local::cli`.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalCommand {
-    /// Manage companion-local build presets and their execution grants.
-    Preset {
-        #[command(subcommand)]
-        command: LocalPresetCommand,
-    },
-    /// Start the loopback service and print its pairing code
+    /// Start the companion (in the background by default, or in this process with --foreground)
     Start {
+        /// Run in the foreground of this process instead of in the background
+        #[arg(long)]
+        foreground: bool,
         /// Port to listen on (default 8763)
         #[arg(
             long,
@@ -488,13 +486,8 @@ pub enum LocalCommand {
         )]
         tex_path: Vec<PathBuf>,
     },
-    /// Start the local companion in the background.
-    Launch {
-        #[arg(long, default_value_t = 0, hide_default_value = true)]
-        port: u16,
-    },
     /// Open the local companion settings, starting it if needed.
-    Manage,
+    Settings,
     /// Ask a running companion to stop cleanly.
     Stop,
     /// Launch the companion and open a validated local connection link.
@@ -502,27 +495,8 @@ pub enum LocalCommand {
     /// listed because nobody types it.
     #[command(hide = true)]
     Open { url: String },
-    /// Enable or disable starting the companion when you log in.
-    Startup {
-        #[command(subcommand)]
-        command: StartupCommand,
-    },
-    /// Whether the service is running, its address, code and pairings
-    Status,
-    /// Which agents on this computer can reach which documents, and revoke one
-    Connections {
-        /// Remove one connection by name. Agents configured against it stop
-        /// resolving immediately.
-        #[arg(long, value_name = "NAME")]
-        remove: Option<String>,
-    },
-    /// Teach this computer an ACP agent the sidebar can drive
-    Agent {
-        #[command(subcommand)]
-        command: LocalAgentCommand,
-    },
-    /// Which native tools were found, and what is missing
-    Doctor {
+    /// Service running state, address, code, pairings, native tools, and agent connections
+    Status {
         /// Extra directories to search for TeX tools, colon-separated
         #[arg(
             long,
@@ -532,62 +506,10 @@ pub enum LocalCommand {
         )]
         tex_path: Vec<PathBuf>,
     },
-    /// Revoke pairings
-    Disconnect {
-        /// The browser origin to revoke; all of them with --all
-        #[arg(long, value_name = "URL")]
-        origin: Option<String>,
-        #[arg(long)]
-        all: bool,
-    },
-}
-
-#[derive(Subcommand, Clone, Debug)]
-pub enum LocalPresetCommand {
-    /// List safe metadata for locally configured presets.
-    List,
-    /// Create a local preset. Options and environment are key=value pairs.
-    Create {
-        name: String,
-        adapter: String,
-        #[arg(long, value_delimiter = ',')]
-        format: Vec<String>,
-        #[arg(long = "option", value_name = "KEY=VALUE")]
-        options: Vec<String>,
-        #[arg(long = "env", value_name = "KEY=VALUE")]
-        environment: Vec<String>,
-        #[arg(long)]
-        wrapper: Option<String>,
-    },
-    /// Update a local preset; all grants become invalid.
-    Update {
-        id: String,
-        name: String,
-        adapter: String,
-        #[arg(long, value_delimiter = ',')]
-        format: Vec<String>,
-        #[arg(long = "option", value_name = "KEY=VALUE")]
-        options: Vec<String>,
-        #[arg(long = "env", value_name = "KEY=VALUE")]
-        environment: Vec<String>,
-        #[arg(long)]
-        wrapper: Option<String>,
-    },
-    Remove {
-        id: String,
-    },
-    Grant {
-        preset: String,
-        origin: String,
-        project: String,
-        entrypoint: String,
-        #[arg(long, default_value = "snapshot")]
-        workspace: String,
-        #[arg(long, default_value = "build")]
-        operation: String,
-    },
-    Revoke {
-        id: String,
+    /// Teach this computer an ACP agent the sidebar can drive
+    Agent {
+        #[command(subcommand)]
+        command: LocalAgentCommand,
     },
 }
 
@@ -614,11 +536,6 @@ pub enum LocalAgentCommand {
     },
 }
 
-#[derive(Subcommand, Clone, Debug)]
-pub enum StartupCommand {
-    Enable,
-    Disable,
-}
 
 /// The arguments `librepaper local` hands to `crate::local::run`.
 #[derive(Clone, Debug)]

@@ -30,7 +30,7 @@ pub(crate) fn resolve_executable(found: PathBuf) -> Result<PathBuf, String> {
     };
     if !path.is_file() {
         return Err(format!(
-            "the librepaper binary this app is running from is gone ({}); restart it with `librepaper local stop` then `librepaper local launch`",
+            "the librepaper binary this app is running from is gone ({}); restart it with `librepaper local stop` then `librepaper local start`",
             path.display()
         ));
     }
@@ -52,7 +52,7 @@ mod tests {
 
         let missing = directory.path().join("missing");
         let error = resolve_executable(missing.clone()).unwrap_err();
-        assert!(error.contains("librepaper local launch"), "{error}");
+        assert!(error.contains("librepaper local start"), "{error}");
         assert!(error.contains(&missing.display().to_string()));
         assert!(resolve_executable(directory.path().to_path_buf()).is_err());
     }

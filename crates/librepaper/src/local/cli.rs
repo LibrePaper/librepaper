@@ -1,10 +1,6 @@
 //! `librepaper local <command>`: the command line front end for the loopback
 //! service.
-//!
-//! `start` stays in the foreground for scripts; `launch` starts an
-//! independent background process and waits for it to become ready.
 
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,10 +8,8 @@ use std::time::Duration;
 
 use tokio::net::TcpListener;
 
-use crate::cli::state_home;
-use crate::cli::{LocalArgs, LocalCommand, LocalPresetCommand, StartupCommand};
+use crate::cli::{state_home, LocalArgs, LocalCommand};
 use crate::local::pairing::{generate_code, PairingStore, ServiceState};
-use crate::local::presets::{Operation, OptionType, Preset, PresetStore, WorkspaceMode};
 use crate::local::protocol::{self, DEFAULT_PORT};
 use crate::local::service::{LocalService, NativeRunner, Runner};
 use crate::util::die;
@@ -23,165 +17,23 @@ use crate::util::die;
 pub async fn run(args: LocalArgs) {
     match args.command {
         LocalCommand::Start {
+            foreground,
             port,
             code,
             tex_path,
-        } => start(port, code, tex_path).await,
-        LocalCommand::Launch { port } => launch(port).await,
-        LocalCommand::Manage => open("librepaper://manage").await,
+        } => {
+            if foreground {
+                start_foreground(port, code, tex_path).await
+            } else {
+                start_background(port, code, &tex_path).await
+            }
+        }
+        LocalCommand::Settings => open("librepaper://manage").await,
         LocalCommand::Stop => stop().await,
         LocalCommand::Open { url } => open(&url).await,
-        LocalCommand::Startup { command } => startup(command),
-        LocalCommand::Status => status().await,
-        LocalCommand::Connections { remove } => connections(remove),
+        LocalCommand::Status { tex_path } => status(tex_path).await,
         LocalCommand::Agent { command } => local_agent(command),
-        LocalCommand::Doctor { tex_path } => doctor(tex_path).await,
-        LocalCommand::Disconnect { origin, all } => disconnect(origin, all),
-        LocalCommand::Preset { command } => run_preset(command),
     }
-}
-
-fn run_preset(command: LocalPresetCommand) {
-    let store = PresetStore::new(state_home());
-    match command {
-        LocalPresetCommand::List => {
-            for preset in store.list() {
-                println!(
-                    "{}\t{}\t{}",
-                    preset.id, preset.base_adapter, preset.display_name
-                );
-            }
-        }
-        LocalPresetCommand::Create {
-            name,
-            adapter,
-            format,
-            options,
-            environment,
-            wrapper,
-        } => {
-            let preset = preset_from_args(
-                String::new(),
-                name,
-                adapter,
-                format,
-                options,
-                environment,
-                wrapper,
-            );
-            match store.create(preset) {
-                Ok(preset) => println!("created preset {}", preset.id),
-                Err(error) => die(error),
-            }
-        }
-        LocalPresetCommand::Update {
-            id,
-            name,
-            adapter,
-            format,
-            options,
-            environment,
-            wrapper,
-        } => {
-            let preset = preset_from_args(
-                id.clone(),
-                name,
-                adapter,
-                format,
-                options,
-                environment,
-                wrapper,
-            );
-            match store.update(&id, preset) {
-                Ok(preset) => println!("updated preset {} (grants must be renewed)", preset.id),
-                Err(error) => die(error),
-            }
-        }
-        LocalPresetCommand::Remove { id } => match store.remove(&id) {
-            Ok(()) => println!("removed preset {id}"),
-            Err(error) => die(error),
-        },
-        LocalPresetCommand::Grant {
-            preset,
-            origin,
-            project,
-            entrypoint,
-            workspace,
-            operation,
-        } => {
-            let workspace = match workspace.as_str() {
-                "snapshot" => WorkspaceMode::Snapshot,
-                "bound" => WorkspaceMode::Bound,
-                _ => die("workspace must be snapshot or bound"),
-            };
-            let operation = match operation.as_str() {
-                "build" => Operation::Build,
-                "preview" => Operation::Preview,
-                _ => die("operation must be build or preview"),
-            };
-            match store.grant(
-                &origin,
-                &project,
-                &preset,
-                workspace,
-                operation,
-                &entrypoint,
-                crate::auth::now_unix(),
-            ) {
-                Ok(grant) => println!("granted preset {}", grant.id),
-                Err(error) => die(error),
-            }
-        }
-        LocalPresetCommand::Revoke { id } => match store.revoke(&id) {
-            Ok(true) => println!("revoked preset grant {id}"),
-            Ok(false) => die("preset grant not found"),
-            Err(error) => die(error),
-        },
-    }
-}
-
-fn preset_from_args(
-    id: String,
-    name: String,
-    adapter: String,
-    formats: Vec<String>,
-    options: Vec<String>,
-    environment: Vec<String>,
-    wrapper: Option<String>,
-) -> Preset {
-    fn pairs(values: Vec<String>) -> BTreeMap<String, String> {
-        values
-            .into_iter()
-            .filter_map(|value| {
-                value
-                    .split_once('=')
-                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
-            })
-            .collect()
-    }
-    let option_schema = options_from_schema(&options);
-    Preset {
-        id,
-        display_name: name,
-        base_adapter: adapter,
-        source_formats: formats.into_iter().collect(),
-        options: pairs(options),
-        option_schema,
-        environment: pairs(environment),
-        wrapper,
-        semantic_revision: 0,
-    }
-}
-
-fn options_from_schema(values: &[String]) -> BTreeMap<String, OptionType> {
-    values
-        .iter()
-        .filter_map(|value| {
-            value
-                .split_once('=')
-                .map(|(key, _)| (key.to_owned(), OptionType::String))
-        })
-        .collect()
 }
 
 /// The cache-home base directory a job workspace lives under:
@@ -203,7 +55,14 @@ fn cache_home() -> PathBuf {
     }
 }
 
-async fn start(port: u16, code: Option<String>, tex_path: Vec<PathBuf>) {
+async fn start_background(port: u16, code: Option<String>, tex_path: &[PathBuf]) {
+    match crate::local::lifecycle::spawn_background(port, code.as_deref(), tex_path).await {
+        Ok(state) => println!("librepaper local companion ready on port {}", state.port),
+        Err(error) => die(error),
+    }
+}
+
+async fn start_foreground(port: u16, code: Option<String>, tex_path: Vec<PathBuf>) {
     let state_home = state_home();
     let pairing = PairingStore::new(&state_home, code.clone());
     let port = if port == 0 { DEFAULT_PORT } else { port };
@@ -219,7 +78,7 @@ async fn start(port: u16, code: Option<String>, tex_path: Vec<PathBuf>) {
         .open(local_dir.join("companion.lock"))
         .unwrap_or_else(|error| die(error));
     if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
-        die("The companion is already running. Use `librepaper local launch` to reuse it.");
+        die("The companion is already running. Use `librepaper local start` to reuse it.");
     }
     crate::local::lifecycle::clear_stop_request(&state_home);
 
@@ -332,13 +191,6 @@ async fn stop() {
     println!("librepaper local companion stopped");
 }
 
-async fn launch(port: u16) {
-    match crate::local::lifecycle::spawn_background(port, None, &[]).await {
-        Ok(state) => println!("librepaper local companion ready on port {}", state.port),
-        Err(error) => die(error),
-    }
-}
-
 async fn open(url: &str) {
     // Validate before causing even a launch side effect.
     if let Err(error) = crate::local::lifecycle::connection_target(url, DEFAULT_PORT) {
@@ -356,19 +208,13 @@ async fn open(url: &str) {
     }
 }
 
-fn startup(command: StartupCommand) {
-    let enabled = matches!(command, StartupCommand::Enable);
-    match crate::local::lifecycle::set_startup(enabled) {
-        Ok(()) => println!("startup {}", if enabled { "enabled" } else { "disabled" }),
-        Err(error) => die(error),
-    }
-}
-
 /// Exits non-zero when nothing is answering, so a script can branch on it:
 /// `make deploy` uses it to decide whether to start a companion or leave the
-/// one already running alone.
-async fn status() {
-    let pairing = PairingStore::new(&state_home(), None);
+/// one already running alone. Reports service state/address/code/pairings,
+/// native tools found and missing, and agent connections.
+async fn status(tex_path: Vec<PathBuf>) {
+    let state_home_val = state_home();
+    let pairing = PairingStore::new(&state_home_val, None);
     let Some(state) = pairing.read_service() else {
         println!("librepaper local is not running");
         std::process::exit(1);
@@ -407,103 +253,9 @@ async fn status() {
     };
     println!("pairing code: {}", state.code);
     print_pairings(&pairing);
-    // A stale `service.json` describes a companion that is gone. Reporting
-    // that as success would have a script skip starting one.
-    if !answering {
-        std::process::exit(1);
-    }
-}
 
-fn print_pairings(pairing: &PairingStore) {
-    let pairings = pairing.active_pairings();
-    if pairings.is_empty() {
-        println!("no paired origins");
-        return;
-    }
-    println!("paired origins:");
-    for (origin, project) in pairings {
-        println!("  {origin}  {project}");
-    }
-}
-
-/// Teach this computer an ACP agent, so the sidebar can drive an agent that
-/// is not in the built-in table. This is how opencode, Pi, or something that
-/// does not exist yet becomes a sidebar assistant without LibrePaper
-/// guessing at a package name that may never have existed.
-fn local_agent(command: crate::cli::LocalAgentCommand) {
-    use crate::cli::LocalAgentCommand;
-    let store = crate::local::acp_agents::CustomStore::new(&state_home());
-    match command {
-        LocalAgentCommand::Add {
-            id,
-            label,
-            command: acp,
-        } => match store.add(&id, &label, &acp) {
-            Ok(()) => println!("{id} will be offered in the document sidebar"),
-            Err(error) => die(error),
-        },
-        LocalAgentCommand::List => {
-            let all = store.list();
-            if all.is_empty() {
-                println!("No agents added on this computer. Built-in agents are detected on PATH.");
-                return;
-            }
-            for (id, custom) in all {
-                println!("{id}\t{}\t{}", custom.label, custom.command.join(" "));
-            }
-        }
-        LocalAgentCommand::Remove { id } => {
-            if store.remove(&id) {
-                println!("removed {id}");
-            } else {
-                die(format!("no agent named '{id}'"));
-            }
-        }
-    }
-}
-/// What agents on this computer can reach, and how to take it back. A
-/// connection is a document credential under a readable name, so being able
-/// to list and revoke them without opening a browser matters.
-fn connections(remove: Option<String>) {
-    let store = crate::local::connections::ConnectionStore::new(&state_home());
-    if let Some(name) = remove {
-        if store.remove(&name) {
-            println!("removed {name}");
-        } else {
-            die(format!("no connection named '{name}'"));
-        }
-        return;
-    }
-    let all = store.list();
-    if all.is_empty() {
-        println!("No agent connections on this computer.");
-        return;
-    }
-    for (name, entry) in all {
-        // The link itself is deliberately absent: this is an audit listing,
-        // not a place to copy a credential out of.
-        println!(
-            "{name}\t{}\t{}\t{}",
-            if entry.title.is_empty() {
-                "(untitled)"
-            } else {
-                &entry.title
-            },
-            if entry.access.is_empty() {
-                "unknown access"
-            } else {
-                &entry.access
-            },
-            entry.origin
-        );
-    }
-}
-
-async fn doctor(tex_path: Vec<PathBuf>) {
+    // Native tools found and missing
     let capabilities = crate::local::discovery::discover(true, &tex_path).await;
-    println!("librepaper local doctor");
-    println!();
-    println!("platform: {}", capabilities.platform);
     println!();
     println!("tools:");
     print_tool("calepin", &capabilities.calepin);
@@ -531,6 +283,49 @@ async fn doctor(tex_path: Vec<PathBuf>) {
         );
         println!("  paired local builds run with the user's normal access");
     }
+
+    // Agent connections
+    let store = crate::local::connections::ConnectionStore::new(&state_home_val);
+    let all = store.list();
+    if !all.is_empty() {
+        println!();
+        println!("agent connections:");
+        for (name, entry) in all {
+            println!(
+                "  {}\t{}\t{}\t{}",
+                name,
+                if entry.title.is_empty() {
+                    "(untitled)"
+                } else {
+                    &entry.title
+                },
+                if entry.access.is_empty() {
+                    "unknown access"
+                } else {
+                    &entry.access
+                },
+                entry.origin
+            );
+        }
+    }
+
+    // A stale `service.json` describes a companion that is gone. Reporting
+    // that as success would have a script skip starting one.
+    if !answering {
+        std::process::exit(1);
+    }
+}
+
+fn print_pairings(pairing: &PairingStore) {
+    let pairings = pairing.active_pairings();
+    if pairings.is_empty() {
+        println!("no paired origins");
+        return;
+    }
+    println!("paired origins:");
+    for (origin, project) in pairings {
+        println!("  {origin}  {project}");
+    }
 }
 
 fn print_tool(name: &str, tool: &protocol::Tool) {
@@ -546,16 +341,39 @@ fn print_tool(name: &str, tool: &protocol::Tool) {
     }
 }
 
-fn disconnect(origin: Option<String>, all: bool) {
-    if !all && origin.is_none() {
-        die("pass --origin <URL> or --all");
-    }
-    let pairing = PairingStore::new(&state_home(), None);
-    let target = if all { None } else { origin.as_deref() };
-    let removed = pairing.revoke(target);
-    if removed == 0 {
-        println!("nothing to revoke");
-    } else {
-        println!("revoked {removed} pairing(s)");
+/// Teach this computer an ACP agent, so the sidebar can drive an agent that
+/// is not in the built-in table. This is how opencode, Pi, or something that
+/// does not exist yet becomes a sidebar assistant without LibrePaper
+/// guessing at a package name that may never have existed.
+fn local_agent(command: crate::cli::LocalAgentCommand) {
+    use crate::cli::LocalAgentCommand;
+    let state_home = crate::cli::state_home();
+    let store = crate::local::acp_agents::CustomStore::new(&state_home);
+    match command {
+        LocalAgentCommand::Add {
+            id,
+            label,
+            command: acp,
+        } => match store.add(&id, &label, &acp) {
+            Ok(()) => println!("{id} will be offered in the document sidebar"),
+            Err(error) => die(error),
+        },
+        LocalAgentCommand::List => {
+            let all = store.list();
+            if all.is_empty() {
+                println!("No agents added on this computer. Built-in agents are detected on PATH.");
+                return;
+            }
+            for (id, custom) in all {
+                println!("{id}\t{}\t{}", custom.label, custom.command.join(" "));
+            }
+        }
+        LocalAgentCommand::Remove { id } => {
+            if store.remove(&id) {
+                println!("removed {id}");
+            } else {
+                die(format!("no agent named '{id}'"));
+            }
+        }
     }
 }
