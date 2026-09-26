@@ -5,6 +5,7 @@
 //! nonce-bound request which the runner observes; it never sends a signal to a
 //! PID that may have been reused by another process.
 
+use super::protocol::truncate_utf8;
 use crate::automation::peer::{AutomationPeer, DocumentLink};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,7 +38,7 @@ impl std::fmt::Display for Error {
                 formatter.write_str(detail)
             }
             Self::StopTimeout => {
-                formatter.write_str("stop requested; runner did not exit within five seconds")
+                formatter.write_str("stop requested; runner did not exit within ten seconds")
             }
         }
     }
@@ -53,11 +54,26 @@ pub(crate) struct Location {
     pub binding: PathBuf,
 }
 
+/// A lease's coarse phase, as written to `runner.status.json` for `agent
+/// status` and the sidebar to poll. Distinct from a task's own status: a
+/// runner can be `ready` with no task running at all.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RunnerState {
+    Starting,
+    Ready,
+    Connecting,
+    Working,
+    NeedsInput,
+    Stopped,
+    Failed,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Status {
     pub pid: u32,
     pub nonce: String,
-    pub state: String,
+    pub state: RunnerState,
     pub updated_at: u64,
     #[serde(default)]
     pub task_id: Option<String>,
@@ -89,24 +105,11 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
-pub(crate) fn default_state_dir() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
-        if !path.is_empty() {
-            return Ok(PathBuf::from(path).join("librepaper"));
-        }
-    }
-    std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".local/state/librepaper"))
-        .ok_or_else(|| {
-            "cannot locate a private state directory (set HOME or XDG_STATE_HOME)".into()
-        })
+fn state_root() -> Result<PathBuf, String> {
+    Ok(crate::local::paths::state_home()?.join("librepaper"))
 }
 
-pub(crate) fn location(
-    link: &DocumentLink,
-    conversation: &str,
-    state_dir: Option<&Path>,
-) -> Result<Location, String> {
+fn location_at(base: PathBuf, link: &DocumentLink, conversation: &str) -> Result<Location, String> {
     if conversation.is_empty()
         || conversation.len() > 128
         || !conversation
@@ -115,10 +118,6 @@ pub(crate) fn location(
     {
         return Err("invalid conversation identifier".into());
     }
-    let base = match state_dir {
-        Some(path) => path.to_path_buf(),
-        None => default_state_dir()?,
-    };
     let mut digest = Sha256::new();
     digest.update(link.server().as_bytes());
     digest.update([0]);
@@ -134,6 +133,19 @@ pub(crate) fn location(
         binding: directory.join(BINDING),
         directory,
     })
+}
+
+pub(crate) fn location(link: &DocumentLink, conversation: &str) -> Result<Location, String> {
+    location_at(state_root()?, link, conversation)
+}
+
+#[cfg(test)]
+fn location_with_root(
+    base: &Path,
+    link: &DocumentLink,
+    conversation: &str,
+) -> Result<Location, String> {
+    location_at(base.to_path_buf(), link, conversation)
 }
 
 fn private_directory(path: &Path) -> Result<(), String> {
@@ -167,10 +179,9 @@ impl Lease {
     pub(crate) fn acquire(
         peer: &AutomationPeer,
         conversation: &str,
-        state_dir: Option<&Path>,
         config_hash: String,
     ) -> Result<Self, String> {
-        let location = location(peer.link(), conversation, state_dir)?;
+        let location = location(peer.link(), conversation)?;
         private_directory(&location.directory)?;
         let mut lock = OpenOptions::new()
             .read(true)
@@ -191,20 +202,20 @@ impl Lease {
             lock,
             config_hash,
         };
-        lease.write_status("starting", None, None)?;
+        lease.write_status(RunnerState::Starting, None, None)?;
         Ok(lease)
     }
 
     pub(crate) fn write_status(
         &self,
-        state: &str,
+        state: RunnerState,
         task_id: Option<&str>,
         detail: Option<&str>,
     ) -> Result<(), String> {
         let value = Status {
             pid: std::process::id(),
             nonce: self.nonce.clone(),
-            state: state.into(),
+            state,
             updated_at: unix_now(),
             task_id: task_id.map(str::to_owned),
             detail: detail.map(str::to_owned),
@@ -264,38 +275,16 @@ fn last_log_line(path: &Path) -> Option<String> {
     let line = text.lines().map(str::trim).rfind(|line| {
         !line.is_empty() && !line.starts_with("Usage:") && !line.starts_with("tip:")
     })?;
-    Some(line.chars().take(400).collect())
-}
-
-/// Wait for a stopping runner to release its conversation. `stop` only writes
-/// the request; the runner observes it, finishes what it is doing and exits,
-/// so a replacement started immediately would collide with it.
-pub(crate) fn wait_until_free(
-    link: &DocumentLink,
-    conversation: &str,
-    state_dir: Option<&Path>,
-) -> Result<(), String> {
-    let location = location(link, conversation, state_dir)?;
-    for _ in 0..100 {
-        if lock_is_free(&location.lock) {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    Err(
-        "the assistant already running for this conversation did not stop; try again in a moment"
-            .into(),
-    )
+    Some(truncate_utf8(line, 400))
 }
 
 pub(crate) fn start_background(
     link: &DocumentLink,
     conversation: &str,
     token: &str,
-    state_dir: Option<&Path>,
     agent: &[String],
 ) -> Result<(), String> {
-    let location = location(link, conversation, state_dir)?;
+    let location = location(link, conversation)?;
     private_directory(&location.directory)?;
     if !lock_is_free(&location.lock) {
         return Err("a runner is already connected to this conversation".into());
@@ -311,13 +300,6 @@ pub(crate) fn start_background(
     command.args(["run-agent", "-", conversation]);
     for part in agent {
         command.args(["--agent", part]);
-    }
-    if let Some(path) = state_dir {
-        command.args([
-            "--state-directory",
-            path.to_str()
-                .ok_or_else(|| "state directory is not valid UTF-8".to_string())?,
-        ]);
     }
     command
         .env("LIBREPAPER_DOCUMENT", link.credential_url())
@@ -371,18 +353,23 @@ pub(crate) fn start_background(
                     status.pid == child_pid && old_nonce.as_deref() != Some(status.nonce.as_str());
                 if fresh
                     && matches!(
-                        status.state.as_str(),
-                        "ready" | "working" | "needs_input" | "queued"
+                        status.state,
+                        RunnerState::Ready | RunnerState::Working | RunnerState::NeedsInput
                     )
                 {
                     return Ok(());
                 }
-                if fresh && matches!(status.state.as_str(), "failed" | "stopped") {
+                if fresh && matches!(status.state, RunnerState::Failed | RunnerState::Stopped) {
+                    let label = if status.state == RunnerState::Failed {
+                        "failed"
+                    } else {
+                        "stopped"
+                    };
                     return Err(status
                         .detail
-                        .unwrap_or_else(|| format!("background runner {}", status.state)));
+                        .unwrap_or_else(|| format!("background runner {label}")));
                 }
-                if fresh && status.state == "starting" && !lock_is_free(&location.lock) {
+                if fresh && status.state == RunnerState::Starting && !lock_is_free(&location.lock) {
                     // The app-server may take a while to initialize; keep
                     // waiting while the child owns the lease.
                 } else if fresh && lock_is_free(&location.lock) {
@@ -415,11 +402,10 @@ fn start_or_replace_inner(
     link: &DocumentLink,
     conversation: &str,
     token: &str,
-    state_dir: Option<&Path>,
     agent: &[String],
 ) -> Result<(), String> {
     let wanted = configuration_hash(link, agent);
-    let location = location(link, conversation, state_dir)?;
+    let location = location(link, conversation)?;
     if !lock_is_free(&location.lock) {
         if fs::read_to_string(&location.status)
             .ok()
@@ -428,32 +414,28 @@ fn start_or_replace_inner(
         {
             return Ok(());
         }
-        stop_at(&location).map_err(|error| error.to_string())?;
-        wait_until_free(link, conversation, state_dir)?;
+        stop_and_wait(&location).map_err(|error| error.to_string())?;
     }
-    start_background(link, conversation, token, state_dir, agent)
+    start_background(link, conversation, token, agent)
 }
 
 pub(crate) fn start_or_replace(
     link: &DocumentLink,
     conversation: &str,
     token: &str,
-    state_dir: Option<&Path>,
     agent: &[String],
 ) -> Result<(), Error> {
-    start_or_replace_inner(link, conversation, token, state_dir, agent).map_err(Error::Startup)
+    start_or_replace_inner(link, conversation, token, agent).map_err(Error::Startup)
 }
 
-pub(crate) fn status(
-    link: &DocumentLink,
-    conversation: &str,
-    state_dir: Option<&Path>,
-) -> Result<Status, Error> {
-    let location = location(link, conversation, state_dir).map_err(Error::InvalidConfiguration)?;
+pub(crate) fn status(link: &DocumentLink, conversation: &str) -> Result<Status, Error> {
+    let location = location(link, conversation).map_err(Error::InvalidConfiguration)?;
     let status = read_status(&location)?;
-    if lock_is_free(&location.lock) && !matches!(status.state.as_str(), "failed" | "stopped") {
+    if lock_is_free(&location.lock)
+        && !matches!(status.state, RunnerState::Failed | RunnerState::Stopped)
+    {
         return Ok(Status {
-            state: "stopped".into(),
+            state: RunnerState::Stopped,
             detail: Some(
                 "runner process is no longer holding its lease; task outcome is uncertain".into(),
             ),
@@ -479,7 +461,10 @@ fn read_status(location: &Location) -> Result<Status, Error> {
         .map_err(|error| Error::Startup(format!("invalid runner status: {error}")))
 }
 
-fn stop_at(location: &Location) -> Result<(), Error> {
+/// Write the stop request and wait, in one bound, for the runner to release
+/// its lease. A replacement started before this returns would collide with
+/// the runner still finishing what it was doing.
+fn stop_and_wait(location: &Location) -> Result<(), Error> {
     let current = read_status(location)?;
     if lock_is_free(&location.lock) {
         return Err(Error::NotRunning);
@@ -497,18 +482,14 @@ fn stop_at(location: &Location) -> Result<(), Error> {
         if lock_is_free(&location.lock) {
             return Ok(());
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(100));
     }
     Err(Error::StopTimeout)
 }
 
-pub(crate) fn stop(
-    link: &DocumentLink,
-    conversation: &str,
-    state_dir: Option<&Path>,
-) -> Result<(), Error> {
-    let location = location(link, conversation, state_dir).map_err(Error::InvalidConfiguration)?;
-    stop_at(&location)
+pub(crate) fn stop(link: &DocumentLink, conversation: &str) -> Result<(), Error> {
+    let location = location(link, conversation).map_err(Error::InvalidConfiguration)?;
+    stop_and_wait(&location)
 }
 
 #[cfg(test)]
@@ -518,8 +499,8 @@ mod tests {
     #[test]
     fn state_location_is_private_and_scoped() {
         let link = DocumentLink::parse("https://example.test/docs/paper#k=secret", "").unwrap();
-        let first = location(&link, "one", Some(Path::new("/tmp/librepaper-test"))).unwrap();
-        let second = location(&link, "two", Some(Path::new("/tmp/librepaper-test"))).unwrap();
+        let first = location_with_root(Path::new("/tmp/librepaper-test"), &link, "one").unwrap();
+        let second = location_with_root(Path::new("/tmp/librepaper-test"), &link, "two").unwrap();
         assert_ne!(first.directory, second.directory);
         assert!(first.directory.ends_with(
             "assistant/".to_string() + &first.directory.file_name().unwrap().to_string_lossy()

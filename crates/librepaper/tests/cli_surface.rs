@@ -27,20 +27,18 @@ fn lists_command(help: &str, command: &str) -> bool {
 #[test]
 fn top_level_help_lists_exactly_the_public_commands() {
     let help = help_of(&["--help"]);
-    for command in ["login", "logout", "list", "export", "mcp", "local", "admin"] {
+    for command in ["login", "logout", "list", "export", "local", "admin"] {
         assert!(
             lists_command(&help, command),
             "public command {command:?} is absent from top-level help:\n{help}"
         );
     }
-    assert!(
-        !lists_command(&help, "agent"),
-        "machine command 'agent' should not be listed in top-level help:\n{help}"
-    );
-    assert!(
-        !lists_command(&help, "run-agent"),
-        "machine command 'run-agent' should not be listed in top-level help:\n{help}"
-    );
+    for command in ["agent", "mcp", "run-agent"] {
+        assert!(
+            !lists_command(&help, command),
+            "{command:?} should not be listed in top-level help:\n{help}"
+        );
+    }
 }
 
 #[test]
@@ -79,27 +77,22 @@ fn local_help_lists_the_local_commands() {
     }
 }
 
-/// `local open` answers `librepaper://` links for the operating system and
-/// `run-agent` is spawned by the local app. Both parse, neither is
+/// `local open` answers `librepaper://` links for the operating system, and
+/// the sidebar assistant spawns `mcp` and `run-agent`. All parse, none is
 /// advertised.
 #[test]
 fn machine_invoked_commands_parse_but_are_not_listed() {
-    assert!(
-        !lists_command(&help_of(&["local", "--help"]), "open"),
-        "machine command 'open' should not be listed in local help"
-    );
-    assert!(
-        !lists_command(&help_of(&["--help"]), "run-agent"),
-        "machine command 'run-agent' should not be listed in top-level help"
-    );
-    assert!(
-        cli(&["local", "open", "--help"]).status.success(),
-        "local open --help should succeed"
-    );
-    assert!(
-        cli(&["run-agent", "--help"]).status.success(),
-        "run-agent --help should succeed"
-    );
+    for (parent, command) in [("local", "open"), ("", "mcp"), ("", "run-agent")] {
+        let mut path: Vec<&str> = [parent].into_iter().filter(|p| !p.is_empty()).collect();
+        let mut help_args = path.clone();
+        help_args.push("--help");
+        assert!(
+            !lists_command(&help_of(&help_args), command),
+            "{command:?} should not be listed under {parent:?}"
+        );
+        path.extend([command, "--help"]);
+        assert!(cli(&path).status.success(), "{path:?} should parse");
+    }
 }
 
 #[test]

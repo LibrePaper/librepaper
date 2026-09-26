@@ -1282,10 +1282,10 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
         .await
         .unwrap();
     let from_window = window.thread.expect("the thread itself");
-    let version = crate::room::agent_comments::comment_version(&by_id);
+    let version = by_id.version();
     assert_eq!(
         version,
-        crate::room::agent_comments::comment_version(on_page),
+        on_page.version(),
         "a page's reply preview must not change the token",
     );
     assert_eq!(
@@ -1308,7 +1308,7 @@ async fn an_agent_walks_threads_and_its_version_token_survives_paging() {
         .expect("still there");
     assert_ne!(
         version,
-        crate::room::agent_comments::comment_version(&after_reply),
+        after_reply.version(),
         "a reply to the thread moves the token",
     );
     deployment.catalog.close().await;

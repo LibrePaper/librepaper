@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node tests/unit/vocabulary.js && vite build && vite build --config vite.agent.config.js && node tools/vendor-katex.mjs && node tools/compress-shell.mjs",
+    "build": "node tests/unit/vocabulary.js && vite build && vite build --config vite.frame.config.js && node tools/vendor-katex.mjs && node tools/compress-shell.mjs",
     "build:site": "node tools/build-site.mjs && vite build --config vite.site.config.js",
     "serve:site": "vite preview --config vite.site.config.js",
     "dev": "vite build --watch",

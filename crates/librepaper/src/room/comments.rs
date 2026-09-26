@@ -184,6 +184,37 @@ impl Comment {
             .as_ref()
             .and_then(|a| a.target.source())
     }
+
+    /// The optimistic-concurrency token an agent echoes back as
+    /// `expected_version`.
+    ///
+    /// Deliberately not a digest of the whole serialized `Comment`, which is
+    /// what it used to be: a `Comment` now carries a *page* of its thread, so
+    /// that digest would have depended on how many replies the caller's page
+    /// happened to load and a `reply` would have raced its own version check.
+    /// This names the row and the thread instead -- the row's own mutable
+    /// fields, how many replies it has, and when the newest of them last
+    /// changed -- so the same comment produces the same token from a page, a
+    /// single-row read or an agent window, and any create, edit, resolve,
+    /// delete or reply changes it.
+    pub fn version(&self) -> String {
+        super::catalog::request_digest(&json!({
+            "id": self.id,
+            "body": self.body,
+            "motivation": self.motivation,
+            "color": self.color,
+            "resolved": self.resolved,
+            "resolved_at": self.resolved_at,
+            "created": self.created,
+            "creator": self.creator,
+            "proposal": self.proposal,
+            "outcome": self.outcome,
+            "render_digest": self.render_digest,
+            "presentation": self.presentation,
+            "replies": self.reply_total,
+            "replies_changed": self.thread_changed_micros,
+        }))
+    }
 }
 
 /// Keeps a highlight colour only if it is one: six hexadecimal digits behind

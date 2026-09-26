@@ -1355,62 +1355,42 @@ export async function syncWorkspace({ tree } = {}) {
 
 /* --------------------------------------------------- Connecting an agent */
 
+/** One pairing-scoped call to the local app's assistant surface, JSON in and
+ * out. `agents`, `startAssistant`, `assistantStatus` and `stopAssistant` are
+ * all this same shape; only the method, path and body differ. */
+async function assistantCall(method, path, jsonBody) {
+  const pairing = requirePairing();
+  const response = await send(method, path, { token: pairing.token, ...(jsonBody ? { jsonBody } : {}) });
+  return response.json();
+}
+
 /** Which coding agents this computer has, and which documents are already
  * connected. The browser cannot read a PATH, so this is the only way the
  * sidebar can offer a real choice instead of setup instructions. */
 export async function agents() {
-  const pairing = requirePairing();
-  const response = await send("GET", "agents", { token: pairing.token });
-  return response.json();
+  return assistantCall("GET", "agents");
 }
 
-/** Register a document under a readable name on this computer. The protected
- * link crosses loopback once, here, and afterwards every agent refers to the
- * document by name: no config file, command line or transcript holds the key.
- */
-export async function registerConnection({ title = "", link = "", access = "" } = {}) {
-  const pairing = requirePairing();
-  const response = await send("POST", "connections", {
-    token: pairing.token,
-    jsonBody: { title: String(title || ""), link: String(link || ""), access: String(access || "") },
+/** Start the sidebar assistant, driving the chosen installed agent directly
+ * against the document link. The link crosses loopback once, here: no
+ * connection name, config file, command line or transcript holds the key. */
+export async function startAssistant({ link = "", conversation = "", chatToken = "", agent = "" } = {}) {
+  return assistantCall("POST", "assistant", {
+    link: String(link || ""), conversation: String(conversation || ""),
+    chat_token: String(chatToken || ""), agent: String(agent || ""),
   });
-  return response.json();
-}
-
-/** Start the sidebar assistant, driving the chosen installed agent. */
-export async function startAssistant({ connection, conversation, chatToken, agent } = {}) {
-  const pairing = requirePairing();
-  const response = await send("POST", "assistant", {
-    token: pairing.token,
-    jsonBody: {
-      connection: String(connection || ""),
-      conversation: String(conversation || ""),
-      chat_token: String(chatToken || ""),
-      agent: String(agent || ""),
-    },
-  });
-  return response.json();
 }
 
 /** Whether the sidebar assistant is attached to this conversation. Not
  * running is an answer, not an error: it is the ordinary state before the
- * first start. */
-export async function assistantStatus({ connection, conversation } = {}) {
-  const pairing = requirePairing();
-  const response = await send("POST", "assistant/status", {
-    token: pairing.token,
-    jsonBody: { connection: String(connection || ""), conversation: String(conversation || "") },
-  });
-  return response.json();
+ * first start. Which agent and access level that is does not come back
+ * here; the browser already remembers its own choice. */
+export async function assistantStatus({ link = "", conversation = "" } = {}) {
+  return assistantCall("POST", "assistant/status", { link: String(link || ""), conversation: String(conversation || "") });
 }
 
 /** Detach the sidebar assistant. Document changes already made are not
  * undone by stopping; only the attachment ends. */
-export async function stopAssistant({ connection, conversation } = {}) {
-  const pairing = requirePairing();
-  const response = await send("POST", "assistant/stop", {
-    token: pairing.token,
-    jsonBody: { connection: String(connection || ""), conversation: String(conversation || "") },
-  });
-  return response.json();
+export async function stopAssistant({ link = "", conversation = "" } = {}) {
+  return assistantCall("POST", "assistant/stop", { link: String(link || ""), conversation: String(conversation || "") });
 }

@@ -5,6 +5,7 @@
 //! The MCP stdio adapter can use the free functions below before and after it
 //! forwards a mutation; the runner uses the same file for restart recovery.
 
+use super::protocol::truncate_utf8;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -49,25 +50,33 @@ pub(crate) struct Event {
     /// the argument or the permission at fault.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// Bounded, typed outcome metadata. Old journal files omit this field.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub effects: Vec<Value>,
+    /// How many individual operations this call's response refused. Old
+    /// journal files omit this field, which defaults to zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub refused: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+fn format_refusals(refusals: &[Value]) -> Option<String> {
+    (!refusals.is_empty()).then(|| {
+        truncate_utf8(
+            &refusals
+                .iter()
+                .map(|failure| failure["detail"].as_str().unwrap_or("tool refused"))
+                .collect::<Vec<_>>()
+                .join("; "),
+            400,
+        )
+    })
 }
 
 /// The service's account of a refusal, bounded for the journal. `None` when
 /// the response carries no error, so a successful call stores nothing.
 pub(crate) fn failure_detail(response: &Value) -> Option<String> {
-    let failures = refusal_details(response);
-    (!failures.is_empty()).then(|| {
-        failures
-            .iter()
-            .map(|failure| failure["detail"].as_str().unwrap_or("tool refused"))
-            .collect::<Vec<_>>()
-            .join("; ")
-            .chars()
-            .take(400)
-            .collect()
-    })
+    format_refusals(&refusal_details(response))
 }
 
 fn refusal_details(response: &Value) -> Vec<Value> {
@@ -96,7 +105,7 @@ fn refusal_details(response: &Value) -> Vec<Value> {
                     format!("{code}: ")
                 }
             );
-            out.push(serde_json::json!({"kind":"refusal", "detail":detail.chars().take(400).collect::<String>()}));
+            out.push(serde_json::json!({"kind":"refusal", "detail":truncate_utf8(&detail, 400)}));
         }
         for (index, child) in body["items"]
             .as_array()
@@ -192,6 +201,13 @@ pub(crate) fn execution_epoch(path: &Path) -> Option<String> {
     }
     let value = fs::read_to_string(path).ok()?;
     (!value.is_empty() && !value.chars().any(char::is_control)).then_some(value)
+}
+
+/// Whether a bridge readiness marker file's contents are exactly the nonce
+/// this launch expects. A stale file from a previous launch, or one written
+/// by anything else, never matches.
+pub(crate) fn readiness_marker_matches(expected: &str, found: Option<&str>) -> bool {
+    !expected.is_empty() && expected.len() <= 128 && found == Some(expected)
 }
 
 #[cfg(unix)]
@@ -337,20 +353,11 @@ impl Journal {
         result_ids: Vec<String>,
         status: &str,
     ) -> Result<u64, String> {
-        self.append_detailed_with_effects(
-            task_id,
-            kind,
-            tool,
-            operation,
-            result_ids,
-            status,
-            None,
-            Vec::new(),
-        )
+        self.append_detailed(task_id, kind, tool, operation, result_ids, status, None, 0)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn append_detailed_with_effects(
+    fn append_detailed(
         &mut self,
         task_id: &str,
         kind: &str,
@@ -359,7 +366,7 @@ impl Journal {
         result_ids: Vec<String>,
         status: &str,
         detail: Option<String>,
-        effects: Vec<Value>,
+        refused: u32,
     ) -> Result<u64, String> {
         if task_id.len() > 128 || kind.len() > 64 || tool.len() > 128 || status.len() > 64 {
             return Err("runner journal event field exceeds its limit".into());
@@ -387,7 +394,7 @@ impl Journal {
                 result_ids: result_ids.clone(),
                 status: status.clone(),
                 detail: detail.clone(),
-                effects: effects.clone(),
+                refused,
             });
             while disk.events.len() > MAX_EVENTS {
                 let unresolved = unresolved_keys(&disk.events);
@@ -455,11 +462,12 @@ impl Journal {
             .collect()
     }
 
-    /// Receipt metadata, with total counts preserved when details are omitted.
+    /// What a task achieved, as the sidebar and the runner actually use it:
+    /// the receipt-bound suggestion ids the browser renders, and the refused
+    /// and unresolved counts the runner reports in its own summary.
     pub(crate) fn task_results(&self, task_id: &str) -> Value {
-        let mut confirmed = BTreeMap::new();
-        let mut refused = Vec::new();
         let mut suggestions = BTreeSet::new();
+        let mut refused: u64 = 0;
         for event in self
             .disk
             .events
@@ -469,45 +477,8 @@ impl Journal {
             if !matches!(event.kind.as_str(), "tool_result" | "receipt_reconcile") {
                 continue;
             }
-            let mut has_refusal = false;
-            for effect in &event.effects {
-                let mut effect = effect.clone();
-                if effect.get("tool").is_none() {
-                    effect["tool"] = Value::String(event.tool.clone());
-                }
-                if let Some(operation) = &event.operation {
-                    effect["operation"] = serde_json::json!(operation);
-                }
-                if effect["kind"] == "refusal" {
-                    has_refusal = true;
-                    refused.push(effect);
-                } else {
-                    if effect["kind"] == "suggestion" {
-                        if let Some(id) = effect["id"].as_str() {
-                            suggestions.insert(id.to_owned());
-                        }
-                    }
-                    confirmed.insert(effect.to_string(), effect);
-                }
-            }
-            if !has_refusal {
-                if let Some(detail) = &event.detail {
-                    refused.push(serde_json::json!({"tool":event.tool,"detail":detail}));
-                }
-            }
-            if event.tool == "document_propose" {
-                for id in &event.result_ids {
-                    suggestions.insert(id.clone());
-                    if !event
-                        .effects
-                        .iter()
-                        .any(|effect| effect["kind"] == "suggestion" && effect["id"] == *id)
-                    {
-                        let effect = serde_json::json!({"kind":"suggestion","id":id,"tool":event.tool,"operation":event.operation});
-                        confirmed.insert(effect.to_string(), effect);
-                    }
-                }
-            }
+            suggestions.extend(event.result_ids.iter().cloned());
+            refused += u64::from(event.refused);
         }
         let unresolved = self
             .pending_operations()
@@ -519,39 +490,8 @@ impl Journal {
                         "document_propose" | "document_apply" | "document_comment"
                     )
             })
-            .map(|(_, tool, operation)| serde_json::json!({"tool":tool,"operation":operation}))
-            .collect::<Vec<_>>();
-        let mut report = serde_json::json!({"suggestions":suggestions,"pass":null,"effects":{
-            "counts":{"confirmed":confirmed.len(),"refused":refused.len(),"unresolved":unresolved.len(),"suggestions":suggestions.len()},
-            "omitted":{"confirmed":0,"refused":0,"unresolved":0,"suggestions":0},
-            "confirmed":confirmed.into_values().collect::<Vec<_>>(),"refused":refused,"unresolved":unresolved
-        }});
-        while serde_json::to_vec(&report).map_or(usize::MAX, |bytes| bytes.len()) > 12 * 1024 {
-            let key = ["confirmed", "suggestions", "refused", "unresolved"]
-                .into_iter()
-                .find(|key| {
-                    let values = if *key == "suggestions" {
-                        &report[*key]
-                    } else {
-                        &report["effects"][*key]
-                    };
-                    values.as_array().is_some_and(|values| !values.is_empty())
-                });
-            let Some(key) = key else {
-                break;
-            };
-            let values = if key == "suggestions" {
-                &mut report[key]
-            } else {
-                &mut report["effects"][key]
-            };
-            if let Some(values) = values.as_array_mut() {
-                values.pop();
-            }
-            let omitted = report["effects"]["omitted"][key].as_u64().unwrap_or(0);
-            report["effects"]["omitted"][key] = Value::from(omitted + 1);
-        }
-        report
+            .count();
+        serde_json::json!({"suggestions":suggestions,"refused":refused,"unresolved":unresolved})
     }
 }
 
@@ -649,85 +589,6 @@ pub(crate) fn response_settled(response: &Value) -> bool {
     )
 }
 
-fn typed_effects(tool: &str, response: &Value) -> Vec<Value> {
-    fn field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
-        value
-            .get(key)?
-            .as_str()
-            .filter(|s| !s.is_empty() && s.len() <= 128)
-    }
-    fn walk(tool: &str, value: &Value, depth: usize, out: &mut Vec<Value>) {
-        if depth > 4 || out.len() >= 100 {
-            return;
-        }
-        if matches!(value["status"].as_str(), Some("committed" | "replayed"))
-            && value.get("error").is_none()
-        {
-            match tool {
-                "document_apply" => {
-                    if let (Some(before), Some(after)) = (
-                        field(value, "tree_digest_before"),
-                        field(value, "tree_digest_after"),
-                    ) {
-                        out.push(serde_json::json!({"kind":"application","tree_digest_before":before,"tree_digest_after":after}));
-                    }
-                }
-                "document_comment" => {
-                    if let (Some(action), Some(id)) =
-                        (field(value, "action"), field(value, "comment_id"))
-                    {
-                        let mut effect =
-                            serde_json::json!({"kind":"comment","action":action,"comment_id":id});
-                        if let Some(id) = field(&value["reply"], "id") {
-                            effect["reply_id"] = Value::String(id.into());
-                        }
-                        out.push(effect);
-                    }
-                }
-                "document_propose" | "document_result" => {
-                    for effect in value["effects"].as_array().into_iter().flatten() {
-                        if out.len() >= 100 {
-                            break;
-                        }
-                        if effect["kind"] == "suggestion" {
-                            if let Some(id) = field(effect, "id") {
-                                out.push(serde_json::json!({"kind":"suggestion","id":id}));
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        for child in value["items"].as_array().into_iter().flatten().take(100) {
-            walk(tool, child, depth + 1, out);
-        }
-        if value["status"] == "already_committed" {
-            walk(tool, &value["outcome"], depth + 1, out);
-        }
-    }
-    let mut out = Vec::new();
-    let body = structured_response(response);
-    let effect_tool = if tool == "document_result" {
-        body["tool"]
-            .as_str()
-            .filter(|name| {
-                matches!(
-                    *name,
-                    "document_apply" | "document_comment" | "document_propose"
-                )
-            })
-            .unwrap_or(tool)
-    } else {
-        tool
-    };
-    walk(effect_tool, body, 0, &mut out);
-    for effect in &mut out {
-        effect["tool"] = Value::String(effect_tool.to_owned());
-    }
-    out
-}
-
 /// Record a tool request before it is sent to the document service. The
 /// returned identity is suitable for pairing with [`record_tool_result`].
 pub(crate) fn record_tool_call(
@@ -777,6 +638,12 @@ pub(crate) fn record_tool_result(
     } else {
         Vec::new()
     };
+    let refusals = if owned_lookup {
+        refusal_details(response)
+    } else {
+        Vec::new()
+    };
+    let detail = format_refusals(&refusals);
     let result_id = identity
         .as_ref()
         .map(|operation| receipt_id(tool, operation));
@@ -785,23 +652,15 @@ pub(crate) fn record_tool_result(
     } else {
         "outcome_unknown"
     };
-    journal.append_detailed_with_effects(
+    journal.append_detailed(
         task_id,
         "tool_result",
         tool,
         identity,
         ids.clone(),
         status,
-        failure_detail(response),
-        {
-            let mut effects = if owned_lookup {
-                typed_effects(tool, response)
-            } else {
-                Vec::new()
-            };
-            effects.extend(refusal_details(response));
-            effects
-        },
+        detail,
+        refusals.len() as u32,
     )?;
     if tool == "document_result" && response_settled(response) {
         if let Some(target) = target {
@@ -828,7 +687,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn summaries_preserve_partial_effects_and_every_item_refusal() {
+    fn task_results_counts_refusals_and_keeps_receipted_suggestions() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("journal.json");
         let request = json!({"params":{"arguments":{"operation":{"epoch":"e","id":"batch"}}}});
@@ -841,101 +700,8 @@ mod tests {
         record_tool_result(&path, "task", "document_propose", &request, &response).unwrap();
         let summary = Journal::open(&path).unwrap().task_results("task");
         assert_eq!(summary["suggestions"], json!(["kept"]));
-        assert_eq!(summary["effects"]["counts"]["confirmed"], 1);
-        assert_eq!(summary["effects"]["counts"]["refused"], 2);
-        assert_eq!(summary["effects"]["counts"]["unresolved"], 1);
-        assert!(summary["effects"]["refused"][1]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("item 2"));
-    }
-
-    #[test]
-    fn summaries_include_applications_and_comment_actions_without_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("journal.json");
-        for (tool, id, result) in [
-            (
-                "document_apply",
-                "apply",
-                json!({"status":"committed","tree_digest_before":"old","tree_digest_after":"new"}),
-            ),
-            (
-                "document_comment",
-                "refine",
-                json!({"status":"committed","action":"refine","comment_id":"c1","comment":{"body":"private source"}}),
-            ),
-            (
-                "document_comment",
-                "reply",
-                json!({"status":"committed","action":"reply","comment_id":"c1","reply":{"id":"reply1","body":"private source"}}),
-            ),
-        ] {
-            let request = json!({"params":{"arguments":{"operation":{"epoch":"e","id":id}}}});
-            record_tool_call(&path, "task", tool, &request).unwrap();
-            record_tool_result(
-                &path,
-                "task",
-                tool,
-                &request,
-                &json!({"result":{"structuredContent":result}}),
-            )
-            .unwrap();
-        }
-        let summary = Journal::open(&path).unwrap().task_results("task");
-        assert_eq!(summary["effects"]["counts"]["confirmed"], 3);
-        assert_eq!(summary["effects"]["counts"]["unresolved"], 0);
-        assert!(!std::fs::read_to_string(path)
-            .unwrap()
-            .contains("private source"));
-        assert!(summary["effects"]["confirmed"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|effect| effect["kind"].is_string() && effect["operation"].is_object()));
-    }
-
-    #[test]
-    fn summary_counts_survive_truncation_and_old_journals() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("journal.json");
-        let events = (0..500)
-            .map(|index| Event {
-                seq: index + 1,
-                at: 0,
-                task_id: "task".into(),
-                kind: "tool_result".into(),
-                tool: "document_propose".into(),
-                operation: None,
-                receipt_id: None,
-                result_ids: vec![format!("suggestion-{index:0110}")],
-                status: "completed".into(),
-                detail: None,
-                effects: Vec::new(),
-            })
-            .collect();
-        let journal = Journal {
-            path,
-            disk: Disk {
-                next_seq: 500,
-                events,
-            },
-        };
-        let summary = journal.task_results("task");
-        assert!(serde_json::to_vec(&summary).unwrap().len() <= 12 * 1024);
-        assert_eq!(summary["effects"]["counts"]["confirmed"], 500);
-        assert_eq!(summary["effects"]["counts"]["suggestions"], 500);
-        for key in ["confirmed", "suggestions"] {
-            let retained = if key == "suggestions" {
-                summary[key].as_array().unwrap().len()
-            } else {
-                summary["effects"][key].as_array().unwrap().len()
-            };
-            assert_eq!(
-                retained as u64 + summary["effects"]["omitted"][key].as_u64().unwrap(),
-                500
-            );
-        }
+        assert_eq!(summary["refused"], 2);
+        assert_eq!(summary["unresolved"], 1);
     }
 
     #[test]
@@ -953,10 +719,7 @@ mod tests {
         )
         .unwrap();
         let mut journal = Journal::open(&path).unwrap();
-        assert_eq!(
-            journal.task_results("task")["effects"]["counts"]["unresolved"],
-            1
-        );
+        assert_eq!(journal.task_results("task")["unresolved"], 1);
         journal
             .append(
                 "task",
@@ -970,10 +733,7 @@ mod tests {
                 "reconciled",
             )
             .unwrap();
-        assert_eq!(
-            journal.task_results("task")["effects"]["counts"]["unresolved"],
-            0
-        );
+        assert_eq!(journal.task_results("task")["unresolved"], 0);
     }
 
     #[test]
@@ -994,7 +754,7 @@ mod tests {
                     result_ids: Vec::new(),
                     status: "working".into(),
                     detail: None,
-                    effects: Vec::new(),
+                    refused: 0,
                 })
                 .collect(),
         };
@@ -1074,51 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn recovered_outcomes_preserve_application_and_comment_effects() {
-        for (tool, metadata, kind) in [
-            (
-                "document_apply",
-                json!({"tree_digest_before":"before","tree_digest_after":"after"}),
-                "application",
-            ),
-            (
-                "document_comment",
-                json!({"action":"delete","comment_id":"removed-comment"}),
-                "comment",
-            ),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("journal.json");
-            let key = json!({"epoch":"epoch","id":"lost-response"});
-            record_tool_call(
-                &path,
-                "task",
-                tool,
-                &json!({"params":{"arguments":{"operation":key}}}),
-            )
-            .unwrap();
-            let mut outcome = metadata;
-            outcome["status"] = json!("committed");
-            outcome["tool"] = json!(tool);
-            outcome["operation"] = key.clone();
-            record_tool_result(
-                &path,
-                "task",
-                "document_result",
-                &json!({"params":{"arguments":{"target_operation":key}}}),
-                &json!({"structuredContent":outcome}),
-            )
-            .unwrap();
-            let journal = Journal::open(&path).unwrap();
-            assert!(journal.pending_operations().is_empty());
-            let results = journal.task_results("task");
-            assert_eq!(results["effects"]["counts"]["confirmed"], 1);
-            assert_eq!(results["effects"]["confirmed"][0]["kind"], kind);
-        }
-    }
-
-    #[test]
-    fn retained_refusal_settles_lookup_without_claiming_an_effect() {
+    fn retained_refusal_settles_lookup_without_claiming_a_suggestion() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("journal.json");
         let operation = json!({"epoch":"epoch","id":"refused"});
@@ -1141,8 +857,8 @@ mod tests {
         let journal = Journal::open(&path).unwrap();
         assert!(journal.pending_operations().is_empty());
         let results = journal.task_results("task");
-        assert_eq!(results["effects"]["counts"]["confirmed"], 0);
-        assert_eq!(results["effects"]["counts"]["refused"], 1);
+        assert_eq!(results["suggestions"], json!([]));
+        assert_eq!(results["refused"], 1);
         assert!(!response_settled(
             &json!({"structuredContent":{"status":"committed","items":[{"error":{"code":"outcome_unknown"}}]}})
         ));
@@ -1204,6 +920,18 @@ mod tests {
         assert_eq!(execution_epoch(&second).as_deref(), Some("second"));
         assert!(execution_epoch(&first).is_none());
     }
+
+    #[test]
+    fn readiness_marker_requires_an_exact_current_nonce() {
+        assert!(readiness_marker_matches("fresh-nonce", Some("fresh-nonce")));
+        assert!(!readiness_marker_matches(
+            "fresh-nonce",
+            Some("stale-nonce")
+        ));
+        assert!(!readiness_marker_matches("fresh-nonce", None));
+        assert!(!readiness_marker_matches("", Some("")));
+    }
+
     #[test]
     fn a_refusal_keeps_the_service_reason_it_used_to_discard() {
         let dir = tempfile::tempdir().unwrap();

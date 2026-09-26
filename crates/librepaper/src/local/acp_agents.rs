@@ -40,10 +40,9 @@ struct Kind {
     label: &'static str,
     /// What to look for on PATH.
     executable: &'static str,
-    /// The command that speaks the Agent Client Protocol on stdio, when this
-    /// agent can be driven from the sidebar. The first element is looked up
-    /// on PATH like any other executable.
-    acp: Option<&'static [&'static str]>,
+    /// The command that speaks the Agent Client Protocol on stdio. The first
+    /// element is looked up on PATH like any other executable.
+    acp: &'static [&'static str],
     /// The same adapter run straight from the npm registry, for an agent whose
     /// ACP entry point ships separately from the agent itself. Offered only
     /// when the adapter is not already on PATH, and only behind a button that
@@ -54,8 +53,6 @@ struct Kind {
     /// working but does change what to expect. Shown next to the agent rather
     /// than discovered when a task mysteriously does nothing.
     acp_note: Option<&'static str>,
-    /// What the user must do after its adapter is fetched for the first time.
-    restart: &'static str,
 }
 
 const KINDS: &[Kind] = &[
@@ -63,32 +60,29 @@ const KINDS: &[Kind] = &[
         id: "claude",
         label: "Claude Code",
         executable: "claude",
-        acp: Some(&["claude-code-acp"]),
+        acp: &["claude-code-acp"],
         acp_fetch: Some(&["npx", "-y", "@zed-industries/claude-code-acp"]),
         acp_note: None,
-        restart: "Restart Claude Code",
     },
     Kind {
         id: "codex",
         label: "Codex",
         executable: "codex",
-        acp: Some(&["codex-acp"]),
+        acp: &["codex-acp"],
         // Codex's ACP adapter is distributed as a binary rather than from a
         // registry this can fetch, so there is nothing honest to offer here.
         // The sidebar names the missing adapter instead of guessing at a
         // package and failing at the moment the user presses start.
         acp_fetch: None,
         acp_note: None,
-        restart: "Restart Codex",
     },
     Kind {
         id: "gemini",
         label: "Gemini CLI",
         executable: "gemini",
-        acp: Some(&["gemini", "--experimental-acp"]),
+        acp: &["gemini", "--experimental-acp"],
         acp_fetch: None,
         acp_note: None,
-        restart: "Restart Gemini CLI",
     },
     Kind {
         id: "opencode",
@@ -97,16 +91,15 @@ const KINDS: &[Kind] = &[
         // Native ACP: the agent itself speaks it, so there is no adapter to
         // install and nothing to fetch. It also accepts MCP servers from the
         // ACP client, which is how the document tools reach the session.
-        acp: Some(&["opencode", "acp"]),
+        acp: &["opencode", "acp"],
         acp_fetch: None,
         acp_note: None,
-        restart: "Restart opencode",
     },
     Kind {
         id: "pi",
         label: "Pi",
         executable: "pi",
-        acp: Some(&["pi-acp"]),
+        acp: &["pi-acp"],
         acp_fetch: Some(&["npx", "-y", "pi-acp"]),
         // The adapter translates ACP onto `pi --mode rpc`, and its MCP
         // integration is incomplete. The document tools are the only way this
@@ -116,7 +109,6 @@ const KINDS: &[Kind] = &[
         acp_note: Some(
             "Pi's ACP adapter has incomplete MCP support, so the document tools may not reach it",
         ),
-        restart: "Restart Pi",
     },
 ];
 
@@ -125,8 +117,6 @@ const KINDS: &[Kind] = &[
 pub struct Detected {
     pub id: String,
     pub label: String,
-    /// Absolute path to the executable we found.
-    pub path: String,
     /// LibrePaper can drive this agent from the sidebar.
     pub assistant: bool,
     /// Driving it would first fetch its ACP adapter from the npm registry.
@@ -138,7 +128,6 @@ pub struct Detected {
     /// A known limitation of an agent the sidebar *can* drive. Empty when
     /// there is nothing to warn about.
     pub assistant_note: String,
-    pub restart: String,
 }
 
 fn kind(id: &str) -> Option<&'static Kind> {
@@ -260,12 +249,10 @@ pub fn detect(state_home: &Path) -> Vec<Detected> {
         let Some(program) = custom.command.first() else {
             continue;
         };
-        let Some(path) = on_path(program).or_else(|| {
-            let direct = PathBuf::from(program);
-            direct.is_file().then_some(direct)
-        }) else {
+        let is_installed = on_path(program).is_some() || Path::new(program).is_file();
+        if !is_installed {
             continue;
-        };
+        }
         // A declaration for a built-in overrides how it is driven and leaves
         // the rest of the row alone, so the agent keeps the label and the
         // configuration route LibrePaper already knows for it. Its compiled-in
@@ -280,12 +267,10 @@ pub fn detect(state_home: &Path) -> Vec<Detected> {
         found.push(Detected {
             id,
             label: custom.label,
-            path: path.to_string_lossy().into_owned(),
             assistant: true,
             assistant_fetches: false,
             assistant_blocked: String::new(),
             assistant_note: String::new(),
-            restart: "Restart it".into(),
         });
     }
     found
@@ -295,29 +280,24 @@ fn built_in() -> Vec<Detected> {
     KINDS
         .iter()
         .filter_map(|kind| {
-            let found = on_path(kind.executable)?;
+            on_path(kind.executable)?;
             let adapter = adapter(kind);
             Some(Detected {
                 id: kind.id.to_string(),
                 label: kind.label.to_string(),
-                path: found.to_string_lossy().into_owned(),
                 assistant: adapter.is_some(),
                 assistant_fetches: matches!(adapter, Some(Adapter::Fetched(_))),
-                assistant_blocked: match (adapter, kind.acp) {
-                    (Some(_), _) => String::new(),
-                    (None, Some(command)) => format!(
+                assistant_blocked: match adapter {
+                    Some(_) => String::new(),
+                    None => format!(
                         "{} needs its ACP adapter ({}) to be driven from the sidebar",
-                        kind.label, command[0]
+                        kind.label, kind.acp[0]
                     ),
-                    (None, None) => {
-                        format!("{} does not speak the Agent Client Protocol", kind.label)
-                    }
                 },
                 assistant_note: match adapter {
                     Some(_) => kind.acp_note.unwrap_or_default().to_string(),
                     None => String::new(),
                 },
-                restart: kind.restart.to_string(),
             })
         })
         .collect()
@@ -333,10 +313,8 @@ enum Adapter {
 }
 
 fn adapter(kind: &'static Kind) -> Option<Adapter> {
-    if let Some(command) = kind.acp {
-        if on_path(command[0]).is_some() {
-            return Some(Adapter::Installed(command));
-        }
+    if on_path(kind.acp[0]).is_some() {
+        return Some(Adapter::Installed(kind.acp));
     }
     // `npx` is what fetches it, so without npx there is no fetch to offer.
     let fetch = kind.acp_fetch?;
@@ -363,10 +341,7 @@ mod tests {
 
     /// A `Kind` built for the resolution tests, so they do not depend on what
     /// happens to be installed on the machine running them.
-    fn kind_with(
-        acp: Option<&'static [&'static str]>,
-        fetch: Option<&'static [&'static str]>,
-    ) -> Kind {
+    fn kind_with(acp: &'static [&'static str], fetch: Option<&'static [&'static str]>) -> Kind {
         Kind {
             id: "test",
             label: "Test Agent",
@@ -374,7 +349,6 @@ mod tests {
             acp,
             acp_fetch: fetch,
             acp_note: None,
-            restart: "Restart it",
         }
     }
 
@@ -382,7 +356,7 @@ mod tests {
     fn an_installed_adapter_is_preferred_over_fetching_one() {
         // `sh` stands in for an adapter that is already on PATH.
         let installed = Box::leak(Box::new(kind_with(
-            Some(&["sh"]),
+            &["sh"],
             Some(&["npx", "-y", "@example/adapter"]),
         )));
         assert_eq!(adapter(installed), Some(Adapter::Installed(&["sh"])));
@@ -391,7 +365,7 @@ mod tests {
     #[test]
     fn a_missing_adapter_falls_back_to_fetching_it_only_when_npx_exists() {
         let fetchable = Box::leak(Box::new(kind_with(
-            Some(&["definitely-not-installed-adapter"]),
+            &["definitely-not-installed-adapter"],
             Some(&["sh", "-c", "adapter"]),
         )));
         // `sh` stands in for npx here: the fetch is offered because the tool
@@ -404,13 +378,10 @@ mod tests {
         // With no way to fetch it, there is no adapter and the sidebar must
         // say so rather than offering a button that cannot work.
         let stranded = Box::leak(Box::new(kind_with(
-            Some(&["definitely-not-installed-adapter"]),
+            &["definitely-not-installed-adapter"],
             Some(&["definitely-not-installed-fetcher"]),
         )));
         assert_eq!(adapter(stranded), None);
-
-        let never = Box::leak(Box::new(kind_with(None, None)));
-        assert_eq!(adapter(never), None);
     }
 
     #[test]
@@ -503,7 +474,7 @@ mod tests {
             .iter()
             .find(|kind| kind.id == "opencode")
             .expect("opencode");
-        assert_eq!(opencode.acp, Some(&["opencode", "acp"][..]));
+        assert_eq!(opencode.acp, &["opencode", "acp"]);
         assert!(opencode.acp_fetch.is_none());
         assert!(opencode.acp_note.is_none());
     }

@@ -5,9 +5,8 @@ title: "The CLI"
 LibrePaper is a server and a web app, and the command line is deliberately
 small. Four commands are for a person at a terminal: `login`, `logout`,
 `list`, and `export`. Two namespaces are for particular jobs: `admin` runs
-a deployment and `local` runs the companion on your own computer. `mcp`
-connects an agent to a document. Publishing, review, and document management
-happen in the browser.
+a deployment and `local` runs the companion on your own computer.
+Publishing, review, and document management happen in the browser.
 
 Every command that talks to a deployment needs to know which one. Pass it with
 a flag, for example against the sandbox the developers maintain:
@@ -137,19 +136,17 @@ under *Settings*, *Local app*, *Project folder* in the browser. The companion
 never receives a path from a website; the choice is made on this machine.
 
 Everything else is on the settings page that `librepaper local settings`
-opens: build presets and their permissions, paired websites, agent
-connections, and whether the companion starts when you log in.
+opens: build presets and their permissions, paired websites, and whether
+the companion starts when you log in.
 
 ## Agents
 
-Which agents this computer offers the document sidebar, and what they can reach,
-are shown in the settings page at `librepaper local settings`. An agent's own
-configuration points at a document through a named connection, so the document
-key never sits in a config file or a shell history:
+Which agents this computer offers the document sidebar:
 
 ```sh
-librepaper mcp --connection thesis
+librepaper local agent list       # add <id> -- <command> teaches it another
 ```
 
-The [agents page](agents.html) covers how connections are made and what the
-tools can do.
+Agents are driven from the document sidebar only; there is no command line
+for connecting one to a document by hand. The [agents page](agents.html)
+covers what the sidebar assistant can do.

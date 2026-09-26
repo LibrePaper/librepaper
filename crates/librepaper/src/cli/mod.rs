@@ -306,10 +306,10 @@ pub(crate) enum Command {
         #[command(flatten)]
         deployment: Deployment,
     },
-    /// Serve the document MCP tools to an agent on this computer
+    // The two commands the sidebar assistant spawns. Neither is listed,
+    // because nobody types them; see `agent`.
+    #[command(hide = true)]
     Mcp(agent::McpArgs),
-    /// Drive a local ACP agent against a private sidebar conversation. The
-    /// local app starts this; it is not listed because nobody types it.
     #[command(hide = true)]
     RunAgent(agent::RunAgentArgs),
     /// The local app: run native tools on this machine for the jobs the
@@ -453,7 +453,7 @@ pub enum LocalCommand {
     /// listed because nobody types it.
     #[command(hide = true)]
     Open { url: String },
-    /// Service running state, address, code, pairings, native tools, and agent connections
+    /// Whether the service is running, its address, code and pairings, and which native tools were found
     Status {
         /// Extra directories to search for TeX tools, colon-separated
         #[arg(
@@ -531,7 +531,7 @@ pub async fn main() {
             }
         }
         Command::RunAgent(args) => {
-            if let Err(err) = agent::run_connect(args).await {
+            if let Err(err) = agent::run_agent(args).await {
                 die(err);
             }
         }

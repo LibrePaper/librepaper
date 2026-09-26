@@ -1,4 +1,4 @@
-// The in-frame agent, built on its own.
+// The in-frame script, built on its own.
 //
 // It runs inside the document, on the documents origin, injected by the server
 // as a plain <script src>. That is a different world from the shell: no module
@@ -9,7 +9,7 @@ import { defineConfig } from "vite";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-// Where the agent fetches KaTeX from when a document carries math: the path
+// Where the frame fetches KaTeX from when a document carries math: the path
 // tools/vendor-katex.mjs copies it to, named for the version the lockfile
 // pins, so the two cannot disagree.
 const katex = JSON.parse(readFileSync(resolve(import.meta.dirname, "node_modules/katex/package.json"), "utf8")).version;
@@ -22,10 +22,10 @@ export default defineConfig({
     outDir: resolve(import.meta.dirname, "dist"),
     emptyOutDir: false,
     lib: {
-      entry: resolve(import.meta.dirname, "src/agent/agent.js"),
+      entry: resolve(import.meta.dirname, "src/agent/frame.js"),
       formats: ["iife"],
-      name: "librepaperAgent",
-      fileName: () => "agent.js",
+      name: "librepaperFrame",
+      fileName: () => "frame.js",
     },
     target: "es2022",
   },

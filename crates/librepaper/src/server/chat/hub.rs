@@ -327,28 +327,6 @@ impl Hub {
         }
     }
 
-    /// Cancel one pending render waiter. This is deliberately best effort;
-    /// the durable MCP cancellation flag is the authoritative race guard.
-    pub(crate) async fn cancel_render(
-        &self,
-        slug: &str,
-        id: &str,
-        token: &str,
-        request_id: &str,
-    ) -> Result<bool, Error> {
-        if !valid_id(request_id) {
-            return Err((400, "render request id is required"));
-        }
-        let mut channels = self.channels.lock().await;
-        let channel = channels
-            .get_mut(id)
-            .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
-            .ok_or((404, "channel not found"))?;
-        channel.render_expected.remove(request_id);
-        channel.render_results.remove(request_id);
-        Ok(channel.render_waiters.remove(request_id).is_some())
-    }
-
     pub(crate) async fn relay(
         &self,
         slug: &str,
@@ -463,20 +441,6 @@ impl Hub {
             "preview_request" => {
                 bounded_string(&value, "task_id")?;
                 bounded_string(&value, "base_revision")?;
-                let files = value.get("files");
-                let legacy_files = files.is_some_and(|files| {
-                    files.is_object()
-                        && valid_context(files)
-                        && files.as_object().is_some_and(|files| {
-                            files.iter().all(|(path, text)| {
-                                !path.is_empty()
-                                    && !path.starts_with('/')
-                                    && !path.contains('\\')
-                                    && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
-                                    && text.is_string()
-                            })
-                        })
-                });
                 let candidate = value["candidate_id"].as_str().unwrap_or("");
                 let candidate_ref = valid_id(candidate)
                     && value
@@ -485,11 +449,10 @@ impl Hub {
                         .is_some_and(valid_capability);
                 if role != "agent"
                     || !valid_id(value["revision"].as_str().unwrap_or(""))
-                    || (candidate_ref == legacy_files)
-                    || (candidate_ref && files.is_some())
-                    || (!candidate_ref
-                        && (value.get("candidate_id").is_some()
-                            || value.get("candidate_token").is_some()))
+                    || !candidate_ref
+                    // Source never rides the relay: the browser fetches the
+                    // candidate by reference.
+                    || value.get("files").is_some()
                 {
                     return Err((400, "invalid preview request"));
                 }

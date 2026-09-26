@@ -448,7 +448,7 @@ async fn committed_suggestions_deletes_and_applies_survive_a_lost_mcp_response()
     let delete_arguments = json!({
         "action":"delete",
         "comment_id":suggestion_id,
-        "expected_version":crate::room::agent_comments::comment_version(&suggestion),
+        "expected_version":suggestion.version(),
         "operation":delete_operation
     });
     let (status, _discarded) = call(

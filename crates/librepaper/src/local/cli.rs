@@ -216,8 +216,8 @@ async fn open(url: &str) {
 
 /// Exits non-zero when nothing is answering, so a script can branch on it:
 /// `make deploy` uses it to decide whether to start a companion or leave the
-/// one already running alone. Reports service state/address/code/pairings,
-/// native tools found and missing, and agent connections.
+/// one already running alone. Reports the service address, code and pairings,
+/// then the native tools found and missing.
 async fn status(tex_path: Vec<PathBuf>) {
     let home = state_home();
     let pairing = PairingStore::new(&home, None);
@@ -293,30 +293,6 @@ async fn status(tex_path: Vec<PathBuf>) {
             }
         );
         println!("  paired local builds run with the user's normal access");
-    }
-
-    let store = crate::local::connections::ConnectionStore::new(&home);
-    let all = store.list();
-    if !all.is_empty() {
-        println!();
-        println!("agent connections:");
-        for (name, entry) in all {
-            println!(
-                "  {}\t{}\t{}\t{}",
-                name,
-                if entry.title.is_empty() {
-                    "(untitled)"
-                } else {
-                    &entry.title
-                },
-                if entry.access.is_empty() {
-                    "unknown access"
-                } else {
-                    &entry.access
-                },
-                entry.origin
-            );
-        }
     }
 
     // A stale `service.json` describes a companion that is gone. Reporting

@@ -1,12 +1,18 @@
-//! The mcp and run-agent commands: spawning MCP servers and agents that talk
-//! to the browser through agent connections.
+//! `librepaper mcp` and `librepaper run-agent`: the two entry points the
+//! sidebar assistant spawns on this computer. Both take a document link and
+//! speak nothing but MCP or ACP frames, and neither is listed, because only
+//! the local app runs them.
 
 use clap::Args;
 
 use crate::automation::peer::{AutomationPeer, DocumentLink};
 use crate::cli::Deployment;
 
-/// MCP server for an agent to call, with document and credential access
+/// Serve the document MCP tools over stdio for the sidebar runner's agent.
+///
+/// `--connection NAME` names a runner record this computer holds, so the
+/// agent's command line carries a name rather than a document key. A literal
+/// link is still accepted, and `-` reads it from LIBREPAPER_DOCUMENT.
 #[derive(Args, Clone, Debug)]
 pub(crate) struct McpArgs {
     #[arg(
@@ -14,34 +20,27 @@ pub(crate) struct McpArgs {
         conflicts_with = "connection",
         default_value = ""
     )]
-    pub(crate) link: String,
-    /// A connection registered by the browser on this computer.
+    link: String,
+    /// A runner record on this computer.
     #[arg(long, value_name = "NAME")]
-    pub(crate) connection: Option<String>,
+    connection: Option<String>,
     #[command(flatten)]
-    pub(crate) deployment: Deployment,
+    deployment: Deployment,
 }
 
 /// Drive a local ACP agent against a private sidebar conversation.
 #[derive(Args, Clone, Debug)]
 pub(crate) struct RunAgentArgs {
-    pub(crate) link: String,
+    link: String,
     /// Private conversation identifier from the LibrePaper sidebar.
-    pub(crate) conversation: String,
+    conversation: String,
     /// Conversation credential.
     #[arg(
         long = "chat-token",
         env = "LIBREPAPER_CHAT_TOKEN",
         hide_env_values = true
     )]
-    pub(crate) chat_token: Option<String>,
-    /// Directory for the local thread id and completed task ids.
-    #[arg(
-        long = "state-directory",
-        env = "LIBREPAPER_ASSISTANT_STATE_DIR",
-        value_name = "DIRECTORY"
-    )]
-    pub(crate) state_dir: Option<std::path::PathBuf>,
+    chat_token: Option<String>,
     /// Command line for an Agent Client Protocol implementation.
     /// `allow_hyphen_values` because an adapter's arguments are flags of
     /// its own: `gemini --experimental-acp`, `npx -y pi-acp`. Without it
@@ -54,21 +53,14 @@ pub(crate) struct RunAgentArgs {
         required = true,
         value_name = "COMMAND"
     )]
-    pub(crate) agent: Vec<String>,
-    /// Start a detached runner and wait until it is ready.
-    #[arg(long)]
-    pub(crate) background: bool,
+    agent: Vec<String>,
     #[command(flatten)]
-    pub(crate) deployment: Deployment,
+    deployment: Deployment,
 }
 
 pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
-    let link = args.link;
-    let connection = args.connection;
-    let server = args.deployment.server;
-    let token = args.deployment.token;
-
-    if let Some(name) = connection {
+    let Deployment { server, token } = args.deployment;
+    if let Some(name) = args.connection {
         let resolved =
             crate::local::connections::ConnectionStore::new(&crate::local::paths::state_home()?)
                 .resolve(&name)?;
@@ -82,59 +74,32 @@ pub(crate) async fn run_mcp(args: McpArgs) -> Result<(), String> {
         let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
         return crate::automation::mcp::stdio(&peer).await;
     }
-
-    let link_text = if link == "-" {
-        std::env::var("LIBREPAPER_DOCUMENT")
-            .map_err(|_| "LIBREPAPER_DOCUMENT is required when link is -".to_string())?
-    } else {
-        link
-    };
-    let link = DocumentLink::parse(&link_text, server.as_deref().unwrap_or(""))?;
-    let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
+    let peer = open_peer(args.link, server, token).await?;
     crate::automation::mcp::stdio(&peer).await
 }
 
-pub(crate) async fn run_connect(args: RunAgentArgs) -> Result<(), String> {
-    let link = args.link;
-    let conversation = args.conversation;
-    let chat_token = args.chat_token;
-    let state_dir = args.state_dir;
-    let agent = args.agent;
-    let background = args.background;
-    let server = args.deployment.server;
-    let token = args.deployment.token;
+pub(crate) async fn run_agent(args: RunAgentArgs) -> Result<(), String> {
+    let Deployment { server, token } = args.deployment;
+    let peer = open_peer(args.link, server, token).await?;
+    let config = crate::assistant::runtime::config(args.conversation, args.chat_token, args.agent)?;
+    std::env::remove_var("LIBREPAPER_DOCUMENT");
+    std::env::remove_var("LIBREPAPER_CHAT_TOKEN");
+    crate::assistant::runtime::run(&peer, config).await
+}
 
-    let link_text = if link == "-" {
+/// `-` reads the link from LIBREPAPER_DOCUMENT, which keeps the document key
+/// off the child's command line.
+async fn open_peer(
+    link: String,
+    server: Option<String>,
+    token: Option<String>,
+) -> Result<AutomationPeer, String> {
+    let link = if link == "-" {
         std::env::var("LIBREPAPER_DOCUMENT")
-            .map_err(|_| "LIBREPAPER_DOCUMENT is required for the background runner".to_string())?
+            .map_err(|_| "LIBREPAPER_DOCUMENT is required when the link is -".to_string())?
     } else {
         link
     };
-    let link = DocumentLink::parse(&link_text, server.as_deref().unwrap_or(""))?;
-    let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
-
-    let config = crate::assistant::runtime::config(
-        conversation.clone(),
-        chat_token,
-        state_dir.clone(),
-        agent,
-    )?;
-    std::env::remove_var("LIBREPAPER_DOCUMENT");
-    std::env::remove_var("LIBREPAPER_CHAT_TOKEN");
-    if background {
-        crate::assistant::lifecycle::start_background(
-            peer.link(),
-            &conversation,
-            &config.token,
-            config.state_dir.as_deref(),
-            &config.agent,
-        )?;
-        println!(
-            "{}",
-            serde_json::json!({"started":true,"conversation":conversation})
-        );
-    } else {
-        crate::assistant::runtime::run(&peer, config).await?;
-    }
-    Ok(())
+    let link = DocumentLink::parse(&link, server.as_deref().unwrap_or(""))?;
+    AutomationPeer::open(link, server.as_deref(), token.as_deref()).await
 }
