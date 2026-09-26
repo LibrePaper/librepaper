@@ -1407,6 +1407,73 @@ export async function syncWorkspace({ tree } = {}) {
   return response.json();
 }
 
+/* -------------------------------------------- Build presets and permissions */
+
+/** Load companion settings: installed presets, grants for this document,
+ * startup configuration, and whether the companion is standalone. Dialog
+ * routes (create, delete, grant, startup, quit) may take up to 5 minutes
+ * waiting for OS confirmation and surface 403 or 503 errors. */
+export async function settings() {
+  const pairing = requirePairing();
+  const response = await send("GET", "settings", { token: pairing.token });
+  return response.json();
+}
+
+/** Create a new preset. Waits for OS dialog confirmation (up to 5 minutes).
+ * Returns the created preset. */
+export async function createPreset({ name, adapter, formats, options, environment, wrapper }) {
+  const pairing = requirePairing();
+  const response = await send("POST", "presets", {
+    token: pairing.token,
+    jsonBody: { name, adapter, formats, options, environment, wrapper },
+  });
+  return response.json();
+}
+
+/** Delete a preset. Waits for OS dialog confirmation (up to 5 minutes). */
+export async function deletePreset(id) {
+  const pairing = requirePairing();
+  const response = await send("DELETE", `presets/${id}`, { token: pairing.token });
+  return response.json();
+}
+
+/** Grant this document permission to use a preset at a given entrypoint.
+ * Waits for OS dialog confirmation (up to 5 minutes). */
+export async function grantPreset(id, entrypoint) {
+  const pairing = requirePairing();
+  const response = await send("POST", `presets/${id}/grant`, {
+    token: pairing.token,
+    jsonBody: { entrypoint },
+  });
+  return response.json();
+}
+
+/** Revoke this document's permission to use a grant (no dialog). */
+export async function revokeGrant(id) {
+  const pairing = requirePairing();
+  const response = await send("DELETE", `grants/${id}`, { token: pairing.token });
+  return response.json();
+}
+
+/** Enable or disable starting the companion at login (standalone only).
+ * Waits for OS dialog confirmation (up to 5 minutes). */
+export async function setStartup(enabled) {
+  const pairing = requirePairing();
+  const response = await send("POST", "startup", {
+    token: pairing.token,
+    jsonBody: { enabled },
+  });
+  return response.json();
+}
+
+/** Quit the companion (standalone only). Waits for OS dialog confirmation
+ * (up to 5 minutes). */
+export async function quit() {
+  const pairing = requirePairing();
+  const response = await send("POST", "quit", { token: pairing.token });
+  return response.json();
+}
+
 /* --------------------------------------------------- Connecting an agent */
 
 /** One pairing-scoped call to the local app's assistant surface, JSON in and
