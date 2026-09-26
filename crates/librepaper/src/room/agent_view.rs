@@ -56,16 +56,15 @@ impl Room {
         after: Option<comments::Position>,
         limit: usize,
     ) -> Result<crate::agent_query::ThreadWindow, crate::room::agent::AgentError> {
-        let (_, page) = self
+        let (views, page) = self
             .comment_page(after, limit, author, editor)
             .await
             .map_err(crate::room::agent::AgentError::from)?;
-        let items = page
-            .comments
-            .iter()
-            .map(|c| {
-                let mut view = serde_json::to_value(CommentView::for_viewer(c, author, editor))
-                    .unwrap_or(Value::Null);
+        let items = views
+            .into_iter()
+            .zip(page.comments.iter())
+            .map(|(view, c)| {
+                let mut view = serde_json::to_value(view).unwrap_or(Value::Null);
                 view["comment_version"] = json!(c.version());
                 if let Some(at) = c.at {
                     view["cursor"] =

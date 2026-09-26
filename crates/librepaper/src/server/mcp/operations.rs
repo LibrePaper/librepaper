@@ -134,7 +134,7 @@ fn definite_noncommit_code(code: &str) -> bool {
     )
 }
 
-pub(super) fn tree_of_view(view: &View) -> Result<SourceTree, Failure> {
+pub(super) fn tree_of_view(view: &View) -> Result<SourceTree<'_>, Failure> {
     // The capture holds the `Projection` the sequencer produced (§4.4). It
     // is used here only to look up each path's stable file id; there is no
     // separate canonical checkpoint to carry alongside it any more, so
@@ -151,9 +151,9 @@ pub(super) fn tree_of_view(view: &View) -> Result<SourceTree, Failure> {
                     file_id: projection
                         .files
                         .get(path)
-                        .map(|entry| entry.id.clone())
+                        .map(|entry| entry.id.as_str())
                         .unwrap_or_default(),
-                    text: text.clone(),
+                    text: text.as_str(),
                 },
             )
         })
@@ -628,10 +628,8 @@ impl Server {
                     request_digest: digest,
                 };
                 let authority = AgentAuthority {
-                    account_id: String::new(),
                     owner_key: current.key.clone(),
                     link_hash: current.link.clone(),
-                    policy_editor: false,
                     operation_scope: actor.to_string(),
                 };
                 let room = self
@@ -729,7 +727,7 @@ impl Server {
             .await
             .map_err(|error| Failure::new("unavailable", error.to_string()))?
             .ok_or_else(|| Failure::new("not_found", "suggestion unavailable"))?;
-        if comment.version()(&comment) != expected
+        if comment.version() != expected
             || comment.motivation != "editing"
             || comment.resolved
             || !comment.outcome.is_empty()
@@ -913,7 +911,7 @@ impl Server {
             )?;
             dependencies.push(agent::Dependency {
                 path: path.to_string(),
-                file_id: tree.files[path].file_id.clone(),
+                file_id: tree.files[path].file_id.to_string(),
                 file_hash: hex::encode(Sha256::digest(view.snapshot.texts[path].as_bytes())),
                 start,
                 end,
@@ -943,7 +941,7 @@ impl Server {
             }
             patches.push(Patch {
                 path: path.to_string(),
-                file_id: tree.files[path].file_id.clone(),
+                file_id: tree.files[path].file_id.to_string(),
                 start,
                 end,
                 exact: view.snapshot.texts[path][start..end].to_string(),
@@ -962,7 +960,7 @@ impl Server {
             )?;
             dependencies.push(agent::Dependency {
                 path: path.to_string(),
-                file_id: tree.files[path].file_id.clone(),
+                file_id: tree.files[path].file_id.to_string(),
                 file_hash: hex::encode(Sha256::digest(view.snapshot.texts[path].as_bytes())),
                 start,
                 end,
