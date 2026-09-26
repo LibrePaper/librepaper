@@ -167,8 +167,8 @@ window.filesCheck = async () => {
   row('empty').dispatchEvent(new DragEvent('drop', { dataTransfer: upload, bubbles: true, cancelable: true }));
   await flush(); check(session.list().some((file) => file.path === 'empty/upload.tex'), 'external upload to folder');
   const mixedUpload = new DataTransfer();
-  mixedUpload.items.add(new File(['valid'], 'mixed-valid.tex', { type: 'text/plain' }));
   mixedUpload.items.add(new File(['generated'], 'snowflake.log', { type: 'text/plain' }));
+  mixedUpload.items.add(new File(['valid'], 'mixed-valid.tex', { type: 'text/plain' }));
   row('empty').dispatchEvent(new DragEvent('drop', { dataTransfer: mixedUpload, bubbles: true, cancelable: true }));
   await flush();
   check(session.list().some((file) => file.path === 'empty/mixed-valid.tex'), 'valid file uploads beside an unsupported file');
