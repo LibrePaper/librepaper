@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use super::pairing::{PairingStore, ServiceState};
+use super::pairing::{self, PairingStore, ServiceState};
 use super::protocol::{BASE_PATH, DEFAULT_PORT};
 
 pub fn control_path(state_home: &Path) -> PathBuf {
@@ -75,7 +75,7 @@ pub async fn spawn_background(
         }
         return Ok(state);
     }
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable = super::paths::current_executable()?;
     let mut command = Command::new(executable);
     command.args([
         "local",
@@ -167,8 +167,16 @@ pub async fn stop(state_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// What a `librepaper://` link asks the browser to do once the companion is
+/// up: nothing at all, or open the system browser at an address.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Target {
+    Nothing,
+    Open(String),
+}
+
 /// Pure validation, also used before launching a stopped companion.
-pub fn connection_target(raw: &str, port: u16) -> Result<String, String> {
+pub fn connection_target(raw: &str, port: u16) -> Result<Target, String> {
     let link = url::Url::parse(raw).map_err(|_| "Invalid companion link.")?;
     if link.scheme() != "librepaper"
         || !link.username().is_empty()
@@ -180,46 +188,44 @@ pub fn connection_target(raw: &str, port: u16) -> Result<String, String> {
         return Err("Invalid companion link.".into());
     }
     let base = format!("http://127.0.0.1:{port}{BASE_PATH}");
-    if link.host_str() == Some("launch") && link.query().is_none() {
-        return Ok(String::new());
+    match link.host_str() {
+        Some("launch") => launch_target(&link, port),
+        Some("manage") => {
+            if link.query().is_some() {
+                return Err("Unknown companion action.".into());
+            }
+            Ok(Target::Open(format!("{base}/manage")))
+        }
+        Some("connect") => connect_target(&link, &base),
+        _ => Err("Unknown companion action.".into()),
     }
-    if link.host_str() == Some("manage") && link.query().is_none() {
-        return Ok(format!("{base}/manage"));
-    }
-    if link.host_str() != Some("connect") {
-        return Err("Unknown companion action.".into());
-    }
+}
+
+/// `librepaper://connect?origin&project&request&challenge&return`: always
+/// opens the consent page, carrying every field it was given so `pair/request`
+/// can register the pending pair. Validation is the shared rule
+/// `crate::local::pairing` and the consent route both call.
+fn connect_target(link: &url::Url, base: &str) -> Result<Target, String> {
     let mut fields = std::collections::HashMap::new();
     for (key, value) in link.query_pairs() {
-        if !matches!(key.as_ref(), "origin" | "project" | "request" | "challenge")
-            || fields
-                .insert(key.into_owned(), value.into_owned())
-                .is_some()
+        if !matches!(
+            key.as_ref(),
+            "origin" | "project" | "request" | "challenge" | "return"
+        ) || fields
+            .insert(key.into_owned(), value.into_owned())
+            .is_some()
         {
             return Err("Unexpected or repeated companion link parameter.".into());
         }
     }
     let origin = fields.get("origin").ok_or("The connection needs a site.")?;
-    let parsed = url::Url::parse(origin).map_err(|_| "Invalid connection site.")?;
-    if !matches!(parsed.scheme(), "http" | "https")
-        || parsed.host_str().is_none()
-        || parsed.path() != "/"
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-    {
+    if pairing::valid_origin(origin).is_none() {
         return Err("The connection site must be an HTTP(S) origin.".into());
     }
     let project = fields
         .get("project")
         .ok_or("The connection needs a document.")?;
-    if project.is_empty()
-        || project.len() > 256
-        || !project
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
-    {
+    if pairing::valid_project(project).is_none() {
         return Err("Invalid connection document.".into());
     }
     let request = fields
@@ -228,14 +234,15 @@ pub fn connection_target(raw: &str, port: u16) -> Result<String, String> {
     let challenge = fields
         .get("challenge")
         .ok_or("The connection needs a challenge.")?;
-    if !(32..=128).contains(&request.len())
-        || !request
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
-        || challenge.len() != 64
-        || !challenge.bytes().all(|c| c.is_ascii_hexdigit())
+    if pairing::valid_request_id(request).is_none() || pairing::valid_challenge(challenge).is_none()
     {
         return Err("Invalid connection challenge.".into());
+    }
+    let return_to = fields
+        .get("return")
+        .ok_or("The connection needs a return address.")?;
+    if pairing::valid_return(return_to, origin).is_none() {
+        return Err("Invalid connection return address.".into());
     }
     let mut target =
         url::Url::parse(&format!("{base}/pair/request")).map_err(|error| error.to_string())?;
@@ -244,8 +251,50 @@ pub fn connection_target(raw: &str, port: u16) -> Result<String, String> {
         .append_pair("origin", origin)
         .append_pair("project", project)
         .append_pair("request", request)
-        .append_pair("challenge", challenge);
-    Ok(target.into())
+        .append_pair("challenge", challenge)
+        .append_pair("return", return_to);
+    Ok(Target::Open(target.into()))
+}
+
+/// `librepaper://launch`, with or without `?origin&request&return`. Either
+/// way this only ever runs after the companion is confirmed up; with the
+/// three fields present, and only when the companion's port is not the
+/// default one, it hands the browser back the address it could not
+/// otherwise learn.
+fn launch_target(link: &url::Url, port: u16) -> Result<Target, String> {
+    if link.query().is_none() {
+        return Ok(Target::Nothing);
+    }
+    let mut fields = std::collections::HashMap::new();
+    for (key, value) in link.query_pairs() {
+        if !matches!(key.as_ref(), "origin" | "request" | "return")
+            || fields
+                .insert(key.into_owned(), value.into_owned())
+                .is_some()
+        {
+            return Err("Unexpected or repeated companion link parameter.".into());
+        }
+    }
+    let origin = fields.get("origin").ok_or("The connection needs a site.")?;
+    if pairing::valid_origin(origin).is_none() {
+        return Err("The connection site must be an HTTP(S) origin.".into());
+    }
+    let request = fields
+        .get("request")
+        .ok_or("The connection needs a request identifier.")?;
+    if pairing::valid_request_id(request).is_none() {
+        return Err("Invalid connection request identifier.".into());
+    }
+    let return_to = fields
+        .get("return")
+        .ok_or("The connection needs a return address.")?;
+    if pairing::valid_return(return_to, origin).is_none() {
+        return Err("Invalid connection return address.".into());
+    }
+    if port == DEFAULT_PORT {
+        return Ok(Target::Nothing);
+    }
+    Ok(Target::Open(pairing::return_fragment(return_to, port, request)))
 }
 
 pub fn open_browser(target: &str) -> Result<(), String> {
@@ -318,7 +367,7 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
         if !enabled {
             return remove_startup(&file);
         }
-        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        let executable = super::paths::current_executable()?;
         write_startup_file(
             &file,
             format!("[Desktop Entry]\nType=Application\nName=LibrePaper companion\nExec={} local launch\nTerminal=false\n", desktop_quote(&executable)),
@@ -333,7 +382,7 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
         if !enabled {
             return remove_startup(&file);
         }
-        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        let executable = super::paths::current_executable()?;
         let path = html_escape::encode_text(&executable.to_string_lossy()).into_owned();
         write_startup_file(
             &file,
@@ -342,7 +391,7 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        let executable = super::paths::current_executable()?;
         let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
         let mut command = Command::new("reg");
         if enabled {
@@ -386,13 +435,17 @@ mod tests {
     #[test]
     fn deep_links_only_open_scoped_local_consent() {
         let query = format!(
-            "origin=https%3A%2F%2Fpapers.example&project=paper&request={}&challenge={}",
+            "origin=https%3A%2F%2Fpapers.example&project=paper&request={}&challenge={}&return=https%3A%2F%2Fpapers.example%2Fdoc",
             "r".repeat(32),
             "a".repeat(64)
         );
         let target =
             connection_target(&format!("librepaper://connect?{query}"), 18763).expect("valid link");
-        assert!(target.starts_with("http://127.0.0.1:18763/librepaper/local/v1/pair/request?"));
+        let Target::Open(target) = target else {
+            panic!("a connect link always opens the consent page");
+        };
+        assert!(target.starts_with(&format!("http://127.0.0.1:18763{BASE_PATH}/pair/request?")));
+        assert!(target.contains("return=https"));
         for invalid in [
             "https://evil.example".into(),
             "librepaper://connect".into(),
@@ -401,6 +454,18 @@ mod tests {
             format!("librepaper://connect?{query}&origin=https://evil.example"),
             format!("librepaper://connect?{query}#fragment"),
             query.replace("https%3A%2F%2Fpapers.example", "file%3A%2F%2F%2Ftmp"),
+            // return is now required, and must share the origin's site.
+            format!(
+                "librepaper://connect?{}",
+                query.replace("&return=https%3A%2F%2Fpapers.example%2Fdoc", "")
+            ),
+            format!(
+                "librepaper://connect?{}",
+                query.replace(
+                    "return=https%3A%2F%2Fpapers.example%2Fdoc",
+                    "return=https%3A%2F%2Fevil.example%2Fdoc",
+                )
+            ),
         ] {
             assert!(
                 connection_target(&invalid, 8763).is_err(),
@@ -409,8 +474,60 @@ mod tests {
         }
         assert_eq!(
             connection_target("librepaper://manage", 8763).expect("manage"),
-            format!("http://127.0.0.1:8763{BASE_PATH}/manage")
+            Target::Open(format!("http://127.0.0.1:8763{BASE_PATH}/manage"))
         );
+    }
+
+    #[test]
+    fn launch_links_only_return_an_address_off_the_default_port() {
+        assert_eq!(
+            connection_target("librepaper://launch", 18763).expect("bare launch"),
+            Target::Nothing
+        );
+
+        let query = format!(
+            "origin=https%3A%2F%2Fpapers.example&request={}&return=https%3A%2F%2Fpapers.example%2Fdoc",
+            "r".repeat(32)
+        );
+        let link = format!("librepaper://launch?{query}");
+
+        // On the default port there is nothing for the browser to learn: it
+        // already knows the address.
+        assert_eq!(
+            connection_target(&link, DEFAULT_PORT).expect("launch on default port"),
+            Target::Nothing
+        );
+
+        let Target::Open(target) =
+            connection_target(&link, 18763).expect("launch on a non-default port")
+        else {
+            panic!("a non-default port must hand back an address");
+        };
+        assert!(target.starts_with("https://papers.example/doc#librepaper-local="));
+        assert!(target.contains("librepaper-request="));
+
+        // A launch link with an unexpected extra field, only some of the
+        // three, or a mismatched return origin, is rejected rather than
+        // silently ignored.
+        for invalid in [
+            format!("librepaper://launch?{query}&project=paper"),
+            format!(
+                "librepaper://launch?origin=https%3A%2F%2Fpapers.example&request={}",
+                "r".repeat(32)
+            ),
+            format!(
+                "librepaper://launch?{}",
+                query.replace(
+                    "return=https%3A%2F%2Fpapers.example%2Fdoc",
+                    "return=https%3A%2F%2Fevil.example%2Fdoc",
+                )
+            ),
+        ] {
+            assert!(
+                connection_target(&invalid, 18763).is_err(),
+                "accepted {invalid}"
+            );
+        }
     }
     #[test]
     fn stop_request_is_tied_to_the_running_instance() {

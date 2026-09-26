@@ -271,6 +271,95 @@ pub fn normalize_origin(raw: &str) -> String {
     }
 }
 
+/// An origin as a browser or a `librepaper://` link would send it: an
+/// http(s) scheme and a host, and nothing else -- no path but `/`, no query,
+/// fragment or embedded credentials. Returns it normalised the way the
+/// pairing store keys origins.
+pub(crate) fn valid_origin(raw: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+    Some(normalize_origin(raw.trim()))
+}
+
+/// A project name: non-empty, bounded, and drawn from the characters a
+/// document identifier needs.
+pub(crate) fn valid_project(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    let ok = !value.is_empty()
+        && value.len() <= 256
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'));
+    ok.then(|| value.to_string())
+}
+
+/// A pairing request id: what the browser generates client side to track one
+/// attempt across the consent page and the claim loop. The browser always
+/// generates base64url, so this is the strict reading -- ASCII alphanumeric
+/// plus `-` and `_` only, never `.`.
+pub(crate) fn valid_request_id(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    (value.len() >= 32
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_')))
+    .then(|| value.to_string())
+}
+
+/// A PKCE challenge: the lowercase hex SHA-256 digest of the verifier the
+/// browser keeps to itself.
+pub(crate) fn valid_challenge(raw: &str) -> Option<String> {
+    let value = raw.trim().to_ascii_lowercase();
+    (value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit())).then_some(value)
+}
+
+/// Where the consent result page, or a `librepaper://launch` link, sends the
+/// browser back to when there is no opener to poll claim for it: an absolute
+/// http(s) URL, bounded, without a fragment or embedded credentials, whose
+/// normalised origin is exactly `origin`.
+pub(crate) fn valid_return(raw: &str, origin: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty() || value.len() > 2048 {
+        return None;
+    }
+    let parsed = url::Url::parse(value).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || parsed.fragment().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || normalize_origin(value) != normalize_origin(origin)
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+/// The fragment a link handler, or the consent result page, hands back to a
+/// page it cannot otherwise reach: the companion's real address and the
+/// request id that proves the fragment came from an attempt the page itself
+/// started.
+pub(crate) fn return_fragment(return_to: &str, port: u16, request: &str) -> String {
+    let address = format!("http://127.0.0.1:{port}/");
+    let encoded_address: String =
+        percent_encoding::utf8_percent_encode(&address, percent_encoding::NON_ALPHANUMERIC)
+            .collect();
+    let encoded_request: String =
+        percent_encoding::utf8_percent_encode(request, percent_encoding::NON_ALPHANUMERIC)
+            .collect();
+    format!("{return_to}#librepaper-local={encoded_address}&librepaper-request={encoded_request}")
+}
+
 pub(crate) fn write_private_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let body = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
     crate::private_files::publish(path, &body, "local private JSON").map_err(std::io::Error::other)
@@ -365,6 +454,94 @@ mod tests {
             store.authenticate("https://example.test", &new),
             Some("paper".into())
         );
+    }
+
+    #[test]
+    fn valid_origin_rejects_anything_but_a_bare_http_s_origin() {
+        assert_eq!(
+            valid_origin("HTTPS://Papers.Example/"),
+            Some(normalize_origin("https://papers.example"))
+        );
+        for rejected in [
+            "ftp://papers.example/",
+            "https://papers.example/doc",
+            "https://papers.example/?q=1",
+            "https://papers.example/#frag",
+            "https://user:pass@papers.example/",
+            "not a url",
+        ] {
+            assert!(valid_origin(rejected).is_none(), "accepted {rejected}");
+        }
+    }
+
+    #[test]
+    fn valid_project_is_bounded_and_charset_limited() {
+        assert_eq!(valid_project("paper-1.review:2"), Some("paper-1.review:2".into()));
+        assert!(valid_project("").is_none());
+        assert!(valid_project(&"a".repeat(257)).is_none());
+        assert!(valid_project("has space").is_none());
+    }
+
+    #[test]
+    fn valid_request_id_is_strict_base64url_with_no_dot() {
+        let id = "r".repeat(32);
+        assert_eq!(valid_request_id(&id), Some(id.clone()));
+        assert!(valid_request_id(&"r".repeat(31)).is_none());
+        assert!(valid_request_id(&"r".repeat(129)).is_none());
+        assert!(valid_request_id(&format!("{}.", "r".repeat(31))).is_none());
+    }
+
+    #[test]
+    fn valid_challenge_requires_a_lowercase_hex_sha256_digest() {
+        let digest = "a".repeat(64);
+        assert_eq!(valid_challenge(&digest.to_ascii_uppercase()), Some(digest));
+        assert!(valid_challenge(&"a".repeat(63)).is_none());
+        assert!(valid_challenge(&"g".repeat(64)).is_none());
+    }
+
+    #[test]
+    fn valid_return_requires_the_same_origin_as_the_pairing() {
+        let origin = "https://paper.example".to_string();
+        assert_eq!(
+            valid_return("https://paper.example/document/1", &origin),
+            Some("https://paper.example/document/1".to_string())
+        );
+        // A different origin, scheme or port is rejected even though the
+        // rest of the URL is well formed.
+        for rejected in [
+            "https://evil.example/document/1",
+            "http://paper.example/document/1",
+            "https://paper.example:8443/document/1",
+            "ftp://paper.example/document/1",
+            "https://user:pass@paper.example/document/1",
+            "https://paper.example/document/1#fragment",
+            "not a url",
+            "",
+        ] {
+            assert!(
+                valid_return(rejected, &origin).is_none(),
+                "accepted {rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_return_is_bounded_in_length() {
+        let origin = "https://paper.example".to_string();
+        let long = format!(
+            "https://paper.example/{}",
+            "a".repeat(2048 - "https://paper.example/".len() + 1)
+        );
+        assert!(long.len() > 2048);
+        assert!(valid_return(&long, &origin).is_none());
+    }
+
+    #[test]
+    fn return_fragment_carries_the_address_and_request_percent_encoded() {
+        let fragment = return_fragment("https://paper.example/doc", 18763, "r".repeat(32).as_str());
+        assert!(fragment.starts_with("https://paper.example/doc#librepaper-local="));
+        assert!(fragment.contains("librepaper-request="));
+        assert!(fragment.contains("http%3A%2F%2F127.0.0.1%3A18763%2F"));
     }
 
     #[test]
