@@ -656,7 +656,7 @@ mod tests {
             .is_empty());
 
         let visible = catalog
-            .visible_documents(Some(collaborator.id), None, 200, false)
+            .visible_documents(Some(collaborator.id), None, 200)
             .await
             .unwrap();
         assert_eq!(

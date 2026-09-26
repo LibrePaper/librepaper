@@ -43,13 +43,6 @@ use crate::document::session;
 use crate::log::frame::{self, Batch};
 use crate::storage::postgres::{Authority, FlushRow, NewLabel, PostgresCatalog};
 
-/// What a simulation left behind, for the operator to read back.
-pub struct Simulated {
-    pub steps: usize,
-    pub versions: usize,
-    pub first: OffsetDateTime,
-}
-
 /// How far back a simulation may reach. Four whole weeks, which is also what
 /// the calendar reads best over.
 const MAX_DAYS: u32 = 28;
@@ -462,7 +455,7 @@ pub async fn simulate(
     author_account_id: Uuid,
     author_label: &str,
     days: u32,
-) -> Result<Simulated, String> {
+) -> Result<(), String> {
     let head = catalog
         .log_head(document_id)
         .await
@@ -502,7 +495,6 @@ pub async fn simulate(
     // behind dependencies that a cold replay can never obtain.
     let mut vector = loro::VersionVector::default();
     let mut next_sequence = head.update_sequence;
-    let mut versions = 0usize;
     let mut present: Vec<String> = Vec::new();
 
     for (index, step) in steps.iter().enumerate() {
@@ -593,7 +585,6 @@ pub async fn simulate(
             .execute(&mut *tx)
             .await
             .map_err(|error| error.to_string())?;
-            versions += 1;
         }
         tx.commit().await.map_err(|error| error.to_string())?;
     }
@@ -609,11 +600,7 @@ pub async fn simulate(
         return Err(format!("{slug} lost a file while being written"));
     }
 
-    Ok(Simulated {
-        steps: steps.len(),
-        versions,
-        first: when.first().copied().unwrap_or(now),
-    })
+    Ok(())
 }
 
 #[cfg(test)]

@@ -39,14 +39,12 @@ pub struct IndexEntry {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub example: bool,
     #[serde(skip)]
     pub unowned: bool,
     /// The lowercased GitHub login that uploaded this version, and the only
-    /// account that may replace or delete it. Empty on a reserved example, and
-    /// on anything published before ownership was recorded or on a deployment
-    /// where publishing needs no account at all.
+    /// account that may replace or delete it. Empty on anything published
+    /// before ownership was recorded or on a deployment where publishing
+    /// needs no account at all.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub publisher: String,
     /// The GitHub account's numeric id, set alongside `publisher` on every new
@@ -229,12 +227,7 @@ impl IndexEntry {
             }
         }
         // A read link is read-only: the switch is a ceiling on what a link may
-        // carry, not a grant to whoever reaches the document. The examples are
-        // the one exception when opened without a link, since they exist to
-        // be commented on. An explicit Read link still means read-only.
-        if ceiling.comment && self.example && link_hash.is_empty() {
-            role = role.max(Role::Commenter);
-        }
+        // carry, not a grant to whoever reaches the document.
         role
     }
 
@@ -308,9 +301,8 @@ impl IndexEntry {
     /// holds a live link, since a read link
     /// is the least a link carries. The URL alone opens nothing for anybody
     /// else -- a link is the whole of sharing, and the bare slug is not one.
-    /// The reserved examples are the exception: they are there to be read.
     pub fn readable_by(&self, caller_id: &str, link_hash: &str, now: i64) -> bool {
-        self.example || self.unowned || self.names(caller_id, link_hash, now)
+        self.unowned || self.names(caller_id, link_hash, now)
     }
 
     /// When this document expires from, as seconds since the epoch.
@@ -674,7 +666,6 @@ impl Store {
         _owner_key: Option<&str>,
         cursor: Option<(&str, &str)>,
         limit: u32,
-        include_examples: bool,
     ) -> Result<Vec<IndexEntry>, CatalogError> {
         let catalog = &self.catalog;
         let account_id = account_id
@@ -698,7 +689,7 @@ impl Store {
             None => None,
         };
         let documents = catalog
-            .visible_documents(account_id, before, i64::from(limit), include_examples)
+            .visible_documents(account_id, before, i64::from(limit))
             .await?;
         entries_from_documents(catalog, &documents).await
     }
@@ -1192,13 +1183,7 @@ impl Store {
             .map_err(|e| ModifyError::Storage(e.to_string()))?;
         change(&mut entry).map_err(ModifyError::Refused)?;
         let owner = uuid::Uuid::parse_str(&entry.publisher_id).unwrap_or(document.owner_id);
-        let mode = if entry.example {
-            "example"
-        } else if entry.unowned {
-            "open"
-        } else {
-            "owned"
-        };
+        let mode = if entry.unowned { "open" } else { "owned" };
         catalog
             .update_document_identity(document.id, &entry.title, owner, mode)
             .await
@@ -1370,7 +1355,6 @@ async fn entries_from_documents(
                 sha: document.update_sequence.to_string(),
                 created_at: crate::util::format_unix(document.created_at.unix_timestamp()),
                 updated_at: crate::util::format_unix(document.updated_at.unix_timestamp()),
-                example: document.ownership_mode == "example",
                 unowned: document.ownership_mode == "open",
                 publisher: owner.map(|a| a.handle.clone()).unwrap_or_default(),
                 publisher_id: document.owner_id.to_string(),
@@ -1413,16 +1397,6 @@ pub fn slugify(value: &str, config: &Configuration) -> String {
         .take(config.slug_max)
         .collect();
     slug.trim_matches('-').to_string()
-}
-
-pub fn example_suffix(base: &str, config: &Configuration) -> String {
-    let digest = Sha256::digest(format!("librepaper example {base}").as_bytes());
-    let alphabet = config.suffix_alphabet.as_bytes();
-    digest
-        .iter()
-        .take(config.suffix_length)
-        .map(|byte| alphabet[*byte as usize % alphabet.len()] as char)
-        .collect()
 }
 
 pub fn digest_of(text: &str) -> String {

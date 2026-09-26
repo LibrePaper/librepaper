@@ -46,7 +46,7 @@ WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') 
 SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
 
 .DEFAULT_GOAL := help
-.PHONY: help build install test check-all browser test-external test-release-workloads smoke serve seed examples kill clean snapshot wasm wasm-check wasm-update loro-codemirror loro-update fmt web fuzz
+.PHONY: help build install test check-all browser test-external test-release-workloads smoke serve kill clean snapshot wasm wasm-check wasm-update loro-codemirror loro-update fmt web fuzz
 
 help:  ## Display this help screen
 	@printf "\033[1mAvailable commands:\033[0m\n\n"
@@ -206,11 +206,6 @@ SITE_PORT  ?= 8082
 # a machine that is already serving its own documents over plain loopback.
 LOCAL_CODE ?= 123456
 DATA       ?= librepaper-data
-# Ownership for the manual admin seed command, derived from .env's own
-# LIBREPAPER_PUBLISHERS (exported above). Account onboarding creates private
-# copies for each signed-in account automatically.
-comma := ,
-OWNER      ?= $(if $(filter any,$(LIBREPAPER_PUBLISHERS)),,$(if $(findstring $(comma),$(LIBREPAPER_PUBLISHERS)),,$(LIBREPAPER_PUBLISHERS)))
 # Browsers fetch LaTeX directly from an HTTPS static mirror. With no override,
 # the binary uses the project mirror. `LATEX_MIRROR=` selects an operator-hosted
 # copy for local runs.
@@ -231,26 +226,6 @@ serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX_MIR
 	@test "$(OPEN)" = 1 && command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
 	@$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(LATEX_MIRROR_FLAG) $(SIMULATE_ACTIVITY_FLAG)
 
-# One tutorial project per source format LibrePaper accepts. Each project has
-# a source file and the same relative icon asset; no example is generated.
-EXAMPLES := $(shell find docs/examples/tutorial-* -type f)
-
-# Not in the help: a step of `deploy`, not an entry point.
-examples: $(EXAMPLES)
-
-# Not in the help: it is a step of `deploy`, not a thing to run on its own.
-# A deployment is seeded once. Resetting a nonempty catalogue is a `librepaper
-# admin seed --backup <verified-point>` the operator runs deliberately, so a second
-# `make deploy` serves what is there rather than refusing to start.
-# SIMULATE_ACTIVITY=<days> writes each example as though it had been typed
-# over that many days -- drafted, cut and rewritten, in sittings -- so a
-# demonstration deployment has a calendar of versions in the history panel
-# rather than the one cell a document published once has. The operations are
-# real and every version opens; only the times are invented.
-seed: $(BIN) $(EXAMPLES)
-	@$(BIN) admin seed --data-directory $(DATA) $(if $(OWNER),--owner $(OWNER)) \
-		$(if $(SIMULATE_ACTIVITY),--simulate-activity $(SIMULATE_ACTIVITY))
-
 kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
 	@pkill -f '[d]ist/librepaper admin serve' && echo "stopped" || echo "nothing to stop"
@@ -266,7 +241,7 @@ MIRROR ?= ../wasm-latex/mirror
 latex-check:
 	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
 
-latex-smoke: $(BIN)  ## Compile and display the seeded LaTeX example in Chromium against MIRROR=
+latex-smoke: $(BIN)  ## Compile and display the LaTeX tutorial in Chromium against MIRROR=
 	@node tools/latex/tools/check-mirror.test.mjs
 	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
 	@node web/tools/latex-e2e.mjs $(BIN) browser docs/examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
@@ -352,7 +327,7 @@ deploy: latex-check $(BIN)  ## Serve the site, the application and a local compa
 	if $(BIN) local status >/dev/null 2>&1; then \
 		echo "local $$($(BIN) local status | sed -n 2p)  (already running; left alone)"; \
 	else \
-		$(BIN) local start --code $(LOCAL_CODE) >/dev/null 2>&1 & \
+		$(BIN) local start --foreground --code $(LOCAL_CODE) >/dev/null 2>&1 & \
 		companion_pid=$$!; \
 	fi; \
 	trap "kill $$site_pid $$companion_pid 2>/dev/null || true" EXIT INT TERM; \

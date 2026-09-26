@@ -120,11 +120,10 @@ impl DocumentService {
     /// Apply the complete read policy to an already-resolved caller.
     fn may_read(&self, entry: &IndexEntry, who: &Viewer) -> bool {
         if who.automation {
-            return entry.example
-                || (!who.link.is_empty()
-                    && entry
-                        .link_role(&who.link, crate::util::now_unix())
-                        .is_some());
+            return !who.link.is_empty()
+                && entry
+                    .link_role(&who.link, crate::util::now_unix())
+                    .is_some();
         }
         entry.readable_by(&who.id.id, &who.link, crate::util::now_unix())
     }
@@ -154,11 +153,6 @@ pub struct Server {
     /// Who a GitHub login is, for a grant by name. GitHub in a running
     /// deployment; a stand-in in the tests, which have no network.
     pub accounts: Arc<dyn Accounts>,
-    /// Whether the landing page lists anything to somebody who is on none of
-    /// it. `--no-listing` is the operator saying this deployment has no
-    /// public front page, and the reserved examples -- the only documents
-    /// that would be on one -- are then listed to nobody but their owner.
-    pub listing: bool,
     /// Days of invented history to write for each starter document a new
     /// account is given, or nothing. A demonstration deployment asks for one;
     /// every other deployment keeps the honest history of a document
@@ -773,7 +767,6 @@ impl Server {
             publishers,
             commenters,
             accounts,
-            listing: true,
             simulate_activity: None,
             pending: PendingCodes::new(),
             onboarding: tokio::sync::Mutex::new(()),
@@ -1306,7 +1299,6 @@ impl Server {
             "sha": entry.sha,
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,
-            "example": entry.example,
             "size": entry.size,
             "source_format": entry.source_format,
             "execution_engine": metadata.execution_engine,

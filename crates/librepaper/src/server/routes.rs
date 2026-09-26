@@ -1241,7 +1241,6 @@ impl Server {
                 (!who.key.is_empty()).then_some(who.key.as_str()),
                 listing_cursor,
                 listing_limit,
-                self.listing,
             )
             .await
         {

@@ -99,9 +99,10 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
     let viewer = account(&catalog).await;
     let owner = account(&catalog).await;
     let owned = document(&catalog, viewer, "owned").await;
-    let overlap = document(&catalog, viewer, "example").await;
+    // Owned and granted at once, so it reaches the listing through both
+    // branches and must still appear once.
+    let overlap = document(&catalog, viewer, "owned").await;
     let shared = document(&catalog, owner, "owned").await;
-    let example = document(&catalog, owner, "example").await;
     let inactive = document(&catalog, viewer, "owned").await;
     let hidden = document(&catalog, owner, "owned").await;
     for id in [overlap, shared, inactive] {
@@ -137,7 +138,7 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
         }
         linked.push(id);
     }
-    let mut fixture = vec![owned, overlap, shared, example, inactive, hidden];
+    let mut fixture = vec![owned, overlap, shared, inactive, hidden];
     fixture.extend(&linked);
     // Put this fixture ahead of other tests' rows and make the UUID tie-breaker
     // necessary on every page, including across overlapping access branches.
@@ -146,58 +147,40 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
         .execute(catalog.pool())
         .await
         .unwrap();
-    for include_examples in [false, true] {
-        let mut expected = vec![owned, overlap, shared, linked[0]];
-        if include_examples {
-            expected.push(example);
-        }
-        expected.sort_unstable_by(|a, b| b.cmp(a));
-        let mut cursor = None;
-        let mut seen = Vec::new();
-        while seen.len() < expected.len() {
-            let page = catalog
-                .visible_documents(Some(viewer), cursor, 2, include_examples)
-                .await
-                .unwrap();
-            assert!(!page.is_empty());
-            cursor = page.last().map(|row| (row.updated_at, row.id));
-            seen.extend(
-                page.into_iter()
-                    .filter(|row| fixture.contains(&row.id))
-                    .map(|row| row.id),
-            );
-            assert!(seen.len() <= expected.len());
-        }
-        assert_eq!(seen, expected);
-        let all = catalog
-            .visible_documents(Some(viewer), None, 200, include_examples)
+    let mut expected = vec![owned, overlap, shared, linked[0]];
+    expected.sort_unstable_by(|a, b| b.cmp(a));
+    let mut cursor = None;
+    let mut seen = Vec::new();
+    while seen.len() < expected.len() {
+        let page = catalog
+            .visible_documents(Some(viewer), cursor, 2)
             .await
             .unwrap();
-        let actual: Vec<_> = all
-            .into_iter()
-            .filter(|row| fixture.contains(&row.id))
-            .map(|row| row.id)
-            .collect();
-        assert_eq!(actual, expected);
+        assert!(!page.is_empty());
+        cursor = page.last().map(|row| (row.updated_at, row.id));
+        seen.extend(
+            page.into_iter()
+                .filter(|row| fixture.contains(&row.id))
+                .map(|row| row.id),
+        );
+        assert!(seen.len() <= expected.len());
     }
-    let anonymous = catalog
-        .visible_documents(None, None, 200, true)
+    assert_eq!(seen, expected);
+    let all = catalog
+        .visible_documents(Some(viewer), None, 200)
         .await
         .unwrap();
-    let mut expected_examples = vec![overlap, example];
-    expected_examples.sort_unstable_by(|a, b| b.cmp(a));
-    assert_eq!(
-        anonymous
-            .into_iter()
-            .filter(|row| fixture.contains(&row.id))
-            .map(|row| row.id)
-            .collect::<Vec<_>>(),
-        expected_examples
-    );
-    assert!(catalog
-        .visible_documents(None, None, 200, false)
-        .await
-        .unwrap()
+    let actual: Vec<_> = all
+        .into_iter()
+        .filter(|row| fixture.contains(&row.id))
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(actual, expected);
+    let anonymous = catalog.visible_documents(None, None, 200).await.unwrap();
+    assert!(anonymous
+        .into_iter()
+        .filter(|row| fixture.contains(&row.id))
+        .collect::<Vec<_>>()
         .is_empty());
     drop(writer);
     catalog.close().await;
