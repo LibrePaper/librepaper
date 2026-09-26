@@ -49,15 +49,12 @@ cleanup() {
 trap cleanup EXIT
 mkdir -m 700 "$work/source-data" "$work/restored-data"
 
-# Populate a fresh deployment with starter documents and simulated activity by
-# starting a server, signing in an account, triggering onboarding, and waiting
-# for documents to be created. No production data or existing deployment
-# directory is read.
+# Populate a fresh deployment with tutorial documents. No production data or
+# existing deployment directory is read.
 node "$(dirname "$0")/fixture.mjs" \
   "$LIBREPAPER_BIN" \
   "$LIBREPAPER_SOURCE_URL" \
-  "$work/source-data" \
-  7
+  "$work/source-data"
 
 signature_sql="SELECT jsonb_build_object(
   'documents',(SELECT count(*) FROM documents),

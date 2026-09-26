@@ -1,16 +1,41 @@
 #!/usr/bin/env node
 
-// Populate a fresh frugal_fixture database with starter documents and simulated
-// activity. Starts the server, then populates the database using admin seed,
-// then stops the server cleanly. The server is started so the deployment is
-// ready for use after this script completes.
+// Populate a fresh fixture database by starting the server and publishing
+// the five tutorial documents through the HTTP API. This replaces the admin
+// seed command which is being removed.
 
 import { spawn, execFileSync } from "node:child_process";
+import { createHmac, randomUUID } from "node:crypto";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:net";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "url";
+
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
+const repository = resolve(__dirname, "../../..");
 
 function logError(message) {
   console.error(`fixture.mjs: ${message}`);
   process.exit(1);
+}
+
+function psqlCommand() {
+  const override = (process.env.LIBREPAPER_TEST_PSQL || "").trim();
+  const argv = override ? override.split(/\s+/) : ["psql"];
+  return { program: argv[0], prefix: argv.slice(1) };
+}
+
+function sqlLiteral(value) {
+  if (value === null || value === undefined) return "null";
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function sessionCookie({ dataDirectory, accountId, handle, name, generation = "1", seconds = 3600 }) {
+  const key = Buffer.from(readFileSync(join(dataDirectory, "secrets", "session.key"), "utf8").trim(), "hex");
+  const expires = Math.floor(Date.now() / 1000) + seconds;
+  const payload = Buffer.from(`github|${handle}|${accountId}|${generation}||${name}|${expires}`).toString("base64url");
+  const signature = createHmac("sha256", key).update(`session-v2\0${payload}`).digest("base64url");
+  return `librepaper_session=v2.${payload}.${signature}`;
 }
 
 async function until(what, predicate, timeout = 30000) {
@@ -40,17 +65,54 @@ async function findFreePort() {
   });
 }
 
+function listTutorialFiles(tutorialDir) {
+  const files = {};
+  const entries = readdirSync(tutorialDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isFile()) {
+      const path = join(tutorialDir, entry.name);
+      files[entry.name] = readFileSync(path);
+    }
+  }
+  return files;
+}
+
+async function publishTutorial(base, cookie, tutorialDir, title) {
+  const form = new FormData();
+  const files = listTutorialFiles(tutorialDir);
+  for (const [name, content] of Object.entries(files)) {
+    // Files are appended with their path as the filename
+    form.append("file", new Blob([content]), name);
+  }
+  form.append("title", title);
+
+  const response = await fetch(`${base}/api/documents`, {
+    method: "POST",
+    headers: {
+      "x-librepaper-client": "1",
+      "cookie": cookie,
+    },
+    body: form,
+  });
+
+  if (response.status !== 201) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(`publish failed: ${response.status} ${JSON.stringify(payload)}`);
+  }
+
+  const result = await response.json();
+  return result;
+}
+
 async function main() {
   const binary = process.argv[2];
   const databaseUrl = process.argv[3];
   const dataDirectory = process.argv[4];
-  const simulateActivityDays = process.argv[5] ? parseInt(process.argv[5], 10) : 0;
 
   if (!binary || !databaseUrl || !dataDirectory) {
-    logError("usage: fixture.mjs <binary> <database-url> <data-directory> [simulate-activity-days]");
+    logError("usage: fixture.mjs <binary> <database-url> <data-directory>");
   }
 
-  // Start the server with --simulate-activity so it's ready for later use
   const port = await findFreePort();
   const base = `http://127.0.0.1:${port}`;
 
@@ -65,10 +127,6 @@ async function main() {
     "--database-url", databaseUrl,
     "--no-local",
   ];
-
-  if (simulateActivityDays > 0) {
-    args.push("--simulate-activity", String(simulateActivityDays));
-  }
 
   let log = "";
   let server = null;
@@ -132,30 +190,46 @@ async function main() {
     await ready();
   } catch (error) {
     await halt();
+    if (log) console.error("Server log:\n" + log);
     logError(error.message);
   }
 
   try {
-    // Populate the database with starter documents and simulated activity
-    // using the seed command, then the server is ready to serve them.
-    const seedArgs = [
-      "seed",
-      "--database-url", databaseUrl,
-      "--data-directory", dataDirectory,
+    // Create account directly in database
+    const accountId = randomUUID();
+    const handle = "fixture";
+    const displayName = "Fixture";
+
+    const { program, prefix } = psqlCommand();
+    execFileSync(program, [
+      ...prefix,
+      databaseUrl,
+      "-XAt",
+      "-v", "ON_ERROR_STOP=1",
+      "-c",
+      `INSERT INTO accounts (id, kind, provider, provider_subject, handle, display_name, status, session_generation) VALUES (${sqlLiteral(accountId)}, 'registered', ${sqlLiteral("github")}, ${sqlLiteral("github:fixture")}, ${sqlLiteral(handle)}, ${sqlLiteral(displayName)}, 'active', 1)`,
+    ], { stdio: "ignore" });
+
+    // Create session cookie
+    const cookie = sessionCookie({ dataDirectory, accountId, handle, name: displayName });
+
+    // Publish the five tutorial documents
+    const tutorials = [
+      { dir: join(repository, "docs/examples/tutorial-markdown"), title: "Learn LibrePaper with Markdown" },
+      { dir: join(repository, "docs/examples/tutorial-typst"), title: "Learn LibrePaper with Typst" },
+      { dir: join(repository, "docs/examples/tutorial-latex"), title: "Learn LibrePaper with LaTeX" },
+      { dir: join(repository, "docs/examples/tutorial-html"), title: "Learn LibrePaper with HTML" },
+      { dir: join(repository, "docs/examples/tutorial-quarto"), title: "Learn LibrePaper with Quarto" },
     ];
 
-    if (simulateActivityDays > 0) {
-      seedArgs.push("--simulate-activity", String(simulateActivityDays));
+    for (const tutorial of tutorials) {
+      await publishTutorial(base, cookie, tutorial.dir, tutorial.title);
     }
 
-    execFileSync(binary, seedArgs, {
-      stdio: "inherit",
-      env: process.env,
-    });
-
-    console.log("Documents populated successfully");
+    console.log("Tutorial documents published successfully");
   } catch (error) {
     await halt();
+    if (log) console.error("Server log:\n" + log);
     logError(error.message);
   }
 
