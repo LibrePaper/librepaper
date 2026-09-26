@@ -1,7 +1,7 @@
 //! Named connections: the indirection that keeps a document key out of an
 //! agent's configuration file.
 //!
-//! An agent's MCP entry names a connection (`librepaper agent mcp
+//! An agent's MCP entry names a connection (`librepaper mcp
 //! --connection dissertation`), never a link. This machine holds the mapping
 //! from that name to the protected document URL, in
 //! `<state_home>/librepaper/local/connections.json` at mode 0600, next to the
@@ -278,7 +278,7 @@ impl ConnectionStore {
     }
 
     /// Resolve a name to its document link, renewing its idle clock. This is
-    /// the call `librepaper agent mcp --connection` makes on startup.
+    /// the call `librepaper mcp --connection` makes on startup.
     pub fn resolve(&self, name: &str) -> Result<Connection, String> {
         if !valid_name(name) {
             return Err("invalid connection name".into());

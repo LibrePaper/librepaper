@@ -552,7 +552,7 @@ mod tests {
             &path,
             "error: unexpected argument '--experimental-acp' found\n\n\
              tip: to pass it as a value, use '-- --experimental-acp'\n\
-             Usage: librepaper agent connect --agent <COMMAND>\n",
+             Usage: librepaper run-agent --agent <COMMAND>\n",
         )
         .unwrap();
         assert_eq!(
