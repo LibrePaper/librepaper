@@ -33,7 +33,6 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Open { url } => open(&url).await,
         LocalCommand::Startup { command } => startup(command),
         LocalCommand::Status => status().await,
-        LocalCommand::Connections { remove } => connections(remove),
         LocalCommand::Agent { command } => local_agent(command),
         LocalCommand::Doctor { tex_path } => doctor(tex_path).await,
         LocalCommand::Disconnect { origin, all } => disconnect(origin, all),
@@ -461,44 +460,6 @@ fn local_agent(command: crate::cli::LocalAgentCommand) {
         }
     }
 }
-/// What agents on this computer can reach, and how to take it back. A
-/// connection is a document credential under a readable name, so being able
-/// to list and revoke them without opening a browser matters.
-fn connections(remove: Option<String>) {
-    let store = crate::local::connections::ConnectionStore::new(&state_home());
-    if let Some(name) = remove {
-        if store.remove(&name) {
-            println!("removed {name}");
-        } else {
-            die(format!("no connection named '{name}'"));
-        }
-        return;
-    }
-    let all = store.list();
-    if all.is_empty() {
-        println!("No agent connections on this computer.");
-        return;
-    }
-    for (name, entry) in all {
-        // The link itself is deliberately absent: this is an audit listing,
-        // not a place to copy a credential out of.
-        println!(
-            "{name}\t{}\t{}\t{}",
-            if entry.title.is_empty() {
-                "(untitled)"
-            } else {
-                &entry.title
-            },
-            if entry.access.is_empty() {
-                "unknown access"
-            } else {
-                &entry.access
-            },
-            entry.origin
-        );
-    }
-}
-
 async fn doctor(tex_path: Vec<PathBuf>) {
     let capabilities = crate::local::discovery::discover(true, &tex_path).await;
     println!("librepaper local doctor");

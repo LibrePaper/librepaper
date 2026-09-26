@@ -24,13 +24,13 @@ That is the only way an agent is connected. LibrePaper never writes another tool
 
 Bring your own model is literal here: the agent you picked is already installed and already signed in, LibrePaper never sees a model name or a credential, and no inference runs on the document server. The sidebar names the running agent, so the claim is checkable rather than asserted.
 
-The document reaches the session as an MCP server handed to the agent over ACP. The model uses `document_read`, `document_propose`, `document_apply`, `document_comment` and `document_result`; document links and tokens are never MCP tool arguments. The command names a connection rather than a link:
+The document reaches the session as an MCP server handed to the agent over ACP. The model uses `document_read`, `document_propose`, `document_apply`, `document_comment` and `document_result`; document links and tokens are never MCP tool arguments. The runner starts its agent with a command that names a private connection rather than a link:
 
 ```
-librepaper agent mcp --connection thesis
+librepaper agent mcp --connection runner-3f7a9c1b2d0e4f5a6b7c
 ```
 
-This computer holds what the name means, so a document key never reaches a command line, a shell history or a transcript; a rotated link is repaired in one place; and `librepaper local connections` lists what agents here can reach, with `--remove` to take it back. Disconnecting the site from the app drops its connections too.
+This computer holds what that name means, so a document key never reaches a command line, a shell history or a transcript, and a rotated link is repaired in one place. The record is written by the runner itself, not typed by hand; disconnecting the site from the app drops it, along with everything else that origin registered.
 
 Agents differ in how they reach ACP, and the sidebar says which case yours is rather than leaving you to find out:
 

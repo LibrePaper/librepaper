@@ -1,9 +1,10 @@
-//! Named connections: the indirection that keeps a document key out of an
+//! Runner records: the indirection that keeps a document key out of an
 //! agent's configuration file.
 //!
-//! An agent's MCP entry names a connection (`librepaper agent mcp
-//! --connection dissertation`), never a link. This machine holds the mapping
-//! from that name to the protected document URL, in
+//! An agent is used only from the browser sidebar. The sidebar assistant's
+//! own MCP subprocess names a runner record (`librepaper agent mcp
+//! --connection runner-<hash>`), never a link. This machine holds the
+//! mapping from that name to the protected document URL, in
 //! `<state_home>/librepaper/local/connections.json` at mode 0600, next to the
 //! pairing store that authorizes writing it.
 //!
@@ -20,8 +21,6 @@ use std::path::{Path, PathBuf};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-#[cfg(test)]
-use super::pairing::read_json;
 use super::pairing::write_private_json;
 use crate::auth::now_unix;
 
@@ -40,43 +39,16 @@ pub struct Connection {
     /// The browser origin that registered it, so a revoke of a pairing can
     /// take its connections with it.
     pub origin: String,
-    /// What the link grants: `reader`, `commenter` or `editor`. Recorded for
-    /// display only; the link itself is what actually bounds access.
-    #[serde(default)]
-    pub access: String,
-    /// Human label for the sidebar and `librepaper local connections`.
-    #[serde(default)]
-    pub title: String,
-    /// Sidebar runner configuration by conversation. A connection may be
-    /// shared by several browser conversations, so each record is bound to
-    /// the runner nonce and configuration hash that made it current.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub assistant_sessions: BTreeMap<String, AssistantConfiguration>,
     pub created: i64,
     /// Last time an agent resolved this connection.
     #[serde(default)]
     pub used: i64,
     /// The sidebar conversation and its credential, for the adapter the
-    /// sidebar assistant spawns. Present only on internal records: an agent
-    /// the user connected themselves has no sidebar channel to dispatch
-    /// browser renders through.
+    /// sidebar assistant spawns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_token: Option<String>,
-    /// Written by the runner for its own adapter rather than by a user
-    /// connecting an agent. Hidden from listings so the sidebar shows only
-    /// connections a person made.
-    #[serde(default)]
-    pub internal: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct AssistantConfiguration {
-    pub agent: String,
-    pub access: String,
-    pub nonce: String,
-    pub config_hash: String,
 }
 
 #[derive(Clone)]
@@ -95,39 +67,16 @@ pub fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_'))
 }
 
-/// A stable, readable name derived from a document title or slug, made unique
-/// against what is already stored. Users see this in their agent config, so
-/// `thesis-2` beats a hash.
-pub fn derive_name(preferred: &str, taken: &dyn Fn(&str) -> bool) -> String {
-    let mut base: String = preferred
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    while base.contains("--") {
-        base = base.replace("--", "-");
-    }
-    let base = base.trim_matches('-').to_string();
-    let base = if base.is_empty() {
-        "document".to_string()
-    } else {
-        base.chars().take(48).collect()
-    };
-    if !taken(&base) {
-        return base;
-    }
-    for suffix in 2..1000 {
-        let candidate = format!("{base}-{suffix}");
-        if !taken(&candidate) {
-            return candidate;
-        }
-    }
-    format!("{base}-{}", now_unix())
+/// The private connection name a sidebar runner uses for one (document,
+/// conversation) pair. Deterministic in both credential URL and conversation,
+/// so the same runner rewrites the same record on every start instead of
+/// leaving old ones behind.
+pub fn runner_connection_name(credential_url: &str, conversation: &str) -> String {
+    use sha2::Digest as _;
+    let digest = hex::encode(sha2::Sha256::digest(
+        format!("{credential_url}\0{conversation}").as_bytes(),
+    ));
+    format!("runner-{}", &digest[..48])
 }
 
 impl ConnectionStore {
@@ -188,93 +137,33 @@ impl ConnectionStore {
         Ok(result)
     }
 
-    /// Store a connection under `name`, replacing any connection of the same
-    /// name. Returns the name actually used.
-    pub fn put(&self, name: &str, connection: Connection) -> Result<String, String> {
-        if !valid_name(name) {
-            return Err("invalid connection name".into());
-        }
-        self.update(|all| {
-            if all.len() >= 200 && !all.contains_key(name) {
-                return Err("too many connections on this computer".into());
-            }
-            all.insert(name.to_string(), connection);
-            Ok(name.to_string())
-        })
-    }
-
-    /// Register a document under a name derived from `title`, reusing the
-    /// existing name when this origin already registered this exact link, so
-    /// connecting a second agent to one document does not mint a second name.
-    pub fn register(
+    /// Park the sidebar assistant's own credentials under
+    /// [`runner_connection_name`], recorded with the real pairing origin so
+    /// revoking that pairing also revokes this record. Replaced on every
+    /// runner start.
+    pub fn put_runner(
         &self,
-        title: &str,
-        link: &str,
+        credential_url: &str,
         origin: &str,
-        access: &str,
-    ) -> Result<String, String> {
-        self.update(|all| {
-            if let Some(name) = all
-                .iter()
-                .find(|(_, entry)| entry.link == link && entry.origin == origin)
-                .map(|(name, _)| name.clone())
-            {
-                let entry = all.get_mut(&name).ok_or("connection disappeared")?;
-                entry.access = access.to_string();
-                entry.title = title.to_string();
-                entry.used = now_unix();
-                return Ok(name);
-            }
-            if all.len() >= 200 {
-                return Err("too many connections on this computer".into());
-            }
-            let name = derive_name(title, &|candidate| all.contains_key(candidate));
-            let now = now_unix();
-            all.insert(
-                name.clone(),
-                Connection {
-                    link: link.to_string(),
-                    origin: origin.to_string(),
-                    access: access.to_string(),
-                    title: title.to_string(),
-                    assistant_sessions: BTreeMap::new(),
-                    created: now,
-                    used: now,
-                    conversation: None,
-                    chat_token: None,
-                    internal: false,
-                },
-            );
-            Ok(name)
-        })
-    }
-
-    /// Park the sidebar assistant's own credentials under a private name, so
-    /// the command line the runner hands its agent carries a name rather than
-    /// a document key and a channel token. Replaced on every runner start.
-    pub fn put_internal(
-        &self,
-        name: &str,
-        link: &str,
         conversation: &str,
         chat_token: &str,
     ) -> Result<String, String> {
+        let name = runner_connection_name(credential_url, conversation);
         let now = now_unix();
-        self.put(
-            name,
-            Connection {
-                link: link.to_string(),
-                origin: "local-runner".into(),
-                access: String::new(),
-                title: String::new(),
-                assistant_sessions: BTreeMap::new(),
-                created: now,
-                used: now,
-                conversation: Some(conversation.to_string()),
-                chat_token: Some(chat_token.to_string()),
-                internal: true,
-            },
-        )
+        self.update(|all| {
+            all.insert(
+                name.clone(),
+                Connection {
+                    link: credential_url.to_string(),
+                    origin: origin.to_string(),
+                    created: now,
+                    used: now,
+                    conversation: Some(conversation.to_string()),
+                    chat_token: Some(chat_token.to_string()),
+                },
+            );
+            Ok(name.clone())
+        })
     }
 
     /// Resolve a name to its document link, renewing its idle clock. This is
@@ -296,53 +185,6 @@ impl ConnectionStore {
 
     pub fn get(&self, name: &str) -> Option<Connection> {
         self.load().get(name).cloned()
-    }
-
-    /// Retain non-secret sidebar configuration for the matching runner. A
-    /// later start in another conversation keeps its own identity separate.
-    pub fn set_assistant_configuration(
-        &self,
-        name: &str,
-        conversation: &str,
-        configuration: AssistantConfiguration,
-    ) -> Result<(), String> {
-        self.update(|all| {
-            let entry = all
-                .get_mut(name)
-                .ok_or("no such connection on this computer")?;
-            entry.assistant_sessions.remove(conversation);
-            while entry.assistant_sessions.len() >= 32 {
-                let Some(evicted_key) = entry.assistant_sessions.keys().next().cloned() else {
-                    break;
-                };
-                entry.assistant_sessions.remove(&evicted_key);
-            }
-            // Conversation IDs are random, not chronological. Evict before
-            // insertion so the configuration being saved always survives.
-            entry
-                .assistant_sessions
-                .insert(conversation.to_string(), configuration);
-            entry.used = now_unix();
-            Ok(())
-        })
-    }
-
-    /// Every connection a person made, newest first, for the sidebar and the
-    /// CLI listing. Internal runner records are bookkeeping, not choices, so
-    /// they never appear.
-    pub fn list(&self) -> Vec<(String, Connection)> {
-        let mut all: Vec<(String, Connection)> = self
-            .load()
-            .into_iter()
-            .filter(|(_, entry)| !entry.internal)
-            .collect();
-        all.sort_by(|a, b| b.1.created.cmp(&a.1.created).then(a.0.cmp(&b.0)));
-        all
-    }
-
-    pub fn remove(&self, name: &str) -> bool {
-        self.update(|all| Ok(all.remove(name).is_some()))
-            .unwrap_or(false)
     }
 
     /// Drop every connection registered by `origin`. Called when a pairing is
@@ -369,120 +211,60 @@ mod tests {
     }
 
     #[test]
-    fn names_are_derived_readably_and_made_unique() {
-        assert_eq!(derive_name("My Thesis!", &|_| false), "my-thesis");
-        assert_eq!(derive_name("", &|_| false), "document");
-        let taken = |c: &str| c == "notes";
-        assert_eq!(derive_name("Notes", &taken), "notes-2");
-    }
-
-    #[test]
-    fn a_registered_document_resolves_to_its_protected_link() {
+    fn a_runner_record_resolves_to_its_protected_link() {
         let (_dir, store) = store();
         let name = store
-            .register(
-                "My Thesis",
+            .put_runner(
                 "https://d.example/docs/a#k=secret",
-                "o",
-                "editor",
+                "https://origin.example",
+                "conversation-1",
+                "token-1",
             )
             .unwrap();
-        assert_eq!(name, "my-thesis");
         assert_eq!(
-            store.resolve(&name).unwrap().link,
-            "https://d.example/docs/a#k=secret"
+            name,
+            runner_connection_name("https://d.example/docs/a#k=secret", "conversation-1")
         );
+        let resolved = store.resolve(&name).unwrap();
+        assert_eq!(resolved.link, "https://d.example/docs/a#k=secret");
+        assert_eq!(resolved.conversation.as_deref(), Some("conversation-1"));
+        assert_eq!(resolved.chat_token.as_deref(), Some("token-1"));
     }
 
     #[test]
-    fn the_same_document_from_one_origin_keeps_one_name() {
+    fn restarting_the_same_runner_replaces_its_record() {
         let (_dir, store) = store();
-        let first = store
-            .register("Thesis", "https://d.example/docs/a#k=s", "o", "commenter")
+        let name = store
+            .put_runner(
+                "https://d.example/docs/a#k=s",
+                "https://origin.example",
+                "conversation-1",
+                "token-1",
+            )
             .unwrap();
         let second = store
-            .register("Thesis", "https://d.example/docs/a#k=s", "o", "editor")
-            .unwrap();
-        assert_eq!(first, second);
-        // The later registration's access wins, so upgrading a connection in
-        // the sidebar does not leave the stale role on display.
-        assert_eq!(store.get(&first).unwrap().access, "editor");
-        assert_eq!(store.list().len(), 1);
-    }
-
-    #[test]
-    fn newest_configuration_survives_bounded_history_even_with_a_smaller_id() {
-        let (_dir, store) = store();
-        let name = store
-            .register("Thesis", "https://d.example/docs/a#k=s", "o", "editor")
-            .unwrap();
-        let configuration = AssistantConfiguration {
-            agent: "claude".into(),
-            access: "editor".into(),
-            nonce: "n".into(),
-            config_hash: "h".into(),
-        };
-        for index in 0..32 {
-            store
-                .set_assistant_configuration(&name, &format!("z-{index}"), configuration.clone())
-                .unwrap();
-        }
-        store
-            .set_assistant_configuration(&name, "a-newest", configuration)
-            .unwrap();
-        let retained = store.get(&name).unwrap();
-        assert_eq!(retained.assistant_sessions.len(), 32);
-        assert!(retained.assistant_sessions.contains_key("a-newest"));
-    }
-
-    #[test]
-    fn selected_sidebar_configuration_is_bound_to_a_runner_identity() {
-        let (_dir, store) = store();
-        let name = store
-            .register("Thesis", "https://d.example/docs/a#k=s", "o", "editor")
-            .unwrap();
-        store
-            .set_assistant_configuration(
-                &name,
+            .put_runner(
+                "https://d.example/docs/a#k=s",
+                "https://origin.example",
                 "conversation-1",
-                AssistantConfiguration {
-                    agent: "claude-code".into(),
-                    access: "editor".into(),
-                    nonce: "nonce-1".into(),
-                    config_hash: "hash-1".into(),
-                },
+                "token-2",
             )
             .unwrap();
-        let retained = store.get(&name).unwrap();
-        assert_eq!(
-            retained
-                .assistant_sessions
-                .get("conversation-1")
-                .unwrap()
-                .agent,
-            "claude-code"
-        );
-        assert_eq!(
-            retained
-                .assistant_sessions
-                .get("conversation-1")
-                .unwrap()
-                .nonce,
-            "nonce-1"
-        );
+        assert_eq!(name, second);
+        assert_eq!(store.get(&name).unwrap().chat_token.as_deref(), Some("token-2"));
     }
 
     #[test]
     fn revoking_an_origin_takes_its_connections() {
         let (_dir, store) = store();
         store
-            .register("A", "https://d.example/docs/a#k=1", "one", "editor")
+            .put_runner("https://d.example/docs/a#k=1", "one", "c1", "t1")
             .unwrap();
         store
-            .register("B", "https://d.example/docs/b#k=2", "two", "editor")
+            .put_runner("https://d.example/docs/b#k=2", "two", "c2", "t2")
             .unwrap();
         assert_eq!(store.remove_origin("one"), 1);
-        assert_eq!(store.list().len(), 1);
+        assert!(store.get(&runner_connection_name("https://d.example/docs/b#k=2", "c2")).is_some());
     }
 
     #[test]
@@ -497,10 +279,12 @@ mod tests {
     fn an_idle_connection_expires_rather_than_keeping_a_key_forever() {
         let (_dir, store) = store();
         let name = store
-            .register("Old", "https://d.example/docs/a#k=s", "o", "editor")
+            .put_runner("https://d.example/docs/a#k=s", "o", "c1", "t1")
             .unwrap();
-        let mut all: BTreeMap<String, Connection> =
-            read_json(&store.path()).expect("stored connections");
+        let mut all: BTreeMap<String, Connection> = {
+            let bytes = std::fs::read(store.path()).unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        };
         let stale = now_unix() - IDLE_TTL_SECONDS - 1;
         let entry = all.get_mut(&name).unwrap();
         entry.created = stale;
