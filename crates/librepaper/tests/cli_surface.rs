@@ -27,9 +27,7 @@ fn lists_command(help: &str, command: &str) -> bool {
 #[test]
 fn top_level_help_lists_the_retained_workflows() {
     let help = help_of(&["--help"]);
-    for command in [
-        "login", "logout", "admin", "list", "export", "local",
-    ] {
+    for command in ["login", "logout", "admin", "list", "export", "local"] {
         assert!(
             lists_command(&help, command),
             "public command {command:?} is absent from top-level help:\n{help}"
