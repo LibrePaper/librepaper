@@ -99,10 +99,13 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
     let viewer = account(&catalog).await;
     let owner = account(&catalog).await;
     let owned = document(&catalog, viewer, "owned").await;
+    // Owned and granted at once, so it reaches the listing through both
+    // branches and must still appear once.
+    let overlap = document(&catalog, viewer, "owned").await;
     let shared = document(&catalog, owner, "owned").await;
     let inactive = document(&catalog, viewer, "owned").await;
     let hidden = document(&catalog, owner, "owned").await;
-    for id in [shared, inactive] {
+    for id in [overlap, shared, inactive] {
         catalog
             .set_grant(id, viewer, AccessRole::Reader)
             .await
@@ -135,7 +138,7 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
         }
         linked.push(id);
     }
-    let mut fixture = vec![owned, shared, inactive, hidden];
+    let mut fixture = vec![owned, overlap, shared, inactive, hidden];
     fixture.extend(&linked);
     // Put this fixture ahead of other tests' rows and make the UUID tie-breaker
     // necessary on every page, including across overlapping access branches.
@@ -144,7 +147,8 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
         .execute(catalog.pool())
         .await
         .unwrap();
-    let expected = vec![owned, shared, linked[0]];
+    let mut expected = vec![owned, overlap, shared, linked[0]];
+    expected.sort_unstable_by(|a, b| b.cmp(a));
     let mut cursor = None;
     let mut seen = Vec::new();
     while seen.len() < expected.len() {
@@ -172,10 +176,7 @@ async fn visible_listing_preserves_access_deduplication_and_tied_timestamp_pagin
         .map(|row| row.id)
         .collect();
     assert_eq!(actual, expected);
-    let anonymous = catalog
-        .visible_documents(None, None, 200)
-        .await
-        .unwrap();
+    let anonymous = catalog.visible_documents(None, None, 200).await.unwrap();
     assert!(anonymous
         .into_iter()
         .filter(|row| fixture.contains(&row.id))

@@ -261,6 +261,5 @@ impl Server {
             days,
         )
         .await
-        .map(|_| ())
     }
 }

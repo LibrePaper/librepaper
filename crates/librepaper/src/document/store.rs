@@ -301,7 +301,6 @@ impl IndexEntry {
     /// holds a live link, since a read link
     /// is the least a link carries. The URL alone opens nothing for anybody
     /// else -- a link is the whole of sharing, and the bare slug is not one.
-    /// The reserved examples are the exception: they are there to be read.
     pub fn readable_by(&self, caller_id: &str, link_hash: &str, now: i64) -> bool {
         self.unowned || self.names(caller_id, link_hash, now)
     }
@@ -1184,11 +1183,7 @@ impl Store {
             .map_err(|e| ModifyError::Storage(e.to_string()))?;
         change(&mut entry).map_err(ModifyError::Refused)?;
         let owner = uuid::Uuid::parse_str(&entry.publisher_id).unwrap_or(document.owner_id);
-        let mode = if entry.unowned {
-            "open"
-        } else {
-            "owned"
-        };
+        let mode = if entry.unowned { "open" } else { "owned" };
         catalog
             .update_document_identity(document.id, &entry.title, owner, mode)
             .await

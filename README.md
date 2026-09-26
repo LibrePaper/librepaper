@@ -7,19 +7,16 @@ browser, share a link to it, and collect comments and highlights in real time.
 - Multiple people can annotate simultaneously, with live updates
 - Create, edit, review, share, and render projects in the browser
 - Trivial to deploy: one static binary, on your laptop or on a small server
-- Export annotations or a complete independent project copy from the CLI
+- Export a complete, independent project copy from the CLI
 
 ![A document open in LibrePaper, with highlighted passages and the comments sidebar.](docs/images/commenting.png)
 
 ## Try it
 
-The tutorial is a real LibrePaper document, open to anyone. Drag across a
-sentence and a comment box opens where you released:
-
-**[Learn LibrePaper with Markdown](https://app.librepaper.org/docs/learn-librepaper-with-markdown-t678fbd47v)**
-
-Signing in gives you a private copy of it, and the same walkthrough written in
-Typst, HTML, LaTeX and Quarto.
+[Sign in](https://app.librepaper.org) with GitHub or Google and your account
+starts with five tutorials, the same walkthrough in Markdown, Typst, HTML, LaTeX
+and Quarto. Open one and drag across a sentence: a comment box opens where you
+released.
 
 ## Install
 
