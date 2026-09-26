@@ -32,8 +32,9 @@ const listener = createServer();
 await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
 const port = listener.address().port;
 await new Promise((resolve) => listener.close(resolve));
-const base = `http://127.0.0.1:${port}/librepaper/local/v1`;
+const base = `http://127.0.0.1:${port}/librepaper/local`;
 const site = "https://papers.example";
+const returnUrl = `${site}/docs/paper`;
 const state = async () => JSON.parse(await readFile(join(env.XDG_STATE_HOME, "librepaper/local/service.json"), "utf8"));
 try {
   await cli("launch", "--port", String(port));
@@ -47,7 +48,7 @@ try {
   const request = randomBytes(24).toString("base64url");
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("hex");
-  await cli("open", `librepaper://connect?${new URLSearchParams({ origin: site, project: "paper", request, challenge })}`);
+  await cli("open", `librepaper://connect?${new URLSearchParams({ origin: site, project: "paper", request, challenge, return: returnUrl })}`);
   let target;
   for (let attempt = 0; attempt < 30; attempt++) {
     try { target = await readFile(opened, "utf8"); if (target) break; } catch {}
@@ -55,10 +56,11 @@ try {
   }
   assert.equal(new URL(target).port, String(port), "handler uses the running companion port");
   assert.ok(!target.includes(verifier));
+  assert.match(target, /\/librepaper\/local\/pair\/request\?/, "the link opens the one consent page");
   const registration = await fetch(target);
   assert.equal(registration.status, 200);
   assert.match(await registration.text(), /paper/);
-  const form = new URLSearchParams({ origin: site, project: "paper", request, challenge });
+  const form = new URLSearchParams({ origin: site, project: "paper", request, challenge, return: returnUrl });
   const consent = await fetch(`${base}/pair`, { method: "POST", headers: { Origin: `http://127.0.0.1:${port}`, "Sec-Fetch-Site": "same-origin" }, body: form });
   assert.equal(consent.status, 200, await consent.text());
   const claim = () => fetch(`${base}/connect/claim`, { method: "POST", headers: { Origin: site, "Content-Type": "application/json" }, body: JSON.stringify({ origin: site, project: "paper", request, verifier }) });

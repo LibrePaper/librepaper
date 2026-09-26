@@ -1,8 +1,9 @@
-// The one-click pairing, end to end in a real browser against a real
-// `librepaper local start`: the reader asks the local app for permission, the
-// app's consent page is answered with Allow, the pairing comes back by
-// postMessage, and the client ends up connected with the hosted binding --
-// nothing typed, nothing bound.
+// The one connection, end to end in a real browser against a real
+// `librepaper local start`: the reader asks the local app to connect, the
+// app's consent page is answered with Allow, and the same tab's own
+// `connect/claim` poll -- already running underneath the popup -- picks up
+// the staged token, so the client ends up connected with the hosted binding
+// without anything typed or bound.
 //
 // The consent page is opened in an iframe rather than the popup the reader
 // uses, because a headless session cannot reach a popup's window; the page
@@ -50,9 +51,7 @@ addEventListener("unhandledrejection", (event) => window.errors.push(String(even
 local.configure({ project: "paper-check", origin: location.origin });
 local.setAddress(${JSON.stringify(appAddress)});
 window.pairing = null;
-window.messages = [];
-addEventListener("message", (event) => window.messages.push({ origin: event.origin, data: event.data }));
-window.startPairing = () => { window.pairing = local.pairViaApp().then((status) => ({ state: status.state, error: status.error })); };
+window.startPairing = () => { window.pairing = local.connectApp().then((status) => ({ state: status.state, error: status.error })); };
 `);
 
 await build({
@@ -86,7 +85,7 @@ let appLog = "";
 app.stdout.on("data", (chunk) => (appLog += chunk));
 app.stderr.on("data", (chunk) => (appLog += chunk));
 await until("local app health", async () => {
-  const response = await fetch(`${appAddress}librepaper/local/v1/health`);
+  const response = await fetch(`${appAddress}librepaper/local/health`);
   return response.ok;
 }, 15000);
 
@@ -102,9 +101,12 @@ try {
   assert.equal(before, "unauthorized", `before consent: ${before}`);
 
   // The reader opens the consent page as a popup from a click; the gesture
-  // is what lets the popup through, as it does for a person.
+  // is what lets the popup through, as it does for a person. The same call
+  // also starts this tab's own `connect/claim` poll underneath the popup,
+  // which is what actually picks up the token once Allow is clicked -- the
+  // consent page never talks back to this tab directly.
   await b.evaluateWithGesture("window.startPairing()");
-  const PAIR = "/librepaper/local/v1/pair";
+  const PAIR = "/librepaper/local/pair/request";
   await until("consent page shown", () => b.popupEvaluate(PAIR, "Boolean(document.querySelector('button.allow'))"), 10000);
   const shown = await b.popupEvaluate(PAIR, "document.body.innerText");
   assert.match(shown, /localhost:\d+/, "the page names the site asking");
@@ -118,10 +120,9 @@ try {
   try {
     await until("pairing arrives", () => b.evaluate("window.local.status().state === 'connected'"), 15000);
   } catch (error) {
-    const messages = await b.evaluate("JSON.stringify(window.messages)");
     const frame = await b.popupEvaluate(PAIR, "document.body.innerText + ' | ' + location.href").catch((e) => `popup: ${e.message}`);
     const status = await b.evaluate("JSON.stringify(window.local.status())");
-    throw new Error(`${error.message}\nmessages: ${messages}\nframe: ${frame}\nstatus: ${status}\napp log: ${appLog}`);
+    throw new Error(`${error.message}\nframe: ${frame}\nstatus: ${status}\napp log: ${appLog}`);
   }
   const outcome = "window.pairing.then((r) => JSON.stringify(r))";
   const after = JSON.parse(await b.evaluate(outcome));

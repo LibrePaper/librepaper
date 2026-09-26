@@ -63,8 +63,7 @@
     if (connecting) return;
     connecting = true;
     try {
-      if (canPair) await localBridge.pairViaApp();
-      else await localBridge.connectViaApp();
+      await localBridge.connectApp();
     }
     catch (error) { doctor = error?.message || "Could not open the companion permission window."; }
     finally { connecting = false; }
@@ -149,7 +148,7 @@
   <input class="input input-sm setting-input" type="text" aria-label="Local app address" value={address}
          oninput={(event) => (address = event.currentTarget.value)} onblur={() => localBridge.setAddress(address)} />
 </SettingRow>
-<p class="setting-description"><a href={`${local?.address || localBridge.address()}librepaper/local/v1/manage`} target="_blank" rel="noreferrer">Open companion settings</a></p>
+<p class="setting-description"><a href={`${local?.address || localBridge.address()}librepaper/local/manage`} target="_blank" rel="noreferrer">Open companion settings</a></p>
 
 {#if projectBinding}
   <SettingRow id="local-binding" title="Project folder" description="Use this folder for local project builds and previews. Selecting a folder does not upload its contents.">
