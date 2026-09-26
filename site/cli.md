@@ -98,10 +98,9 @@ librepaper export c9k ./paper-copy --at "Draft v1"
 
 `librepaper admin serve` is the server, and its flags are the deployment's
 whole configuration; `librepaper admin serve --help` lists them and the
-[hosting page](host.html) explains them. `admin seed` replaces a data
-directory's contents with the example documents, and `admin backup`
-and `admin restore` take and restore a verified recovery point.
-Operational state is one loopback request away:
+[hosting page](host.html) explains them. `admin backup` and `admin restore`
+take and restore a verified recovery point. Operational state is one loopback
+request away:
 
 ```sh
 curl http://127.0.0.1:8080/api/status

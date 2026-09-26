@@ -12,7 +12,7 @@ struct Starter {
     files: &'static [(&'static str, &'static [u8])],
 }
 
-const STARTERS: [Starter; crate::seed::ACCOUNT_EXAMPLE_COUNT] = [
+const STARTERS: [Starter; 5] = [
     Starter {
         main: "librepaper.md",
         title: "Learn LibrePaper with Markdown",

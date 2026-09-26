@@ -346,22 +346,6 @@ pub(crate) enum AdminCommand {
         #[command(flatten)]
         storage: StorageFlags,
     },
-    /// Replace the contents of a data directory with the example documents
-    Seed {
-        #[command(flatten)]
-        storage: StorageFlags,
-        #[arg(long, value_name = "ACCOUNT")]
-        owner: Option<String>,
-        #[arg(long, value_name = "DIRECTORY")]
-        backup: Option<String>,
-        /// Write each example as though it had been typed over this many
-        /// days -- drafted, cut and rewritten, in sittings -- so a fresh
-        /// deployment has a calendar of versions to look at. The operations
-        /// are real and reachable; only the times are invented. Capped at the
-        /// four weeks the store keeps versions for.
-        #[arg(long, value_name = "DAYS")]
-        simulate_activity: Option<u32>,
-    },
     /// Create a snapshot-consistent PostgreSQL and immutable-object recovery point.
     Backup {
         #[command(flatten)]
@@ -389,6 +373,8 @@ pub(crate) enum AdminCommand {
     /// bytes and committing the row that would have named them. Reclaiming
     /// it means listing the store, which is why this is a command an
     /// operator runs after a bug rather than something a boot does.
+    // For cleaning up after a crash and routine cleanup runs inside the server
+    #[command(hide = true)]
     Sweep {
         #[command(flatten)]
         storage: StorageFlags,
@@ -564,22 +550,6 @@ async fn run_admin(command: AdminCommand) {
                 no_local: service.no_local,
                 config,
             })
-            .await
-        }
-        AdminCommand::Seed {
-            storage,
-            owner,
-            backup,
-            simulate_activity,
-        } => {
-            let documents = crate::seed::examples::seed_documents();
-            crate::seed::seed_with_backup(
-                storage.options(),
-                &owner.unwrap_or_default(),
-                &documents,
-                backup.as_deref().map(std::path::Path::new),
-                simulate_activity,
-            )
             .await
         }
         AdminCommand::Backup {

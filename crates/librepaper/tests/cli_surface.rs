@@ -44,12 +44,16 @@ fn top_level_help_lists_exactly_the_public_commands() {
 #[test]
 fn admin_help_lists_the_admin_commands() {
     let help = help_of(&["admin", "--help"]);
-    for command in ["serve", "seed", "backup", "restore", "sweep"] {
+    for command in ["serve", "backup", "restore"] {
         assert!(
             lists_command(&help, command),
             "admin command {command:?} is absent from admin help:\n{help}"
         );
     }
+    assert!(
+        !lists_command(&help, "sweep"),
+        "sweep should not be listed in admin help:\n{help}"
+    );
 }
 
 #[test]
@@ -227,5 +231,24 @@ fn removed_commands_fail_to_parse() {
     assert!(
         !cli(&["export", "paper", "--project"]).status.success(),
         "export with --project should fail"
+    );
+    assert!(
+        !cli(&["admin", "seed"]).status.success(),
+        "admin seed should fail"
+    );
+}
+
+/// `admin sweep` and `admin seed` (when it existed) are hidden from help but
+/// still parse for backwards compatibility or operational needs.
+#[test]
+fn hidden_admin_commands_parse_but_are_not_listed() {
+    let admin_help = help_of(&["admin", "--help"]);
+    assert!(
+        !lists_command(&admin_help, "sweep"),
+        "sweep should not be listed in admin help"
+    );
+    assert!(
+        cli(&["admin", "sweep", "--help"]).status.success(),
+        "admin sweep --help should parse"
     );
 }
