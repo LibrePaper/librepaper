@@ -153,9 +153,9 @@ function build(extra = {}) {
   assert.equal(workspace.state.openFile, "id:chapter.md");
   assert.deepEqual(session.added, [{ path: "chapter.md", text: "" }]);
   assert.equal(events.paints, 1, "a new file changes what a compiler would produce");
-  assert.throws(() => workspace.addText("notes.exe"), /texts and figures/);
+  assert.throws(() => workspace.addText("notes.exe"), /allowed file extensions are \.md, \.tex, \.png/);
   assert.throws(() => workspace.addText("main.md"), /already a file or folder/);
-  assert.throws(() => workspace.addText("build.log"), /a compiler writes/);
+  assert.throws(() => workspace.addText("build.log"), /allowed file extensions are \.md, \.tex, \.png/);
 }
 
 // A figure: the bytes go to the store and the name goes into the shared

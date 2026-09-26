@@ -77,17 +77,18 @@ export function checkDirectoryPath(rules, path) {
 export function kindOf(rules, path) {
   const lower = path.toLowerCase();
   const ends = (list) => (list || []).some((end) => lower.endsWith(end));
-  // Derived first, because `.log` and `.out` are plausible-looking names and
-  // the reason they are refused is worth saying rather than "not a file type
-  // this holds".
+  const allowed = [...new Set([
+    ...(rules?.text_extensions || []),
+    ...(rules?.asset_extensions || []),
+  ])];
+  const error = `${path}: allowed file extensions are ${allowed.join(", ") || "none"}`;
+  // Derived extensions are refused even when their names look plausible.
   if (ends(rules?.derived_extensions)) {
-    return {
-      error: `${path}: this is a file a compiler writes, and the document keeps what a person wrote`,
-    };
+    return { error };
   }
   if (ends(rules?.text_extensions)) return { kind: "text" };
   if (ends(rules?.asset_extensions)) return { kind: "asset" };
-  return { error: `${path}: a document holds texts and figures, and this is neither` };
+  return { error };
 }
 
 /// The next spelling of a path that is already taken: `paper.tex` becomes
