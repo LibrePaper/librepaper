@@ -6,6 +6,7 @@
 //! discovery and the native runners find and run the tools; `cli` is the command line.
 
 pub mod acp_agents;
+pub(crate) mod approval;
 pub(crate) mod assistant;
 pub mod bindings;
 pub mod builders;

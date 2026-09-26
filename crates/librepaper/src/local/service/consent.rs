@@ -55,28 +55,6 @@ fn pair_request_fields(query: &str, origin: &str) -> Option<(String, String, Str
     Some((request?, challenge?, return_to?))
 }
 
-/// All five fields off the `POST pair` form body: nothing about the consent
-/// form is optional any more.
-fn pair_form_fields(body: &[u8]) -> Option<(String, String, String, String, String)> {
-    let mut origin = None;
-    let mut project = None;
-    let mut request = None;
-    let mut challenge = None;
-    let mut return_raw = None;
-    for (key, value) in url::form_urlencoded::parse(body) {
-        match &*key {
-            "origin" => origin = super::super::pairing::valid_origin(&value),
-            "project" => project = super::super::pairing::valid_project(&value),
-            "request" => request = super::super::pairing::valid_request_id(&value),
-            "challenge" => challenge = super::super::pairing::valid_challenge(&value),
-            "return" => return_raw = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-    let origin = origin?;
-    let return_to = super::super::pairing::valid_return(&return_raw?, &origin)?;
-    Some((origin, project?, request?, challenge?, return_to))
-}
 
 pub(super) async fn handle_pair_request(inner: &Inner, request: Request<Body>) -> Reply {
     let query = request.uri().query().unwrap_or_default();
@@ -119,7 +97,41 @@ pub(super) async fn handle_pair_request(inner: &Inner, request: Request<Body>) -
         );
     }
     drop(pending);
-    handle_pair_page(&origin, &project, &request_id, &challenge, &return_to)
+
+    let message = format!(
+        "{} wants to render the document {} with the Quarto and TeX tools installed on this computer.\n\n\
+        Warning: Quarto documents can execute arbitrary code on this computer, with your user account's access to files, \
+        installed packages, and the network. Pair only with a site and document you trust. Pairing alone does not run the \
+        document; LibrePaper will ask you to start Quarto separately.",
+        origin, project
+    );
+
+    let approval = super::super::approval::Approval {
+        title: "Connect LibrePaper Companion".to_string(),
+        message,
+        allow_label: "Connect".to_string(),
+    };
+
+    match super::super::approval::ask(&approval).await {
+        super::super::approval::Decision::Allowed => {
+            let (token, expires) = match inner.pairing.issue(&origin, &project, "native dialog") {
+                Ok(issued) => issued,
+                Err(_) => return plain(500, "could not store the pairing"),
+            };
+            let mut pending = inner.pending_pairs.lock().await;
+            if let Some(item) = pending.get_mut(&request_id) {
+                item.token = Some((token, expires));
+            }
+            drop(pending);
+            pair_result_page(inner.port, &return_to, &request_id)
+        }
+        super::super::approval::Decision::Denied => {
+            pair_denied_page()
+        }
+        super::super::approval::Decision::Unavailable(msg) => {
+            pair_unavailable_page(&msg)
+        }
+    }
 }
 
 pub(super) async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> Reply {
@@ -188,131 +200,37 @@ fn html(status: u16, body: String) -> Reply {
 }
 
 const PAIR_STYLE: &str = "body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:28px;color:#1c1c1c;background:#fff}\
-h1{font-size:18px;margin:0 0 12px}p{margin:0 0 12px}code{font-size:14px;background:#f2f2f2;padding:1px 5px;border-radius:4px}\
-.site{font-weight:600;word-break:break-all}.row{display:flex;gap:10px;margin-top:20px}\
-button{font:inherit;padding:8px 18px;border-radius:6px;border:1px solid #bbb;background:#fff;cursor:pointer}\
-button.allow{background:#1f6f43;border-color:#1f6f43;color:#fff}";
+h1{font-size:18px;margin:0 0 12px}p{margin:0 0 12px}code{font-size:14px;background:#f2f2f2;padding:1px 5px;border-radius:4px}";
 
-/* ------------------------------------------------------------ pair page */
+/* -------------------------------------------------------- result pages */
 
-/// The one consent page, reached only through `GET pair/request`: it names
-/// the site that wants to use the tools on this computer and offers Allow.
-/// It is opened either by the browser (already on this computer's address)
-/// or by the OS through a `librepaper://connect` link (the app was not
-/// running, or its port was unknown), and carries every field the pending
-/// request was registered with as hidden fields, so `POST pair` can check
-/// them all again.
-fn handle_pair_page(
-    origin: &str,
-    project: &str,
-    request_id: &str,
-    challenge: &str,
-    return_to: &str,
-) -> Reply {
-    let site = html_escape::encode_text(origin);
-    let name = html_escape::encode_text(project);
-    let origin_attr = html_escape::encode_double_quoted_attribute(origin);
-    let project_attr = html_escape::encode_double_quoted_attribute(project);
-    let request_attr = html_escape::encode_double_quoted_attribute(request_id);
-    let challenge_attr = html_escape::encode_double_quoted_attribute(challenge);
-    let return_attr = html_escape::encode_double_quoted_attribute(return_to);
+
+fn pair_denied_page() -> Reply {
     let page = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-<title>Allow LibrePaper?</title><style>{PAIR_STYLE}</style></head><body>\
-<h1>Use this computer's tools?</h1>\
-<p><span class=\"site\">{site}</span> wants to render the document <code>{name}</code> \
-with the Quarto and TeX tools installed on this computer.</p>\
-<p><strong>Warning:</strong> Quarto documents can execute arbitrary code on this computer, \
-with your user account's access to files, installed packages, and the network. Pair only \
-with a site and document you trust. Pairing alone does not run the document; LibrePaper \
-will ask you to start Quarto separately.</p>\
-<form method=\"post\" action=\"{BASE_PATH}/pair\">\
-<input type=\"hidden\" name=\"origin\" value=\"{origin_attr}\">\
-<input type=\"hidden\" name=\"project\" value=\"{project_attr}\">\
-<input type=\"hidden\" name=\"request\" value=\"{request_attr}\">\
-<input type=\"hidden\" name=\"challenge\" value=\"{challenge_attr}\">\
-<input type=\"hidden\" name=\"return\" value=\"{return_attr}\">\
-<div class=\"row\"><button type=\"submit\" class=\"allow\">Allow local code execution</button>\
-<button type=\"button\" onclick=\"window.close()\">Cancel</button></div></form>\
+<title>Connection not approved</title><style>{PAIR_STYLE}</style></head><body>\
+<h1>Connection not approved</h1><p>The connection was not approved. You can try again from your document.</p>\
+<script>(function(){{if(window.opener){{setTimeout(function(){{window.close();}},150);}}}})();</script>\
 </body></html>"
     );
     html(200, page)
 }
 
-pub(super) async fn handle_pair_consent(
-    inner: &Arc<Inner>,
-    peer: SocketAddr,
-    request: Request<Body>,
-) -> Reply {
-    if rate_limited(inner, peer).await {
-        return plain(
-            429,
-            "too many pairing attempts; wait a minute and try again",
-        );
-    }
-    // Only the consent page itself may submit this: a form post from any
-    // other origin carries that origin, and one from the page carries the
-    // service's own. Browsers always send Origin on a POST.
-    let own = [
-        format!("http://127.0.0.1:{}", inner.port),
-        format!("http://localhost:{}", inner.port),
-        format!("http://[::1]:{}", inner.port),
-    ];
-    let sent = header_str(request.headers(), "origin").map(super::super::pairing::normalize_origin);
-    if !sent.as_deref().is_some_and(|sent| {
-        own.iter()
-            .any(|o| super::super::pairing::normalize_origin(o) == sent)
-    }) {
-        return plain(
-            403,
-            &format!(
-                "the pairing form must be submitted from this app's own page (origin {})",
-                sent.as_deref().unwrap_or("missing")
-            ),
-        );
-    }
-    if let Some(site) = header_str(request.headers(), "sec-fetch-site")
-        .filter(|site| !site.is_empty() && *site != "same-origin")
-    {
-        return plain(
-            403,
-            &format!(
-                "the pairing form must be submitted from this app's own page (sec-fetch-site {site})"
-            ),
-        );
-    }
-    let body = match axum::body::to_bytes(request.into_body(), 4096).await {
-        Ok(body) => body,
-        Err(_) => return plain(413, "pairing form is too large"),
-    };
-    let Some((origin, project, request_id, challenge, return_to)) = pair_form_fields(&body) else {
-        return plain(400, "invalid pair request");
-    };
-    let mut pending = inner.pending_pairs.lock().await;
-    let valid = pending.get(&request_id).is_some_and(|item| {
-        item.expires > Instant::now()
-            && item.project == project
-            && item.origin == origin
-            && item.challenge == challenge
-            && item.return_to == return_to
-            && item.token.is_none()
-    });
-    if !valid {
-        return plain(400, "pair request expired, unknown, or already used");
-    }
-    let (token, expires) = match inner.pairing.issue(&origin, &project, "consent page") {
-        Ok(issued) => issued,
-        Err(_) => return plain(500, "could not store the pairing"),
-    };
-    if let Some(item) = pending.get_mut(&request_id) {
-        item.token = Some((token, expires));
-    }
-    drop(pending);
-    pair_result_page(inner.port, &return_to, &request_id)
+fn pair_unavailable_page(msg: &str) -> Reply {
+    let msg = html_escape::encode_text(msg);
+    let page = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+<title>Connection approval failed</title><style>{PAIR_STYLE}</style></head><body>\
+<h1>Connection approval failed</h1><p>{msg}</p>\
+<script>(function(){{if(window.opener){{setTimeout(function(){{window.close();}},150);}}}})();</script>\
+</body></html>"
+    );
+    html(200, page)
 }
 
-/// The page a completed `POST pair` answers with. It never carries the
+/// The page a completed approval answers with. It never carries the
 /// token -- the opener that started this attempt retrieves it separately by
 /// polling `connect/claim` -- and it takes one of two actions: if an opener
 /// exists, this window closes itself; otherwise, when the service is not on
@@ -450,5 +368,17 @@ mod tests {
         assert!(custom_body.contains("location.replace"));
         assert!(custom_body.contains(return_to));
         assert!(!custom_body.contains(token_marker));
+    }
+
+    #[test]
+    fn pair_denied_page_does_not_open_dialog() {
+        let reply = pair_denied_page();
+        assert_eq!(reply.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn pair_unavailable_page_does_not_open_dialog() {
+        let reply = pair_unavailable_page("Test error message");
+        assert_eq!(reply.status(), StatusCode::OK);
     }
 }
