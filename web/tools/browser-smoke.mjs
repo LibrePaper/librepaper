@@ -700,7 +700,7 @@ async function run() {
     !bare.includes("the private text"),
     bare.slice(0, 80),
   );
-  check("the empty shell still carries the agent", bare.includes("agent.js"), bare.slice(0, 80));
+  check("the empty shell still carries the frame script", bare.includes("frame.js"), bare.slice(0, 80));
 
   const ownerOfSecret = await openTab(`${BASE}/docs/${secret.slug}`, [
     { name: "librepaper_visitor", value: alice, domain: "localhost", path: "/" },

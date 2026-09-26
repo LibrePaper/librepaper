@@ -463,20 +463,6 @@ impl Hub {
             "preview_request" => {
                 bounded_string(&value, "task_id")?;
                 bounded_string(&value, "base_revision")?;
-                let files = value.get("files");
-                let legacy_files = files.is_some_and(|files| {
-                    files.is_object()
-                        && valid_context(files)
-                        && files.as_object().is_some_and(|files| {
-                            files.iter().all(|(path, text)| {
-                                !path.is_empty()
-                                    && !path.starts_with('/')
-                                    && !path.contains('\\')
-                                    && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
-                                    && text.is_string()
-                            })
-                        })
-                });
                 let candidate = value["candidate_id"].as_str().unwrap_or("");
                 let candidate_ref = valid_id(candidate)
                     && value
@@ -485,11 +471,7 @@ impl Hub {
                         .is_some_and(valid_capability);
                 if role != "agent"
                     || !valid_id(value["revision"].as_str().unwrap_or(""))
-                    || (candidate_ref == legacy_files)
-                    || (candidate_ref && files.is_some())
-                    || (!candidate_ref
-                        && (value.get("candidate_id").is_some()
-                            || value.get("candidate_token").is_some()))
+                    || !candidate_ref
                 {
                     return Err((400, "invalid preview request"));
                 }

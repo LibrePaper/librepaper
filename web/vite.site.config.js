@@ -1,7 +1,7 @@
 // The static docs site: the landing page and every page web/tools/build-site.mjs
 // wrote into site/.build, built with the same Tailwind/Skeleton/Svelte
 // toolchain as the reader shell but shipped on its own -- see
-// vite.agent.config.js for the precedent of a second, purpose-built config
+// vite.frame.config.js for the precedent of a second, purpose-built config
 // beside vite.config.js's.
 //
 // This never writes into web/dist: that directory is embedded into the Rust

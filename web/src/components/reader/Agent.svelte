@@ -6,7 +6,7 @@
   import PanelTabs from "../PanelTabs.svelte";
   import ChatTranscript from "../ChatTranscript.svelte";
   import ChatComposer from "../ChatComposer.svelte";
-  import { createAgentClient } from "../../lib/agent-client.js";
+  import { createAgentClient } from "../../lib/agent-client.svelte.js";
   import * as local from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
   import {
@@ -20,9 +20,11 @@
     diagnostics = [], oncommenttask, ondiagnostictask,
     comments = [], suggestion: initialSuggestion = null, onreview, onpreview,
   } = $props();
-  let client;
-  let connection = $state({ id: "", token: "", messages: [], tasks: {}, connected: false,
-    runnerConnected: false, status: "idle", error: "", capabilities: null });
+  let client = $state.raw(null);
+  const EMPTY_CONNECTION = { id: "", token: "", messages: [], tasks: {}, connected: false,
+    runnerConnected: false, status: "idle", error: "", capabilities: null,
+    assistantAgent: "", assistantAccess: "" };
+  const connection = $derived(client?.current ?? EMPTY_CONNECTION);
   let busy = $state(false);
   let starting = $state(true);
   let problem = $state("");
@@ -46,7 +48,6 @@
   // read a PATH, so until the app is paired there is nothing to offer and the
   // panel says so rather than guessing.
   let installed = $state([]);
-  let connectionName = $state("");
   let restoredConversation = "";
   let chosenAgent = $state("");
   let assistant = $state({ running: false, agent: "", access: "" });
@@ -77,15 +78,15 @@
   // it: Comment is the narrowest that works, and it still writes nothing the
   // reader has not accepted.
   const roles = [
-    { id: "commenter", label: "Comment", help: "Read, comment, and suggest changes",
-      detail: "The agent can leave comments and attach suggestions for you to accept or reject." },
+    { id: "commenter", label: "Comment", help: "Read and comment",
+      detail: "The agent can read the document and leave comments for you to review." },
     { id: "editor", label: "Edit", help: "Apply source changes when asked", warn: true,
       detail: "Can apply source changes when you ask; otherwise suggests changes." },
   ];
   const currentRole = $derived(!caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
   // Without sharing rights the panel can only hand out the access the reader
   // already holds, so the other rows are visible but not selectable.
-  const roleOffered = (entry) => canShare || currentRole === (entry.role || entry.id);
+  const roleOffered = (entry) => canShare || currentRole === entry.id;
   let access = $state("");
   const chosenAccess = $derived(roles.find((entry) => entry.id === access) || null);
   // Running "here" means running as what is currently selected. A different
@@ -107,10 +108,6 @@
   let suppressedSelection = $state("");
   let capabilityGeneration = 0;
   let verifiedCapabilities = $state(null);
-  const previewResponses = new Map();
-  const previewInFlight = new Set();
-  const previewArrivals = new Set();
-  let previewConversation = "";
   const selectedText = $derived(attachment?.selection?.exact || "");
   const caps = $derived(normalizeCapabilities(verifiedCapabilities));
   const contextPath = $derived(diagnostic?.file || diagnostic?.path || path);
@@ -156,32 +153,25 @@
     return value?.exact ? JSON.stringify([value.exact, source.path, source.prefix, source.suffix, source.position]) : "";
   }
 
-  /// Mint the access link for `mode`, confirm it really grants that access,
-  /// and hand it to the local app once. Everything after this refers to the
-  /// document by the name the app gives back, so no key reaches a config
-  /// file, a command line or a chat transcript.
-  async function registerConnection(mode) {
-    const role = mode === "tracked" ? "commenter" : mode;
+  /// Mint the access link for `mode` and confirm it really grants that
+  /// access. The local app is then told this link directly when the
+  /// assistant starts, so no connection name or key sits in a config file,
+  /// a command line or a chat transcript.
+  async function prepareAccessLink(mode) {
     if (canShare) {
       const endpoint = `/api/documents/${encodeURIComponent(slug)}/share`;
       let sharing = await getPrivate(endpoint);
-      let access = sharing.links?.[role];
-      if (!access?.key || access.expired) {
-        sharing = await post(endpoint, { link: { role, until: "180d", label: "Agent" } });
-        access = sharing.links?.[role];
+      let accessLink = sharing.links?.[mode];
+      if (!accessLink?.key || accessLink.expired) {
+        sharing = await post(endpoint, { link: { role: mode, until: "180d", label: "Agent" } });
+        accessLink = sharing.links?.[mode];
       }
-      if (!access?.url) throw new Error("Could not create an agent access link.");
-      agentLink = new URL(access.url, location.origin).href;
+      if (!accessLink?.url) throw new Error("Could not create an agent access link.");
+      agentLink = new URL(accessLink.url, location.origin).href;
     }
     if (!validDocumentLink()) throw new Error("The access link must point to this document.");
     await checkCapabilities(agentLink);
-    if (currentRole !== role) throw new Error("This access level is unavailable. Ask the document owner for an access link.");
-    const answer = await local.registerConnection({
-      title: document.title || slug, link: agentLink || link, access: mode,
-    });
-    if (!answer?.connection) throw new Error(answer?.error || "The local app could not register this document.");
-    connectionName = answer.connection;
-    return connectionName;
+    if (currentRole !== mode) throw new Error("This access level is unavailable. Ask the document owner for an access link.");
   }
 
   async function refreshAgents() {
@@ -228,62 +218,54 @@
     });
   }
 
-  /// Start the assistant: mint the access link, hand it to the local app as a
-  /// named connection, and have the app drive the chosen agent against it.
-  /// This is the only way an agent is connected, so it is the only button.
+  /// Start the assistant: mint the access link and have the local app drive
+  /// the chosen agent directly against it. This is the only way an agent is
+  /// connected, so it is the only button.
   async function startAssistant(mode) {
     await act(async () => {
       // One assistant per conversation. Starting a second against the same
       // one would leave the first holding the link it was started with, so a
       // change of agent or access replaces it rather than racing it.
-      if (assistant.running && connectionName) {
-        await local.stopAssistant({ connection: connectionName, conversation: connection.id });
+      if (assistant.running) {
+        await local.stopAssistant({ link: agentLink || link, conversation: connection.id });
         assistant = { running: false, agent: "", access: "" };
       }
-      const name = await registerConnection(mode);
-      rememberAssistantConnection(connection.id, name);
+      await prepareAccessLink(mode);
       const answer = await local.startAssistant({
-        connection: name, conversation: connection.id,
+        link: agentLink || link, conversation: connection.id,
         chatToken: connection.token, agent: chosenAgent,
       });
       if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
       assistant = { running: true, agent: chosenAgent, access: mode };
-      rememberAssistantConnection(connection.id, name);
+      client.rememberAssistant({ agent: chosenAgent, access: mode });
       // The work happens in the chat, so go there rather than leaving the
       // reader on a settings pane that has nothing more to say.
       tab = "chat";
     });
   }
 
-  function assistantConnectionKey(conversationId) {
-    return `librepaper:assistant:${slug}:${conversationId}`;
-  }
-
-  function rememberAssistantConnection(conversationId, name) {
-    if (!conversationId || !name) return;
-    try { localStorage.setItem(assistantConnectionKey(conversationId), name); } catch { /* storage can be disabled */ }
-  }
-
+  /// The local app's status call reports only whether an assistant is
+  /// running; which agent and access level that is comes back from the
+  /// per-conversation record this browser already remembered.
   async function restoreAssistant() {
     if (!paired || !connection.id || restoredConversation === connection.id) return;
     const conversationId = connection.id;
     restoredConversation = conversationId;
-    let name = "";
-    try { name = localStorage.getItem(assistantConnectionKey(conversationId)) || ""; } catch { /* storage can be disabled */ }
-    if (!name) return;
+    const agent = connection.assistantAgent || "";
+    const savedAccess = connection.assistantAccess || "";
+    if (!agent && !savedAccess) return;
     try {
-      const answer = await local.assistantStatus({ connection: name, conversation: conversationId });
+      const answer = await local.assistantStatus({ link: agentLink || link, conversation: conversationId });
       if (connection.id !== conversationId || restoredConversation !== conversationId || !answer?.running) return;
-      connectionName = answer.connection || name;
-      assistant = { running: true, agent: answer.agent || "", access: answer.access || "" };
-      if (assistant.access) access = assistant.access;
-      if (answer.agent) chosenAgent = answer.agent;
-    } catch { /* the saved connection may have been revoked or removed */ }
+      assistant = { running: true, agent, access: savedAccess };
+      if (savedAccess) access = savedAccess;
+      if (agent) chosenAgent = agent;
+    } catch { /* the saved assistant may have been revoked or removed */ }
   }
 
   async function stopAssistant() {
     await act(async () => {
-      await local.stopAssistant({ connection: connectionName, conversation: connection.id });
+      await local.stopAssistant({ link: agentLink || link, conversation: connection.id });
       assistant = { running: false, agent: "", access: "" };
     });
   }
@@ -293,10 +275,6 @@
     try { await operation(); }
     catch (error) { problem = error?.message || String(error); }
     finally { busy = false; }
-  }
-
-  function saveDraft(value) {
-    draft = value;
   }
 
   function attach(value, capturedRevision = revision) {
@@ -329,7 +307,7 @@
     // is not one of them: leave the launcher on its list.
     chosenTaskId = "";
     taskView = "launcher";
-    saveDraft("");
+    draft = "";
     task = next.task || null;
     commentContext = next.comment || null;
     suggestion = next.suggestion || next.comment?.suggestion || null;
@@ -349,7 +327,10 @@
     if (next.task) {
       task = { ...next.task };
       scope = next.task.scope || scope;
-      if (!next.comment && !next.diagnostic) saveDraft(promptFor(task.kind, task.scope));
+      if (!next.comment && !next.diagnostic) {
+        const label = task.kind.charAt(0).toUpperCase() + task.kind.slice(1);
+        draft = taskPrompt({ label }, task.scope);
+      }
     }
     if (next.comment) {
       const quoted = next.comment.source || next.comment;
@@ -357,11 +338,11 @@
       else { suppressedSelection = selectionKey(selection || lastSelection); attachment = null; }
       scope = attachment ? "selection" : (contextPath ? "file" : "document");
       task = { kind: next.comment.suggestion ? "refine" : "respond", scope };
-      saveDraft(next.comment.suggestion ? "Refine this suggestion." : "Address this comment.");
+      draft = next.comment.suggestion ? "Refine this suggestion." : "Address this comment.";
     }
     if (next.diagnostic) {
       task = next.task || { kind: "fix", scope };
-      if (!draft.trim()) saveDraft(task.kind === "fix" ? "Fix this diagnostic." : "Explain this diagnostic.");
+      if (!draft.trim()) draft = task.kind === "fix" ? "Fix this diagnostic." : "Explain this diagnostic.";
     }
     lastRequestId = next.id || lastRequestId;
   }
@@ -382,10 +363,6 @@
     taskView = "prepare";
   }
 
-  function closeTask() {
-    taskView = "launcher";
-  }
-
   /// Picking a task is the decision; writing a draft the reader then has to
   /// send again was a second confirmation of the same thing. This sends it and
   /// moves to the chat, where the answer will arrive.
@@ -404,13 +381,8 @@
     // chat pane reopens this task's view.
     taskView = "launcher";
     tab = "chat";
-    saveDraft("");
+    draft = "";
     await send(note ? `${prompt}\n\n${note}` : prompt);
-  }
-
-  function promptFor(kind, chosenScope) {
-    const target = chosenScope === "document" ? "the whole document" : chosenScope === "file" ? "this file" : "the selected passage";
-    return `${{ proofread: "Proofread", tighten: "Tighten", rewrite: "Rewrite", explain: "Explain", fix: "Fix", refine: "Refine" }[kind] || kind} ${target}.`;
   }
 
   // Scope is chosen inside the preparation view, before anything is written
@@ -437,22 +409,10 @@
     return sent;
   }
 
-  function chooseAgent(id) {
-    chosenAgent = id;
-  }
-
-  function chooseAccess(id) {
-    access = id;
-    // A connection carries one access level. Reusing the previous one here
-    // would silently hand out the old link after the user picked a narrower
-    // level, which is the one mistake this panel must never make.
-    connectionName = "";
-  }
-
   async function newConversation() {
     await act(async () => {
-      if (assistant.running && connectionName) await local.stopAssistant({ connection: connectionName, conversation: connection.id });
-      assistant = { running: false, agent: "", access: "" }; connectionName = "";
+      if (assistant.running) await local.stopAssistant({ link: agentLink || link, conversation: connection.id });
+      assistant = { running: false, agent: "", access: "" };
       await client.end(); await client.create();
       draft = ""; task = null; attachment = null; suggestion = null; commentContext = null;
       pendingRequest = null; diagnostic = null; diagnosticRevision = "";
@@ -481,7 +441,7 @@
 
   function chooseResult(results) {
     const reviewable = visibleResults({ context: { results } }, comments);
-    if (reviewable.suggestions.length || reviewable.pass) onreview?.(reviewable);
+    if (reviewable.suggestions.length) onreview?.(reviewable);
     else problem = "These suggestions are no longer available.";
   }
 
@@ -494,55 +454,6 @@
     }
   });
   $effect(() => requestArrived(request));
-  $effect(() => {
-    const preview = connection.previewRequest;
-    if (connection.id !== previewConversation) {
-      previewConversation = connection.id || "";
-      previewResponses.clear();
-      previewInFlight.clear();
-      previewArrivals.clear();
-    }
-    if (!preview?.id || !onpreview || !client) return;
-    const arrival = `${connection.id || ""}:${preview._arrival || preview.id}`;
-    if (previewArrivals.has(arrival)) return;
-    previewArrivals.add(arrival);
-    const cached = previewResponses.get(preview.id);
-    const conversation = connection.id;
-    const sendResult = (result) => client.current.id === conversation && client.previewResult({
-      ...result,
-      id: `${preview.id}-result`, request_id: preview.id,
-      task_id: preview.task_id,
-      base_revision: preview.base_revision, revision: preview.revision,
-    });
-    // A runner retries an unconfirmed preview with the same request ID after
-    // reconnecting. Reuse the immutable browser result and resend it rather
-    // than compiling the candidate twice.
-    if (cached) { void sendResult(cached); return; }
-    if (previewInFlight.has(preview.id)) return;
-    previewInFlight.add(preview.id);
-    void (async () => {
-      let result;
-      try {
-        // The relay carries only an immutable candidate handle. Source files
-        // travel over authenticated same-origin requests, so a large file
-        // never consumes the chat frame's bounded context budget.
-        const candidate = preview.candidate_id
-          ? await client.fetchCandidate(preview.candidate_id, undefined, preview.candidate_token || preview.renderer_token || "")
-          : null;
-        result = await onpreview(candidate ? { ...preview, candidate } : preview);
-      } catch (error) {
-        result = {
-          ok: false,
-          diagnostics: [{ severity: "error", message: error?.message || "Candidate verification failed." }],
-          output: "none",
-        };
-      }
-      previewResponses.set(preview.id, result);
-      while (previewResponses.size > 8) previewResponses.delete(previewResponses.keys().next().value);
-      previewInFlight.delete(preview.id);
-      await sendResult(result);
-    })();
-  });
   async function checkCapabilities(nextLink = agentLink) {
     const generation = ++capabilityGeneration;
     verifiedCapabilities = null;
@@ -557,9 +468,7 @@
 
   onMount(() => {
     agentLink = link || "";
-    client = createAgentClient({ origin: location.origin, slug, link: agentLink || link,
-      onChange: (next) => { connection = next; } });
-    connection = client.current;
+    client = createAgentClient({ origin: location.origin, slug, link: agentLink || link, onpreview });
     void (async () => {
       await client.resume();
       await checkCapabilities(agentLink || link);
@@ -643,7 +552,7 @@
           <label class="label setup-field">
             <span class="setup-label">Agent</span>
             <select class="select" aria-label="Agent" disabled={busy} value={chosenAgent}
-                    onchange={(event) => chooseAgent(event.currentTarget.value)}>
+                    onchange={(event) => chosenAgent = event.currentTarget.value}>
               {#each installed as entry (entry.id)}
                 <option value={entry.id}>{entry.label}</option>
               {/each}
@@ -651,12 +560,12 @@
           </label>
           {#if chosenInstalled}
             <span class="panel-meta" data-agent-note={chosenInstalled.id}>
-              {chosenInstalled.assistant ? "Brings its own model and sign-in; can also run in the sidebar." : "Brings its own model and sign-in. Document tools only."}
+              {chosenInstalled.assistant ? "Brings its own model and sign-in; can also run in the sidebar." : "Brings its own model and sign-in; cannot run in the sidebar."}
               {chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}
             </span>
           {/if}
         {:else}
-          <span class="panel-meta">No supported coding agent was found on this computer. Install one, or connect your own with the configuration snippet below.</span>
+          <span class="panel-meta">No supported coding agent was found on this computer. Install one to use it here.</span>
         {/if}
       </div>
     {/if}
@@ -665,7 +574,7 @@
       <span class="setup-label">Access</span>
       <select class="select" aria-label="Access" value={access}
               disabled={busy || starting || !connection.id}
-              onchange={(event) => chooseAccess(event.currentTarget.value)}>
+              onchange={(event) => access = event.currentTarget.value}>
         <option value="" disabled>Choose what the agent may do</option>
         {#each roles as entry}
           <option value={entry.id} disabled={!roleOffered(entry)}>{entry.label}: {entry.help}</option>
@@ -784,12 +693,12 @@
   {#if Object.values(connection.tasks || {}).some((item) => ["working", "needs_input"].includes(item.status))}
     <p class="panel-meta">Queue next request. It will run after the active task; it will not change that task.</p>
   {/if}
-  <ChatComposer placeholder="Ask your agent…" canSend={!busy && sendable} draft={draft} ondraft={saveDraft} onsend={send} />
+  <ChatComposer placeholder="Ask your agent…" canSend={!busy && sendable} draft={draft} ondraft={(value) => draft = value} onsend={send} />
   </Tabs.Content>
   <Tabs.Content value="tasks" class="agent-tab-content">
   {#if taskView === "prepare" && chosen}
     <div class="agent-context task-prepare">
-      <button class="task-back" onclick={closeTask}>← All tasks</button>
+      <button class="task-back" onclick={() => taskView = "launcher"}>← All tasks</button>
       <div>
         <h3 class="task-title">{chosen.label}</h3>
         <p class="panel-muted task-description">{chosen.description}</p>
