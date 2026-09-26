@@ -1433,45 +1433,40 @@ export async function createPreset({ name, adapter, formats, options, environmen
 /** Delete a preset. Waits for OS dialog confirmation (up to 5 minutes). */
 export async function deletePreset(id) {
   const pairing = requirePairing();
-  const response = await send("DELETE", `presets/${id}`, { token: pairing.token });
-  return response.json();
+  await send("DELETE", `presets/${id}`, { token: pairing.token });
 }
 
 /** Grant this document permission to use a preset at a given entrypoint.
  * Waits for OS dialog confirmation (up to 5 minutes). */
 export async function grantPreset(id, entrypoint) {
   const pairing = requirePairing();
-  const response = await send("POST", `presets/${id}/grant`, {
+  await send("POST", `presets/${id}/grant`, {
     token: pairing.token,
     jsonBody: { entrypoint },
   });
-  return response.json();
 }
 
 /** Revoke this document's permission to use a grant (no dialog). */
 export async function revokeGrant(id) {
   const pairing = requirePairing();
-  const response = await send("DELETE", `grants/${id}`, { token: pairing.token });
-  return response.json();
+  await send("DELETE", `grants/${id}`, { token: pairing.token });
 }
 
 /** Enable or disable starting the companion at login (standalone only).
  * Waits for OS dialog confirmation (up to 5 minutes). */
 export async function setStartup(enabled) {
   const pairing = requirePairing();
-  const response = await send("POST", "startup", {
+  await send("POST", "startup", {
     token: pairing.token,
     jsonBody: { enabled },
   });
-  return response.json();
 }
 
 /** Quit the companion (standalone only). Waits for OS dialog confirmation
  * (up to 5 minutes). */
 export async function quit() {
   const pairing = requirePairing();
-  const response = await send("POST", "quit", { token: pairing.token });
-  return response.json();
+  await send("POST", "quit", { token: pairing.token });
 }
 
 /* --------------------------------------------------- Connecting an agent */
