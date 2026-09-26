@@ -268,6 +268,7 @@ impl Server {
                 "can_resolve": can_comment,
                 "can_label": can_edit,
                 "can_suggest": can_edit,
+                "can_reply": can_comment,
             }),
         )
     }
