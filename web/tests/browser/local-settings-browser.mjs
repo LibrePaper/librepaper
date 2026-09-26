@@ -63,6 +63,10 @@ export async function capabilities(options) {
   window.capabilityOptions = options;
   return { tools: { quarto: { available: true, version: "1.6.0" } }, confinement: { kind: "none" } };
 }
+export async function settings() {
+  window.settingsCalls = (window.settingsCalls || 0) + 1;
+  return { version: "1.0.0", standalone: false, startup: null, presets: [], grants: [] };
+}
 `);
 
 writeFileSync(entry, `
@@ -145,9 +149,10 @@ try {
 
   // Once connected, the install commands give way to machine controls and a
   // Quarto permission switch. The switch asks Reader to confirm; its checked
-  // state remains controlled until Reader reports the confirmed change.
+  // state remains controlled until Reader reports the confirmed change. The
+  // companion settings sections appear once settings are loaded.
   await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:8763/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
-  await until("connected settings shown", () => b.evaluate("document.body.innerText.includes('Open companion settings')"), 5000);
+  await until("connected settings shown", () => b.evaluate("document.body.innerText.includes('Build presets')"), 5000);
   const connected = await b.evaluate(`JSON.stringify({
     text: document.body.innerText,
     switch: document.querySelector('#local-execution [role="switch"][aria-label="Allow paired Quarto documents to run local code"]')?.getAttribute('aria-checked'),
@@ -156,7 +161,7 @@ try {
   const connectedView = JSON.parse(connected);
   assert.doesNotMatch(connectedView.text, /macOS & Linux|Windows/);
   assert.doesNotMatch(connectedView.text, /permission window was blocked/);
-  assert.match(connectedView.text, /Open companion settings/);
+  assert.match(connectedView.text, /Build presets/);
   assert.match(connectedView.switchLabel, /Allow paired Quarto documents to run local code/);
   assert.equal(connectedView.switch, "false", "local execution starts off");
   await b.evaluate(clickSelector('#local-execution [role="switch"]'));
