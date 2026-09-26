@@ -36,7 +36,6 @@ use crate::storage::blob::BlobStore;
 use crate::storage::postgres::{Authority, PostgresCatalog};
 
 pub(crate) mod agent;
-pub(crate) mod agent_comments;
 mod agent_view;
 pub mod annotation;
 mod catalog;

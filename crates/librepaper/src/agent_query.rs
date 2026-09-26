@@ -535,22 +535,14 @@ fn validate_query_keys(query: &Map<String, Value>) -> Result<(), String> {
     const ALLOWED: &[&str] = &[
         "kind",
         "path",
-        "file",
-        "paths",
-        "files",
         "line",
         "end_line",
         "start",
         "end",
-        "range",
-        "range_bytes",
         "range_id",
         "query",
-        "queries",
-        "text",
         "id",
         "key",
-        "keys",
         "selection",
         "context",
         "include",
@@ -591,8 +583,8 @@ fn execute(
             budget,
         ),
         "search" => search_query(snapshot, query, offset, &fingerprint),
-        "outline" | "headings" => outline_query(snapshot, query, offset, &fingerprint),
-        "manifest" | "files" => manifest_query(snapshot, query, offset, &fingerprint),
+        "outline" => outline_query(snapshot, query, offset, &fingerprint),
+        "manifest" => manifest_query(snapshot, query, offset, &fingerprint),
         "bibliography" => bibliography_query(snapshot, query, offset, &fingerprint),
         "thread" => thread_query(snapshot, query, &fingerprint),
         "diagnostics" | "changes" | "rendered" => {
@@ -623,65 +615,9 @@ fn source_query(
     };
     let mut path = query
         .get("path")
-        .or_else(|| query.get("file"))
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    if query.get("range_id").is_some()
-        && query.get("range").is_none()
-        && query.get("selection").is_none()
-    {
-        return Ok((
-            json!({
-                "kind": output_kind,
-                "status":"unsupported",
-                "reason":"range handles must be resolved by the parent service"
-            }),
-            false,
-            None,
-        ));
-    }
-    let mut range = query.get("range");
-    if let Some(selection) = query.get("selection") {
-        match selection {
-            Value::Object(selection) => {
-                if path.is_empty() {
-                    path = selection
-                        .get("path")
-                        .or_else(|| selection.get("file"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                }
-                if range.is_none() {
-                    range = selection.get("range");
-                }
-                if range.is_none() {
-                    return Ok((
-                        json!({
-                            "kind": output_kind,
-                            "status":"unsupported",
-                            "reason":"source selections must be resolved by the parent service"
-                        }),
-                        false,
-                        None,
-                    ));
-                }
-            }
-            Value::String(_) => {
-                return Ok((
-                    json!({
-                        "kind": output_kind,
-                        "status":"unsupported",
-                        "reason":"selection handles must be resolved by the parent service"
-                    }),
-                    false,
-                    None,
-                ))
-            }
-            _ => return Err("selection must be an object or opaque string handle".into()),
-        }
-    }
     if path.is_empty() {
         path.clone_from(&snapshot.main);
     }
@@ -689,23 +625,20 @@ fn source_query(
         .texts
         .get(&path)
         .ok_or_else(|| format!("no source file {path:?}"))?;
-    let direct_range =
-        if range.is_none() && (query.contains_key("start") || query.contains_key("end")) {
-            match (query.get("start"), query.get("end")) {
-                (Some(start), Some(end)) => {
-                    Some((as_usize(start, "range start")?, as_usize(end, "range end")?))
-                }
-                _ => return Err("range requires both start and end byte offsets".into()),
+    let direct_range = if query.contains_key("start") || query.contains_key("end") {
+        match (query.get("start"), query.get("end")) {
+            (Some(start), Some(end)) => {
+                Some((as_usize(start, "range start")?, as_usize(end, "range end")?))
             }
-        } else {
-            None
-        };
+            _ => return Err("range requires both start and end byte offsets".into()),
+        }
+    } else {
+        None
+    };
     let line_range = line_number_range(source, query).transpose()?;
     let (mut start, mut end) = match direct_range {
         Some(range) => range,
-        None => parse_range(range.or_else(|| query.get("range_bytes")))?
-            .or(line_range)
-            .unwrap_or((0, source.len())),
+        None => line_range.unwrap_or((0, source.len())),
     };
     if output_kind == "section" {
         let wanted = query
@@ -823,38 +756,6 @@ fn line_number_range(
     Some(Ok((start, end)))
 }
 
-fn parse_range(value: Option<&Value>) -> Result<Option<(usize, usize)>, String> {
-    let Some(value) = value else { return Ok(None) };
-    if let Some(numbers) = value.as_array() {
-        if numbers.len() != 2 {
-            return Err("range array must contain [start, end]".into());
-        }
-        return Ok(Some((
-            as_usize(&numbers[0], "range start")?,
-            as_usize(&numbers[1], "range end")?,
-        )));
-    }
-    let object = value
-        .as_object()
-        .ok_or("range must be an object or [start, end]")?;
-    let start = object
-        .get("start_byte")
-        .or_else(|| object.get("start"))
-        .or_else(|| object.get("from"));
-    let end = object
-        .get("end_byte")
-        .or_else(|| object.get("end"))
-        .or_else(|| object.get("to"));
-    match (start, end) {
-        (Some(start), Some(end)) => Ok(Some((
-            as_usize(start, "range start")?,
-            as_usize(end, "range end")?,
-        ))),
-        (None, None) => Ok(None),
-        _ => Err("range requires both start and end byte offsets".into()),
-    }
-}
-
 fn as_usize(value: &Value, label: &str) -> Result<usize, String> {
     value
         .as_u64()
@@ -876,39 +777,17 @@ fn context_range(source: &str, anchor: usize, context: &str) -> Result<(usize, u
     if anchor > source.len() || !source.is_char_boundary(anchor) {
         return Err("context anchor must be a UTF-8 boundary".into());
     }
-    let (mut start, mut end) = line_range(source, anchor);
     match context {
-        "line" => {}
+        "none" => Ok((anchor, anchor)),
         "paragraph" => {
-            start = source[..anchor].rfind("\n\n").map_or(0, |i| i + 2);
-            end = source[anchor..]
+            let start = source[..anchor].rfind("\n\n").map_or(0, |i| i + 2);
+            let end = source[anchor..]
                 .find("\n\n")
                 .map_or(source.len(), |i| anchor + i);
+            Ok((start, end))
         }
-        "heading" => {
-            let mut cursor = start;
-            while cursor > 0 {
-                let previous_end = cursor - 1;
-                let previous_start = source[..previous_end].rfind('\n').map_or(0, |i| i + 1);
-                if is_heading_line(&source[previous_start..previous_end]).is_some() {
-                    start = previous_start;
-                    break;
-                }
-                cursor = previous_start;
-            }
-            end = source[end..].find("\n\n").map_or(source.len(), |i| end + i);
-        }
-        other => return Err(format!("unsupported context {other:?}")),
+        other => Err(format!("unsupported context {other:?}")),
     }
-    Ok((start, end))
-}
-
-fn line_range(source: &str, anchor: usize) -> (usize, usize) {
-    let start = source[..anchor].rfind('\n').map_or(0, |i| i + 1);
-    let end = source[anchor..]
-        .find('\n')
-        .map_or(source.len(), |i| anchor + i + 1);
-    (start, end)
 }
 
 fn range_value(
@@ -945,23 +824,11 @@ fn search_query(
     offset: usize,
     fingerprint: &str,
 ) -> Result<(Value, bool, Option<String>), String> {
-    let terms: Vec<String> = match query.get("queries") {
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|item| {
-                item.as_str()
-                    .map(str::to_string)
-                    .ok_or("search queries must be strings".to_string())
-            })
-            .collect::<Result<_, _>>()?,
-        Some(_) => return Err("search queries must be an array".into()),
-        None => vec![query
-            .get("query")
-            .or_else(|| query.get("text"))
-            .and_then(Value::as_str)
-            .ok_or("search requires string query")?
-            .to_string()],
-    };
+    let terms: Vec<String> = vec![query
+        .get("query")
+        .and_then(Value::as_str)
+        .ok_or("search requires string query")?
+        .to_string()];
     if terms.is_empty() || terms.iter().any(String::is_empty) {
         return Err("search text cannot be empty".into());
     }
@@ -1142,18 +1009,6 @@ fn selected_paths(
         }
         return Ok(vec![path.to_string()]);
     }
-    if let Some(paths) = query.get("paths") {
-        let paths = paths.as_array().ok_or("query paths must be an array")?;
-        let mut selected = Vec::with_capacity(paths.len());
-        for path in paths {
-            let path = path.as_str().ok_or("query paths must be strings")?;
-            if !snapshot.texts.contains_key(path) {
-                return Err(format!("no source file {path:?}"));
-            }
-            selected.push(path.to_string());
-        }
-        return Ok(selected);
-    }
     Ok(snapshot.texts.keys().cloned().collect())
 }
 
@@ -1315,13 +1170,8 @@ fn manifest_query(
         offset,
         query.get("limit"),
     );
-    let kind = if query.get("kind").and_then(Value::as_str) == Some("files") {
-        "files"
-    } else {
-        "manifest"
-    };
     Ok((
-        json!({"kind":kind,"main":snapshot.main,"files":page.0["items"],"complete":page.0["complete"],"next_cursor":page.0["next_cursor"]}),
+        json!({"kind":"manifest","main":snapshot.main,"files":page.0["items"],"complete":page.0["complete"],"next_cursor":page.0["next_cursor"]}),
         page.1,
         page.2,
     ))
@@ -1344,31 +1194,15 @@ fn bibliography_query(
             .cloned()
             .collect()
     };
-    let requested: Option<BTreeSet<String>> = if let Some(key) = query.get("key") {
-        Some(
-            std::iter::once(
-                key.as_str()
-                    .map(str::to_string)
-                    .ok_or("bibliography key must be a string")?,
-            )
-            .collect(),
+    let requested: Option<BTreeSet<String>> = query.get("key").map(|key| {
+        std::iter::once(
+            key.as_str()
+                .map(str::to_string)
+                .ok_or("bibliography key must be a string"),
         )
-    } else {
-        query
-            .get("keys")
-            .map(|keys| {
-                keys.as_array()
-                    .ok_or("bibliography keys must be an array")?
-                    .iter()
-                    .map(|key| {
-                        key.as_str()
-                            .map(str::to_string)
-                            .ok_or("bibliography keys must be strings")
-                    })
-                    .collect()
-            })
-            .transpose()?
-    };
+        .collect::<Result<_, _>>()
+    })
+    .transpose()?;
     let mut entries = Vec::new();
     let mut all_keys = BTreeSet::new();
     let mut partial = false;

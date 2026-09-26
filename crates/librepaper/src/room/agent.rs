@@ -81,13 +81,6 @@ impl OperationKey {
         }
     }
 
-    /// The catalogue's existing idempotency key has one bounded string column.
-    /// Hashing avoids delimiter ambiguity while preserving the original pair
-    /// in the intent and receipt.
-    pub fn request_id(&self) -> String {
-        self.scoped_request_id("")
-    }
-
     /// Bind the retry key to an authenticated actor scope. The empty scope is
     /// retained for callers that only need a collision-resistant pair hash;
     /// Room mutations always pass the authenticated scope.
@@ -128,19 +121,6 @@ pub struct Patch {
     /// empty insertion, where it must be the empty string.
     pub exact: String,
     pub replacement: String,
-    #[serde(default)]
-    pub affinity: Affinity,
-}
-
-/// Which side of a character boundary an insertion belongs to. Affinity is
-/// retained in the durable payload even though a single source transaction
-/// rejects two ambiguous insertions at the same endpoint.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Affinity {
-    #[default]
-    Before,
-    After,
 }
 
 /// A read dependency for the `unchanged_dependencies` policy.
@@ -164,9 +144,9 @@ pub struct Dependency {
 /// including a retried one, because the head it is rebuilt from is what a
 /// retry's precondition has to agree with.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct SourceTree {
+pub struct SourceTree<'a> {
     pub main: String,
-    pub files: BTreeMap<String, SourceFile>,
+    pub files: BTreeMap<String, SourceFile<'a>>,
     /// The projection digest this tree was read at (§4.4's
     /// `Projection::digest`). This is the identity `base_tree` is checked
     /// against -- not a hash recomputed from these fields, because the
@@ -176,21 +156,13 @@ pub struct SourceTree {
     pub revision: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-pub struct SourceFile {
-    pub file_id: String,
-    pub text: String,
-}
-
-impl SourceTree {
-    pub fn digest(&self) -> String {
-        self.revision.clone()
-    }
-
-    #[cfg(test)]
-    pub fn main_file(&self) -> Option<&SourceFile> {
-        self.files.get(&self.main)
-    }
+/// A file's identity and text, borrowed from whatever already holds them
+/// (the head projection, or a captured view). Nothing here is cloned: a
+/// tree is read-only for the length of one validation or evaluation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SourceFile<'a> {
+    pub file_id: &'a str,
+    pub text: &'a str,
 }
 
 /// A patch request after its JSON payload has been normalized by the caller.
@@ -215,28 +187,11 @@ pub struct PatchRequest {
 /// payload and therefore never alter a retry's operation digest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentAuthority {
-    pub account_id: String,
     pub owner_key: String,
-    pub generation: String,
     pub link_hash: String,
-    pub policy_editor: bool,
-    pub automation: bool,
-    pub unowned_publisher: bool,
-    pub execution_epoch: String,
     /// Trusted endpoint scope (document/account/link/generation/role). This
     /// binds operation ids to the complete authenticated actor context.
     pub operation_scope: String,
-}
-
-/// The exact source effect produced by a validated request, before it is
-/// applied to the shared document. Informational: the identity that actually
-/// matters is the projection digest `head.prepare` computes from the fork
-/// (§7.3), not a hash this validator produces independently.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg(test)]
-pub struct AppliedSource {
-    pub before: String,
-    pub after: String,
 }
 
 /// A compact durable result. The source itself is intentionally absent: a
@@ -251,18 +206,6 @@ pub struct AgentReceipt {
     pub replay: bool,
 }
 
-/// Validate and apply a request to a source tree. No input is normalized:
-/// offsets address raw UTF-8 bytes and the captured `exact` text must match
-/// byte-for-byte.
-#[cfg(test)]
-pub fn apply_patches(
-    tree: &SourceTree,
-    request: &PatchRequest,
-) -> Result<AppliedSource, AgentError> {
-    validate_patches(tree, request)?;
-    build_patched(tree, request)
-}
-
 /// Everything a patch request has to satisfy against the tree it names, and
 /// nothing built.
 ///
@@ -273,7 +216,7 @@ pub fn apply_patches(
 /// [`apply_patches`] adds on top of this is that result, and the one caller
 /// that wants it is MCP's candidate creation, which shows the author what a
 /// patch would produce before anything is committed.
-pub fn validate_patches(tree: &SourceTree, request: &PatchRequest) -> Result<(), AgentError> {
+pub fn validate_patches(tree: &SourceTree<'_>, request: &PatchRequest) -> Result<(), AgentError> {
     request.operation.validate()?;
     if request.base_tree.is_empty() || request.base_tree.len() > 128 {
         return Err(AgentError::Invalid("invalid base tree digest".into()));
@@ -293,7 +236,7 @@ pub fn validate_patches(tree: &SourceTree, request: &PatchRequest) -> Result<(),
     }
     // §7.1: "each expected passage matches at head" starts with the whole
     // tree the caller says it read, when it asked for that strength.
-    if request.consistency == Consistency::ExactTree && request.base_tree != tree.digest() {
+    if request.consistency == Consistency::ExactTree && request.base_tree != tree.revision {
         return Err(AgentError::Conflict("source tree changed".into()));
     }
 
@@ -310,7 +253,7 @@ pub fn validate_patches(tree: &SourceTree, request: &PatchRequest) -> Result<(),
                 patch.path
             )));
         }
-        validate_range(&file.text, patch.start, patch.end, &patch.exact)?;
+        validate_range(file.text, patch.start, patch.end, &patch.exact)?;
         checked.push((patch.path.as_str(), patch.start, patch.end));
     }
     if request.consistency == Consistency::UnchangedDependencies {
@@ -325,12 +268,12 @@ pub fn validate_patches(tree: &SourceTree, request: &PatchRequest) -> Result<(),
                 ));
             }
             if !dependency.file_hash.is_empty()
-                && dependency.file_hash != crate::document::store::digest_of(&file.text)
+                && dependency.file_hash != crate::document::store::digest_of(file.text)
             {
                 return Err(AgentError::Conflict("dependency file changed".into()));
             }
             validate_range(
-                &file.text,
+                file.text,
                 dependency.start,
                 dependency.end,
                 &dependency.exact,
@@ -338,38 +281,6 @@ pub fn validate_patches(tree: &SourceTree, request: &PatchRequest) -> Result<(),
         }
     }
     reject_overlaps(&mut checked)
-}
-
-/// The source a validated patch request produces. Callers that only need to
-/// know whether it would be admitted use [`validate_patches`].
-#[cfg(test)]
-fn build_patched(tree: &SourceTree, request: &PatchRequest) -> Result<AppliedSource, AgentError> {
-    let mut files = tree.files.clone();
-    // Group by path and apply from the end. A path with several edits gets one
-    // deterministic splice sequence, and distinct paths cannot interfere.
-    let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
-    for patch in &request.patches {
-        by_path.entry(&patch.path).or_default().push(patch);
-    }
-    for (path, mut patches) in by_path {
-        patches.sort_by(|left, right| right.start.cmp(&left.start).then(right.end.cmp(&left.end)));
-        let file = files
-            .get_mut(path)
-            .ok_or_else(|| AgentError::Conflict(format!("file is absent: {path}")))?;
-        for patch in patches {
-            file.text
-                .replace_range(patch.start..patch.end, &patch.replacement);
-        }
-    }
-    let before = tree
-        .main_file()
-        .map(|file| file.text.clone())
-        .unwrap_or_default();
-    let after = files
-        .get(&tree.main)
-        .map(|file| file.text.clone())
-        .unwrap_or_default();
-    Ok(AppliedSource { before, after })
 }
 
 fn validate_path(path: &str) -> Result<(), AgentError> {
@@ -461,6 +372,12 @@ impl From<CommandError> for AgentError {
     }
 }
 
+impl From<super::error::WriteError> for AgentError {
+    fn from(error: super::error::WriteError) -> Self {
+        Self::Storage(error.to_string())
+    }
+}
+
 /// Turns a byte offset in `text` into the UTF-16 offset the CRDT text API
 /// wants (§3.2 of SPEC-loro.md: every offset that crosses the document layer
 /// counts UTF-16 code units).
@@ -471,7 +388,7 @@ fn byte_to_utf16(text: &str, byte: usize) -> usize {
 /// The head's text files, as the patch validator needs them. Rebuilt on
 /// every evaluation -- including a retried one -- because the head it is
 /// built from is exactly what a retry's precondition has to agree with.
-fn tree_from_head(head: &Head<'_>) -> SourceTree {
+fn tree_from_head<'a>(head: &'a Head<'_>) -> SourceTree<'a> {
     let projection = &head.projection.projection;
     let files = projection
         .files
@@ -482,8 +399,8 @@ fn tree_from_head(head: &Head<'_>) -> SourceTree {
                 (
                     path.clone(),
                     SourceFile {
-                        file_id: entry.id.clone(),
-                        text: text.clone(),
+                        file_id: entry.id.as_str(),
+                        text: text.as_str(),
                     },
                 )
             })
@@ -501,7 +418,7 @@ fn tree_from_head(head: &Head<'_>) -> SourceTree {
 /// files shares the same conflict rules a main-file-only edit does.
 fn apply_patch_edits(
     doc: &LoroDoc,
-    tree: &SourceTree,
+    tree: &SourceTree<'_>,
     request: &PatchRequest,
 ) -> Result<(), String> {
     let mut by_path: BTreeMap<&str, Vec<&Patch>> = BTreeMap::new();
@@ -517,7 +434,7 @@ fn apply_patch_edits(
         let edits: Vec<_> = patches
             .into_iter()
             .map(|patch| wasm_helpers::text::Edit {
-                at: byte_to_utf16(&original.text, patch.start),
+                at: byte_to_utf16(original.text, patch.start),
                 delete: byte_to_utf16(&original.text[patch.start..], patch.end - patch.start),
                 insert: patch.replacement.clone(),
             })
@@ -725,34 +642,19 @@ impl Room {
         Fut: std::future::Future<Output = Result<(), AgentError>>,
     {
         request.operation.validate()?;
-        if !authority.policy_editor
-            && authority.account_id.is_empty()
-            && authority.link_hash.is_empty()
-        {
+        if authority.link_hash.is_empty() {
             return Err(AgentError::Conflict("edit access changed".into()));
         }
         recheck().await?;
 
         let catalog = self.catalog().clone();
         let actor = crate::document::store::MutationActor {
-            account_id: if authority.automation {
-                String::new()
-            } else {
-                authority.account_id.clone()
-            },
-            owner_key: if authority.automation {
-                String::new()
-            } else {
-                authority.owner_key.clone()
-            },
-            session_generation: if authority.automation {
-                String::new()
-            } else {
-                authority.generation.clone()
-            },
+            account_id: String::new(),
+            owner_key: String::new(),
+            session_generation: String::new(),
             link_hash: authority.link_hash.clone(),
-            policy_editor: !authority.automation && authority.policy_editor,
-            unowned_publisher: !authority.automation && authority.unowned_publisher,
+            policy_editor: false,
+            unowned_publisher: false,
         };
         let authorization = super::catalog::mutation_authorization(&actor)
             .map_err(|error| AgentError::Conflict(error.to_string()))?;
@@ -761,11 +663,7 @@ impl Room {
             .await
             .map_err(|error| AgentError::Conflict(error.to_string()))?;
         let document_authority = crate::storage::postgres::Authority {
-            principal_key: if authority.account_id.is_empty() {
-                authority.owner_key.clone()
-            } else {
-                authority.account_id.clone()
-            },
+            principal_key: authority.owner_key.clone(),
             account_id: authorization.account_id,
             link_hash: authorization.token_hash.map(Vec::from),
         };
@@ -809,12 +707,12 @@ impl Room {
 mod tests {
     use super::*;
 
-    fn tree(text: &str) -> SourceTree {
+    fn tree(text: &str) -> SourceTree<'_> {
         let files = [(
             "paper.md".to_string(),
             SourceFile {
-                file_id: "file-1".into(),
-                text: text.into(),
+                file_id: "file-1",
+                text,
             },
         )]
         .into_iter()
@@ -827,43 +725,18 @@ mod tests {
         }
     }
 
-    fn request(base: &SourceTree, patches: Vec<Patch>) -> PatchRequest {
+    fn request(base: &SourceTree<'_>, patches: Vec<Patch>) -> PatchRequest {
         PatchRequest {
             operation: OperationKey {
                 epoch: "epoch-1".into(),
                 id: crate::util::new_request_key(),
             },
-            base_tree: base.digest(),
+            base_tree: base.revision.clone(),
             consistency: Consistency::ExactTree,
             dependencies: Vec::new(),
             patches,
             request_digest: String::new(),
         }
-    }
-
-    #[test]
-    fn applies_unicode_byte_ranges_without_splitting_scalars() {
-        let source = "A 😀 B";
-        let base = tree(source);
-        let start = source.find('😀').expect("emoji");
-        let end = start + '😀'.len_utf8();
-        let result = apply_patches(
-            &base,
-            &request(
-                &base,
-                vec![Patch {
-                    path: "paper.md".into(),
-                    file_id: "file-1".into(),
-                    start,
-                    end,
-                    exact: "😀".into(),
-                    replacement: "wide".into(),
-                    affinity: Affinity::Before,
-                }],
-            ),
-        )
-        .expect("valid patch");
-        assert_eq!(result.after, "A wide B");
     }
 
     #[test]
@@ -878,11 +751,10 @@ mod tests {
                 end: 3,
                 exact: "zz".into(),
                 replacement: "x".into(),
-                affinity: Affinity::Before,
             }],
         );
         assert!(matches!(
-            apply_patches(&base, &stale),
+            validate_patches(&base, &stale),
             Err(AgentError::Conflict(_))
         ));
         let overlapping = request(
@@ -895,7 +767,6 @@ mod tests {
                     end: 4,
                     exact: "bcd".into(),
                     replacement: "x".into(),
-                    affinity: Affinity::Before,
                 },
                 Patch {
                     path: "paper.md".into(),
@@ -904,12 +775,11 @@ mod tests {
                     end: 5,
                     exact: "de".into(),
                     replacement: "y".into(),
-                    affinity: Affinity::Before,
                 },
             ],
         );
         assert!(matches!(
-            apply_patches(&base, &overlapping),
+            validate_patches(&base, &overlapping),
             Err(AgentError::Conflict(_))
         ));
     }
@@ -924,7 +794,7 @@ mod tests {
             epoch: "a".into(),
             id: "b:c".into(),
         };
-        assert_ne!(a.request_id(), b.request_id());
+        assert_ne!(a.scoped_request_id(""), b.scoped_request_id(""));
     }
 
     /// Each half of an operation key fails for its own reason, and the caller
