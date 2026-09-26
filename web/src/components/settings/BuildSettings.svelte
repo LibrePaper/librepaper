@@ -87,7 +87,7 @@
     if (backend === "local") void localBridge.probe({ force: true });
   }
   async function rescan() { try { await localBridge.capabilities({ rescan: true }); } catch { /* status explains failure */ } }
-  async function connect() { try { await localBridge.connectViaApp(); } catch { /* local status carries instructions */ } }
+  async function connect() { try { await localBridge.connectApp(); } catch { /* local status carries instructions */ } }
   const presets = $derived.by(() => {
     const found = Array.isArray(local?.capabilities?.presets) ? [...local.capabilities.presets] : [];
     const compatible = found.filter((item) => (!Array.isArray(item.source_formats) || item.source_formats.includes(format)) && (!item.base_adapter || builders.some((entry) => entry.id === item.base_adapter)));

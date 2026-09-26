@@ -61,7 +61,7 @@ local management controls.
 The companion is the same binary as the CLI, and can be run and inspected from
 a terminal instead; see [the companion](../cli.html#the-companion).
 
-Enter the pairing code once in the document's Settings dialog and later fallbacks are
+Connect once from the document's Settings dialog and later fallbacks are
 automatic. When browser compilation fails outright (an engine that will not
 start, a package the mirror lacks, a crash, a TeX error), the reader asks the
 app to compile the whole project natively with your installed TeX, once per

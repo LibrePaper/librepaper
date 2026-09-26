@@ -1402,14 +1402,14 @@
 
   // The whole connection story, on demand and with nothing to type: reach
   // the local app, and when it is there but has not allowed this site yet,
-  // ask in a popup. What remains for the person is to have started the app
-  // and to click Allow once; the status text says which when it fails.
+  // ask it to connect. What remains for the person is to have started the
+  // app and to click Allow once; the status text says which when it fails.
   async function ensureLocalApp() {
     localConnectionError = "";
     localQuarto.configure({ project: SLUG, origin: location.origin, active: mayEdit });
     let status = await localQuarto.retry();
     if (["unreachable", "unauthorized", "reachable"].includes(status.state)) {
-      try { status = status.state === "unreachable" ? await localQuarto.connectViaApp() : await localQuarto.pairViaApp(); }
+      try { status = await localQuarto.connectApp(); }
       catch (error) { localConnectionError = error.message; showPanel("diagnostics"); return false; }
     }
     if (status.state !== "connected") {

@@ -212,6 +212,23 @@
     }
   }
 
+  /// The primary route: opens the app's own consent page (a popup when it is
+  /// already reachable, the `librepaper://connect` link otherwise) and
+  /// claims the token once the person allows it. The pairing code below stays
+  /// as the fallback for a computer without the link handler installed.
+  async function connectViaApp() {
+    pairProblem = "";
+    busy = true;
+    try {
+      await local.connectApp();
+      await refreshAgents();
+    } catch (error) {
+      pairProblem = error?.message || String(error);
+    } finally {
+      busy = false;
+    }
+  }
+
   /// Point this browser at a local app that is not on the default port, and
   /// look again immediately so the panel answers rather than waiting for the
   /// next scheduled probe.
@@ -610,20 +627,27 @@
       <div class="setup-requirement">
         {#if reachable}
           <strong>Connect the LibrePaper app on this computer</strong>
-          <span class="panel-meta">The app shows a six digit code when it starts. Enter it once; this browser stays paired afterwards.</span>
+          <span class="panel-meta">Click Connect and allow this site in the window that opens; this browser stays paired afterwards.</span>
           <div class="setup-actions">
-            <label class="label"><span class="sr-only">Pairing code</span>
-              <input class="input setup-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"
-                     placeholder="000000" value={pairingCode}
-                     oninput={(event) => pairingCode = event.currentTarget.value} /></label>
-            <button class="btn btn-sm preset-filled-primary-500" disabled={busy || pairingCode.trim().length < 6}
-                    onclick={() => void pair()}>Pair</button>
+            <button class="btn btn-sm preset-filled-primary-500" disabled={busy}
+                    onclick={() => void connectViaApp()}>Connect</button>
           </div>
-          <!-- A refused code must say so here, beside the button that was
-               pressed. The panel's shared error line sits below three tabs of
-               content, which in a narrow column is off screen: an invisible
-               error reads as a dead button. -->
+          <!-- A refused connection must say so here, beside the button that
+               was pressed. The panel's shared error line sits below three
+               tabs of content, which in a narrow column is off screen: an
+               invisible error reads as a dead button. -->
           {#if pairProblem}<span class="panel-meta" role="alert">{pairProblem}</span>{/if}
+          <details class="setup-address">
+            <summary class="panel-meta">Or enter the code the app printed</summary>
+            <div class="setup-actions">
+              <label class="label"><span class="sr-only">Pairing code</span>
+                <input class="input setup-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"
+                       placeholder="000000" value={pairingCode}
+                       oninput={(event) => pairingCode = event.currentTarget.value} /></label>
+              <button class="btn btn-sm preset-filled-primary-500" disabled={busy || pairingCode.trim().length < 6}
+                      onclick={() => void pair()}>Pair</button>
+            </div>
+          </details>
           {@render appAddress()}
         {:else}
           <strong>Install the LibrePaper app on this computer</strong>

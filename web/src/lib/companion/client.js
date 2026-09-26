@@ -1,4 +1,3 @@
-import { newRequestKey } from "../request-key.js";
 // The local LibrePaper app, as a browser client.
 //
 // The browser can discover a reachable local service; it cannot enumerate
@@ -26,12 +25,16 @@ import { bytesOf, toArrayBuffer } from "../bytes.js";
 import { named } from "../latex/errors.js";
 
 export const DEFAULT_ADDRESS = "http://127.0.0.1:8763/";
-export const QUARTO_PROTOCOL = 1;
 export const QUARTO_JOB_KINDS = Object.freeze(["render", "refresh", "frozen"]);
+
+// Every route lives under this one path, on the companion's own address.
+const LOCAL_BASE = "librepaper/local/";
 
 const ADDRESS_KEY = "librepaper-local-address";
 const PAIRINGS_KEY = "librepaper-local-pairings";
 const BINDINGS_KEY = "librepaper-local-quarto-bindings";
+const PENDING_KEY = "librepaper-local-pending";
+const PENDING_TTL_MS = 10 * 60 * 1000;
 
 const NEGATIVE_MIN_MS = 60 * 1000;
 const NEGATIVE_MAX_MS = 10 * 60 * 1000;
@@ -58,6 +61,25 @@ function defaultDeps() {
     storage: typeof localStorage !== "undefined" ? localStorage : null,
     now: () => Date.now(),
     wait: realWait,
+    location: () => (typeof location !== "undefined" ? location : null),
+    replaceHash(hash) {
+      if (typeof history === "undefined" || typeof location === "undefined") return;
+      const url = new URL(location.href);
+      url.hash = hash;
+      history.replaceState(null, "", url.href);
+    },
+    openPopup: (url, name, features) => (typeof window !== "undefined" ? window.open(url, name, features) : null),
+    launchLink(url) {
+      if (typeof window === "undefined" || !window.document?.body) {
+        throw named("Unreachable", "Open LibrePaper in a browser to launch the companion.");
+      }
+      const frame = window.document.createElement("iframe");
+      frame.hidden = true;
+      frame.src = url;
+      window.document.body.appendChild(frame);
+      const timer = setTimeout(() => frame.remove(), 3000);
+      timer.unref?.();
+    },
   };
 }
 
@@ -75,8 +97,10 @@ export const _testing = {
     subscriberCount = 0;
     engaged = false;
     currentStatus = initialStatus();
+    connectionAttempt = null;
     cancelAutoReconnect();
   },
+  intakeFragment,
 };
 
 // -------------------------------------------------------------- storage
@@ -149,12 +173,86 @@ export function address() {
   return validAddress(readRaw(ADDRESS_KEY)) || DEFAULT_ADDRESS;
 }
 
+// Shared by an explicit `setAddress` and the `storage` listener that notices
+// another tab wrote a new one through the fragment mechanism: either way,
+// a probe against the old address is stale and the status is unknown again
+// until the next one.
+function addressChanged() {
+  resetNegativeCache();
+  setStatus({ address: address(), state: "unknown", checkedAt: null, error: null, instructions: instructionsFor("unknown") });
+}
+
 export function setAddress(url) {
   const value = validAddress(url);
   if (value) writeRaw(ADDRESS_KEY, value);
   else removeRaw(ADDRESS_KEY);
-  resetNegativeCache();
-  setStatus({ address: address(), state: "unknown", checkedAt: null, error: null, instructions: instructionsFor("unknown") });
+  addressChanged();
+}
+
+// -------------------------------------------------------------- pending connection
+//
+// The one request this page is mid-connection for, written when `connectApp`
+// starts and read back by the fragment the link handler or the consent
+// result page hands back through a top-level navigation (see
+// `intakeFragment`). It is never a secret -- the request id only tells this
+// page which of possibly several outstanding attempts an address belongs to.
+
+function writePending(request) {
+  writeJSON(PENDING_KEY, { request, expires: deps.now() + PENDING_TTL_MS });
+}
+
+function clearPending() {
+  removeRaw(PENDING_KEY);
+}
+
+function readPending() {
+  const pending = readJSON(PENDING_KEY, null);
+  if (!pending || typeof pending.request !== "string" || !pending.request) return null;
+  if (!Number.isFinite(pending.expires) || pending.expires <= deps.now()) return null;
+  return pending;
+}
+
+// A stored address is only ever written by this same-origin page (through
+// `setAddress`) or by this fragment, so the loopback shape it demands here is
+// a promise about what a legitimate companion port looks like, not a defence
+// against a malicious one -- the request id match is what stops a third
+// party's address from being accepted at all.
+function loopbackAddress(value) {
+  let parsed;
+  try { parsed = new URL(value); } catch { return null; }
+  if (parsed.protocol !== "http:") return null;
+  if (!["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname)) return null;
+  if (!parsed.port) return null;
+  if (parsed.pathname !== "/") return null;
+  if (parsed.search || parsed.hash) return null;
+  if (parsed.username || parsed.password) return null;
+  return parsed.href;
+}
+
+// Read at module init, and only then: the fragment is how the OS link
+// handler tells the page the companion's real port, since a top-level
+// navigation is the only channel back from it. The two params are stripped
+// from the hash whatever they say, so a stale or forged pair never lingers
+// in the address bar.
+function intakeFragment() {
+  const loc = deps.location();
+  const hash = String(loc?.hash || "").replace(/^#/, "");
+  if (!hash) return;
+  const params = new URLSearchParams(hash);
+  const encodedAddress = params.get("librepaper-local");
+  const requestId = params.get("librepaper-request");
+  if (encodedAddress == null && requestId == null) return;
+  params.delete("librepaper-local");
+  params.delete("librepaper-request");
+  const remaining = params.toString();
+  deps.replaceHash(remaining);
+  if (encodedAddress == null || requestId == null) return;
+  const pending = readPending();
+  if (!pending || pending.request !== requestId) return;
+  const decoded = loopbackAddress(encodedAddress);
+  if (!decoded) return;
+  writeRaw(ADDRESS_KEY, decoded);
+  clearPending();
 }
 
 // The binding every document has without anyone granting one: the local app
@@ -235,7 +333,7 @@ function instructionsFor(state) {
     case "denied":
       return "Your browser blocked access to the local app. Allow local network access for this site and retry.";
     case "unauthorized":
-      return "Local LibrePaper is running but has not allowed this site yet. Choose Render locally and click Allow in the window that opens, or enter the pairing code it printed.";
+      return "Local LibrePaper is running but has not allowed this site yet. Click Connect and allow it in the window that opens, or enter the pairing code it printed.";
     case "connected":
       return "Local LibrePaper is connected.";
     case "reachable":
@@ -348,7 +446,7 @@ function noteNegative(nowMs) {
 let addressSpaceSupported = true;
 
 async function healthFetch(addr) {
-  const url = addr + "librepaper/local/v1/health";
+  const url = addr + LOCAL_BASE + "health";
   const init = {
     method: "GET",
     mode: "cors",
@@ -405,7 +503,7 @@ async function send(method, path, { token, jsonBody, formBody, signal } = {}) {
   engage();
   const scope = pairingKey();
   const addr = address();
-  const url = addr + "librepaper/local/v1/" + path;
+  const url = addr + LOCAL_BASE + path;
   const headers = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
   let body;
@@ -560,93 +658,78 @@ export async function connect(code) {
   return probe({ force: true });
 }
 
-// The one-click pairing: the local app serves a consent page on its own
-// loopback origin, this opens it in a popup naming this site and document,
-// and the pairing comes back by postMessage once the person clicks Allow.
-// Nothing to read off a terminal. Resolves with the status after the pairing
-// is stored and verified, or the unchanged status if the window was closed
-// without allowing.
-export function pairViaApp({ timeoutMs = 5 * 60 * 1000 } = {}) {
-  const addr = address();
-  const appOrigin = new URL(addr).origin;
-  const scope = pairingKey();
-  const url = `${addr}librepaper/local/v1/pair?origin=${encodeURIComponent(current.origin)}&project=${encodeURIComponent(current.project)}`;
-  const sameOrigin = (a, b) => String(a || "").replace(/\/+$/, "").toLowerCase() === String(b || "").replace(/\/+$/, "").toLowerCase();
-  return new Promise((resolve, reject) => {
-    const popup = window.open(url, "librepaper-local-pair", "popup,width=480,height=400");
-    if (!popup) {
-      reject(new Error("The browser blocked the window that asks the local app for permission. Allow popups for this site and try again."));
-      return;
-    }
-    let settled = false;
-    let watch = null;
-    let timer = null;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      window.removeEventListener("message", onMessage);
-      clearInterval(watch);
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const onMessage = (event) => {
-      if (event.origin !== appOrigin || event.source !== popup || scope !== pairingKey()) return;
-      const data = event.data;
-      if (!data || data.type !== "librepaper-local-pairing") return;
-      if (data.project !== current.project || !sameOrigin(data.origin, current.origin)) return;
-      setPairing({ token: data.token, expires: data.expires, instance: data.instance || null });
-      resetNegativeCache();
-      finish(probe({ force: true }));
-    };
-    window.addEventListener("message", onMessage);
-    watch = setInterval(() => { if (popup.closed) setTimeout(() => finish(currentStatus), 300); }, 400);
-    timer = setTimeout(() => finish(currentStatus), timeoutMs);
-  });
-}
-
-// Start a consent request through an installed companion protocol handler.
-// The verifier stays in this page; the deep link contains only its SHA-256
-// challenge. The companion registers the request when it opens its consent UI.
+// The one connection entrypoint: paired already, this fires a launch link and
+// waits for the probe to see it; unpaired, it opens the consent page (a popup
+// when this address is one the browser can already reach, the
+// `librepaper://connect` link otherwise, with the link as the popup's own
+// fallback when the browser blocks it) and claims the token once the person
+// allows it. Single-flight: a second call while one is in flight joins it.
 let connectionAttempt = null;
 
-export function connectViaApp(options = {}) {
+export function connectApp(options = {}) {
   if (connectionAttempt) return connectionAttempt;
-  connectionAttempt = runAppConnection(options).finally(() => { connectionAttempt = null; });
+  connectionAttempt = runConnectApp(options).finally(() => { connectionAttempt = null; });
   return connectionAttempt;
 }
 
-async function runAppConnection({ timeoutMs = 120 * 1000, pollMs = 700, signal } = {}) {
+async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal } = {}) {
   const { origin, project } = current;
   if (!origin || !project) throw named("Unauthorized", "Open a document before enabling local rendering.");
-  const addr = address();
   const scope = pairingKey();
+  // The address may legitimately change mid-attempt -- the fragment this very
+  // attempt is waiting on rewrites it -- so only a change of document scope
+  // cancels; every address read below goes through `address()` fresh.
   const checkScope = () => {
-    if (signal?.aborted || scope !== pairingKey() || addr !== address()) {
-      throw named("Canceled", "The document or companion address changed. Connect again in the current document.");
+    if (signal?.aborted || scope !== pairingKey()) {
+      throw named("Canceled", "The document changed. Connect again in the current document.");
     }
   };
-  const paired = getPairing();
   const request = randomUrlToken(24);
   const verifier = randomUrlToken(32);
   const challenge = await sha256Hex(verifier);
+  const loc = deps.location();
+  const returnUrl = String(loc?.href || "").split("#")[0];
+  writePending(request);
   checkScope();
-  // Existing grants need only a launch, not another consent ceremony.
-  launchLink(paired ? "librepaper://launch" : `librepaper://connect?${new URLSearchParams({ origin, project, request, challenge })}`);
+
+  if (getPairing()) {
+    if (currentStatus.state !== "connected") {
+      deps.launchLink(`librepaper://launch?${new URLSearchParams({ origin, request, return: returnUrl })}`);
+    }
+    const started = deps.now();
+    while (deps.now() - started < timeoutMs) {
+      await deps.wait(pollMs, signal);
+      checkScope();
+      const status = await probe({ force: true });
+      checkScope();
+      if (status.state === "connected") { clearPending(); return status; }
+      if (status.state === "unauthorized") throw named("Unauthorized", "This document's permission expired or was revoked. Enable local rendering again to approve it.");
+      if (status.state === "denied" || status.state === "incompatible") throw named("Refused", status.instructions);
+    }
+    throw named("Unreachable", "The companion did not connect. Install or open it, approve the local permission window, then retry.");
+  }
+
+  let popup = null;
+  if (["unauthorized", "reachable"].includes(currentStatus.state)) {
+    const url = `${address()}${LOCAL_BASE}pair/request?${new URLSearchParams({ origin, project, request, challenge, return: returnUrl })}`;
+    popup = deps.openPopup(url, "librepaper-local-pair", "popup,width=480,height=400");
+  }
+  if (!popup) {
+    deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, project, request, challenge, return: returnUrl })}`);
+  }
+
   const started = deps.now();
+  let popupClosedAt = null;
   while (deps.now() - started < timeoutMs) {
     await deps.wait(pollMs, signal);
     checkScope();
-    if (paired) {
-      const status = await probe({ force: true });
-      checkScope();
-      if (status.state === "connected") return status;
-      if (status.state === "unauthorized") throw named("Unauthorized", "This document's permission expired or was revoked. Enable local rendering again to approve it.");
-      if (status.state === "denied" || status.state === "incompatible") throw named("Refused", status.instructions);
-      continue;
+    if (popup?.closed) {
+      popupClosedAt ??= deps.now();
+      if (deps.now() - popupClosedAt > 1000) { clearPending(); return currentStatus; }
     }
     let response;
     try {
-      response = await deps.fetch(`${addr}librepaper/local/v1/connect/claim`, {
+      response = await deps.fetch(`${address()}${LOCAL_BASE}connect/claim`, {
         method: "POST", mode: "cors", credentials: "omit",
         headers: { "Content-Type": "application/json" },
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
@@ -670,8 +753,10 @@ async function runAppConnection({ timeoutMs = 120 * 1000, pollMs = 700, signal }
     }
     setPairing({ token: data.token, expires: data.expires, instance: data.instance || null });
     resetNegativeCache();
+    clearPending();
     return probe({ force: true });
   }
+  clearPending();
   throw named("Unreachable", "The companion did not connect. Install or open it, approve the local permission window, then retry.");
 }
 
@@ -735,33 +820,6 @@ export async function chooseFolderBinding({ entrypoint = "" } = {}) {
   return data;
 }
 
-/// The one-line pairing instruction, unchanged from what `openApp()` and the
-/// status line already show for an unpaired local app -- reused verbatim by
-/// `latex.js`'s "a package the bundle index says the mirror does not have"
-/// failure message so a reader sees the exact same call to action wherever
-/// it appears.
-export function pairingInstruction() {
-  return instructionsFor("unauthorized");
-}
-
-function launchLink(url) {
-  if (typeof window === "undefined" || !window.document?.body) {
-    throw named("Unreachable", "Open LibrePaper in a browser to launch the companion.");
-  }
-  const frame = window.document.createElement("iframe");
-  frame.hidden = true;
-  frame.src = url;
-  window.document.body.appendChild(frame);
-  const timer = setTimeout(() => frame.remove(), 3000);
-  timer.unref?.();
-}
-
-export function openApp() {
-  try { launchLink("librepaper://launch"); }
-  catch { /* Keep this synchronous compatibility entrypoint usable without a DOM. */ }
-  return instructionsFor(currentStatus.state === "connected" ? "connected" : "unauthorized");
-}
-
 // -------------------------------------------------------------- multipart job bodies
 
 function formOf(jobRequest, files) {
@@ -818,7 +876,7 @@ function quartoPolicy(kind, policy) {
 // today for both.
 function jobEnvelope({ job, manifest, inputRevision }) {
   return {
-    protocol: QUARTO_PROTOCOL,
+    protocol: 2,
     kind: "quarto",
     project: current.project,
     origin: current.origin,
@@ -1013,22 +1071,8 @@ async function pollJob(id, token, signal) {
   }
 }
 
-async function submitAndAwait(pairing, form, signal, { retryPost = false } = {}) {
-  let submitted;
-  try {
-    submitted = await send("POST", "jobs", { token: pairing.token, formBody: form }).then((r) => r.json());
-  } catch (error) {
-    // A lost response is the only safe case for retrying a render.  Reuse the
-    // same FormData object: its idempotency key and complete project snapshot
-    // are identical, so the bridge can return the existing job instead of
-    // executing user code a second time.
-    if (!retryPost || error?.name !== "Unreachable" || signal?.aborted) throw error;
-    await deps.wait(250, signal);
-    if (signal?.aborted) {
-      throw named("Canceled", "Canceled");
-    }
-    submitted = await send("POST", "jobs", { token: pairing.token, formBody: form }).then((r) => r.json());
-  }
+async function submitAndAwait(pairing, form, signal) {
+  const submitted = await send("POST", "jobs", { token: pairing.token, formBody: form }).then((r) => r.json());
   let status;
   try {
     status = await pollJob(submitted.id, pairing.token, signal);
@@ -1094,19 +1138,6 @@ export async function runBuild({ job = {}, tree, builder, engine, output = "pdf"
   const log = await fetchVerifiedOutput(id, pairing.token, "log", jobStatus);
   onProgress?.({ done: 1, total: 1, scope: `local ${builder}` });
   return { ok: jobStatus.status === "done" && jobStatus.exit === 0 && artifact != null, kind: output, pdf: output === "pdf" ? artifact : null, artifact, log: log ? new TextDecoder().decode(log) : "", diagnostics: jobStatus.diagnostics || [], exit: jobStatus.exit, error: jobStatus.error, provenance: { ...(jobStatus.provenance || {}), backend: "local", builder } };
-}
-
-// Quarto has a separate capability and job contract from TeX.  The bridge
-// receives a structured request and a project snapshot; it never receives a
-// command line, executable path, or arbitrary environment from the browser.
-export async function runQuarto({ job = {}, tree, options = {} }, { signal, onProgress, onLog } = {}) {
-  const pairing = requirePairing();
-  const stableKey = String(job.idempotencyKey || job.id || newRequestKey(deps.now()));
-  const stableJob = { ...job, id: job.id || stableKey, idempotencyKey: job.idempotencyKey || stableKey };
-  onProgress?.({ done: 0, total: 1, scope: "local Quarto render", stage: "preparing" });
-  const form = await buildQuartoForm({ job: stableJob, tree, options });
-  const { id, status } = await submitAndAwait(pairing, form, signal, { retryPost: true });
-  return collectQuartoOutputs(id, status, pairing, options, { onProgress, onLog }, job);
 }
 
 async function collectQuartoOutputs(id, status, pairing, options, { onProgress, onLog } = {}, job = {}) {
@@ -1306,7 +1337,7 @@ function kindHeaderOf(response) {
 export async function localPreviewPage(id, { etag } = {}) {
   const pairing = requirePairing();
   const addr = address();
-  const url = `${addr}librepaper/local/v1/previews/${encodeURIComponent(id)}/page`;
+  const url = `${addr}${LOCAL_BASE}previews/${encodeURIComponent(id)}/page`;
   const headers = { Accept: "text/html, application/pdf", Authorization: `Bearer ${pairing.token}` };
   if (etag) headers["If-None-Match"] = etag;
   let response;
@@ -1413,4 +1444,16 @@ export async function stopAssistant({ connection, conversation } = {}) {
     jsonBody: { connection: String(connection || ""), conversation: String(conversation || "") },
   });
   return response.json();
+}
+
+// -------------------------------------------------------------- module init
+//
+// Only in a real browser: a Node test drives `intakeFragment` directly
+// through `_testing`, with its own injected `location`/`storage`, rather than
+// relying on this running at import time.
+if (typeof window !== "undefined") {
+  intakeFragment();
+  window.addEventListener("storage", (event) => {
+    if (event.key === ADDRESS_KEY) addressChanged();
+  });
 }

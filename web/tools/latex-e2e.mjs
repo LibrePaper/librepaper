@@ -122,8 +122,8 @@ async function main() {
       try { code = JSON.parse(readFileSync(join(config, "librepaper", "local", "service.json"), "utf8")).code; } catch {}
       return Boolean(code);
     }, 30000);
-    const health = await (await fetch("http://127.0.0.1:8763/librepaper/local/v1/health")).json();
-    const connected = await fetch("http://127.0.0.1:8763/librepaper/local/v1/connect", {
+    const health = await (await fetch("http://127.0.0.1:8763/librepaper/local/health")).json();
+    const connected = await fetch("http://127.0.0.1:8763/librepaper/local/connect", {
       method: "POST", headers: { "content-type": "application/json", origin: BASE },
       body: JSON.stringify({ origin: BASE, project: published.slug, code }),
     });

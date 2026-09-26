@@ -7,7 +7,7 @@ import { loadRunes } from "../helpers/runes.mjs";
 const { createLocalPreview } = await loadRunes(
   new URL("../../src/lib/reader/local-preview.svelte.js", import.meta.url),
 );
-import { _testing, configure, probe, quartoRequest, runQuarto, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../../src/lib/companion/client.js";
+import { _testing, configure, probe, quartoRequest, runBuild, syncWorkspace, startLocalPreview, localPreviewPage, localPreviewStatus, stopLocalPreview, calepinAvailable } from "../../src/lib/companion/client.js";
 import { parameterSha256 } from "../../src/lib/engines/quarto.js";
 
 const digest = "a".repeat(64);
@@ -79,11 +79,9 @@ const manifest = new TextEncoder().encode(JSON.stringify({
 }));
 const manifestSha = await sha(manifest);
 const posts = [];
-let firstPost = true;
 setup(async (url, init = {}) => {
   if (init.method === "POST" && url.endsWith("/jobs")) {
     posts.push(await init.body.get("job").text());
-    if (firstPost) { firstPost = false; throw new TypeError("connection lost after admission"); }
     return response({ id: "qjob-1", status: "queued" }, 202);
   }
   if (init.method === "GET" && url.endsWith("/jobs/qjob-1")) {
@@ -96,26 +94,26 @@ setup(async (url, init = {}) => {
   if (url.endsWith("/files/artifact.html")) return response(artifact);
   throw new Error(`unexpected local request: ${init.method || "GET"} ${url}`);
 });
-const first = await runQuarto({
-  job: { id: "stable-job", binding: "binding-1" },
+// A one-shot Quarto build now travels through the same `runBuild` path as
+// every other builder; the Quarto-specific envelope (`runQuarto`, deleted
+// with the pairing cutover) had no live caller left, so what remains worth
+// checking here is the bundle collection `runBuild` still relies on.
+const first = await runBuild({
+  job: { snapshot: "rev-1", generation: 0 },
   tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" }, assets: {} },
-  options: { inputRevision: "rev-1", inputDigest: digest, executionMode:"isolated-snapshot", dataInputs:["data/local.csv"] },
+  builder: "quarto", output: "html",
 });
 assert.equal(first.ok, true);
 assert.equal(first.kind, "html");
 assert.equal(first.publish.blobs.length, 1);
-assert.equal(posts.length, 2, "a lost POST response is retried once");
-assert.equal(posts[0], posts[1], "retry reuses the exact logical multipart request");
-const retriedJob = JSON.parse(posts[0]);
-assert.equal(retriedJob.quarto.idempotency_key, "stable-job");
-assert.equal(retriedJob.quarto.shared_tree_sha256, digest);
-assert.equal(retriedJob.quarto.execution_mode, "isolated-snapshot");
-assert.equal(retriedJob.quarto.shared_inventory_complete, true);
-assert.deepEqual(retriedJob.quarto.data_inputs, ["data/local.csv"]);
-assert.equal(retriedJob.quarto.render_scope, "document");
+assert.equal(JSON.parse(posts[0]).builder, "quarto");
+console.log("quarto-local: a build job through runBuild collects a Quarto bundle into a publishable artifact");
+
+// The website/book project rejection lives in `buildQuartoForm`, still real
+// behavior reached through a live preview.
 await assert.rejects(
-  runQuarto({
-    job: { id: "project-job", binding: "binding-1" },
+  startLocalPreview({
+    job: { binding: "binding-1" },
     tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } },
     options: { renderScope: "project" },
   }),
@@ -137,12 +135,12 @@ setup(async (url, init = {}) => {
   if (url.endsWith("/files/artifact.html")) return response(artifact);
   throw new Error(`unexpected local request: ${url}`);
 });
-const rejected = await runQuarto({ job: { id: "job-missing", binding: "binding-1" }, tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" } }, options: { inputDigest: digest } });
+const rejected = await runBuild({ job: { snapshot: "s", generation: 0 }, tree: { main: "paper.qmd", texts: { "paper.qmd": "# Paper" }, assets: {} }, builder: "quarto", output: "html" });
 assert.equal(rejected.ok, false);
 assert.equal(rejected.publish, null);
 assert.match(rejected.error, /missing required output/);
 
-console.log("quarto-local: strict request validation, idempotent POST retry, and required closure passed");
+console.log("quarto-local: request validation and required-output closure passed");
 
 const previewCalls = [];
 setup(async (url, init) => {
@@ -187,7 +185,7 @@ console.log("quarto-local: protocol 2 preview retains its bound entrypoint inven
 let syncRequest = null;
 setup(async (url, init = {}) => {
   assert.equal(init.method, "PUT");
-  assert.ok(url.endsWith("/librepaper/local/v1/workspace"));
+  assert.ok(url.endsWith("/librepaper/local/workspace"));
   assert.equal(init.headers.Authorization, "Bearer token");
   syncRequest = init;
   return response({ synced: 2 });

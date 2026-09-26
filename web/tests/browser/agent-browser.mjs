@@ -49,7 +49,7 @@ window.localAgents = [
 window.fetch = async (url, init) => {
   const pathname = new URL(url, location.href).pathname;
   if (new URL(url, location.href).origin === 'http://127.0.0.1:8763') {
-    const route = pathname.replace('/librepaper/local/v1/', '');
+    const route = pathname.replace('/librepaper/local/', '');
     const body = init?.body ? JSON.parse(init.body) : {};
     window.localCalls.push({route, body});
     if (route === 'health') return Response.json({service:'librepaper-local',protocol:[2],version:'test',instance:'one'});
@@ -509,6 +509,11 @@ try {
   await page.evaluate("window.remount()");
   await page.evaluate('document.querySelector("#agent-tab-connection").click()');
   await until("pairing prompt", () => page.evaluate(`Boolean(document.querySelector('.setup-code'))`), 3000);
+  // Connect is the primary action; the typed code stays below it as the
+  // fallback for a computer without the link handler installed.
+  const requirementButtons = await page.evaluate(`Array.from(document.querySelectorAll('.setup-requirement button')).map(b=>b.textContent.trim())`);
+  assert.ok(requirementButtons.includes("Connect"), `no Connect button: ${requirementButtons}`);
+  assert.ok(requirementButtons.indexOf("Connect") < requirementButtons.indexOf("Pair"), "Connect comes before the code fallback");
   await page.evaluate(`(()=>{const field=document.querySelector('.setup-code');field.value='424242';field.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await page.evaluate(`Array.from(document.querySelectorAll('.setup-requirement button')).find(b=>b.textContent.trim()==='Pair').click()`);
   await until("refused code is reported in place", () => page.evaluate(
