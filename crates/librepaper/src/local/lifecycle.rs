@@ -191,12 +191,6 @@ pub fn connection_target(raw: &str, port: u16) -> Result<Target, String> {
     let base = format!("http://127.0.0.1:{port}{BASE_PATH}");
     match link.host_str() {
         Some("launch") => launch_target(&link, port),
-        Some("manage") => {
-            if link.query().is_some() {
-                return Err("Unknown companion action.".into());
-            }
-            Ok(Target::Open(format!("{base}/manage")))
-        }
         Some("connect") => connect_target(&link, &base),
         _ => Err("Unknown companion action.".into()),
     }
@@ -475,10 +469,6 @@ mod tests {
                 "accepted {invalid}"
             );
         }
-        assert_eq!(
-            connection_target("librepaper://manage", 8763).expect("manage"),
-            Target::Open(format!("http://127.0.0.1:8763{BASE_PATH}/manage"))
-        );
     }
 
     #[test]

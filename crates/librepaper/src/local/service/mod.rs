@@ -433,7 +433,6 @@ struct PendingPair {
 
 pub(super) struct Inner {
     pub(super) state_home: PathBuf,
-    management_nonce: String,
     folder_dialog: Mutex<()>,
     instance: String,
     port: u16,
@@ -516,7 +515,6 @@ impl LocalService {
         }
         let inner = Arc::new(Inner {
             state_home: state_home.to_path_buf(),
-            management_nonce: pairing::random_token(),
             folder_dialog: Mutex::new(()),
             instance,
             port,
@@ -961,7 +959,7 @@ async fn handle(
 
     let local_page = matches!(
         route.as_deref(),
-        Some("pair") | Some("pair/request") | Some("manage")
+        Some("pair") | Some("pair/request")
     );
     let allow_origin = !local_page
         && origin
@@ -980,17 +978,6 @@ async fn dispatch(
     request: Request<Body>,
 ) -> Reply {
     match segs {
-        ["manage"] if *method == Method::GET || *method == Method::POST => {
-            super::management::handle(
-                &inner.state_home,
-                inner.port,
-                &inner.instance,
-                &inner.management_nonce,
-                inner.runner.as_ref(),
-                request,
-            )
-            .await
-        }
         ["health"] if *method == Method::GET => handle_health(inner),
         ["connect"] if *method == Method::POST => handle_connect(inner, peer, request).await,
         ["connect", "claim"] if *method == Method::POST => {
@@ -1032,6 +1019,31 @@ async fn dispatch(
         }
         ["capabilities", "rescan"] if *method == Method::POST => {
             handle_capabilities(inner, headers, origin, true).await
+        }
+        // Settings routes (bearer authenticated)
+        ["settings"] if *method == Method::GET => {
+            handle_settings(inner, headers, origin).await
+        }
+        ["presets"] if *method == Method::POST => {
+            handle_presets_create(inner, headers, origin, request).await
+        }
+        ["presets", preset_id] if *method == Method::DELETE => {
+            handle_presets_delete(inner, headers, origin, preset_id).await
+        }
+        ["presets", preset_id, "grant"] if *method == Method::POST => {
+            handle_presets_grant(inner, headers, origin, preset_id, request).await
+        }
+        ["grants", grant_id] if *method == Method::DELETE => {
+            handle_grants_delete(inner, headers, origin, grant_id).await
+        }
+        ["startup"] if *method == Method::POST => {
+            handle_startup(inner, headers, origin, request).await
+        }
+        ["quit"] if *method == Method::POST => {
+            handle_quit(inner, headers, origin).await
+        }
+        ["approve"] if *method == Method::POST => {
+            handle_approve(inner, peer, request).await
         }
         ["zotero", "search"] if *method == Method::GET => {
             handle_zotero_search(inner, headers, origin, request).await
@@ -1328,6 +1340,452 @@ async fn handle_capabilities(
     write_json(200, &response)
 }
 
+/* ------------------------------------------------------ Settings routes */
+
+async fn handle_settings(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
+    let (origin, project) = match authenticate_bearer(inner, headers, origin) {
+        Ok(p) => (origin.unwrap_or_default().to_string(), p),
+        Err(response) => return response,
+    };
+
+    let pairing = super::pairing::PairingStore::new(&inner.state_home, None);
+    let standalone = pairing
+        .read_service()
+        .is_some_and(|state| state.instance == inner.instance && state.pid == std::process::id());
+
+    let presets = super::presets::PresetStore::new(&inner.state_home);
+    let preset_list: Vec<_> = presets
+        .list()
+        .into_iter()
+        .map(|summary| {
+            let full = presets.get(&summary.id).unwrap_or_else(|| {
+                super::presets::Preset {
+                    id: summary.id.clone(),
+                    display_name: summary.display_name.clone(),
+                    base_adapter: summary.base_adapter.clone(),
+                    source_formats: summary.source_formats.clone(),
+                    options: Default::default(),
+                    option_schema: Default::default(),
+                    environment: Default::default(),
+                    wrapper: None,
+                    semantic_revision: summary.semantic_revision,
+                }
+            });
+            json!({
+                "id": summary.id,
+                "display_name": summary.display_name,
+                "base_adapter": summary.base_adapter,
+                "source_formats": summary.source_formats,
+                "options": full.options,
+                "environment_keys": full.environment.keys().collect::<Vec<_>>(),
+                "wrapper": full.wrapper,
+            })
+        })
+        .collect();
+
+    let grants = match presets.grants() {
+        Ok(all_grants) => all_grants
+            .into_iter()
+            .filter(|g| g.origin == origin && g.project == project)
+            .map(|g| {
+                json!({
+                    "id": g.id,
+                    "preset": g.preset_id,
+                    "entrypoint": g.entrypoint,
+                    "mode": g.workspace,
+                })
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+
+    write_json(
+        200,
+        &json!({
+            "version": crate::VERSION,
+            "standalone": standalone,
+            "startup": if standalone { pairing.read_service().map(|_| true) } else { None },
+            "presets": preset_list,
+            "grants": grants,
+        }),
+    )
+}
+
+#[derive(serde::Deserialize)]
+struct PresetCreateRequest {
+    name: String,
+    adapter: String,
+    #[serde(default)]
+    formats: Vec<String>,
+    #[serde(default)]
+    options: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    environment: std::collections::BTreeMap<String, String>,
+    wrapper: Option<String>,
+}
+
+async fn handle_presets_create(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    let (origin, _project) = match authenticate_bearer(inner, headers, origin) {
+        Ok(p) => (origin.unwrap_or_default().to_string(), p),
+        Err(response) => return response,
+    };
+
+    let body = match read_json_body::<PresetCreateRequest>(request).await {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+
+    let env_display = body
+        .environment
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let approval = super::approval::Approval {
+        title: "Create build preset".to_string(),
+        message: format!(
+            "Origin: {}\nAdapter: {}\nFormats: {}\nOptions: {}\nEnvironment:\n{}\nWrapper: {}",
+            origin,
+            body.adapter,
+            body.formats.join(", "),
+            if body.options.is_empty() {
+                "(none)".to_string()
+            } else {
+                body.options
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
+            env_display,
+            body.wrapper.as_deref().unwrap_or("(none)")
+        ),
+        allow_label: "Create".to_string(),
+    };
+
+    match super::approval::ask(&approval).await {
+        super::approval::Decision::Allowed => {
+            let preset = super::presets::Preset {
+                id: String::new(),
+                display_name: body.name,
+                base_adapter: body.adapter,
+                source_formats: body.formats.into_iter().collect(),
+                options: body.options,
+                option_schema: Default::default(),
+                environment: body.environment,
+                wrapper: body.wrapper.filter(|s| !s.trim().is_empty()),
+                semantic_revision: 0,
+            };
+
+            let presets = super::presets::PresetStore::new(&inner.state_home);
+            match presets.create(preset) {
+                Ok(created) => write_json(
+                    201,
+                    &json!({
+                        "id": created.id,
+                        "display_name": created.display_name,
+                    }),
+                ),
+                Err(error) => write_json(400, &json!({"error": error})),
+            }
+        }
+        super::approval::Decision::Denied => {
+            write_json(
+                403,
+                &json!({"error": "Not approved on this computer."}),
+            )
+        }
+        super::approval::Decision::Unavailable(msg) => {
+            write_json(503, &json!({"error": msg}))
+        }
+    }
+}
+
+async fn handle_presets_delete(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    preset_id: &str,
+) -> Reply {
+    let origin = match authenticate_bearer(inner, headers, origin) {
+        Ok(_) => origin.unwrap_or_default().to_string(),
+        Err(response) => return response,
+    };
+
+    let presets = super::presets::PresetStore::new(&inner.state_home);
+    let preset = match presets.get(preset_id) {
+        Some(p) => p,
+        None => return write_json(404, &json!({"error": "preset not found"})),
+    };
+
+    let approval = super::approval::Approval {
+        title: "Delete build preset".to_string(),
+        message: format!(
+            "Origin: {}\nPreset: {}",
+            origin, preset.display_name
+        ),
+        allow_label: "Delete".to_string(),
+    };
+
+    match super::approval::ask(&approval).await {
+        super::approval::Decision::Allowed => {
+            match presets.remove(preset_id) {
+                Ok(()) => write_json(200, &json!({})),
+                Err(error) => write_json(400, &json!({"error": error})),
+            }
+        }
+        super::approval::Decision::Denied => {
+            write_json(
+                403,
+                &json!({"error": "Not approved on this computer."}),
+            )
+        }
+        super::approval::Decision::Unavailable(msg) => {
+            write_json(503, &json!({"error": msg}))
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct GrantRequest {
+    entrypoint: String,
+}
+
+async fn handle_presets_grant(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    preset_id: &str,
+    request: Request<Body>,
+) -> Reply {
+    let (origin, project) = match authenticate_bearer(inner, headers, origin) {
+        Ok(p) => (origin.unwrap_or_default().to_string(), p),
+        Err(response) => return response,
+    };
+
+    let body = match read_json_body::<GrantRequest>(request).await {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+
+    let presets = super::presets::PresetStore::new(&inner.state_home);
+    let preset = match presets.get(preset_id) {
+        Some(p) => p,
+        None => return write_json(404, &json!({"error": "preset not found"})),
+    };
+
+    let preset_details = format!(
+        "Adapter: {}\nFormats: {}\nOptions: {}\nEnvironment keys: {}\nWrapper: {}",
+        preset.base_adapter,
+        preset.source_formats.iter().cloned().collect::<Vec<_>>().join(", "),
+        if preset.options.is_empty() {
+            "(none)".to_string()
+        } else {
+            preset
+                .options
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+        preset
+            .environment
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        preset.wrapper.as_deref().unwrap_or("(none)")
+    );
+
+    let approval = super::approval::Approval {
+        title: "Allow preset build".to_string(),
+        message: format!(
+            "Origin: {}\nDocument: {}\nPreset: {}\nEntrypoint: {}\n{}",
+            origin, project, preset.display_name, body.entrypoint, preset_details
+        ),
+        allow_label: "Allow".to_string(),
+    };
+
+    match super::approval::ask(&approval).await {
+        super::approval::Decision::Allowed => {
+            match presets.grant(
+                &origin,
+                &project,
+                preset_id,
+                super::presets::WorkspaceMode::Snapshot,
+                super::presets::Operation::Build,
+                &body.entrypoint,
+                crate::util::now_unix(),
+            ) {
+                Ok(_) => write_json(200, &json!({})),
+                Err(error) => write_json(400, &json!({"error": error})),
+            }
+        }
+        super::approval::Decision::Denied => {
+            write_json(
+                403,
+                &json!({"error": "Not approved on this computer."}),
+            )
+        }
+        super::approval::Decision::Unavailable(msg) => {
+            write_json(503, &json!({"error": msg}))
+        }
+    }
+}
+
+async fn handle_grants_delete(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    grant_id: &str,
+) -> Reply {
+    let (origin, project) = match authenticate_bearer(inner, headers, origin) {
+        Ok(p) => (origin.unwrap_or_default().to_string(), p),
+        Err(response) => return response,
+    };
+
+    let presets = super::presets::PresetStore::new(&inner.state_home);
+    let grants = match presets.grants() {
+        Ok(g) => g,
+        Err(_) => return write_json(404, &json!({"error": "grant not found"})),
+    };
+
+    if !grants.iter().any(|g| g.id == grant_id && g.origin == origin && g.project == project) {
+        return write_json(404, &json!({"error": "grant not found"}));
+    }
+
+    match presets.revoke(grant_id) {
+        Ok(true) => write_json(200, &json!({})),
+        _ => write_json(404, &json!({"error": "grant not found"})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct StartupRequest {
+    enabled: bool,
+}
+
+async fn handle_startup(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    request: Request<Body>,
+) -> Reply {
+    let _origin = match authenticate_bearer(inner, headers, origin) {
+        Ok(_) => origin.unwrap_or_default().to_string(),
+        Err(response) => return response,
+    };
+
+    let pairing = super::pairing::PairingStore::new(&inner.state_home, None);
+    let is_standalone = pairing
+        .read_service()
+        .is_some_and(|state| state.instance == inner.instance && state.pid == std::process::id());
+
+    if !is_standalone {
+        return write_json(409, &json!({"error": "startup can only be set on standalone installations"}));
+    }
+
+    let body = match read_json_body::<StartupRequest>(request).await {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+
+    let approval = super::approval::Approval {
+        title: "Startup setting".to_string(),
+        message: if body.enabled {
+            "Start companion at login?".to_string()
+        } else {
+            "Disable startup at login?".to_string()
+        },
+        allow_label: if body.enabled { "Start at login" } else { "Disable" }.to_string(),
+    };
+
+    match super::approval::ask(&approval).await {
+        super::approval::Decision::Allowed => {
+            match super::lifecycle::set_startup(body.enabled) {
+                Ok(()) => write_json(200, &json!({})),
+                Err(error) => write_json(500, &json!({"error": error})),
+            }
+        }
+        super::approval::Decision::Denied => {
+            write_json(403, &json!({"error": "Not approved on this computer."}))
+        }
+        super::approval::Decision::Unavailable(msg) => {
+            write_json(503, &json!({"error": msg}))
+        }
+    }
+}
+
+async fn handle_quit(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
+    let _origin = match authenticate_bearer(inner, headers, origin) {
+        Ok(_) => origin.unwrap_or_default().to_string(),
+        Err(response) => return response,
+    };
+
+    let pairing = super::pairing::PairingStore::new(&inner.state_home, None);
+    let is_standalone = pairing
+        .read_service()
+        .is_some_and(|state| state.instance == inner.instance && state.pid == std::process::id());
+
+    if !is_standalone {
+        return write_json(409, &json!({"error": "quit can only be called on standalone installations"}));
+    }
+
+    let approval = super::approval::Approval {
+        title: "Quit companion".to_string(),
+        message: "Stop the companion app?".to_string(),
+        allow_label: "Quit".to_string(),
+    };
+
+    match super::approval::ask(&approval).await {
+        super::approval::Decision::Allowed => {
+            match super::lifecycle::request_stop(&inner.state_home) {
+                Ok(()) => write_json(200, &json!({})),
+                Err(error) => write_json(500, &json!({"error": error})),
+            }
+        }
+        super::approval::Decision::Denied => {
+            write_json(403, &json!({"error": "Not approved on this computer."}))
+        }
+        super::approval::Decision::Unavailable(msg) => {
+            write_json(503, &json!({"error": msg}))
+        }
+    }
+}
+
+async fn handle_approve(inner: &Inner, peer: SocketAddr, request: Request<Body>) -> Reply {
+    if !peer.ip().is_loopback() {
+        return write_json(403, &json!({"error": "loopback only"}));
+    }
+
+    let has_origin = request.headers().get("origin").is_some();
+    if has_origin {
+        return write_json(403, &json!({"error": "loopback only"}));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ApprovalRequest {
+        code: String,
+    }
+
+    let body = match read_json_body::<ApprovalRequest>(request).await {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+
+    if super::approval::approve_code(&body.code) {
+        write_json(200, &json!({}))
+    } else {
+        write_json(404, &json!({"error": "code not found"}))
+    }
+}
+
 struct MultipartUpload {
     metadata: String,
     files: Vec<(String, Vec<u8>)>,
@@ -1434,6 +1892,24 @@ async fn read_multipart_upload(
 /// The one gate every route but `health`/`connect` shares.
 #[allow(clippy::result_large_err)] // as `server.rs`'s `read_upload`: the error is a response
 pub(super) fn authenticate(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+) -> Result<String, Reply> {
+    let Some(origin) = origin else {
+        return Err(write_json(403, &json!({"error": "missing Origin header"})));
+    };
+    let token = bearer_token(headers).unwrap_or_default();
+    if token.is_empty() {
+        return Err(write_json(401, &json!({"error": "missing bearer token"})));
+    }
+    match inner.pairing.authenticate(origin, &token) {
+        Some(project) => Ok(project),
+        None => Err(write_json(401, &json!({"error": "unauthorized"}))),
+    }
+}
+
+fn authenticate_bearer(
     inner: &Inner,
     headers: &HeaderMap,
     origin: Option<&str>,

@@ -59,7 +59,7 @@ fn admin_help_lists_the_admin_commands() {
 #[test]
 fn local_help_lists_the_local_commands() {
     let help = help_of(&["local", "--help"]);
-    for command in ["start", "stop", "status", "settings", "agent"] {
+    for command in ["start", "stop", "status", "approve", "disconnect", "agent"] {
         assert!(
             lists_command(&help, command),
             "local command {command:?} is absent from local help:\n{help}"
@@ -68,9 +68,9 @@ fn local_help_lists_the_local_commands() {
     for removed_command in [
         "launch",
         "manage",
+        "settings",
         "doctor",
         "connections",
-        "disconnect",
         "startup",
         "preset",
     ] {
