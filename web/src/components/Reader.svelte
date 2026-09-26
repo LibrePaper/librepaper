@@ -3608,18 +3608,6 @@
          rather than the frame's, so it belongs with the rest of what this bar
          says about the document. -->
     {@render previewStatusControl()}
-    <!-- What the keyboard does, one press away from the bar rather than a
-         page of documentation away. It is in the bar because that is where a
-         person looks for what the window can do, and it opens the same table
-         `?` opens, which is the same list the keys themselves are wired
-         from.
-         Not on a phone, which has no keyboard to explain and no room in the
-         bar to explain it in. The table is still there for a phone with a
-         keyboard attached: `?` opens it. -->
-    <div class="desktop-workspace-menu">
-      <IconButton icon="keyboard" label="Keyboard shortcuts" tone="plain"
-                  onclick={() => void runCommand("shortcuts")} />
-    </div>
     <div class="connection-settings" role="group" aria-label="Connection settings">
       <button class="connection-pill local-pill" type="button" onclick={() => openSettings("local")}
               aria-label={`Local companion ${localAppStatus.state === "connected" ? "connected" : "disconnected"}; open local settings`}
@@ -3808,6 +3796,8 @@
           label={`Layout: ${ARRANGEMENTS[layout].says}. Switch to ${ARRANGEMENTS[ARRANGEMENTS[layout].next].says}`}
           onclick={cycleLayout} />
       {/if}
+      <IconButton icon="keyboard" label="Keyboard shortcuts" tone="plain"
+                  onclick={() => void runCommand("shortcuts")} />
     {/snippet}
   </Sidebar>
 

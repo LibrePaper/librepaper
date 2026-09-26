@@ -34,9 +34,9 @@
     settled = false,
     // What sits at the foot of the rail, under the places: the controls that
     // belong to the page rather than to any one panel. The reader puts its
-    // layout switch and a way home there; the landing page has no home to go
-    // to and puts only help. A snippet rather than a list of flags, because
-    // this component has no business knowing what a layout is.
+    // layout switch, shortcuts and way home there; the landing page has no
+    // home to go to and puts only help. A snippet rather than a list of flags,
+    // because this component has no business knowing what a layout is.
     controls,
     // Whether the column can be dragged wider, and whether a panel is even
     // expected. The landing page's rail is navigation with nothing beside it,
@@ -98,7 +98,7 @@
   .sidebar.collapsed { flex: 0 0 var(--librepaper-activity); }
   .sidebar-activity { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--spacing); width: var(--librepaper-activity); min-height: 0; padding-block: calc(var(--spacing) * 3); border-right: 1px solid var(--color-pane-edge); }
   .activity-bottom { display: flex; flex: none; flex-direction: column; align-items: center; gap: var(--spacing); margin-top: auto; }
-  /* Eight panels and three workspace controls are taller than a short window,
+  /* Eight panels and four workspace controls are taller than a short window,
      and the column clips what it cannot fit -- so the panels scroll and the
      controls below them stay put, rather than the home and help buttons
      disappearing off the bottom of a laptop in landscape with no sign that
