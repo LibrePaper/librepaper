@@ -305,7 +305,9 @@ try {
     await until(role + " chosen", () => page.evaluate(`Boolean(document.querySelector('.access-detail[data-access=${role}] button'))`), 1000);
     await page.evaluate(`document.querySelector('.access-detail[data-access=${role}] button').click()`);
   };
-  await startWith("commenter");
+  // The session below exercises editing tasks (tighten, fix), which only an
+  // editor may run: a suggestion is an editor's track change.
+  await startWith("editor");
   await until("assistant started", () => page.evaluate("window.localCalls.some(call=>call.route==='assistant')"), 2000);
   const started = await page.evaluate("window.localCalls.find(call=>call.route==='assistant')");
   assert.equal(started.body.agent, "claude");
@@ -313,7 +315,7 @@ try {
   assert.equal(started.body.connection, undefined, "the assistant call carries no separate connection name");
   // The link crosses loopback exactly once, in the assistant call itself.
   // Everything afterwards refers to the document by conversation and link.
-  assert.match(started.body.link, /#k=commenter/);
+  assert.match(started.body.link, /#k=editor/);
   // There is no separate route to register a connection; the sidebar never
   // calls one.
   assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='connections')"), false);
