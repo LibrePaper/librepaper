@@ -637,7 +637,7 @@
                tabs of content, which in a narrow column is off screen: an
                invisible error reads as a dead button. -->
           {#if pairProblem}<span class="panel-meta" role="alert">{pairProblem}</span>{/if}
-          <details class="setup-address">
+          <details class="setup-code-fallback">
             <summary class="panel-meta">Or enter the code the app printed</summary>
             <div class="setup-actions">
               <label class="label"><span class="sr-only">Pairing code</span>
@@ -929,8 +929,8 @@
   .setup-code { max-width:8rem; font-variant-numeric:tabular-nums; letter-spacing:.2em; }
   /* Folded away by default: the port is right for almost everyone, and an
      address field offered up front reads as a decision to make. */
-  .setup-address { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
-  .setup-address summary { cursor:pointer; }
+  .setup-address, .setup-code-fallback { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
+  .setup-address summary, .setup-code-fallback summary { cursor:pointer; }
   .setup-address button { align-self:flex-start; }
   /* Agent and access are two settings, each with one value in force, so each
      is a select. A row of buttons had to signal the chosen one and the signal

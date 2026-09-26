@@ -165,9 +165,9 @@ pub struct Capabilities {
     /// involved; `note` distinguishes disabled, absent, and incompatible.
     #[serde(default)]
     pub zotero: Tool,
-    /// Adapter-oriented capability records. The `tools` field is kept for
-    /// browser settings page troubleshooting; it shows tool availability at a
-    /// glance without requiring the new builder interface.
+    /// Adapter-oriented capability records, the schema builds are chosen
+    /// from. `tools` above is the flat per-tool view the settings page shows
+    /// as a troubleshooting table.
     #[serde(default)]
     pub builders: Vec<BuilderCapability>,
 }
@@ -391,8 +391,8 @@ impl WorkspaceRequest {
     }
 }
 
-/// Version 2 structured build request. It has all required fields: `builder`,
-/// `entrypoint`, and `engine`.
+/// The build request as it arrives on the wire, validated once here and then
+/// normalised into [`JobRequest`].
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BuildRequestV2 {
