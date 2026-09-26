@@ -165,10 +165,9 @@ impl Server {
         who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
-        _peer: SocketAddr,
         args: &Value,
         key: &OperationKey,
-        _digest: &str,
+        digest: &str,
     ) -> Result<Value, Failure> {
         if !who.at_least(Role::Commenter) {
             return Err(Failure::new(
@@ -176,13 +175,9 @@ impl Server {
                 "comment access is required",
             ));
         }
+        // `accept` and `label` are routed to `mcp_accept`/`mcp_label` in
+        // operations.rs before this function is ever called.
         let action = args["action"].as_str().unwrap_or_default();
-        if matches!(action, "accept" | "label") {
-            return Err(Failure::new(
-                "unsupported",
-                "this annotation action requires the ordinary editor workflow",
-            ));
-        }
         if !matches!(
             action,
             "create" | "reply" | "resolve" | "delete" | "refine" | "reject"
@@ -309,7 +304,7 @@ impl Server {
             .transpose()?;
         let named_comment = || comment_uuid_value.expect("validated above");
         let operation_receipt =
-            self.mcp_operation_receipt(actor, key, _digest, "document_comment", room.document_id)?;
+            self.mcp_operation_receipt(actor, key, digest, "document_comment", room.document_id)?;
 
         let result = match action {
             "create" => {
