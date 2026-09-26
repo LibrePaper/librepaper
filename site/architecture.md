@@ -132,15 +132,12 @@ rules are pinned by tests.
 
 ### Size ceilings
 
-A deployment bounds two separate things. `--document-size-limit` caps the
-combined source text, 4 MB by default and 8 MB at most. What must be durably
-saved is the CRDT state behind that text, which carries the edit history as
-well, and has its own ceiling. A heavily rewritten paper can reach the second
-without approaching the first, so a refusal for that reason says which limit was
-hit and that history counts toward it.
-
-A configuration whose limits could accept work the deployment could not durably
-save is refused at startup rather than at the first save.
+Each document's log (its source plus edit history) is capped by `log_quota_mb` in the
+advanced configuration file, 32 MB by default. History counts toward this limit, so a
+heavily rewritten paper can reach it with little visible text. When a document reaches
+this limit, new edits are refused with the message "this document's log is at its quota
+and is waiting to be compacted". A configuration whose limits could accept work the
+deployment cannot durably save is refused at startup rather than at the first save.
 
 ## Storage and history
 
@@ -228,13 +225,12 @@ abandoned one cannot leak capacity.
 
 Storage limits are set per deployment and enforced at several scopes:
 
-| Flag | Caps |
+| Limit | Caps |
 | --- | --- |
-| `--document-size-limit` | combined source text of one document |
-| `--document-assets-limit` | combined input assets of one document |
 | `--publisher-storage-limit` | everything one publisher holds |
 | `--deployment-storage-limit` | the whole deployment |
 | `--publisher-upload-limit` | uploads one publisher may make in an hour |
+| `log_quota_mb` (advanced config) | per-document log size, in megabytes |
 
 Owners can set a softer history budget, retention density and warning thresholds
 of their own, but these cannot raise the deployment's hard limits. Material
@@ -245,7 +241,7 @@ the document's last edit, and zero means never.
 
 ### Backups
 
-`librepaper admin backup create` writes a recovery point covering both stores
+`librepaper admin backup` writes a recovery point covering both stores
 together, a snapshot-consistent Postgres dump plus the immutable objects it
 references, and verifies it. `restore` restores one into a fresh directory.
 

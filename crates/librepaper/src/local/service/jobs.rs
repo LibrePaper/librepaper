@@ -836,9 +836,6 @@ mod preset_admission_tests {
             403
         );
 
-        let mut updated = store.get("paper-preset").unwrap();
-        updated.display_name = "Paper 2".into();
-        store.update("paper-preset", updated).unwrap();
         store
             .grant(
                 "https://example.test",
@@ -850,9 +847,8 @@ mod preset_admission_tests {
                 2,
             )
             .unwrap();
-        assert_eq!(admitted.preset_revision, Some(1));
-        let mut fresh = job();
-        pin_preset_revision(&mut fresh, &store).unwrap();
-        assert_eq!(fresh.preset_revision, Some(2));
+        let mut regranted = job();
+        pin_preset_revision(&mut regranted, &store).unwrap();
+        assert_eq!(regranted.preset_revision, Some(1));
     }
 }

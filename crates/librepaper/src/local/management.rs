@@ -35,6 +35,66 @@ fn form(nonce: &str, action: &str, label: &str, extra: &str) -> String {
     )
 }
 
+fn lines(field: Option<&String>) -> Vec<String> {
+    field
+        .map(|s| {
+            s.lines()
+                .filter_map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn preset_from_args(
+    name: String,
+    adapter: String,
+    formats: Vec<String>,
+    options: Vec<String>,
+    environment: Vec<String>,
+    wrapper: Option<String>,
+) -> super::presets::Preset {
+    use std::collections::BTreeMap;
+    fn pairs(values: Vec<String>) -> BTreeMap<String, String> {
+        values
+            .into_iter()
+            .filter_map(|value| {
+                value
+                    .split_once('=')
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            })
+            .collect()
+    }
+    fn options_from_schema(values: &[String]) -> BTreeMap<String, super::presets::OptionType> {
+        values
+            .iter()
+            .filter_map(|value| {
+                value
+                    .split_once('=')
+                    .map(|(key, _)| (key.to_owned(), super::presets::OptionType::String))
+            })
+            .collect()
+    }
+    let option_schema = options_from_schema(&options);
+    super::presets::Preset {
+        id: String::new(),
+        display_name: name,
+        base_adapter: adapter,
+        source_formats: formats.into_iter().collect(),
+        options: pairs(options),
+        option_schema,
+        environment: pairs(environment),
+        wrapper,
+        semantic_revision: 0,
+    }
+}
+
 pub(super) async fn handle(
     state_home: &Path,
     port: u16,
@@ -87,6 +147,49 @@ pub(super) async fn handle(
             );
         }
         match fields.get("action").map(String::as_str) {
+            Some("startup-enable" | "startup-disable") if standalone => {
+                let enabled = fields["action"] == "startup-enable";
+                notice = match super::lifecycle::set_startup(enabled) {
+                    Ok(()) if enabled => "The companion will start when you log in.".into(),
+                    Ok(()) => "Automatic startup is disabled.".into(),
+                    Err(error) => error,
+                };
+            }
+            Some("preset-create") => {
+                let (Some(name), Some(adapter)) = (fields.get("name"), fields.get("adapter"))
+                else {
+                    return page(
+                        StatusCode::BAD_REQUEST,
+                        "Specify the preset name and adapter.",
+                    );
+                };
+                let formats = fields
+                    .get("formats")
+                    .map(|s| {
+                        s.split(',')
+                            .map(|f| f.trim().to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let options = lines(fields.get("options"));
+                let environment = lines(fields.get("environment"));
+                let wrapper = fields
+                    .get("wrapper")
+                    .cloned()
+                    .filter(|s| !s.trim().is_empty());
+                let preset = preset_from_args(
+                    name.clone(),
+                    adapter.clone(),
+                    formats,
+                    options,
+                    environment,
+                    wrapper,
+                );
+                notice = match presets.create(preset) {
+                    Ok(created) => format!("Created preset {}", created.id),
+                    Err(error) => error,
+                };
+            }
             Some("preset-remove") => {
                 let Some(id) = fields.get("preset") else {
                     return page(StatusCode::BAD_REQUEST, "Choose a preset to remove.");
@@ -135,14 +238,6 @@ pub(super) async fn handle(
                 };
                 store.revoke_one(origin, project);
                 notice = "Document disconnected. New local jobs require permission again.".into();
-            }
-            Some("startup-enable" | "startup-disable") if standalone => {
-                let enabled = fields["action"] == "startup-enable";
-                notice = match super::lifecycle::set_startup(enabled) {
-                    Ok(()) if enabled => "The companion will start when you log in.".into(),
-                    Ok(()) => "Automatic startup is disabled.".into(),
-                    Err(error) => error,
-                };
             }
             Some("quit") if standalone => {
                 return match super::lifecycle::request_stop(state_home) {
@@ -243,9 +338,14 @@ pub(super) async fn handle(
         }
         Err(error) => preset_grants = format!("<li>{}</li>", escape(&error)),
     }
-    let preset_section = format!(
-        "<h2>Local build presets</h2><p>Define or update presets using <code>librepaper local preset</code> on this computer.</p><ul>{preset_rows}</ul><h3>Preset permissions</h3><ul>{preset_grants}</ul>"
+    let create_preset_form = format!(
+        "<h3>Create a preset</h3><form method=\"post\" action=\"{BASE_PATH}/manage\"><input type=\"hidden\" name=\"nonce\" value=\"{}\"><input type=\"hidden\" name=\"action\" value=\"preset-create\"><label>Name <input name=\"name\" required></label> <label>Adapter <input name=\"adapter\" required placeholder=\"typst\"></label> <label>Formats <input name=\"formats\" placeholder=\"typst, markdown\"></label> <p><label>Options (KEY=VALUE, one per line)<br><textarea name=\"options\" rows=\"4\" placeholder=\"engine=lualatex\"></textarea></label></p><p><label>Environment (KEY=VALUE, one per line)<br><textarea name=\"environment\" rows=\"4\"></textarea></label></p><label>Wrapper (optional) <input name=\"wrapper\"></label><button>Create preset</button></form>",
+        escape(nonce)
     );
+    let preset_section = format!(
+        "<h2>Local build presets</h2>{create_preset_form}<h3>Configured presets</h3><ul>{preset_rows}</ul><h3>Preset permissions</h3><ul>{preset_grants}</ul>"
+    );
+
     let lifecycle = if standalone {
         format!(
             "<h2>Background app</h2><div class=\"actions\">{}{}{}</div>",
@@ -258,12 +358,8 @@ pub(super) async fn handle(
     };
     let details = serde_json::to_string_pretty(&caps).unwrap_or_default();
     let body = format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>LibrePaper companion</title><style>body{{font:16px/1.5 system-ui,sans-serif;max-width:850px;margin:32px auto;padding:0 20px}}h1,h2{{line-height:1.2}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:8px;border-bottom:1px solid #ddd}}button{{font:inherit;padding:6px 12px;cursor:pointer}}.actions{{display:flex;gap:12px;flex-wrap:wrap}}li{{margin:12px 0}}li form{{display:inline}}pre{{overflow:auto}}.notice{{font-weight:bold}}</style></head><body><h1>LibrePaper companion</h1><p>Running on this computer · version {}</p><p class=\"notice\">{}</p><h2>Local tools</h2><table><thead><tr><th>Tool</th><th>Status</th><th>Version or next step</th></tr></thead><tbody>{tool_rows}</tbody></table>{}<h2>Connected documents</h2><ul>{grants}</ul>{lifecycle}<h2>Updates</h2><p><a href=\"https://github.com/LibrePaper/librepaper/releases/latest\" target=\"_blank\" rel=\"noopener noreferrer\">Download the latest companion</a>. Installing an update preserves document permissions.</p><details><summary>Details</summary><pre>{}</pre></details></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>LibrePaper companion</title><style>body{{font:16px/1.5 system-ui,sans-serif;max-width:850px;margin:32px auto;padding:0 20px}}h1,h2{{line-height:1.2}}h3{{margin-top:24px}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:8px;border-bottom:1px solid #ddd}}button{{font:inherit;padding:6px 12px;cursor:pointer}}.actions{{display:flex;gap:12px;flex-wrap:wrap}}li{{margin:12px 0}}li form{{display:inline}}form{{margin:16px 0}}textarea{{width:100%;font-family:monospace;font-size:13px}}input{{margin:0 8px 0 0;padding:4px 8px}}.notice{{font-weight:bold}}</style></head><body><h1>LibrePaper companion</h1><p>Running on this computer · version {}</p><p class=\"notice\">{}</p><h2>Local tools</h2><table><thead><tr><th>Tool</th><th>Status</th><th>Version or next step</th></tr></thead><tbody>{tool_rows}</tbody></table>{}<h2>Connected documents</h2><ul>{grants}</ul>{preset_section}{lifecycle}<h2>Updates</h2><p><a href=\"https://github.com/LibrePaper/librepaper/releases/latest\" target=\"_blank\" rel=\"noopener noreferrer\">Download the latest companion</a>. Installing an update preserves document permissions.</p><details><summary>Details</summary><pre>{}</pre></details></body></html>",
         escape(crate::VERSION), escape(&notice), form(nonce, "rescan", "Check tools again", ""), escape(&details)
-    );
-    let body = body.replace(
-        "<h2>Connected documents</h2>",
-        &format!("{preset_section}<h2>Connected documents</h2>"),
     );
     page(StatusCode::OK, &body)
 }

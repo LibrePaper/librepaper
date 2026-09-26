@@ -170,8 +170,7 @@ JOIN documents d ON d.id = v.document_id WHERE v.author_account_id = $1;
 SELECT document_id, role, created_at FROM grants WHERE account_id = $1;
 ```
 
-The files of an owned project come out of `librepaper export DOCUMENT
---project`, and its comments out of `librepaper export DOCUMENT`.
+The files of an owned project come out of `librepaper export DOCUMENT DIR`.
 
 **Erasure on request** is the same operation the settings page performs, so
 the simplest route is to ask the person to run it themselves. A request made

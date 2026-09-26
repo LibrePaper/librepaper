@@ -10,7 +10,7 @@ Installers verify downloaded archives against the release checksums, register `l
 startup opt-in. The macOS app is ad-hoc signed; public distribution with Gatekeeper trust
 requires Developer ID signing and notarization in the release environment.
 
-The desktop settings entry invokes `librepaper local manage`.
+The desktop settings entry invokes `librepaper local settings`.
 
 On Linux, save `install-companion.sh` and run `sh install-companion.sh` once.
 The installer adds a LibrePaper companion entry to the application menu.

@@ -68,7 +68,7 @@ signature_sql="SELECT jsonb_build_object(
 )::text"
 psql "$LIBREPAPER_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 -c "$signature_sql" >"$work/source-signature"
 
-"$LIBREPAPER_BIN" admin backup create \
+"$LIBREPAPER_BIN" admin backup \
   --database-url "$LIBREPAPER_SOURCE_URL" \
   --data-directory "$work/source-data" \
   --id frugal-recovery-drill "$work/backup"
@@ -114,7 +114,7 @@ restore_tables=$(psql "$LIBREPAPER_RESTORE_URL" -XAt -v ON_ERROR_STOP=1 -c \
   "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r'")
 [[ "$restore_tables" == 0 ]] || { echo "refusing nonempty restore database ($restore_tables public tables)" >&2; exit 2; }
 rmdir "$work/restored-data"
-"$LIBREPAPER_BIN" admin backup restore \
+"$LIBREPAPER_BIN" admin restore \
   --database-url "$LIBREPAPER_RESTORE_URL" \
   --data-directory "$work/restored-data" \
   "$work/backup" "$work/restored-data"

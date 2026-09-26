@@ -256,12 +256,7 @@ impl Agent {
 
         let server = McpServer::Stdio(
             McpServerStdio::new("librepaper", executable)
-                .args(vec![
-                    "agent".into(),
-                    "mcp".into(),
-                    "--connection".into(),
-                    connection.into(),
-                ])
+                .args(vec!["mcp".into(), "--connection".into(), connection.into()])
                 .env(
                     environment
                         .iter()

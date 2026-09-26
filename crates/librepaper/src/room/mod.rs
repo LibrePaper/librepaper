@@ -63,7 +63,7 @@ pub(crate) mod proposals;
 pub(crate) mod resolve;
 pub(crate) mod text;
 
-pub use annotation::{AnchorStatus, CommentTarget, OriginalAnchor};
+pub use annotation::OriginalAnchor;
 pub use command::Command as RoomCommand;
 pub use comments::*;
 pub use error::WriteError;

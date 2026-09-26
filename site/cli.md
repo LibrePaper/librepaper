@@ -4,10 +4,9 @@ title: "The CLI"
 
 LibrePaper is a server and a web app, and the command line is deliberately
 small. Four commands are for a person at a terminal: `login`, `logout`,
-`list`, and `export`. Three namespaces are for particular jobs: `admin` runs
-a deployment, `local` runs the companion on your own computer, and `agent`
-connects an agent to a document. Publishing, review, and document management
-happen in the browser.
+`list`, and `export`. Two namespaces are for particular jobs: `admin` runs
+a deployment and `local` runs the companion on your own computer.
+Publishing, review, and document management happen in the browser.
 
 Every command that talks to a deployment needs to know which one. Pass it with
 a flag, for example against the sandbox the developers maintain:
@@ -73,38 +72,35 @@ librepaper list
 
 ## Export
 
-Export a document's comments, as W3C Web Annotation JSON-LD by default or as
-Markdown, using the short ID from `list` (a full slug also works):
+Export a complete independent copy of the document using the short ID from
+`list` (a full slug also works):
 
 ```sh
-librepaper export c9k --format markdown --output comments.md
+librepaper export c9k ./paper-copy
 ```
 
-`--format response` writes a reply template listing each comment with room
-under it, and `--since <checkpoint>` limits that to comments made after a given
-moment:
-
-```sh
-librepaper export c9k --format response --since 4f2a91c --output response.md
-```
-
-`--project` takes a complete independent copy of the document instead:
-
-```sh
-librepaper export c9k --project --output ./paper-copy
-```
-
-An exported project is a snapshot. Editing it does not update the hosted
+The export is an immutable snapshot. Editing it does not update the hosted
 document. `--key` reads as the holder of a share link rather than as your
-sign-in, for a document you can open but do not own.
+sign-in, for a document you can open but do not own:
+
+```sh
+librepaper export c9k ./paper-copy --key https://librepaper.example/s/abc123
+```
+
+`--at` exports the project as it stood at a given label instead of its current
+state. Requesting a historical export waits for the server to build its archive:
+
+```sh
+librepaper export c9k ./paper-copy --at "Draft v1"
+```
 
 ## Operating a deployment
 
 `librepaper admin serve` is the server, and its flags are the deployment's
 whole configuration; `librepaper admin serve --help` lists them and the
 [hosting page](host.html) explains them. `admin seed` replaces a data
-directory's contents with the example documents, and `admin backup create`
-and `admin backup restore` take and restore a verified recovery point.
+directory's contents with the example documents, and `admin backup`
+and `admin restore` take and restore a verified recovery point.
 Operational state is one loopback request away:
 
 ```sh
@@ -118,22 +114,20 @@ the jobs the browser cannot do: Quarto renders, and Typst to self-contained
 HTML. It also holds the agents the document sidebar can drive.
 
 ```sh
-librepaper local launch           # run in the background
-librepaper local start            # run in a terminal; prints a fallback pairing code
-librepaper local stop             # stop the background companion
-librepaper local startup enable   # optional: start when you log in
-librepaper local startup disable
-librepaper local status           # exits non-zero when nothing is answering
-librepaper local doctor           # which tools it found, and whether it can confine them
-librepaper local manage           # open the companion's settings page
-librepaper local disconnect --all # revoke every paired site
+librepaper local start       # start it in the background, or reuse the one running
+librepaper local stop        # stop it
+librepaper local status      # address, pairing code, pairings, tools found, agent connections
+librepaper local settings    # open its settings page in a browser
+librepaper local agent list  # the agents it offers; `agent add <id> -- <command>` teaches it another
 ```
 
 `start --code` fixes the pairing code instead of rotating it per run, which is
 what `make deploy` uses so that connecting an agent in development does not
-mean reading a fresh code off a terminal after every restart. `--tool-path`
-(colon-separated directories) points `start` and `doctor` at typst, pandoc and
-calepin they would not otherwise find.
+mean reading a fresh code off a terminal after every restart. `--foreground`
+runs the companion in this process instead of the background, and
+`--at-login` also starts it every time you log in. `--tool-path`
+(colon-separated directories) points `start` and `status` at typst, pandoc or
+calepin installed where they would not otherwise find them.
 
 A Quarto or Typst document renders in a workspace of its own, written from the
 files the browser sends. To render against a project folder on your disk
@@ -141,14 +135,9 @@ instead, because it keeps data the document does not share, choose the folder
 under *Settings*, *Local app*, *Project folder* in the browser. The companion
 never receives a path from a website; the choice is made on this machine.
 
-Build presets are how the companion offers a configured adapter, wrapper, or
-environment to the browser's build settings without any of it crossing the
-wire:
-
-```sh
-librepaper local preset list
-librepaper local preset create NAME ADAPTER --format typst --option engine=lualatex
-```
+Everything else is on the settings page that `librepaper local settings`
+opens: build presets and their permissions, paired websites, and whether
+the companion starts when you log in.
 
 ## Agents
 
@@ -156,7 +145,6 @@ Which agents this computer offers the document sidebar:
 
 ```sh
 librepaper local agent list       # add <id> -- <command> teaches it another
-librepaper local agent remove <id>
 ```
 
 Agents are driven from the document sidebar only; there is no command line

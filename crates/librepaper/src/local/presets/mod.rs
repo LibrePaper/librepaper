@@ -152,25 +152,6 @@ impl PresetStore {
         Ok(preset)
     }
 
-    /// Replace the semantic contents of a preset.  Grants are not silently
-    /// updated: their old revision remains, so `resolve_grant` rejects them.
-    pub fn update(&self, id: &str, mut next: Preset) -> Result<Preset, String> {
-        validate_preset(&next)?;
-        let _lock = self.lock()?;
-        let mut state = self.load()?;
-        let previous = state.presets.get(id).ok_or("preset not found")?;
-        if next.id != id {
-            return Err("preset id cannot change".into());
-        }
-        next.semantic_revision = previous
-            .semantic_revision
-            .checked_add(1)
-            .ok_or("preset revision exhausted")?;
-        state.presets.insert(id.to_owned(), next.clone());
-        self.save(&state)?;
-        Ok(next)
-    }
-
     pub fn remove(&self, id: &str) -> Result<(), String> {
         let _lock = self.lock()?;
         let mut state = self.load()?;
@@ -226,57 +207,6 @@ impl PresetStore {
             self.save(&state)?;
         }
         Ok(removed)
-    }
-
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn resolve_grant(
-        &self,
-        grant_id: &str,
-        origin: &str,
-        project: &str,
-        preset_id: &str,
-        workspace: WorkspaceMode,
-        operation: Operation,
-        entrypoint: &str,
-    ) -> Result<PresetGrant, String> {
-        self.resolve_for(
-            grant_id, origin, project, preset_id, workspace, operation, entrypoint,
-        )
-        .map(|(grant, _)| grant)
-    }
-
-    /// Resolve authorization and the local command definition together at
-    /// admission time. Callers must use this immediately before spawning;
-    /// editing or revoking either record then denies a subsequent request.
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn resolve_for(
-        &self,
-        grant_id: &str,
-        origin: &str,
-        project: &str,
-        preset_id: &str,
-        workspace: WorkspaceMode,
-        operation: Operation,
-        entrypoint: &str,
-    ) -> Result<(PresetGrant, Preset), String> {
-        let state = self.load()?;
-        let grant = state.grants.get(grant_id).ok_or("preset grant not found")?;
-        let preset = state.presets.get(preset_id).ok_or("preset not found")?;
-        if grant.origin != origin
-            || grant.project != project
-            || grant.preset_id != preset_id
-            || grant.workspace != workspace
-            || grant.operation != operation
-            || grant.entrypoint != entrypoint
-        {
-            return Err("preset grant scope does not match request".into());
-        }
-        if grant.semantic_revision != preset.semantic_revision {
-            return Err("preset changed; grant must be renewed".into());
-        }
-        Ok((grant.clone(), preset.clone()))
     }
 
     /// Resolve the current grant for a request that carries only the preset
@@ -528,38 +458,6 @@ mod tests {
             wrapper: None,
             semantic_revision: 0,
         }
-    }
-
-    #[test]
-    fn editing_a_preset_invalidates_its_grant() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let store = PresetStore::new(root.path());
-        let created = store.create(preset()).expect("create");
-        let grant = store
-            .grant(
-                "https://example.test",
-                "paper",
-                &created.id,
-                WorkspaceMode::Snapshot,
-                Operation::Build,
-                "paper.tex",
-                1,
-            )
-            .expect("grant");
-        let mut edited = created.clone();
-        edited.display_name = "changed".into();
-        store.update(&created.id, edited).expect("update");
-        assert!(store
-            .resolve_grant(
-                &grant.id,
-                "https://example.test",
-                "paper",
-                &created.id,
-                WorkspaceMode::Snapshot,
-                Operation::Build,
-                "paper.tex"
-            )
-            .is_err());
     }
 
     #[test]

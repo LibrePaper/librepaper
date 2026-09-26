@@ -421,37 +421,5 @@ mod tests {
             "failed"
         );
         assert!(!root.path().join("revoked/project/spawn-marker").exists());
-        let mut updated = store.get("test").unwrap();
-        updated.display_name = "Updated".into();
-        let updated = store.update("test", updated).unwrap();
-        assert_eq!(updated.semantic_revision, 2);
-        store
-            .grant(
-                "https://example.test",
-                "p",
-                "test",
-                presets::WorkspaceMode::Snapshot,
-                presets::Operation::Build,
-                "main.typ",
-                2,
-            )
-            .unwrap();
-        let changed_after_admission = run(
-            request.clone(),
-            stage("changed-after-admission"),
-            tools,
-            rx,
-            tx,
-            &store,
-        )
-        .await;
-        assert_eq!(changed_after_admission.status.status, "failed");
-        assert_eq!(changed_after_admission.status.snapshot, "s");
-        assert_eq!(changed_after_admission.status.generation, 1);
-        assert!(changed_after_admission.files.is_empty());
-        assert!(!root
-            .path()
-            .join("changed-after-admission/project/spawn-marker")
-            .exists());
     }
 }

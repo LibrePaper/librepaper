@@ -37,13 +37,12 @@ const site = "https://papers.example";
 const returnUrl = `${site}/docs/paper`;
 const state = async () => JSON.parse(await readFile(join(env.XDG_STATE_HOME, "librepaper/local/service.json"), "utf8"));
 try {
-  await cli("launch", "--port", String(port));
+  await cli("start", "--port", String(port));
   const first = await state();
-  await cli("launch", "--port", String(port));
-  assert.equal((await state()).pid, first.pid, "launch is idempotent");
-  await cli("startup", "enable");
-  assert.match(await readFile(join(env.XDG_CONFIG_HOME, "autostart/librepaper-local.desktop"), "utf8"), /local launch/);
-  await cli("startup", "disable");
+  await cli("start", "--port", String(port));
+  assert.equal((await state()).pid, first.pid, "start is idempotent");
+  await cli("start", "--port", String(port), "--at-login");
+  assert.match(await readFile(join(env.XDG_CONFIG_HOME, "autostart/librepaper-local.desktop"), "utf8"), /local start/);
 
   const request = randomBytes(24).toString("base64url");
   const verifier = randomBytes(32).toString("base64url");
@@ -92,17 +91,17 @@ try {
   assert.equal(forbidden.status, 403);
 
   // `librepaper local restart` was removed in the CLI cull; `stop` then
-  // `launch` is the replacement sequence and exercises the same instance
+  // `start` is the replacement sequence and exercises the same instance
   // change and permission persistence.
   await cli("stop");
-  await cli("launch", "--port", String(port));
+  await cli("start", "--port", String(port));
   assert.notEqual((await state()).instance, first.instance);
   assert.equal((await caps()).status, 200, "permission survives restart");
   await cli("stop");
   await assert.rejects(fetch(`${base}/health`));
   await assert.rejects(cli("open", "https://evil.example/"));
-  await assert.rejects(fetch(`${base}/health`), "invalid link does not launch companion");
-  console.log("companion-lifecycle: background launch, startup, deep-link consent, management isolation, restart and stop passed");
+  await assert.rejects(fetch(`${base}/health`), "invalid link does not start companion");
+  console.log("companion-lifecycle: background start, at-login, deep-link consent, management isolation, restart and stop passed");
 } finally {
   await cli("stop").catch(() => {});
   await rm(root, { recursive: true, force: true });

@@ -27,7 +27,7 @@ Bring your own model is literal here: the agent you picked is already installed 
 The document reaches the session as an MCP server handed to the agent over ACP. The model uses `document_read`, `document_propose`, `document_apply`, `document_comment` and `document_result`; document links and tokens are never MCP tool arguments. The runner starts its agent with a command that names a private connection rather than a link:
 
 ```
-librepaper agent mcp --connection runner-3f7a9c1b2d0e4f5a6b7c
+librepaper mcp --connection runner-3f7a9c1b2d0e4f5a6b7c
 ```
 
 This computer holds what that name means, so a document key never reaches a command line, a shell history or a transcript, and a rotated link is repaired in one place. The record is written by the runner itself, not typed by hand; disconnecting the site from the app drops it, along with everything else that origin registered.

@@ -69,7 +69,7 @@ jobs:
             if [ "${{ matrix.os }}" = "macos-latest" ]; then
               cp "target/${{ matrix.target }}/release/librepaper" dist/librepaper-companion-binary
               osacompile -o "dist/LibrePaper Companion.app" -e 'on run
-                do shell script quoted form of ((POSIX path of (path to me)) & "Contents/Resources/librepaper") & " local manage"
+                do shell script quoted form of ((POSIX path of (path to me)) & "Contents/Resources/librepaper") & " local settings"
               end run
               on open location theURL
                 do shell script quoted form of ((POSIX path of (path to me)) & "Contents/Resources/librepaper") & " local open " & quoted form of theURL

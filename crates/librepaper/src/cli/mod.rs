@@ -34,27 +34,30 @@ To sign in from this terminal:
     librepaper login"
 )]
 pub(crate) struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+/// Deployment credentials: server URL and optional authentication token.
+#[derive(Args, Clone, Debug)]
+pub(crate) struct Deployment {
     /// Deployment to talk to
     #[arg(
         long,
-        global = true,
         env = "LIBREPAPER_SERVER",
         value_name = "URL",
         help_heading = "Deployment"
     )]
-    server: Option<String>,
+    pub(crate) server: Option<String>,
     /// A credential to use instead of the one `login` stored
     #[arg(
         long,
-        global = true,
         env = "LIBREPAPER_TOKEN",
         value_name = "TOKEN",
         hide_env_values = true,
         help_heading = "Deployment"
     )]
-    token: Option<String>,
-    #[command(subcommand)]
-    command: Command,
+    pub(crate) token: Option<String>,
 }
 
 /// The options that describe a running service rather than where it runs:
@@ -105,7 +108,8 @@ pub(crate) struct ServiceFlags {
     #[arg(
         long = "simulate-activity",
         env = "LIBREPAPER_SIMULATE_ACTIVITY",
-        value_name = "DAYS"
+        value_name = "DAYS",
+        hide = true
     )]
     simulate_activity: Option<u32>,
     /// Delete documents after this duration, for example 24h or 30d (default never)
@@ -262,36 +266,16 @@ struct AdvancedConfigFile {
     backup: crate::config::BackupPolicyOverrides,
 }
 
-fn backup_policy_from_config(path: Option<&std::path::Path>) -> crate::config::BackupPolicy {
-    let Some(path) = path else {
-        return crate::config::BackupPolicy::default();
-    };
-    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
-        die(format!(
-            "could not read advanced configuration {}: {error}",
-            path.display()
-        ))
-    });
-    let file: AdvancedConfigFile = serde_yaml::from_str(&text).unwrap_or_else(|error| {
-        die(format!(
-            "could not parse advanced configuration {}: {error}",
-            path.display()
-        ))
-    });
-    let mut config = crate::config::Configuration::default();
-    config
-        .apply_backup_overrides(file.backup)
-        .unwrap_or_else(|error| die(format!("invalid advanced backup policy: {error}")));
-    config.backup
-}
-
 // The nested `AdminCommand::Serve` flags determine this enum's size too; clap
 // parses one command once, so an extra indirection would not improve runtime.
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum Command {
     /// Sign in through a deployment, in a browser
-    Login,
+    Login {
+        #[command(flatten)]
+        deployment: Deployment,
+    },
     /// Forget the stored sign-in
     Logout,
     /// Deployment administration and operator commands.
@@ -300,47 +284,39 @@ pub(crate) enum Command {
         command: AdminCommand,
     },
     /// List your documents
-    List,
-    /// Export comments or an independent copy of the complete project
+    List {
+        #[command(flatten)]
+        deployment: Deployment,
+    },
+    /// Export a complete independent copy of the project
     Export {
         /// A full slug, or one of the short handles `list` prints
         id: String,
-        /// jsonld (W3C Web Annotation), markdown, or response
-        #[arg(long, value_name = "FORMAT")]
-        format: Option<String>,
-        /// Only comments made at or after this label, by id (or a prefix of
-        /// it) or by the name somebody gave it
-        #[arg(long, value_name = "LABEL")]
-        since: Option<String>,
-        /// With --project, export the project as it stood at this label
-        /// instead of its live state; requesting a historical export waits
-        /// for the server to build it (SPEC-server-is-a-log §8.5)
+        /// A new directory to create
+        dir: String,
+        /// Export the project as it stood at this label instead of its live
+        /// state; requesting a historical export waits for the server to build
+        /// it (SPEC-server-is-a-log §8.5)
         #[arg(long, value_name = "LABEL")]
         at: Option<String>,
-        /// File for comments, or a new directory for a project
-        #[arg(long, value_name = "PATH")]
-        output: Option<String>,
         /// A share link, or the key from one: read as its holder rather than
         /// as your sign-in
         #[arg(long, value_name = "LINK")]
         key: Option<String>,
-        /// Export every project source file and owned binary asset instead
-        /// of the comments
-        #[arg(long)]
-        project: bool,
+        #[command(flatten)]
+        deployment: Deployment,
     },
+    // The two commands the sidebar assistant spawns. Neither is listed,
+    // because nobody types them; see `agent`.
+    #[command(hide = true)]
+    Mcp(agent::McpArgs),
+    #[command(hide = true)]
+    RunAgent(agent::RunAgentArgs),
     /// The local app: run native tools on this machine for the jobs the
     /// browser editor cannot do itself
     Local {
         #[command(subcommand)]
         command: LocalCommand,
-    },
-    /// What the local app spawns to run the in-document assistant. Nothing
-    /// under it is typed by a person, so it is not listed.
-    #[command(hide = true)]
-    Agent {
-        #[command(subcommand)]
-        command: agent::AgentCommand,
     },
 }
 
@@ -389,10 +365,24 @@ pub(crate) enum AdminCommand {
         #[arg(long, value_name = "DAYS")]
         simulate_activity: Option<u32>,
     },
-    /// Create or restore verified deployment backups.
+    /// Create a snapshot-consistent PostgreSQL and immutable-object recovery point.
     Backup {
-        #[command(subcommand)]
-        command: BackupCommand,
+        #[command(flatten)]
+        storage: StorageFlags,
+        /// New directory to create
+        directory: String,
+        /// Identifier to record for this backup; generated when omitted
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+    },
+    /// Restore a verified backup into a new deployment directory.
+    Restore {
+        #[command(flatten)]
+        storage: StorageFlags,
+        /// Backup directory to read
+        backup: String,
+        /// New deployment directory to create
+        directory: String,
     },
     /// Delete objects no catalogue row names any more.
     ///
@@ -417,46 +407,14 @@ pub(crate) enum AdminCommand {
     },
 }
 
-#[derive(Subcommand)]
-pub(crate) enum BackupCommand {
-    /// Create a snapshot-consistent PostgreSQL and immutable-object recovery point.
-    Create {
-        #[command(flatten)]
-        storage: StorageFlags,
-        #[arg(
-            long = "config",
-            env = "LIBREPAPER_CONFIG",
-            value_name = "PATH",
-            hide = true
-        )]
-        advanced_config: Option<PathBuf>,
-        /// New directory to create
-        directory: String,
-        /// Identifier to record for this backup; generated when omitted
-        #[arg(long, value_name = "ID")]
-        id: Option<String>,
-    },
-    /// Restore a verified backup into a new deployment directory.
-    Restore {
-        #[command(flatten)]
-        storage: StorageFlags,
-        /// Backup directory to read
-        backup: String,
-        /// New deployment directory to create
-        directory: String,
-    },
-}
-
 /// `librepaper local <command>`. See `crate::local::cli`.
 #[derive(Subcommand, Clone, Debug)]
 pub enum LocalCommand {
-    /// Manage companion-local build presets and their execution grants.
-    Preset {
-        #[command(subcommand)]
-        command: LocalPresetCommand,
-    },
-    /// Start the loopback service and print its pairing code
+    /// Start the companion (in the background by default, or in this process with --foreground)
     Start {
+        /// Run in the foreground of this process instead of in the background
+        #[arg(long)]
+        foreground: bool,
         /// Port to listen on (default 8763)
         #[arg(
             long,
@@ -474,7 +432,7 @@ pub enum LocalCommand {
             hide_env_values = true
         )]
         code: Option<String>,
-        /// Extra directories to search for typst, pandoc and calepin, colon-separated
+        /// Extra directories searched before PATH for typst, pandoc and calepin, colon-separated
         #[arg(
             long,
             value_name = "DIRS",
@@ -482,14 +440,12 @@ pub enum LocalCommand {
             value_delimiter = ':'
         )]
         tool_path: Vec<PathBuf>,
-    },
-    /// Start the local companion in the background.
-    Launch {
-        #[arg(long, default_value_t = 0, hide_default_value = true)]
-        port: u16,
+        /// Also start the companion every time you log in; turn it off on the settings page
+        #[arg(long)]
+        at_login: bool,
     },
     /// Open the local companion settings, starting it if needed.
-    Manage,
+    Settings,
     /// Ask a running companion to stop cleanly.
     Stop,
     /// Launch the companion and open a validated local connection link.
@@ -497,21 +453,9 @@ pub enum LocalCommand {
     /// listed because nobody types it.
     #[command(hide = true)]
     Open { url: String },
-    /// Enable or disable starting the companion when you log in.
-    Startup {
-        #[command(subcommand)]
-        command: StartupCommand,
-    },
-    /// Whether the service is running, its address, code and pairings
-    Status,
-    /// Teach this computer an ACP agent the sidebar can drive
-    Agent {
-        #[command(subcommand)]
-        command: LocalAgentCommand,
-    },
-    /// Which native tools were found, and what is missing
-    Doctor {
-        /// Extra directories to search for typst, pandoc and calepin, colon-separated
+    /// Whether the service is running, its address, code and pairings, and which native tools were found
+    Status {
+        /// Extra directories searched before PATH for typst, pandoc and calepin, colon-separated
         #[arg(
             long,
             value_name = "DIRS",
@@ -520,62 +464,10 @@ pub enum LocalCommand {
         )]
         tool_path: Vec<PathBuf>,
     },
-    /// Revoke pairings
-    Disconnect {
-        /// The browser origin to revoke; all of them with --all
-        #[arg(long, value_name = "URL")]
-        origin: Option<String>,
-        #[arg(long)]
-        all: bool,
-    },
-}
-
-#[derive(Subcommand, Clone, Debug)]
-pub enum LocalPresetCommand {
-    /// List safe metadata for locally configured presets.
-    List,
-    /// Create a local preset. Options and environment are key=value pairs.
-    Create {
-        name: String,
-        adapter: String,
-        #[arg(long, value_delimiter = ',')]
-        format: Vec<String>,
-        #[arg(long = "option", value_name = "KEY=VALUE")]
-        options: Vec<String>,
-        #[arg(long = "env", value_name = "KEY=VALUE")]
-        environment: Vec<String>,
-        #[arg(long)]
-        wrapper: Option<String>,
-    },
-    /// Update a local preset; all grants become invalid.
-    Update {
-        id: String,
-        name: String,
-        adapter: String,
-        #[arg(long, value_delimiter = ',')]
-        format: Vec<String>,
-        #[arg(long = "option", value_name = "KEY=VALUE")]
-        options: Vec<String>,
-        #[arg(long = "env", value_name = "KEY=VALUE")]
-        environment: Vec<String>,
-        #[arg(long)]
-        wrapper: Option<String>,
-    },
-    Remove {
-        id: String,
-    },
-    Grant {
-        preset: String,
-        origin: String,
-        project: String,
-        entrypoint: String,
-        #[arg(long, default_value = "snapshot")]
-        workspace: String,
-        #[arg(long, default_value = "build")]
-        operation: String,
-    },
-    Revoke {
-        id: String,
+    /// Teach this computer an ACP agent the sidebar can drive
+    Agent {
+        #[command(subcommand)]
+        command: LocalAgentCommand,
     },
 }
 
@@ -602,12 +494,6 @@ pub enum LocalAgentCommand {
     },
 }
 
-#[derive(Subcommand, Clone, Debug)]
-pub enum StartupCommand {
-    Enable,
-    Disable,
-}
-
 /// The arguments `librepaper local` hands to `crate::local::run`.
 #[derive(Clone, Debug)]
 pub struct LocalArgs {
@@ -617,58 +503,39 @@ pub struct LocalArgs {
 #[tokio::main]
 pub async fn main() {
     let cli = Cli::parse();
-    let server = cli.server;
-    let token = cli.token;
     match cli.command {
-        Command::Login => login(server).await,
+        Command::Login { deployment } => login(deployment.server).await,
         Command::Logout => logout(),
         Command::Admin { command } => run_admin(command).await,
-        Command::List => list_documents(server, token).await,
+        Command::List { deployment } => list_documents(deployment.server, deployment.token).await,
         Command::Export {
             id,
-            format,
-            since,
+            dir,
             at,
-            output,
             key,
-            project,
+            deployment,
         } => {
-            if project {
-                if format.is_some() || since.is_some() {
-                    die("--format and --since apply only to comments export");
-                }
-                let output = output.unwrap_or_else(|| die("--project requires --output DIRECTORY"));
-                crate::cli::export::export_project(
-                    &id,
-                    server,
-                    token,
-                    &output,
-                    key.unwrap_or_default(),
-                    at.unwrap_or_default(),
-                )
-                .await
-            } else {
-                if at.is_some() {
-                    die("--at applies only to --project export");
-                }
-                crate::cli::export::export_document(
-                    &id,
-                    server,
-                    token,
-                    format.as_deref().unwrap_or("jsonld"),
-                    output.unwrap_or_default(),
-                    since.unwrap_or_default(),
-                    key.unwrap_or_default(),
-                )
-                .await
-            }
+            crate::cli::export::export_project(
+                &id,
+                deployment.server,
+                deployment.token,
+                &dir,
+                key.unwrap_or_default(),
+                at.unwrap_or_default(),
+            )
+            .await
         }
-        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
-        Command::Agent { command } => {
-            if let Err(err) = agent::run(command, server, token).await {
+        Command::Mcp(args) => {
+            if let Err(err) = agent::run_mcp(args).await {
                 die(err);
             }
         }
+        Command::RunAgent(args) => {
+            if let Err(err) = agent::run_agent(args).await {
+                die(err);
+            }
+        }
+        Command::Local { command } => crate::local::cli::run(LocalArgs { command }).await,
     }
 }
 
@@ -720,25 +587,17 @@ async fn run_admin(command: AdminCommand) {
             .await
         }
         AdminCommand::Backup {
-            command:
-                BackupCommand::Create {
-                    storage,
-                    directory,
-                    id,
-                    advanced_config,
-                },
+            storage,
+            directory,
+            id,
         } => {
-            let _backup_policy = backup_policy_from_config(advanced_config.as_deref());
             crate::storage::backup::backup_cli(storage.options(), directory, id.unwrap_or_default())
                 .await
         }
-        AdminCommand::Backup {
-            command:
-                BackupCommand::Restore {
-                    storage,
-                    backup,
-                    directory,
-                },
+        AdminCommand::Restore {
+            storage,
+            backup,
+            directory,
         } => crate::storage::backup::restore_cli(storage.options(), backup, directory).await,
         AdminCommand::Sweep { storage, batch } => sweep(storage, batch as usize).await,
     }
@@ -795,11 +654,13 @@ mod socket_policy_tests {
     use super::*;
 
     #[test]
-    fn export_modes_parse() {
-        let comments =
-            Cli::try_parse_from(["librepaper", "export", "paper", "--format", "markdown"]);
-        assert!(comments.is_ok());
-        let project = Cli::try_parse_from([
+    fn export_project_parse() {
+        let export = Cli::try_parse_from(["librepaper", "export", "paper", "copy"]);
+        assert!(export.is_ok());
+        let with_at =
+            Cli::try_parse_from(["librepaper", "export", "paper", "copy", "--at", "label"]);
+        assert!(with_at.is_ok());
+        let old_format = Cli::try_parse_from([
             "librepaper",
             "export",
             "paper",
@@ -807,6 +668,6 @@ mod socket_policy_tests {
             "--output",
             "copy",
         ]);
-        assert!(project.is_ok());
+        assert!(old_format.is_err());
     }
 }
