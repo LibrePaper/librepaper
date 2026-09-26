@@ -47,24 +47,13 @@ pub(crate) enum AgentCommand {
         #[arg(long)]
         background: bool,
     },
-    /// Serve the document MCP tools over stdio for an MCP host.
-    ///
-    /// `--connection NAME` is how an agent's configuration file names a
-    /// document without holding its key: this computer resolves the name
-    /// through the connections the browser registered. A literal link is
-    /// still accepted for a one-off, and `-` reads it from
-    /// LIBREPAPER_DOCUMENT, which lets a host keep the credential in its
-    /// protected environment.
+    /// Serve the document MCP tools over stdio for an MCP host. The local app
+    /// starts this; it is not listed because nobody types it.
+    #[command(hide = true)]
     Mcp {
-        #[arg(
-            required_unless_present = "connection",
-            conflicts_with = "connection",
-            default_value = ""
-        )]
-        link: String,
         /// A connection registered by the browser on this computer.
         #[arg(long, value_name = "NAME")]
-        connection: Option<String>,
+        connection: String,
     },
 }
 
@@ -73,45 +62,39 @@ pub(crate) async fn run(
     server: Option<String>,
     token: Option<String>,
 ) -> Result<(), String> {
-    if let AgentCommand::Mcp {
-        connection: Some(name),
-        ..
-    } = &command
-    {
-        let resolved =
-            crate::local::connections::ConnectionStore::new(&crate::local::paths::state_home()?)
-                .resolve(name)?;
-        if let (Some(conversation), Some(chat_token)) =
-            (&resolved.conversation, &resolved.chat_token)
-        {
-            std::env::set_var("LIBREPAPER_CONVERSATION", conversation);
-            std::env::set_var("LIBREPAPER_CHAT_TOKEN", chat_token);
-        }
-        let link = DocumentLink::parse(&resolved.link, server.as_deref().unwrap_or(""))?;
-        let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
-        return crate::automation::mcp::stdio(&peer).await;
-    }
-
-    let link_text = match &command {
-        AgentCommand::Connect { link, .. } | AgentCommand::Mcp { link, .. } => link,
-    };
-    let link_text = if link_text == "-" {
-        std::env::var("LIBREPAPER_DOCUMENT")
-            .map_err(|_| "LIBREPAPER_DOCUMENT is required for the background runner".to_string())?
-    } else {
-        link_text.to_owned()
-    };
-    let link = DocumentLink::parse(&link_text, server.as_deref().unwrap_or(""))?;
-    let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
     match command {
+        AgentCommand::Mcp { connection } => {
+            let resolved = crate::local::connections::ConnectionStore::new(
+                &crate::local::paths::state_home()?,
+            )
+            .resolve(&connection)?;
+            if let (Some(conversation), Some(chat_token)) =
+                (&resolved.conversation, &resolved.chat_token)
+            {
+                std::env::set_var("LIBREPAPER_CONVERSATION", conversation);
+                std::env::set_var("LIBREPAPER_CHAT_TOKEN", chat_token);
+            }
+            let link = DocumentLink::parse(&resolved.link, server.as_deref().unwrap_or(""))?;
+            let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
+            crate::automation::mcp::stdio(&peer).await?;
+        }
         AgentCommand::Connect {
+            link,
             conversation,
             chat_token,
             state_dir,
             agent,
             background,
-            ..
         } => {
+            let link = if link == "-" {
+                std::env::var("LIBREPAPER_DOCUMENT").map_err(|_| {
+                    "LIBREPAPER_DOCUMENT is required for the background runner".to_string()
+                })?
+            } else {
+                link
+            };
+            let link = DocumentLink::parse(&link, server.as_deref().unwrap_or(""))?;
+            let peer = AutomationPeer::open(link, server.as_deref(), token.as_deref()).await?;
             let config = crate::assistant::runtime::config(
                 conversation.clone(),
                 chat_token,
@@ -133,7 +116,6 @@ pub(crate) async fn run(
                 crate::assistant::runtime::run(&peer, config).await?;
             }
         }
-        AgentCommand::Mcp { .. } => crate::automation::mcp::stdio(&peer).await?,
     }
     Ok(())
 }
