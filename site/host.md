@@ -170,9 +170,9 @@ last word: a document may name its own coauthors and reviewers with
 [Share](collaborate/share.html), and may only ever be stricter than the server it is on.
 Nothing a document says can widen `--publishers` or `--commenters`.
 
-`--no-listing` turns the public front page off: the reserved examples stop
-being listed to people who hold nothing on them, and nothing else was ever
-listed to strangers.
+Anonymous visitors see no documents; the front page lists nothing to strangers.
+Each account receives its own private copies of the tutorial documents when it
+signs in.
 
 Forwarded client identity is trusted only from networks listed in the advanced
 configuration file. A single loopback proxy can use:

@@ -44,11 +44,11 @@ once, when the account is made, and stay deleted if you remove them.
 | LaTeX | [Learn LibrePaper with LaTeX](https://app.librepaper.org/docs/learn-librepaper-with-latex-ua3e2x26cw) |
 | Quarto | [Learn LibrePaper with Quarto](https://app.librepaper.org/docs/learn-librepaper-with-quarto-mgprkwz4m7) |
 
-Those addresses do not change. A curated tutorial's suffix is derived from its
-title rather than drawn at random, so re-seeding a deployment leaves these
-links pointing at the same documents — which is safe only because a tutorial
-is public on purpose. Every other document keeps an unguessable address. See
-[the sandbox](#the-sandbox) for what that means for your own work.
+Those addresses do not change. A tutorial's suffix is derived from its
+title rather than drawn at random, so every account receives the same links —
+which is safe only because a tutorial is public on purpose. Every other document
+keeps an unguessable address. See [the sandbox](#the-sandbox) for what that
+means for your own work.
 
 ## Install
 
@@ -73,12 +73,11 @@ The LibrePaper sandbox is a free website where anyone can upload small (<4MB) sh
 Sign in to receive private, editable tutorials for Markdown, Typst, HTML, LaTeX, and Quarto. Each tutorial contains the same LibrePaper walkthrough in that format.
 
 A published document lives at `/docs/<title>-<suffix>`, where the suffix is
-random so the link cannot be guessed from the title. Curated tutorial documents
+random so the link cannot be guessed from the title. Tutorial documents
 are the exception: their suffix is derived from the title rather than drawn at
-random, so re-seeding the sandbox leaves these links pointing at the same
-documents. That is safe only because an example is public on purpose; every
-other document keeps an unguessable address. A link that resolves to nothing
-gets a 404 page saying so.
+random, so every new account receives the same links. That is safe only because
+a tutorial is public on purpose; every other document keeps an unguessable
+address. A link that resolves to nothing gets a 404 page saying so.
 
 > **Warning:** Do not publish confidential information on the LibrePaper sandbox. Normally, documents are only visible to the person who uploaded them, or to people holding a share link they minted. But if you are gathering comments on documents about national security, you should probably [host your own instance](host.html) or find another solution.
 
