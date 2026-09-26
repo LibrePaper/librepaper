@@ -335,7 +335,9 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: LocalCommand,
     },
-    /// Serve the document MCP tools to an agent on this computer
+    /// What the local app spawns to run the in-document assistant. Nothing
+    /// under it is typed by a person, so it is not listed.
+    #[command(hide = true)]
     Agent {
         #[command(subcommand)]
         command: agent::AgentCommand,

@@ -294,7 +294,9 @@ fn launch_target(link: &url::Url, port: u16) -> Result<Target, String> {
     if port == DEFAULT_PORT {
         return Ok(Target::Nothing);
     }
-    Ok(Target::Open(pairing::return_fragment(return_to, port, request)))
+    Ok(Target::Open(pairing::return_fragment(
+        return_to, port, request,
+    )))
 }
 
 pub fn open_browser(target: &str) -> Result<(), String> {

@@ -1094,25 +1094,16 @@ pub(super) fn owned_connection(
     Ok(connection)
 }
 
-/// The agents installed on this computer, plus the connections this origin
-/// already registered. This is what turns setup from a wall of pasted
-/// instructions into a list of choices: the browser cannot read a PATH, so
-/// only the local app can say what the user actually has.
+/// The agents installed on this computer. This is what turns setup from a
+/// wall of pasted instructions into a list of choices: the browser cannot
+/// read a PATH, so only the local app can say what the user actually has.
 async fn handle_agents_list(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
     if let Err(response) = authenticate(inner, headers, origin) {
         return response;
     }
-    let store = super::connections::ConnectionStore::new(&inner.state_home);
-    let origin = origin.unwrap_or_default();
-    let connections: Vec<Value> = store
-        .list()
-        .into_iter()
-        .filter(|(_, entry)| entry.origin == origin)
-        .map(|(name, entry)| json!({"name": name, "title": entry.title, "access": entry.access}))
-        .collect();
     write_json(
         200,
-        &json!({"agents": super::acp_agents::detect(&inner.state_home), "connections": connections}),
+        &json!({"agents": super::acp_agents::detect(&inner.state_home)}),
     )
 }
 

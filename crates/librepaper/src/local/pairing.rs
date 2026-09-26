@@ -476,7 +476,10 @@ mod tests {
 
     #[test]
     fn valid_project_is_bounded_and_charset_limited() {
-        assert_eq!(valid_project("paper-1.review:2"), Some("paper-1.review:2".into()));
+        assert_eq!(
+            valid_project("paper-1.review:2"),
+            Some("paper-1.review:2".into())
+        );
         assert!(valid_project("").is_none());
         assert!(valid_project(&"a".repeat(257)).is_none());
         assert!(valid_project("has space").is_none());
@@ -541,7 +544,7 @@ mod tests {
         let fragment = return_fragment("https://paper.example/doc", 18763, "r".repeat(32).as_str());
         assert!(fragment.starts_with("https://paper.example/doc#librepaper-local="));
         assert!(fragment.contains("librepaper-request="));
-        assert!(fragment.contains("http%3A%2F%2F127.0.0.1%3A18763%2F"));
+        assert!(fragment.contains("http%3A%2F%2F127%2E0%2E0%2E1%3A18763%2F"));
     }
 
     #[test]
