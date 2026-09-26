@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::json;
 use tokio::net::TcpListener;
 
 use crate::cli::{state_home, LocalArgs, LocalCommand};
@@ -348,7 +349,7 @@ async fn approve(code: &str) {
                     client
                         .post(&url)
                         .header("content-type", "application/json")
-                        .body(format!(r#"{{"code":"{}"}}"#, code))
+                        .body(json!({"code": code}).to_string())
                         .send()
                         .await
                 }

@@ -8,6 +8,11 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+#[cfg(test)]
+thread_local! {
+    static SCRIPTED: std::cell::RefCell<Option<bool>> = std::cell::RefCell::new(None);
+}
+
 pub(crate) struct Approval {
     pub title: String,
     pub message: String,
@@ -37,6 +42,17 @@ async fn output(command: &mut Command) -> Result<std::process::Output, String> {
 /// (Linux without DISPLAY/WAYLAND_DISPLAY), generates a code and waits for it
 /// to be approved via approve_code().
 pub(crate) async fn ask(approval: &Approval) -> Decision {
+    #[cfg(test)]
+    {
+        if let Some(allowed) = SCRIPTED.with(|s| *s.borrow()) {
+            return if allowed {
+                Decision::Allowed
+            } else {
+                Decision::Denied
+            };
+        }
+    }
+
     let _dialog_guard = DIALOG_LOCK.lock().await;
 
     if cfg!(target_os = "macos") {
@@ -229,4 +245,18 @@ mod tests {
             assert!(rx.await.is_ok());
         });
     }
+}
+
+#[cfg(test)]
+pub(crate) fn script(allowed: bool) {
+    SCRIPTED.with(|s| {
+        *s.borrow_mut() = Some(allowed);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn unscript() {
+    SCRIPTED.with(|s| {
+        *s.borrow_mut() = None;
+    });
 }

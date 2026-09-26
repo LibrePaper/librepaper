@@ -352,6 +352,47 @@ fn desktop_quote(path: &Path) -> String {
     format!("\"{value}\"")
 }
 
+pub fn startup_enabled() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let config = match std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        {
+            Some(c) => c,
+            None => return false,
+        };
+        config.join("autostart/librepaper-local.desktop").exists()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match std::env::var_os("HOME") {
+            Some(h) => PathBuf::from(h)
+                .join("Library/LaunchAgents/com.librepaper.local.plist")
+                .exists(),
+            None => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        let output = Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "LibrePaperLocal",
+            ])
+            .output();
+        output.map(|o| o.status.success()).unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        false
+    }
+}
+
 pub fn set_startup(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
