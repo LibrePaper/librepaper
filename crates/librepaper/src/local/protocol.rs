@@ -19,7 +19,7 @@ pub const PROTOCOL_VERSIONS: &[u32] = &[2];
 pub const DEFAULT_PORT: u16 = 8763;
 
 /// The base path every route hangs under.
-pub const BASE_PATH: &str = "/librepaper/local/v1";
+pub const BASE_PATH: &str = "/librepaper/local";
 
 /// Largest JSON body accepted.
 pub const MAX_JSON_BYTES: usize = 64 * 1024;
@@ -165,8 +165,9 @@ pub struct Capabilities {
     /// involved; `note` distinguishes disabled, absent, and incompatible.
     #[serde(default)]
     pub zotero: Tool,
-    /// Adapter-oriented capability records introduced by protocol v2. The
-    /// legacy `tools` fields remain populated for v1 clients.
+    /// Adapter-oriented capability records. The `tools` field is kept for
+    /// browser settings page troubleshooting; it shows tool availability at a
+    /// glance without requiring the new builder interface.
     #[serde(default)]
     pub builders: Vec<BuilderCapability>,
 }
@@ -313,11 +314,8 @@ impl BuildInputs {
 ///
 /// Every field here is required, because every one of them is filled in from
 /// [`BuildRequestV2`] by the one validation this protocol has, at the wire
-/// boundary. The optional mirrors this type used to carry -- a `builder` that
-/// might be absent, an `entrypoint` beside a `main`, an `engine` beside a
-/// `builder` -- existed so that a v1 request could omit them, and v1 is not
-/// admitted any more. Each mirror was also re-validated deeper in, which is
-/// what let the two disagree.
+/// boundary. Mirrors that used to let this type carry optional fields have
+/// been removed: `builder`, `entrypoint`, and `engine` are now required.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct JobRequest {
     pub protocol: u32,
@@ -393,9 +391,8 @@ impl WorkspaceRequest {
     }
 }
 
-/// Version 2 structured build request. It is deliberately separate from
-/// `JobRequest` so the v1 wire shape and its existing callers remain stable
-/// during migration.
+/// Version 2 structured build request. It has all required fields: `builder`,
+/// `entrypoint`, and `engine`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BuildRequestV2 {

@@ -40,12 +40,12 @@ impl Embedded {
 }
 
 /// Start the service. `base` is a private directory of the deployment
-/// (pairings and workspaces both go under it); `tex_path` is the local
-/// `--tex-path` list, empty for plain `PATH` discovery. The default local
+/// (pairings and workspaces both go under it); `tool_path` is the local
+/// `--tool-path` list, empty for plain `PATH` discovery. The default local
 /// port is tried first so a browser that already knows it finds the service
 /// there; when a standalone local app holds it, any free port serves, since
 /// the browser is told the address rather than guessing it.
-pub async fn start(base: &Path, tex_path: Vec<PathBuf>) -> Result<Arc<Embedded>, String> {
+pub async fn start(base: &Path, tool_path: Vec<PathBuf>) -> Result<Arc<Embedded>, String> {
     let state_home = base.join("state");
     let cache_home = base.join("cache");
     let workspaces = base.join("workspaces");
@@ -67,7 +67,7 @@ pub async fn start(base: &Path, tex_path: Vec<PathBuf>) -> Result<Arc<Embedded>,
 
     let instance = hex::encode(crate::auth::random_bytes(8));
     let runner = Arc::new(NativeRunner::with_hosted_workspaces(
-        tex_path,
+        tool_path,
         &state_home,
         workspaces.clone(),
     ));

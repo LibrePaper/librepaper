@@ -91,15 +91,15 @@ fn cache_path() -> PathBuf {
 }
 
 /// The directories to search before `PATH` and the conventional locations:
-/// whatever `--tex-path` resolved to, flag or its matching environment
+/// whatever `--tool-path` resolved to, flag or its matching environment
 /// variable. Clap does the splitting and the environment fallback; this
 /// module only ever sees the resulting list, never the environment itself.
-fn configured_paths(tex_path: &[PathBuf]) -> Vec<PathBuf> {
-    tex_path.to_vec()
+fn configured_paths(tool_path: &[PathBuf]) -> Vec<PathBuf> {
+    tool_path.to_vec()
 }
 
-/// PATH's directories, then the conventional install locations for TeX
-/// Live, TinyTeX, MacTeX, MiKTeX -- searched after the configured ones.
+/// PATH's directories, then generic fallback locations searched after the
+/// configured ones when launched with a minimal PATH.
 fn fallback_search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(path) = std::env::var_os("PATH") {
@@ -112,65 +112,19 @@ fn fallback_search_dirs() -> Vec<PathBuf> {
 fn conventional_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
-    // TeX Live: /usr/local/texlive/<year>/bin/<arch>/
-    push_children_bin(Path::new("/usr/local/texlive"), &mut dirs);
+    // Homebrew on macOS.
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
 
-    // TinyTeX: ~/.TinyTeX/bin/<arch>/
+    // Standard Unix/Linux prefix.
+    dirs.push(PathBuf::from("/usr/local/bin"));
+
+    // User-local binary directories.
     if let Some(home) = home_dir() {
-        push_children_bin(&home.join(".TinyTeX"), &mut dirs);
-    }
-
-    // MacTeX.
-    dirs.push(PathBuf::from("/Library/TeX/texbin"));
-
-    // Windows: MiKTeX and TeX Live under Program Files and %LOCALAPPDATA%.
-    for base_var in ["ProgramFiles", "ProgramFiles(x86)"] {
-        if let Ok(base) = std::env::var(base_var) {
-            let base = PathBuf::from(base);
-            dirs.push(base.join("MiKTeX").join("miktex").join("bin").join("x64"));
-            dirs.push(base.join("MiKTeX").join("miktex").join("bin"));
-            push_children_bin(&base.join("texlive"), &mut dirs);
-        }
-    }
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        let local = PathBuf::from(local);
-        dirs.push(
-            local
-                .join("Programs")
-                .join("MiKTeX")
-                .join("miktex")
-                .join("bin")
-                .join("x64"),
-        );
-        dirs.push(
-            local
-                .join("Programs")
-                .join("MiKTeX")
-                .join("miktex")
-                .join("bin"),
-        );
+        dirs.push(home.join(".local").join("bin"));
+        dirs.push(home.join(".cargo").join("bin"));
     }
 
     dirs
-}
-
-/// `<root>/<year-or-anything>/bin/<arch>` for every immediate child of
-/// `root`, the shape both TeX Live and TinyTeX use.
-fn push_children_bin(root: &Path, dirs: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let bin = entry.path().join("bin");
-        let Ok(arches) = std::fs::read_dir(&bin) else {
-            continue;
-        };
-        for arch in arches.flatten() {
-            if arch.path().is_dir() {
-                dirs.push(arch.path());
-            }
-        }
-    }
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -422,9 +376,9 @@ fn tool_paths_from(cache: &Cache) -> ToolPaths {
 /// Finds every tool and returns the browser-facing `Capabilities`, using
 /// the cache unless `refresh` is set or the cache is stale (a changed
 /// configured path, or a cached tool's executable missing or changed).
-/// `tex_path` is the resolved `--tex-path` directory list.
-pub async fn discover(refresh: bool, tex_path: &[PathBuf]) -> Capabilities {
-    let mut capabilities = capabilities_from(&discover_cache(refresh, tex_path).await);
+/// `tool_path` is the resolved `--tool-path` directory list.
+pub async fn discover(refresh: bool, tool_path: &[PathBuf]) -> Capabilities {
+    let mut capabilities = capabilities_from(&discover_cache(refresh, tool_path).await);
     capabilities.quarto = crate::local::quarto::discover().await;
     capabilities.tools.quarto = capabilities.quarto.tool.clone();
     capabilities.calepin = crate::local::preview::calepin::discover().await;
@@ -478,15 +432,15 @@ pub async fn discover(refresh: bool, tex_path: &[PathBuf]) -> Capabilities {
 }
 
 /// The resolved tool paths for `native.rs`, from the same cache `discover`
-/// maintains. Never rescans on its own -- call `discover(true, tex_path)`
+/// maintains. Never rescans on its own -- call `discover(true, tool_path)`
 /// first if a fresh scan is wanted -- so a job never pays a rescan's cost
 /// mid-run.
-pub async fn tool_paths(tex_path: &[PathBuf]) -> ToolPaths {
-    tool_paths_from(&discover_cache(false, tex_path).await)
+pub async fn tool_paths(tool_path: &[PathBuf]) -> ToolPaths {
+    tool_paths_from(&discover_cache(false, tool_path).await)
 }
 
-async fn discover_cache(refresh: bool, tex_path: &[PathBuf]) -> Cache {
-    let configured = configured_paths(tex_path);
+async fn discover_cache(refresh: bool, tool_path: &[PathBuf]) -> Cache {
+    let configured = configured_paths(tool_path);
     if !refresh {
         if let Some(cache) = load_cache() {
             if !cache_is_stale(&cache, &configured) {

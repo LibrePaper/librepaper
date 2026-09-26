@@ -25,8 +25,8 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Start {
             port,
             code,
-            tex_path,
-        } => start(port, code, tex_path).await,
+            tool_path,
+        } => start(port, code, tool_path).await,
         LocalCommand::Launch { port } => launch(port).await,
         LocalCommand::Manage => open("librepaper://manage").await,
         LocalCommand::Stop => stop().await,
@@ -35,7 +35,7 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Status => status().await,
         LocalCommand::Connections { remove } => connections(remove),
         LocalCommand::Agent { command } => local_agent(command),
-        LocalCommand::Doctor { tex_path } => doctor(tex_path).await,
+        LocalCommand::Doctor { tool_path } => doctor(tool_path).await,
         LocalCommand::Disconnect { origin, all } => disconnect(origin, all),
         LocalCommand::Preset { command } => run_preset(command),
     }
@@ -203,7 +203,7 @@ fn cache_home() -> PathBuf {
     }
 }
 
-async fn start(port: u16, code: Option<String>, tex_path: Vec<PathBuf>) {
+async fn start(port: u16, code: Option<String>, tool_path: Vec<PathBuf>) {
     let state_home = state_home();
     let pairing = PairingStore::new(&state_home, code.clone());
     let port = if port == 0 { DEFAULT_PORT } else { port };
@@ -260,7 +260,7 @@ async fn start(port: u16, code: Option<String>, tex_path: Vec<PathBuf>) {
         .join("local")
         .join("workspaces");
     let runner: Arc<dyn Runner> = Arc::new(NativeRunner::with_hosted_workspaces(
-        tex_path,
+        tool_path,
         &state_home,
         workspaces.clone(),
     ));
@@ -499,8 +499,8 @@ fn connections(remove: Option<String>) {
     }
 }
 
-async fn doctor(tex_path: Vec<PathBuf>) {
-    let capabilities = crate::local::discovery::discover(true, &tex_path).await;
+async fn doctor(tool_path: Vec<PathBuf>) {
+    let capabilities = crate::local::discovery::discover(true, &tool_path).await;
     println!("librepaper local doctor");
     println!();
     println!("platform: {}", capabilities.platform);

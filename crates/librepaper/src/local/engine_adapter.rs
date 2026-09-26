@@ -22,7 +22,7 @@ use super::{quarto, quarto_capture};
 /// The caller still supplies the same workspace, cancellation receiver and
 /// progress channel used by the service's queue worker.
 pub async fn run(
-    tex_path: &[std::path::PathBuf],
+    tool_path: &[std::path::PathBuf],
     request: JobRequest,
     workspace: Workspace,
     cancel: watch::Receiver<bool>,
@@ -34,7 +34,7 @@ pub async fn run(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tools = crate::local::discovery::tool_paths(tex_path).await;
+    let tools = crate::local::discovery::tool_paths(tool_path).await;
     // The binding a bound snapshot named is checked again here rather than
     // only at admission: the queue delay between the two is long enough for
     // the folder to be moved, replaced or revoked, and what runs is what is
@@ -70,10 +70,10 @@ pub async fn run(
 /// Capabilities remain the existing browser-facing shape.  Keeping discovery
 /// behind this function means the service has no engine-specific capability
 /// branch and cannot accidentally advertise a future engine.
-pub async fn capabilities(refresh: bool, tex_path: &[std::path::PathBuf]) -> Capabilities {
+pub async fn capabilities(refresh: bool, tool_path: &[std::path::PathBuf]) -> Capabilities {
     let zotero_client = super::zotero::Client::local();
     let (mut capabilities, zotero) = tokio::join!(
-        super::discovery::discover(refresh, tex_path),
+        super::discovery::discover(refresh, tool_path),
         zotero_client.probe()
     );
     capabilities.zotero = match zotero {

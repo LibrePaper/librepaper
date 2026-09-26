@@ -93,10 +93,10 @@ pub trait Runner: Send + Sync {
 }
 
 /// The real runner: native TeX tools on this machine, through package R1b's
-/// `discovery` and `native` modules. `tex_path` is the resolved `--tex-path`
+/// `discovery` and `native` modules. `tool_path` is the resolved `--tool-path`
 /// directory list, fixed for the lifetime of one `librepaper local start`.
 pub struct NativeRunner {
-    pub tex_path: Vec<PathBuf>,
+    pub tool_path: Vec<PathBuf>,
     binding_store: BindingStore,
 }
 
@@ -104,12 +104,12 @@ impl NativeRunner {
     /// A runner that executes granted projects and, under `base`, the hosted
     /// workspace every document has without a grant.
     pub fn with_hosted_workspaces(
-        tex_path: Vec<PathBuf>,
+        tool_path: Vec<PathBuf>,
         state_home: &std::path::Path,
         base: PathBuf,
     ) -> Self {
         Self {
-            tex_path,
+            tool_path,
             binding_store: BindingStore::new(state_home).with_hosted_workspaces(base),
         }
     }
@@ -125,7 +125,7 @@ impl Runner for NativeRunner {
         progress: mpsc::UnboundedSender<JobStatus>,
     ) -> JobOutcome {
         crate::local::engine_adapter::run(
-            &self.tex_path,
+            &self.tool_path,
             request,
             workspace,
             cancel,
@@ -136,7 +136,7 @@ impl Runner for NativeRunner {
     }
 
     async fn capabilities(&self, refresh: bool) -> Capabilities {
-        crate::local::engine_adapter::capabilities(refresh, &self.tex_path).await
+        crate::local::engine_adapter::capabilities(refresh, &self.tool_path).await
     }
 }
 

@@ -472,14 +472,14 @@ pub enum LocalCommand {
             hide_env_values = true
         )]
         code: Option<String>,
-        /// Extra directories to search for TeX tools, colon-separated
+        /// Extra directories to search for typst, pandoc and calepin, colon-separated
         #[arg(
             long,
             value_name = "DIRS",
-            env = "LIBREPAPER_TEX_PATH",
+            env = "LIBREPAPER_TOOL_PATH",
             value_delimiter = ':'
         )]
-        tex_path: Vec<PathBuf>,
+        tool_path: Vec<PathBuf>,
     },
     /// Start the local companion in the background.
     Launch {
@@ -516,14 +516,14 @@ pub enum LocalCommand {
     },
     /// Which native tools were found, and what is missing
     Doctor {
-        /// Extra directories to search for TeX tools, colon-separated
+        /// Extra directories to search for typst, pandoc and calepin, colon-separated
         #[arg(
             long,
             value_name = "DIRS",
-            env = "LIBREPAPER_TEX_PATH",
+            env = "LIBREPAPER_TOOL_PATH",
             value_delimiter = ':'
         )]
-        tex_path: Vec<PathBuf>,
+        tool_path: Vec<PathBuf>,
     },
     /// Revoke pairings
     Disconnect {

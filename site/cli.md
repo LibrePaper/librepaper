@@ -131,9 +131,9 @@ librepaper local disconnect --all # revoke every paired site
 
 `start --code` fixes the pairing code instead of rotating it per run, which is
 what `make deploy` uses so that connecting an agent in development does not
-mean reading a fresh code off a terminal after every restart. `--tex-path`
-(colon-separated directories) points `start` and `doctor` at a TeX
-installation they would not otherwise find.
+mean reading a fresh code off a terminal after every restart. `--tool-path`
+(colon-separated directories) points `start` and `doctor` at typst, pandoc and
+calepin they would not otherwise find.
 
 A Quarto or Typst document renders in a workspace of its own, written from the
 files the browser sends. To render against a project folder on your disk

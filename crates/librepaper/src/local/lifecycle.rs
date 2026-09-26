@@ -63,7 +63,7 @@ pub async fn running(state_home: &Path) -> Option<ServiceState> {
 pub async fn spawn_background(
     port: u16,
     code: Option<&str>,
-    tex_path: &[PathBuf],
+    tool_path: &[PathBuf],
 ) -> Result<ServiceState, String> {
     let state_home = crate::cli::state_home();
     if let Some(state) = running(&state_home).await {
@@ -86,8 +86,8 @@ pub async fn spawn_background(
     if let Some(code) = code {
         command.args(["--code", code]);
     }
-    for path in tex_path {
-        command.arg("--tex-path").arg(path);
+    for path in tool_path {
+        command.arg("--tool-path").arg(path);
     }
     let log_dir = state_home.join("librepaper/local");
     std::fs::create_dir_all(&log_dir).map_err(|error| error.to_string())?;
@@ -392,7 +392,7 @@ mod tests {
         );
         let target =
             connection_target(&format!("librepaper://connect?{query}"), 18763).expect("valid link");
-        assert!(target.starts_with("http://127.0.0.1:18763/librepaper/local/v1/pair/request?"));
+        assert!(target.starts_with("http://127.0.0.1:18763/librepaper/local/pair/request?"));
         for invalid in [
             "https://evil.example".into(),
             "librepaper://connect".into(),
