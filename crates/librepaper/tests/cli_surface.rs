@@ -25,51 +25,50 @@ fn lists_command(help: &str, command: &str) -> bool {
 }
 
 #[test]
-fn top_level_help_lists_the_retained_workflows() {
+fn top_level_help_lists_exactly_the_public_commands() {
     let help = help_of(&["--help"]);
-    for command in [
-        "login", "logout", "admin", "list", "export", "local", "mcp",
-    ] {
+    for command in ["login", "logout", "list", "export", "mcp", "local", "admin"] {
         assert!(
             lists_command(&help, command),
             "public command {command:?} is absent from top-level help:\n{help}"
         );
     }
+    assert!(
+        !lists_command(&help, "agent"),
+        "machine command 'agent' should not be listed in top-level help:\n{help}"
+    );
+    assert!(
+        !lists_command(&help, "run-agent"),
+        "machine command 'run-agent' should not be listed in top-level help:\n{help}"
+    );
 }
 
 #[test]
-fn operator_commands_live_under_admin() {
+fn admin_help_lists_the_admin_commands() {
     let help = help_of(&["admin", "--help"]);
-    for command in ["serve", "seed", "backup"] {
+    for command in ["serve", "seed", "backup", "restore", "sweep"] {
         assert!(
             lists_command(&help, command),
-            "operator command {command:?} is absent from admin help:\n{help}"
+            "admin command {command:?} is absent from admin help:\n{help}"
         );
     }
 }
 
 #[test]
-fn companion_commands_people_type_are_listed() {
+fn local_help_lists_the_local_commands() {
     let help = help_of(&["local", "--help"]);
-    for command in [
-        "launch",
-        "start",
-        "stop",
-        "status",
-        "doctor",
-        "manage",
-        "startup",
-        "disconnect",
-        "connections",
-        "agent",
-        "preset",
-    ] {
+    for command in ["start", "stop", "status", "settings", "agent"] {
         assert!(
             lists_command(&help, command),
-            "companion command {command:?} is absent from local help:\n{help}"
+            "local command {command:?} is absent from local help:\n{help}"
         );
     }
-    assert!(lists_command(&help_of(&["mcp", "--help"]), "--connection"));
+    for removed_command in ["launch", "manage", "doctor", "connections", "disconnect", "startup", "preset"] {
+        assert!(
+            !lists_command(&help, removed_command),
+            "removed command {removed_command:?} should not be listed in local help:\n{help}"
+        );
+    }
 }
 
 /// `local open` answers `librepaper://` links for the operating system and
@@ -77,41 +76,41 @@ fn companion_commands_people_type_are_listed() {
 /// advertised.
 #[test]
 fn machine_invoked_commands_parse_but_are_not_listed() {
-    assert!(!lists_command(&help_of(&["local", "--help"]), "open"));
-    assert!(!lists_command(&help_of(&["--help"]), "run-agent"));
-    assert!(cli(&["local", "open", "--help"]).status.success());
-    assert!(cli(&["run-agent", "--help"]).status.success());
+    assert!(
+        !lists_command(&help_of(&["local", "--help"]), "open"),
+        "machine command 'open' should not be listed in local help"
+    );
+    assert!(
+        !lists_command(&help_of(&["--help"]), "run-agent"),
+        "machine command 'run-agent' should not be listed in top-level help"
+    );
+    assert!(
+        cli(&["local", "open", "--help"]).status.success(),
+        "local open --help should succeed"
+    );
+    assert!(
+        cli(&["run-agent", "--help"]).status.success(),
+        "run-agent --help should succeed"
+    );
 }
 
 #[test]
-fn compound_resources_use_subcommand_namespaces() {
-    for (path, commands) in [
-        (&["admin", "backup"][..], &["create", "restore"][..]),
-        (&["local", "agent"][..], &["add", "list", "remove"][..]),
-        (
-            &["local", "preset"][..],
-            &["list", "create", "update", "remove", "grant", "revoke"][..],
-        ),
-    ] {
-        let mut args = path.to_vec();
-        args.push("--help");
-        let help = help_of(&args);
-        for command in commands {
-            assert!(
-                lists_command(&help, command),
-                "command {command:?} is absent from `{}`:\n{help}",
-                path.join(" ")
-            );
-        }
+fn local_agent_lists_its_subcommands() {
+    let help = help_of(&["local", "agent", "--help"]);
+    for command in ["add", "list", "remove"] {
+        assert!(
+            lists_command(&help, command),
+            "agent command {command:?} is absent from local agent help:\n{help}"
+        );
     }
 }
 
 #[test]
-fn operands_are_positional_and_modifiers_are_named() {
+fn operands_are_positional() {
     for args in [
-        &["admin", "backup", "create", "--help"][..],
-        &["admin", "backup", "restore", "--help"][..],
-        &["local", "preset", "grant", "--help"][..],
+        &["admin", "backup", "--help"][..],
+        &["admin", "restore", "--help"][..],
+        &["export", "--help"][..],
     ] {
         let help = help_of(args);
         assert!(
@@ -119,10 +118,80 @@ fn operands_are_positional_and_modifiers_are_named() {
             "no positional operands in:\n{help}"
         );
     }
+}
 
+#[test]
+fn export_flags_are_correct() {
     let help = help_of(&["export", "--help"]);
-    assert!(help.contains("--output <PATH>"), "{help}");
-    assert!(help.contains("--project"), "{help}");
-    assert!(help.contains("--at <LABEL>"), "{help}");
-    assert!(help.contains("--since <LABEL>"), "{help}");
+    assert!(help.contains("--at <LABEL>"), "--at <LABEL> missing from export help:\n{help}");
+    assert!(help.contains("--key <LINK>"), "--key <LINK> missing from export help:\n{help}");
+    assert!(help.contains("--server"), "--server missing from export help:\n{help}");
+    assert!(help.contains("--token"), "--token missing from export help:\n{help}");
+    assert!(
+        !help.contains("--project"),
+        "--project should not be in export help:\n{help}"
+    );
+    assert!(
+        !help.contains("--format"),
+        "--format should not be in export help:\n{help}"
+    );
+    assert!(
+        !help.contains("--since"),
+        "--since should not be in export help:\n{help}"
+    );
+    assert!(
+        !help.contains("--output"),
+        "--output should not be in export help:\n{help}"
+    );
+}
+
+#[test]
+fn local_start_flags_are_correct() {
+    let help = help_of(&["local", "start", "--help"]);
+    assert!(help.contains("--foreground"), "--foreground missing from local start help:\n{help}");
+    assert!(help.contains("--at-login"), "--at-login missing from local start help:\n{help}");
+}
+
+#[test]
+fn deployment_flags_are_scoped() {
+    let export_help = help_of(&["export", "--help"]);
+    assert!(export_help.contains("--server"), "--server should be in export help");
+
+    let admin_help = help_of(&["admin", "--help"]);
+    assert!(
+        !admin_help.contains("--server <"),
+        "--server should not be in admin help:\n{admin_help}"
+    );
+    assert!(
+        !admin_help.contains("--token"),
+        "--token should not be in admin help:\n{admin_help}"
+    );
+
+    let local_help = help_of(&["local", "--help"]);
+    assert!(
+        !local_help.contains("--server <"),
+        "--server should not be in local help:\n{local_help}"
+    );
+    assert!(
+        !local_help.contains("--token"),
+        "--token should not be in local help:\n{local_help}"
+    );
+
+    let admin_serve_help = help_of(&["admin", "serve", "--help"]);
+    assert!(
+        !admin_serve_help.contains("--server <"),
+        "--server should not be in admin serve help:\n{admin_serve_help}"
+    );
+    assert!(
+        !admin_serve_help.contains("--token"),
+        "--token should not be in admin serve help:\n{admin_serve_help}"
+    );
+}
+
+#[test]
+fn removed_commands_fail_to_parse() {
+    assert!(!cli(&["local", "launch"]).status.success(), "local launch should fail");
+    assert!(!cli(&["local", "doctor"]).status.success(), "local doctor should fail");
+    assert!(!cli(&["agent", "mcp", "x"]).status.success(), "agent mcp should fail");
+    assert!(!cli(&["export", "paper", "--project"]).status.success(), "export with --project should fail");
 }
