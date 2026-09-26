@@ -1,0 +1,21 @@
+# cargo-dist runs these steps on each build runner before compiling the Rust
+# binary. The binary embeds both the browser app and the renderer modules, so
+# assemble and verify those locked inputs on every target runner.
+- name: Set the version embedded in the companion
+  shell: bash
+  run: echo "LIBREPAPER_VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+- name: Set up Bun
+  uses: oven-sh/setup-bun@v2
+- name: Fetch pinned CodeMirror and browser renderers
+  shell: bash
+  run: |
+    node web/tools/fetch-loro-codemirror.mjs
+    node web/tools/fetch-modules.mjs
+- name: Build the embedded browser app
+  shell: bash
+  run: |
+    cd web
+    bun install --frozen-lockfile
+    bun run build
+    cd ..
+    cp README.md web/dist/README.md

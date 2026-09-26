@@ -1,86 +1,44 @@
 #!/bin/sh
-# Install librepaper: fetch the release binary for this machine and put it on
-# the PATH. Nothing else is needed -- the tool is one static file.
+# Compatibility entry point for the pre-Cargo-Dist install URL.
+# New installs use the platform installer published with each release.
 #
 #   curl -fsSL https://raw.githubusercontent.com/LibrePaper/librepaper/main/deploy/install.sh | sh
 #
-# Environment:
-#   LIBREPAPER_VERSION   version to install, e.g. v0.0.1 (default: latest)
-#   LIBREPAPER_BIN_DIR   where to put the binary (default: ~/.local/bin)
+# LIBREPAPER_VERSION may pin a release. LIBREPAPER_BIN_DIR is retained for
+# saved commands and maps to Cargo Dist's LIBREPAPER_INSTALL_DIR.
 set -eu
 
-REPO="LibrePaper/librepaper"
-VERSION="${LIBREPAPER_VERSION:-latest}"
-BIN_DIR="${LIBREPAPER_BIN_DIR:-$HOME/.local/bin}"
+repo=LibrePaper/librepaper
+version=${LIBREPAPER_VERSION:-}
 
-die() { printf 'install: %s\n' "$*" >&2; exit 1; }
-
-# The release archives are named for the platform they were built for.
-case "$(uname -s)" in
-	Linux)   os=linux ;;
-	Darwin)  os=darwin ;;
-	*)       die "unsupported operating system $(uname -s); see github.com/$REPO/releases" ;;
-esac
-case "$(uname -m)" in
-	x86_64|amd64)   arch=amd64 ;;
-	arm64|aarch64)  arch=arm64 ;;
-	*)              die "unsupported architecture $(uname -m); see github.com/$REPO/releases" ;;
-esac
+die() { printf 'librepaper installer: %s\n' "$*" >&2; exit 1; }
 
 if command -v curl >/dev/null 2>&1; then
 	fetch() { curl -fsSL "$1"; }
 elif command -v wget >/dev/null 2>&1; then
 	fetch() { wget -qO- "$1"; }
 else
-	die "neither curl nor wget is available"
+	die 'neither curl nor wget is available'
 fi
 
-# "latest" redirects to the newest tag, whose name is the last path segment.
-if [ "$VERSION" = latest ]; then
-	VERSION=$(fetch "https://api.github.com/repos/$REPO/releases/latest" |
-		sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
-	[ -n "$VERSION" ] || die "could not determine the latest version"
+if [ -n "${LIBREPAPER_BIN_DIR:-}" ]; then
+	export LIBREPAPER_INSTALL_DIR="$LIBREPAPER_BIN_DIR"
+elif [ -z "${LIBREPAPER_INSTALL_DIR:-}" ]; then
+	export LIBREPAPER_INSTALL_DIR="$HOME/.local/bin"
 fi
 
-archive="librepaper_${os}_${arch}.tar.gz"
-url="https://github.com/$REPO/releases/download/$VERSION/$archive"
-checksums_url="https://github.com/$REPO/releases/download/$VERSION/checksums.txt"
-
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-
-printf 'install: downloading librepaper %s (%s/%s)\n' "$VERSION" "$os" "$arch" >&2
-# The archive is saved under its release name, not a generic temp name, so the
-# line pulled out of checksums.txt below names a file that is actually there.
-fetch "$url" > "$tmp/$archive" || die "download failed: $url"
-fetch "$checksums_url" > "$tmp/checksums.txt" || die "download failed: $checksums_url"
-
-# checksums.txt has one "<sha256>  <filename>" line per archive; pull out
-# ours rather than trusting the whole file, so sha256sum/shasum only ever
-# checks the one file this run downloaded.
-line=$(awk -v f="$archive" '$2 == f { print; exit }' "$tmp/checksums.txt")
-[ -n "$line" ] || die "no checksum for $archive in checksums.txt"
-printf '%s\n' "$line" > "$tmp/checksums.txt.match"
-
-if command -v sha256sum >/dev/null 2>&1; then
-	verify() { (cd "$tmp" && sha256sum -c checksums.txt.match) >/dev/null 2>&1; }
-elif command -v shasum >/dev/null 2>&1; then
-	verify() { (cd "$tmp" && shasum -a 256 -c checksums.txt.match) >/dev/null 2>&1; }
+installer="librepaper-installer.sh"
+if [ -z "$version" ] || [ "$version" = latest ]; then
+	unset LIBREPAPER_VERSION
+	url="https://github.com/$repo/releases/latest/download/$installer"
 else
-	die "neither sha256sum nor shasum is available to verify the download"
+	case "$version" in
+		*[!A-Za-z0-9._-]*) die "invalid release version: $version" ;;
+	esac
+	export LIBREPAPER_VERSION="$version"
+	url="https://github.com/$repo/releases/download/$version/$installer"
 fi
-verify || die "checksum mismatch for $archive; the download may be corrupt or tampered with"
-
-tar -xzf "$tmp/$archive" -C "$tmp" || die "the download was not a valid archive"
-[ -f "$tmp/librepaper" ] || die "the archive did not contain a librepaper binary"
-
-mkdir -p "$BIN_DIR"
-mv "$tmp/librepaper" "$BIN_DIR/librepaper"
-chmod +x "$BIN_DIR/librepaper"
-
-printf 'install: librepaper %s -> %s/librepaper\n' "$VERSION" "$BIN_DIR" >&2
-
-case ":$PATH:" in
-	*":$BIN_DIR:"*) ;;
-	*) printf 'install: %s is not on your PATH. Add it:\n\n    export PATH="%s:$PATH"\n\n' "$BIN_DIR" "$BIN_DIR" >&2 ;;
-esac
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+fetch "$url" > "$tmp/$installer" || die "could not download $url"
+sh "$tmp/$installer" "$@" || exit $?

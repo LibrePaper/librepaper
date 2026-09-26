@@ -53,14 +53,12 @@ export const CATEGORIES = [
   },
   {
     id: "local", says: "Local", offered: local,
-    note: "The LibrePaper app running on this computer.",
+    note: "LibrePaper on this computer",
     entries: [
-      { id: "local-status", says: "Connection", terms: "connect disconnect retry status" },
-      { id: "local-install-help", says: "About and installation", terms: "install installer setup linux macos windows agent claude codex pi opencode zotero quarto backup sync local folder" },
-      { id: "local-pairing", says: "Pairing code", terms: "pair code allow site" },
-      { id: "local-address", says: "Address", terms: "port url localhost host" },
+      { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows pair pairing code allow site agent claude codex pi opencode zotero quarto" },
+      { id: "local-details", says: "Connection details", terms: "address port url localhost host version tools diagnostics doctor troubleshooting" },
+      { id: "local-execution", says: "Local code execution", terms: "quarto run code permission execute", offered: quarto },
       { id: "local-binding", says: "Project folder", terms: "quarto typst markdown folder binding hosted", offered: projectBinding },
-      { id: "local-tools", says: "Available tools", terms: "versions latex quarto biber" },
       { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
     ],
   },

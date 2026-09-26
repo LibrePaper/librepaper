@@ -56,11 +56,22 @@ You do not need the CLI to read or comment on a document. You need it to
 publish one from a project on your own machine.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/LibrePaper/librepaper/main/deploy/install.sh | sh
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
 ```
 
-The installer supports Linux and macOS. Windows binaries are available on the
-[releases page](https://github.com/LibrePaper/librepaper/releases).
+On Windows, run this in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"
+```
+
+To pin a version, replace `releases/latest/download/` in either URL with
+`releases/download/<tag>/`. Older saved commands using `deploy/install.sh` still forward to the
+generated installer.
+
+The installer puts the executable on your PATH. In a new terminal, run
+`librepaper local settings` to configure and start the companion. It does not
+add a desktop shortcut or register the `librepaper://` link handler.
 
 Then [publish something of your own](cli.html#publish).
 

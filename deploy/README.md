@@ -1,27 +1,50 @@
-# Companion installers
+# Installing the local companion
 
-Release tags publish the platform archives plus installer entry points:
+Cargo Dist publishes the platform archives and generated installer entry
+points with each tagged release:
 
-- Linux/macOS: `install-companion.sh` (curl or wget)
-- Windows: `install-companion.cmd` or `install-companion.ps1`
-- macOS: `librepaper_darwin_<arch>.app.zip`
+- Linux and macOS: `librepaper-installer.sh`
+- Windows: `librepaper-installer.ps1`
 
-Installers verify downloaded archives against the release checksums, register `librepaper://connect`, launch the companion, and leave login
-startup opt-in. The macOS app is ad-hoc signed; public distribution with Gatekeeper trust
-requires Developer ID signing and notarization in the release environment.
+Linux and macOS:
 
-The desktop settings entry invokes `librepaper local settings`.
+```sh
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
+```
 
-On Linux, save `install-companion.sh` and run `sh install-companion.sh` once.
-The installer adds a LibrePaper companion entry to the application menu.
-On macOS, unzip the matching app archive, move the app to `~/Applications`,
-and open it. On Windows, open `install-companion.cmd`; it downloads the
-matching PowerShell installer and creates a companion settings shortcut.
+Windows PowerShell:
 
-Use **Start at login** in companion settings to avoid launching it manually.
-The editor's **Open companion** button also launches a stopped installation.
-Quarto, R/Python, and TeX are detected, not installed or updated by these installers.
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"
+```
 
-For an update, quit the running companion before replacing the macOS app.
-The scripted installers stop the previous companion before replacing its binary.
-Permissions live separately from the application and survive updates.
+The generated installers select the matching release archive. The old
+`deploy/install.sh` and `install-companion.*` commands remain compatibility
+wrappers and forward to those generated installers. For those wrappers,
+`LIBREPAPER_VERSION` pins a release; the old shell variable `LIBREPAPER_BIN_DIR` maps to
+`LIBREPAPER_INSTALL_DIR`.
+
+The installer places the executable on PATH. In a fresh terminal, run:
+
+```sh
+librepaper local settings
+```
+
+This opens the companion settings so you can configure and start the local
+service. Installation does not create a desktop shortcut or register the
+`librepaper://` link handler. Start at login is configured from companion
+settings when available. Quarto, R/Python, and TeX must be installed
+separately.
+
+Cargo Dist also installs `librepaper-update` to update LibrePaper. It does not
+update separately installed tools.
+
+## Release transition note
+
+The generated asset names become available after the first Cargo Dist release
+tag. The currently published `v0.0.3` predates these assets.
+
+Release configuration lives in `Cargo.toml`. After changing it or
+`.github/dist-build-setup.yml`, regenerate the workflow with `dist generate`
+using the pinned Cargo Dist version, then run `dist generate --check` and
+`dist plan`. The release tag must match the application crate's version.

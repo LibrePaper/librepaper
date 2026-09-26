@@ -4058,6 +4058,7 @@
                 {keys} onkeys={setKeys} commands={commandContext}
                 buildPreferences={buildPreferences} documentId={SLUG} userId={buildUserId} onbuildpreferences={setBuildPreferences}
                 main={previewMain} onbindingid={(id) => { quartoBindingId = id; localQuarto.setBindingId(id); }}
+                {localExecution} onlocalexecution={toggleLocalExecution}
                 options={quartoOptions}
                 onapplyoptions={applyRenderOptions}
                 account={me} />

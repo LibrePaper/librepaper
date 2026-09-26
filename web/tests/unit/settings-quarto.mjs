@@ -21,11 +21,11 @@ for (const format of ["latex", "typst", "markdown", "quarto", "html", ""]) {
 }
 assert.match(registry, /id: "local", says: "Local", offered: local,/);
 assert.match(registry, /id: "remote", says: "Remote", offered: remote,/);
-for (const query of ["windows setup", "macos", "claude", "zotero", "backup", "server address"]) {
+for (const query of ["windows setup", "macos", "claude", "zotero", "server address", "connection details"]) {
   const matches = search(query, { format: "html", mayEdit: false, signedIn: false }) || [];
   assert.ok(matches.length, `settings search finds ${query}`);
 }
-assert.match(registry, /id: "local-install-help"/);
+assert.match(registry, /id: "local-details", says: "Connection details"/);
 assert.match(registry, /id: "remote-status"/);
 assert.match(local, /import \* as localBridge from "\.\.\/\.\.\/lib\/companion\/client\.js"/);
 // The panel shows the status rather than keeping its own copy of it: the
@@ -62,7 +62,7 @@ assert.doesNotMatch(rendering, /preview\.url/);
 // two that are not this browser's alone say so in a note under their title.
 assert.doesNotMatch(registry, /GROUPS|group:/);
 assert.match(registry, /id: "build",[\s\S]*?note: "Only this browser and user\."/);
-assert.match(registry, /id: "local",[\s\S]*?note: "The LibrePaper app running on this computer\."/);
+assert.match(registry, /id: "local",[\s\S]*?note: "LibrePaper on this computer"/);
 
 // Choosing a build tool is mostly a browser question -- which engine, which
 // output -- and opening this pane must not make the browser ask to allow the

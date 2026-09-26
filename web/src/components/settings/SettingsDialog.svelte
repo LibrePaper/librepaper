@@ -36,6 +36,8 @@
     // The Quarto project and the local app it renders on.
     main = "",
     onbindingid,
+    localExecution = false,
+    onlocalexecution,
     options,
     onapplyoptions,
     // Who is signed in, which is what the account category is about. `{}`
@@ -97,7 +99,7 @@
         {:else if shown.id === "rendering"}
           <RenderingSettings {options} {onapplyoptions} />
         {:else if shown.id === "local"}
-          <LocalAppSettings {main} {sourceFormat} {mayEdit} {onbindingid} />
+          <LocalAppSettings {main} {sourceFormat} {mayEdit} {onbindingid} {localExecution} {onlocalexecution} />
         {:else if shown.id === "remote"}
           <RemoteSettings {remoteConnected} {remoteNote} />
         {:else if shown.id === "account"}

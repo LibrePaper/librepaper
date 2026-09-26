@@ -5,6 +5,12 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 build = "build.rs"
+repository = "https://github.com/LibrePaper/librepaper"
+
+[package.metadata.dist]
+# Cargo's publish=false keeps this application off crates.io. It is still the
+# one package cargo-dist should build and publish as release artifacts.
+dist = true
 
 # The doc comments quote shell sessions and file layouts, not Rust: they are
 # read, never run.

@@ -24,11 +24,22 @@ Typst, HTML, LaTeX and Quarto.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/LibrePaper/librepaper/main/deploy/install.sh | sh
+curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh | sh
 ```
 
-Linux and macOS; Windows binaries are on the
-[releases page](https://github.com/LibrePaper/librepaper/releases).
+On Windows, run this in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1 | iex"
+```
+
+To pin a version, replace `releases/latest/download/` in either URL with
+`releases/download/<tag>/`. Older saved commands using `deploy/install.sh` still forward to the
+generated installer.
+
+The installer puts the executable on your PATH. In a new terminal, run
+`librepaper local settings` to configure and start the companion. The installer
+does not add a desktop shortcut or register the `librepaper://` link handler.
 
 ## Documentation
 
