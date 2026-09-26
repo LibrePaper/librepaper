@@ -40,10 +40,6 @@ fn missing_assistant_tools<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<
         .collect()
 }
 
-pub(crate) fn readiness_marker_matches(expected: &str, found: Option<&str>) -> bool {
-    !expected.is_empty() && expected.len() <= 128 && found == Some(expected)
-}
-
 #[derive(Clone)]
 struct Bridge {
     peer: AutomationPeer,
@@ -87,7 +83,7 @@ impl Bridge {
             .map(active_task_id)
             .unwrap_or_default();
         if let Some(path) = journal_path.as_deref() {
-            journal_before_dispatch(path, &task_id, tool.unwrap_or(method), &request)
+            runner_journal::record_tool_call(path, &task_id, tool.unwrap_or(method), &request)
                 .map_err(internal_error)?;
         }
         // Capture the epoch at request admission, before an await or queue can
@@ -102,8 +98,14 @@ impl Bridge {
         let response = response_value(status, &content_type, &body, Value::String(id))
             .map_err(internal_error)?;
         if let Some(path) = journal_path.as_deref() {
-            journal_after_response(path, &task_id, tool.unwrap_or(method), &request, &response)
-                .map_err(internal_error)?;
+            runner_journal::record_tool_result(
+                path,
+                &task_id,
+                tool.unwrap_or(method),
+                &request,
+                &response,
+            )
+            .map_err(internal_error)?;
         }
         if let Some(error) = response.get("error") {
             return Err(McpError::internal_error(
@@ -215,25 +217,6 @@ fn runner_journal_path() -> Option<PathBuf> {
     std::env::var_os("LIBREPAPER_RUNNER_JOURNAL").map(PathBuf::from)
 }
 
-fn journal_before_dispatch(
-    path: &Path,
-    task_id: &str,
-    tool: &str,
-    request: &Value,
-) -> Result<(), String> {
-    runner_journal::record_tool_call(path, task_id, tool, request).map(|_| ())
-}
-
-fn journal_after_response(
-    path: &Path,
-    task_id: &str,
-    tool: &str,
-    request: &Value,
-    response: &Value,
-) -> Result<(), String> {
-    runner_journal::record_tool_result(path, task_id, tool, request, response).map(|_| ())
-}
-
 fn active_task_id(journal_path: &Path) -> String {
     std::env::var_os("LIBREPAPER_RUNNER_TASK_FILE")
         .map(std::path::PathBuf::from)
@@ -339,7 +322,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn assistant_readiness_requires_every_document_tool_and_the_current_nonce() {
+    fn assistant_readiness_requires_every_document_tool() {
         let all = [
             "document_read",
             "document_propose",
@@ -352,13 +335,6 @@ mod tests {
             missing_assistant_tools(all.into_iter().filter(|name| *name != "document_apply")),
             ["document_apply"]
         );
-        assert!(readiness_marker_matches("fresh-nonce", Some("fresh-nonce")));
-        assert!(!readiness_marker_matches(
-            "fresh-nonce",
-            Some("stale-nonce")
-        ));
-        assert!(!readiness_marker_matches("fresh-nonce", None));
-        assert!(!readiness_marker_matches("", Some("")));
     }
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -471,8 +447,9 @@ mod tests {
         let response = json!({
             "result":{"structuredContent":{"status":"committed","effects":[{"kind":"suggestion","id":"suggestion-1"}]}}
         });
-        journal_before_dispatch(&path, "task-1", "document_propose", &request).unwrap();
-        journal_after_response(&path, "task-1", "document_propose", &request, &response).unwrap();
+        runner_journal::record_tool_call(&path, "task-1", "document_propose", &request).unwrap();
+        runner_journal::record_tool_result(&path, "task-1", "document_propose", &request, &response)
+            .unwrap();
         let journal = runner_journal::Journal::open(&path).unwrap();
         assert!(journal.pending_operations().is_empty());
         assert!(journal.known_result_ids("task-1").contains("suggestion-1"));
@@ -487,8 +464,9 @@ mod tests {
             "params":{"arguments":{"operation":{"epoch":"epoch","id":"op-unknown"}}}
         });
         let response = rpc_error(json!(1), -32000, "outcome unknown");
-        journal_before_dispatch(&path, "task-1", "document_apply", &request).unwrap();
-        journal_after_response(&path, "task-1", "document_apply", &request, &response).unwrap();
+        runner_journal::record_tool_call(&path, "task-1", "document_apply", &request).unwrap();
+        runner_journal::record_tool_result(&path, "task-1", "document_apply", &request, &response)
+            .unwrap();
         let journal = runner_journal::Journal::open(&path).unwrap();
         assert_eq!(journal.pending_operations().len(), 1);
     }

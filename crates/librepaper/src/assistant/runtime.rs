@@ -2,8 +2,9 @@
 use super::acp;
 use super::context;
 use super::journal::{self as runner_journal, Journal};
-use super::lifecycle::{configuration_hash, Lease};
-use super::task::{terminal, AdmissionResult, State, Task};
+use super::lifecycle::{configuration_hash, Lease, RunnerState};
+use super::protocol::{push_bounded_utf8, truncate_utf8, TaskStatus};
+use super::task::{AdmissionResult, State, Task};
 use super::transport::{Event, Transport};
 use crate::automation::peer::{chat_token, validate_conversation, AutomationPeer};
 use serde_json::{json, Value};
@@ -15,7 +16,6 @@ use std::time::Duration;
 pub struct Config {
     pub conversation: String,
     pub token: String,
-    pub state_dir: Option<PathBuf>,
     /// The agent the user chose, as a command line. Whichever agent this is,
     /// it arrives already installed and already signed in: LibrePaper never
     /// holds a model credential.
@@ -24,7 +24,6 @@ pub struct Config {
 pub fn config(
     conversation: String,
     token: Option<String>,
-    state_dir: Option<PathBuf>,
     agent: Vec<String>,
 ) -> Result<Config, String> {
     if agent.is_empty() || agent[0].trim().is_empty() {
@@ -33,7 +32,6 @@ pub fn config(
     Ok(Config {
         conversation,
         token: chat_token(token)?,
-        state_dir,
         agent,
     })
 }
@@ -42,7 +40,7 @@ fn event_id() -> String {
 }
 /// The bookkeeping paths the document adapter needs. Everything secret is
 /// absent by construction: the link and the channel credential live in the
-/// private connection record named by [`internal_connection`], so neither
+/// private connection record named by [`runner_connection`], so neither
 /// reaches the agent's process arguments or the session payload it can read.
 fn adapter_environment(journal_path: &Path, epoch_path: &Path) -> Vec<(String, String)> {
     vec![
@@ -63,23 +61,23 @@ fn adapter_environment(journal_path: &Path, epoch_path: &Path) -> Vec<(String, S
     ]
 }
 
-/// Park this runner's document link and channel credential under a private
-/// connection name, and return the name. Rewritten on every start, so a
-/// rotated link repairs itself and a stale record never outlives its runner
-/// by more than one session.
-fn internal_connection(peer: &AutomationPeer, config: &Config) -> Result<String, String> {
-    use sha2::Digest as _;
-    let digest = hex::encode(sha2::Sha256::digest(
-        format!("{}\0{}", peer.link().credential_url(), config.conversation).as_bytes(),
-    ));
-    let name = format!("runner-{}", &digest[..48]);
+/// Resolve this runner's document link and channel credential from the
+/// private connection record the local companion parks them under before
+/// starting the runner, and return the connection's name. The runner no
+/// longer writes this record itself: it only reads what the companion
+/// already published, under the same derived name.
+fn runner_connection(peer: &AutomationPeer, config: &Config) -> Result<String, String> {
+    let name = crate::local::connections::runner_connection_name(
+        &peer.link().credential_url(),
+        &config.conversation,
+    );
     crate::local::connections::ConnectionStore::new(&crate::local::paths::state_home()?)
-        .put_internal(
-            &name,
-            &peer.link().credential_url(),
-            &config.conversation,
-            &config.token,
-        )
+        .get(&name)
+        .ok_or_else(|| {
+            "the assistant's connection record is missing; start it again from the browser"
+                .to_string()
+        })?;
+    Ok(name)
 }
 
 struct Active {
@@ -119,7 +117,14 @@ async fn emit(transport: &Transport, value: Value) -> Result<(), String> {
         .map_err(|_| "assistant transport stopped".into())
 }
 async fn report(transport: &Transport, task: &Task) -> Result<(), String> {
-    emit(transport, task.frame()).await?;
+    emit(transport, task.frame()).await
+}
+
+/// The task frame plus its accumulated answer, if any. Used only where a task
+/// is being reported as terminal: everywhere else the answer travels through
+/// [`publish_answer`] instead, so it is not resent on every activity update.
+async fn report_final(transport: &Transport, task: &Task) -> Result<(), String> {
+    report(transport, task).await?;
     if let Some(answer) = &task.answer {
         if !answer.is_empty() {
             emit(transport,json!({"type":"answer","id":event_id(),"task_id":task.id,"seq":task.event_seq,"text":answer,"truncated":task.answer_truncated})).await?;
@@ -135,11 +140,15 @@ async fn report_task(
     state_path: &Path,
 ) -> Result<(), String> {
     let task = persist_report(state, id, state_path)?;
-    report(transport, &task).await
+    if task.status.terminal() {
+        report_final(transport, &task).await
+    } else {
+        report(transport, &task).await
+    }
 }
 
 fn persist_report(state: &mut State, id: &str, state_path: &Path) -> Result<Task, String> {
-    if state.task(id).is_some_and(|task| terminal(&task.status)) {
+    if state.task(id).is_some_and(|task| task.status.terminal()) {
         let journal = Journal::open(state_path.with_file_name("runner.journal.json"))?;
         if let Some(task) = state.task_mut(id) {
             task.results = journal.task_results(id);
@@ -150,7 +159,6 @@ fn persist_report(state: &mut State, id: &str, state_path: &Path) -> Result<Task
         .ok_or("task disappeared while reporting")?;
     task.event_seq = task.event_seq.saturating_add(1);
     let task = task.clone();
-    state.sync_admission(id);
     state.save(state_path)?;
     Ok(task)
 }
@@ -159,7 +167,11 @@ fn persist_report(state: &mut State, id: &str, state_path: &Path) -> Result<Task
 /// advancing its task sequence.
 async fn replay_task(transport: &Transport, state: &State, id: &str) -> Result<(), String> {
     let task = state.task(id).ok_or("task disappeared while replaying")?;
-    report(transport, task).await
+    if task.status.terminal() {
+        report_final(transport, task).await
+    } else {
+        report(transport, task).await
+    }
 }
 
 /// Check that this link can actually use the document tools, and say what is
@@ -196,7 +208,7 @@ async fn start_agent_with_bridge(
     executable: &Path,
     connection: &str,
 ) -> Result<acp::Agent, String> {
-    lease.write_status("starting", None, Some("Starting agent session"))?;
+    lease.write_status(RunnerState::Starting, None, Some("Starting agent session"))?;
     let token = event_id();
     let marker = lease
         .location
@@ -218,7 +230,11 @@ async fn start_agent_with_bridge(
         connection,
     )
     .await?;
-    lease.write_status("starting", None, Some("Checking document bridge tools"))?;
+    lease.write_status(
+        RunnerState::Starting,
+        None,
+        Some("Checking document bridge tools"),
+    )?;
     let ready = tokio::time::timeout(Duration::from_secs(25), async {
         loop {
             if lease.stop_requested() {
@@ -228,10 +244,7 @@ async fn start_agent_with_bridge(
             }
             match tokio::fs::read_to_string(&marker).await {
                 Ok(found)
-                    if crate::automation::mcp::readiness_marker_matches(
-                        &token,
-                        Some(found.as_str()),
-                    ) =>
+                    if runner_journal::readiness_marker_matches(&token, Some(found.as_str())) =>
                 {
                     return Ok::<(), String>(())
                 }
@@ -256,7 +269,11 @@ async fn start_agent_with_bridge(
         agent.shutdown().await;
         return Err(error);
     }
-    lease.write_status("starting", None, Some("Document bridge connected"))?;
+    lease.write_status(
+        RunnerState::Starting,
+        None,
+        Some("Document bridge connected"),
+    )?;
     Ok(agent)
 }
 
@@ -340,23 +357,6 @@ fn context_queries(task: &Task) -> Result<Vec<Value>, String> {
     Ok(vec![source])
 }
 
-fn push_bounded_utf8(target: &mut String, chunk: &str, max_bytes: usize) {
-    if target.len() >= max_bytes {
-        return;
-    }
-    let mut end = (max_bytes - target.len()).min(chunk.len());
-    while end > 0 && !chunk.is_char_boundary(end) {
-        end -= 1;
-    }
-    target.push_str(&chunk[..end]);
-}
-
-fn truncate_utf8(value: &str, max_bytes: usize) -> String {
-    let mut output = String::with_capacity(value.len().min(max_bytes));
-    push_bounded_utf8(&mut output, value, max_bytes);
-    output
-}
-
 fn bounded_answer(value: &str, truncated: bool) -> String {
     const MAX: usize = super::protocol::MAX_ANSWER_BYTES;
     const MARKER: &str = "… [answer truncated at 32 KiB]";
@@ -377,21 +377,39 @@ fn retain_partial_answer(state: &mut State, id: &str, active: &Active) {
     }
 }
 
+/// Retain whatever answer text had streamed so far, mark the task terminal,
+/// and report the final frame. The same three steps happen wherever the
+/// runner gives up on a task it was actively driving.
+async fn finish_active_task(
+    transport: &Transport,
+    state: &mut State,
+    state_path: &Path,
+    active: &Active,
+    status: TaskStatus,
+    detail: &str,
+) -> Result<(), String> {
+    retain_partial_answer(state, &active.id, active);
+    finish(state, &active.id, status, detail);
+    report_task(transport, state, &active.id, state_path).await
+}
+
+/// Send the live streamed answer over the transport without persisting it:
+/// the in-memory task's answer field, and the state on disk, are only ever
+/// updated once a task reaches a terminal state (via `retain_partial_answer`
+/// at that point), never on every periodic flush of a turn still in flight.
 async fn publish_answer(
     transport: &Transport,
     state: &mut State,
     id: &str,
-    state_path: &Path,
+    text: &str,
+    truncated: bool,
 ) -> Result<(), String> {
     let task = state
         .task_mut(id)
         .ok_or("task disappeared while publishing answer")?;
     task.event_seq = task.event_seq.saturating_add(1);
-    let snapshot = task.clone();
-    state.sync_admission(id);
-    state.save(state_path)?;
-    if let Some(text) = snapshot.answer.as_ref().filter(|text| !text.is_empty()) {
-        emit(transport, json!({"type":"answer","id":event_id(),"task_id":snapshot.id,"seq":snapshot.event_seq,"text":text,"truncated":snapshot.answer_truncated})).await?;
+    if !text.is_empty() {
+        emit(transport,json!({"type":"answer","id":event_id(),"task_id":id,"seq":task.event_seq,"text":text,"truncated":truncated})).await?;
     }
     Ok(())
 }
@@ -416,7 +434,7 @@ async fn reconcile(
     }
     Ok(())
 }
-fn finish(state: &mut State, id: &str, status: &str, detail: &str) {
+fn finish(state: &mut State, id: &str, status: TaskStatus, detail: &str) {
     if let Some(task) = state.task_mut(id) {
         task.finish(status, detail);
     }
@@ -439,7 +457,7 @@ fn recover_state(path: &Path) -> Result<State, String> {
         // Keep previously reported terminal snapshots: the bounded journal
         // may already have evicted their receipts. Only unfinished recovery
         // needs a first durable effects summary.
-        .filter(|task| task.status == "interrupted" && task.results.is_null())
+        .filter(|task| task.status == TaskStatus::Interrupted && task.results.is_null())
         .map(|task| task.id.clone())
         .collect::<Vec<_>>();
     for id in ids {
@@ -447,7 +465,6 @@ fn recover_state(path: &Path) -> Result<State, String> {
             task.results = journal.task_results(&id);
             task.event_seq = task.event_seq.saturating_add(1);
         }
-        state.sync_admission(&id);
     }
     state.save(path)?;
     Ok(state)
@@ -458,10 +475,9 @@ pub async fn run(peer: &AutomationPeer, config: Config) -> Result<(), String> {
     let lease = Lease::acquire(
         peer,
         &config.conversation,
-        config.state_dir.as_deref(),
         configuration_hash(peer.link(), &config.agent),
     )?;
-    lease.write_status("starting", None, None)?;
+    lease.write_status(RunnerState::Starting, None, None)?;
     let result = execute(peer, &config, &lease).await;
     let _ = runner_journal::set_active_task(
         &lease.location.directory.join("runner.journal.json"),
@@ -472,7 +488,11 @@ pub async fn run(peer: &AutomationPeer, config: Config) -> Result<(), String> {
     let final_state = recover_state(&lease.location.state).map(|_| ());
     let result = result.and(final_state);
     let _ = lease.write_status(
-        if result.is_ok() { "stopped" } else { "failed" },
+        if result.is_ok() {
+            RunnerState::Stopped
+        } else {
+            RunnerState::Failed
+        },
         None,
         result.as_ref().err().map(String::as_str),
     );
@@ -485,27 +505,13 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     let mut epoch_path = runner_journal::execution_epoch_path(&journal_path);
     let mut _epoch_file = EpochFileGuard(epoch_path.clone());
     let mut journal = Journal::open(&journal_path)?;
-    for task in state
-        .tasks
-        .iter()
-        .filter(|task| task.status == "interrupted")
-    {
-        journal.append(
-            &task.id,
-            "restart_reconcile",
-            "",
-            None,
-            Vec::new(),
-            "interrupted",
-        )?;
-    }
     // Pending operations remain explicit uncertainty. The server does not
     // retain committed receipts, so startup must not imply that a lookup can
     // prove execution or safely replay a mutation.
     state.save(&lease.location.state)?;
     let executable = crate::local::paths::current_executable()?;
     let environment = adapter_environment(&journal_path, &epoch_path);
-    let connection = internal_connection(peer, config)?;
+    let connection = runner_connection(peer, config)?;
     // Prove the document is reachable at this access level before starting an
     // agent against it. The tools are handed to the agent as an MCP server it
     // launches itself, so a refusal there is invisible: the assistant comes up
@@ -514,7 +520,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // not starting. A reader link is the case that made this necessary, since
     // the document's MCP surface admits a commenter at minimum and answers a
     // reader with a flat 404.
-    lease.write_status("starting", None, Some("Checking document access"))?;
+    lease.write_status(RunnerState::Starting, None, Some("Checking document access"))?;
     reachable_or_refuse(peer).await?;
     // Said out loud, into the runner's own log, because every failure from
     // here on is invisible otherwise: the assistant answers happily with no
@@ -535,8 +541,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // so what is lost is the model's own memory of the conversation, not the
     // user's.
     let mut session_id = agent.session_id().to_string();
-    state.thread_id = Some(session_id.clone());
-    state.save(&lease.location.state)?;
     // ACP has no place to put developer instructions on a session, so they
     // lead the first prompt of this process. Once per runner start, not once
     // per task: the agent keeps the session's context between turns.
@@ -553,6 +557,9 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     let mut current_epoch: Option<String> = None;
     let mut stopping: Option<tokio::time::Instant> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(250));
+    // The lease status file is written to disk; only write it when the
+    // computed (state, task id) pair actually changed, not on every tick.
+    let mut last_lease_status: Option<(RunnerState, Option<String>)> = None;
     loop {
         // A single dispatch point prevents failed or cancelled turns from
         // stranding the next queued task.
@@ -563,13 +570,13 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
             if let Some(id) = state
                 .tasks
                 .iter()
-                .find(|task| task.status == "queued")
+                .find(|task| task.status == TaskStatus::Queued)
                 .map(|task| task.id.clone())
             {
                 let task_input = state.task(&id).cloned().ok_or("queued task disappeared")?;
                 match prepare_task_context(peer, &task_input).await {
                     Err(error) => {
-                        finish(&mut state, &id, "failed", &error);
+                        finish(&mut state, &id, TaskStatus::Failed, &error);
                         state.save(&lease.location.state)?;
                     }
                     Ok(prepared) => {
@@ -577,7 +584,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         task.start(prepared);
                         let prompt = task.prompt();
                         runner_journal::set_active_task(&journal_path, Some(&id))?;
-                        journal.append(&id, "task_dispatch", "", None, Vec::new(), "working")?;
                         state.save(&lease.location.state)?;
                         let prompt = match instructions.take() {
                             Some(preamble) => format!("{preamble}\n\nTask:\n{prompt}"),
@@ -585,14 +591,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         };
                         match agent.prompt(prompt).await {
                             Ok(()) => {
-                                journal.append(
-                                    &id,
-                                    "turn_started",
-                                    "",
-                                    None,
-                                    Vec::new(),
-                                    "working",
-                                )?;
                                 active = Some(Active {
                                     id: id.clone(),
                                     answer: String::new(),
@@ -607,15 +605,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                             }
                             Err(error) => {
                                 runner_journal::set_active_task(&journal_path, None)?;
-                                journal.append(
-                                    &id,
-                                    "turn_failed",
-                                    "",
-                                    None,
-                                    Vec::new(),
-                                    "failed",
-                                )?;
-                                finish(&mut state, &id, "failed", &error);
+                                finish(&mut state, &id, TaskStatus::Failed, &error);
                                 state.save(&lease.location.state)?;
                             }
                         }
@@ -627,15 +617,16 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
         if stopping.is_some_and(|at| active.is_none() || at.elapsed() > Duration::from_secs(3)) {
             runner_journal::set_execution_epoch(&epoch_path, None)?;
             agent.shutdown().await;
-            if let Some(current) = &active {
-                retain_partial_answer(&mut state, &current.id, current);
-                finish(
+            if let Some(current) = active.take() {
+                finish_active_task(
+                    &transport,
                     &mut state,
-                    &current.id,
-                    "interrupted",
+                    &lease.location.state,
+                    &current,
+                    TaskStatus::Interrupted,
                     "Runner stopped; remote document effects may still require reconciliation.",
-                );
-                report_task(&transport, &mut state, &current.id, &lease.location.state).await?;
+                )
+                .await?;
             }
             return Ok(());
         }
@@ -646,27 +637,26 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     let id = current.id.clone();
                     let text = bounded_answer(&current.answer, current.answer_truncated);
                     let truncated = current.answer_truncated;
-                    if let Some(task) = state.task_mut(&id) { task.answer = Some(text); task.answer_truncated = truncated; }
-                    publish_answer(&transport, &mut state, &id, &lease.location.state).await?;
+                    publish_answer(&transport, &mut state, &id, &text, truncated).await?;
                     if let Some(current) = active.as_mut() { current.answer_dirty = false; current.last_answer_emit = now; }
                 }
                 let timed_out = active.as_ref().filter(|current| {
                     current.cancel_deadline.is_some_and(|deadline| deadline <= now)
                 }).map(|current| current.id.clone());
-                if let Some(id) = timed_out {
-                    if let Some(current) = active.as_ref().filter(|current| current.id == id) {
-                        retain_partial_answer(&mut state, &id, current);
-                    }
-                    journal.append(&id, "cancel_timeout", "", None, Vec::new(), "interrupted")?;
+                if timed_out.is_some() {
                     // Fence the adapter before publishing any terminal state.
                     // The old ACP task must be fully stopped before a new
                     // session can acquire the same execution epoch.
                     runner_journal::set_execution_epoch(&epoch_path, None)?;
                     agent.shutdown().await;
-                    finish(&mut state, &id, "interrupted", "The agent connection stopped after cancellation; remote document effects may still require reconciliation.");
                     runner_journal::set_active_task(&journal_path, None)?;
-                    report_task(&transport, &mut state, &id, &lease.location.state).await?;
-                    active = None;
+                    if let Some(current) = active.take() {
+                        finish_active_task(
+                            &transport, &mut state, &lease.location.state, &current,
+                            TaskStatus::Interrupted,
+                            "The agent connection stopped after cancellation; remote document effects may still require reconciliation.",
+                        ).await?;
+                    }
                     if stopping.is_some() { return Ok(()); }
                     epoch_path = runner_journal::execution_epoch_path(&journal_path);
                     _epoch_file = EpochFileGuard(epoch_path.clone());
@@ -676,8 +666,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     ).await?;
                     if connected && stopping.is_none() { runner_journal::set_execution_epoch(&_epoch_file.0, current_epoch.as_deref())?; }
                     session_id = agent.session_id().to_string();
-                    state.thread_id = Some(session_id.clone());
-                    state.save(&lease.location.state)?;
                     instructions = Some(context::instructions(&lease.location.directory)?);
                     if connected { reconcile(&transport, &mut state, &session_id).await?; }
                 }
@@ -704,19 +692,27 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                 if lease.stop_requested() && stopping.is_none() {
                     stopping=Some(tokio::time::Instant::now());
                     runner_journal::set_execution_epoch(&epoch_path, None)?;
-                    let ids = state.tasks.iter().filter(|task| !terminal(&task.status)).map(|task| task.id.clone()).collect::<Vec<_>>();
-                    for task in &mut state.tasks { if task.status=="queued" { task.finish("cancelled", "Runner stopped"); } }
+                    let ids = state.tasks.iter().filter(|task| !task.status.terminal()).map(|task| task.id.clone()).collect::<Vec<_>>();
+                    for task in &mut state.tasks { if task.status==TaskStatus::Queued { task.finish(TaskStatus::Cancelled, "Runner stopped"); } }
                     if let Some(current)=active.as_mut() {
                         if !current.cancelling { current.cancelling = true; agent.cancel().await?; }
                         runner_journal::set_active_task(&journal_path, None)?;
-                        journal.append(&current.id, "runner_stop", "", None, Vec::new(), "interrupted")?;
-                        finish(&mut state,&current.id,"interrupted","Runner stopped before completion was confirmed; inspect the document before submitting new work.");
+                        finish(&mut state,&current.id,TaskStatus::Interrupted,"Runner stopped before completion was confirmed; inspect the document before submitting new work.");
                     }
                     state.save(&lease.location.state)?;
                     for id in ids { report_task(&transport, &mut state, &id, &lease.location.state).await?; }
                 }
-                let (status,id)=if let Some(current)=&active { (state.task(&current.id).map(|task|task.status.as_str()).unwrap_or("working"),Some(current.id.as_str())) } else if relay_connected { ("ready",None) } else { ("connecting",None) };
-                lease.write_status(status,id,None)?;
+                let computed = if let Some(current)=&active {
+                    let kind = match state.task(&current.id).map(|task| task.status) {
+                        Some(TaskStatus::NeedsInput) => RunnerState::NeedsInput,
+                        _ => RunnerState::Working,
+                    };
+                    (kind, Some(current.id.clone()))
+                } else if relay_connected { (RunnerState::Ready, None) } else { (RunnerState::Connecting, None) };
+                if last_lease_status.as_ref() != Some(&computed) {
+                    lease.write_status(computed.0, computed.1.as_deref(), None)?;
+                    last_lease_status = Some(computed);
+                }
             }
             _=tokio::signal::ctrl_c()=> {
                 if stopping.is_none() {
@@ -747,7 +743,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                             }
                         }
                         runner_journal::set_active_task(&journal_path, None)?;
-                        for task in &mut state.tasks { if !terminal(&task.status) { journal.append(&task.id, "transport_lost", "", None, Vec::new(), "interrupted")?; task.interrupt("Connection ended before completion was confirmed. Inspect the document before submitting new work.");} }
+                        for task in &mut state.tasks { if !task.status.terminal() { task.interrupt("Connection ended before completion was confirmed. Inspect the document before submitting new work.");} }
                         state.save(&lease.location.state)?;return Err(error);
                     }
                     None=>return Err("assistant transport stopped".into()),
@@ -760,7 +756,6 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                     let id=task.id.clone();
                                     match state.admit(task) {
                                     Ok(AdmissionResult::New)=>{
-                                        journal.append(&id, "task_admitted", "", None, Vec::new(), "queued")?;
                                         report_task(&transport,&mut state,&id,&lease.location.state).await?;
                                     }
                                     Ok(AdmissionResult::ExistingFull(existing_id))=>{
@@ -778,7 +773,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 if let Some(current)=active.as_mut().filter(|task|task.id==id) {
                                     if !current.cancelling { current.cancelling=true; current.cancel_deadline=Some(tokio::time::Instant::now()+Duration::from_secs(3)); agent.cancel().await?; }
                                     if let Some(task)=state.task_mut(id){task.request_cancel();}
-                                } else if state.task(id).is_some_and(|task|task.status=="queued") { finish(&mut state,id,"cancelled","Queued task cancelled"); }
+                                } else if state.task(id).is_some_and(|task|task.status==TaskStatus::Queued) { finish(&mut state,id,TaskStatus::Cancelled,"Queued task cancelled"); }
                                 if state.task(id).is_some(){report_task(&transport,&mut state,id,&lease.location.state).await?;}
                             }
                             "input"=> {
@@ -820,21 +815,21 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
             }
             event=agent.recv()=> {
                 let Some(event)=event else {
-                    if let Some(current) = active.as_ref() {
-                        let id = current.id.clone();
-                        retain_partial_answer(&mut state, &id, current);
-                        finish(&mut state, &id, "failed", "The agent exited; unconfirmed work will not be replayed.");
-                        report_task(&transport, &mut state, &id, &lease.location.state).await?;
+                    if let Some(current) = active.take() {
+                        finish_active_task(
+                            &transport, &mut state, &lease.location.state, &current,
+                            TaskStatus::Failed, "The agent exited; unconfirmed work will not be replayed.",
+                        ).await?;
                     }
                     return Err("the agent exited; unconfirmed work will not be replayed".into());
                 };
                 match event {
                     acp::Event::Exited(error) => {
-                        if let Some(current) = active.as_ref() {
-                            let id = current.id.clone();
-                            retain_partial_answer(&mut state, &id, current);
-                            finish(&mut state, &id, "failed", &format!("The agent exited: {error}"));
-                            report_task(&transport, &mut state, &id, &lease.location.state).await?;
+                        if let Some(current) = active.take() {
+                            finish_active_task(
+                                &transport, &mut state, &lease.location.state, &current,
+                                TaskStatus::Failed, &format!("The agent exited: {error}"),
+                            ).await?;
                         }
                         return Err(format!("the agent exited: {error}"));
                     }
@@ -889,28 +884,26 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         let Some(current)=active.as_mut() else { continue; };
                         let id=current.id.clone();
                         retain_partial_answer(&mut state, &id, current);
-                        let answer=current.answer.clone();
                         while let Some(pending)=current.pending.pop_front() { pending.handle.respond(None)?; }
                         runner_journal::set_active_task(&journal_path, None)?;
                         journal.refresh()?;
                         let terminal_results = journal.task_results(&id);
                         match outcome {
                             Err(error) => {
-                                journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?;
                                 if let Some(task) = state.task_mut(&id) { task.results = terminal_results.clone(); }
-                                finish(&mut state,&id,"failed",&error);
+                                finish(&mut state,&id,TaskStatus::Failed,&error);
                             }
                             Ok(agent_client_protocol::schema::v1::StopReason::EndTurn) => {
                                 let results = journal.task_results(&id);
-                                let unresolved_count = results["effects"]["counts"]["unresolved"].as_u64().unwrap_or(0);
-                                let refused = results["effects"]["counts"]["refused"].as_u64().unwrap_or(0);
-                                let answer=answer.trim().to_string();
+                                let unresolved_count = results["unresolved"].as_u64().unwrap_or(0);
+                                let refused = results["refused"].as_u64().unwrap_or(0);
+                                let answer=current.answer.trim().to_string();
+                                let answer_truncated = current.answer_truncated;
                                 if let Some(task)=state.task_mut(&id){
-                                    task.answer=Some(if answer.is_empty() {"Finished.".into()} else {bounded_answer(answer.trim(), current.answer_truncated)});
-                                    task.answer_truncated=current.answer_truncated;
+                                    task.answer=Some(if answer.is_empty() {"Finished.".into()} else {bounded_answer(&answer, answer_truncated)});
+                                    task.answer_truncated=answer_truncated;
                                     task.results=results;
                                 }
-                                journal.append(&id, "turn_completed", "", None, Vec::new(), if refused == 0 {"completed"} else {"refused"})?;
                                 let detail=if unresolved_count>0 {
                                     "Turn ended; document changes need reconciliation"
                                 } else if refused == 0 {
@@ -918,22 +911,19 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 } else {
                                     "Finished; some operations were refused"
                                 };
-                                finish(&mut state,&id,"completed",detail);
+                                finish(&mut state,&id,TaskStatus::Completed,detail);
                             }
                             Ok(agent_client_protocol::schema::v1::StopReason::Cancelled) => {
-                                journal.append(&id, "turn_interrupted", "", None, Vec::new(), "cancelled")?;
                                 if let Some(task) = state.task_mut(&id) { task.results = terminal_results.clone(); }
-                                finish(&mut state,&id,"cancelled","Task cancelled");
+                                finish(&mut state,&id,TaskStatus::Cancelled,"Task cancelled");
                             }
                             Ok(agent_client_protocol::schema::v1::StopReason::Refusal) => {
-                                journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?;
                                 if let Some(task) = state.task_mut(&id) { task.results = terminal_results.clone(); }
-                                finish(&mut state,&id,"failed","The agent declined this task. Inspect any document changes before retrying.");
+                                finish(&mut state,&id,TaskStatus::Failed,"The agent declined this task. Inspect any document changes before retrying.");
                             }
                             Ok(reason) => {
-                                journal.append(&id, "turn_failed", "", None, Vec::new(), "failed")?;
                                 if let Some(task) = state.task_mut(&id) { task.results = terminal_results; }
-                                finish(&mut state,&id,"failed",&format!("Task ended early ({reason:?}). Inspect any document changes before retrying."));
+                                finish(&mut state,&id,TaskStatus::Failed,&format!("Task ended early ({reason:?}). Inspect any document changes before retrying."));
                             }
                         }
                         report_task(&transport,&mut state,&id,&lease.location.state).await?;
@@ -965,7 +955,7 @@ mod tests {
         let last = persist_report(&mut state, "one", &path).unwrap();
         assert!(last.event_seq > first.event_seq);
         let recovered = recover_state(&path).unwrap();
-        assert_eq!(recovered.task("one").unwrap().status, "interrupted");
+        assert_eq!(recovered.task("one").unwrap().status, TaskStatus::Interrupted);
         assert!(recovered.task("one").unwrap().event_seq > last.event_seq);
     }
 
@@ -978,7 +968,7 @@ mod tests {
         runner_journal::record_tool_call(&journal_path, "one", "document_propose", &request)
             .unwrap();
         runner_journal::record_tool_result(&journal_path,"one","document_propose",&request,&json!({"structuredContent":{"status":"committed","effects":[{"kind":"suggestion","id":"kept"}]}})).unwrap();
-        for status in ["cancelled", "failed", "interrupted"] {
+        for status in [TaskStatus::Cancelled, TaskStatus::Failed, TaskStatus::Interrupted] {
             let mut state = State::default();
             let mut task =
                 Task::from_message(&json!({"id":"one","role":"user","text":"Edit"})).unwrap();
@@ -1019,7 +1009,7 @@ mod tests {
         let mut state = State::default();
         let mut task =
             Task::from_message(&json!({"id":"one","role":"user","text":"Edit"})).unwrap();
-        task.finish("interrupted", "Stopped");
+        task.finish(TaskStatus::Interrupted, "Stopped");
         task.results = json!({"suggestions":["kept"]});
         state.admit(task).unwrap();
         state.save(&path).unwrap();
@@ -1034,11 +1024,11 @@ mod tests {
         let path = dir.path().join("runner.json");
         let mut state = State::default();
         let mut task=Task::from_message(&json!({"id":"one","role":"user","text":"Edit","task":{"kind":"rewrite","scope":"selection"}})).unwrap();
-        task.status = "working".into();
+        task.status = TaskStatus::Working;
         state.admit(task).unwrap();
         state.save(&path).unwrap();
         let restored = State::load(&path).unwrap();
-        assert_eq!(restored.tasks[0].status, "interrupted");
+        assert_eq!(restored.tasks[0].status, TaskStatus::Interrupted);
         assert_eq!(
             restored.tasks[0].task.as_ref().unwrap().kind,
             crate::assistant::protocol::TaskKind::Rewrite
@@ -1064,8 +1054,8 @@ mod tests {
                     .unwrap()
             )
             .is_err());
-        finish(&mut state, "0", "cancelled", "cancelled");
-        assert_eq!(state.task("0").unwrap().status, "cancelled");
+        finish(&mut state, "0", TaskStatus::Cancelled, "cancelled");
+        assert_eq!(state.task("0").unwrap().status, TaskStatus::Cancelled);
     }
 
     #[test]
@@ -1092,25 +1082,15 @@ mod tests {
 
     #[test]
     fn an_agent_command_is_required_before_a_runner_can_start() {
-        assert!(config("c".into(), Some("t".into()), None, Vec::new()).is_err());
-        assert!(config("c".into(), Some("t".into()), None, vec!["  ".into()]).is_err());
-        let config = config(
-            "c".into(),
-            Some("t".into()),
-            None,
-            vec!["claude-code-acp".into()],
-        )
-        .expect("an installed agent");
+        assert!(config("c".into(), Some("t".into()), Vec::new()).is_err());
+        assert!(config("c".into(), Some("t".into()), vec!["  ".into()]).is_err());
+        let config = config("c".into(), Some("t".into()), vec!["claude-code-acp".into()])
+            .expect("an installed agent");
         assert_eq!(config.agent, vec!["claude-code-acp".to_string()]);
     }
 
     #[test]
     fn answer_bounds_are_bytes_and_preserve_utf8() {
-        let mut output = "a".repeat(5);
-        push_bounded_utf8(&mut output, "ééé", 8);
-        assert_eq!(output, "aaaaaé");
-        assert_eq!(output.len(), 7);
-        assert_eq!(truncate_utf8("ééé", 5), "éé");
         let truncated = bounded_answer(&"a".repeat(32 * 1024 + 1), true);
         assert!(truncated.ends_with("… [answer truncated at 32 KiB]"));
         assert!(truncated.len() <= crate::assistant::protocol::MAX_ANSWER_BYTES);
@@ -1130,7 +1110,7 @@ mod tests {
         state.save(&path).unwrap();
         let recovered = recover_state(&path).unwrap();
         let task = recovered.task("streamed").unwrap();
-        assert_eq!(task.status, "interrupted");
+        assert_eq!(task.status, TaskStatus::Interrupted);
         assert_eq!(task.answer.as_deref(), Some("partial answer"));
         assert!(task.answer_truncated);
         assert!(task.event_seq > 0);
