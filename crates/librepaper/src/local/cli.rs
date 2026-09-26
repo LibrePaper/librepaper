@@ -348,7 +348,7 @@ async fn open(url: &str) {
         .unwrap_or_else(|error| die(error));
     let target = crate::local::lifecycle::connection_target(url, state.port)
         .unwrap_or_else(|error| die(error));
-    if !target.is_empty() {
+    if let crate::local::lifecycle::Target::Open(target) = target {
         if let Err(error) = crate::local::lifecycle::open_browser(&target) {
             die(error);
         }

@@ -423,6 +423,10 @@ struct PendingPair {
     origin: String,
     project: String,
     challenge: String,
+    /// Where the consent result page sends the browser back when there is
+    /// no opener to poll claim for it. Required, and checked against the
+    /// same origin as every other field of the pending entry.
+    return_to: String,
     expires: Instant,
     token: Option<(String, i64)>,
 }
@@ -985,7 +989,6 @@ async fn dispatch(
         ["pair", "request"] if *method == Method::GET => {
             consent::handle_pair_request(inner, request).await
         }
-        ["pair"] if *method == Method::GET => consent::handle_pair_page(&request),
         ["pair"] if *method == Method::POST => {
             consent::handle_pair_consent(inner, peer, request).await
         }

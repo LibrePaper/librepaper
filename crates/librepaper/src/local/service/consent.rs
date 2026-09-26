@@ -1,11 +1,21 @@
 //! Consent: how a site in the browser comes to be allowed to use the tools
 //! on this computer.
 //!
-//! Two proofs, in this order. The six digits the person reads off this
-//! machine and types into the page prove they are sitting at it; the consent
-//! page, served from the service's own loopback origin, proves the decision
-//! was taken here rather than by the site asking. Only then does a token
-//! exist, and it is posted back to exactly the origin the page named.
+//! One consent page, reached only through `GET pair/request`, and one way
+//! the token is handed back afterward: `POST connect/claim`, proven by the
+//! PKCE verifier the browser generated and never sent here. The consent
+//! result page itself never carries a token. When it was opened as a popup
+//! from a page already polling claim, closing the window is enough; when it
+//! was opened by the OS through a `librepaper://connect` link -- because the
+//! app was not running, or its port was unknown -- there is no opener to
+//! notice anything, so the page instead redirects the browser back to the
+//! site's own `return` URL with the companion's real address in the
+//! fragment, which is the only channel a link handler has back to the page.
+//!
+//! The six digits the person reads off this machine and types in
+//! (`POST connect`) stay as the fallback for a machine without the link
+//! handler installed; that path proves they are sitting at this computer
+//! without ever visiting the consent page.
 //!
 //! Split out of `service` because it is a closed surface: nothing here reads
 //! a job, a binding or a workspace, and nothing outside calls into it except
@@ -19,40 +29,53 @@ fn pair_query(query: &str) -> Option<(String, String)> {
     let mut project = None;
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
         match &*key {
-            "origin" => origin = valid_pair_origin(&value),
-            "project" => project = valid_pair_project(&value),
+            "origin" => origin = super::super::pairing::valid_origin(&value),
+            "project" => project = super::super::pairing::valid_project(&value),
             _ => {}
         }
     }
     Some((origin?, project?))
 }
 
-fn pair_request_fields(query: &str) -> Option<(String, String)> {
+/// `request`, `challenge` and `return` off the `pair/request` query string.
+/// `origin` must already be validated: `return`'s own validation depends on
+/// it.
+fn pair_request_fields(query: &str, origin: &str) -> Option<(String, String, String)> {
     let mut request = None;
     let mut challenge = None;
+    let mut return_to = None;
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
         match &*key {
-            "request" => request = valid_request_id(&value),
-            "challenge" => challenge = valid_challenge(&value),
+            "request" => request = super::super::pairing::valid_request_id(&value),
+            "challenge" => challenge = super::super::pairing::valid_challenge(&value),
+            "return" => return_to = super::super::pairing::valid_return(&value, origin),
             _ => {}
         }
     }
-    Some((request?, challenge?))
+    Some((request?, challenge?, return_to?))
 }
 
-fn valid_request_id(raw: &str) -> Option<String> {
-    let value = raw.trim();
-    (value.len() >= 32
-        && value.len() <= 128
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
-    .then(|| value.to_string())
-}
-
-fn valid_challenge(raw: &str) -> Option<String> {
-    let value = raw.trim().to_ascii_lowercase();
-    (value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit())).then_some(value)
+/// All five fields off the `POST pair` form body: nothing about the consent
+/// form is optional any more.
+fn pair_form_fields(body: &[u8]) -> Option<(String, String, String, String, String)> {
+    let mut origin = None;
+    let mut project = None;
+    let mut request = None;
+    let mut challenge = None;
+    let mut return_raw = None;
+    for (key, value) in url::form_urlencoded::parse(body) {
+        match &*key {
+            "origin" => origin = super::super::pairing::valid_origin(&value),
+            "project" => project = super::super::pairing::valid_project(&value),
+            "request" => request = super::super::pairing::valid_request_id(&value),
+            "challenge" => challenge = super::super::pairing::valid_challenge(&value),
+            "return" => return_raw = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    let origin = origin?;
+    let return_to = super::super::pairing::valid_return(&return_raw?, &origin)?;
+    Some((origin, project?, request?, challenge?, return_to))
 }
 
 pub(super) async fn handle_pair_request(inner: &Inner, request: Request<Body>) -> Reply {
@@ -63,16 +86,10 @@ pub(super) async fn handle_pair_request(inner: &Inner, request: Request<Body>) -
             &json!({"error": "pair request needs an origin and project"}),
         );
     };
-    let Some((request_id, challenge)) = pair_request_fields(query) else {
+    let Some((request_id, challenge, return_to)) = pair_request_fields(query, &origin) else {
         return write_json(
             400,
-            &json!({"error": "pair request needs a request id and challenge"}),
-        );
-    };
-    let Some(challenge) = valid_challenge(&challenge) else {
-        return write_json(
-            400,
-            &json!({"error": "challenge must be a SHA-256 hex digest"}),
+            &json!({"error": "pair request needs a request id, challenge and return URL"}),
         );
     };
     let mut pending = inner.pending_pairs.lock().await;
@@ -84,22 +101,25 @@ pub(super) async fn handle_pair_request(inner: &Inner, request: Request<Body>) -
         if existing.origin != origin
             || existing.project != project
             || existing.challenge != challenge
+            || existing.return_to != return_to
         {
             return write_json(409, &json!({"error": "request id is already registered"}));
         }
     } else {
         pending.insert(
-            request_id,
+            request_id.clone(),
             PendingPair {
-                origin,
-                project,
-                challenge,
+                origin: origin.clone(),
+                project: project.clone(),
+                challenge: challenge.clone(),
+                return_to: return_to.clone(),
                 expires: Instant::now() + PAIR_REQUEST_TTL,
                 token: None,
             },
         );
     }
-    handle_pair_page(&request)
+    drop(pending);
+    handle_pair_page(&origin, &project, &request_id, &challenge, &return_to)
 }
 
 pub(super) async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> Reply {
@@ -145,34 +165,6 @@ pub(super) async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> 
     )
 }
 
-/// An origin as a browser would send it: an http(s) scheme and a host, and
-/// nothing else -- no path, credentials, query or fragment -- normalised
-/// the way the pairing store keys it.
-fn valid_pair_origin(raw: &str) -> Option<String> {
-    let parsed = url::Url::parse(raw.trim()).ok()?;
-    if !matches!(parsed.scheme(), "http" | "https")
-        || parsed.host_str().is_none()
-        || parsed.path() != "/"
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-    {
-        return None;
-    }
-    Some(super::super::pairing::normalize_origin(raw.trim()))
-}
-
-fn valid_pair_project(raw: &str) -> Option<String> {
-    let value = raw.trim();
-    let ok = !value.is_empty()
-        && value.len() <= 256
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'));
-    ok.then(|| value.to_string())
-}
-
 fn html(status: u16, body: String) -> Reply {
     let mut response = Response::new(Body::from(body));
     *response.status_mut() =
@@ -203,20 +195,27 @@ button.allow{background:#1f6f43;border-color:#1f6f43;color:#fff}";
 
 /* ------------------------------------------------------------ pair page */
 
-// The one-consent page a browser opens in a popup: it names the site that
-// wants to use the tools on this computer and offers Allow.
-pub(super) fn handle_pair_page(request: &Request<Body>) -> Reply {
-    let Some((origin, project)) = pair_query(request.uri().query().unwrap_or("")) else {
-        return plain(400, "pair needs an origin and a project");
-    };
-    let site = html_escape::encode_text(&origin);
-    let name = html_escape::encode_text(&project);
-    let origin_attr = html_escape::encode_double_quoted_attribute(&origin);
-    let project_attr = html_escape::encode_double_quoted_attribute(&project);
-    let request_fields = request.uri().query().and_then(pair_request_fields).map(|(id, challenge)| format!(
-        "<input type=\"hidden\" name=\"request\" value=\"{}\"><input type=\"hidden\" name=\"challenge\" value=\"{}\">",
-        html_escape::encode_double_quoted_attribute(&id), html_escape::encode_double_quoted_attribute(&challenge)
-    )).unwrap_or_default();
+/// The one consent page, reached only through `GET pair/request`: it names
+/// the site that wants to use the tools on this computer and offers Allow.
+/// It is opened either by the browser (already on this computer's address)
+/// or by the OS through a `librepaper://connect` link (the app was not
+/// running, or its port was unknown), and carries every field the pending
+/// request was registered with as hidden fields, so `POST pair` can check
+/// them all again.
+fn handle_pair_page(
+    origin: &str,
+    project: &str,
+    request_id: &str,
+    challenge: &str,
+    return_to: &str,
+) -> Reply {
+    let site = html_escape::encode_text(origin);
+    let name = html_escape::encode_text(project);
+    let origin_attr = html_escape::encode_double_quoted_attribute(origin);
+    let project_attr = html_escape::encode_double_quoted_attribute(project);
+    let request_attr = html_escape::encode_double_quoted_attribute(request_id);
+    let challenge_attr = html_escape::encode_double_quoted_attribute(challenge);
+    let return_attr = html_escape::encode_double_quoted_attribute(return_to);
     let page = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
@@ -230,7 +229,10 @@ with a site and document you trust. Pairing alone does not run the document; Lib
 will ask you to start Quarto separately.</p>\
 <form method=\"post\" action=\"{BASE_PATH}/pair\">\
 <input type=\"hidden\" name=\"origin\" value=\"{origin_attr}\">\
-<input type=\"hidden\" name=\"project\" value=\"{project_attr}\">{request_fields}\
+<input type=\"hidden\" name=\"project\" value=\"{project_attr}\">\
+<input type=\"hidden\" name=\"request\" value=\"{request_attr}\">\
+<input type=\"hidden\" name=\"challenge\" value=\"{challenge_attr}\">\
+<input type=\"hidden\" name=\"return\" value=\"{return_attr}\">\
 <div class=\"row\"><button type=\"submit\" class=\"allow\">Allow local code execution</button>\
 <button type=\"button\" onclick=\"window.close()\">Cancel</button></div></form>\
 </body></html>"
@@ -284,61 +286,68 @@ pub(super) async fn handle_pair_consent(
         Ok(body) => body,
         Err(_) => return plain(413, "pairing form is too large"),
     };
-    let Some((origin, project)) = pair_query(std::str::from_utf8(&body).unwrap_or("")) else {
-        return plain(400, "pair needs an origin and a project");
-    };
-    let request_fields = pair_request_fields(std::str::from_utf8(&body).unwrap_or(""));
-    let has_request_fields =
-        url::form_urlencoded::parse(&body).any(|(key, _)| key == "request" || key == "challenge");
-    if has_request_fields && request_fields.is_none() {
+    let Some((origin, project, request_id, challenge, return_to)) = pair_form_fields(&body) else {
         return plain(400, "invalid pair request");
-    }
+    };
     let mut pending = inner.pending_pairs.lock().await;
-    if let Some((request_id, challenge)) = &request_fields {
-        let valid = pending.get(request_id).is_some_and(|item| {
-            item.expires > Instant::now()
-                && item.project == project
-                && item.origin == origin
-                && item.challenge == challenge.to_ascii_lowercase()
-                && item.token.is_none()
-        });
-        if !valid {
-            return plain(400, "pair request expired, unknown, or already used");
-        }
+    let valid = pending.get(&request_id).is_some_and(|item| {
+        item.expires > Instant::now()
+            && item.project == project
+            && item.origin == origin
+            && item.challenge == challenge
+            && item.return_to == return_to
+            && item.token.is_none()
+    });
+    if !valid {
+        return plain(400, "pair request expired, unknown, or already used");
     }
     let (token, expires) = match inner.pairing.issue(&origin, &project, "consent page") {
         Ok(issued) => issued,
         Err(_) => return plain(500, "could not store the pairing"),
     };
-    if let Some((request_id, _)) = request_fields {
-        if let Some(item) = pending.get_mut(&request_id) {
-            item.token = Some((token.clone(), expires));
-        }
+    if let Some(item) = pending.get_mut(&request_id) {
+        item.token = Some((token, expires));
     }
     drop(pending);
-    // The pairing goes to the window that opened this one and to that
-    // window only: postMessage's target origin is the origin that was
-    // allowed, so a page anywhere else never receives it.
-    let message = json!({
-        "type": "librepaper-local-pairing",
-        "origin": origin,
-        "project": project,
-        "token": token,
-        "expires": expires,
-        "instance": inner.instance,
-        "address": format!("http://127.0.0.1:{}/", inner.port),
-    })
-    .to_string()
-    .replace("</", "<\\/");
-    let target = serde_json::to_string(&origin).unwrap_or_else(|_| "\"\"".into());
+    pair_result_page(inner.port, &return_to, &request_id)
+}
+
+/// The page a completed `POST pair` answers with. It never carries the
+/// token -- the opener that started this attempt retrieves it separately by
+/// polling `connect/claim` -- and it takes one of two actions: if an opener
+/// exists, this window closes itself; otherwise, when the service is not on
+/// its default port, it redirects the browser back to `return_to` with the
+/// port and the request id in the fragment, the only channel a link handler
+/// has back to the page. On the default port with no opener there is
+/// nothing to hand back: the page just says so.
+fn pair_result_page(port: u16, return_to: &str, request_id: &str) -> Reply {
+    let redirect = (port != protocol::DEFAULT_PORT)
+        .then(|| super::super::pairing::return_fragment(return_to, port, request_id));
+    let (body_text, script) = match &redirect {
+        Some(target) => {
+            let target_json = serde_json::to_string(target)
+                .unwrap_or_else(|_| "\"\"".into())
+                .replace("</", "<\\/");
+            (
+                "This site can now render with the tools on this computer.",
+                format!(
+                    "<script>(function(){{if(window.opener){{setTimeout(function(){{window.close();}},150);}}else{{location.replace({target_json});}}}})();</script>"
+                ),
+            )
+        }
+        None => (
+            "This site can now render with the tools on this computer. Return to your \
+             document; this tab can be closed.",
+            "<script>(function(){if(window.opener){setTimeout(function(){window.close();},150);}}\
+)();</script>"
+                .to_string(),
+        ),
+    };
     let page = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
 <title>LibrePaper allowed</title><style>{PAIR_STYLE}</style></head><body>\
-<h1>Allowed</h1><p>This site can now render with the tools on this computer. \
-You can close this window.</p>\
-<script>(function(){{var m={message};var t={target};\
-if(window.opener){{try{{window.opener.postMessage(m,t);}}catch(e){{}}\
-setTimeout(function(){{window.close();}},150);}}}})();</script>\
+<h1>Allowed</h1><p>{body_text}</p>\
+{script}\
 </body></html>"
     );
     html(200, page)
@@ -405,3 +414,41 @@ pub(super) async fn handle_disconnect(
 }
 
 /* -------------------------------------------------------- capabilities */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn body_text(reply: Reply) -> String {
+        let bytes = axum::body::to_bytes(reply.into_body(), 64 * 1024)
+            .await
+            .expect("result page body");
+        String::from_utf8(bytes.to_vec()).expect("result page is utf8")
+    }
+
+    #[tokio::test]
+    async fn pair_result_page_never_carries_the_token_and_redirects_only_off_the_default_port() {
+        let token_marker = "super-secret-token";
+        let request_id = "r".repeat(32);
+        let return_to = "https://paper.example/document/1";
+
+        let default_body = body_text(pair_result_page(
+            protocol::DEFAULT_PORT,
+            return_to,
+            &request_id,
+        ))
+        .await;
+        assert!(!default_body.contains("location.replace"));
+        assert!(!default_body.contains(token_marker));
+
+        let custom_body = body_text(pair_result_page(
+            protocol::DEFAULT_PORT + 1,
+            return_to,
+            &request_id,
+        ))
+        .await;
+        assert!(custom_body.contains("location.replace"));
+        assert!(custom_body.contains(return_to));
+        assert!(!custom_body.contains(token_marker));
+    }
+}
