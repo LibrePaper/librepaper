@@ -151,6 +151,10 @@ export function diagnosticLabel(item, fallbackPath = "") {
   return path ? `${severity} · ${path}${line}` : severity;
 }
 
+// The server's capability flags are taken exactly as given. A commenter must
+// never be upgraded into a suggester by inferring one right from another: a
+// suggestion is an editor's track change, and only the server's own
+// `can_suggest` flag says whether this reader may make one.
 export function normalizeCapabilities(value) {
   const raw = value?.capabilities && typeof value.capabilities === "object"
     ? value.capabilities
@@ -160,10 +164,10 @@ export function normalizeCapabilities(value) {
   return {
     verified: value?.verified !== false && (value?.verified === true || hasAny),
     can_read: raw.can_read === true,
-    can_comment: raw.can_comment === true || raw.can_suggest === true,
+    can_comment: raw.can_comment === true,
     can_edit: raw.can_edit === true,
-    can_suggest: raw.can_suggest === true || raw.can_comment === true,
-    can_reply: raw.can_reply === true || raw.can_comment === true,
+    can_suggest: raw.can_suggest === true,
+    can_reply: raw.can_reply === true,
     raw,
   };
 }
@@ -185,7 +189,10 @@ export function capabilityAllows(capabilities, task, { attached = null, path = "
   return true;
 }
 
-export function diagnosticContext(diagnostic, revision = "") {
+// The compact diagnostic entry a task's context carries, distinct from
+// assistant-review.js's `diagnosticContext`, which reconstructs a source
+// line from a rendered tree rather than compacting a wire diagnostic.
+export function taskDiagnosticContext(diagnostic, revision = "") {
   if (!diagnostic) return null;
   const source = diagnostic.source || diagnostic.excerpt || diagnostic.line_text;
   return {
@@ -229,7 +236,7 @@ export function composeTaskMessage({ id, text: body = "", task, attachment = nul
     if (currentRevision) context.revision = currentRevision;
     if (selected?.render_digest) context.render_digest = selected.render_digest;
   }
-  const error = diagnosticContext(diagnostic, revision || diagnostic?.revision || "");
+  const error = taskDiagnosticContext(diagnostic, revision || diagnostic?.revision || "");
   if (error) context.diagnostic = error;
   const refinement = suggestionContext(suggestion);
   if (refinement) context.suggestion = refinement;
@@ -241,7 +248,7 @@ export function composeTaskMessage({ id, text: body = "", task, attachment = nul
   context.diagnostics = [];
   context.diagnostics_omitted = diagnostics.length;
   for (const item of diagnostics) {
-    const entry = diagnosticContext(item, item?.revision || "");
+    const entry = taskDiagnosticContext(item, item?.revision || "");
     if (!entry) continue;
     context.diagnostics.push(entry);
     if (!checkContextSize({ task, context }).ok) context.diagnostics.pop();
@@ -267,11 +274,11 @@ export function checkContextSize(value, limit = CONTEXT_LIMIT) {
 
 export function resultIds(message) {
   const results = message?.context?.results;
-  if (!results || typeof results !== "object") return { suggestions: [], pass: null };
+  if (!results || typeof results !== "object") return { suggestions: [] };
   const suggestions = Array.isArray(results.suggestions)
     ? results.suggestions.map(text).filter(Boolean)
     : [];
-  return { suggestions, pass: results.pass ? text(results.pass) : null };
+  return { suggestions };
 }
 
 export function visibleResults(message, comments = []) {
@@ -279,12 +286,5 @@ export function visibleResults(message, comments = []) {
   const editing = comments.filter((comment) => comment?.motivation === "editing");
   const visible = new Set(editing.map((comment) => text(comment?.id)));
   const suggestions = result.suggestions.filter((id) => visible.has(id));
-  const pass = result.pass && editing.some((comment) => comment.pass === result.pass) ? result.pass : null;
-  return { suggestions, pass };
-}
-
-export function groupPass(comments = [], pass) {
-  const items = comments.filter((comment) => pass && comment?.pass === pass && comment?.motivation === "editing");
-  const pending = items.filter((comment) => !comment.resolved);
-  return { pass, total: items.length, pending: pending.length, suggestions: items.map((item) => item.id) };
+  return { suggestions };
 }

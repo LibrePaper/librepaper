@@ -12,19 +12,19 @@ import { browser, until } from "../../tools/browser-driver.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const dist = join(root, "dist");
-assert.ok(existsSync(join(dist, "agent.js")), "run `bun run build` first");
+assert.ok(existsSync(join(dist, "frame.js")), "run `bun run build` first");
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-math-browser-"));
 
 const types = { js: "text/javascript", css: "text/css", woff2: "font/woff2", html: "text/html" };
-// The page is its own parent: the agent takes messages from `parent`, which
-// at the top level is the window itself, so the check plays the sidebar. The
-// agent now refuses to speak to a wildcard reader (`reader=*` fails its own
-// `new URL()` and it says nothing rather than saying it to everybody), so the
-// query string has to name this page's real origin -- which is not known
-// until the server has picked its port.
+// The page is its own parent: the frame script takes messages from `parent`,
+// which at the top level is the window itself, so the check plays the
+// sidebar. The frame script now refuses to speak to a wildcard reader
+// (`reader=*` fails its own `new URL()` and it says nothing rather than
+// saying it to everybody), so the query string has to name this page's real
+// origin -- which is not known until the server has picked its port.
 const shell = (origin) => `<!doctype html><html><head><meta charset="utf-8"></head><body>
 <script>window.published=[];addEventListener("message",e=>{if(e.data&&e.data.librepaper&&e.data.type==="ready")window.published.push(e.data.text)});</script>
-<script src="/agent.js?reader=${encodeURIComponent(origin)}"></script>
+<script src="/frame.js?reader=${encodeURIComponent(origin)}"></script>
 </body></html>`;
 
 let server, page;

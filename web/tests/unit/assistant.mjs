@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
-  captureAttachment, capabilityAllows, composeTaskMessage, diagnosticContext, diagnosticLabel,
-  groupPass, normalizeCapabilities, resultIds, visibleResults, checkContextSize,
+  captureAttachment, capabilityAllows, composeTaskMessage, taskDiagnosticContext, diagnosticLabel,
+  normalizeCapabilities, resultIds, visibleResults, checkContextSize,
   TASK_CATALOG, TASK_KINDS, findTask, groupTasks, inferScope, searchTasks, taskPrompt, taskScopes,
 } from "../../src/lib/assistant.js";
 
@@ -22,7 +22,7 @@ assert.deepEqual(message.context.selection, attachment.selection);
 assert.equal(message.context.file, "main.md");
 assert.equal(message.context.revision, "sha-1");
 
-const caps = normalizeCapabilities({ can_read: true, can_comment: true, can_edit: false });
+const caps = normalizeCapabilities({ can_read: true, can_comment: true, can_suggest: true, can_edit: false });
 assert.equal(capabilityAllows(caps, task, { attached: attachment, path: "main.md" }), true);
 const rendered = captureAttachment({ exact: "Rendered words", prefix: "before ", suffix: " after", render_digest: "render-1" }, "open-file.md", "unrelated-source-revision");
 assert.equal(rendered.anchored, false);
@@ -35,7 +35,15 @@ assert.equal(capabilityAllows(caps, { kind: "rewrite", scope: "selection" }, { a
 assert.equal(capabilityAllows(caps, { kind: "explain", scope: "file" }, { path: "main.md" }), true);
 assert.equal(capabilityAllows({}, { kind: "explain", scope: "file" }, { path: "main.md" }), false);
 
-const diagnostic = diagnosticContext({ severity: "error", path: "main.md", line: 9, column: 3, message: "Unknown command", excerpt: "#bad" }, "sha-9");
+// A commenter must never be treated as able to suggest just because they can
+// comment: a suggestion is an editor's track change, gated on the server's
+// own `can_suggest` flag alone.
+const commenter = normalizeCapabilities({ can_read: true, can_comment: true, can_edit: false });
+assert.equal(commenter.can_suggest, false);
+assert.equal(commenter.can_reply, false);
+assert.equal(capabilityAllows(commenter, task, { attached: attachment, path: "main.md" }), false);
+
+const diagnostic = taskDiagnosticContext({ severity: "error", path: "main.md", line: 9, column: 3, message: "Unknown command", excerpt: "#bad" }, "sha-9");
 assert.equal(diagnostic.file, "main.md");
 assert.equal(diagnostic.revision, "sha-9");
 assert.equal(diagnostic.source, "#bad");
@@ -68,15 +76,14 @@ const refinement = composeTaskMessage({ id: "m4", text: "Make the suggestion mor
   suggestion: { id: "s1", proposed: "A shorter proposal", revision: "sha-1" } });
 assert.deepEqual(refinement.context.suggestion, { id: "s1", proposed: "A shorter proposal", revision: "sha-1" });
 
-const reply = { context: { results: { suggestions: ["s1", "s2"], pass: "p1" } } };
-assert.deepEqual(resultIds(reply), { suggestions: ["s1", "s2"], pass: "p1" });
+const reply = { context: { results: { suggestions: ["s1", "s2"] } } };
+assert.deepEqual(resultIds(reply), { suggestions: ["s1", "s2"] });
 const comments = [
-  { id: "s1", motivation: "editing", pass: "p1", resolved: false },
-  { id: "s2", motivation: "editing", pass: "p1", resolved: true },
-  { id: "other", motivation: "commenting", pass: "p1", resolved: false },
+  { id: "s1", motivation: "editing", resolved: false },
+  { id: "s2", motivation: "editing", resolved: true },
+  { id: "other", motivation: "commenting", resolved: false },
 ];
-assert.deepEqual(visibleResults(reply, comments), { suggestions: ["s1", "s2"], pass: "p1" });
-assert.deepEqual(groupPass(comments, "p1"), { pass: "p1", total: 2, pending: 1, suggestions: ["s1", "s2"] });
+assert.deepEqual(visibleResults(reply, comments), { suggestions: ["s1", "s2"] });
 
 // Every launcher entry must stay inside the protocol's task vocabulary, and
 // every entry must be reachable by its own id.

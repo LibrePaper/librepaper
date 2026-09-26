@@ -51,11 +51,11 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /* -------------------------------------------------------------- the server */
 
 // The shell as the Rust server serves it on the documents origin: the pages
-// and their assets, `/agent.js`, and the agent injected into `viewer.html`.
-// Anything this gets wrong is a difference between the test and the server, so
-// it is kept to the two rules that matter -- the agent goes in before
-// `</body>`, and the assets are reachable from the same origin, which is what
-// the page's own `script-src 'self'` requires.
+// and their assets, `/frame.js`, and the frame script injected into
+// `viewer.html`. Anything this gets wrong is a difference between the test
+// and the server, so it is kept to the two rules that matter -- the frame
+// script goes in before `</body>`, and the assets are reachable from the
+// same origin, which is what the page's own `script-src 'self'` requires.
 const PORT = 8700 + Math.floor(Math.random() * 300);
 const BASE = `http://localhost:${PORT}`;
 
@@ -122,7 +122,7 @@ const server = createServer((request, response) => {
   if (path === "/viewer.html") {
     const page = readFileSync(file, "utf8").replace(
       "</body>",
-      `<script src="/agent.js?reader=${BASE}"></script></body>`,
+      `<script src="/frame.js?reader=${BASE}"></script></body>`,
     );
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(page);

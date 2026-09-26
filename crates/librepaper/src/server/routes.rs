@@ -586,8 +586,8 @@ pub(super) async fn dispatch(
             }
             return plain(404, "not found");
         }
-        if path == "/agent.js" {
-            if let Some(asset) = server.shell.get("/agent.js") {
+        if path == "/frame.js" {
+            if let Some(asset) = server.shell.get("/frame.js") {
                 let mut response = Response::new(Body::from(asset.body.clone()));
                 set(&mut response, "content-type", asset.kind);
                 privacy_headers(&mut response);
@@ -746,10 +746,10 @@ pub(super) async fn dispatch(
 /// Appends the in-frame half of the reader to a document. The stored bytes are
 /// never modified; the script is added on the way out, and told which origin
 /// to talk back to. Before </body> if there is one, so the document has parsed
-/// by the time the agent runs; appended otherwise.
-pub fn with_agent(document: &[u8], reader: &str) -> Vec<u8> {
+/// by the time the frame script runs; appended otherwise.
+pub fn with_frame(document: &[u8], reader: &str) -> Vec<u8> {
     let tag = format!(
-        "<script src=\"/agent.js?reader={}\"></script>",
+        "<script src=\"/frame.js?reader={}\"></script>",
         url_escape(reader)
     )
     .into_bytes();
@@ -850,7 +850,7 @@ impl Server {
         // shell, but never turns a slug into the live source tree. Published
         // bytes have their own capability and current-manifest checks.
         let page = empty;
-        let mut response = Response::new(Body::from(with_agent(&page, &reader)));
+        let mut response = Response::new(Body::from(with_frame(&page, &reader)));
         set(&mut response, "content-type", "text/html; charset=utf-8");
         set(
             &mut response,
@@ -892,7 +892,7 @@ impl Server {
             return plain(404, "not found");
         };
         let reader = arrival.reader_origin();
-        let mut response = Response::new(Body::from(with_agent(&asset.body, &reader)));
+        let mut response = Response::new(Body::from(with_frame(&asset.body, &reader)));
         set(&mut response, "content-type", "text/html; charset=utf-8");
         set(
             &mut response,
@@ -1130,17 +1130,17 @@ mod served_policy_tests {
 
 #[cfg(test)]
 mod frame_agent_tests {
-    use super::with_agent;
+    use super::with_frame;
 
     #[test]
-    fn injected_agent_runs_as_a_classic_bundle() {
-        let page = with_agent(
+    fn injected_frame_runs_as_a_classic_bundle() {
+        let page = with_frame(
             b"<!doctype html><body>preview</body>",
             "http://localhost:8081",
         );
         let page = String::from_utf8(page).unwrap();
         assert!(page.contains(
-            "<script src=\"/agent.js?reader=http%3A%2F%2Flocalhost%3A8081\"></script></body>"
+            "<script src=\"/frame.js?reader=http%3A%2F%2Flocalhost%3A8081\"></script></body>"
         ));
     }
 }

@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { createAgentClient } from "../../src/lib/agent-client.js";
+import { loadRunes } from "../helpers/runes.mjs";
+
+const { createAgentClient } = await loadRunes(
+  new URL("../../src/lib/agent-client.svelte.js", import.meta.url),
+);
 
 const requests = [];
 let conversationCount = 0;
