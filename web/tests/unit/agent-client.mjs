@@ -208,7 +208,7 @@ try {
   answer(4, "A longer answer");
   assert.equal(client.current.messages.filter((message) => message.context?.streamed_answer && message.context.task_id === "streamed").length, 1);
   const streamed = () => client.current.messages.find((message) => message.context?.streamed_answer && message.context.task_id === "streamed");
-  const results = { effects: { confirmed: [{ kind: "suggestion", id: "s1" }] } };
+  const results = { suggestions: ["s1"], confirmed: [{ kind: "application" }], confirmed_omitted: 0, refused: 0, unresolved: 0 };
   reconnected.emit({ type: "task", task_id: "streamed", seq: 6, status: "interrupted", text: "Task interrupted", context: { results } });
   answer(5, "Stale answer");
   assert.equal(streamed().text, "A longer answer");
