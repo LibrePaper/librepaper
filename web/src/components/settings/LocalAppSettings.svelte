@@ -31,8 +31,6 @@
   let addressOpen = $state(false);
   let pairConfirmOpen = $state(false);
 
-  let companionSettings = $state(null);
-
   $effect(() => { entrypoint = main; });
   $effect(() => {
     if (!connected) return;
@@ -40,21 +38,6 @@
     manualPairingNeeded = false;
     copyError = false;
   });
-  $effect(() => {
-    if (!connected) {
-      companionSettings = null;
-      return;
-    }
-    loadSettings();
-  });
-
-  async function loadSettings() {
-    try {
-      companionSettings = await localBridge.settings();
-    } catch {
-      companionSettings = null;
-    }
-  }
   const connected = $derived(local?.state === "connected");
   const canPair = $derived(["unauthorized", "reachable"].includes(local?.state));
   const tone = $derived(connected ? "good" : canPair || ["denied", "incompatible"].includes(local?.state) ? "warn" : "off");
@@ -211,8 +194,8 @@
   {#if folderError}<p class="setting-description local-error" role="alert">{folderError}</p>{/if}
 {/if}
 
-{#if connected && companionSettings}
-  <CompanionPresets {companionSettings} {main} />
+{#if connected}
+  <CompanionPresets {main} />
 {/if}
 
 <nav class="local-footer" aria-label="Local connection help">

@@ -3,10 +3,10 @@
   import * as localBridge from "../../lib/companion/client.js";
 
   let {
-    companionSettings = null,
     main = "",
   } = $props();
 
+  let companionSettings = $state(null);
   let settingsError = $state("");
   let pendingDialogAction = $state("");
 
@@ -19,6 +19,10 @@
 
   let grantPresetId = $state("");
   let grantEntrypoint = $state("");
+
+  $effect(() => {
+    void loadSettings();
+  });
 
   function parseFormattedInput(text) {
     return text.split("\n").filter(Boolean);
@@ -133,8 +137,9 @@
 
 {#if settingsError}<p class="setting-description local-error" role="alert">{settingsError}</p>{/if}
 
-<!-- Build presets section -->
-<section class="companion-section">
+{#if companionSettings}
+  <!-- Build presets section -->
+  <section class="companion-section">
   <h4 class="setting-title">Build presets</h4>
   {#if companionSettings.presets && companionSettings.presets.length > 0}
     <table class="setting-table">
@@ -261,6 +266,7 @@
       {/if}
     </div>
   </section>
+  {/if}
 {/if}
 
 <style>
