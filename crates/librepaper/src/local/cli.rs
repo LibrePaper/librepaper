@@ -223,7 +223,6 @@ async fn status(tex_path: Vec<PathBuf>) {
     let pairing = PairingStore::new(&home, None);
     let mut answering = true;
 
-    // Service section
     match pairing.read_service() {
         Some(state) => {
             let url = format!(
@@ -266,10 +265,9 @@ async fn status(tex_path: Vec<PathBuf>) {
         }
     }
 
-    // Tools section
     println!();
-    println!("platform: {}", std::env::consts::OS);
     let capabilities = crate::local::discovery::discover(true, &tex_path).await;
+    println!("platform: {}", capabilities.platform);
     println!("tools:");
     print_tool("calepin", &capabilities.calepin);
     print_tool("quarto", &capabilities.quarto.tool);
@@ -297,7 +295,6 @@ async fn status(tex_path: Vec<PathBuf>) {
         println!("  paired local builds run with the user's normal access");
     }
 
-    // Agent connections section
     let store = crate::local::connections::ConnectionStore::new(&home);
     let all = store.list();
     if !all.is_empty() {
@@ -322,7 +319,8 @@ async fn status(tex_path: Vec<PathBuf>) {
         }
     }
 
-    // Exit 1 if service not running or not answering
+    // A stale `service.json` describes a companion that is gone. Reporting
+    // that as success would have a script skip starting one.
     if !answering {
         std::process::exit(1);
     }

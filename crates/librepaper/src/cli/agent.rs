@@ -129,7 +129,10 @@ pub(crate) async fn run_connect(args: RunAgentArgs) -> Result<(), String> {
             config.state_dir.as_deref(),
             &config.agent,
         )?;
-        println!("{}", serde_json::json!({"started":true,"conversation":conversation}));
+        println!(
+            "{}",
+            serde_json::json!({"started":true,"conversation":conversation})
+        );
     } else {
         crate::assistant::runtime::run(&peer, config).await?;
     }

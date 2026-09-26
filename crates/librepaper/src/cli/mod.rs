@@ -266,7 +266,6 @@ struct AdvancedConfigFile {
     backup: crate::config::BackupPolicyOverrides,
 }
 
-
 // The nested `AdminCommand::Serve` flags determine this enum's size too; clap
 // parses one command once, so an extra indirection would not improve runtime.
 #[allow(clippy::large_enum_variant)]
@@ -495,7 +494,6 @@ pub enum LocalAgentCommand {
     },
 }
 
-
 /// The arguments `librepaper local` hands to `crate::local::run`.
 #[derive(Clone, Debug)]
 pub struct LocalArgs {
@@ -509,9 +507,7 @@ pub async fn main() {
         Command::Login { deployment } => login(deployment.server).await,
         Command::Logout => logout(),
         Command::Admin { command } => run_admin(command).await,
-        Command::List { deployment } => {
-            list_documents(deployment.server, deployment.token).await
-        }
+        Command::List { deployment } => list_documents(deployment.server, deployment.token).await,
         Command::Export {
             id,
             dir,
@@ -661,12 +657,16 @@ mod socket_policy_tests {
     fn export_project_parse() {
         let export = Cli::try_parse_from(["librepaper", "export", "paper", "copy"]);
         assert!(export.is_ok());
-        let with_at = Cli::try_parse_from([
-            "librepaper", "export", "paper", "copy", "--at", "label",
-        ]);
+        let with_at =
+            Cli::try_parse_from(["librepaper", "export", "paper", "copy", "--at", "label"]);
         assert!(with_at.is_ok());
         let old_format = Cli::try_parse_from([
-            "librepaper", "export", "paper", "--project", "--output", "copy",
+            "librepaper",
+            "export",
+            "paper",
+            "--project",
+            "--output",
+            "copy",
         ]);
         assert!(old_format.is_err());
     }

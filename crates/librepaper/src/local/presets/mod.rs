@@ -209,57 +209,6 @@ impl PresetStore {
         Ok(removed)
     }
 
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn resolve_grant(
-        &self,
-        grant_id: &str,
-        origin: &str,
-        project: &str,
-        preset_id: &str,
-        workspace: WorkspaceMode,
-        operation: Operation,
-        entrypoint: &str,
-    ) -> Result<PresetGrant, String> {
-        self.resolve_for(
-            grant_id, origin, project, preset_id, workspace, operation, entrypoint,
-        )
-        .map(|(grant, _)| grant)
-    }
-
-    /// Resolve authorization and the local command definition together at
-    /// admission time. Callers must use this immediately before spawning;
-    /// editing or revoking either record then denies a subsequent request.
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn resolve_for(
-        &self,
-        grant_id: &str,
-        origin: &str,
-        project: &str,
-        preset_id: &str,
-        workspace: WorkspaceMode,
-        operation: Operation,
-        entrypoint: &str,
-    ) -> Result<(PresetGrant, Preset), String> {
-        let state = self.load()?;
-        let grant = state.grants.get(grant_id).ok_or("preset grant not found")?;
-        let preset = state.presets.get(preset_id).ok_or("preset not found")?;
-        if grant.origin != origin
-            || grant.project != project
-            || grant.preset_id != preset_id
-            || grant.workspace != workspace
-            || grant.operation != operation
-            || grant.entrypoint != entrypoint
-        {
-            return Err("preset grant scope does not match request".into());
-        }
-        if grant.semantic_revision != preset.semantic_revision {
-            return Err("preset changed; grant must be renewed".into());
-        }
-        Ok((grant.clone(), preset.clone()))
-    }
-
     /// Resolve the current grant for a request that carries only the preset
     /// id. A request cannot select an arbitrary grant id from another scope.
     pub fn resolve_scoped(

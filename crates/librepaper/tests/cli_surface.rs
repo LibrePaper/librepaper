@@ -63,7 +63,15 @@ fn local_help_lists_the_local_commands() {
             "local command {command:?} is absent from local help:\n{help}"
         );
     }
-    for removed_command in ["launch", "manage", "doctor", "connections", "disconnect", "startup", "preset"] {
+    for removed_command in [
+        "launch",
+        "manage",
+        "doctor",
+        "connections",
+        "disconnect",
+        "startup",
+        "preset",
+    ] {
         assert!(
             !lists_command(&help, removed_command),
             "removed command {removed_command:?} should not be listed in local help:\n{help}"
@@ -123,10 +131,22 @@ fn operands_are_positional() {
 #[test]
 fn export_flags_are_correct() {
     let help = help_of(&["export", "--help"]);
-    assert!(help.contains("--at <LABEL>"), "--at <LABEL> missing from export help:\n{help}");
-    assert!(help.contains("--key <LINK>"), "--key <LINK> missing from export help:\n{help}");
-    assert!(help.contains("--server"), "--server missing from export help:\n{help}");
-    assert!(help.contains("--token"), "--token missing from export help:\n{help}");
+    assert!(
+        help.contains("--at <LABEL>"),
+        "--at <LABEL> missing from export help:\n{help}"
+    );
+    assert!(
+        help.contains("--key <LINK>"),
+        "--key <LINK> missing from export help:\n{help}"
+    );
+    assert!(
+        help.contains("--server"),
+        "--server missing from export help:\n{help}"
+    );
+    assert!(
+        help.contains("--token"),
+        "--token missing from export help:\n{help}"
+    );
     assert!(
         !help.contains("--project"),
         "--project should not be in export help:\n{help}"
@@ -148,14 +168,23 @@ fn export_flags_are_correct() {
 #[test]
 fn local_start_flags_are_correct() {
     let help = help_of(&["local", "start", "--help"]);
-    assert!(help.contains("--foreground"), "--foreground missing from local start help:\n{help}");
-    assert!(help.contains("--at-login"), "--at-login missing from local start help:\n{help}");
+    assert!(
+        help.contains("--foreground"),
+        "--foreground missing from local start help:\n{help}"
+    );
+    assert!(
+        help.contains("--at-login"),
+        "--at-login missing from local start help:\n{help}"
+    );
 }
 
 #[test]
 fn deployment_flags_are_scoped() {
     let export_help = help_of(&["export", "--help"]);
-    assert!(export_help.contains("--server"), "--server should be in export help");
+    assert!(
+        export_help.contains("--server"),
+        "--server should be in export help"
+    );
 
     let admin_help = help_of(&["admin", "--help"]);
     assert!(
@@ -190,8 +219,20 @@ fn deployment_flags_are_scoped() {
 
 #[test]
 fn removed_commands_fail_to_parse() {
-    assert!(!cli(&["local", "launch"]).status.success(), "local launch should fail");
-    assert!(!cli(&["local", "doctor"]).status.success(), "local doctor should fail");
-    assert!(!cli(&["agent", "mcp", "x"]).status.success(), "agent mcp should fail");
-    assert!(!cli(&["export", "paper", "--project"]).status.success(), "export with --project should fail");
+    assert!(
+        !cli(&["local", "launch"]).status.success(),
+        "local launch should fail"
+    );
+    assert!(
+        !cli(&["local", "doctor"]).status.success(),
+        "local doctor should fail"
+    );
+    assert!(
+        !cli(&["agent", "mcp", "x"]).status.success(),
+        "agent mcp should fail"
+    );
+    assert!(
+        !cli(&["export", "paper", "--project"]).status.success(),
+        "export with --project should fail"
+    );
 }

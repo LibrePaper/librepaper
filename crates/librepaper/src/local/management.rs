@@ -165,11 +165,18 @@ pub(super) async fn handle(
                 };
                 let formats = fields
                     .get("formats")
-                    .map(|s| s.split(',').map(|f| f.trim().to_string()).collect::<Vec<_>>())
+                    .map(|s| {
+                        s.split(',')
+                            .map(|f| f.trim().to_string())
+                            .collect::<Vec<_>>()
+                    })
                     .unwrap_or_default();
                 let options = lines(fields.get("options"));
                 let environment = lines(fields.get("environment"));
-                let wrapper = fields.get("wrapper").cloned().filter(|s| !s.trim().is_empty());
+                let wrapper = fields
+                    .get("wrapper")
+                    .cloned()
+                    .filter(|s| !s.trim().is_empty());
                 let preset = preset_from_args(
                     name.clone(),
                     adapter.clone(),

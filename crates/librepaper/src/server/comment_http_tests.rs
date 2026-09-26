@@ -443,7 +443,7 @@ async fn the_wire_sees_every_comment_past_the_first_page_and_can_resolve_one() {
                         original_anchor: crate::room::OriginalAnchor {
                             source_sequence: 1,
                             frontier: vec![1, 2, 3],
-                            target: crate::room::CommentTarget::Document,
+                            target: crate::room::annotation::CommentTarget::Document,
                         },
                         presentation: Default::default(),
                         render_digest: None,
