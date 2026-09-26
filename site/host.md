@@ -39,8 +39,8 @@ Run the server behind a reverse proxy that terminates HTTPS, and have the proxy 
 `LIBREPAPER_DATA`, `librepaper-data` in the working directory by default: the
 catalogue (`catalog.db`), the objects it names, private server state, and the
 secrets that keep sessions and share links valid. Back it up if the instance
-holds real work; `librepaper admin backup create` writes a verified recovery point of
-all of it, and `librepaper admin backup restore` restores one into a fresh
+holds real work; `librepaper admin backup` writes a verified recovery point of
+all of it, and `librepaper admin restore` restores one into a fresh
 directory.
 See the [operator cost policy](https://github.com/LibrePaper/librepaper/blob/main/docs/cost-policy.md) for the complete defaults,
 advanced YAML schema, the loopback `/api/status` endpoint, capacity accounting, and backup
@@ -50,34 +50,29 @@ The storage flags bound what a deployment will store:
 
 | Flag | Caps | Default |
 | --- | --- | --- |
-| `--document-size-limit` | combined source text of one document | 4 MB (maximum 8) |
-| `--document-assets-limit` | combined input assets of one document | 32 MiB |
 | `--publisher-storage-limit` | everything one publisher holds | 100 MB |
 | `--deployment-storage-limit` | the whole deployment | 5120 MB |
 | `--publisher-upload-limit` | uploads one publisher may make in an hour | 30 |
+| `log_quota_mb` (advanced config) | per-document log size, in megabytes | 32 MB |
 
 ```sh
-librepaper admin serve --document-size-limit 8 --document-assets-limit 16 --publisher-storage-limit 500 --deployment-storage-limit 10240
+librepaper admin serve --publisher-storage-limit 500 --deployment-storage-limit 10240
 ```
 
-`--document-size-limit` may not be set above 8 MB. It bounds the text a person can see;
-what has to be durably saved is the CRDT snapshot behind that text, which
-carries the document's edit history and metadata as well, and this deployment
-supports snapshots up to 16 MB. A document can therefore reach that second
-ceiling without its visible text ever approaching the first -- an edit refused
-for that reason says so, and says that the history counts too. A configuration
-whose ceilings could accept work the journal could not durably save is refused
-at startup rather than at the first save.
+The per-document log ceiling, `log_quota_mb`, is set in the advanced configuration file rather than
+as a command-line flag. It bounds the collaborative editing log that carries every change to a document,
+including its edit history and metadata. Once a document reaches this limit, new edits are refused
+with a retryable reason, though readers and semantic commands still work against the log as it stands.
+A configuration whose limits could accept work the deployment could not durably save is refused
+at startup rather than at the first save. See the optional `--config PATH` (or `LIBREPAPER_CONFIG`)
+advanced YAML file for this setting.
 
-A document is a directory, so `--document-size-limit` bounds the sum of its texts and
-`--document-assets-limit` bounds the combined input assets. Both count against `--publisher-storage-limit`; a figure is
-an upload and counts against `--publisher-upload-limit` like any other. A Typst or
-LaTeX document keeps source and input assets only. PDF and HTML output created
-by a browser or companion is transient and never counts toward storage,
-quotas, or uploads. On a deployment with many publishers,
-`--document-assets-limit` is the one worth lowering:
-figures are where a paper's bytes actually are, and it is what stops a single
-document spending a publisher's whole allowance on images.
+A document is a directory containing source files and input assets. All content counts against
+`--publisher-storage-limit`; a figure uploaded to a document counts against `--publisher-upload-limit`
+like any other upload. A Typst or LaTeX document keeps source and input assets only. PDF and HTML
+output created by a browser or companion is transient and never counts toward storage, quotas, or
+uploads. On a deployment with many publishers, `--publisher-storage-limit` is the one worth tuning:
+a single document should not spend a publisher's whole allowance on assets.
 
 Publishing is always attributed to an authenticated Google or GitHub account
 and charged against that account's quota. Anonymous readers and commenters do

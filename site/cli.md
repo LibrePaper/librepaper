@@ -103,8 +103,8 @@ sign-in, for a document you can open but do not own.
 `librepaper admin serve` is the server, and its flags are the deployment's
 whole configuration; `librepaper admin serve --help` lists them and the
 [hosting page](host.html) explains them. `admin seed` replaces a data
-directory's contents with the example documents, and `admin backup create`
-and `admin backup restore` take and restore a verified recovery point.
+directory's contents with the example documents, and `admin backup`
+and `admin restore` take and restore a verified recovery point.
 Operational state is one loopback request away:
 
 ```sh

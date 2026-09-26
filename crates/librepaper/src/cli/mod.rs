@@ -98,16 +98,6 @@ pub(crate) struct ServiceFlags {
         value_name = "N"
     )]
     uploads_per_hour: Option<usize>,
-    /// Write each new account's starter documents as though they had been
-    /// typed over this many days, so a demonstration deployment has a history
-    /// panel with something in it. The operations are real; only the clock is
-    /// invented. See `crate::seed::activity`.
-    #[arg(
-        long = "simulate-activity",
-        env = "LIBREPAPER_SIMULATE_ACTIVITY",
-        value_name = "DAYS"
-    )]
-    simulate_activity: Option<u32>,
     /// Delete documents after this duration, for example 24h or 30d (default never)
     #[arg(
         long = "document-expire-after",
@@ -181,8 +171,9 @@ pub(crate) struct ServiceFlags {
 }
 
 impl ServiceFlags {
-    fn configuration(&self) -> Configuration {
+    fn configuration(&self) -> (Configuration, Option<u32>) {
         let mut config = Configuration::default();
+        let mut simulate_activity = None;
         if let Some(path) = &self.advanced_config {
             let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
                 die(format!(
@@ -214,6 +205,7 @@ impl ServiceFlags {
             if let Err(error) = config.set_memory_budget(file.memory_budget_mb) {
                 die(format!("invalid advanced memory budget: {error}"));
             }
+            simulate_activity = file.simulate_activity_days;
         }
         if let Err(err) = config.set_storage(self.quota, self.storage) {
             die(err);
@@ -231,7 +223,7 @@ impl ServiceFlags {
         if let Err(err) = config.validate_budgets() {
             die(err);
         }
-        config
+        (config, simulate_activity)
     }
 }
 
@@ -258,32 +250,15 @@ struct AdvancedConfigFile {
     /// quota, so a raised quota needs a raised budget with it; the pair is
     /// checked at startup.
     memory_budget_mb: Option<u64>,
+    /// Write each new account's starter documents as though they had been
+    /// typed over this many days, so a demonstration deployment has a history
+    /// panel with something in it. The operations are real; only the clock is
+    /// invented. See `crate::seed::activity`. Advanced configuration only.
+    simulate_activity_days: Option<u32>,
     #[serde(default)]
     backup: crate::config::BackupPolicyOverrides,
 }
 
-fn backup_policy_from_config(path: Option<&std::path::Path>) -> crate::config::BackupPolicy {
-    let Some(path) = path else {
-        return crate::config::BackupPolicy::default();
-    };
-    let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
-        die(format!(
-            "could not read advanced configuration {}: {error}",
-            path.display()
-        ))
-    });
-    let file: AdvancedConfigFile = serde_yaml::from_str(&text).unwrap_or_else(|error| {
-        die(format!(
-            "could not parse advanced configuration {}: {error}",
-            path.display()
-        ))
-    });
-    let mut config = crate::config::Configuration::default();
-    config
-        .apply_backup_overrides(file.backup)
-        .unwrap_or_else(|error| die(format!("invalid advanced backup policy: {error}")));
-    config.backup
-}
 
 // The nested `AdminCommand::Serve` flags determine this enum's size too; clap
 // parses one command once, so an extra indirection would not improve runtime.
@@ -387,10 +362,24 @@ pub(crate) enum AdminCommand {
         #[arg(long, value_name = "DAYS")]
         simulate_activity: Option<u32>,
     },
-    /// Create or restore verified deployment backups.
+    /// Create a snapshot-consistent PostgreSQL and immutable-object recovery point.
     Backup {
-        #[command(subcommand)]
-        command: BackupCommand,
+        #[command(flatten)]
+        storage: StorageFlags,
+        /// New directory to create
+        directory: String,
+        /// Identifier to record for this backup; generated when omitted
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+    },
+    /// Restore a verified backup into a new deployment directory.
+    Restore {
+        #[command(flatten)]
+        storage: StorageFlags,
+        /// Backup directory to read
+        backup: String,
+        /// New deployment directory to create
+        directory: String,
     },
     /// Delete objects no catalogue row names any more.
     ///
@@ -412,36 +401,6 @@ pub(crate) enum AdminCommand {
             value_name = "COUNT"
         )]
         batch: u32,
-    },
-}
-
-#[derive(Subcommand)]
-pub(crate) enum BackupCommand {
-    /// Create a snapshot-consistent PostgreSQL and immutable-object recovery point.
-    Create {
-        #[command(flatten)]
-        storage: StorageFlags,
-        #[arg(
-            long = "config",
-            env = "LIBREPAPER_CONFIG",
-            value_name = "PATH",
-            hide = true
-        )]
-        advanced_config: Option<PathBuf>,
-        /// New directory to create
-        directory: String,
-        /// Identifier to record for this backup; generated when omitted
-        #[arg(long, value_name = "ID")]
-        id: Option<String>,
-    },
-    /// Restore a verified backup into a new deployment directory.
-    Restore {
-        #[command(flatten)]
-        storage: StorageFlags,
-        /// Backup directory to read
-        backup: String,
-        /// New deployment directory to create
-        directory: String,
     },
 }
 
@@ -685,7 +644,7 @@ async fn run_admin(command: AdminCommand) {
             service,
             storage,
         } => {
-            let config = service.configuration();
+            let (config, simulate_activity) = service.configuration();
             crate::server::serve::serve(crate::server::serve::ServeOptions {
                 bind,
                 port,
@@ -695,7 +654,7 @@ async fn run_admin(command: AdminCommand) {
                 publishers: service.publishers,
                 commenters: service.commenters,
                 no_listing: service.no_listing,
-                simulate_activity: service.simulate_activity,
+                simulate_activity,
                 origin: service.origin,
                 docs_origin: service.docs_origin,
                 site_origin: service.site_origin,
@@ -725,25 +684,17 @@ async fn run_admin(command: AdminCommand) {
             .await
         }
         AdminCommand::Backup {
-            command:
-                BackupCommand::Create {
-                    storage,
-                    directory,
-                    id,
-                    advanced_config,
-                },
+            storage,
+            directory,
+            id,
         } => {
-            let _backup_policy = backup_policy_from_config(advanced_config.as_deref());
             crate::storage::backup::backup_cli(storage.options(), directory, id.unwrap_or_default())
                 .await
         }
-        AdminCommand::Backup {
-            command:
-                BackupCommand::Restore {
-                    storage,
-                    backup,
-                    directory,
-                },
+        AdminCommand::Restore {
+            storage,
+            backup,
+            directory,
         } => crate::storage::backup::restore_cli(storage.options(), backup, directory).await,
         AdminCommand::Sweep { storage, batch } => sweep(storage, batch as usize).await,
     }
