@@ -3,10 +3,10 @@
 //! without a display (Linux without DISPLAY or WAYLAND_DISPLAY).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::process::Command;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 
 pub(crate) struct Approval {
     pub title: String,
@@ -20,14 +20,9 @@ pub(crate) enum Decision {
     Unavailable(String),
 }
 
-struct ApprovalState {
-    pending: HashMap<String, Arc<Notify>>,
-}
-
 static DIALOG_LOCK: Mutex<()> = Mutex::const_new(());
-static PENDING_MUTEX: Mutex<ApprovalState> = Mutex::const_new(ApprovalState {
-    pending: HashMap::new(),
-});
+static PENDING: LazyLock<std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 async fn output(command: &mut Command) -> Result<std::process::Output, String> {
     command.kill_on_drop(true);
@@ -143,11 +138,11 @@ async fn ask_linux(approval: &Approval) -> Decision {
                             return Decision::Denied;
                         }
                     }
-                    Ok(Err(_)) => return Decision::Unavailable("Could not open approval dialog; neither zenity nor kdialog found.".to_string()),
+                    Ok(Err(_)) => return ask_headless(approval).await,
                     Err(_) => return Decision::Denied,
                 }
             }
-            Ok(Err(_)) => return Decision::Unavailable("Could not open approval dialog.".to_string()),
+            Ok(Err(_)) => return ask_headless(approval).await,
             Err(_) => return Decision::Denied,
         }
     } else {
@@ -156,12 +151,12 @@ async fn ask_linux(approval: &Approval) -> Decision {
 }
 
 async fn ask_headless(approval: &Approval) -> Decision {
-    let code = generate_code();
-    let notify = Arc::new(Notify::new());
+    let code = super::pairing::generate_code();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
     {
-        let mut state = PENDING_MUTEX.lock().await;
-        state.pending.insert(code.clone(), notify.clone());
+        let mut pending = PENDING.lock().unwrap();
+        pending.insert(code.clone(), tx);
     }
 
     eprintln!(
@@ -170,32 +165,19 @@ async fn ask_headless(approval: &Approval) -> Decision {
     );
 
     let code_clone = code.clone();
-    let timeout_result = tokio::time::timeout(Duration::from_secs(300), notify.notified()).await;
-
-    let mut state = PENDING_MUTEX.lock().await;
-    let was_approved = state.pending.remove(&code_clone).is_none();
-    drop(state);
-
-    match timeout_result {
-        Ok(()) => {
-            if was_approved {
-                Decision::Allowed
-            } else {
-                Decision::Denied
-            }
+    match tokio::time::timeout(Duration::from_secs(300), rx).await {
+        Ok(Ok(())) => Decision::Allowed,
+        Ok(Err(_)) => {
+            let mut pending = PENDING.lock().unwrap();
+            pending.remove(&code_clone);
+            Decision::Denied
         }
-        Err(_) => Decision::Denied,
+        Err(_) => {
+            let mut pending = PENDING.lock().unwrap();
+            pending.remove(&code_clone);
+            Decision::Denied
+        }
     }
-}
-
-fn generate_code() -> String {
-    use std::fmt::Write;
-    let mut code = String::new();
-    for _ in 0..6 {
-        let digit = (rand::random::<u8>() % 10) as char;
-        let _ = write!(code, "{}", digit);
-    }
-    code
 }
 
 /// Called from the CLI to approve a pending approval request. Returns true if
@@ -203,63 +185,48 @@ fn generate_code() -> String {
 /// Each code is single-use.
 pub(crate) fn approve_code(code: &str) -> bool {
     let code = code.trim();
-    let rt = tokio::runtime::Handle::try_current();
-
-    if rt.is_err() {
-        return false;
+    let mut pending = match PENDING.lock() {
+        Ok(guard) => guard,
+        Err(_) => return false,
+    };
+    if let Some(tx) = pending.remove(code) {
+        let _ = tx.send(());
+        true
+    } else {
+        false
     }
-
-    let rt = rt.unwrap();
-    rt.block_on(async {
-        let mut state = PENDING_MUTEX.lock().await;
-        if let Some(notify) = state.pending.remove(code) {
-            notify.notify_one();
-            true
-        } else {
-            false
-        }
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn unknown_code_returns_false() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            assert!(!approve_code("000000"));
-        });
+    fn register(code: &str) -> tokio::sync::oneshot::Receiver<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let mut pending = PENDING.lock().unwrap();
+        pending.insert(code.to_string(), tx);
+        rx
     }
 
-    #[tokio::test]
-    async fn registered_code_resolves_once() {
+    #[test]
+    fn unknown_code_returns_false() {
+        assert!(!approve_code("000000"));
+    }
+
+    #[test]
+    fn registered_code_resolves_once() {
         let code = "123456";
-        let notify = Arc::new(Notify::new());
+        let rx = register(code);
 
-        {
-            let mut state = PENDING_MUTEX.lock().await;
-            state.pending.insert(code.to_string(), notify.clone());
-        }
+        let result_first = approve_code(code);
+        assert!(result_first);
 
-        let notify_clone = notify.clone();
-        let code_clone = code.to_string();
-        let approval_task = tokio::spawn(async move {
-            notify_clone.notified().await;
-            true
+        let result_second = approve_code(code);
+        assert!(!result_second);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            assert!(rx.await.is_ok());
         });
-
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        let result = approve_code(code);
-
-        let task_result = approval_task.await.unwrap();
-
-        assert!(result);
-        assert!(task_result);
-
-        let mut state = PENDING_MUTEX.lock().await;
-        assert!(!state.pending.contains_key(&code_clone));
     }
 }

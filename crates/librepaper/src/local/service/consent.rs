@@ -56,7 +56,14 @@ fn pair_request_fields(query: &str, origin: &str) -> Option<(String, String, Str
 }
 
 
-pub(super) async fn handle_pair_request(inner: &Inner, request: Request<Body>) -> Reply {
+pub(super) async fn handle_pair_request(inner: &Inner, peer: SocketAddr, request: Request<Body>) -> Reply {
+    if rate_limited(inner, peer).await {
+        return plain(
+            429,
+            "too many pairing attempts; wait a minute and try again",
+        );
+    }
+
     let query = request.uri().query().unwrap_or_default();
     let Some((origin, project)) = pair_query(query) else {
         return write_json(
@@ -75,7 +82,8 @@ pub(super) async fn handle_pair_request(inner: &Inner, request: Request<Body>) -
     if pending.len() >= 64 && !pending.contains_key(&request_id) {
         return write_json(429, &json!({"error": "too many pending pair requests"}));
     }
-    if let Some(existing) = pending.get(&request_id) {
+
+    let should_ask = if let Some(existing) = pending.get(&request_id) {
         if existing.origin != origin
             || existing.project != project
             || existing.challenge != challenge
@@ -83,6 +91,10 @@ pub(super) async fn handle_pair_request(inner: &Inner, request: Request<Body>) -
         {
             return write_json(409, &json!({"error": "request id is already registered"}));
         }
+        if existing.asked || existing.token.is_some() {
+            return write_json(409, &json!({"error": "pair request already answered or in progress"}));
+        }
+        true
     } else {
         pending.insert(
             request_id.clone(),
@@ -93,10 +105,22 @@ pub(super) async fn handle_pair_request(inner: &Inner, request: Request<Body>) -
                 return_to: return_to.clone(),
                 expires: Instant::now() + PAIR_REQUEST_TTL,
                 token: None,
+                asked: false,
             },
         );
+        true
+    };
+
+    if should_ask {
+        if let Some(item) = pending.get_mut(&request_id) {
+            item.asked = true;
+        }
     }
     drop(pending);
+
+    if !should_ask {
+        return write_json(409, &json!({"error": "pair request already answered or in progress"}));
+    }
 
     let message = format!(
         "{} wants to render the document {} with the Quarto and TeX tools installed on this computer.\n\n\
@@ -114,11 +138,22 @@ pub(super) async fn handle_pair_request(inner: &Inner, request: Request<Body>) -
 
     match super::super::approval::ask(&approval).await {
         super::super::approval::Decision::Allowed => {
+            let mut pending = inner.pending_pairs.lock().await;
+            let item = pending.get(&request_id);
+            let should_issue = item.is_some_and(|item| {
+                item.expires > Instant::now()
+                    && item.origin == origin
+                    && item.project == project
+                    && item.token.is_none()
+            });
+            if !should_issue {
+                return pair_denied_page();
+            }
+
             let (token, expires) = match inner.pairing.issue(&origin, &project, "native dialog") {
                 Ok(issued) => issued,
                 Err(_) => return plain(500, "could not store the pairing"),
             };
-            let mut pending = inner.pending_pairs.lock().await;
             if let Some(item) = pending.get_mut(&request_id) {
                 item.token = Some((token, expires));
             }
@@ -370,15 +405,12 @@ mod tests {
         assert!(!custom_body.contains(token_marker));
     }
 
-    #[test]
-    fn pair_denied_page_does_not_open_dialog() {
-        let reply = pair_denied_page();
-        assert_eq!(reply.status(), StatusCode::OK);
-    }
-
-    #[test]
-    fn pair_unavailable_page_does_not_open_dialog() {
-        let reply = pair_unavailable_page("Test error message");
-        assert_eq!(reply.status(), StatusCode::OK);
+    #[tokio::test]
+    async fn pair_unavailable_page_html_escapes_error_message() {
+        let malicious_msg = "<script>alert('xss')</script>";
+        let reply = pair_unavailable_page(malicious_msg);
+        let body = body_text(reply).await;
+        assert!(body.contains("&lt;script&gt;"));
+        assert!(!body.contains("<script>"));
     }
 }

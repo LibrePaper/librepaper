@@ -429,6 +429,7 @@ struct PendingPair {
     return_to: String,
     expires: Instant,
     token: Option<(String, i64)>,
+    asked: bool,
 }
 
 pub(super) struct Inner {
