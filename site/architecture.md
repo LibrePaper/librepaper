@@ -132,16 +132,12 @@ rules are pinned by tests.
 
 ### Size ceilings
 
-A deployment bounds document size through two separate mechanisms. The per-document
-log ceiling (`log_quota_mb`, set in the advanced configuration file and defaulting
-to 32 MB) caps the collaborative editing log that carries the edit history. What must
-be durably saved is the CRDT state behind a document's visible text, which carries the
-edit history as well. A heavily rewritten paper can reach the log ceiling without its
-visible text ever approaching the source file ceiling, so a refusal for that reason
-says which limit was hit and that history counts toward it.
-
-A configuration whose limits could accept work the deployment could not durably
-save is refused at startup rather than at the first save.
+Each document's log (its source plus edit history) is capped by `log_quota_mb` in the
+advanced configuration file, 32 MB by default. History counts toward this limit, so a
+heavily rewritten paper can reach it with little visible text. When a document reaches
+this limit, new edits are refused with the message "this document's log is at its quota
+and is waiting to be compacted". A configuration whose limits could accept work the
+deployment cannot durably save is refused at startup rather than at the first save.
 
 ## Storage and history
 
