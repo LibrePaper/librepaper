@@ -1,15 +1,85 @@
 //! The advertised JSON schemas also validate incoming tool arguments.
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 
-pub(super) fn tools() -> &'static Vec<Value> {
-    static TOOLS: OnceLock<Vec<Value>> = OnceLock::new();
-    TOOLS.get_or_init(|| {
+/// The checked-in file's own shape: one `operation`-object schema shared by
+/// every tool that needs it, referenced from each tool's `inputSchema` by
+/// `{"$ref":"#/$defs/NAME"}`.
+#[derive(Deserialize)]
+struct ToolsFile {
+    #[serde(rename = "$defs")]
+    defs: Value,
+    tools: Vec<Value>,
+}
+
+fn tools_file() -> &'static ToolsFile {
+    static FILE: OnceLock<ToolsFile> = OnceLock::new();
+    FILE.get_or_init(|| {
         serde_json::from_str(include_str!("tools.json")).expect("checked-in MCP tools JSON")
     })
 }
 
+/// The tools as authored, `$ref`s and all: what `tools/call` looks a tool up
+/// by name in and validates its arguments against.
+pub(super) fn tools() -> &'static Vec<Value> {
+    &tools_file().tools
+}
+
+/// The tools as served over `tools/list`: every `$ref` expanded inline, since
+/// a client reads one schema per tool and does not resolve JSON Schema
+/// references itself.
+pub(super) fn served_tools() -> &'static Vec<Value> {
+    static SERVED: OnceLock<Vec<Value>> = OnceLock::new();
+    SERVED.get_or_init(|| {
+        tools()
+            .iter()
+            .cloned()
+            .map(|mut tool| {
+                inline_refs(&mut tool["inputSchema"]);
+                tool
+            })
+            .collect()
+    })
+}
+
+fn inline_refs(schema: &mut Value) {
+    if let Some(name) = schema
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(|reference| reference.strip_prefix("#/$defs/"))
+    {
+        if let Some(resolved) = tools_file().defs.get(name).cloned() {
+            *schema = resolved;
+        }
+    }
+    match schema {
+        Value::Object(object) => {
+            for value in object.values_mut() {
+                inline_refs(value);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                inline_refs(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(super) fn validate(schema: &Value, value: &Value) -> Result<(), String> {
+    if let Some(name) = schema
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(|reference| reference.strip_prefix("#/$defs/"))
+    {
+        let resolved = tools_file()
+            .defs
+            .get(name)
+            .ok_or_else(|| format!("unknown schema definition {name}"))?;
+        return validate(resolved, value);
+    }
     if let Some(choices) = schema["anyOf"].as_array() {
         if choices.iter().any(|s| validate(s, value).is_ok()) {
             return Ok(());
@@ -94,7 +164,7 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "document_read")
             .unwrap()["inputSchema"];
-        let mut args = json!({"queries":[{"kind":"source","selection":{"exact":"Selected words","position":null},"render_digest":"current"}]});
+        let mut args = json!({"queries":[{"kind":"source","selection":{"exact":"Selected words","position":null},"revision":"current"}]});
         assert!(validate(read, &args).is_ok());
         args["queries"][0]["selection"]["position"] = json!("invalid");
         assert!(validate(read, &args).is_err());

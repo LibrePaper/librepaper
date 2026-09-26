@@ -1,576 +1,484 @@
-[
-  {
-    "name": "document_read",
-    "description": "Read bounded exact source or search, outline, bibliography, comments and context. Reuse returned view and range handles.",
-    "inputSchema": {
+{
+  "$defs": {
+    "OperationKey": {
       "type": "object",
       "properties": {
-        "document_id": {
+        "epoch": {
           "type": "string",
           "maxLength": 128,
-          "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
-        },
-        "queries": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "context",
-                  "source",
-                  "section",
-                  "search",
-                  "outline",
-                  "headings",
-                  "manifest",
-                  "files",
-                  "bibliography",
-                  "thread",
-                  "diagnostics",
-                  "changes",
-                  "rendered"
-                ]
-              },
-              "path": {
-                "type": "string",
-                "maxLength": 1024
-              },
-              "line": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 10000000
-              },
-              "end_line": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 10000000
-              },
-              "start": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 100000000
-              },
-              "end": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 100000000
-              },
-              "query": {
-                "type": "string",
-                "maxLength": 8192
-              },
-              "id": {
-                "type": "string",
-                "maxLength": 128
-              },
-              "key": {
-                "type": "string",
-                "maxLength": 128
-              },
-              "selection": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "maxLength": 256
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "path": {
-                        "type": "string",
-                        "maxLength": 1024
-                      },
-                      "exact": {
-                        "type": "string",
-                        "maxLength": 16000
-                      },
-                      "prefix": {
-                        "type": "string",
-                        "maxLength": 4096
-                      },
-                      "suffix": {
-                        "type": "string",
-                        "maxLength": 4096
-                      },
-                      "position": {
-                        "anyOf": [
-                          { "type": "integer", "minimum": 0, "maximum": 100000000 },
-                          { "type": "null" }
-                        ]
-                      }
-                    },
-                    "required": [
-                      "exact"
-                    ]
-                  }
-                ]
-              },
-              "render_digest": {
-                "type": "string",
-                "maxLength": 128
-              },
-              "tree_digest": {
-                "type": "string",
-                "maxLength": 128
-              },
-              "comment_id": {
-                "type": "string",
-                "maxLength": 128
-              },
-              "context": {
-                "type": "string",
-                "enum": [
-                  "none",
-                  "paragraph"
-                ]
-              },
-              "include": {
-                "type": "string",
-                "enum": [
-                  "all",
-                  "unresolved"
-                ]
-              },
-              "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 100
-              },
-              "cursor": {
-                "type": "string",
-                "maxLength": 4096
-              },
-              "revision": {
-                "type": "string",
-                "maxLength": 128
-              },
-              "range_id": {
-                "type": "string",
-                "maxLength": 256
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 8
-        },
-        "snapshot": {
-          "anyOf": [
-            {
-              "type": "string",
-              "enum": [
-                "latest"
-              ]
-            },
-            {
-              "type": "object",
-              "properties": {
-                "view_id": {
-                  "type": "string",
-                  "maxLength": 128
-                }
-              },
-              "required": [
-                "view_id"
-              ],
-              "additionalProperties": false
-            }
-          ]
-        },
-        "budget": {
-          "type": "object",
-          "properties": {
-            "max_bytes": {
-              "type": "integer",
-              "minimum": 1024,
-              "maximum": 49152
-            },
-            "max_tokens": {
-              "type": "integer",
-              "minimum": 256,
-              "maximum": 12288
-            }
-          },
-          "required": [],
-          "additionalProperties": false
-        }
-      },
-      "required": [
-        "queries"
-      ],
-      "additionalProperties": false
-    },
-    "outputSchema": {
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    }
-  },
-  {
-    "name": "document_propose",
-    "description": "Propose replacements for captured source ranges. Suggestions do not edit the source. Reuse operation keys on retry.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "document_id": {
-          "type": "string",
-          "maxLength": 128,
-          "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
-        },
-        "view_id": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "operation": {
-          "type": "object",
-          "properties": {
-            "epoch": {
-              "type": "string",
-              "maxLength": 128,
-              "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
-            },
-            "id": {
-              "type": "string",
-              "maxLength": 128,
-              "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
-              "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
-            }
-          },
-          "required": [
-            "epoch",
-            "id"
-          ],
-          "additionalProperties": false
-        },
-        "patches": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "range_id": {
-                "type": "string",
-                "maxLength": 256
-              },
-              "replacement": {
-                "type": "string",
-                "maxLength": 60000
-              },
-              "note": {
-                "type": "string",
-                "maxLength": 4096
-              },
-              "find": {
-                "type": "string",
-                "maxLength": 8192
-              }
-            },
-            "required": [
-              "range_id",
-              "replacement"
-            ],
-            "additionalProperties": false
-          },
-          "minItems": 1,
-          "maxItems": 100
-        },
-        "publish": {
-          "type": "string",
-          "enum": [
-            "suggestions",
-            "private"
-          ]
-        },
-        "validation": {
-          "type": "string",
-          "enum": [
-            "source",
-            "compile"
-          ]
-        },
-        "batch": {
-          "type": "string",
-          "enum": [
-            "atomic",
-            "independent"
-          ]
-        },
-        "dependencies": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "maxLength": 256
-          },
-          "maxItems": 100
-        }
-      },
-      "required": [
-        "view_id",
-        "operation",
-        "patches"
-      ],
-      "additionalProperties": false
-    },
-    "outputSchema": {
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": false,
-      "destructiveHint": false,
-      "idempotentHint": false,
-      "openWorldHint": false
-    }
-  },
-  {
-    "name": "document_apply",
-    "description": "Apply a candidate only when the user authorized direct edits. Refuses changed source; replay uses the original operation key.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "document_id": {
-          "type": "string",
-          "maxLength": 128,
-          "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
-        },
-        "view_id": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "operation": {
-          "type": "object",
-          "properties": {
-            "epoch": {
-              "type": "string",
-              "maxLength": 128,
-              "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
-            },
-            "id": {
-              "type": "string",
-              "maxLength": 128,
-              "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
-              "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
-            }
-          },
-          "required": [
-            "epoch",
-            "id"
-          ],
-          "additionalProperties": false
-        },
-        "candidate_id": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "consistency": {
-          "type": "string",
-          "enum": [
-            "exact_tree",
-            "unchanged_dependencies"
-          ]
-        }
-      },
-      "required": [
-        "candidate_id",
-        "operation"
-      ],
-      "additionalProperties": false
-    },
-    "outputSchema": {
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    }
-  },
-  {
-    "name": "document_comment",
-    "description": "Create or reply to comments, refine or decide suggestions, and resolve threads, conditional on their captured version.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "document_id": {
-          "type": "string",
-          "maxLength": 128,
-          "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
-        },
-        "view_id": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "operation": {
-          "type": "object",
-          "properties": {
-            "epoch": {
-              "type": "string",
-              "maxLength": 128,
-              "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
-            },
-            "id": {
-              "type": "string",
-              "maxLength": 128,
-              "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
-              "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
-            }
-          },
-          "required": [
-            "epoch",
-            "id"
-          ],
-          "additionalProperties": false
-        },
-        "action": {
-          "type": "string",
-          "enum": [
-            "create",
-            "reply",
-            "resolve",
-            "delete",
-            "refine",
-            "reject",
-            "label"
-          ]
-        },
-        "comment_id": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "range_id": {
-          "type": "string",
-          "maxLength": 256
-        },
-        "body": {
-          "type": "string",
-          "maxLength": 16000
-        },
-        "proposed": {
-          "type": "string",
-          "maxLength": 32000
-        },
-        "expected_version": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "resolved": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "action",
-        "operation"
-      ],
-      "additionalProperties": false
-    },
-    "outputSchema": {
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "idempotentHint": false,
-      "openWorldHint": false
-    }
-  },
-  {
-    "name": "document_result",
-    "description": "Read an operation receipt or retained candidate; cancel a pending operation explicitly.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "document_id": {
-          "type": "string",
-          "maxLength": 128,
-          "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
-        },
-        "operation": {
-          "type": "object",
-          "properties": {
-            "epoch": {
-              "type": "string",
-              "maxLength": 128,
-              "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
-            },
-            "id": {
-              "type": "string",
-              "maxLength": 128,
-              "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
-              "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
-            }
-          },
-          "required": [
-            "epoch",
-            "id"
-          ],
-          "additionalProperties": false
-        },
-        "kind": {
-          "type": "string",
-          "enum": [
-            "operation",
-            "candidate",
-            "render"
-          ]
+          "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
         },
         "id": {
           "type": "string",
-          "maxLength": 128
-        },
-        "action": {
-          "type": "string",
-          "enum": [
-            "get",
-            "cancel"
-          ]
-        },
-        "target_operation": {
-          "type": "object",
-          "properties": {
-            "epoch": {
-              "type": "string",
-              "maxLength": 128,
-              "description": "Copy operation_epoch verbatim from the most recent document_read response. It is signed and time limited: it cannot be constructed, guessed, or carried over from another document, another reader, or an earlier session, and authorization_epoch is a different value that will be refused. Read again to obtain a fresh one when it expires."
-            },
-            "id": {
-              "type": "string",
-              "maxLength": 128,
-              "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
-              "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
-            }
-          },
-          "required": [
-            "epoch",
-            "id"
-          ],
-          "additionalProperties": false
-        },
-        "wait_ms": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 10000
+          "maxLength": 128,
+          "pattern": "^v2\\.[0-9]+\\.[a-f0-9]{32}$",
+          "description": "Create once per mutation: v2.<current Unix milliseconds>.<32 random lowercase hexadecimal characters>. Reuse this exact key on retry."
         }
       },
-      "required": [],
+      "required": [
+        "epoch",
+        "id"
+      ],
       "additionalProperties": false
-    },
-    "outputSchema": {
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": false,
-      "destructiveHint": false,
-      "idempotentHint": false,
-      "openWorldHint": false
     }
-  }
-]
+  },
+  "tools": [
+    {
+      "name": "document_read",
+      "description": "Read bounded exact source or search, outline, bibliography, comments and context. Reuse returned view and range handles.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
+          },
+          "queries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "context",
+                    "source",
+                    "section",
+                    "search",
+                    "outline",
+                    "manifest",
+                    "bibliography",
+                    "thread",
+                    "diagnostics",
+                    "changes",
+                    "rendered"
+                  ]
+                },
+                "path": {
+                  "type": "string",
+                  "maxLength": 1024
+                },
+                "line": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000000
+                },
+                "end_line": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000000
+                },
+                "start": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100000000
+                },
+                "end": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100000000
+                },
+                "query": {
+                  "type": "string",
+                  "maxLength": 8192
+                },
+                "id": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "key": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "selection": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 256
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "maxLength": 1024
+                        },
+                        "exact": {
+                          "type": "string",
+                          "maxLength": 16000
+                        },
+                        "prefix": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "suffix": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "position": {
+                          "anyOf": [
+                            { "type": "integer", "minimum": 0, "maximum": 100000000 },
+                            { "type": "null" }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "exact"
+                      ]
+                    }
+                  ]
+                },
+                "comment_id": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "context": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "paragraph"
+                  ]
+                },
+                "include": {
+                  "type": "string",
+                  "enum": [
+                    "all",
+                    "unresolved"
+                  ]
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                },
+                "cursor": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "revision": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "range_id": {
+                  "type": "string",
+                  "maxLength": 256
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "latest"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "view_id": {
+                    "type": "string",
+                    "maxLength": 128
+                  }
+                },
+                "required": [
+                  "view_id"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "budget": {
+            "type": "object",
+            "properties": {
+              "max_bytes": {
+                "type": "integer",
+                "minimum": 1024,
+                "maximum": 49152
+              },
+              "max_tokens": {
+                "type": "integer",
+                "minimum": 256,
+                "maximum": 12288
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "queries"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "document_propose",
+      "description": "Propose replacements for captured source ranges. Suggestions do not edit the source. Reuse operation keys on retry.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
+          },
+          "view_id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "operation": { "$ref": "#/$defs/OperationKey" },
+          "patches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "range_id": {
+                  "type": "string",
+                  "maxLength": 256
+                },
+                "replacement": {
+                  "type": "string",
+                  "maxLength": 60000
+                },
+                "note": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "find": {
+                  "type": "string",
+                  "maxLength": 8192
+                }
+              },
+              "required": [
+                "range_id",
+                "replacement"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "publish": {
+            "type": "string",
+            "enum": [
+              "suggestions",
+              "private"
+            ]
+          },
+          "validation": {
+            "type": "string",
+            "enum": [
+              "source",
+              "compile"
+            ]
+          },
+          "batch": {
+            "type": "string",
+            "enum": [
+              "atomic",
+              "independent"
+            ]
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "view_id",
+          "operation",
+          "patches"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "document_apply",
+      "description": "Apply a candidate only when the user authorized direct edits. Refuses changed source; replay uses the original operation key.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
+          },
+          "view_id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "operation": { "$ref": "#/$defs/OperationKey" },
+          "candidate_id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "consistency": {
+            "type": "string",
+            "enum": [
+              "exact_tree",
+              "unchanged_dependencies"
+            ]
+          }
+        },
+        "required": [
+          "candidate_id",
+          "operation"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "document_comment",
+      "description": "Create or reply to comments, refine or decide suggestions, and resolve threads, conditional on their captured version.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
+          },
+          "view_id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "operation": { "$ref": "#/$defs/OperationKey" },
+          "action": {
+            "type": "string",
+            "enum": [
+              "create",
+              "reply",
+              "resolve",
+              "delete",
+              "refine",
+              "reject",
+              "label"
+            ]
+          },
+          "comment_id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "range_id": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 16000
+          },
+          "proposed": {
+            "type": "string",
+            "maxLength": 32000
+          },
+          "expected_version": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "resolved": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "operation"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "document_result",
+      "description": "Read an operation receipt or retained candidate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Omit this. The endpoint already serves exactly one document, and supplying a different value is refused. Pass it only to echo back the document_id a previous document_read returned; a file name is not a document identifier."
+          },
+          "operation": { "$ref": "#/$defs/OperationKey" },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "operation",
+              "candidate",
+              "render"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "target_operation": { "$ref": "#/$defs/OperationKey" },
+          "wait_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

@@ -47,6 +47,18 @@ struct Admission {
     context: Value,
 }
 
+/// What `mcp_record_definite_refusal` found for one failed effect.
+enum RefusalRecord {
+    /// No admission survives for this request, or it names a different
+    /// request: there is nothing new to record.
+    Unrecorded,
+    /// The refused operation's durable effect is a private candidate, kept
+    /// as is rather than overwritten with a refusal.
+    PrivateCandidate(Admission),
+    /// The refusal itself is now the retained outcome.
+    Recorded,
+}
+
 pub(super) fn failure(error: agent::AgentError) -> Failure {
     let code = match error {
         agent::AgentError::Invalid(_) => "invalid_params",
@@ -354,7 +366,6 @@ impl Server {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn mcp_operation(
         &self,
         slug: &str,
@@ -362,66 +373,75 @@ impl Server {
         who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
-        peer: SocketAddr,
         name: &str,
         args: &Value,
     ) -> Result<Value, Failure> {
         let result = self
-            .mcp_operation_inner(slug, actor, who, headers, arrival, peer, name, args, "")
+            .mcp_operation_inner(slug, actor, who, headers, arrival, name, args, "")
             .await;
         if let Err(error) = &result {
             if name != "document_result" && definite_noncommit_code(error.code) {
                 if let Ok(key) = serde_json::from_value::<OperationKey>(args["operation"].clone()) {
                     let digest = operation_digest(name, args);
-                    let admission = self
-                        .mcp_load::<Admission>(
-                            slug,
-                            actor,
-                            who,
-                            &key.scoped_request_id(actor),
-                            "admission",
-                        )
-                        .await;
-                    let Ok(admission) = admission else {
-                        return result;
-                    };
-                    if admission.tool != name || admission.digest != digest {
-                        return result;
-                    }
-                    if name == "document_propose"
-                        && self
-                            .has_private_candidate(
-                                slug,
-                                actor,
-                                who,
-                                &key,
-                                &digest,
-                                admission.context["candidate_id"]
-                                    .as_str()
-                                    .unwrap_or_default(),
-                            )
-                            .await
-                    {
-                        // Candidate storage is itself this operation's
-                        // durable effect. Preserve it for document_result;
-                        // compilation still requires verified render evidence.
-                        return result;
-                    }
-                    let room = self
-                        .rooms
-                        .get(slug)
-                        .await
-                        .map_err(|failure| Failure::new("unavailable", failure.to_string()))?;
-                    let receipt =
-                        self.mcp_operation_receipt(actor, &key, &digest, name, room.document_id)?;
-                    room.catalog()
-                        .store_operation_refusal(&receipt, error.code, &error.message)
-                        .await
-                        .map_err(|failure| Failure::new("unavailable", failure.to_string()))?;
+                    self.mcp_record_definite_refusal(slug, actor, who, &key, name, &digest, error)
+                        .await?;
                 }
             }
         }
         result
+    }
+
+    /// The "record a definite refusal" logic shared by a single operation and
+    /// each item of an independent batch: load the admission a failed effect
+    /// still owns, and either recognize its durable effect is a private
+    /// candidate (left for `document_result` to recover) or store the
+    /// refusal itself as the retained outcome. Returns `Unrecorded` when the
+    /// admission does not survive or names a different request, in which
+    /// case the caller has nothing new to report either.
+    async fn mcp_record_definite_refusal(
+        &self,
+        slug: &str,
+        actor: &str,
+        who: &Viewer,
+        key: &OperationKey,
+        name: &str,
+        digest: &str,
+        error: &Failure,
+    ) -> Result<RefusalRecord, Failure> {
+        let admission = self
+            .mcp_load::<Admission>(slug, actor, who, &key.scoped_request_id(actor), "admission")
+            .await;
+        let Ok(admission) = admission else {
+            return Ok(RefusalRecord::Unrecorded);
+        };
+        if admission.tool != name || admission.digest != digest {
+            return Ok(RefusalRecord::Unrecorded);
+        }
+        let candidate_id = admission.context["candidate_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if name == "document_propose"
+            && self
+                .has_private_candidate(slug, actor, who, key, digest, &candidate_id)
+                .await
+        {
+            // Candidate storage is itself this operation's durable effect.
+            // Preserve it for document_result; compilation still requires
+            // verified render evidence.
+            return Ok(RefusalRecord::PrivateCandidate(admission));
+        }
+        let room = self
+            .rooms
+            .get(slug)
+            .await
+            .map_err(|failure| Failure::new("unavailable", failure.to_string()))?;
+        let receipt = self.mcp_operation_receipt(actor, key, digest, name, room.document_id)?;
+        room.catalog()
+            .store_operation_refusal(&receipt, error.code, &error.message)
+            .await
+            .map_err(|failure| Failure::new("unavailable", failure.to_string()))?;
+        Ok(RefusalRecord::Recorded)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -432,15 +452,12 @@ impl Server {
         who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
-        peer: SocketAddr,
         name: &str,
         args: &Value,
         parent_request_id: &str,
     ) -> Result<Value, Failure> {
         if name == "document_result" {
-            return self
-                .mcp_result(slug, actor, headers, arrival, peer, args)
-                .await;
+            return self.mcp_result(slug, actor, headers, arrival, args).await;
         }
         let key: OperationKey = serde_json::from_value(args["operation"].clone())
             .map_err(|e| Failure::new("invalid_params", e.to_string()))?;
@@ -469,7 +486,6 @@ impl Server {
                             &current,
                             headers,
                             arrival,
-                            peer,
                             name,
                             &child,
                             &key.scoped_request_id(actor),
@@ -478,67 +494,40 @@ impl Server {
                         if let Err(error) = &outcome {
                             if definite_noncommit_code(error.code) {
                                 let child_digest = operation_digest(name, &child);
-                                let child_admission = self
-                                    .mcp_load::<Admission>(
-                                        slug,
-                                        actor,
-                                        who,
-                                        &child_operation.scoped_request_id(actor),
-                                        "admission",
-                                    )
-                                    .await;
-                                let Ok(child_admission) = child_admission else {
-                                    items.push(json!({"index":index,"error":{"code":error.code,"message":error.message}}));
-                                    continue;
-                                };
-                                if child_admission.tool != name
-                                    || child_admission.digest != child_digest
-                                {
-                                    items.push(json!({"index":index,"error":{"code":error.code,"message":error.message}}));
-                                    continue;
-                                }
-                                if name == "document_propose"
-                                    && self
-                                        .has_private_candidate(
-                                            slug,
-                                            actor,
-                                            who,
-                                            &child_operation,
-                                            &child_digest,
-                                            child_admission.context["candidate_id"]
-                                                .as_str()
-                                                .unwrap_or_default(),
-                                        )
-                                        .await
-                                {
-                                    match self.mcp_recover_private_candidate(
+                                match self
+                                    .mcp_record_definite_refusal(
                                         slug,
                                         actor,
                                         who,
                                         &child_operation,
-                                        &child_admission,
-                                    ).await {
-                                        Ok(outcome) => items.push(json!({"index":index,"status":"committed","candidate_id":outcome["candidate_id"],"effects":outcome["effects"],"replay":true})),
-                                        Err(recovery) => items.push(json!({"index":index,"status":"outcome_unknown","error":{"code":"outcome_unknown","message":recovery.message}})),
+                                        name,
+                                        &child_digest,
+                                        error,
+                                    )
+                                    .await?
+                                {
+                                    RefusalRecord::Unrecorded => {
+                                        items.push(json!({"index":index,"error":{"code":error.code,"message":error.message}}));
+                                        continue;
                                     }
-                                    continue;
+                                    RefusalRecord::PrivateCandidate(child_admission) => {
+                                        match self
+                                            .mcp_recover_private_candidate(
+                                                slug,
+                                                actor,
+                                                who,
+                                                &child_operation,
+                                                &child_admission,
+                                            )
+                                            .await
+                                        {
+                                            Ok(outcome) => items.push(json!({"index":index,"status":"committed","candidate_id":outcome["candidate_id"],"effects":outcome["effects"],"replay":true})),
+                                            Err(recovery) => items.push(json!({"index":index,"status":"outcome_unknown","error":{"code":"outcome_unknown","message":recovery.message}})),
+                                        }
+                                        continue;
+                                    }
+                                    RefusalRecord::Recorded => {}
                                 }
-                                let room = self.rooms.get(slug).await.map_err(|failure| {
-                                    Failure::new("unavailable", failure.to_string())
-                                })?;
-                                let receipt = self.mcp_operation_receipt(
-                                    actor,
-                                    &child_operation,
-                                    &child_digest,
-                                    name,
-                                    room.document_id,
-                                )?;
-                                room.catalog()
-                                    .store_operation_refusal(&receipt, error.code, &error.message)
-                                    .await
-                                    .map_err(|failure| {
-                                        Failure::new("unavailable", failure.to_string())
-                                    })?;
                             }
                         }
                         items.push(match outcome {
@@ -554,9 +543,9 @@ impl Server {
                     // command has none to report, e.g. a private candidate);
                     // there is no batch-level key here.
                     let result = json!({"operation":key,"status":"committed","batch":"independent","items":items});
-                    // No receipt is retained, but access is still rechecked
-                    // before the batch result is handed back.
-                    self.mcp_recheck(slug, headers, arrival, actor).await?;
+                    // Access was rechecked before each child effect above;
+                    // `handle_mcp` rechecks once more before the batch result
+                    // is handed back.
                     return Ok(result);
                 }
                 self.mcp_propose(
@@ -565,7 +554,6 @@ impl Server {
                     &current,
                     headers,
                     arrival,
-                    peer,
                     args,
                     key,
                     digest,
@@ -664,9 +652,7 @@ impl Server {
             "document_comment" => {
                 if args["action"] == "accept" {
                     return self
-                        .mcp_accept(
-                            slug, actor, &current, headers, arrival, peer, args, &key, &digest,
-                        )
+                        .mcp_accept(slug, actor, &current, headers, arrival, args, &key, &digest)
                         .await;
                 }
                 if args["action"] == "label" {
@@ -681,10 +667,8 @@ impl Server {
                         )
                         .await;
                 }
-                self.mcp_comment(
-                    slug, actor, who, headers, arrival, peer, args, &key, &digest,
-                )
-                .await
+                self.mcp_comment(slug, actor, who, headers, arrival, args, &key, &digest)
+                    .await
             }
             _ => Err(Failure::new("invalid_params", "unknown tool")),
         }
@@ -703,7 +687,6 @@ impl Server {
         who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
-        _peer: SocketAddr,
         args: &Value,
         key: &OperationKey,
         digest: &str,
@@ -887,7 +870,6 @@ impl Server {
         who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
-        peer: SocketAddr,
         args: &Value,
         key: OperationKey,
         digest: String,
@@ -1048,18 +1030,8 @@ impl Server {
             true,
         )
         .await?;
-        self.mcp_finish_proposal(
-            slug,
-            actor,
-            who,
-            headers,
-            arrival,
-            peer,
-            &candidate_id,
-            &candidate,
-            &view,
-        )
-        .await
+        self.mcp_finish_proposal(slug, actor, who, headers, arrival, &candidate_id, &candidate, &view)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1070,7 +1042,6 @@ impl Server {
         who: &Viewer,
         headers: &HeaderMap,
         arrival: &Arrival,
-        _peer: SocketAddr,
         candidate_id: &str,
         candidate: &Candidate,
         view: &View,
@@ -1273,9 +1244,9 @@ impl Server {
             );
             return Ok(result);
         }
-        // No receipt is retained for private staging, but access is still
-        // rechecked before the result is handed back.
-        self.mcp_recheck(slug, headers, arrival, actor).await?;
+        // No receipt is retained for private staging; the candidate was
+        // already stored under the recheck at the top of `mcp_operation_inner`,
+        // and `handle_mcp` rechecks once more before the result is returned.
         Ok(result)
     }
 
@@ -1285,13 +1256,9 @@ impl Server {
         actor: &str,
         headers: &HeaderMap,
         arrival: &Arrival,
-        peer: SocketAddr,
         args: &Value,
     ) -> Result<Value, Failure> {
         let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
-        if args["action"] == "cancel" {
-            return self.mcp_cancel(slug, actor, headers, arrival, args).await;
-        }
         match args["kind"].as_str().unwrap_or("operation") {
             "operation" => {
                 let key: OperationKey = serde_json::from_value(
@@ -1364,7 +1331,6 @@ impl Server {
                     )
                     .await?;
                 if args["kind"] == "render" {
-                    let who = self.mcp_recheck(slug, headers, arrival, actor).await?;
                     let view = self
                         .mcp_load::<View>(slug, actor, &who, &candidate.view_id, "view")
                         .await?;
@@ -1375,7 +1341,6 @@ impl Server {
                             &who,
                             headers,
                             arrival,
-                            peer,
                             args["id"].as_str().unwrap_or_default(),
                             &candidate,
                             &view,
