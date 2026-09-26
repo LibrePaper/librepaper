@@ -187,8 +187,10 @@ pub struct PatchRequest {
 /// payload and therefore never alter a retry's operation digest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentAuthority {
+    pub account_id: String,
     pub owner_key: String,
     pub link_hash: String,
+    pub policy_editor: bool,
     /// Trusted endpoint scope (document/account/link/generation/role). This
     /// binds operation ids to the complete authenticated actor context.
     pub operation_scope: String,
@@ -642,7 +644,10 @@ impl Room {
         Fut: std::future::Future<Output = Result<(), AgentError>>,
     {
         request.operation.validate()?;
-        if authority.link_hash.is_empty() {
+        if !authority.policy_editor
+            && authority.account_id.is_empty()
+            && authority.link_hash.is_empty()
+        {
             return Err(AgentError::Conflict("edit access changed".into()));
         }
         recheck().await?;
@@ -663,7 +668,11 @@ impl Room {
             .await
             .map_err(|error| AgentError::Conflict(error.to_string()))?;
         let document_authority = crate::storage::postgres::Authority {
-            principal_key: authority.owner_key.clone(),
+            principal_key: if authority.account_id.is_empty() {
+                authority.owner_key.clone()
+            } else {
+                authority.account_id.clone()
+            },
             account_id: authorization.account_id,
             link_hash: authorization.token_hash.map(Vec::from),
         };

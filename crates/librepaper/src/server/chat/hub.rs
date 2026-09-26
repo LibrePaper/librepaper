@@ -327,28 +327,6 @@ impl Hub {
         }
     }
 
-    /// Cancel one pending render waiter. This is deliberately best effort;
-    /// the durable MCP cancellation flag is the authoritative race guard.
-    pub(crate) async fn cancel_render(
-        &self,
-        slug: &str,
-        id: &str,
-        token: &str,
-        request_id: &str,
-    ) -> Result<bool, Error> {
-        if !valid_id(request_id) {
-            return Err((400, "render request id is required"));
-        }
-        let mut channels = self.channels.lock().await;
-        let channel = channels
-            .get_mut(id)
-            .filter(|channel| channel.slug == slug && token_matches(&channel.token_hash, token))
-            .ok_or((404, "channel not found"))?;
-        channel.render_expected.remove(request_id);
-        channel.render_results.remove(request_id);
-        Ok(channel.render_waiters.remove(request_id).is_some())
-    }
-
     pub(crate) async fn relay(
         &self,
         slug: &str,

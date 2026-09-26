@@ -125,8 +125,8 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     status: persisted?.id ? "reconnecting" : "idle",
     assistantAgent: persisted?.assistantAgent || "", assistantAccess: persisted?.assistantAccess || "" });
   let runtimeSessionId = persisted?.runtimeSessionId || "";
-  id = view.id;
-  token = view.token;
+  id = persisted?.id || "";
+  token = persisted?.token || "";
   let saveQueued = false;
 
   function save() {

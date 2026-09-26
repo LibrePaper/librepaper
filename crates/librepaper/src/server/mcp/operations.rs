@@ -616,8 +616,10 @@ impl Server {
                     request_digest: digest,
                 };
                 let authority = AgentAuthority {
+                    account_id: current.id.id.clone(),
                     owner_key: current.key.clone(),
                     link_hash: current.link.clone(),
+                    policy_editor: self.publishers.allows(&current.id.handle),
                     operation_scope: actor.to_string(),
                 };
                 let room = self
