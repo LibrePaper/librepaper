@@ -4,8 +4,8 @@ title: "The CLI"
 
 LibrePaper is a server and a web app, and the command line is deliberately
 small. Four commands are for a person at a terminal: `login`, `logout`,
-`list`, and `export`. Three namespaces are for particular jobs: `admin` runs
-a deployment, `local` runs the companion on your own computer, and `mcp`
+`list`, and `export`. Two namespaces are for particular jobs: `admin` runs
+a deployment and `local` runs the companion on your own computer. `mcp`
 connects an agent to a document. Publishing, review, and document management
 happen in the browser.
 
@@ -115,19 +115,20 @@ the jobs the browser cannot do: Quarto renders, and Typst to self-contained
 HTML. It also holds the agents the document sidebar can drive.
 
 ```sh
-librepaper local start            # run in the background (default) or in this process with --foreground
-librepaper local stop             # stop the companion
-librepaper local status           # service state, address, code, pairings, tools, and agent connections
-librepaper local settings         # open the companion's settings page
-librepaper local agent list       # add <id> -- <command> teaches it another
+librepaper local start       # start it in the background, or reuse the one running
+librepaper local stop        # stop it
+librepaper local status      # address, pairing code, pairings, tools found, agent connections
+librepaper local settings    # open its settings page in a browser
+librepaper local agent list  # the agents it offers; `agent add <id> -- <command>` teaches it another
 ```
 
 `start --code` fixes the pairing code instead of rotating it per run, which is
 what `make deploy` uses so that connecting an agent in development does not
 mean reading a fresh code off a terminal after every restart. `--foreground`
-runs the companion in this process instead of the background. `--tex-path`
-(colon-separated directories) points to a TeX installation they would not
-otherwise find.
+runs the companion in this process instead of the background, and
+`--at-login` also starts it every time you log in. `--tex-path`
+(colon-separated directories) points `start` and `status` at a TeX
+installation they would not otherwise find.
 
 A Quarto or Typst document renders in a workspace of its own, written from the
 files the browser sends. To render against a project folder on your disk
@@ -135,9 +136,9 @@ instead, because it keeps data the document does not share, choose the folder
 under *Settings*, *Local app*, *Project folder* in the browser. The companion
 never receives a path from a website; the choice is made on this machine.
 
-Build presets are configured and managed in the settings page opened by
-`librepaper local settings`, or through the web interface at
-`http://127.0.0.1:8763/librepaper/local/v1/manage` when it is running.
+Everything else is on the settings page that `librepaper local settings`
+opens: build presets and their permissions, paired websites, agent
+connections, and whether the companion starts when you log in.
 
 ## Agents
 
