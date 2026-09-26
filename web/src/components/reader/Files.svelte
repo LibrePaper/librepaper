@@ -6,7 +6,7 @@
   import IconButton from "../IconButton.svelte";
   import Modal from "../Modal.svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
-  import { checkPath, collisionKey } from "../../lib/paths.js";
+  import { checkDirectoryPath, checkPath, collisionKey } from "../../lib/paths.js";
   import { basename, parentPath, inside, nodeKey, fileTree, folderPaths, topEntries, checkPlacement, copyPath, droppedFiles } from "../../lib/file-manager.js";
   import { expandArchives } from "../../lib/project-upload.js";
   import { unzip } from "../../lib/zip.js";
@@ -20,6 +20,7 @@
   let editing = $state(null);
   let draft = $state("");
   let refusal = $state("");
+  let uploadWarning = $state("");
   let chooser = $state(null);
   let uploadTarget = "";
   let busy = $state(false);
@@ -57,7 +58,7 @@
   function entryOf(node) { return node.kind === "folder" ? { kind: "folder", id: node.path, path: node.path } : files.find((file) => file.id === node.fileId && file.kind === node.kind); }
   function selectionFor(node) { return selected.includes(node.id) ? topEntries(chosen) : [entryOf(node)].filter(Boolean); }
   function expand(path) { if (path) expanded = [...new Set([...expanded, `folder:${path}`])]; }
-  function reset() { editing = null; draft = ""; refusal = ""; }
+  function reset() { editing = null; draft = ""; refusal = ""; uploadWarning = ""; }
   function focusName(element) { tick().then(() => { element.focus(); element.select(); }); }
   // `start` and `choose` are exported for the toolbar's File menu, which
   // offers what this panel's own toolbar does without making a person open
@@ -141,7 +142,9 @@
     if (!mayEdit || busy) return;
     busy = true;
     refusal = "";
+    uploadWarning = "";
     const errors = [];
+    const skipped = [];
     try {
       // A ZIP is the files inside it. Expanding before anything is written
       // means a broken archive refuses the whole import rather than leaving
@@ -159,7 +162,12 @@
         try {
           let path = [target, relative].filter(Boolean).join("/");
           const answer = checkPath(rules, path);
-          if (answer.error) throw new Error(answer.error);
+          if (answer.error) {
+            // Invalid paths remain errors. A valid path with an unsupported
+            // extension is a skipped upload and should not block its siblings.
+            if (!checkDirectoryPath(rules, path)) { skipped.push(relative); continue; }
+            throw new Error(answer.error);
+          }
           if (entries.some((entry) => collisionKey(entry.path) === collisionKey(path))) {
             conflict = path;
             const keep = await new Promise((resolve) => { settleConflict = resolve; });
@@ -174,7 +182,14 @@
       }
       expand(target);
     } catch (error) { errors.push(error.message); }
-    finally { busy = false; refusal = errors.join("; "); }
+    finally {
+      busy = false;
+      refusal = errors.join("; ");
+      if (skipped.length) {
+        const allowed = [...new Set([...(rules.text_extensions || []), ...(rules.asset_extensions || []), ".zip"])].sort();
+        uploadWarning = `Skipped unsupported file${skipped.length === 1 ? "" : "s"}: ${skipped.join(", ")}. Allowed extensions: ${allowed.join(", ") || "none"}.`;
+      }
+    }
   }
   export function offer(chosenFiles) {
     return upload(chosenFiles.map((file) => ({ file, path: file.webkitRelativePath || file.name })), "");
@@ -256,6 +271,7 @@
       <span class="panel-meta">{chosen.length} selected</span>
     {/if}
     {#if busy}<p role="status">Uploading files…</p>{/if}
+    {#if uploadWarning}<p class="upload-warning" role="status">{uploadWarning}</p>{/if}
     {#if refusal && !dialog}<p class="refusal" role="alert">{refusal}</p>{/if}
     {#if editing && editing.type !== "rename"}
       <div class="space-y-1">

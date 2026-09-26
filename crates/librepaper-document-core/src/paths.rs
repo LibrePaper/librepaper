@@ -113,17 +113,25 @@ pub fn check(rules: &Rules, path: &str) -> Result<Kind, String> {
 /// answer, and the command line asks it that way.
 pub fn kind_of(rules: &Rules, path: &str) -> Result<Kind, String> {
     let lower = path.to_lowercase();
-    // Derived first, because `.log` and `.out` are plausible-looking names and
-    // the reason they are refused is worth saying rather than "not a file
-    // type this holds".
+    let mut allowed = rules.text.to_vec();
+    for extension in rules.asset {
+        if !allowed.contains(extension) {
+            allowed.push(extension.clone());
+        }
+    }
+    let allowed = if allowed.is_empty() {
+        "none".to_owned()
+    } else {
+        allowed.join(", ")
+    };
+    let error = format!("{path}: allowed file extensions are {allowed}");
+    // Derived extensions are refused even when their names look plausible.
     if rules
         .derived
         .iter()
         .any(|end| lower.ends_with(end.as_str()))
     {
-        return Err(format!(
-            "{path}: this is a file a compiler writes, and the document keeps what a person wrote"
-        ));
+        return Err(error);
     }
     if rules.text.iter().any(|end| lower.ends_with(end.as_str())) {
         return Ok(Kind::Text);
@@ -131,9 +139,7 @@ pub fn kind_of(rules: &Rules, path: &str) -> Result<Kind, String> {
     if rules.asset.iter().any(|end| lower.ends_with(end.as_str())) {
         return Ok(Kind::Asset);
     }
-    Err(format!(
-        "{path}: a document holds texts and figures, and this is neither"
-    ))
+    Err(error)
 }
 
 /// The next spelling of a path that is already taken: `paper.tex` becomes
