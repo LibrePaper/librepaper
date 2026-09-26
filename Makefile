@@ -217,15 +217,19 @@ OWNER      ?= $(if $(filter any,$(LIBREPAPER_PUBLISHERS)),,$(if $(findstring $(c
 LATEX_MIRROR      ?=
 LATEX_MIRROR_FLAG ?= $(if $(LATEX_MIRROR),--latex-mirror $(LATEX_MIRROR))
 
-# SIMULATE_ACTIVITY=<days> writes each example as though it had been typed
-# over that many days, so the history panel has a calendar in it. For admin serve,
-# set simulate_activity_days in the advanced config file instead.
+# SIMULATE_ACTIVITY=<days> writes every starter document a new account is
+# given as though it had been typed over that many days, so the history panel
+# has a calendar in it rather than the one cell a document published once has.
+# The operations are real; only the clock is invented. See seed::activity.
+# 0 -- or nothing at all -- asks for no simulation, which is what `serve`
+# does on its own; `deploy` supplies a default below.
+SIMULATE_ACTIVITY_FLAG ?= $(if $(filter-out 0,$(SIMULATE_ACTIVITY)),--simulate-activity $(SIMULATE_ACTIVITY))
 
 OPEN ?= 1
 
 serve: $(BIN)  ## Run the server and open it in Firefox (PORT=, DATA=, LATEX_MIRROR=; everything else through .env)
 	@test "$(OPEN)" = 1 && command -v firefox >/dev/null && (sleep 1; firefox http://localhost:$(PORT) >/dev/null 2>&1 &) || true
-	@$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(LATEX_MIRROR_FLAG)
+	@$(BIN) admin serve --port $(PORT) --data-directory $(DATA) $(LATEX_MIRROR_FLAG) $(SIMULATE_ACTIVITY_FLAG)
 
 # One tutorial project per source format LibrePaper accepts. Each project has
 # a source file and the same relative icon asset; no example is generated.

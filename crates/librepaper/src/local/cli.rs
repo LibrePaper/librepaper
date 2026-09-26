@@ -21,7 +21,13 @@ pub async fn run(args: LocalArgs) {
             port,
             code,
             tex_path,
+            at_login,
         } => {
+            if at_login {
+                if let Err(error) = crate::local::lifecycle::set_startup(true) {
+                    die(error);
+                }
+            }
             if foreground {
                 start_foreground(port, code, tex_path).await
             } else {
@@ -213,50 +219,57 @@ async fn open(url: &str) {
 /// one already running alone. Reports service state/address/code/pairings,
 /// native tools found and missing, and agent connections.
 async fn status(tex_path: Vec<PathBuf>) {
-    let state_home_val = state_home();
-    let pairing = PairingStore::new(&state_home_val, None);
-    let Some(state) = pairing.read_service() else {
-        println!("librepaper local is not running");
-        std::process::exit(1);
-    };
-    let url = format!(
-        "http://127.0.0.1:{}{}/health",
-        state.port,
-        protocol::BASE_PATH
-    );
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(1))
-        .build();
-    let reachable = match client {
-        Ok(client) => client.get(&url).send().await,
-        Err(err) => Err(err),
-    };
-    let answering = match reachable {
-        Ok(response) if response.status().is_success() => {
-            println!("reachable at {url} (pid {})", state.pid);
-            true
-        }
-        Ok(response) => {
-            println!(
-                "listening at {url} but answered unexpectedly: {}",
-                response.status()
-            );
-            false
-        }
-        Err(_) => {
-            println!(
-                "not reachable at {url}; service.json names pid {} but nothing answered",
-                state.pid
-            );
-            false
-        }
-    };
-    println!("pairing code: {}", state.code);
-    print_pairings(&pairing);
+    let home = state_home();
+    let pairing = PairingStore::new(&home, None);
+    let mut answering = true;
 
-    // Native tools found and missing
-    let capabilities = crate::local::discovery::discover(true, &tex_path).await;
+    // Service section
+    match pairing.read_service() {
+        Some(state) => {
+            let url = format!(
+                "http://127.0.0.1:{}{}/health",
+                state.port,
+                protocol::BASE_PATH
+            );
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(1))
+                .build();
+            let reachable = match client {
+                Ok(client) => client.get(&url).send().await,
+                Err(err) => Err(err),
+            };
+            match reachable {
+                Ok(response) if response.status().is_success() => {
+                    println!("reachable at {url} (pid {})", state.pid);
+                }
+                Ok(response) => {
+                    println!(
+                        "listening at {url} but answered unexpectedly: {}",
+                        response.status()
+                    );
+                    answering = false;
+                }
+                Err(_) => {
+                    println!(
+                        "not reachable at {url}; service.json names pid {} but nothing answered",
+                        state.pid
+                    );
+                    answering = false;
+                }
+            }
+            println!("pairing code: {}", state.code);
+            print_pairings(&pairing);
+        }
+        None => {
+            println!("librepaper local is not running");
+            answering = false;
+        }
+    }
+
+    // Tools section
     println!();
+    println!("platform: {}", std::env::consts::OS);
+    let capabilities = crate::local::discovery::discover(true, &tex_path).await;
     println!("tools:");
     print_tool("calepin", &capabilities.calepin);
     print_tool("quarto", &capabilities.quarto.tool);
@@ -284,8 +297,8 @@ async fn status(tex_path: Vec<PathBuf>) {
         println!("  paired local builds run with the user's normal access");
     }
 
-    // Agent connections
-    let store = crate::local::connections::ConnectionStore::new(&state_home_val);
+    // Agent connections section
+    let store = crate::local::connections::ConnectionStore::new(&home);
     let all = store.list();
     if !all.is_empty() {
         println!();
@@ -309,8 +322,7 @@ async fn status(tex_path: Vec<PathBuf>) {
         }
     }
 
-    // A stale `service.json` describes a companion that is gone. Reporting
-    // that as success would have a script skip starting one.
+    // Exit 1 if service not running or not answering
     if !answering {
         std::process::exit(1);
     }

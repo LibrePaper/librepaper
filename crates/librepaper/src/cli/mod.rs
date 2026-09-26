@@ -40,7 +40,7 @@ pub(crate) struct Cli {
 
 /// Deployment credentials: server URL and optional authentication token.
 #[derive(Args, Clone, Debug)]
-struct Deployment {
+pub(crate) struct Deployment {
     /// Deployment to talk to
     #[arg(
         long,
@@ -48,7 +48,7 @@ struct Deployment {
         value_name = "URL",
         help_heading = "Deployment"
     )]
-    server: Option<String>,
+    pub(crate) server: Option<String>,
     /// A credential to use instead of the one `login` stored
     #[arg(
         long,
@@ -57,7 +57,7 @@ struct Deployment {
         hide_env_values = true,
         help_heading = "Deployment"
     )]
-    token: Option<String>,
+    pub(crate) token: Option<String>,
 }
 
 /// The options that describe a running service rather than where it runs:
@@ -101,6 +101,17 @@ pub(crate) struct ServiceFlags {
         value_name = "N"
     )]
     uploads_per_hour: Option<usize>,
+    /// Write each new account's starter documents as though they had been
+    /// typed over this many days, so a demonstration deployment has a history
+    /// panel with something in it. The operations are real; only the clock is
+    /// invented. See `crate::seed::activity`.
+    #[arg(
+        long = "simulate-activity",
+        env = "LIBREPAPER_SIMULATE_ACTIVITY",
+        value_name = "DAYS",
+        hide = true
+    )]
+    simulate_activity: Option<u32>,
     /// Delete documents after this duration, for example 24h or 30d (default never)
     #[arg(
         long = "document-expire-after",
@@ -174,9 +185,8 @@ pub(crate) struct ServiceFlags {
 }
 
 impl ServiceFlags {
-    fn configuration(&self) -> (Configuration, Option<u32>) {
+    fn configuration(&self) -> Configuration {
         let mut config = Configuration::default();
-        let mut simulate_activity = None;
         if let Some(path) = &self.advanced_config {
             let text = std::fs::read_to_string(path).unwrap_or_else(|error| {
                 die(format!(
@@ -208,7 +218,6 @@ impl ServiceFlags {
             if let Err(error) = config.set_memory_budget(file.memory_budget_mb) {
                 die(format!("invalid advanced memory budget: {error}"));
             }
-            simulate_activity = file.simulate_activity_days;
         }
         if let Err(err) = config.set_storage(self.quota, self.storage) {
             die(err);
@@ -226,7 +235,7 @@ impl ServiceFlags {
         if let Err(err) = config.validate_budgets() {
             die(err);
         }
-        (config, simulate_activity)
+        config
     }
 }
 
@@ -253,11 +262,6 @@ struct AdvancedConfigFile {
     /// quota, so a raised quota needs a raised budget with it; the pair is
     /// checked at startup.
     memory_budget_mb: Option<u64>,
-    /// Write each new account's starter documents as though they had been
-    /// typed over this many days, so a demonstration deployment has a history
-    /// panel with something in it. The operations are real; only the clock is
-    /// invented. See `crate::seed::activity`. Advanced configuration only.
-    simulate_activity_days: Option<u32>,
     #[serde(default)]
     backup: crate::config::BackupPolicyOverrides,
 }
@@ -290,7 +294,7 @@ pub(crate) enum Command {
         /// A full slug, or one of the short handles `list` prints
         id: String,
         /// A new directory to create
-        dir: PathBuf,
+        dir: String,
         /// Export the project as it stood at this label instead of its live
         /// state; requesting a historical export waits for the server to build
         /// it (SPEC-server-is-a-log §8.5)
@@ -304,59 +308,11 @@ pub(crate) enum Command {
         deployment: Deployment,
     },
     /// Serve the document MCP tools to an agent on this computer
-    Mcp {
-        #[arg(
-            required_unless_present = "connection",
-            conflicts_with = "connection",
-            default_value = ""
-        )]
-        link: String,
-        /// A connection registered by the browser on this computer.
-        #[arg(long, value_name = "NAME")]
-        connection: Option<String>,
-        #[command(flatten)]
-        deployment: Deployment,
-    },
+    Mcp(agent::McpArgs),
     /// Drive a local ACP agent against a private sidebar conversation. The
     /// local app starts this; it is not listed because nobody types it.
     #[command(hide = true)]
-    RunAgent {
-        link: String,
-        /// Private conversation identifier from the LibrePaper sidebar.
-        conversation: String,
-        /// Conversation credential.
-        #[arg(
-            long = "chat-token",
-            env = "LIBREPAPER_CHAT_TOKEN",
-            hide_env_values = true
-        )]
-        chat_token: Option<String>,
-        /// Directory for the local thread id and completed task ids.
-        #[arg(
-            long = "state-directory",
-            env = "LIBREPAPER_ASSISTANT_STATE_DIR",
-            value_name = "DIRECTORY"
-        )]
-        state_dir: Option<std::path::PathBuf>,
-        /// Command line for an Agent Client Protocol implementation.
-        /// `allow_hyphen_values` because an adapter's arguments are flags of
-        /// its own: `gemini --experimental-acp`, `npx -y pi-acp`. Without it
-        /// clap claims the adapter's flag as one of ours and exits 2.
-        #[arg(
-            long = "agent",
-            env = "LIBREPAPER_AGENT",
-            value_delimiter = ' ',
-            allow_hyphen_values = true,
-            required = true,
-            value_name = "COMMAND"
-        )]
-        agent: Vec<String>,
-        /// Start a detached runner and wait until it is ready.
-        #[arg(long)]
-        background: bool,
-        #[command(flatten)]
-        deployment: Deployment,
-    },
+    RunAgent(agent::RunAgentArgs),
     /// The local app: run native tools on this machine for the jobs the
     /// browser editor cannot do itself
     Local {
@@ -485,6 +441,9 @@ pub enum LocalCommand {
             value_delimiter = ':'
         )]
         tex_path: Vec<PathBuf>,
+        /// Also start the companion every time you log in; turn it off on the settings page
+        #[arg(long)]
+        at_login: bool,
     },
     /// Open the local companion settings, starting it if needed.
     Settings,
@@ -564,42 +523,19 @@ pub async fn main() {
                 &id,
                 deployment.server,
                 deployment.token,
-                dir.to_str().unwrap_or_else(|| die("directory path is not valid UTF-8")),
+                &dir,
                 key.unwrap_or_default(),
                 at.unwrap_or_default(),
             )
             .await
         }
-        Command::Mcp {
-            link,
-            connection,
-            deployment,
-        } => {
-            if let Err(err) = agent::run_mcp(link, connection, deployment.server, deployment.token).await {
+        Command::Mcp(args) => {
+            if let Err(err) = agent::run_mcp(args).await {
                 die(err);
             }
         }
-        Command::RunAgent {
-            link,
-            conversation,
-            chat_token,
-            state_dir,
-            agent,
-            background,
-            deployment,
-        } => {
-            if let Err(err) = agent::run_connect(
-                link,
-                conversation,
-                chat_token,
-                state_dir,
-                agent,
-                background,
-                deployment.server,
-                deployment.token,
-            )
-            .await
-            {
+        Command::RunAgent(args) => {
+            if let Err(err) = agent::run_connect(args).await {
                 die(err);
             }
         }
@@ -615,7 +551,7 @@ async fn run_admin(command: AdminCommand) {
             service,
             storage,
         } => {
-            let (config, simulate_activity) = service.configuration();
+            let config = service.configuration();
             crate::server::serve::serve(crate::server::serve::ServeOptions {
                 bind,
                 port,
@@ -625,7 +561,7 @@ async fn run_admin(command: AdminCommand) {
                 publishers: service.publishers,
                 commenters: service.commenters,
                 no_listing: service.no_listing,
-                simulate_activity,
+                simulate_activity: service.simulate_activity,
                 origin: service.origin,
                 docs_origin: service.docs_origin,
                 site_origin: service.site_origin,

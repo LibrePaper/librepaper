@@ -35,8 +35,24 @@ fn form(nonce: &str, action: &str, label: &str, extra: &str) -> String {
     )
 }
 
+fn lines(field: Option<&String>) -> Vec<String> {
+    field
+        .map(|s| {
+            s.lines()
+                .filter_map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn preset_from_args(
-    id: String,
     name: String,
     adapter: String,
     formats: Vec<String>,
@@ -67,7 +83,7 @@ fn preset_from_args(
     }
     let option_schema = options_from_schema(&options);
     super::presets::Preset {
-        id,
+        id: String::new(),
         display_name: name,
         base_adapter: adapter,
         source_formats: formats.into_iter().collect(),
@@ -131,6 +147,14 @@ pub(super) async fn handle(
             );
         }
         match fields.get("action").map(String::as_str) {
+            Some("startup-enable" | "startup-disable") if standalone => {
+                let enabled = fields["action"] == "startup-enable";
+                notice = match super::lifecycle::set_startup(enabled) {
+                    Ok(()) if enabled => "The companion will start when you log in.".into(),
+                    Ok(()) => "Automatic startup is disabled.".into(),
+                    Err(error) => error,
+                };
+            }
             Some("preset-create") => {
                 let (Some(name), Some(adapter)) = (fields.get("name"), fields.get("adapter"))
                 else {
@@ -143,39 +167,10 @@ pub(super) async fn handle(
                     .get("formats")
                     .map(|s| s.split(',').map(|f| f.trim().to_string()).collect::<Vec<_>>())
                     .unwrap_or_default();
-                let options = fields
-                    .get("options")
-                    .map(|s| {
-                        s.lines()
-                            .filter_map(|line| {
-                                let trimmed = line.trim();
-                                if trimmed.is_empty() {
-                                    None
-                                } else {
-                                    Some(trimmed.to_string())
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let environment = fields
-                    .get("environment")
-                    .map(|s| {
-                        s.lines()
-                            .filter_map(|line| {
-                                let trimmed = line.trim();
-                                if trimmed.is_empty() {
-                                    None
-                                } else {
-                                    Some(trimmed.to_string())
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+                let options = lines(fields.get("options"));
+                let environment = lines(fields.get("environment"));
                 let wrapper = fields.get("wrapper").cloned().filter(|s| !s.trim().is_empty());
                 let preset = preset_from_args(
-                    String::new(),
                     name.clone(),
                     adapter.clone(),
                     formats,
@@ -378,7 +373,9 @@ pub(super) async fn handle(
 
     let lifecycle = if standalone {
         format!(
-            "<h2>Background app</h2><div class=\"actions\">{}</div>",
+            "<h2>Background app</h2><div class=\"actions\">{}{}{}</div>",
+            form(nonce, "startup-enable", "Start at login", ""),
+            form(nonce, "startup-disable", "Disable startup", ""),
             form(nonce, "quit", "Quit companion", "")
         )
     } else {

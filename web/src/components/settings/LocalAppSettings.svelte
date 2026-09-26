@@ -55,7 +55,7 @@
       const capabilities = await localBridge.capabilities({ rescan: true });
       doctor = JSON.stringify(capabilities, null, 2);
     } catch (error) {
-      doctor = error?.message || "librepaper local doctor could not be reached";
+      doctor = error?.message || "librepaper local status could not be reached";
     }
   }
 

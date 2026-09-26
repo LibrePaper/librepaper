@@ -95,14 +95,12 @@ async fn project_export_writes_verified_text_and_binary_files() {
     let destination = root.path().join("copy");
     let output = Command::new(env!("CARGO_BIN_EXE_librepaper"))
         .args([
+            "export",
             "--server",
             &server,
             "--token",
             "test-token",
-            "export",
             SLUG,
-            "--project",
-            "--output",
             destination.to_str().unwrap(),
         ])
         .stdin(Stdio::null())

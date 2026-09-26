@@ -62,7 +62,7 @@ librepaper admin serve --publisher-storage-limit 500 --deployment-storage-limit 
 The per-document log ceiling, `log_quota_mb`, is set in the advanced configuration file rather than
 as a command-line flag. It bounds the collaborative editing log that carries every change to a document,
 including its edit history and metadata. Once a document reaches this limit, new edits are refused
-with a retryable reason, though readers and semantic commands still work against the log as it stands.
+with the message "this document's log is at its quota and is waiting to be compacted".
 A configuration whose limits could accept work the deployment could not durably save is refused
 at startup rather than at the first save. See the optional `--config PATH` (or `LIBREPAPER_CONFIG`)
 advanced YAML file for this setting.
