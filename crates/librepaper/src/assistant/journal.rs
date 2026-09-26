@@ -806,12 +806,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("journal.json");
 
-        let apply_request = json!({"params":{"arguments":{"operation":{"epoch":"e","id":"apply"}}}});
-        let apply_response =
-            json!({"result":{"structuredContent":{"status":"committed"}}});
+        let apply_request =
+            json!({"params":{"arguments":{"operation":{"epoch":"e","id":"apply"}}}});
+        let apply_response = json!({"result":{"structuredContent":{"status":"committed"}}});
         record_tool_call(&path, "task", "document_apply", &apply_request).unwrap();
-        record_tool_result(&path, "task", "document_apply", &apply_request, &apply_response)
-            .unwrap();
+        record_tool_result(
+            &path,
+            "task",
+            "document_apply",
+            &apply_request,
+            &apply_response,
+        )
+        .unwrap();
 
         let comment_request =
             json!({"params":{"arguments":{"operation":{"epoch":"e","id":"comment"}}}});
