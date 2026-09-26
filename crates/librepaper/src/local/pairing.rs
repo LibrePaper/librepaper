@@ -208,26 +208,6 @@ impl PairingStore {
         }
         removed
     }
-
-    /// Revokes every project under `origin`, or -- with `None` -- every
-    /// pairing this store holds. Managed through the settings page.
-    /// Returns how many were removed.
-    pub fn revoke(&self, origin: Option<&str>) -> usize {
-        let mut pairings = self.load();
-        let before = pairings.len();
-        match origin {
-            None => pairings.clear(),
-            Some(origin) => {
-                let origin = normalize_origin(origin);
-                pairings.retain(|_, p| p.origin != origin);
-            }
-        }
-        let removed = before - pairings.len();
-        if removed > 0 {
-            let _ = self.save(&pairings);
-        }
-        removed
-    }
 }
 
 fn key_of(origin: &str, project: &str) -> String {

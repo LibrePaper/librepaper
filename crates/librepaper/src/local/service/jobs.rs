@@ -836,9 +836,6 @@ mod preset_admission_tests {
             403
         );
 
-        let mut updated = store.get("paper-preset").unwrap();
-        updated.display_name = "Paper 2".into();
-        store.update("paper-preset", updated).unwrap();
         store
             .grant(
                 "https://example.test",

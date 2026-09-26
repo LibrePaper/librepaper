@@ -44,8 +44,11 @@ case "$(uname -s)" in
         unzip -oq "$companion_tmp/librepaper_darwin_${arch}.app.zip" -d "$HOME/Applications"
         executable="$app/Contents/Resources/librepaper"
         /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
-        "$executable" local launch
-        if [ "${LIBREPAPER_AUTOSTART:-0}" = 1 ]; then "$executable" local startup enable; fi
+        if [ "${LIBREPAPER_AUTOSTART:-0}" = 1 ]; then
+          "$executable" local start --at-login
+        else
+          "$executable" local start
+        fi
         open "$app"
         ;;
     Linux)

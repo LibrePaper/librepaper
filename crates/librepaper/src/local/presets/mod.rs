@@ -152,25 +152,6 @@ impl PresetStore {
         Ok(preset)
     }
 
-    /// Replace the semantic contents of a preset.  Grants are not silently
-    /// updated: their old revision remains, so `resolve_grant` rejects them.
-    pub fn update(&self, id: &str, mut next: Preset) -> Result<Preset, String> {
-        validate_preset(&next)?;
-        let _lock = self.lock()?;
-        let mut state = self.load()?;
-        let previous = state.presets.get(id).ok_or("preset not found")?;
-        if next.id != id {
-            return Err("preset id cannot change".into());
-        }
-        next.semantic_revision = previous
-            .semantic_revision
-            .checked_add(1)
-            .ok_or("preset revision exhausted")?;
-        state.presets.insert(id.to_owned(), next.clone());
-        self.save(&state)?;
-        Ok(next)
-    }
-
     pub fn remove(&self, id: &str) -> Result<(), String> {
         let _lock = self.lock()?;
         let mut state = self.load()?;
@@ -528,38 +509,6 @@ mod tests {
             wrapper: None,
             semantic_revision: 0,
         }
-    }
-
-    #[test]
-    fn editing_a_preset_invalidates_its_grant() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let store = PresetStore::new(root.path());
-        let created = store.create(preset()).expect("create");
-        let grant = store
-            .grant(
-                "https://example.test",
-                "paper",
-                &created.id,
-                WorkspaceMode::Snapshot,
-                Operation::Build,
-                "paper.tex",
-                1,
-            )
-            .expect("grant");
-        let mut edited = created.clone();
-        edited.display_name = "changed".into();
-        store.update(&created.id, edited).expect("update");
-        assert!(store
-            .resolve_grant(
-                &grant.id,
-                "https://example.test",
-                "paper",
-                &created.id,
-                WorkspaceMode::Snapshot,
-                Operation::Build,
-                "paper.tex"
-            )
-            .is_err());
     }
 
     #[test]

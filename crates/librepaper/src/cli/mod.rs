@@ -485,6 +485,9 @@ pub enum LocalCommand {
             value_delimiter = ':'
         )]
         tex_path: Vec<PathBuf>,
+        /// Also start the companion every time you log in; turn it off on the settings page
+        #[arg(long)]
+        at_login: bool,
     },
     /// Open the local companion settings, starting it if needed.
     Settings,
