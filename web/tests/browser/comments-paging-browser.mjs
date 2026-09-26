@@ -106,7 +106,8 @@ try {
   await page.evaluate(
     `window.show([window.row("a","First")], ${JSON.stringify(state({ total: 1, open: 1 }))})`,
   );
-  await until("complete", () => page.evaluate('window.panel().includes("All 1 comments loaded")'), 5000);
+  await until("complete", () => page.evaluate('window.cards().includes("comment-a")'), 5000);
+  assert.equal(await page.evaluate('window.panel().includes("All 1 comments loaded")'), false);
   assert.equal(await page.evaluate('window.panel().includes("Load more")'), false);
 
   // A long thread: a preview and a button, never the thread.
