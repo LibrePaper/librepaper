@@ -92,6 +92,18 @@ log = "0.4"
 tempfile = "3"
 object_store = { version = "0.14", features = ["aws", "fs"] }
 
+# Native OS dialogs for the companion's approval and folder prompts. No
+# external processes (zenity, kdialog, osascript, powershell): macOS and
+# Windows link the native dialog toolkits directly, and Linux goes through
+# the desktop portal below, so the static musl release never links GTK or
+# any other C library.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+rfd = "0.15"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Pure Rust (zbus), no GTK: talks to the XDG desktop portal over D-Bus.
+ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
+
 [dev-dependencies]
 # `start_paused` and `advance`, so the deadline tests move a clock instead of
 # waiting on one. Test builds only.
