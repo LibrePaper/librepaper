@@ -1,6 +1,6 @@
 // The local companion settings are an important permission boundary: their
-// controls describe the machine LibrePaper can use, while the Quarto switch
-// asks Reader to confirm before it changes execution mode.
+// controls describe the machine LibrePaper can use, and a custom Quarto
+// command is sent to the companion, which confirms it on this computer.
 import assert from "node:assert/strict";
 import { build } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -31,11 +31,10 @@ async function freePort() {
 writeFileSync(harness, `
 <script>
   import LocalAppSettings from ${JSON.stringify(join(root, "web/src/components/settings/LocalAppSettings.svelte"))};
-  let localExecution = $state(false);
-  const onlocalexecution = () => { window.executionRequests += 1; };
+  import IntegrationSettings from ${JSON.stringify(join(root, "web/src/components/settings/IntegrationSettings.svelte"))};
 </script>
-<LocalAppSettings sourceFormat="quarto" main="main.qmd" mayEdit={true}
-                  {localExecution} {onlocalexecution} />
+<LocalAppSettings sourceFormat="quarto" main="main.qmd" mayEdit={true} />
+<section id="quarto-section"><IntegrationSettings name="quarto" /></section>
 `);
 
 writeFileSync(statusMock, `
@@ -64,15 +63,20 @@ export async function capabilities(options) {
 }
 export async function settings() {
   window.settingsCalls = (window.settingsCalls || 0) + 1;
-  return { version: "1.0.0", standalone: false, startup: null, integrations: { quarto: { path: null, args: [] }, calepin: { path: null, args: [] } } };
+  return { version: "1.0.0", standalone: true, startup: false, integrations: { quarto: { path: null, args: [] }, calepin: { path: null, args: [] } } };
 }
+export async function setIntegration(name, custom) {
+  window.integrationCalls = [...(window.integrationCalls || []), { name, ...custom }];
+  return custom;
+}
+export async function setStartup() {}
+export async function quit() {}
 `);
 
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "web/src/styles/app.css"))};
 import { mount } from ${JSON.stringify(join(root, "web/node_modules/svelte/src/index-client.js"))};
 import Harness from ${JSON.stringify(harness)};
-window.executionRequests = 0;
 mount(Harness, { target: document.body });
 `);
 
@@ -142,28 +146,27 @@ try {
   await b.evaluate(clickText("Connect companion"));
   await until("popup failure shown", () => b.evaluate("document.body.innerText.includes('permission window was blocked')"), 5000);
 
-  // Once connected, the install commands give way to machine controls and a
-  // Quarto permission switch. The switch asks Reader to confirm; its checked
-  // state remains controlled until Reader reports the confirmed change. The
-  // companion settings sections appear once settings are loaded.
+  // Once connected, the install commands give way to machine controls, and
+  // the Quarto section offers its own command.
   await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:8763/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
-  await until("connected settings shown", () => b.evaluate("document.body.innerText.includes('Executable')"), 5000);
-  const connected = await b.evaluate(`JSON.stringify({
-    text: document.body.innerText,
-    switch: document.querySelector('#local-execution [role="switch"][aria-label="Allow paired Quarto documents to run local code"]')?.getAttribute('aria-checked'),
-    switchLabel: document.querySelector('#local-execution').textContent,
-  })`);
-  const connectedView = JSON.parse(connected);
-  assert.doesNotMatch(connectedView.text, /macOS & Linux|Windows/);
-  assert.doesNotMatch(connectedView.text, /permission window was blocked/);
-  assert.doesNotMatch(connectedView.text, /Build presets/);
-  assert.match(connectedView.text, /Executable/);
-  assert.match(connectedView.switchLabel, /Allow paired Quarto documents to run local code/);
-  assert.equal(connectedView.switch, "false", "local execution starts off");
-  await b.evaluate(clickSelector('#local-execution [role="switch"]'));
+  await until("connected settings shown", () => b.evaluate("Boolean(document.querySelector('#quarto-executable')) && Boolean(document.querySelector('#local-startup'))"), 5000);
+  const connectedText = await b.evaluate("document.body.innerText");
+  assert.doesNotMatch(connectedText, /macOS & Linux|Windows/);
+  assert.doesNotMatch(connectedText, /permission window was blocked/);
+  assert.doesNotMatch(connectedText, /Build presets|Available tools/);
+  assert.match(connectedText, /Version 1\.6\.0/);
+  assert.match(connectedText, /Quit companion/);
+
+  // A custom command is split into arguments, quotes kept together.
+  const type = (label, value) => `(() => { const input = document.querySelector('#quarto-section [aria-label="${label}"]'); input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('input', { bubbles: true })); })()`;
+  await b.evaluate(type("Executable path", "/opt/quarto/bin"));
+  await b.evaluate(type("Arguments", `--log-level warning --metadata "title=Two words"`));
   await settle();
-  assert.equal(await b.evaluate("window.executionRequests"), 1, "the permission choice calls Reader's confirmation handler");
-  assert.equal(await b.evaluate(`document.querySelector('#local-execution [role="switch"]')?.getAttribute('aria-checked')`), "false", "controlled switch stays off until confirmation updates Reader");
+  await b.evaluate(clickSelector("#quarto-section .integration-actions button"));
+  await until("integration saved", () => b.evaluate("(window.integrationCalls || []).length === 1"), 5000);
+  assert.deepEqual(JSON.parse(await b.evaluate("JSON.stringify(window.integrationCalls[0])")), {
+    name: "quarto", path: "/opt/quarto/bin", args: ["--log-level", "warning", "--metadata", "title=Two words"],
+  });
 
   // The address editor is behind an explicit details action. Diagnostics use
   // the local client and render their result as status text.

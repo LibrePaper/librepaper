@@ -191,7 +191,7 @@
 
 {#if settingsError}<p class="setting-description local-error" role="alert">{settingsError}</p>{/if}
 
-{#if connected && companionSettings?.startup !== null}
+{#if connected && companionSettings?.standalone && companionSettings.startup !== null}
   <SettingRow id="local-startup" title="Start at login" description="Open LibrePaper Companion when you log in.">
     <button type="button" role="switch" class="switch companion-startup-switch" aria-label="Start at login" aria-checked={companionSettings.startup} data-state={companionSettings.startup ? "checked" : "unchecked"} disabled={pendingDialogAction === "startup"} onclick={() => void toggleStartup(!companionSettings.startup)}>
       <span class="switch-thumb" data-state={companionSettings.startup ? "checked" : "unchecked"}></span>
@@ -202,7 +202,7 @@
   </SettingRow>
 {/if}
 
-{#if connected && companionSettings}
+{#if connected && companionSettings?.standalone}
   <div class="quit-button">
     <button type="button" class="btn btn-sm lp-control-outline" disabled={pendingDialogAction === "quit"} onclick={() => void quitCompanion()}>
       {pendingDialogAction === "quit" ? "Confirm on this computer…" : "Quit companion"}

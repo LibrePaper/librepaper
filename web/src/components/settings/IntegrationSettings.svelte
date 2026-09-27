@@ -16,7 +16,7 @@
   $effect(() => companion.watch());
 
   $effect(() => {
-    void loadSettings();
+    if (local?.state === "connected") void loadSettings();
   });
 
   function quoteAwareJoin(args) {
