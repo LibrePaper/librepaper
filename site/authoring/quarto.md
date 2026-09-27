@@ -23,17 +23,16 @@ Rendering runs on your own computer, with Quarto and R or Python installed
 there. Enable local rendering from the preview banner, or start the companion from a
 terminal; see [the companion](../cli.html#the-companion).
 
-The first time you pick Quarto preview, a small window from the local app
-asks whether to allow that site to use this computer's tools; click
-**Allow**. Once paired, your edits sync into the app's own workspace, Quarto
+The first time you pick Quarto preview, the browser asks the local app
+to connect. Approve the system dialog that appears (or run the `librepaper local approve`
+command on machines without a display). Once paired, your edits sync into the app's own workspace, Quarto
 re-renders there, and the pane polls the result and paints it in, so comments
 and highlights work on the live page too. The previous render stays on screen
 while a new one is under way, so figures never flash blank. If the browser
 isn't paired, or no local app is available, the pane shows Markdown preview
 with a **Connect** button in the banner. These run the document's code,
-filters, and scripts on your machine, so allow only sites you trust. The
-pairing code the app prints still works as a fallback under Tools, **Local
-app settings…**. Nothing rendered is ever uploaded: the server holds only the
+filters, and scripts on your machine, so allow only sites you trust.
+Nothing rendered is ever uploaded: the server holds only the
 `.qmd` source and its declared shared resources. Website and book project
 renders are not supported; LibrePaper previews one document at a time.
 

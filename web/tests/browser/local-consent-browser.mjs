@@ -1,22 +1,19 @@
 // The one connection, end to end in a real browser against a real
-// `librepaper local start`: the reader asks the local app to connect, the
-// app's consent page is answered with Allow, and the same tab's own
-// `connect/claim` poll -- already running underneath the popup -- picks up
-// the staged token, so the client ends up connected with the hosted binding
+// `librepaper local start`: the browser asks the local app to connect,
+// a system dialog appears to approve (or a command-line approve on machines
+// without a display), and the client ends up connected with the hosted binding
 // without anything typed or bound.
 //
-// The consent page is opened in an iframe rather than the popup the reader
-// uses, because a headless session cannot reach a popup's window; the page
-// answers a parent frame exactly as it answers an opener. The reader page is
-// served on `localhost` and the app on `127.0.0.1` so the frame is
-// cross-site and Chrome gives it a target of its own to click in.
+// This test runs headless, so the companion prints the approve code to stderr.
+// The test extracts it, runs the approve command, and waits for the connection.
 //
 // Needs `dist/librepaper` (run `make build`) and chromium on PATH.
 
 import assert from "node:assert/strict";
 import { build } from "vite";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -27,6 +24,19 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
 const binary = process.env.LIBREPAPER_TEST_BINARY || join(root, "dist", "librepaper");
 assert.ok(existsSync(binary), "run `make build` first");
+
+function randomUrlToken(length) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return result;
+}
+
+function sha256Hex(input) {
+  return createHash("sha256").update(input).digest("hex");
+}
 
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-consent-check-"));
 const output = join(temporary, "build");
@@ -77,13 +87,18 @@ pagePort = server.address().port;
 // The local app, with its state and cache kept out of the real home.
 const stateHome = join(temporary, "state");
 const cacheHome = join(temporary, "cache");
-const app = spawn(binary, ["local", "start", "--port", String(appPort), "--code", "123456"], {
+let appStderr = "";
+let approveCode = null;
+const app = spawn(binary, ["local", "start", "--port", String(appPort)], {
   env: { ...process.env, XDG_STATE_HOME: stateHome, XDG_CACHE_HOME: cacheHome, HOME: temporary },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let appLog = "";
 app.stdout.on("data", (chunk) => (appLog += chunk));
-app.stderr.on("data", (chunk) => (appLog += chunk));
+app.stderr.on("data", (chunk) => {
+  appStderr += chunk;
+  appLog += chunk;
+});
 await until("local app health", async () => {
   const response = await fetch(`${appAddress}librepaper/local/health`);
   return response.ok;
@@ -103,8 +118,8 @@ try {
   // The reader opens the consent page as a popup from a click; the gesture
   // is what lets the popup through, as it does for a person. The same call
   // also starts this tab's own `connect/claim` poll underneath the popup,
-  // which is what actually picks up the token once Allow is clicked -- the
-  // consent page never talks back to this tab directly.
+  // which is what actually picks up the token once a system dialog or command
+  // approves the pairing.
   await b.evaluateWithGesture("window.startPairing()");
   const PAIR = "/librepaper/local/pair/request";
   await until("consent page shown", () => b.popupEvaluate(PAIR, "Boolean(document.querySelector('button.allow'))"), 10000);
@@ -113,7 +128,19 @@ try {
   assert.match(shown, /paper-check/, "the page names the document");
   assert.match(shown, /execute arbitrary code/, "the page warns about native Quarto execution");
   assert.match(shown, /Pairing alone does not run/, "the page distinguishes pairing from execution");
-  await b.popupEvaluate(PAIR, "document.querySelector('button.allow').click()");
+
+  // Extract the approval code from companion stderr
+  await until("approve code in stderr", async () => {
+    const match = appStderr.match(/librepaper local approve (\d{6})/);
+    if (match) { approveCode = match[1]; return true; }
+    return false;
+  }, 10000);
+
+  // Run the approve command to approve the pairing request
+  const approveResult = spawnSync(binary, ["local", "approve", approveCode], {
+    env: { ...process.env, XDG_STATE_HOME: stateHome, XDG_CACHE_HOME: cacheHome, HOME: temporary },
+  });
+  if (approveResult.status !== 0) throw new Error(`approve command failed: ${approveResult.stderr}`);
 
   // Wait on the client's status rather than the pairing promise, so a
   // failure reports what the page saw instead of hanging on a promise.
