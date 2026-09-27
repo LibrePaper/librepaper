@@ -4,6 +4,7 @@
   import { getPrivate, post } from "../../lib/api.js";
   import PanelHeader from "../PanelHeader.svelte";
   import PanelTabs from "../PanelTabs.svelte";
+  import IconButton from "../IconButton.svelte";
   import ChatTranscript from "../ChatTranscript.svelte";
   import ChatComposer from "../ChatComposer.svelte";
   import { createAgentClient } from "../../lib/agent-client.svelte.js";
@@ -14,6 +15,7 @@
     normalizeCapabilities, scopeLabel, visibleResults,
     findTask, groupTasks, inferScope, searchTasks, taskPrompt, taskScopes,
   } from "../../lib/assistant.js";
+  import { humanizeTool, permissionAction, permissionButtons } from "../../lib/agent-permission.js";
 
   let {
     slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
@@ -52,10 +54,6 @@
   let chosenAgent = $state("");
   let assistant = $state({ running: false, agent: "", access: "" });
   let pairProblem = $state("");
-  // Once an assistant is running here, the agent/access controls fold away
-  // so the chat has room; "Change agent" in the header brings them back
-  // without waiting for the assistant to stop first.
-  let showSetup = $state(false);
   // The local app's state drives the whole connection panel, so this view
   // holds its own subscription and asks once itself. Subscribing alone only
   // schedules the periodic reconnect, so a panel that waited for someone
@@ -126,15 +124,17 @@
   // it; which scope that is belongs to the preparation view, not the catalog.
   const canPrepare = (entry) => taskScopes(entry).some((id) => scopeAvailable(id) && allows(entry.kind, id));
   const preparable = $derived(Boolean(chosen) && scopeAvailable(scope) && allows(chosen.kind, scope));
-  const interrupted = $derived(Object.values(connection.tasks || {}).some(task => task.status === "interrupted"));
-  const status = $derived(
-    !connection.connected || !connection.runnerConnected ? "Disconnected"
-      : Object.values(connection.tasks || {}).some(task => task.status === "working") ? "Working"
-        : interrupted ? "Interrupted" : "Waiting",
-  );
   const inputTask = $derived(Object.values(connection.tasks || {}).find((item) => item?.status === "needs_input" && item.input) || null);
-  const permissionKindLabel = (kind) => ({ allow_once: "Allow once", allow_always: "Allow always",
-    reject_once: "Reject once", reject_always: "Reject always" }[kind] || "");
+  // Everything that is currently in flight: what the Activity disclosure
+  // lists, and the composer's Stop button acts on. "Active" (as opposed to
+  // queued) is what a Stop button can actually interrupt.
+  const activeTasks = $derived(Object.values(connection.tasks || {}).filter((item) =>
+    ["queued", "working", "needs_input"].includes(item.status)));
+  const activeTask = $derived(activeTasks.find((item) => ["working", "needs_input"].includes(item.status)) || null);
+  const showActivity = $derived(assistant.running || activeTasks.length > 0);
+  const composerStatus = $derived(
+    activeTasks.some((item) => item.status === "working") ? "Agent working…"
+      : activeTasks.some((item) => item.status === "needs_input") ? "Waiting for permission" : "");
 
   function validDocumentLink() {
     try {
@@ -217,9 +217,9 @@
       if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
       assistant = { running: true, agent: chosenAgent, access: mode };
       client.rememberAssistant({ agent: chosenAgent, access: mode });
-      // The work happens in the chat, so go there and fold the setup block
-      // away rather than leaving the reader on it with nothing more to say.
-      showSetup = false;
+      // The work happens in the chat, so go there rather than leaving the
+      // reader on the setup block with nothing more to say. It folds away on
+      // its own now that the assistant is running.
       tab = "chat";
     });
   }
@@ -481,7 +481,6 @@
       <div class="setup-actions">
         <button class="btn btn-sm lp-control-brand" disabled={busy}
                 onclick={() => void connectToApp()}>Connect</button>
-        <button class="btn btn-sm lp-control-outline" onclick={() => onsettings?.()}>Companion settings</button>
       </div>
       <!-- A refused connection must say so here, beside the button that was
            pressed, rather than in the panel's shared error line below. -->
@@ -489,9 +488,54 @@
     </div>
   {/snippet}
 
-  <!-- Agent, access and Start: what actually launches an assistant. Folded
-       away once one is running here so the chat has the room; "Change
-       agent" in the header brings it back. -->
+  <!-- The gear at the top of each pane is the one way to Local companion
+       settings now; the Chat pane also gets New conversation beside it. -->
+  {#snippet paneHeader(withNewConversation)}
+    <div class="pane-header">
+      {#if withNewConversation && connection.id}
+        <IconButton icon="file-plus" label="New conversation" tone="plain" size="btn-icon-sm"
+                    disabled={busy} onclick={() => void newConversation()} />
+      {/if}
+      <IconButton icon="sliders" label="Local companion settings" tone="plain" size="btn-icon-sm"
+                  onclick={() => onsettings?.()} />
+    </div>
+  {/snippet}
+
+  <!-- The permission card sits inside the transcript, through ChatTranscript's
+       `after` snippet, so it reads as part of the conversation rather than a
+       dashboard bolted underneath it. -->
+  {#snippet permissionCard()}
+    {#if inputTask}
+      <div class="permission-card" role="group" aria-label="Assistant input request">
+        <span class="permission-label">Permission required</span>
+        <p>{permissionAction(inputTask.input)}</p>
+        <!-- The agent names its own options, so the card renders exactly
+             those, ordered and labelled by kind. Inventing an option it
+             never offered would be answering a question it did not ask. -->
+        <div class="setup-actions">
+          {#each permissionButtons(inputTask.input.options) as option (option.id)}
+            <button class="btn btn-sm {option.primary ? 'lp-control-brand' : ''}" disabled={busy}
+                    onclick={() => void answerInput(option.id)}>{option.label}</button>
+          {/each}
+        </div>
+        {#if inputTask.input.details}
+          {@const details = inputTask.input.details}
+          <details class="permission-info">
+            <summary>Details</summary>
+            <div class="permission-details">
+              {#if details.command}<p><strong>Command</strong><code>{details.command.slice(0, 2048)}{#if details.command.length > 2048}…{/if}</code></p>{/if}
+              {#if details.files?.length}<p><strong>Files</strong><span>{details.files.slice(0, 8).map((path) => String(path).slice(0, 512)).join(", ")}{#if details.files.length > 8} and {details.files.length - 8} more{/if}</span></p>{/if}
+              {#if details.diff}<details><summary>Review changes</summary><pre>{details.diff.slice(0, 2048)}{#if details.diff.length > 2048}…{/if}</pre></details>{/if}
+            </div>
+          </details>
+        {/if}
+      </div>
+    {/if}
+  {/snippet}
+
+  <!-- Agent, access and Start: what actually launches an assistant. Shown
+       only while nothing is running here; stopping the assistant is what
+       brings it back, so that is how the agent or access level is changed. -->
   {#snippet agentSetup()}
     <div class="agent-setup">
       {#if installed.length}
@@ -541,7 +585,6 @@
                 : assistant.running ? "Restart with this choice"
                 : "Start assistant"}
             </button>
-            <button class="btn btn-sm lp-control-outline" onclick={() => onsettings?.()}>Companion settings</button>
           </div>
           <!-- At most one line: the fetch warning survives the label
                changing to "Restart with this choice", and the stale-runner
@@ -561,6 +604,7 @@
   {/snippet}
 
   <Tabs.Content value="chat" class="agent-tab-content">
+  {@render paneHeader(true)}
   {#if !paired}
     {@render connectPrompt()}
   {:else}
@@ -569,19 +613,8 @@
     {#if connection.id && !connection.connected}
       <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm lp-control-outline" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
     {/if}
-    <div class="agent-actions">
-      <span class="panel-meta" role="status">{status}{#if status === "Working"}<span class="working-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>{/if}</span>
-      {#if connection.id}<button class="btn btn-sm" disabled={busy} onclick={() => void newConversation()}>New conversation</button>{/if}
-      {#if assistant.running}
-        <!-- Named, because the assistant may be running on an agent other
-             than the one currently selected, and "Stop" with no subject
-             would be a guess about which. -->
-        <button class="btn btn-sm" disabled={busy} onclick={() => void stopAssistant()}>Stop {runningLabel}</button>
-        <button class="btn btn-sm lp-control-outline" onclick={() => showSetup = true}>Change agent</button>
-      {/if}
-    </div>
 
-    {#if !runningHere || showSetup}{@render agentSetup()}{/if}
+    {#if !runningHere}{@render agentSetup()}{/if}
 
   {#if pendingRequest}
     <div class="request-warning" role="alert">
@@ -593,57 +626,51 @@
   {#each uncertainTasks() as item (item.id)}
     <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm lp-control-outline" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
   {/each}
-  {#each Object.values(connection.tasks || {}).filter((item) => ["queued", "working", "needs_input"].includes(item.status)) as item (item.id)}
-    <div class="agent-task panel-meta" role="status">
-      <span>{item.status === "queued" ? "Queued next request" : item.status === "working" ? "Active request" : "Waiting for your input"}: {item.request || "Request"}</span>
-      {#if item.message}<span>{item.message}</span>{/if}
-      {#if item.cancelRequested}<span>Cancellation requested</span>
-      {:else}<button class="btn btn-sm" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(item.id))}>{item.status === "queued" ? "Cancel queued request" : "Stop task"}</button>{/if}
-    </div>
-  {/each}
-  <ChatTranscript messages={connection.messages} empty={connection.runnerConnected ? "No messages yet." : "Start an agent above to begin."} roleLabel={(message) => message.role === "user" ? "You" : "Agent"} onresult={chooseResult} />
-
-  {#if inputTask}
-    <div class="input-request" role="group" aria-label="Assistant input request">
-      <strong>The assistant requests permission</strong>
-      {#if inputTask.input.message}<p>{inputTask.input.message}</p>{/if}
-      <!-- The agent names its own options, so the sidebar renders exactly
-           those. Inventing an "Approve" it never offered would be answering
-           a question the agent did not ask. -->
-      <div class="setup-actions">
-        {#each inputTask.input.options || [] as option, index (option.id || `option-${index}`)}
-          {@const kind = String(option.kind || "other").toLowerCase()}
-          <button class="btn btn-sm" data-option-kind={kind} disabled={busy}
-                  onclick={() => void answerInput(option.id)}>
-            {#if permissionKindLabel(kind)}<span class="permission-kind">{permissionKindLabel(kind)}</span>{/if}
-            {option.label}
-          </button>
-        {/each}
-        <button class="btn btn-sm" disabled={busy} onclick={() => void answerInput(null)}>Cancel</button>
-      </div>
-      {#if inputTask.input.details}
-        {@const details = inputTask.input.details}
-        <div class="permission-details">
-          {#if details.command}<p><strong>Command</strong><code>{details.command.slice(0, 2048)}{#if details.command.length > 2048}…{/if}</code></p>{/if}
-          {#if details.files?.length}<p><strong>Files</strong><span>{details.files.slice(0, 8).map((path) => String(path).slice(0, 512)).join(", ")}{#if details.files.length > 8} and {details.files.length - 8} more{/if}</span></p>{/if}
-          {#if details.diff}<details><summary>Review changes</summary><pre>{details.diff.slice(0, 2048)}{#if details.diff.length > 2048}…{/if}</pre></details>{/if}
-        </div>
-      {/if}
-    </div>
-  {/if}
+  <ChatTranscript messages={connection.messages}
+                  empty={connection.runnerConnected ? "No messages yet." : "Start an agent to begin."}
+                  authors={false} quiet onresult={chooseResult} after={permissionCard} />
 
   <!-- The draft carries its own context, so the chat pane states it in one
        line and sends the user back to the task view to change it. -->
   {#if task || attachment}<p class="panel-meta context-summary">{scopeLabel(scope, { path: contextPath, attached: attachment })} <button class="btn btn-sm" onclick={() => { tab = "tasks"; taskView = chosen ? "prepare" : "launcher"; }}>Change context</button>{#if attachment}<button class="btn btn-sm" onclick={removeSelection}>Remove passage</button>{/if}</p>{/if}
-  {#if !sendable}<p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : !connection.runnerConnected ? "You can draft now. Start an agent to send." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>{/if}
-    </div>
-  {#if Object.values(connection.tasks || {}).some((item) => ["working", "needs_input"].includes(item.status))}
-    <p class="panel-meta">Queue next request. It will run after the active task; it will not change that task.</p>
+  <!-- Missing access or context is worth explaining; a runner that simply
+       is not there yet is already said by the setup block above, so that
+       case gets no second line here. -->
+  {#if !sendable && (uncertainDelivery || connection.runnerConnected)}
+    <p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>
   {/if}
-  <ChatComposer placeholder="Ask your agent…" canSend={!busy && sendable} draft={draft} ondraft={(value) => draft = value} onsend={send} />
+    </div>
+  {#if showActivity}
+    <!-- Collapsed by default: the transcript is the point, this is what a
+         reader checks when they want to know what is queued or stop the
+         assistant, not something that sits open in front of the chat. -->
+    <details class="agent-activity">
+      <summary>Activity</summary>
+      <div class="activity-body">
+        {#each activeTasks as item (item.id)}
+          <div class="activity-task">
+            <span>{item.status === "queued" ? "Queued" : item.status === "working" ? "Working on" : "Waiting for your input"}: {item.request || "Request"}</span>
+            {#if item.message}<span class="activity-message">{humanizeTool(item.message)}</span>{/if}
+            {#if item.cancelRequested}<span>Cancellation requested</span>
+            {:else if item.status === "queued"}<button class="btn btn-sm" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(item.id))}>Cancel</button>{/if}
+          </div>
+        {/each}
+        {#if assistant.running}
+          <!-- Named, because the assistant may be running on an agent other
+               than the one currently selected, and "Stop" with no subject
+               would be a guess about which. -->
+          <button class="btn btn-sm" disabled={busy} onclick={() => void stopAssistant()}>Stop {runningLabel}</button>
+        {/if}
+      </div>
+    </details>
+  {/if}
+  <ChatComposer placeholder="Ask your agent…" canSend={!busy && sendable} draft={draft} ondraft={(value) => draft = value} onsend={send}
+                onstop={assistant.running && activeTask ? () => void act(() => client.cancel(activeTask.id)) : null}
+                stopLabel="Stop" status={composerStatus} />
   {/if}
   </Tabs.Content>
   <Tabs.Content value="tasks" class="agent-tab-content">
+  {@render paneHeader(false)}
   {#if !paired}
     {@render connectPrompt()}
   {:else}
@@ -739,12 +766,15 @@
      collaboration panel. What is left here is this panel's own: its panes
      scroll as a whole, except the chat, whose transcript scrolls under a
      composer that stays put. */
-  .agent-panel { gap:calc(var(--spacing) * 3); }
+  .agent-panel { gap:calc(var(--spacing) * 2); }
   .agent-panel > :global(*) { flex-shrink:0; }
-  .agent-panel :global([role="tabpanel"]) { overflow-y:auto; gap:calc(var(--spacing) * 3); }
+  .agent-panel :global([role="tabpanel"]) { overflow-y:auto; gap:calc(var(--spacing) * 2); }
   .agent-panel :global(#agent-pane-chat) { overflow:hidden; }
   .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
-  .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 3); overflow-y:auto; }
+  /* The gear (and, in Chat, New conversation) sits above everything else in
+     its pane, aligned right: it is upkeep, not the point of the pane. */
+  .pane-header { display:flex; justify-content:flex-end; gap:calc(var(--spacing) * .5); }
+  .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }
   .chat-history > :global(*) { flex-shrink:0; }
   .agent-panel :global(.agent-tab-content .chat-form) { flex-shrink:0; }
   .agent-setup, .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
@@ -762,14 +792,14 @@
   .setup-label { font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
                  color:var(--color-text-secondary); }
   .access-detail { display:flex; flex-direction:column; align-items:flex-start; gap:var(--spacing); }
-  .setup-actions, .agent-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
-  .agent-actions { justify-content:space-between; }
-  .agent-task { display:flex; flex-direction:column; align-items:flex-start; gap:var(--spacing); overflow-wrap:anywhere; }
-  .working-dots span { animation:working-dot 1.2s infinite; }
-  .working-dots span:nth-child(2) { animation-delay:.2s; }
-  .working-dots span:nth-child(3) { animation-delay:.4s; }
-  @keyframes working-dot { 0%, 80%, 100% { opacity:.25; } 40% { opacity:1; } }
-  @media (prefers-reduced-motion:reduce) { .working-dots span { animation:none; } }
+  .setup-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
+  /* Collapsed by default, and plain: this is upkeep information, not the
+     conversation, so it reads as a quiet list rather than a status panel. */
+  .agent-activity summary { cursor:pointer; font-size:.7rem; font-weight:600; letter-spacing:.08em;
+                             text-transform:uppercase; color:var(--color-text-secondary); }
+  .activity-body { display:flex; flex-direction:column; align-items:flex-start; gap:calc(var(--spacing) * 1.5); margin-top:var(--spacing); }
+  .activity-task { display:flex; flex-direction:column; align-items:flex-start; gap:calc(var(--spacing) * .5); overflow-wrap:anywhere; font-size:.85em; }
+  .activity-message { color:var(--color-text-secondary); }
   /* The task catalog is a list, not a set of controls: typography, spacing
      and a hover background carry it, so it stays legible as it grows. */
   .task-list { display:flex; flex-direction:column; }
@@ -799,10 +829,13 @@
   .diagnostic-context { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); background:var(--color-subtle); }
   .diagnostic-context span { white-space:pre-wrap; overflow-wrap:anywhere; }
   .request-warning { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); background:var(--color-warning-bg); overflow-wrap:anywhere; }
-  .input-request { display:flex; flex-direction:column; gap:var(--spacing); padding:calc(var(--spacing) * 2); border-left:3px solid var(--color-warning-solid); background:var(--color-subtle); }
-  .input-request p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
-  .permission-kind { display:inline-block; margin-right:.35rem; font-size:.7em; font-weight:700; text-transform:uppercase; opacity:.75; }
-  .permission-details { display:flex; flex-direction:column; gap:var(--spacing); overflow:hidden; }
+  /* A compact card inside the transcript rather than a dashboard block below
+     it: a thin accent border says "this needs you" without a heavy frame. */
+  .permission-card { display:flex; flex-direction:column; gap:calc(var(--spacing) * .75); padding:calc(var(--spacing) * 1.5); border-left:3px solid var(--color-warning-solid); background:var(--color-subtle); }
+  .permission-card p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .permission-label { font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--color-text-secondary); }
+  .permission-info summary { cursor:pointer; font-size:.8em; color:var(--color-text-secondary); }
+  .permission-details { display:flex; flex-direction:column; gap:var(--spacing); overflow:hidden; margin-top:var(--spacing); }
   .permission-details p { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
   .permission-details code, .permission-details pre { max-height:14rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
   .permission-details pre { margin:0; padding:var(--spacing); background:var(--color-divider); }
