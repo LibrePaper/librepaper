@@ -350,6 +350,50 @@ window.trackingCheck = async () => {
     flushed: Boolean(update && update.proposal_id === "p1" && update.update),
   };
 };
+// Track changes with a stop before proposal-opened arrives: the unsent work
+// should be sent once the server names the proposal, even though tracking
+// was turned off locally first.
+window.trackingStopBeforeOpenedCheck = async () => {
+  const sent = [];
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const id = value.addText("tracked.md", "alpha");
+  value.setMain(id);
+  const host = document.createElement("section");
+  document.body.append(host);
+  const tracked = createClassComponent({
+    component: Editor,
+    target: host,
+    props: {
+      session: value, format: "markdown", file: id, editable: true,
+      send: (message) => { sent.push(message); return true; },
+    },
+  });
+  await tick();
+  tracked.startTracking();
+  await tick();
+  const view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  view.dispatch({ changes: { from: 0, insert: "TRACKED " } });
+  // Wait for flush to send the unsent flag (proposal-open has sent, but no
+  // proposal-opened response yet).
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  // Stop tracking before proposal-opened arrives.
+  tracked.stopTracking();
+  await tick();
+  const noUpdateYet = sent.filter((message) => message.type === "proposal-update").length;
+  // Now deliver proposal-opened -- the unsent work should be sent.
+  tracked.receiveProposal({ type: "proposal-opened", proposal_id: "p2" });
+  const delayedUpdate = sent.find((message) => message.type === "proposal-update" && message.proposal_id === "p2");
+  const shown = value.textOf(id).toString();
+  tracked.$destroy();
+  host.remove();
+  value.leave();
+  return {
+    noUpdateYet,
+    delayedSent: Boolean(delayedUpdate && delayedUpdate.update),
+    delayedUpdateId: delayedUpdate?.proposal_id || "",
+    shown,
+  };
+};
 window.diagnosticsCheck = async () => {
   const host = document.createElement("aside");
   document.body.append(host);
@@ -658,6 +702,12 @@ try {
   assert.equal(tracked.afterStop, "alpha", "stopping applied the proposal instead of leaving it for review");
   assert.equal(tracked.direct, "DIRECT alpha", "editing after stopping did not reach the document");
   console.log("editor-browser: tracked edits go to a branch, are sent while typing, and leave the paper alone");
+  const trackingStopBefore = await evaluate("trackingStopBeforeOpenedCheck()");
+  assert.equal(trackingStopBefore.noUpdateYet, 0, "proposal-update was sent before stopping");
+  assert.equal(trackingStopBefore.delayedSent, true, "unsent work was not sent after proposal-opened");
+  assert.equal(trackingStopBefore.delayedUpdateId, "p2", "the delayed update was sent to the wrong proposal id");
+  assert.equal(trackingStopBefore.shown, "alpha", "stopping tracking changed the paper text");
+  console.log("editor-browser: stopping before proposal-opened sends unsent edits once named");
 } finally {
   socket?.close();
   browser?.kill();
