@@ -1132,7 +1132,7 @@ function base64Of(bytes) {
 
 // -------------------------------------------------------------- jobs
 
-export async function runBuild({ job = {}, tree, builder, engine, output = "pdf", options = {}, bindingId = "", preset = "" }, { signal, onProgress } = {}) {
+export async function runBuild({ job = {}, tree, builder, engine, output = "pdf", options = {}, bindingId = "" }, { signal, onProgress } = {}) {
   // A pairing only exists after a health check that refused anything below
   // protocol 2 (see `probe`), so the build request needs no version guard.
   const pairing = requirePairing();
@@ -1142,7 +1142,7 @@ export async function runBuild({ job = {}, tree, builder, engine, output = "pdf"
     protocol: 2, kind: "build", project: current.project, origin: current.origin,
     snapshot: String(job.snapshot || ""), generation: Number(job.generation || 0),
     builder, workspace: { mode: "snapshot", ...(bindingId ? { binding_id: bindingId } : {}) }, entrypoint: relativePath(tree.main), output,
-    ...(preset ? { preset } : {}), options: { ...options, ...(engine ? { engine } : {}) }, manifest,
+    options: { ...options, ...(engine ? { engine } : {}) }, manifest,
   };
   const source = await sourceSnapshot(job.snapshot, tree.main, manifest);
   if (source) request.source = source;
@@ -1403,7 +1403,7 @@ export async function syncWorkspace({ tree } = {}) {
 
 /** Load companion settings: installed presets, grants for this document,
  * startup configuration, and whether the companion is standalone. Dialog
- * routes (create, delete, grant, startup, quit) may take up to 5 minutes
+ * routes (setIntegration, setStartup, quit) may take up to 5 minutes
  * waiting for OS confirmation and surface 403 or 503 errors. */
 export async function settings() {
   const pairing = requirePairing();
@@ -1411,37 +1411,14 @@ export async function settings() {
   return response.json();
 }
 
-/** Create a new preset. Waits for OS dialog confirmation (up to 5 minutes).
- * Returns the created preset. */
-export async function createPreset({ name, adapter, formats, options, environment, wrapper }) {
+/** Update an integration's settings (path and arguments). Waits for OS dialog confirmation (up to 5 minutes). */
+export async function setIntegration(name, { path, args }) {
   const pairing = requirePairing();
-  const response = await send("POST", "presets", {
+  const response = await send("PUT", `integrations/${name}`, {
     token: pairing.token,
-    jsonBody: { name, adapter, formats, options, environment, wrapper },
+    jsonBody: { path, args },
   });
   return response.json();
-}
-
-/** Delete a preset. Waits for OS dialog confirmation (up to 5 minutes). */
-export async function deletePreset(id) {
-  const pairing = requirePairing();
-  await send("DELETE", `presets/${id}`, { token: pairing.token });
-}
-
-/** Grant this document permission to use a preset at a given entrypoint.
- * Waits for OS dialog confirmation (up to 5 minutes). */
-export async function grantPreset(id, entrypoint) {
-  const pairing = requirePairing();
-  await send("POST", `presets/${id}/grant`, {
-    token: pairing.token,
-    jsonBody: { entrypoint },
-  });
-}
-
-/** Revoke this document's permission to use a grant (no dialog). */
-export async function revokeGrant(id) {
-  const pairing = requirePairing();
-  await send("DELETE", `grants/${id}`, { token: pairing.token });
 }
 
 /** Enable or disable starting the companion at login (standalone only).

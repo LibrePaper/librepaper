@@ -64,7 +64,7 @@ export async function capabilities(options) {
 }
 export async function settings() {
   window.settingsCalls = (window.settingsCalls || 0) + 1;
-  return { version: "1.0.0", standalone: false, startup: null, presets: [], grants: [] };
+  return { version: "1.0.0", standalone: false, startup: null, integrations: { quarto: { path: null, args: [] }, calepin: { path: null, args: [] } } };
 }
 `);
 
@@ -134,6 +134,7 @@ try {
   assert.match(disconnected.text, /Windows/);
   assert.equal(disconnected.details, 0, "initial view has no collapsed details");
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");
+  assert.doesNotMatch(disconnected.text, /Build presets/);
 
   // A failed one-click permission window is shown, explaining why it happened.
   await b.evaluate("window.setLocalStatus({ state: 'unauthorized', address: 'http://127.0.0.1:8763/', capabilities: null })");
@@ -146,7 +147,7 @@ try {
   // state remains controlled until Reader reports the confirmed change. The
   // companion settings sections appear once settings are loaded.
   await b.evaluate(`window.setLocalStatus({ state: 'connected', address: 'http://127.0.0.1:8763/', capabilities: { tools: { quarto: { available: true, version: '1.6.0' } }, confinement: { kind: 'none' } } })`);
-  await until("connected settings shown", () => b.evaluate("document.body.innerText.includes('Build presets')"), 5000);
+  await until("connected settings shown", () => b.evaluate("document.body.innerText.includes('Executable')"), 5000);
   const connected = await b.evaluate(`JSON.stringify({
     text: document.body.innerText,
     switch: document.querySelector('#local-execution [role="switch"][aria-label="Allow paired Quarto documents to run local code"]')?.getAttribute('aria-checked'),
@@ -155,7 +156,8 @@ try {
   const connectedView = JSON.parse(connected);
   assert.doesNotMatch(connectedView.text, /macOS & Linux|Windows/);
   assert.doesNotMatch(connectedView.text, /permission window was blocked/);
-  assert.match(connectedView.text, /Build presets/);
+  assert.doesNotMatch(connectedView.text, /Build presets/);
+  assert.match(connectedView.text, /Executable/);
   assert.match(connectedView.switchLabel, /Allow paired Quarto documents to run local code/);
   assert.equal(connectedView.switch, "false", "local execution starts off");
   await b.evaluate(clickSelector('#local-execution [role="switch"]'));
