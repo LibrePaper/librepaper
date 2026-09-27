@@ -40,7 +40,7 @@
 
 <style>
   .site-bar {
-    min-height: clamp(4rem, 1rem + 8vw, 4.5rem);
+    min-height: 3.5rem;
     padding-left: max(1.5rem, calc((100vw - 80rem) / 2 + 1.5rem));
     padding-right: max(1.5rem, calc((100vw - 80rem) / 2 + 1.5rem));
     border: none;
@@ -49,12 +49,18 @@
     align-items: center;
   }
 
-  .site-bar :global(a) {
-    font-size: clamp(0.875rem, 1.5vw, 0.9375rem);
+  /* One size for everything in the bar, the wordmark and the button
+     included: Skeleton sizes .btn-sm on its own scale otherwise. */
+  .site-bar,
+  .site-bar :global(a),
+  .site-bar :global(.btn) {
+    font-size: 0.875rem;
+    line-height: 1.25rem;
   }
 
   .site-bar :global(.btn) {
     border-radius: 4px;
+    padding: 0.25rem 0.75rem;
   }
 
   .site-bar-inner {
