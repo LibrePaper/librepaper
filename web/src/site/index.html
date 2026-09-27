@@ -324,6 +324,14 @@
 
       .shot-frame .shot { width: 100%; }
 
+      /* A small screenshot, captured at twice its CSS size, stays near the
+         size it was on screen, centred, rather than filling the column. */
+      .shot-frame img.shot-small {
+        width: auto;
+        max-width: min(100%, 340px);
+        margin-inline: auto;
+      }
+
       @media (min-width: 960px) {
         .story-layout-shot {
           grid-template-columns: 45fr 55fr;
@@ -650,10 +658,11 @@
             </div>
             <figure class="shot-frame">
               <img
-                src="/images/commenting.png"
-                alt="A document open in LibrePaper, with highlighted passages and the comments sidebar."
-                width="1800"
-                height="938"
+                class="shot-small"
+                src="/images/comment-thread.png"
+                alt="A comment thread in LibrePaper: three messages between two collaborators, with buttons to resolve, delete and reply."
+                width="540"
+                height="451"
               />
             </figure>
           </div>
