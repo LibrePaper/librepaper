@@ -19,13 +19,25 @@
 
   // Auto-grow the textarea with its content: starts at about two lines,
   // grows as the draft grows, and caps at roughly 40% of the viewport
-  // (about ten lines) where it scrolls instead of growing further.
+  // (about ten lines) where it scrolls instead of growing further. A hidden
+  // textarea (a background tab) measures zero, so it keeps its rows until it
+  // is shown; the observer below measures it again then, and whenever its
+  // width changes, and the window listener keeps the cap current.
+  let measuredWidth = 0;
   function autogrow() {
     if (!input) return;
-    input.style.height = "auto";
+    measuredWidth = input.clientWidth;
+    input.style.height = "";
+    if (!input.scrollHeight) return;
     const cap = window.innerHeight * 0.4;
     input.style.height = `${Math.min(input.scrollHeight, cap)}px`;
   }
+
+  $effect(() => {
+    const observer = new ResizeObserver(() => { if (input.clientWidth !== measuredWidth) autogrow(); });
+    observer.observe(input);
+    return () => observer.disconnect();
+  });
 
   $effect(() => {
     if (!initialized) {
@@ -77,6 +89,7 @@
   }
 </script>
 
+<svelte:window onresize={autogrow} />
 <form class="chat-form" onsubmit={submit} data-cansend={canSend && !disabled && !sending}>
   <div class="composer-input">
     <textarea bind:this={input} class="textarea" rows="2" value={draft} {placeholder} aria-label="Message" title="Enter to send · Shift+Enter for a new line"

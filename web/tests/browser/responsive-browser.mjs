@@ -255,6 +255,9 @@ try {
   assert.equal(await visible('#collaboration-comment-plain-highlight'), true, 'adding a discussion shows the same highlight in Comments');
   assert.equal(await b.evaluate('document.querySelector("#collaboration-comment-plain-highlight").innerText.includes("Discussion attached to a highlight")'), true);
   await selectDiscussionTab('Chat');
+  // Mounted while its tab was hidden, the composer must still get a real
+  // height once shown rather than the zero it measured in the background.
+  await until('chat composer measured once shown', () => b.evaluate('document.querySelector(".collaboration .chat-form textarea").getBoundingClientRect().height > 30'), 1000);
   await b.evaluate(`(() => {
     const input=document.querySelector('.collaboration .chat-form textarea');
     input.value='Draft for co-authors'; input.dispatchEvent(new Event('input',{bubbles:true}));
