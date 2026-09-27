@@ -51,7 +51,6 @@
   let restoredConversation = "";
   let chosenAgent = $state("");
   let assistant = $state({ running: false, agent: "", access: "" });
-  let pairingCode = $state("");
   let pairProblem = $state("");
   let appAddressDraft = $state(local.address());
   // The local app's state drives the whole connection panel, so this view
@@ -183,29 +182,9 @@
   $effect(() => { if (paired) void act(refreshAgents); });
   $effect(() => { if (paired && connection.id) void restoreAssistant(); });
 
-  async function pair() {
-    pairProblem = "";
-    busy = true;
-    try {
-      await local.connect(pairingCode.trim());
-      pairingCode = "";
-      await refreshAgents();
-    } catch (error) {
-      // Said here rather than through `act`, whose message lands at the foot
-      // of the panel where the person pairing will not see it.
-      const detail = error?.message || String(error);
-      pairProblem = /unauthor|403|invalid|code/i.test(detail)
-        ? `${detail} The app prints its code when it starts; a second copy of the app has a different one.`
-        : detail;
-    } finally {
-      busy = false;
-    }
-  }
-
-  /// The primary route: opens the app's own consent page (a popup when it is
-  /// already reachable, the `librepaper://connect` link otherwise) and
-  /// claims the token once the person allows it. The pairing code below stays
-  /// as the fallback for a computer without the link handler installed.
+  /// The primary route: sends a pair/request to show a native consent dialog
+  /// on the companion and claims the token once the person allows it. Falls
+  /// back to the librepaper://connect link when the request fails.
   async function connectToApp() {
     pairProblem = "";
     busy = true;
@@ -546,22 +525,11 @@
                tabs of content, which in a narrow column is off screen: an
                invisible error reads as a dead button. -->
           {#if pairProblem}<span class="panel-meta" role="alert">{pairProblem}</span>{/if}
-          <details class="setup-code-fallback">
-            <summary class="panel-meta">Or enter the code the app printed</summary>
-            <div class="setup-actions">
-              <label class="label"><span class="sr-only">Pairing code</span>
-                <input class="input setup-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"
-                       placeholder="000000" value={pairingCode}
-                       oninput={(event) => pairingCode = event.currentTarget.value} /></label>
-              <button class="btn btn-sm lp-control-brand" disabled={busy || pairingCode.trim().length < 6}
-                      onclick={() => void pair()}>Pair</button>
-            </div>
-          </details>
           {@render appAddress()}
         {:else}
           <strong>Install the LibrePaper app on this computer</strong>
           <code class="setup-command">curl -fsSL https://librepaper.org/install.sh | sh</code>
-          <span class="panel-meta">Run that once, in a terminal. It prints a pairing code when it finishes, and this panel then lists the coding agents you already have installed.</span>
+          <span class="panel-meta">Run that once, in a terminal. This panel then lists the coding agents you already have installed.</span>
           <a href="https://github.com/LibrePaper/librepaper#install" target="_blank" rel="noreferrer">Other ways to install →</a>
           {@render appAddress()}
         {/if}
@@ -835,11 +803,10 @@
   .setup-command { align-self:stretch; max-width:100%; padding:calc(var(--spacing) * .5) var(--spacing);
                    background:var(--color-divider); border-radius:var(--radius-base);
                    user-select:all; overflow-wrap:anywhere; word-break:break-word; }
-  .setup-code { max-width:8rem; font-variant-numeric:tabular-nums; letter-spacing:.2em; }
   /* Folded away by default: the port is right for almost everyone, and an
      address field offered up front reads as a decision to make. */
-  .setup-address, .setup-code-fallback { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
-  .setup-address summary, .setup-code-fallback summary { cursor:pointer; }
+  .setup-address { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
+  .setup-address summary { cursor:pointer; }
   .setup-address button { align-self:flex-start; }
   /* Agent and access are two settings, each with one value in force, so each
      is a select. A row of buttons had to signal the chosen one and the signal
