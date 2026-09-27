@@ -16,6 +16,7 @@ use super::lifecycle::{self, RunnerState, StatusHandle, StopSignal};
 use super::runtime;
 use crate::automation::peer::{AutomationPeer, DocumentLink};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 enum Entry {
@@ -35,7 +36,6 @@ enum Entry {
     Terminal(lifecycle::StatusSnapshot),
 }
 
-#[derive(Default)]
 pub(crate) struct SessionRegistry {
     sessions: Mutex<HashMap<String, Entry>>,
     /// Serialises the check-then-spawn in `start`. Without it two sidebar
@@ -43,6 +43,12 @@ pub(crate) struct SessionRegistry {
     /// both spawn, leaving two assistants on one conversation. Held across
     /// the stop and the spawn, never across the wait for readiness.
     start_gate: tokio::sync::Mutex<()>,
+    /// The companion's own state directory, i.e. the same one `Inner` was
+    /// built with. Threaded down into `runtime::Config` so a session's
+    /// lookups and its private connection record agree on where the
+    /// companion actually keeps them, regardless of this process's own
+    /// XDG_STATE_HOME or HOME.
+    state_home: PathBuf,
 }
 
 /// A session directory older than this many is ignored during startup
@@ -54,8 +60,12 @@ pub(crate) struct SessionRegistry {
 const MAX_RECOVERED_SESSIONS: usize = 500;
 
 impl SessionRegistry {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    pub(crate) fn new(state_home: PathBuf) -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            start_gate: tokio::sync::Mutex::new(()),
+            state_home,
+        }
     }
 
     /// Drop a finished task's handle, replacing it with the terminal status
@@ -137,6 +147,7 @@ impl SessionRegistry {
                 conversation.to_string(),
                 Some(chat_token.to_string()),
                 agent.to_vec(),
+                self.state_home.clone(),
             )?;
             self.spawn_running(&key, &wanted, move |status, stop| async move {
                 runtime::run(&peer, config, status, stop).await
@@ -251,7 +262,7 @@ impl SessionRegistry {
         let key = lifecycle::session_key(link, conversation)
             .map_err(lifecycle::Error::InvalidConfiguration)?;
         self.stop_by_key(&key).await?;
-        if let Ok(location) = lifecycle::location(link, conversation) {
+        if let Ok(location) = lifecycle::location(&self.state_home, link, conversation) {
             let _ = runtime::recover_state(&location.state);
         }
         Ok(())
@@ -313,7 +324,7 @@ mod tests {
     /// supervised task per session rather than one shared loop.
     #[tokio::test]
     async fn stopping_one_session_leaves_a_concurrent_one_running() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::new(PathBuf::from("/tmp/registry-test"));
         registry.spawn_running("one", "hash-1", |_status, _stop| async move {
             // Wedged mid-await, exactly like an agent handshake that never
             // returns: this task never checks `stop`, so only a hard abort
@@ -342,7 +353,7 @@ mod tests {
     /// really a test that the registry actually reaps and reports it.
     #[tokio::test]
     async fn a_panicking_session_reports_failed_and_the_registry_keeps_serving() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::new(PathBuf::from("/tmp/registry-test"));
         registry.spawn_running("panics", "hash-1", |_status, _stop| async move {
             panic!("session task panicked")
         });

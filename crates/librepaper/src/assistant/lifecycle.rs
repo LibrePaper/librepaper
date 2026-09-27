@@ -125,10 +125,6 @@ pub(crate) struct Lease {
     stop: StopSignal,
 }
 
-fn state_root() -> Result<PathBuf, String> {
-    Ok(crate::local::paths::state_home()?.join("librepaper"))
-}
-
 fn location_at(base: PathBuf, link: &DocumentLink, conversation: &str) -> Result<Location, String> {
     let directory = base.join(DIRECTORY).join(session_key(link, conversation)?);
     Ok(Location {
@@ -160,8 +156,17 @@ pub(crate) fn session_key(link: &DocumentLink, conversation: &str) -> Result<Str
     Ok(hex::encode(digest.finalize()))
 }
 
-pub(crate) fn location(link: &DocumentLink, conversation: &str) -> Result<Location, String> {
-    location_at(state_root()?, link, conversation)
+/// `state_home` is the companion's own state directory, the same one its
+/// `Inner` was built with (`runtime::Config::state_home`), not this
+/// process's own XDG_STATE_HOME or HOME: the sidebar assistant runs
+/// in-process inside the companion, so the two must agree on one directory
+/// regardless of what environment this process happens to see.
+pub(crate) fn location(
+    state_home: &Path,
+    link: &DocumentLink,
+    conversation: &str,
+) -> Result<Location, String> {
+    location_at(state_home.join("librepaper"), link, conversation)
 }
 
 #[cfg(test)]
@@ -199,12 +204,13 @@ impl Lease {
     /// which keeps its own clones to observe and stop the task from outside;
     /// the registry itself is now the liveness proof, not a lock on disk.
     pub(crate) fn acquire(
+        state_home: &Path,
         link: &DocumentLink,
         conversation: &str,
         status: StatusHandle,
         stop: StopSignal,
     ) -> Result<Self, String> {
-        let location = location(link, conversation)?;
+        let location = location(state_home, link, conversation)?;
         private_directory(&location.directory)?;
         let lease = Self {
             location,

@@ -531,7 +531,9 @@ impl LocalService {
             jobs_root,
             connect_attempts: Mutex::new(HashMap::new()),
             pending_pairs: Mutex::new(HashMap::new()),
-            assistant_sessions: crate::assistant::registry::SessionRegistry::new(),
+            assistant_sessions: crate::assistant::registry::SessionRegistry::new(
+                state_home.to_path_buf(),
+            ),
         });
         tokio::spawn(run_worker(inner.clone()));
         tokio::spawn(run_reaper(inner.clone()));
@@ -2291,7 +2293,9 @@ mod settings_tests {
             jobs_root: cache_home.path().join("jobs"),
             connect_attempts: Mutex::new(HashMap::new()),
             pending_pairs: Mutex::new(HashMap::new()),
-            assistant_sessions: crate::assistant::registry::SessionRegistry::new(),
+            assistant_sessions: crate::assistant::registry::SessionRegistry::new(
+                state_home.path().to_path_buf(),
+            ),
         });
         (inner, state_home, cache_home)
     }
