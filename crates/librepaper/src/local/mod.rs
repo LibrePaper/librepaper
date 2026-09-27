@@ -13,6 +13,7 @@ pub mod builders;
 pub mod cli;
 pub mod connections;
 pub(crate) mod credentials;
+pub mod integrations;
 #[cfg(target_os = "linux")]
 pub(crate) mod dialog;
 pub mod discovery;
