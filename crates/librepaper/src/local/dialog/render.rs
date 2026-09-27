@@ -206,7 +206,12 @@ impl Dialog {
         let buttons_total = deny_w + BUTTON_GAP + allow_w;
         let buttons_start_x = content_x + content_width - buttons_total;
 
-        let deny_rect = LogicalRect { x: buttons_start_x, y: buttons_y, w: deny_w, h: BUTTON_HEIGHT };
+        let deny_rect = LogicalRect {
+            x: buttons_start_x,
+            y: buttons_y,
+            w: deny_w,
+            h: BUTTON_HEIGHT,
+        };
         let allow_rect = LogicalRect {
             x: buttons_start_x + deny_w + BUTTON_GAP,
             y: buttons_y,
@@ -327,9 +332,26 @@ impl Dialog {
         );
 
         // Deny button: outlined, filled only on hover.
-        let deny_fill = if self.hover == Some(Button::Deny) { DENY_FILL_HOVER } else { DENY_FILL };
-        fill_rounded_rect(&mut pixmap, &self.deny_rect, self.scale, BUTTON_RADIUS, deny_fill);
-        stroke_rounded_rect(&mut pixmap, &self.deny_rect, self.scale, BUTTON_RADIUS, DENY_BORDER, 1.0);
+        let deny_fill = if self.hover == Some(Button::Deny) {
+            DENY_FILL_HOVER
+        } else {
+            DENY_FILL
+        };
+        fill_rounded_rect(
+            &mut pixmap,
+            &self.deny_rect,
+            self.scale,
+            BUTTON_RADIUS,
+            deny_fill,
+        );
+        stroke_rounded_rect(
+            &mut pixmap,
+            &self.deny_rect,
+            self.scale,
+            BUTTON_RADIUS,
+            DENY_BORDER,
+            1.0,
+        );
         if self.focus == Button::Deny {
             stroke_rounded_rect(
                 &mut pixmap,
@@ -342,8 +364,18 @@ impl Dialog {
         }
 
         // Allow button: filled with the accent colour.
-        let allow_fill = if self.hover == Some(Button::Allow) { ACCENT_HOVER } else { ACCENT };
-        fill_rounded_rect(&mut pixmap, &self.allow_rect, self.scale, BUTTON_RADIUS, allow_fill);
+        let allow_fill = if self.hover == Some(Button::Allow) {
+            ACCENT_HOVER
+        } else {
+            ACCENT
+        };
+        fill_rounded_rect(
+            &mut pixmap,
+            &self.allow_rect,
+            self.scale,
+            BUTTON_RADIUS,
+            allow_fill,
+        );
         if self.focus == Button::Allow {
             stroke_rounded_rect(
                 &mut pixmap,
@@ -427,18 +459,32 @@ fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, radius: f32) -> tiny_skia::
     pb.finish().expect("rounded rect path is well formed")
 }
 
-fn fill_rect(pixmap: &mut tiny_skia::Pixmap, x: f32, y: f32, w: f32, h: f32, radius: f32, color: (u8, u8, u8)) {
+fn fill_rect(
+    pixmap: &mut tiny_skia::Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    color: (u8, u8, u8),
+) {
     let path = if radius > 0.0 {
         rounded_rect_path(x, y, w, h, radius)
     } else {
-        tiny_skia::Path::from_rect(
+        tiny_skia::PathBuilder::from_rect(
             tiny_skia::Rect::from_xywh(x, y, w, h).expect("dialog background has positive size"),
         )
     };
     let mut paint = tiny_skia::Paint::default();
     paint.set_color_rgba8(color.0, color.1, color.2, 0xff);
     paint.anti_alias = true;
-    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::identity(), None);
+    pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        tiny_skia::Transform::identity(),
+        None,
+    );
 }
 
 fn fill_rounded_rect(
@@ -448,7 +494,15 @@ fn fill_rounded_rect(
     radius: f32,
     color: (u8, u8, u8),
 ) {
-    fill_rect(pixmap, rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale, radius * scale, color);
+    fill_rect(
+        pixmap,
+        rect.x * scale,
+        rect.y * scale,
+        rect.w * scale,
+        rect.h * scale,
+        radius * scale,
+        color,
+    );
 }
 
 fn stroke_rounded_rect(
@@ -470,8 +524,17 @@ fn stroke_rounded_rect(
     let mut paint = tiny_skia::Paint::default();
     paint.set_color_rgba8(color.0, color.1, color.2, 0xff);
     paint.anti_alias = true;
-    let stroke = tiny_skia::Stroke { width, ..Default::default() };
-    pixmap.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::identity(), None);
+    let stroke = tiny_skia::Stroke {
+        width,
+        ..Default::default()
+    };
+    pixmap.stroke_path(
+        &path,
+        &paint,
+        &stroke,
+        tiny_skia::Transform::identity(),
+        None,
+    );
 }
 
 /// Converts a fully opaque tiny-skia pixmap (RGBA8, premultiplied, but alpha
@@ -508,7 +571,8 @@ fn blend_pixel(pixel: &mut u32, color: (u8, u8, u8), coverage: f32) {
     let r = color.0 as f32 * coverage + er * (1.0 - coverage);
     let g = color.1 as f32 * coverage + eg * (1.0 - coverage);
     let b = color.2 as f32 * coverage + eb * (1.0 - coverage);
-    *pixel = 0xff00_0000 | ((r.round() as u32) << 16) | ((g.round() as u32) << 8) | (b.round() as u32);
+    *pixel =
+        0xff00_0000 | ((r.round() as u32) << 16) | ((g.round() as u32) << 8) | (b.round() as u32);
 }
 
 /// Draws `text` starting at `origin_x` with its baseline at `baseline_y`
@@ -597,7 +661,9 @@ fn draw_centered_label(
     let w = text_width(font, px_size, text);
     let center_x = (rect.x + rect.w / 2.0) * scale - w / 2.0;
     let center_y = (rect.y + rect.h / 2.0) * scale + (ascent + descent) / 2.0;
-    draw_text(buf, stride, buf_height, font, px_size, center_x, center_y, text, color, false);
+    draw_text(
+        buf, stride, buf_height, font, px_size, center_x, center_y, text, color, false,
+    );
 }
 
 #[cfg(test)]
@@ -607,8 +673,16 @@ mod tests {
     #[test]
     fn wrap_text_splits_long_message() {
         let font = font();
-        let lines = wrap_text(&font, 14.0, 200.0, "one two three four five six seven eight");
-        assert!(lines.len() > 1, "expected the message to wrap onto multiple lines");
+        let lines = wrap_text(
+            &font,
+            14.0,
+            200.0,
+            "one two three four five six seven eight",
+        );
+        assert!(
+            lines.len() > 1,
+            "expected the message to wrap onto multiple lines"
+        );
         for line in &lines {
             assert!(!line.is_empty());
         }
@@ -640,7 +714,10 @@ mod tests {
             (dialog.allow_rect.y + dialog.allow_rect.h / 2.0) as f64,
         );
         assert_eq!(dialog.hit(deny_center.0, deny_center.1), Some(Button::Deny));
-        assert_eq!(dialog.hit(allow_center.0, allow_center.1), Some(Button::Allow));
+        assert_eq!(
+            dialog.hit(allow_center.0, allow_center.1),
+            Some(Button::Allow)
+        );
         assert_eq!(dialog.hit(-10.0, -10.0), None);
     }
 
@@ -649,7 +726,10 @@ mod tests {
         let dialog = Dialog::new("Title", "A short message.", "Allow", 2.0);
         let physical_x = (dialog.allow_rect.x + dialog.allow_rect.w / 2.0) * 2.0;
         let physical_y = (dialog.allow_rect.y + dialog.allow_rect.h / 2.0) * 2.0;
-        assert_eq!(dialog.hit(physical_x as f64, physical_y as f64), Some(Button::Allow));
+        assert_eq!(
+            dialog.hit(physical_x as f64, physical_y as f64),
+            Some(Button::Allow)
+        );
     }
 
     #[test]
@@ -698,6 +778,9 @@ mod tests {
         let stride = dialog.width();
         let mut buf = vec![0u32; (stride * dialog.height()) as usize];
         dialog.paint(&mut buf, stride);
-        assert!(buf.iter().all(|p| (p >> 24) & 0xff == 0xff), "every pixel should be fully opaque");
+        assert!(
+            buf.iter().all(|p| (p >> 24) & 0xff == 0xff),
+            "every pixel should be fully opaque"
+        );
     }
 }

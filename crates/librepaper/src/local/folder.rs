@@ -3,65 +3,84 @@
 //! time bounded, and serialized by the service.
 
 use std::path::PathBuf;
-use std::time::Duration;
-use tokio::process::Command;
-
-async fn output(command: &mut Command) -> Result<std::process::Output, String> {
-    command.kill_on_drop(true);
-    tokio::time::timeout(Duration::from_secs(300), command.output())
-        .await
-        .map_err(|_| "Folder selection timed out. Choose the project folder again.".to_string())?
-        .map_err(|_| {
-            "Could not open the folder chooser. On Linux, install zenity or kdialog.".to_string()
-        })
-}
 
 pub async fn choose_directory(origin: &str, project: &str) -> Result<PathBuf, String> {
     let title =
         format!("Allow {origin} to render {project} using this folder (contents are not uploaded)");
-    let selected = if cfg!(target_os = "macos") {
-        // Pass the prompt as data, never splice website text into AppleScript.
-        output(Command::new("osascript").args(["-e", "on run argv\nreturn POSIX path of (choose folder with prompt (item 1 of argv))\nend run", &title])).await?
-    } else if cfg!(windows) {
-        let mut command = Command::new("powershell");
-        command.env("LIBREPAPER_FOLDER_PROMPT", &title).args([
-            "-NoProfile", "-STA", "-Command",
-            "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description=$env:LIBREPAPER_FOLDER_PROMPT; if($d.ShowDialog() -eq 'OK'){ $d.SelectedPath }",
-        ]);
-        output(&mut command).await?
+
+    if cfg!(target_os = "macos") || cfg!(windows) {
+        choose_directory_rfd(&title).await
     } else {
-        let mut zenity = Command::new("zenity");
-        zenity
-            .args(["--file-selection", "--directory", "--title", &title])
-            .kill_on_drop(true);
-        match tokio::time::timeout(Duration::from_secs(300), zenity.output()).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                output(Command::new("kdialog").args([
-                    "--title",
-                    &title,
-                    "--getexistingdirectory",
-                    ".",
-                ]))
-                .await?
-            }
-            Ok(Err(_)) => return Err("Could not open the folder chooser.".into()),
-            Err(_) => return Err("Folder selection timed out.".into()),
-        }
+        choose_directory_portal(&title).await
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+async fn choose_directory_rfd(title: &str) -> Result<PathBuf, String> {
+    let handle = rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .pick_folder()
+        .await;
+
+    let Some(handle) = handle else {
+        return Err("Folder selection was cancelled.".into());
     };
-    if !selected.status.success() {
-        return Err("Folder selection was cancelled.".into());
-    }
-    let text = String::from_utf8(selected.stdout)
-        .map_err(|_| "The selected folder name is not valid UTF-8.")?;
-    // Remove the dialog's line terminator, not valid spaces in a directory name.
-    let text = text.trim_end_matches(['\r', '\n']);
-    if text.is_empty() {
-        return Err("Folder selection was cancelled.".into());
-    }
-    let path = PathBuf::from(text);
+
+    let path = handle.path().to_path_buf();
     if !path.is_absolute() || !path.is_dir() {
         return Err("Select an existing project folder.".into());
     }
     Ok(path)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+async fn choose_directory_rfd(_title: &str) -> Result<PathBuf, String> {
+    unreachable!("choose_directory_rfd is only called on macOS and Windows")
+}
+
+async fn choose_directory_portal(_title: &str) -> Result<PathBuf, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use ashpd::desktop::file_chooser::SelectedFiles;
+
+        let request = SelectedFiles::open_file()
+            .title(Some(_title))
+            .directory(true)
+            .modal(true)
+            .send()
+            .await
+            .map_err(|_| {
+                "Could not open the folder chooser: no desktop portal is running.".to_string()
+            })?;
+
+        let selected = request.response().map_err(|error| {
+            if matches!(
+                error,
+                ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)
+            ) {
+                "Folder selection was cancelled.".to_string()
+            } else {
+                "Could not open the folder chooser: no desktop portal is running.".to_string()
+            }
+        })?;
+
+        let uri = selected
+            .uris()
+            .first()
+            .ok_or_else(|| "Folder selection was cancelled.".to_string())?;
+
+        let path = uri
+            .to_file_path()
+            .map_err(|_| "The selected folder is not a local path.".to_string())?;
+
+        if !path.is_absolute() || !path.is_dir() {
+            return Err("Select an existing project folder.".into());
+        }
+        Ok(path)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("The folder chooser is not available on this platform.".to_string())
+    }
 }

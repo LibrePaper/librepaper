@@ -54,7 +54,10 @@ struct KeyMap {
 impl KeyMap {
     fn load(conn: &impl Connection) -> Result<KeyMap, String> {
         let setup = conn.setup();
-        let count = setup.max_keycode.saturating_sub(setup.min_keycode).saturating_add(1);
+        let count = setup
+            .max_keycode
+            .saturating_sub(setup.min_keycode)
+            .saturating_add(1);
         let reply = conn
             .get_keyboard_mapping(setup.min_keycode, count)
             .map_err(|e| e.to_string())?
@@ -98,7 +101,9 @@ fn atom(conn: &impl Connection, name: &str) -> Result<u32, String> {
 }
 
 fn is_delete_window(event: &ClientMessageEvent, wm_protocols: u32, wm_delete_window: u32) -> bool {
-    event.type_ == wm_protocols && event.format == 32 && event.data.as_data32()[0] == wm_delete_window
+    event.type_ == wm_protocols
+        && event.format == 32
+        && event.data.as_data32()[0] == wm_delete_window
 }
 
 fn run(title: &str, message: &str, allow_label: &str) -> Result<bool, String> {
@@ -113,14 +118,16 @@ fn run(title: &str, message: &str, allow_label: &str) -> Result<bool, String> {
     let x = ((screen.width_in_pixels as i32 - width as i32) / 2).max(0) as i16;
     let y = ((screen.height_in_pixels as i32 - height as i32) / 2).max(0) as i16;
 
-    let aux = CreateWindowAux::new().background_pixel(screen.black_pixel).event_mask(
-        EventMask::EXPOSURE
-            | EventMask::KEY_PRESS
-            | EventMask::BUTTON_PRESS
-            | EventMask::BUTTON_RELEASE
-            | EventMask::POINTER_MOTION
-            | EventMask::STRUCTURE_NOTIFY,
-    );
+    let aux = CreateWindowAux::new()
+        .background_pixel(screen.black_pixel)
+        .event_mask(
+            EventMask::EXPOSURE
+                | EventMask::KEY_PRESS
+                | EventMask::BUTTON_PRESS
+                | EventMask::BUTTON_RELEASE
+                | EventMask::POINTER_MOTION
+                | EventMask::STRUCTURE_NOTIFY,
+        );
 
     conn.create_window(
         COPY_DEPTH_FROM_PARENT,
@@ -144,8 +151,14 @@ fn run(title: &str, message: &str, allow_label: &str) -> Result<bool, String> {
     let net_wm_name = atom(&conn, "_NET_WM_NAME")?;
     let utf8_string = atom(&conn, "UTF8_STRING")?;
 
-    conn.change_property32(PropMode::REPLACE, win_id, wm_protocols, AtomEnum::ATOM, &[wm_delete_window])
-        .map_err(|e| e.to_string())?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        win_id,
+        wm_protocols,
+        AtomEnum::ATOM,
+        &[wm_delete_window],
+    )
+    .map_err(|e| e.to_string())?;
     conn.change_property32(
         PropMode::REPLACE,
         win_id,
@@ -154,13 +167,26 @@ fn run(title: &str, message: &str, allow_label: &str) -> Result<bool, String> {
         &[net_wm_window_type_dialog],
     )
     .map_err(|e| e.to_string())?;
-    conn.change_property8(PropMode::REPLACE, win_id, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())
-        .map_err(|e| e.to_string())?;
-    conn.change_property8(PropMode::REPLACE, win_id, net_wm_name, utf8_string, title.as_bytes())
-        .map_err(|e| e.to_string())?;
+    conn.change_property8(
+        PropMode::REPLACE,
+        win_id,
+        AtomEnum::WM_NAME,
+        AtomEnum::STRING,
+        title.as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
+    conn.change_property8(
+        PropMode::REPLACE,
+        win_id,
+        net_wm_name,
+        utf8_string,
+        title.as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
 
     let gc = conn.generate_id().map_err(|e| e.to_string())?;
-    conn.create_gc(gc, win_id, &CreateGCAux::new()).map_err(|e| e.to_string())?;
+    conn.create_gc(gc, win_id, &CreateGCAux::new())
+        .map_err(|e| e.to_string())?;
 
     conn.map_window(win_id).map_err(|e| e.to_string())?;
     conn.flush().map_err(|e| e.to_string())?;
@@ -191,8 +217,13 @@ fn run(title: &str, message: &str, allow_label: &str) -> Result<bool, String> {
                 Outcome::Unchanged
             }
             Event::MotionNotify(e) => dialog.on_pointer_move(e.event_x as f64, e.event_y as f64),
-            Event::ButtonRelease(e) => dialog.on_pointer_release(e.event_x as f64, e.event_y as f64),
-            Event::KeyPress(e) => keymap.lookup(e.detail).map(|k| dialog.on_key(k)).unwrap_or(Outcome::Unchanged),
+            Event::ButtonRelease(e) => {
+                dialog.on_pointer_release(e.event_x as f64, e.event_y as f64)
+            }
+            Event::KeyPress(e) => keymap
+                .lookup(e.detail)
+                .map(|k| dialog.on_key(k))
+                .unwrap_or(Outcome::Unchanged),
             Event::ClientMessage(e) if is_delete_window(&e, wm_protocols, wm_delete_window) => {
                 Outcome::Decided(false)
             }
@@ -247,11 +278,26 @@ fn present(
         let start = (y as usize) * (width as usize);
         let end = start + (rows as usize) * (width as usize);
         for &pixel in &buf[start..end] {
-            let bytes = if byte_order == ImageOrder::MSB_FIRST { pixel.to_be_bytes() } else { pixel.to_le_bytes() };
+            let bytes = if byte_order == ImageOrder::MSB_FIRST {
+                pixel.to_be_bytes()
+            } else {
+                pixel.to_le_bytes()
+            };
             chunk.extend_from_slice(&bytes);
         }
-        conn.put_image(ImageFormat::Z_PIXMAP, window, gc, width as u16, rows as u16, 0, y as i16, 0, depth, &chunk)
-            .map_err(|e| e.to_string())?;
+        conn.put_image(
+            ImageFormat::Z_PIXMAP,
+            window,
+            gc,
+            width as u16,
+            rows as u16,
+            0,
+            y as i16,
+            0,
+            depth,
+            &chunk,
+        )
+        .map_err(|e| e.to_string())?;
         y += rows;
     }
     Ok(())

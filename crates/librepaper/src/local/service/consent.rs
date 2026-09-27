@@ -126,7 +126,6 @@ pub(super) async fn handle_pair_request(
                 token: None,
                 asked: false,
                 refused: false,
-                refused_message: None,
             },
         );
     }
@@ -183,13 +182,6 @@ pub(super) async fn handle_pair_request(
                     item.refused = true;
                 }
             }
-            super::super::approval::Decision::Unavailable(msg) => {
-                let mut pending = inner_clone.pending_pairs.lock().await;
-                if let Some(item) = pending.get_mut(&request_id_clone) {
-                    item.refused_message = Some(msg);
-                    item.refused = true;
-                }
-            }
         }
     });
 
@@ -214,13 +206,7 @@ pub(super) async fn handle_pair_status(inner: &Inner, request: Request<Body>) ->
         Some(item) if item.expires <= Instant::now() => {
             write_json(404, &json!({"error": "request expired"}))
         }
-        Some(item) if item.refused => {
-            let error_msg = item
-                .refused_message
-                .clone()
-                .unwrap_or_else(|| "approval was denied".to_string());
-            write_json(403, &json!({"error": error_msg}))
-        }
+        Some(item) if item.refused => write_json(403, &json!({"error": "approval was denied"})),
         Some(item) if item.token.is_some() => write_json(200, &json!({"status": "allowed"})),
         Some(_) => write_json(202, &json!({"status": "pending"})),
         None => write_json(404, &json!({"error": "request not found"})),
@@ -257,12 +243,8 @@ pub(super) async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> 
         return write_json(403, &json!({"error": "pair request does not match"}));
     }
     if item.refused {
-        let error_msg = item
-            .refused_message
-            .clone()
-            .unwrap_or_else(|| "approval was denied".to_string());
         pending.remove(&body.request);
-        return write_json(403, &json!({"error": error_msg}));
+        return write_json(403, &json!({"error": "approval was denied"}));
     }
     let Some((token, expires)) = item.token.take() else {
         return write_json(202, &json!({"pending": true}));

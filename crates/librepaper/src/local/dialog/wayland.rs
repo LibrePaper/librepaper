@@ -125,16 +125,26 @@ impl State {
 
         let pool = &mut self.pool;
         let buffer = self.buffer.get_or_insert_with(|| {
-            pool.create_buffer(width as i32, height as i32, stride, wl_shm::Format::Argb8888)
-                .expect("create wayland shm buffer")
-                .0
+            pool.create_buffer(
+                width as i32,
+                height as i32,
+                stride,
+                wl_shm::Format::Argb8888,
+            )
+            .expect("create wayland shm buffer")
+            .0
         });
 
         let canvas = match pool.canvas(buffer) {
             Some(canvas) => canvas,
             None => {
                 let (second, canvas) = pool
-                    .create_buffer(width as i32, height as i32, stride, wl_shm::Format::Argb8888)
+                    .create_buffer(
+                        width as i32,
+                        height as i32,
+                        stride,
+                        wl_shm::Format::Argb8888,
+                    )
                     .expect("create wayland shm buffer");
                 *buffer = second;
                 canvas
@@ -143,7 +153,7 @@ impl State {
 
         let mut pixels = vec![0u32; (width * height) as usize];
         self.dialog.paint(&mut pixels, width);
-        for (chunk, pixel) in canvas.chunks_exact_mut(4).zip(pixels.iter()) {
+        for (chunk, pixel) in canvas.as_chunks_mut::<4>().0.iter_mut().zip(pixels.iter()) {
             chunk.copy_from_slice(&pixel.to_le_bytes());
         }
 
@@ -162,7 +172,9 @@ fn run(title: &str, message: &str, allow_label: &str) -> Result<bool, String> {
 
     let mut event_loop: EventLoop<State> = EventLoop::try_new().map_err(|e| e.to_string())?;
     let loop_handle = event_loop.handle();
-    WaylandSource::new(conn.clone(), event_queue).insert(loop_handle.clone()).map_err(|e| e.to_string())?;
+    WaylandSource::new(conn.clone(), event_queue)
+        .insert(loop_handle.clone())
+        .map_err(|e| e.to_string())?;
 
     let compositor = CompositorState::bind(&globals, &qh).map_err(|e| e.to_string())?;
     let xdg_shell = XdgShell::bind(&globals, &qh).map_err(|e| e.to_string())?;
@@ -199,14 +211,19 @@ fn run(title: &str, message: &str, allow_label: &str) -> Result<bool, String> {
     };
 
     loop_handle
-        .insert_source(Timer::from_duration(TIMEOUT), |_deadline, _meta, state: &mut State| {
-            state.decision.get_or_insert(false);
-            TimeoutAction::Drop
-        })
+        .insert_source(
+            Timer::from_duration(TIMEOUT),
+            |_deadline, _meta, state: &mut State| {
+                state.decision.get_or_insert(false);
+                TimeoutAction::Drop
+            },
+        )
         .map_err(|e| e.to_string())?;
 
     while state.decision.is_none() {
-        event_loop.dispatch(Duration::from_millis(200), &mut state).map_err(|e| e.to_string())?;
+        event_loop
+            .dispatch(Duration::from_millis(200), &mut state)
+            .map_err(|e| e.to_string())?;
         if state.needs_redraw {
             state.draw();
         }
@@ -233,7 +250,12 @@ impl Dispatch2<wl_keyboard::WlKeyboard, State> for RawKeyboard {
         _conn: &Connection,
         _qh: &QueueHandle<State>,
     ) {
-        if let wl_keyboard::Event::Key { key, state: key_state, .. } = event {
+        if let wl_keyboard::Event::Key {
+            key,
+            state: key_state,
+            ..
+        } = event
+        {
             if key_state == WEnum::Value(wl_keyboard::KeyState::Pressed) {
                 if let Some(mapped) = evdev_key(key) {
                     let outcome = state.dialog.on_key(mapped);
@@ -269,7 +291,13 @@ impl CompositorHandler for State {
     ) {
     }
 
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {
         // The dialog only repaints in response to input, not a frame clock.
     }
 
@@ -297,9 +325,27 @@ impl OutputHandler for State {
         &mut self.output_state
     }
 
-    fn new_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
-    fn update_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
 }
 
 impl WindowHandler for State {
@@ -366,7 +412,8 @@ impl SeatHandler for State {
         }
     }
 
-    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {}
+    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {
+    }
 }
 
 impl PointerHandler for State {
@@ -382,13 +429,13 @@ impl PointerHandler for State {
                 continue;
             }
             let outcome = match event.kind {
-                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                    self.dialog.on_pointer_move(event.position.0, event.position.1)
-                }
+                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => self
+                    .dialog
+                    .on_pointer_move(event.position.0, event.position.1),
                 PointerEventKind::Leave { .. } => self.dialog.on_pointer_leave(),
-                PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
-                    self.dialog.on_pointer_release(event.position.0, event.position.1)
-                }
+                PointerEventKind::Release { button, .. } if button == BTN_LEFT => self
+                    .dialog
+                    .on_pointer_release(event.position.0, event.position.1),
                 _ => Outcome::Unchanged,
             };
             self.apply_outcome(outcome);

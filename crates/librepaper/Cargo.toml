@@ -92,34 +92,24 @@ log = "0.4"
 tempfile = "3"
 object_store = { version = "0.14", features = ["aws", "fs"] }
 
-# The native approval dialog on Linux (crates::local::dialog). The release
-# binary is static musl, so nothing here may link or dlopen a C library:
-# no libwayland-client, no libX11/libxcb, no GTK, no fontconfig, no GL.
+# Native dialogs for the companion's approval and folder prompts, with no
+# external programs. macOS and Windows use the system toolkits through rfd.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+rfd = "0.15"
+
+# Linux draws its own approval dialog (local::dialog) and asks the desktop
+# portal for folders. The release binary is static musl, so nothing here may
+# link or dlopen a C library: wayland-backend without `client_system` speaks
+# the protocol in Rust, sctk without `xkbcommon` (dialog.rs reads raw
+# keycodes), x11rb without `allow-unsafe-code`, ashpd over zbus.
 [target.'cfg(target_os = "linux")'.dependencies]
-# Wayland backend. `wayland-backend` has no default features, and without
-# the `client_system` feature it never enables `wayland-sys`'s `client`
-# feature, so `wayland-sys` compiles to inert stubs instead of dlopen'ing
-# libwayland-client.so. `smithay-client-toolkit` is taken with
-# default-features = false and only the `calloop` feature: its default
-# `xkbcommon` feature is what pulls a C library (xkbcommon, found through
-# pkg-config), so it stays off and we read raw wl_keyboard keycodes by hand
-# in wayland.rs instead of using sctk's keyboard module (which does not
-# even exist in the crate when the `xkbcommon` feature is disabled).
+ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 wayland-backend = { version = "0.3.17", default-features = false }
 wayland-client = "0.31.15"
 smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
-# X11 backend. x11rb's default build is the `RustConnection`, a pure-Rust
-# implementation of the X11 wire protocol over a plain Unix socket. The only
-# thing that would pull in libxcb is the `allow-unsafe-code` feature, which
-# we never enable.
 x11rb = "0.14.0"
-# Text rasterization: a pure-Rust TrueType/OpenType outline rasterizer, no
-# fontconfig and no system font lookup.
 ab_glyph = { version = "0.2.32", default-features = false, features = ["std"] }
-# Bundled font bytes (the same faces `egui`/`epaint` ship), so no font is
-# ever loaded from the filesystem or downloaded.
 epaint_default_fonts = "0.36.2"
-# Vector fills and strokes for the button shapes, in software, no GL.
 tiny-skia = { version = "0.12.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]

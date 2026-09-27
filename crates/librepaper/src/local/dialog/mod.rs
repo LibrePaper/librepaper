@@ -49,5 +49,8 @@ pub(crate) fn ask(title: &str, message: &str, allow_label: &str) -> Result<bool,
         reasons.push("x11: DISPLAY is not set".to_string());
     }
 
-    Err(format!("no display could be opened ({})", reasons.join("; ")))
+    Err(format!(
+        "no display could be opened ({})",
+        reasons.join("; ")
+    ))
 }

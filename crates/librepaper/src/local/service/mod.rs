@@ -431,7 +431,6 @@ struct PendingPair {
     token: Option<(String, i64)>,
     asked: bool,
     refused: bool,
-    refused_message: Option<String>,
 }
 
 pub(super) struct Inner {
@@ -1832,7 +1831,6 @@ fn decision_to_result(decision: super::approval::Decision) -> Result<(), Reply> 
             403,
             &json!({"error": "Not approved on this computer."}),
         )),
-        super::approval::Decision::Unavailable(msg) => Err(write_json(503, &json!({"error": msg}))),
     }
 }
 
