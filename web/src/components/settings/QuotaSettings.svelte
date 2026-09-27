@@ -1,8 +1,11 @@
 <script>
   // What this account is storing on this deployment, and what a version is.
   // The account's, not the document's: it says the same thing whatever
-  // happens to be open.
+  // happens to be open. One line per document, so an account with a thousand
+  // of them is a list to filter rather than a page of cards.
   import { onMount } from "svelte";
+  import Modal from "../Modal.svelte";
+  import IconButton from "../IconButton.svelte";
   import SettingRow from "./SettingRow.svelte";
   import { loadStorageStatus, storageBytes, trimHistory } from "../../lib/quota-preferences.js";
 
@@ -10,18 +13,22 @@
   let loading = $state(true);
   let error = $state("");
   let trimErrors = $state({});
-  let trimPending = $state({});
   let alive = true;
   let generation = 0;
 
+  let filterText = $state("");
+  let sortBy = $state("largest");
+  let trimOpen = $state(false);
+  let trimTarget = $state(null);
+  let trimPending = $state(false);
+
   const usage = $derived(snapshot?.usage);
+  const documents = $derived(usage?.documents ?? []);
   const percent = $derived(
     usage?.hardQuotaBytes > 0 && Number.isFinite(usage.chargedBytes)
       ? Math.round((100 * usage.chargedBytes) / usage.hardQuotaBytes)
       : null,
   );
-  const largest = $derived(Math.max(1, ...(usage?.documents ?? []).map((d) => d.figureBytes + d.archiveBytes + d.historyBytes)));
-  const share = (bytes) => `${(100 * bytes) / largest}%`;
   // One line under the title, whatever the status of the request: the row
   // keeps its shape while the numbers are on their way or never arrive.
   const used = $derived(
@@ -30,11 +37,66 @@
     : `${storageBytes(usage?.chargedBytes)} of ${storageBytes(usage?.hardQuotaBytes)}${percent == null ? "" : ` (${percent}%)`} used.`,
   );
 
+  const nameOf = (doc) => doc.title || doc.slug;
+  const totalOf = (doc) => doc.figureBytes + doc.archiveBytes + doc.historyBytes;
+  const partsOf = (doc) => [
+    { key: "figure", name: "Figures", bytes: doc.figureBytes },
+    { key: "versions", name: "Versions", bytes: doc.archiveBytes },
+    { key: "history", name: "History", bytes: doc.historyBytes },
+  ];
+  const labelOf = (parts) =>
+    parts.filter((p) => p.bytes > 0).map((p) => `${p.name} ${storageBytes(p.bytes)}`).join(", ") || "Empty";
+
+  // The account bar is drawn against the quota, so what is left of it is the
+  // free space; each document's bar is its own composition, always full.
+  const totalParts = $derived(partsOf(documents.reduce(
+    (sum, d) => ({ figureBytes: sum.figureBytes + d.figureBytes, archiveBytes: sum.archiveBytes + d.archiveBytes, historyBytes: sum.historyBytes + d.historyBytes }),
+    { figureBytes: 0, archiveBytes: 0, historyBytes: 0 },
+  )));
+  const totalUsed = $derived(totalParts.reduce((sum, p) => sum + p.bytes, 0));
+  const quotaBase = $derived(usage?.hardQuotaBytes > 0 ? Math.max(usage.hardQuotaBytes, totalUsed) : totalUsed || 1);
+  const totalLabel = $derived(`${labelOf(totalParts)}, of ${storageBytes(usage?.hardQuotaBytes)}`);
+
+  const SORTS = {
+    largest: (a, b) => totalOf(b) - totalOf(a),
+    history: (a, b) => b.historyBytes - a.historyBytes,
+    name: (a, b) => nameOf(a).localeCompare(nameOf(b)),
+  };
+  const visibleDocs = $derived.by(() => {
+    const needle = filterText.trim().toLowerCase();
+    const docs = needle ? documents.filter((d) => nameOf(d).toLowerCase().includes(needle)) : [...documents];
+    return docs.sort(SORTS[sortBy]);
+  });
+
+  function openTrimDialog(doc) {
+    trimTarget = { title: nameOf(doc), slug: doc.slug };
+    trimOpen = true;
+  }
+
+  async function confirmTrim() {
+    const slug = trimTarget?.slug;
+    if (!slug) return;
+    trimPending = true;
+    trimErrors = { ...trimErrors, [slug]: "" };
+    try {
+      await trimHistory(slug);
+      // The row and the account bar move at once; the server's own numbers
+      // follow.
+      const doc = snapshot?.usage?.documents?.find((d) => d.slug === slug);
+      if (doc) doc.historyBytes = 0;
+      void reload();
+    } catch (cause) {
+      if (alive) trimErrors = { ...trimErrors, [slug]: cause.message || "History could not be trimmed." };
+    } finally {
+      trimPending = false;
+      trimOpen = false;
+    }
+  }
+
   async function reload() {
     const job = ++generation;
     loading = true;
     error = "";
-    trimErrors = {};
     try {
       const result = await loadStorageStatus();
       if (alive && job === generation) snapshot = result;
@@ -42,19 +104,6 @@
       if (alive && job === generation) error = cause.message || "Storage status could not be loaded.";
     } finally {
       if (alive && job === generation) loading = false;
-    }
-  }
-
-  async function onTrimHistory(slug) {
-    trimErrors = { ...trimErrors, [slug]: "" };
-    trimPending = { ...trimPending, [slug]: true };
-    try {
-      await trimHistory(slug);
-      void reload();
-    } catch (cause) {
-      if (alive) trimErrors = { ...trimErrors, [slug]: cause.message || "History could not be trimmed." };
-    } finally {
-      trimPending = { ...trimPending, [slug]: false };
     }
   }
 
@@ -67,44 +116,67 @@
   });
 </script>
 
-<SettingRow id="storage-account" title="Account storage" description={used}>
-  <button class="btn btn-sm lp-control-outline" type="button" onclick={reload}>Refresh</button>
+{#snippet bar(parts, base, label, cls)}
+  <div class="storage-bar {cls}" role="img" aria-label={label}>
+    {#each parts as part (part.key)}
+      {#if part.bytes > 0}
+        <div class="bar-segment {part.key}" title={`${part.name}\n${storageBytes(part.bytes)}`}
+             style:width={`${(100 * part.bytes) / base}%`}></div>
+      {/if}
+    {/each}
+  </div>
+{/snippet}
+
+<SettingRow id="storage-account" stacked title="Account storage" description={used}>
+  <div class="account-line">
+    {@render bar(totalParts, quotaBase, totalLabel, "account-bar")}
+    <button class="btn btn-sm lp-control-outline" type="button" onclick={reload}>Refresh</button>
+  </div>
 </SettingRow>
 
-{#if snapshot && usage?.documents && usage.documents.length > 0}
+{#if documents.length > 0}
   <SettingRow id="storage-documents" stacked title="Storage by document"
-              description="What each document is holding, and where.">
-    {#each usage.documents as doc (doc.id)}
-      <div class="document-storage">
-        <div class="document-title">{doc.title || doc.slug}</div>
-        <div class="storage-bar">
-          {#if doc.figureBytes > 0}
-            <div class="bar-segment figure" title="Figures"
-                 style:width={share(doc.figureBytes)}></div>
-          {/if}
-          {#if doc.archiveBytes > 0}
-            <div class="bar-segment version" title="Versions"
-                 style:width={share(doc.archiveBytes)}></div>
-          {/if}
-          {#if doc.historyBytes > 0}
-            <div class="bar-segment history" title="History"
-                 style:width={share(doc.historyBytes)}></div>
-          {/if}
-        </div>
-        <div class="storage-legend">
-          {#if doc.figureBytes > 0}<span>Figures: {storageBytes(doc.figureBytes)}</span>{/if}
-          {#if doc.archiveBytes > 0}<span>Versions: {storageBytes(doc.archiveBytes)}</span>{/if}
-          {#if doc.historyBytes > 0}<span>History: {storageBytes(doc.historyBytes)}</span>{/if}
-        </div>
-        {#if doc.historyBytes > 0}
-          <div class="trim-control">
-            <button class="btn btn-sm lp-control-outline" type="button" disabled={trimPending[doc.slug]} onclick={() => onTrimHistory(doc.slug)}>Trim history</button>
-            {#if trimErrors[doc.slug]}<span class="trim-error">{trimErrors[doc.slug]}</span>{/if}
-          </div>
-        {/if}
+              description="Trimming keeps a document as it is now and discards its editing history. Named versions and comments stay.">
+    <div class="storage-toolbar">
+      <div class="legend" aria-hidden="true">
+        <span><i class="swatch figure"></i>Figures</span>
+        <span><i class="swatch versions"></i>Versions</span>
+        <span><i class="swatch history"></i>History</span>
       </div>
-    {/each}
-    <p class="storage-note">Trimming keeps a document as it is now and discards its editing history. Named versions and comments stay.</p>
+      <div class="toolbar-controls">
+        <input type="search" class="input input-sm" placeholder="Filter documents"
+               aria-label="Filter documents by title" bind:value={filterText} />
+        <select class="select select-sm" bind:value={sortBy} aria-label="Sort documents">
+          <option value="largest">Largest first</option>
+          <option value="history">Most history</option>
+          <option value="name">Name</option>
+        </select>
+      </div>
+    </div>
+
+    {#if visibleDocs.length > 0}
+      <div role="table" aria-label="Storage by document">
+        {#each visibleDocs as doc (doc.id)}
+          <div role="row" class="doc-row">
+            <div role="cell" class="doc-title">
+              <div class="title-text" title={nameOf(doc)}>{nameOf(doc)}</div>
+              {#if trimErrors[doc.slug]}<div class="trim-error">{trimErrors[doc.slug]}</div>{/if}
+            </div>
+            <div role="cell" class="doc-storage">
+              {@render bar(partsOf(doc), totalOf(doc) || 1, labelOf(partsOf(doc)), "doc-bar")}
+              <span class="doc-total">{storageBytes(totalOf(doc))}</span>
+            </div>
+            <div role="cell">
+              <IconButton icon="history" title="Trim history" label={`Trim history for ${nameOf(doc)}`}
+                          size="btn-icon-sm" disabled={doc.historyBytes === 0}
+                          onclick={() => openTrimDialog(doc)} />
+            </div>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <p class="no-match">No documents match.</p>
+    {/if}
   </SettingRow>
 {/if}
 
@@ -120,17 +192,46 @@
   </SettingRow>
 {/if}
 
+<Modal bind:open={trimOpen} title="Trim editing history?"
+       confirm={{ label: trimPending ? "Trimming…" : "Trim history", tone: "error", disabled: trimPending, onclick: confirmTrim }}>
+  {#if trimTarget}
+    <p>This will discard the editing history for “<strong>{trimTarget.title}</strong>”.</p>
+    <p class="lp-text-secondary text-sm">The current document, named versions, and comments will be kept.</p>
+  {/if}
+</Modal>
+
 <style>
-  .document-storage { display: flex; flex-direction: column; gap: calc(var(--spacing) * 1); padding: calc(var(--spacing) * 2); border: 1px solid var(--color-border); border-radius: var(--radius); }
-  .document-title { font-weight: 600; }
-  .storage-bar { display: flex; height: 1.5rem; border-radius: var(--radius); overflow: hidden; background: var(--color-subtle); }
-  .bar-segment { flex: 0 0 auto; min-width: 0; }
-  .bar-segment.figure { background: var(--color-brand); }
-  .bar-segment.version { background: var(--color-success-solid); }
-  .bar-segment.history { background: var(--color-warning-solid); }
-  .storage-legend { display: flex; gap: calc(var(--spacing) * 2); flex-wrap: wrap; font-size: 0.875rem; }
-  .storage-legend span { display: flex; gap: calc(var(--spacing) * 1); }
-  .trim-control { display: flex; gap: calc(var(--spacing) * 1); align-items: center; }
-  .trim-error { color: var(--color-error-text); font-size: 0.875rem; }
-  .storage-note { font-size: 0.875rem; color: var(--color-text-secondary); }
+  .account-line { display: flex; align-items: center; gap: calc(var(--spacing) * 3); }
+  .storage-bar { display: flex; height: 10px; border-radius: 9999px; overflow: hidden; background: var(--color-subtle); }
+  .account-bar { flex: 1; }
+  .doc-bar { width: 140px; flex-shrink: 0; }
+  .bar-segment { flex: 0 0 auto; height: 100%; }
+  .figure { background: var(--color-brand); }
+  .versions { background: var(--color-success-solid); }
+  .history { background: var(--color-warning-solid); }
+
+  .storage-toolbar { display: flex; justify-content: space-between; align-items: center; gap: calc(var(--spacing) * 2); flex-wrap: wrap; }
+  .legend { display: flex; gap: calc(var(--spacing) * 3); font-size: 0.75rem; color: var(--color-text-secondary); }
+  .legend span { display: flex; align-items: center; gap: calc(var(--spacing) * 1); }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; }
+  .toolbar-controls { display: flex; gap: calc(var(--spacing) * 2); }
+  .toolbar-controls input { width: 14rem; }
+  .toolbar-controls select { width: auto; }
+
+  .doc-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: calc(var(--spacing) * 3); align-items: center; min-height: 44px; padding: calc(var(--spacing) * 1) 0; border-bottom: 1px solid var(--color-divider); }
+  .doc-row:last-child { border-bottom: 0; }
+  .title-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .doc-storage { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
+  .doc-total { min-width: 4.5rem; text-align: right; white-space: nowrap; font-size: 0.875rem; font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
+  .trim-error { color: var(--color-error-text); font-size: 0.75rem; }
+  .no-match { color: var(--color-text-secondary); font-size: 0.875rem; }
+
+  @media (max-width: 640px) {
+    .doc-bar { width: 56px; }
+    .toolbar-controls { width: 100%; }
+    .toolbar-controls input { flex: 1; width: auto; min-width: 0; }
+  }
+  @media (max-width: 420px) {
+    .doc-bar { display: none; }
+  }
 </style>
