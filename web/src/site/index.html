@@ -9,83 +9,441 @@
       content="A free platform to read, write, and review together."
     />
     <link rel="icon" type="image/svg+xml" href="/assets/librepaper-icon.svg" />
-    <!-- The formats line under the tagline, and nothing else. It is inline
-         because this page's stylesheet arrives with the script bundle, and
-         the one rule that changes the shape of a word -- the LaTeX wordmark --
-         must not wait for it. Everything else on the page is a utility class,
-         which Tailwind generates from the copy of this file in site/.build. -->
+    <!-- The formats line and display font, both unlayered rules to beat Tailwind utilities. -->
     <style>
-      /* These rules are unlayered; every Tailwind utility sits in
-         @layer utilities, and an unlayered rule beats a layered one
-         whatever the source order. So a shorthand here silently overrides a
-         utility on the same element: a margin shorthand on .shot ate an
-         mt-14 in the markup, three times, with nothing to show for it. Set
-         only the axis that is meant and leave the other to the markup. */
-      /* The wordmark is a fixed 28rem on a wide window, where the hero
-         column is 72rem and that reads as a brand heading over a product.
-         It was fixed at every width, though, and at around 900px the same
-         448px filled half the window: the page stopped looking like a
-         landing page and started looking like a poster with a screenshot
-         under it. Between those, the mark is a share of the window
-         instead, so what changes with the window is the branding rather
-         than the product. The screenshot deliberately does not scale down
-         with it -- it is the thing being sold. */
-      .wordmark { width: clamp(14rem, 34vw, 28rem); height: auto; }
+      :root {
+        --font-display: "Source Serif 4 Variable", "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Charter, Georgia, serif;
+      }
+
+      body {
+        background: var(--sage-1);
+        color: var(--sage-12);
+      }
+
+      /* Unlayered rules beat Tailwind utilities; use only when necessary. */
+
+      h1, h2, h3 {
+        font-family: var(--font-display);
+      }
 
       .formats {
         display: flex;
         flex-wrap: wrap;
-        justify-content: center;
+        justify-content: flex-start;
         align-items: baseline;
         gap: 0 0.5rem;
         font-variant-caps: all-small-caps;
-        /* Small capitals are drawn at about three quarters of cap height, so
-           this line renders a good deal smaller than its font size says. At
-           14px it came out around 11px of actual letter and was the quietest
-           thing in a hero whose first job it is: 16px and a little weight put
-           it back at a legible size without making it shout. */
         font-weight: 500;
         letter-spacing: 0.08em;
+        font-size: 1.125rem;
+        color: var(--sage-11);
       }
-      .formats .dot { letter-spacing: 0; opacity: 0.6; }
-      /* The wordmark at the size of its neighbours: the two letters that move
-         are the whole of it, so they move and nothing else does. The A and the
-         E are written lowercase because small capitals supply the shapes
-         either way, and a browser without them still reads "LaTeX". */
-      .latex { letter-spacing: 0; }
-      .latex-a { font-size: 0.9em; vertical-align: 0.22em; margin-left: -0.32em; margin-right: -0.12em; }
-      .latex-e { vertical-align: -0.22em; margin-left: -0.1em; margin-right: -0.06em; }
 
-      /* The screenshot under the formats, and the larger view a click on it
-         opens. The overlay is a :target rather than a script: this page is
-         read before any bundle has run, and a thumbnail that does nothing
-         until JavaScript arrives is worse than one that never promised.
+      .formats .dot {
+        letter-spacing: 0;
+        opacity: 0.6;
+      }
 
-         The width is the largest of three limits rather than a fraction. The
-         shot is a two-pane editor, and its job is to show that one pane is
-         source and the other is a typeset paper -- at a third of the column
-         both panes were grey texture.
+      .latex {
+        letter-spacing: 0;
+      }
 
-         48rem is where it stops being wider than the words above it. The
-         wordmark is 28rem and the sentence sets to 42rem, so an image at
-         56rem made the copy read as a label stuck above a larger object;
-         near the measure of the sentence, the hero reads as one column. The
-         second cap turns a height back into a width through the image own
-         ratio of 1.918, so a short window keeps the whole hero on screen.
-         The file is 2852px wide, so either cap is still better than two
-         device pixels per CSS pixel. */
+      .latex-a {
+        font-size: 0.9em;
+        vertical-align: 0.22em;
+        margin-left: -0.32em;
+        margin-right: -0.12em;
+      }
+
+      .latex-e {
+        vertical-align: -0.22em;
+        margin-left: -0.1em;
+        margin-right: -0.06em;
+      }
+
+      /* Hero section grid layout. */
+      .hero {
+        display: grid;
+        gap: 0;
+        min-height: 560px;
+        padding: 0;
+      }
+
+      .hero-text {
+        padding-left: max(1.5rem, calc((100vw - 80rem) / 2 + 1.5rem));
+        padding-right: 3rem;
+        padding-top: 0;
+        padding-bottom: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        background: var(--sage-1);
+      }
+
+      .hero-text h1 {
+        font-size: clamp(2.5rem, 5vw, 4.5rem);
+        line-height: 1.02;
+        color: var(--sage-12);
+        max-width: 11em;
+        letter-spacing: -0.01em;
+        font-weight: 400;
+      }
+
+      .hero-text .formats {
+        margin-top: 1.5rem;
+      }
+
+      .hero-text .btn {
+        align-self: flex-start;
+        margin-top: 2rem;
+        border-radius: 4px;
+      }
+
+      .hero-photo {
+        position: relative;
+        overflow: hidden;
+        background: var(--sage-1);
+      }
+
+      .hero-photo img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: 50% 0%;
+        display: block;
+      }
+
+      .hero-photo::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 120px;
+        background: linear-gradient(to right, var(--sage-1), transparent);
+        z-index: 1;
+      }
+
+      @media (min-width: 960px) {
+        .hero {
+          grid-template-columns: 41fr 59fr;
+        }
+      }
+
+      @media (max-width: 959px) {
+        .hero {
+          display: flex;
+          flex-direction: column;
+        }
+
+        .hero-text {
+          padding-left: 1.25rem;
+          padding-right: 1.25rem;
+          padding-top: 3rem;
+          padding-bottom: 2.5rem;
+          order: -1;
+        }
+
+        .hero-text h1 {
+          font-size: clamp(2.25rem, 8vw, 3rem);
+        }
+
+        .hero-photo {
+          aspect-ratio: 16 / 10;
+          min-height: 0;
+        }
+
+        .hero-photo::before {
+          width: 100%;
+          height: 64px;
+          bottom: auto;
+          background: linear-gradient(to bottom, var(--sage-1), transparent);
+        }
+      }
+
+      /* Feature strip. */
+      .strip {
+        border-top: 1px solid var(--color-divider);
+        border-bottom: 1px solid var(--color-divider);
+      }
+
+      .strip-inner {
+        max-width: 80rem;
+        margin: 0 auto;
+        padding: 0 1.5rem;
+        display: grid;
+        gap: 0;
+      }
+
+      .strip-item {
+        padding: 2rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        border-left: 1px solid var(--color-divider);
+      }
+
+      .strip-item:first-child {
+        border-left: none;
+      }
+
+      .strip-item-icon {
+        width: 24px;
+        height: 24px;
+        color: var(--color-brand);
+        flex-shrink: 0;
+      }
+
+      .strip-item h3 {
+        font-size: 1.375rem;
+        font-weight: 500;
+        margin: 0;
+        padding: 0;
+      }
+
+      .strip-item h3 a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .strip-item h3 a:hover {
+        color: var(--color-brand);
+      }
+
+      .strip-item-desc {
+        font-size: 0.9375rem;
+        color: var(--sage-11);
+        margin: 0;
+        padding: 0;
+      }
+
+      @media (min-width: 960px) {
+        .strip-inner {
+          grid-template-columns: repeat(4, 1fr);
+        }
+      }
+
+      @media (min-width: 600px) and (max-width: 959px) {
+        .strip-inner {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        .strip-item:nth-child(odd) {
+          border-left: none;
+        }
+
+        .strip-item:nth-child(even) {
+          border-left: 1px solid var(--color-divider);
+        }
+
+        .strip-item:nth-child(1),
+        .strip-item:nth-child(2) {
+          border-top: none;
+        }
+
+        .strip-item:nth-child(3),
+        .strip-item:nth-child(4) {
+          border-top: 1px solid var(--color-divider);
+        }
+      }
+
+      @media (max-width: 599px) {
+        .strip-inner {
+          grid-template-columns: 1fr;
+        }
+
+        .strip-item {
+          border-left: none;
+          border-top: 1px solid var(--color-divider);
+        }
+
+        .strip-item:first-child {
+          border-top: none;
+        }
+      }
+
+      /* Narrative sections. */
+      .story {
+        padding: 6.5rem 0;
+      }
+
+      .story-inner {
+        max-width: 78rem;
+        margin: 0 auto;
+        padding: 0 1.5rem;
+      }
+
+      .story h2 {
+        font-size: clamp(2.25rem, 4vw, 3.125rem);
+        font-weight: 400;
+        line-height: 1.05;
+        color: var(--sage-12);
+        margin: 0 0 0.5rem 0;
+      }
+
+      .story.write {
+        background: var(--sage-1);
+      }
+
+      .story.free {
+        background: var(--sage-2);
+      }
+
+      .story.collaborate {
+        background: var(--sage-1);
+      }
+
+      .story.agents {
+        background: var(--sage-2);
+      }
+
+      .story + .story {
+        border-top: 1px solid var(--color-divider);
+      }
+
+      /* Screenshot sections. The copy comes first in the source, so a
+         stacked layout reads heading, list, picture; on a wide window
+         Write puts its picture on the left by ordering, not by markup. */
+      .story-layout-shot {
+        display: grid;
+        gap: 3rem;
+        align-items: center;
+      }
+
+      .shot-frame {
+        margin: 0;
+        background: var(--sage-3);
+        padding: 1.5rem;
+        border-radius: 6px;
+      }
+
+      .shot-frame img {
+        width: 100%;
+        height: auto;
+        display: block;
+        border-radius: 4px;
+        border: 1px solid var(--sage-6);
+        box-shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 8px 24px -12px rgb(0 0 0 / 0.18);
+      }
+
+      .shot-frame .shot { width: 100%; }
+
+      @media (min-width: 960px) {
+        .story-layout-shot {
+          grid-template-columns: 45fr 55fr;
+          gap: 4.5rem;
+        }
+
+        .story-layout-shot.visual-first {
+          grid-template-columns: 55fr 45fr;
+        }
+
+        .story-layout-shot.visual-first .story-copy {
+          order: 2;
+        }
+      }
+
+      /* Two-column list layout. */
+      .story-layout-list {
+        display: grid;
+        gap: 0;
+      }
+
+      @media (min-width: 960px) {
+        .story-layout-list {
+          grid-template-columns: 5fr 7fr;
+          gap: 3rem;
+        }
+      }
+
+      /* Checks list. */
+      .checks {
+        list-style: none;
+        padding: 0;
+        margin: 1.75rem 0 0 0;
+      }
+
+      .checks li {
+        font-size: 1.0625rem;
+        line-height: 1.5;
+        color: var(--sage-11);
+        padding: 0.7rem 0 0.7rem 1.75rem;
+        position: relative;
+        border-top: 1px solid var(--color-divider);
+      }
+
+      .checks li:first-child {
+        border-top: none;
+      }
+
+      .checks strong {
+        color: var(--sage-12);
+        font-weight: 600;
+      }
+
+      .checks li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 12px;
+        height: 12px;
+        background-image: url('data:image/svg+xml;utf8,<svg viewBox="0 0 24 24" fill="none" stroke="%232b5748" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>');
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+      }
+
+      @media (max-width: 959px) {
+        .story-layout-list {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* Closing band. */
+      .closing {
+        background: var(--sage-2);
+        border-top: 1px solid var(--color-divider);
+        padding: 4rem 1.5rem;
+        text-align: center;
+      }
+
+      .closing a {
+        border-radius: 4px;
+      }
+
+      @media (max-width: 599px) {
+        .story {
+          padding: 4rem 0;
+        }
+
+        .story-inner {
+          padding: 0 1.25rem;
+        }
+
+        .shot-frame {
+          padding: 1rem;
+        }
+      }
+
+      /* Existing lightbox styles, preserved. */
       .shot {
         position: relative;
         display: block;
-        width: min(100%, 48rem, calc(52vh * 1.918));
+        width: 100%;
         margin-inline: auto;
         overflow: hidden;
         cursor: zoom-in;
+        border-radius: 4px;
       }
-      .shot img { display: block; width: 100%; height: auto; }
-      /* Say that it opens. A hover state alone says nothing on a touch screen
-         and nothing at a glance, so the badge is always there and hover only
-         strengthens it. */
+
+      .shot img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
       .shot-badge {
         position: absolute;
         right: 0.625rem;
@@ -94,18 +452,27 @@
         align-items: center;
         gap: 0.375rem;
         padding: 0.3rem 0.6rem;
-        border-radius: 999px;
+        border-radius: 4px;
         font-size: 0.8125rem;
         line-height: 1;
         color: #fff;
         background: rgb(0 0 0 / 0.6);
         transition: background 120ms ease;
       }
-      .shot:hover .shot-badge, .shot:focus-visible .shot-badge { background: rgb(0 0 0 / 0.85); }
-      .shot-badge svg { width: 0.875rem; height: 0.875rem; }
-      @media (max-width: 640px) { .shot { width: 100%; } }
 
-      .lightbox { display: none; }
+      .shot:hover .shot-badge, .shot:focus-visible .shot-badge {
+        background: rgb(0 0 0 / 0.85);
+      }
+
+      .shot-badge svg {
+        width: 0.875rem;
+        height: 0.875rem;
+      }
+
+      .lightbox {
+        display: none;
+      }
+
       .lightbox:target {
         display: grid;
         place-items: center;
@@ -115,12 +482,21 @@
         padding: 2rem;
         background: rgb(0 0 0 / 0.75);
       }
-      .lightbox img { max-width: min(96vw, 1600px); max-height: 92vh; width: auto; height: auto; border-radius: 0.5rem; }
-      /* Two ways out of the same overlay: the backdrop, which is the whole of
-         it and takes a click anywhere, and the X, which is what somebody
-         looks for. The X sits above the backdrop and is reachable by keyboard,
-         which the backdrop is not. */
-      .lightbox-dismiss { position: absolute; inset: 0; cursor: zoom-out; }
+
+      .lightbox img {
+        max-width: min(96vw, 1600px);
+        max-height: 92vh;
+        width: auto;
+        height: auto;
+        border-radius: 0.5rem;
+      }
+
+      .lightbox-dismiss {
+        position: absolute;
+        inset: 0;
+        cursor: zoom-out;
+      }
+
       .lightbox-close {
         position: absolute;
         top: 1rem;
@@ -135,8 +511,15 @@
         background: rgb(0 0 0 / 0.55);
         transition: background 120ms ease;
       }
-      .lightbox-close:hover, .lightbox-close:focus-visible { background: rgb(0 0 0 / 0.85); }
-      .lightbox-close svg { width: 1.125rem; height: 1.125rem; }
+
+      .lightbox-close:hover, .lightbox-close:focus-visible {
+        background: rgb(0 0 0 / 0.85);
+      }
+
+      .lightbox-close svg {
+        width: 1.125rem;
+        height: 1.125rem;
+      }
     </style>
   </head>
   <!-- web/tools/build-site.mjs copies this file, unchanged, to
@@ -153,131 +536,191 @@
   <body>
     <div id="siteBar"></div>
 
-    <main class="flex flex-col">
-      <!-- ----------------------------------------------------------- hero -->
-      <!-- No `gap` on this stack. Every step in it used to be the same 16px,
-           which is what made the hero read as four things dropped into a
-           canvas rather than as one sequence: a wordmark, the sentence under
-           it, the formats under that, and then the product. The steps grow
-           instead -- 18, 20, 32 -- so the eye is handed down them, and the
-           last step is the largest because it is the one that changes the
-           subject, from what this is to what it looks like. -->
-      <section class="mx-auto flex w-full max-w-6xl flex-col items-center px-4 pt-7 pb-10 text-center">
-        <img class="wordmark" src="/assets/librepaper-logo.svg" alt="LibrePaper" width="6221" height="908" />
-        <p class="lp-text-secondary mt-4.5 max-w-2xl text-xl">
-          A free platform to read, write, and review together.
-        </p>
-        <!-- The formats, said before anything else: whether it takes what you
-             already write in is the first question a visitor has. -->
-        <p class="formats lp-text-secondary mt-5 text-base">
-          <span>HTML</span>
-          <span aria-hidden="true" class="dot">·</span>
-          <span class="latex">L<span class="latex-a">a</span>T<span class="latex-e">e</span>X</span>
-          <span aria-hidden="true" class="dot">·</span>
-          <span>Typst</span>
-          <span aria-hidden="true" class="dot">·</span>
-          <span>Markdown</span>
-          <span aria-hidden="true" class="dot">·</span>
-          <span>Quarto</span>
-          <span aria-hidden="true" class="dot">·</span>
-          <span>Calepin</span>
-        </p>
-        <p class="mt-5">
+    <main>
+      <!-- ============================================================ hero -->
+      <section class="hero">
+        <div class="hero-text">
+          <h1>A free platform to read, write, and review together.</h1>
+          <p class="formats">
+            <span>HTML</span>
+            <span aria-hidden="true" class="dot">·</span>
+            <span class="latex">L<span class="latex-a">a</span>T<span class="latex-e">e</span>X</span>
+            <span aria-hidden="true" class="dot">·</span>
+            <span>Typst</span>
+            <span aria-hidden="true" class="dot">·</span>
+            <span>Markdown</span>
+            <span aria-hidden="true" class="dot">·</span>
+            <span>Quarto</span>
+            <span aria-hidden="true" class="dot">·</span>
+            <span>Calepin</span>
+          </p>
           <a class="btn lp-control-brand" href="https://app.librepaper.org/try">Try LibrePaper in your browser</a>
-        </p>
-        <a class="shot border-[var(--color-divider)] rounded-container mt-8 border" href="#editor" aria-label="See the editor larger">
-          <img
-            src="/images/editor-latex.png"
-            alt="The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right."
-            width="2852"
-            height="1487"
-          />
-          <span class="shot-badge" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M9 3H3v6" /><path d="m3 3 7 7" /><path d="M15 21h6v-6" /><path d="m21 21-7-7" />
-            </svg>
-            Expand
-          </span>
-        </a>
-      </section>
-
-      <!-- The larger view. It sits outside the hero so the overlay is not
-           inside a centred, padded column when it covers the window. -->
-      <div class="lightbox" id="editor">
-        <a class="lightbox-dismiss" href="#" aria-label="Close the larger view"></a>
-        <a class="lightbox-close" href="#" aria-label="Close the larger view">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <path d="M18 6 6 18" /><path d="m6 6 12 12" />
-          </svg>
-        </a>
-        <img
-          src="/images/editor-latex.png"
-          alt="The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right."
-          width="2852"
-          height="1487"
-        />
-      </div>
-
-      <!-- ------------------------------------------------------ the four -->
-      <!-- Four boxes, two by two on a wide window and stacked on a narrow
-           one: what you write in, what it costs, what a paper does with
-           other people in it, and what an agent may do to it. Everything the page
-           has to say belongs under one of the four, and a visitor decides
-           from the headings which one is theirs. Each line is a fact about
-           the software; a line that cannot be checked does not go here. -->
-      <section class="bg-[var(--color-subtle)] border-[var(--color-divider)] border-y px-4 py-12">
-        <div class="mx-auto grid max-w-6xl items-start gap-6 lg:grid-cols-2">
-          <article class="bg-[var(--color-raised)] border-[var(--color-divider)] rounded-container flex h-full flex-col gap-3 border p-6">
-            <h2 class="text-2xl font-semibold">Write</h2>
-            <ul class="lp-text-secondary list-disc space-y-2 pl-5">
-              <li><strong>Live preview</strong>: Markdown, HTML, Typst and LaTeX</li>
-              <li><strong>Computational notebooks</strong>: Quarto and Calepin</li>
-              <li><strong>Authoring</strong>: templates, mathematics, figures, multi-file projects</li>
-              <li><strong>Bibliographies</strong>: BibTeX and Zotero</li>
-              <li><strong>Track changes</strong>: accept or reject each edit</li>
-            </ul>
-            <!-- shot: source on the left, a compiled page with equations on the right -->
-          </article>
-
-          <article class="bg-[var(--color-raised)] border-[var(--color-divider)] rounded-container flex h-full flex-col gap-3 border p-6">
-            <h2 class="text-2xl font-semibold">Free</h2>
-            <ul class="lp-text-secondary list-disc space-y-2 pl-5">
-              <li><strong>Everything is free</strong>: no gated features</li>
-              <li><strong>Open source</strong>: server, reader and renderers</li>
-              <li><strong>Public host</strong>: 100&nbsp;MB and 50 free projects at librepaper.org</li>
-              <li><strong>Self-host</strong>: one binary and a Postgres DB</li>
-              <li><strong>Export</strong>: projects and comments as ordinary files</li>
-            </ul>
-            <!-- shot: the terminal running `librepaper admin serve`, and the page it puts up -->
-          </article>
-          <article class="bg-[var(--color-raised)] border-[var(--color-divider)] rounded-container flex h-full flex-col gap-3 border p-6">
-            <h2 class="text-2xl font-semibold">Collaborate</h2>
-            <ul class="lp-text-secondary list-disc space-y-2 pl-5">
-              <li><strong>Simultaneous editors</strong>: named carets and personal undo</li>
-              <li><strong>Annotate</strong>: highlights and threaded comments</li>
-              <li><strong>Share</strong>: readers, commenters or editors</li>
-              <li><strong>Chat</strong>: with collaborators and AI agents</li>
-              <li><strong>History</strong>: granular and infinite</li>
-            </ul>
-            <!-- shot: two named carets in one paragraph, with its comment thread open -->
-          </article>
-
-          <article class="bg-[var(--color-raised)] border-[var(--color-divider)] rounded-container flex h-full flex-col gap-3 border p-6">
-            <h2 class="text-2xl font-semibold">AI agents</h2>
-            <ul class="lp-text-secondary list-disc space-y-2 pl-5">
-              <li><strong>Bring your own agent</strong>: no new subscription</li>
-              <li><strong>MCP</strong>: any commercial model or local weights</li>
-              <li><strong>Skills</strong>: three ship inside the binary</li>
-              <li><strong>Constrain your agent</strong>: reader, commenter, or editor</li>
-              <li><strong>Keys and inference</strong>: never leave your machine</li>
-            </ul>
-            <!-- shot: an agent's anchored suggestion awaiting review -->
-          </article>
-
+        </div>
+        <div class="hero-photo">
+          <img src="/images/typewriter.jpg" alt="A blue Olivetti typewriter, a plant and a notebook on a wooden desk. Photograph by Annie Spratt, from Pixabay." width="1920" height="1198" />
         </div>
       </section>
 
+      <!-- ========================================================== strip -->
+      <section class="strip">
+        <div class="strip-inner">
+          <div class="strip-item">
+            <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 5l-3-3-5 5"/><path d="M3 21l18-18"/><path d="M12 17v3"/><path d="M7 21h10"/>
+            </svg>
+            <h3><a href="#write">Write</a></h3>
+            <p class="strip-item-desc">Live preview: Markdown, HTML, Typst and LaTeX</p>
+          </div>
+          <div class="strip-item">
+            <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <h3><a href="#free">Free</a></h3>
+            <p class="strip-item-desc">Everything is free: no gated features</p>
+          </div>
+          <div class="strip-item">
+            <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            <h3><a href="#collaborate">Collaborate</a></h3>
+            <p class="strip-item-desc">Simultaneous editors: named carets and personal undo</p>
+          </div>
+          <div class="strip-item">
+            <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3v12m0 0l-3-3m3 3l3-3"/><circle cx="12" cy="19" r="2"/>
+            </svg>
+            <h3><a href="#agents">AI agents</a></h3>
+            <p class="strip-item-desc">Bring your own agent: no new subscription</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ Write -->
+      <section class="story write" id="write">
+        <div class="story-inner">
+          <div class="story-layout-shot visual-first">
+            <div class="story-copy">
+              <h2>Write</h2>
+              <ul class="checks">
+                <li><strong>Live preview</strong>: Markdown, HTML, Typst and LaTeX</li>
+                <li><strong>Computational notebooks</strong>: Quarto and Calepin</li>
+                <li><strong>Authoring</strong>: templates, mathematics, figures, multi-file projects</li>
+                <li><strong>Bibliographies</strong>: BibTeX and Zotero</li>
+                <li><strong>Track changes</strong>: accept or reject each edit</li>
+              </ul>
+            </div>
+            <figure class="shot-frame">
+              <a class="shot" href="#editor" aria-label="See the editor larger">
+                <img
+                  src="/images/editor-latex.png"
+                  alt="The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right."
+                  width="2852"
+                  height="1487"
+                />
+                <span class="shot-badge" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9 3H3v6" /><path d="m3 3 7 7" /><path d="M15 21h6v-6" /><path d="m21 21-7-7" />
+                  </svg>
+                  Expand
+                </span>
+              </a>
+            </figure>
+          </div>
+          <!-- shot: source on the left, a compiled page with equations on the right -->
+        </div>
+      </section>
+
+      <!-- ============================================================== Free -->
+      <section class="story free" id="free">
+        <div class="story-inner">
+          <div class="story-layout-list">
+            <div>
+              <h2>Free</h2>
+            </div>
+            <div>
+              <ul class="checks">
+                <li><strong>Everything is free</strong>: no gated features</li>
+                <li><strong>Open source</strong>: server, reader and renderers</li>
+                <li><strong>Public host</strong>: 100&nbsp;MB and 50 free projects at librepaper.org</li>
+                <li><strong>Self-host</strong>: one binary and a Postgres DB</li>
+                <li><strong>Export</strong>: projects and comments as ordinary files</li>
+              </ul>
+            </div>
+          </div>
+          <!-- shot: the terminal running `librepaper admin serve`, and the page it puts up -->
+        </div>
+      </section>
+
+      <!-- ======================================================== Collaborate -->
+      <section class="story collaborate" id="collaborate">
+        <div class="story-inner">
+          <div class="story-layout-shot">
+            <div class="story-copy">
+              <h2>Collaborate</h2>
+              <ul class="checks">
+                <li><strong>Simultaneous editors</strong>: named carets and personal undo</li>
+                <li><strong>Annotate</strong>: highlights and threaded comments</li>
+                <li><strong>Share</strong>: readers, commenters or editors</li>
+                <li><strong>Chat</strong>: with collaborators and AI agents</li>
+                <li><strong>History</strong>: granular and infinite</li>
+              </ul>
+            </div>
+            <figure class="shot-frame">
+              <img
+                src="/images/commenting.png"
+                alt="A document open in LibrePaper, with highlighted passages and the comments sidebar."
+                width="1800"
+                height="938"
+              />
+            </figure>
+          </div>
+          <!-- shot: two named carets in one paragraph, with its comment thread open -->
+        </div>
+      </section>
+
+      <!-- ========================================================= AI agents -->
+      <section class="story agents" id="agents">
+        <div class="story-inner">
+          <div class="story-layout-list">
+            <div>
+              <h2>AI agents</h2>
+            </div>
+            <div>
+              <ul class="checks">
+                <li><strong>Bring your own agent</strong>: no new subscription</li>
+                <li><strong>MCP</strong>: any commercial model or local weights</li>
+                <li><strong>Skills</strong>: three ship inside the binary</li>
+                <li><strong>Constrain your agent</strong>: reader, commenter, or editor</li>
+                <li><strong>Keys and inference</strong>: never leave your machine</li>
+              </ul>
+            </div>
+          </div>
+          <!-- shot: an agent's anchored suggestion awaiting review -->
+        </div>
+      </section>
+
+      <!-- ======================================================== closing -->
+      <section class="closing">
+        <a class="btn lp-control-brand" href="https://app.librepaper.org/try">Try LibrePaper in your browser</a>
+      </section>
     </main>
+
+    <!-- The lightbox container. It sits outside the hero so the overlay is not
+         inside a centered, padded column when it covers the window. -->
+    <div class="lightbox" id="editor">
+      <a class="lightbox-dismiss" href="#" aria-label="Close the larger view"></a>
+      <a class="lightbox-close" href="#" aria-label="Close the larger view">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </a>
+      <img
+        src="/images/editor-latex.png"
+        alt="The LibrePaper editor: LaTeX source on the left, the compiled paper with its figure, equation and table on the right."
+        width="2852"
+        height="1487"
+      />
+    </div>
 
     <!-- Escape closes the larger view. The overlay itself is CSS, so it opens
          and closes without this; what a script adds is the key a reader

@@ -16,3 +16,10 @@
    is a file Tailwind scans by default. */
 @source "../../../site/.build/**/*.html";
 @source "./**/*.{svelte,js}";
+
+/* The brand button, as librepaper.css defines it for the application. That
+   file is not imported here, so without these the landing page's calls to
+   action and the bar's Sign in rendered as plain text. */
+.lp-control-brand { background: var(--color-brand); color: var(--color-on-brand); border-color: var(--color-brand); border-radius: 4px; }
+.lp-control-brand:hover { background: var(--color-brand-hover); }
+.lp-control-brand:active { background: var(--color-brand-pressed); }

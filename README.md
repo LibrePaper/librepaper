@@ -59,3 +59,7 @@ document.
 - [Running a server](https://librepaper.org/host.html)
 - [Privacy and the LaTeX mirror](https://librepaper.org/host.html#privacy-and-the-latex-mirror)
 - [Building from source](https://librepaper.org/architecture.html#building-from-source)
+
+## Credits
+
+The typewriter photograph on the landing page is by [Annie Spratt](https://pixabay.com/users/anniespratt-5063125/), from [Pixabay](https://pixabay.com/photos/vintage-typewriter-2168174/).

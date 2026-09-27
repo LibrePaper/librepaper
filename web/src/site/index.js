@@ -7,6 +7,9 @@
 // before it mounts, and would read correctly if it never did.
 import { mount } from "svelte";
 import "./site.css";
+// The display serif, bundled with the site rather than fetched from a font
+// service: the opsz axis lets the hero set tighter than the section heads.
+import "@fontsource-variable/source-serif-4/opsz.css";
 import SiteBar from "./SiteBar.svelte";
 
 mount(SiteBar, { target: document.getElementById("siteBar") });
