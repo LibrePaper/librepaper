@@ -245,6 +245,10 @@ impl Dialog {
         self.scale = scale;
     }
 
+    pub(crate) fn scale(&self) -> f32 {
+        self.scale
+    }
+
     pub(crate) fn width(&self) -> u32 {
         (LOGICAL_WIDTH * self.scale).round().max(1.0) as u32
     }

@@ -424,18 +424,22 @@ impl PointerHandler for State {
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
+        // Wayland reports pointer positions in logical surface coordinates,
+        // while the dialog hit-tests physical buffer pixels.
+        let scale = self.dialog.scale() as f64;
         for event in events {
             if &event.surface != self.window.wl_surface() {
                 continue;
             }
+            let (x, y) = (event.position.0 * scale, event.position.1 * scale);
             let outcome = match event.kind {
-                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => self
-                    .dialog
-                    .on_pointer_move(event.position.0, event.position.1),
+                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                    self.dialog.on_pointer_move(x, y)
+                }
                 PointerEventKind::Leave { .. } => self.dialog.on_pointer_leave(),
-                PointerEventKind::Release { button, .. } if button == BTN_LEFT => self
-                    .dialog
-                    .on_pointer_release(event.position.0, event.position.1),
+                PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
+                    self.dialog.on_pointer_release(x, y)
+                }
                 _ => Outcome::Unchanged,
             };
             self.apply_outcome(outcome);
