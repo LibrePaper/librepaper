@@ -8,6 +8,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::local::integrations::Integration;
+
 pub mod diagnostics;
 pub mod runner;
 
@@ -118,15 +120,26 @@ fn calepin_plan(
     // `PATH` again here, which could resolve a different executable from
     // the one discovery reported as available -- and reported a build
     // failure for a tool the capabilities call had just called present.
+    let executable = if crate::local::integrations::get(Integration::Calepin)
+        .path
+        .is_some()
+    {
+        crate::local::integrations::executable(Integration::Calepin)
+            .ok_or("custom Calepin path not found")?
+    } else {
+        tool(tools, "calepin")?
+    };
+    let mut args = vec![
+        "compile".into(),
+        entrypoint.display().to_string(),
+        output.display().to_string(),
+        "--format".into(),
+        request.output.extension().into(),
+    ];
+    args.extend(crate::local::integrations::extra_args(Integration::Calepin));
     Ok(CommandPlan {
-        executable: tool(tools, "calepin")?,
-        args: vec![
-            "compile".into(),
-            entrypoint.display().to_string(),
-            output.display().to_string(),
-            "--format".into(),
-            request.output.extension().into(),
-        ],
+        executable,
+        args,
         cwd: workspace.to_path_buf(),
         output: output.to_path_buf(),
         environment: BTreeMap::new(),

@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use super::{ArtifactKind, Plan, Session, Watch};
+use crate::local::integrations::Integration;
 use crate::local::protocol::{PreviewRequest, Tool};
 use crate::local::quarto::{verify_bound_manifest, BindingStore};
 
@@ -83,13 +84,17 @@ pub(crate) fn plan(
         _ => ArtifactKind::Html,
     };
     let output = sibling_output(&entrypoint, kind);
-    let mut command = Command::new(find_calepin().ok_or("Calepin is not installed")?);
+    let mut command = Command::new(
+        crate::local::integrations::executable(Integration::Calepin)
+            .ok_or("Calepin is not installed")?,
+    );
     command
         .current_dir(&binding.root)
         .arg("watch")
         .arg(&entrypoint)
         .arg(&output)
         .args(["--format", &options.format]);
+    command.args(crate::local::integrations::extra_args(Integration::Calepin));
     if kind == ArtifactKind::Html {
         // typst's own HTML watch mode starts a web server unless told
         // otherwise; `--serve`/`--port` are website-only and never used
@@ -109,18 +114,11 @@ pub(crate) fn plan(
     })
 }
 
-/// Discover Calepin without exposing its path. A configured path is
-/// accepted for tests and app packaging; normal operation searches PATH
-/// explicitly -- the same shape as `local::quarto::find_quarto`.
-pub(crate) fn find_calepin() -> Option<PathBuf> {
-    crate::local::tools::find("LIBREPAPER_CALEPIN_PATH", "calepin")
-}
-
 /// `GET capabilities`'s `calepin` entry: whether the tool was found and its
 /// version string, through the one bounded probe every tool lookup in this
 /// service shares ([`crate::local::tools`]).
 pub(crate) async fn discover() -> Tool {
-    let Some(path) = find_calepin() else {
+    let Some(path) = crate::local::integrations::executable(Integration::Calepin) else {
         return Tool {
             available: false,
             note: "calepin not found: install Calepin or add it to PATH".into(),
