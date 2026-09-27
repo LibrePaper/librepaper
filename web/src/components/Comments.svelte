@@ -216,12 +216,12 @@
     {/key}
   {/snippet}
 
-  <div id="{cardIdPrefix}-list" class="comments-list flex flex-col gap-3">
+  <div id="{cardIdPrefix}-list" class="comments-list flex flex-col gap-2">
     {@render pending?.()}
     {#if passResult}<p class="panel-muted" role="status">{passResult}</p>{/if}
     {#each groups as group (group.key)}
       {#if composerKey === group.key}{@render composer()}{/if}
-      <div class="flex flex-col gap-3" data-pass={group.pass || undefined}>
+      <div class="flex flex-col gap-2" data-pass={group.pass || undefined}>
       {#if group.pass}
         <div class="pass-header">
           <strong>Writing pass · {group.comments.length} suggestions</strong>
@@ -281,8 +281,6 @@
           onclick={() => onloadmore?.()}>
           {page.busy ? "Loading…" : `Load more (${remaining} not loaded)`}
         </button>
-      {:else}
-        <p class="panel-muted" role="status">All {page.total} comments loaded.</p>
       {/if}
     {/if}
   </div>

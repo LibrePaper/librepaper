@@ -199,7 +199,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
 <article
   id="{cardIdPrefix}-{comment.id}"
-  class="card cursor-pointer p-2 {comment.resolved || comment.pending
+  class="card comment-card cursor-pointer {comment.resolved || comment.pending
     ? 'lp-control-outline opacity-70'
     : 'lp-control-outline'}"
   class:collapsed
@@ -214,6 +214,7 @@
             onclick={open}>{summary}</button>
   {:else}
     <div class="flex flex-col gap-2">
+      {#if comment.orphaned || comment.inSourceOnly || (comment.motivation && comment.motivation !== "commenting")}
       <Row gap={1} wrap>
         {#if comment.orphaned}
           <span class="badge lp-tone-warning">
@@ -236,6 +237,7 @@
           <span class="badge lp-tone-neutral">{isSuggestion ? "Suggested change" : "Highlight"}</span>
         {/if}
       </Row>
+      {/if}
 
       <!-- The passage itself is not repeated here: it is painted in the
            document, and ringed there while this card is the selected one.
@@ -298,7 +300,7 @@
         {#each runs as run (run.id)}
           <div class="run">
             <div class="run-head">
-              <Avatar name={run.author} size={5} title={`${run.author} · ${stamp(run.created)}`} />
+              <Avatar name={run.author} size={7} title={`${run.author} · ${stamp(run.created)}`} />
               <strong class="run-author">{run.author}</strong>
               <small class="panel-meta">{moment(run.created)}</small>
             </div>
@@ -390,23 +392,30 @@
 </article>
 
 <style>
-  .selected { border-color: var(--color-brand); box-shadow: 0 0 0 1px var(--color-brand); }
+  .card.comment-card { box-sizing: border-box; min-width: 0; padding: 10px 13px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-raised); }
+  .card.comment-card.selected { border-color: color-mix(in oklab, var(--color-brand) 45%, var(--color-border)); border-left: 3px solid var(--color-brand); padding-left: 11px; background: color-mix(in oklab, var(--color-brand) 5%, var(--color-raised)); }
+  @media (forced-colors: active) {
+    .card.comment-card.selected { border: 1px solid Highlight; border-left-width: 3px; }
+  }
 
   /* The conversation: runs of one author separated by a little air, the lines
      within a run tight enough to read as one person still talking. No rail
      down the side and no avatar gutter -- a long reply in a sidebar this
      narrow needs the whole width. */
-  .thread { display: flex; flex-direction: column; gap: calc(var(--spacing) * 3); }
+  .thread { display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); }
   .more-replies { align-self: flex-start; }
   .reply-error { color: var(--color-error-text); }
-  .run { display: flex; flex-direction: column; gap: calc(var(--spacing) * 0.75); }
-  .run-head { display: flex; align-items: center; gap: var(--spacing); min-width: 0; }
-  .run-author { min-width: 0; overflow: hidden; font-size: var(--panel-meta-size); line-height: var(--panel-line-height); text-overflow: ellipsis; white-space: nowrap; }
-  .post { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .run { display: flex; flex-direction: column; gap: 6px; }
+  .run-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .run-author { min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+  .run-head :global(.panel-meta) { flex: none; font-size: 13px; line-height: 1.3; }
+  .post { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 15px; line-height: 1.4; }
   /* The highlighted words, in the highlight's own colour when it has one.
      Quiet enough to read as a quotation rather than as something said. */
   .quote { margin: 0; border-color: color-mix(in oklab, currentColor 30%, transparent); color: var(--panel-muted); overflow-wrap: anywhere; }
 
-  .actions { display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--spacing) * 0.5); margin-top: var(--spacing); }
+  .actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; margin-top: 7px; }
+  .actions :global(.icon-control) { box-sizing: border-box; width: 32px; height: 32px; min-width: 32px; min-height: 32px; padding: 0; }
+  .actions :global(.icon-control svg) { width: 16px; height: 16px; }
 
 </style>
