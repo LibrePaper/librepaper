@@ -389,7 +389,7 @@
         transform: translateY(-50%);
         width: 12px;
         height: 12px;
-        background-image: url('data:image/svg+xml;utf8,<svg viewBox="0 0 24 24" fill="none" stroke="%232b5748" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>');
+        background-image: url('data:image/svg+xml;utf8,<svg viewBox="0 0 24 24" fill="none" stroke="%232b5748" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>');
         background-size: contain;
         background-repeat: no-repeat;
         background-position: center;
@@ -563,31 +563,34 @@
 
       <!-- ========================================================== strip -->
       <section class="strip">
+        <!-- The icons are the application's own Lucide shapes, copied from
+             components/Icon.svelte (pencil, unlock, users, bot): this page
+             is static HTML and cannot mount that component. -->
         <div class="strip-inner">
           <div class="strip-item">
             <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M18 5l-3-3-5 5"/><path d="M3 21l18-18"/><path d="M12 17v3"/><path d="M7 21h10"/>
+              <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>
             </svg>
             <h3><a href="#write">Write</a></h3>
             <p class="strip-item-desc">Live preview: Markdown, HTML, Typst and LaTeX</p>
           </div>
           <div class="strip-item">
             <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
             </svg>
             <h3><a href="#free">Free</a></h3>
             <p class="strip-item-desc">Everything is free: no gated features</p>
           </div>
           <div class="strip-item">
             <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
             </svg>
             <h3><a href="#collaborate">Collaborate</a></h3>
             <p class="strip-item-desc">Simultaneous editors: named carets and personal undo</p>
           </div>
           <div class="strip-item">
             <svg class="strip-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 3v12m0 0l-3-3m3 3l3-3"/><circle cx="12" cy="19" r="2"/>
+              <path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>
             </svg>
             <h3><a href="#agents">AI agents</a></h3>
             <p class="strip-item-desc">Bring your own agent: no new subscription</p>
