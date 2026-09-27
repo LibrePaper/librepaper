@@ -705,28 +705,28 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
     throw named("Unreachable", "The companion did not connect. Install or open it, approve the local permission window, then retry.");
   }
 
-  // Asked directly when the companion is already reachable; through the link
-  // handler, which starts it and asks it the same way, otherwise.
+  // Asked directly first, whatever the last probe said: a stale "unreachable"
+  // must not send an already running companion to the link handler, which may
+  // not be registered. The link, which starts it and asks it the same way, is
+  // only for a companion this request cannot reach.
   let asked = false;
-  if (["unauthorized", "reachable"].includes(currentStatus.state)) {
-    try {
-      const response = await deps.fetch(`${address()}${LOCAL_BASE}pair/request`, {
-        method: "POST", mode: "cors", credentials: "omit",
-        headers: { "Content-Type": "application/json" },
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
-        body: JSON.stringify({ origin, project, request, challenge, return: returnUrl }),
-      });
-      asked = true;
-      if (response.status !== 202) {
-        const data = await response.json().catch(() => null);
-        throw named("Refused", data?.error || `The companion could not ask for permission (${response.status}).`);
-      }
-    } catch (error) {
-      if (asked) throw error;
-      // Unreachable after all: fall through to the link.
+  try {
+    const response = await deps.fetch(`${address()}${LOCAL_BASE}pair/request`, {
+      method: "POST", mode: "cors", credentials: "omit",
+      headers: { "Content-Type": "application/json" },
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
+      body: JSON.stringify({ origin, project, request, challenge, return: returnUrl }),
+    });
+    asked = true;
+    if (response.status !== 202) {
+      const data = await response.json().catch(() => null);
+      throw named("Refused", data?.error || `The companion could not ask for permission (${response.status}).`);
     }
-    checkScope();
+  } catch (error) {
+    if (asked) throw error;
+    // Unreachable after all: fall through to the link.
   }
+  checkScope();
   if (!asked) {
     deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, project, request, challenge, return: returnUrl })}`);
   }

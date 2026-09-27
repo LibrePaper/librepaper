@@ -5,7 +5,7 @@ import * as local from "../../src/lib/companion/client.js";
 const response = (status, body) => ({ status, ok: status >= 200 && status < 300,
   json: async () => body, clone() { return response(status, body); } });
 
-let now, link, storage, claimBody, pairBody, attempts;
+let now, link, storage, claimBody, pairBody, attempts, companionUp;
 function inject(claim) {
   local._testing.inject({
     storage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) },
@@ -14,7 +14,9 @@ function inject(claim) {
     location: () => ({ href: "https://papers.example/docs/paper" }),
     launchLink: (url) => { link = url; },
     fetch: async (url, init) => {
-      if (url.includes("pair/request")) { pairBody = JSON.parse(init.body); return response(202, { request: pairBody.request }); }
+      if (url.includes("pair/request")) {
+        if (!companionUp) throw new TypeError("Failed to fetch");
+        pairBody = JSON.parse(init.body); return response(202, { request: pairBody.request }); }
       if (url.includes("connect/claim")) { claimBody = JSON.parse(init.body); return claim(++attempts); }
       if (url.includes("health")) return response(200, { service: "librepaper-local", protocol: [2], instance: "restart" });
       if (url.includes("capabilities")) return response(200, { tools: {} });
@@ -23,12 +25,11 @@ function inject(claim) {
   });
 }
 
-// A fresh attempt: no pairing yet, and the status this tab last probed is
-// not "unauthorized" or "reachable", so `connectApp` goes straight to the
-// `librepaper://connect` link rather than asking the companion directly.
+// A fresh attempt with no pairing yet and no companion answering: the direct
+// ask fails, so `connectApp` falls back to the `librepaper://connect` link.
 function setup(claim) {
   local._testing.reset();
-  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0;
+  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0; companionUp = false;
   inject(claim);
   local.configure({ origin: "https://papers.example", project: "paper" });
 }
@@ -75,10 +76,11 @@ link = "";
 await local.connectApp({ timeoutMs: 10000 });
 assert.equal(link, "", "an already-connected browser fires no link");
 
-// A companion already answering: the page asks it directly, the dialog
-// appears with no window and no link, and the claim picks up the token.
+// A companion already answering: the page asks it directly even though this
+// tab never probed it, the dialog appears with no link, and the claim picks
+// up the token.
 setup((n) => (n === 1 ? response(202, {}) : response(200, { token: "direct-token", expires: 1000000, instance: "restart" })));
-assert.equal((await local.retry()).state, "unauthorized");
+companionUp = true;
 await local.connectApp({ timeoutMs: 10000 });
 assert.equal(link, "", "a reachable companion is asked without a link");
 assert.equal(pairBody.origin, "https://papers.example");
