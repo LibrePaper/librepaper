@@ -748,8 +748,6 @@
   .chat-history > :global(*) { flex-shrink:0; }
   .agent-panel :global(.agent-tab-content .chat-form) { flex-shrink:0; }
   .agent-setup, .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
-  .agent-setup p { margin:0; }
-  .agent-setup h3 { margin:0; }
   /* The whole not-paired warning: one line, the Connect button, and the
      refusal message if there is one. */
   .connect-required { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);
