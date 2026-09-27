@@ -89,6 +89,15 @@
         font-weight: 400;
       }
 
+      /* The name above the slogan. Sized by width, because the wordmark is
+         nearly seven times as wide as it is tall. */
+      .hero-text .hero-logo {
+        display: block;
+        width: min(100%, 20rem);
+        height: auto;
+        margin-bottom: 1.75rem;
+      }
+
       .hero-text .formats {
         margin-top: 1.5rem;
       }
@@ -548,6 +557,7 @@
       <!-- ============================================================ hero -->
       <section class="hero">
         <div class="hero-text">
+          <img class="hero-logo" src="/assets/librepaper-logo.svg" alt="LibrePaper" width="6221" height="908" />
           <h1>A free platform to read, write, and review together.</h1>
           <p class="formats">
             <span>HTML</span>
