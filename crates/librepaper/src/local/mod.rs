@@ -13,13 +13,13 @@ pub mod builders;
 pub mod cli;
 pub mod connections;
 pub(crate) mod credentials;
-pub mod integrations;
 #[cfg(target_os = "linux")]
 pub(crate) mod dialog;
 pub mod discovery;
 pub mod embedded;
 pub mod engine_adapter;
 pub mod folder;
+pub mod integrations;
 pub mod lifecycle;
 pub mod native;
 pub mod pairing;

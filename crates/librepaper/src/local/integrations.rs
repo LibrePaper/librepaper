@@ -98,10 +98,7 @@ impl Custom {
             }
         }
         if self.args.len() > 64 {
-            return Err(format!(
-                "too many args: {} (maximum 64)",
-                self.args.len()
-            ));
+            return Err(format!("too many args: {} (maximum 64)", self.args.len()));
         }
         for (i, arg) in self.args.iter().enumerate() {
             if arg.is_empty() {
@@ -134,7 +131,10 @@ static STATE: RwLock<Option<State>> = RwLock::new(None);
 /// unreadable file, or an entry that no longer validates, reads as the
 /// default. Called when the service starts; a later call replaces the state.
 pub fn init(state_home: &Path) {
-    let path = state_home.join("librepaper").join("local").join("integrations.json");
+    let path = state_home
+        .join("librepaper")
+        .join("local")
+        .join("integrations.json");
     let entries = load_or_default(&path);
     *STATE.write().unwrap_or_else(|poison| poison.into_inner()) = Some(State { path, entries });
 }
@@ -151,7 +151,10 @@ pub fn get(which: Integration) -> Custom {
 
 /// Every integration's configuration, defaults included.
 pub fn all() -> BTreeMap<&'static str, Custom> {
-    Integration::ALL.iter().map(|&which| (which.key(), get(which))).collect()
+    Integration::ALL
+        .iter()
+        .map(|&which| (which.key(), get(which)))
+        .collect()
 }
 
 /// Validates `custom`, writes the store, then updates memory. An empty
@@ -159,7 +162,9 @@ pub fn all() -> BTreeMap<&'static str, Custom> {
 pub fn set(which: Integration, custom: Custom) -> Result<(), String> {
     custom.validate()?;
     let mut guard = STATE.write().unwrap_or_else(|poison| poison.into_inner());
-    let state = guard.as_mut().ok_or("integrations store is not initialised")?;
+    let state = guard
+        .as_mut()
+        .ok_or("integrations store is not initialised")?;
     let mut entries = state.entries.clone();
     if custom == Custom::default() {
         entries.remove(which.key());
@@ -185,7 +190,11 @@ pub fn executable(which: Integration) -> Option<PathBuf> {
         }
     }
     if let Some(path) = get(which).path {
-        let exe = if path.is_dir() { path.join(which.program()) } else { path };
+        let exe = if path.is_dir() {
+            path.join(which.program())
+        } else {
+            path
+        };
         return exe.is_file().then_some(exe);
     }
     crate::local::tools::find(which.override_var(), which.as_str())
@@ -208,15 +217,18 @@ fn load_or_default(path: &Path) -> BTreeMap<&'static str, Custom> {
         .collect()
 }
 
+/// The store is process-wide, so every test that touches it takes turns.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The store is process-wide, so tests that touch it take turns.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn with_tempdir<F: Fn(&Path)>(f: F) {
-        let _turn = SERIAL.lock().unwrap_or_else(|poison| poison.into_inner());
+        let _turn = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let dir = tempfile::tempdir().expect("tempdir");
         f(dir.path());
     }
@@ -344,7 +356,10 @@ mod tests {
             set(Integration::Quarto, custom).expect("set");
             let exe = executable(Integration::Quarto);
             assert!(exe.is_some());
-            assert_eq!(exe.unwrap().file_name().unwrap(), Integration::Quarto.program());
+            assert_eq!(
+                exe.unwrap().file_name().unwrap(),
+                Integration::Quarto.program()
+            );
         });
     }
 
@@ -357,10 +372,10 @@ mod tests {
                 args: vec!["--verbose".to_string(), "--config=custom.toml".to_string()],
             };
             set(Integration::Calepin, custom).expect("set");
-            assert_eq!(extra_args(Integration::Calepin), vec![
-                "--verbose".to_string(),
-                "--config=custom.toml".to_string()
-            ]);
+            assert_eq!(
+                extra_args(Integration::Calepin),
+                vec!["--verbose".to_string(), "--config=custom.toml".to_string()]
+            );
         });
     }
 }

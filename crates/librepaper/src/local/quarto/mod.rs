@@ -461,10 +461,10 @@ pub async fn run_job_with_bindings(
         .file_name()
         .map(|x| x.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let Some(mut options) = request.inputs.quarto().cloned() else {
+    let Some(options) = request.inputs.quarto().cloned() else {
         return failed(&request, &job_id, "quarto job is missing typed options");
     };
-    let mut invocation_plan = match QuartoInvocationPlan::from_options(&options) {
+    let invocation_plan = match QuartoInvocationPlan::from_options(&options) {
         Ok(plan) => plan,
         Err(error) => return failed(&request, &job_id, &error),
     };
@@ -725,7 +725,9 @@ pub async fn run_job_with_bindings(
     // handling treats an absolute source as a single-file render and rejects
     // project-only flags. The canonical path was rechecked above.
     invocation_plan.apply(&mut command, &output, &filter);
-    command.args(super::integrations::extra_args(super::integrations::Integration::Quarto));
+    command.args(super::integrations::extra_args(
+        super::integrations::Integration::Quarto,
+    ));
     command
         .env("LIBREPAPER_QUARTO_CELL_MANIFEST", &cell_manifest)
         .env("LIBREPAPER_QUARTO_INLINE_RECORDS", &inline_records)

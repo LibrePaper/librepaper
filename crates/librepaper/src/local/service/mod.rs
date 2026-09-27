@@ -1409,48 +1409,35 @@ async fn handle_integration_set(
     }
 
     let origin_name = origin.unwrap_or("unknown");
-    let message = match &custom.path {
-        None if custom.args.is_empty() => {
-            format!("{} wants LibrePaper to restore the default {} command.", origin_name, which.as_str())
-        }
-        Some(path) => {
-            let path_str = path.display().to_string();
-            let args_str = if custom.args.is_empty() {
-                String::new()
-            } else {
-                format!(" {}", custom.args.join(" "))
-            };
-            format!(
-                "{} wants LibrePaper to run {} as:\n\n{}{}\n\nOnly allow this if you asked for it.",
-                origin_name, which.as_str(), path_str, args_str
-            )
-        }
-        None => {
-            let args_str = if custom.args.is_empty() {
-                String::new()
-            } else {
-                format!(" {}", custom.args.join(" "))
-            };
-            format!(
-                "{} wants LibrePaper to run {} (found on PATH) as:\n\n{}{}\n\nOnly allow this if you asked for it.",
-                origin_name, which.as_str(), which.as_str(), args_str
-            )
-        }
+    let tool = match which {
+        super::integrations::Integration::Quarto => "Quarto",
+        super::integrations::Integration::Calepin => "Calepin",
+    };
+    let message = if custom == super::integrations::Custom::default() {
+        format!("{origin_name} wants LibrePaper to restore the default {tool} command.")
+    } else {
+        let program = match &custom.path {
+            Some(path) => path.display().to_string(),
+            None => format!("{} (found on PATH)", which.as_str()),
+        };
+        let command = std::iter::once(program)
+            .chain(custom.args.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("{origin_name} wants LibrePaper to run {tool} as:\n\n{command}\n\nOnly allow this if you asked for it.")
     };
 
     let approval = super::approval::Approval {
-        title: format!("Change {} command", which.as_str()),
+        title: format!("Change {tool} command"),
         message,
         allow_label: "Use it".to_string(),
     };
 
     match decision_to_result(super::approval::ask(&approval).await) {
-        Ok(()) => {
-            match super::integrations::set(which, custom.clone()) {
-                Ok(()) => write_json(200, &json!(custom)),
-                Err(error) => write_json(500, &json!({"error": error})),
-            }
-        }
+        Ok(()) => match super::integrations::set(which, custom.clone()) {
+            Ok(()) => write_json(200, &json!(custom)),
+            Err(error) => write_json(500, &json!({"error": error})),
+        },
         Err(response) => response,
     }
 }
@@ -2286,10 +2273,6 @@ mod idempotency_tests {
 mod settings_tests {
     use super::*;
 
-    /// The integrations store is process-wide, so tests that touch it must
-    /// serialize to avoid interference.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     async fn test_inner() -> (Arc<Inner>, tempfile::TempDir, tempfile::TempDir) {
         let state_home = tempfile::tempdir().unwrap();
         let cache_home = tempfile::tempdir().unwrap();
@@ -2329,67 +2312,120 @@ mod settings_tests {
     }
 
     #[tokio::test]
+    // The store is process-wide; holding its test lock across awaits is the point.
+    #[allow(clippy::await_holding_lock)]
     async fn put_integration_denied_leaves_unchanged() {
         let (inner, state_home, _cache_home) = test_inner().await;
-        let _lock = SERIAL.lock().expect("lock");
+        let _lock = super::super::integrations::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         super::super::integrations::init(state_home.path());
         super::super::approval::script(false);
 
-        let pairing = inner.pairing.new_pairing("https://example.test", None, None).unwrap();
+        let (token, _) = inner
+            .pairing
+            .issue("https://example.test", "p", "test")
+            .unwrap();
         let request = Request::put("/integrations/quarto")
-            .header("authorization", format!("Bearer {}", pairing.token))
+            .header("authorization", format!("Bearer {token}"))
             .header("origin", "https://example.test")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#))
+            .body(Body::from(
+                r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#,
+            ))
             .expect("request");
 
-        let response = handle_integration_set(&inner, request.headers(), Some("https://example.test"), "quarto", request).await;
+        let response = handle_integration_set(
+            &inner,
+            &request.headers().clone(),
+            Some("https://example.test"),
+            "quarto",
+            request,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(super::super::integrations::get(super::super::integrations::Integration::Quarto), super::super::integrations::Custom::default());
+        assert_eq!(
+            super::super::integrations::get(super::super::integrations::Integration::Quarto),
+            super::super::integrations::Custom::default()
+        );
 
         super::super::approval::unscript();
     }
 
     #[tokio::test]
+    // The store is process-wide; holding its test lock across awaits is the point.
+    #[allow(clippy::await_holding_lock)]
     async fn put_integration_allowed_persists() {
         let (inner, state_home, _cache_home) = test_inner().await;
-        let _lock = SERIAL.lock().expect("lock");
+        let _lock = super::super::integrations::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         super::super::integrations::init(state_home.path());
         super::super::approval::script(true);
 
-        let pairing = inner.pairing.new_pairing("https://example.test", None, None).unwrap();
+        let (token, _) = inner
+            .pairing
+            .issue("https://example.test", "p", "test")
+            .unwrap();
         let request = Request::put("/integrations/quarto")
-            .header("authorization", format!("Bearer {}", pairing.token))
+            .header("authorization", format!("Bearer {token}"))
             .header("origin", "https://example.test")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#))
+            .body(Body::from(
+                r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#,
+            ))
             .expect("request");
 
-        let response = handle_integration_set(&inner, request.headers(), Some("https://example.test"), "quarto", request).await;
+        let response = handle_integration_set(
+            &inner,
+            &request.headers().clone(),
+            Some("https://example.test"),
+            "quarto",
+            request,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
 
-        let custom = super::super::integrations::get(super::super::integrations::Integration::Quarto);
-        assert_eq!(custom.path, Some(std::path::PathBuf::from("/usr/bin/quarto")));
+        let custom =
+            super::super::integrations::get(super::super::integrations::Integration::Quarto);
+        assert_eq!(
+            custom.path,
+            Some(std::path::PathBuf::from("/usr/bin/quarto"))
+        );
         assert_eq!(custom.args, vec!["--verbose"]);
 
         super::super::approval::unscript();
     }
 
     #[tokio::test]
+    // The store is process-wide; holding its test lock across awaits is the point.
+    #[allow(clippy::await_holding_lock)]
     async fn put_integration_invalid_returns_400() {
         let (inner, state_home, _cache_home) = test_inner().await;
-        let _lock = SERIAL.lock().expect("lock");
+        let _lock = super::super::integrations::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         super::super::integrations::init(state_home.path());
 
-        let pairing = inner.pairing.new_pairing("https://example.test", None, None).unwrap();
+        let (token, _) = inner
+            .pairing
+            .issue("https://example.test", "p", "test")
+            .unwrap();
         let request = Request::put("/integrations/quarto")
-            .header("authorization", format!("Bearer {}", pairing.token))
+            .header("authorization", format!("Bearer {token}"))
             .header("origin", "https://example.test")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"path":"relative/path","args":[]}"#))
             .expect("request");
 
-        let response = handle_integration_set(&inner, request.headers(), Some("https://example.test"), "quarto", request).await;
+        let response = handle_integration_set(
+            &inner,
+            &request.headers().clone(),
+            Some("https://example.test"),
+            "quarto",
+            request,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

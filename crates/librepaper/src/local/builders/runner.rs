@@ -110,7 +110,7 @@ pub async fn run(
     if let Err(error) = std::fs::create_dir(project.join("out")) {
         return failed(&request, &id, &error.to_string());
     }
-    let mut plan = match super::plan(
+    let plan = match super::plan(
         &BuildRequest {
             builder,
             engine: engine.clone(),

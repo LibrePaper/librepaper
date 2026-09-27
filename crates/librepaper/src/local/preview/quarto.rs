@@ -13,7 +13,7 @@ use crate::local::integrations::Integration;
 use crate::local::protocol::{
     PreviewRequest, QuartoExecutionMode, QuartoRenderPolicy, QuartoRenderScope,
 };
-use crate::local::quarto::{find_quarto, verify_bound_manifest, BindingStore};
+use crate::local::quarto::{verify_bound_manifest, BindingStore};
 
 pub(crate) struct QuartoWatch {
     entrypoint: String,

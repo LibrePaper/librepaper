@@ -44,13 +44,6 @@ pub struct ToolPaths {
 }
 
 impl ToolPaths {
-    #[cfg(test)]
-    pub(crate) fn fixture(tools: BTreeMap<String, PathBuf>) -> Self {
-        Self {
-            tools,
-            ..Default::default()
-        }
-    }
     pub(crate) fn version(&self, tool: &str) -> String {
         self.versions.get(tool).cloned().unwrap_or_default()
     }
