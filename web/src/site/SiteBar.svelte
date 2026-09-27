@@ -3,9 +3,12 @@
   // docs, and the button that signs you in. Not Nav.svelte - that bar asks
   // the application who is signed in and shows their account; this site has
   // no application behind it to ask, so the button always reads "Sign in" and
-  // sends you to the application to find out.
+  // sends you to the application to find out. The landing page drops the mark
+  // because its hero already shows it.
   import Logo from "../components/Logo.svelte";
   import Icon from "../components/Icon.svelte";
+
+  let { mark = true } = $props();
 
   // Replaced at build time by vite.site.config.js: the published site points
   // at the deployment, a local build at whatever `make deploy` started.
@@ -14,11 +17,13 @@
 
 <nav class="site-bar">
   <div class="site-bar-inner">
-    <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
-      <Logo />
-      <span>LibrePaper</span>
-    </a>
-    <div class="flex items-center gap-4">
+    {#if mark}
+      <a class="flex items-center gap-2" href="/" aria-label="LibrePaper home">
+        <Logo />
+        <span>LibrePaper</span>
+      </a>
+    {/if}
+    <div class="flex items-center gap-4 ml-auto">
       <a class="lp-text-secondary lp-hover-brand" href="/start.html">Documentation</a>
       <a
         class="lp-text-secondary lp-hover-brand flex items-center"
