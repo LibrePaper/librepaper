@@ -1,0 +1,4 @@
+agent = 'codex'
+
+[kata_context]
+mode = 'current'
