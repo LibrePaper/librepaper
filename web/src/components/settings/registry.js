@@ -52,7 +52,7 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "local", says: "Local", offered: local,
+    id: "local", says: "Local companion", offered: local,
     note: "LibrePaper on this computer",
     entries: [
       { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows allow site agent claude codex pi opencode zotero quarto companion" },
@@ -63,7 +63,7 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "remote", says: "Remote", offered: remote,
+    id: "remote", says: "Remote connection", offered: remote,
     note: "The LibrePaper server for this project.",
     entries: [
       { id: "remote-status", says: "Connection", terms: "connected offline server address sync status" },

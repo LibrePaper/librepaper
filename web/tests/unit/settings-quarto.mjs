@@ -19,8 +19,8 @@ for (const format of ["latex", "typst", "markdown", "quarto", "html", ""]) {
     assert.ok(ids.includes("remote"), `${format} (mayEdit=${mayEdit}) offers Remote`);
   }
 }
-assert.match(registry, /id: "local", says: "Local", offered: local,/);
-assert.match(registry, /id: "remote", says: "Remote", offered: remote,/);
+assert.match(registry, /id: "local", says: "Local companion", offered: local,/);
+assert.match(registry, /id: "remote", says: "Remote connection", offered: remote,/);
 for (const query of ["windows setup", "macos", "claude", "zotero", "server address", "companion address"]) {
   const matches = search(query, { format: "html", mayEdit: false, signedIn: false }) || [];
   assert.ok(matches.length, `settings search finds ${query}`);

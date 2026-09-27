@@ -90,7 +90,7 @@ try {
   await b.evaluate('window.roomConnected(false)'); await flush();
   assert.equal((await connectionState('Remote')).offline,true,'Remote pill turns red while disconnected');
   await clickPill('Local');
-  await until('Local settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Local"'),3000);
+  await until('Local settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Local companion"'),3000);
   assert.equal(await b.evaluate('Boolean(document.querySelector("#local-status .setting-title")?.textContent.trim())'),true,
     'Local settings shows connection status text');
   assert.equal((await connectionState('Local')).offline,true,'Local pill is red while its app is unavailable');
@@ -101,7 +101,7 @@ try {
 
   await click('[aria-label="Close"]');
   await clickPill('Remote');
-  await until('Remote settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Remote"'),3000);
+  await until('Remote settings',()=>b.evaluate('document.querySelector(".settings-category")?.textContent.trim() === "Remote connection"'),3000);
   assert.match(await b.evaluate('document.querySelector("#remote-status").innerText'),/Not connected to the LibrePaper server\./);
   await b.evaluate('window.roomConnected(true)'); await flush();
   assert.equal((await connectionState('Remote')).offline,false,'Remote pill turns green when connected');
