@@ -83,18 +83,10 @@ source digest alone would not freeze remote dependencies.
 
 ## 2. Companion execution: preserve consent before simplifying grants
 
-**Current.** Companion presets, folder bindings and isolated workspaces still
-serve local builds, including projects with unshared inputs. Quarto can execute
-R and Python. Preset environment validation refuses loader and interpreter
-variables (`local/presets/mod.rs`), but that does not make document code safe.
-
-`PresetGrant` binds origin, project, preset, workspace mode, operation,
-entrypoint and preset semantic revision. Changing the preset invalidates its
-grant. The store already supports listing and revoking grants. These grants do
-not bind authenticated collaborator identities or an approved source revision,
-and do not carry an expiry. Quarto folder bindings separately carry an
-`execution_granted` flag. Pairing credentials and execution permissions are
-therefore related but distinct mechanisms.
+**Current.** Companion folder bindings and isolated workspaces serve local
+builds, including projects with unshared inputs. Quarto can execute R and
+Python. Quarto folder bindings carry an `execution_granted` flag. Pairing
+credentials and execution permissions are related but distinct mechanisms.
 
 **Recommendation.** First name the supported execution modes and the meaning
 of consent. Options include explicit execution of a captured revision, or a
@@ -109,6 +101,14 @@ reusing the existing grant store where possible. Do not remove frozen-cache
 checks or execution gates merely because another local-build abstraction is
 being removed. Choose the contract before building collaborator identity
 tracking or a second grant system.
+
+**Custom Quarto and Calepin executables.** The local companion lets authors
+point to custom-built or vendored versions of Quarto and Calepin, and configure
+extra command-line arguments. These settings are stored privately in the
+companion and changed only through `PUT /integrations/{name}` after a native
+confirmation dialog that displays the full command to be executed. The settings
+are never sent anywhere but back to the paired page; changing them requires
+an authorization token that ties to a pairing and origin.
 
 ## 3. Backups: plaintext recovery points remain an exposure
 

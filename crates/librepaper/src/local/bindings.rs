@@ -87,15 +87,6 @@ pub struct BindingStore {
 }
 
 impl BindingStore {
-    pub(crate) fn preset_store(&self) -> super::presets::PresetStore {
-        super::presets::PresetStore::new(
-            self.path
-                .parent()
-                .and_then(Path::parent)
-                .and_then(Path::parent)
-                .expect("binding store has a state root"),
-        )
-    }
     pub fn new(config_home: &Path) -> Self {
         Self {
             path: config_home

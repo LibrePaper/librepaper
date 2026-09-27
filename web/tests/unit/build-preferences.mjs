@@ -41,7 +41,7 @@ test("a paged output lasts the visit and is not read back", () => {
   } finally { globalThis.localStorage = previous; }
 });
 
-test("tool, preset, and options stay isolated by origin and document", () => {
+test("tool and options stay isolated by origin and document", () => {
   const previous = globalThis.localStorage;
   globalThis.localStorage = store();
   try {

@@ -56,15 +56,7 @@ pub async fn run(
     if request.builder == "quarto" {
         return quarto::run_job_with_bindings(request, workspace, cancel, progress, bindings).await;
     }
-    crate::local::builders::runner::run(
-        request,
-        workspace,
-        tools,
-        cancel,
-        progress,
-        &bindings.preset_store(),
-    )
-    .await
+    crate::local::builders::runner::run(request, workspace, tools, cancel, progress).await
 }
 
 /// Capabilities remain the existing browser-facing shape.  Keeping discovery

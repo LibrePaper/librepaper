@@ -44,13 +44,6 @@ pub struct ToolPaths {
 }
 
 impl ToolPaths {
-    #[cfg(test)]
-    pub(crate) fn fixture(tools: BTreeMap<String, PathBuf>) -> Self {
-        Self {
-            tools,
-            ..Default::default()
-        }
-    }
     pub(crate) fn version(&self, tool: &str) -> String {
         self.versions.get(tool).cloned().unwrap_or_default()
     }
@@ -315,7 +308,6 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
                 workspace_modes: snapshot(),
             }],
             preview: false,
-            presets: true,
             note: String::new(),
         },
         BuilderCapability {
@@ -330,7 +322,6 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
                 workspace_modes: snapshot(),
             }],
             preview: false,
-            presets: true,
             note: String::new(),
         },
     ];
@@ -401,7 +392,6 @@ pub async fn discover(refresh: bool, tool_path: &[PathBuf]) -> Capabilities {
                 },
             ],
             preview: true,
-            presets: true,
             note: String::new(),
         });
     }
@@ -424,7 +414,6 @@ pub async fn discover(refresh: bool, tool_path: &[PathBuf]) -> Capabilities {
                 },
             ],
             preview: true,
-            presets: true,
             note: String::new(),
         });
     }

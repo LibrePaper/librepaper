@@ -511,6 +511,7 @@ impl LocalService {
         // assistant route, mirroring `recover_state`'s own semantics rather
         // than replaying it. See `SessionRegistry::recover_at_startup`.
         crate::assistant::registry::SessionRegistry::recover_at_startup(state_home);
+        super::integrations::init(state_home);
         let mut quarto_bindings = BindingStore::new(state_home);
         if let Some(base) = hosted {
             quarto_bindings = quarto_bindings.with_hosted_workspaces(base);
@@ -1019,22 +1020,13 @@ async fn dispatch(
         }
         // Settings routes (bearer authenticated)
         ["settings"] if *method == Method::GET => handle_settings(inner, headers, origin).await,
-        ["presets"] if *method == Method::POST => {
-            handle_presets_create(inner, headers, origin, request).await
-        }
-        ["presets", preset_id] if *method == Method::DELETE => {
-            handle_presets_delete(inner, headers, origin, preset_id).await
-        }
-        ["presets", preset_id, "grant"] if *method == Method::POST => {
-            handle_presets_grant(inner, headers, origin, preset_id, request).await
-        }
-        ["grants", grant_id] if *method == Method::DELETE => {
-            handle_grants_delete(inner, headers, origin, grant_id).await
-        }
         ["startup"] if *method == Method::POST => {
             handle_startup(inner, headers, origin, request).await
         }
         ["quit"] if *method == Method::POST => handle_quit(inner, headers, origin).await,
+        ["integrations", name] if *method == Method::PUT => {
+            handle_integration_set(inner, headers, origin, name, request).await
+        }
         ["approve"] if *method == Method::POST => handle_approve(peer, request).await,
         ["zotero", "search"] if *method == Method::GET => {
             handle_zotero_search(inner, headers, origin, request).await
@@ -1264,70 +1256,19 @@ async fn handle_capabilities(
         return response;
     }
     let capabilities = inner.runner.capabilities(refresh).await;
-    let mut response = serde_json::to_value(capabilities).unwrap_or(Value::Null);
-    let store = super::presets::PresetStore::new(&inner.state_home);
-    let presets: Vec<_> = store
-        .list()
-        .into_iter()
-        .map(|summary| {
-            let schema = store
-                .get(&summary.id)
-                .map(|preset| preset.option_schema)
-                .unwrap_or_default();
-            let mut entry = serde_json::to_value(summary).unwrap_or(Value::Null);
-            entry["option_schema"] = json!(schema);
-            entry
-        })
-        .collect();
-    response["presets"] = json!(presets);
+    let response = serde_json::to_value(capabilities).unwrap_or(Value::Null);
     write_json(200, &response)
 }
 
 /* ------------------------------------------------------ Settings routes */
 
 async fn handle_settings(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
+    let _project = match authenticate(inner, headers, origin) {
         Ok(p) => p,
         Err(response) => return response,
     };
-    let origin = origin.unwrap_or_default().to_string();
 
     let is_standalone = standalone(inner);
-
-    let presets = super::presets::PresetStore::new(&inner.state_home);
-    let preset_list: Vec<_> = presets
-        .list()
-        .into_iter()
-        .filter_map(|summary| {
-            presets.get(&summary.id).map(|full| {
-                json!({
-                    "id": summary.id,
-                    "display_name": summary.display_name,
-                    "base_adapter": summary.base_adapter,
-                    "source_formats": summary.source_formats,
-                    "options": full.options,
-                    "environment_keys": full.environment.keys().collect::<Vec<_>>(),
-                    "wrapper": full.wrapper,
-                })
-            })
-        })
-        .collect();
-
-    let grants = match presets.grants() {
-        Ok(all_grants) => all_grants
-            .into_iter()
-            .filter(|g| g.origin == origin && g.project == project)
-            .map(|g| {
-                json!({
-                    "id": g.id,
-                    "preset": g.preset_id,
-                    "entrypoint": g.entrypoint,
-                    "mode": g.workspace,
-                })
-            })
-            .collect::<Vec<_>>(),
-        Err(_) => Vec::new(),
-    };
 
     write_json(
         200,
@@ -1335,255 +1276,9 @@ async fn handle_settings(inner: &Inner, headers: &HeaderMap, origin: Option<&str
             "version": crate::VERSION,
             "standalone": is_standalone,
             "startup": if is_standalone { Some(super::lifecycle::startup_enabled()) } else { None },
-            "presets": preset_list,
-            "grants": grants,
+            "integrations": super::integrations::all(),
         }),
     )
-}
-
-#[derive(serde::Deserialize)]
-struct PresetCreateRequest {
-    name: String,
-    adapter: String,
-    #[serde(default)]
-    formats: Vec<String>,
-    #[serde(default)]
-    options: std::collections::BTreeMap<String, String>,
-    #[serde(default)]
-    environment: std::collections::BTreeMap<String, String>,
-    wrapper: Option<String>,
-}
-
-async fn handle_presets_create(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    request: Request<Body>,
-) -> Reply {
-    let _project = match authenticate(inner, headers, origin) {
-        Ok(p) => p,
-        Err(response) => return response,
-    };
-    let origin = origin.unwrap_or_default().to_string();
-
-    let body = match read_json_body::<PresetCreateRequest>(request).await {
-        Ok(b) => b,
-        Err(response) => return response,
-    };
-
-    let env_display = body
-        .environment
-        .iter()
-        .map(|(k, v)| format!("{}={}", k, v))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let approval = super::approval::Approval {
-        title: "Create build preset".to_string(),
-        message: format!(
-            "Preset: {}\nOrigin: {}\nAdapter: {}\nFormats: {}\nOptions: {}\nEnvironment:\n{}\nWrapper: {}",
-            body.name,
-            origin,
-            body.adapter,
-            body.formats.join(", "),
-            if body.options.is_empty() {
-                "(none)".to_string()
-            } else {
-                body.options
-                    .iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            },
-            env_display,
-            body.wrapper.as_deref().unwrap_or("(none)")
-        ),
-        allow_label: "Create".to_string(),
-    };
-
-    match decision_to_result(super::approval::ask(&approval).await) {
-        Ok(()) => {
-            // Options entered by hand are plain strings, as the old admin page treated them.
-            let option_schema = body
-                .options
-                .keys()
-                .map(|key| (key.clone(), super::presets::OptionType::String))
-                .collect();
-            let preset = super::presets::Preset {
-                id: String::new(),
-                display_name: body.name,
-                base_adapter: body.adapter,
-                source_formats: body.formats.into_iter().collect(),
-                options: body.options,
-                option_schema,
-                environment: body.environment,
-                wrapper: body.wrapper.filter(|s| !s.trim().is_empty()),
-                semantic_revision: 0,
-            };
-
-            let presets = super::presets::PresetStore::new(&inner.state_home);
-            match presets.create(preset) {
-                Ok(created) => write_json(
-                    201,
-                    &json!({
-                        "id": created.id,
-                        "display_name": created.display_name,
-                    }),
-                ),
-                Err(error) => write_json(400, &json!({"error": error})),
-            }
-        }
-        Err(response) => response,
-    }
-}
-
-async fn handle_presets_delete(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    preset_id: &str,
-) -> Reply {
-    let _project = match authenticate(inner, headers, origin) {
-        Ok(p) => p,
-        Err(response) => return response,
-    };
-    let origin = origin.unwrap_or_default().to_string();
-
-    let presets = super::presets::PresetStore::new(&inner.state_home);
-    let preset = match presets.get(preset_id) {
-        Some(p) => p,
-        None => return write_json(404, &json!({"error": "preset not found"})),
-    };
-
-    let approval = super::approval::Approval {
-        title: "Delete build preset".to_string(),
-        message: format!("Origin: {}\nPreset: {}", origin, preset.display_name),
-        allow_label: "Delete".to_string(),
-    };
-
-    match decision_to_result(super::approval::ask(&approval).await) {
-        Ok(()) => match presets.remove(preset_id) {
-            Ok(()) => write_json(200, &json!({})),
-            Err(error) => write_json(400, &json!({"error": error})),
-        },
-        Err(response) => response,
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct GrantRequest {
-    entrypoint: String,
-}
-
-async fn handle_presets_grant(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    preset_id: &str,
-    request: Request<Body>,
-) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(p) => p,
-        Err(response) => return response,
-    };
-    let origin = origin.unwrap_or_default().to_string();
-
-    let body = match read_json_body::<GrantRequest>(request).await {
-        Ok(b) => b,
-        Err(response) => return response,
-    };
-
-    let presets = super::presets::PresetStore::new(&inner.state_home);
-    let preset = match presets.get(preset_id) {
-        Some(p) => p,
-        None => return write_json(404, &json!({"error": "preset not found"})),
-    };
-
-    let preset_details = format!(
-        "Adapter: {}\nFormats: {}\nOptions: {}\nEnvironment keys: {}\nWrapper: {}",
-        preset.base_adapter,
-        preset
-            .source_formats
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", "),
-        if preset.options.is_empty() {
-            "(none)".to_string()
-        } else {
-            preset
-                .options
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
-        preset
-            .environment
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", "),
-        preset.wrapper.as_deref().unwrap_or("(none)")
-    );
-
-    let approval = super::approval::Approval {
-        title: "Allow preset build".to_string(),
-        message: format!(
-            "Origin: {}\nDocument: {}\nPreset: {}\nEntrypoint: {}\n{}",
-            origin, project, preset.display_name, body.entrypoint, preset_details
-        ),
-        allow_label: "Allow".to_string(),
-    };
-
-    match decision_to_result(super::approval::ask(&approval).await) {
-        Ok(()) => {
-            match presets.grant(
-                &origin,
-                &project,
-                preset_id,
-                super::presets::WorkspaceMode::Snapshot,
-                super::presets::Operation::Build,
-                &body.entrypoint,
-                crate::util::now_unix(),
-            ) {
-                Ok(_) => write_json(200, &json!({})),
-                Err(error) => write_json(400, &json!({"error": error})),
-            }
-        }
-        Err(response) => response,
-    }
-}
-
-async fn handle_grants_delete(
-    inner: &Inner,
-    headers: &HeaderMap,
-    origin: Option<&str>,
-    grant_id: &str,
-) -> Reply {
-    let project = match authenticate(inner, headers, origin) {
-        Ok(p) => p,
-        Err(response) => return response,
-    };
-    let origin = origin.unwrap_or_default().to_string();
-
-    let presets = super::presets::PresetStore::new(&inner.state_home);
-    let grants = match presets.grants() {
-        Ok(g) => g,
-        Err(_) => return write_json(404, &json!({"error": "grant not found"})),
-    };
-
-    if !grants
-        .iter()
-        .any(|g| g.id == grant_id && g.origin == origin && g.project == project)
-    {
-        return write_json(404, &json!({"error": "grant not found"}));
-    }
-
-    match presets.revoke(grant_id) {
-        Ok(true) => write_json(200, &json!({})),
-        _ => write_json(404, &json!({"error": "grant not found"})),
-    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1660,6 +1355,87 @@ async fn handle_quit(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -
     match decision_to_result(super::approval::ask(&approval).await) {
         Ok(()) => match super::lifecycle::request_stop(&inner.state_home) {
             Ok(()) => write_json(200, &json!({})),
+            Err(error) => write_json(500, &json!({"error": error})),
+        },
+        Err(response) => response,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct IntegrationRequest {
+    path: Option<String>,
+    args: Vec<String>,
+}
+
+async fn handle_integration_set(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    name: &str,
+    request: Request<Body>,
+) -> Reply {
+    let _project = match authenticate(inner, headers, origin) {
+        Ok(p) => p,
+        Err(response) => return response,
+    };
+
+    let which = match super::integrations::Integration::parse(name) {
+        Ok(w) => w,
+        Err(error) => return write_json(400, &json!({"error": error})),
+    };
+
+    let body = match read_json_body::<IntegrationRequest>(request).await {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+
+    let path = if body.path.as_deref() == Some("") {
+        None
+    } else {
+        body.path.map(std::path::PathBuf::from)
+    };
+
+    let custom = super::integrations::Custom {
+        path,
+        args: body.args,
+    };
+
+    if let Err(error) = custom.validate() {
+        return write_json(400, &json!({"error": error}));
+    }
+
+    if super::integrations::get(which) == custom {
+        return write_json(200, &json!(custom));
+    }
+
+    let origin_name = origin.unwrap_or("unknown");
+    let tool = match which {
+        super::integrations::Integration::Quarto => "Quarto",
+        super::integrations::Integration::Calepin => "Calepin",
+    };
+    let message = if custom == super::integrations::Custom::default() {
+        format!("{origin_name} wants LibrePaper to restore the default {tool} command.")
+    } else {
+        let program = match &custom.path {
+            Some(path) => path.display().to_string(),
+            None => format!("{} (found on PATH)", which.as_str()),
+        };
+        let command = std::iter::once(program)
+            .chain(custom.args.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("{origin_name} wants LibrePaper to run {tool} as:\n\n{command}\n\nOnly allow this if you asked for it.")
+    };
+
+    let approval = super::approval::Approval {
+        title: format!("Change {tool} command"),
+        message,
+        allow_label: "Use it".to_string(),
+    };
+
+    match decision_to_result(super::approval::ask(&approval).await) {
+        Ok(()) => match super::integrations::set(which, custom.clone()) {
+            Ok(()) => write_json(200, &json!(custom)),
             Err(error) => write_json(500, &json!({"error": error})),
         },
         Err(response) => response,
@@ -2521,260 +2297,6 @@ mod settings_tests {
     }
 
     #[tokio::test]
-    async fn settings_never_contains_environment_values() {
-        super::super::approval::script(false);
-
-        let (inner, _state, _cache) = test_inner().await;
-        let store = inner.pairing.clone();
-        let (token, _) = store
-            .issue("https://example.test", "paper", "test")
-            .expect("grant");
-
-        let presets = super::super::presets::PresetStore::new(&inner.state_home);
-        presets
-            .create(super::super::presets::Preset {
-                id: String::new(),
-                display_name: "Test".to_string(),
-                base_adapter: "typst".to_string(),
-                source_formats: ["typst".to_string()].into_iter().collect(),
-                options: [("option".to_string(), "value".to_string())]
-                    .into_iter()
-                    .collect(),
-                option_schema: [(
-                    "option".to_string(),
-                    super::super::presets::OptionType::String,
-                )]
-                .into_iter()
-                .collect(),
-                environment: [("PATH_VAR".to_string(), "/secret/path".to_string())]
-                    .into_iter()
-                    .collect(),
-                wrapper: None,
-                semantic_revision: 0,
-            })
-            .expect("create preset");
-
-        let request = Request::get("/settings")
-            .header("origin", "https://example.test")
-            .header("authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .expect("request");
-
-        let response =
-            handle_settings(&inner, request.headers(), Some("https://example.test")).await;
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .expect("body");
-        let json: Value = serde_json::from_slice(&body).expect("json");
-        let presets = &json["presets"][0];
-        assert!(!presets["options"].to_string().contains("/secret"));
-        assert!(presets["environment_keys"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|k| k.as_str() == Some("PATH_VAR")));
-        assert!(!presets.to_string().contains("/secret/path"));
-
-        super::super::approval::unscript();
-    }
-
-    #[tokio::test]
-    async fn settings_grants_list_only_callers_scope() {
-        let (inner, _state, _cache) = test_inner().await;
-        let store = inner.pairing.clone();
-        let (token1, _) = store
-            .issue("https://example1.test", "doc1", "test")
-            .expect("grant");
-        let (_token2, _) = store
-            .issue("https://example2.test", "doc2", "test")
-            .expect("grant");
-
-        let presets = super::super::presets::PresetStore::new(&inner.state_home);
-        let preset = presets
-            .create(super::super::presets::Preset {
-                id: String::new(),
-                display_name: "Test".to_string(),
-                base_adapter: "typst".to_string(),
-                source_formats: ["typst".to_string()].into_iter().collect(),
-                options: Default::default(),
-                option_schema: Default::default(),
-                environment: Default::default(),
-                wrapper: None,
-                semantic_revision: 0,
-            })
-            .expect("create preset");
-
-        presets
-            .grant(
-                "https://example1.test",
-                "doc1",
-                &preset.id,
-                super::super::presets::WorkspaceMode::Snapshot,
-                super::super::presets::Operation::Build,
-                "main.typ",
-                0,
-            )
-            .expect("grant 1");
-
-        presets
-            .grant(
-                "https://example2.test",
-                "doc2",
-                &preset.id,
-                super::super::presets::WorkspaceMode::Snapshot,
-                super::super::presets::Operation::Build,
-                "main.typ",
-                0,
-            )
-            .expect("grant 2");
-
-        let request1 = Request::get("/settings")
-            .header("origin", "https://example1.test")
-            .header("authorization", format!("Bearer {token1}"))
-            .body(Body::empty())
-            .expect("request");
-
-        let response =
-            handle_settings(&inner, request1.headers(), Some("https://example1.test")).await;
-        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .expect("body");
-        let json: Value = serde_json::from_slice(&body).expect("json");
-        assert_eq!(
-            json["grants"].as_array().unwrap().len(),
-            1,
-            "caller sees only their grant"
-        );
-
-        super::super::approval::unscript();
-    }
-
-    #[tokio::test]
-    async fn delete_grants_of_other_origin_is_404() {
-        let (inner, _state, _cache) = test_inner().await;
-        let store = inner.pairing.clone();
-        let (_token1, _) = store
-            .issue("https://example1.test", "doc1", "test")
-            .expect("grant");
-        let (token2, _) = store
-            .issue("https://example2.test", "doc2", "test")
-            .expect("grant");
-
-        let presets = super::super::presets::PresetStore::new(&inner.state_home);
-        let preset = presets
-            .create(super::super::presets::Preset {
-                id: String::new(),
-                display_name: "Test".to_string(),
-                base_adapter: "typst".to_string(),
-                source_formats: ["typst".to_string()].into_iter().collect(),
-                options: Default::default(),
-                option_schema: Default::default(),
-                environment: Default::default(),
-                wrapper: None,
-                semantic_revision: 0,
-            })
-            .expect("create preset");
-
-        let grant1 = presets
-            .grant(
-                "https://example1.test",
-                "doc1",
-                &preset.id,
-                super::super::presets::WorkspaceMode::Snapshot,
-                super::super::presets::Operation::Build,
-                "main.typ",
-                0,
-            )
-            .expect("grant");
-
-        let request = Request::delete(format!("/grants/{}", grant1.id))
-            .header("origin", "https://example2.test")
-            .header("authorization", format!("Bearer {token2}"))
-            .body(Body::empty())
-            .expect("request");
-
-        let response = handle_grants_delete(
-            &inner,
-            request.headers(),
-            Some("https://example2.test"),
-            &grant1.id,
-        )
-        .await;
-        assert_eq!(
-            response.status(),
-            StatusCode::NOT_FOUND,
-            "other origin cannot delete"
-        );
-
-        let remaining = presets.grants().expect("grants");
-        assert_eq!(remaining.len(), 1, "grant not deleted");
-
-        super::super::approval::unscript();
-    }
-
-    #[tokio::test]
-    async fn post_presets_denied_creates_nothing() {
-        super::super::approval::script(false);
-
-        let (inner, _state, _cache) = test_inner().await;
-        let store = inner.pairing.clone();
-        let (token, _) = store
-            .issue("https://example.test", "paper", "test")
-            .expect("grant");
-
-        let request = Request::post("/presets")
-            .header("origin", "https://example.test")
-            .header("authorization", format!("Bearer {token}"))
-            .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"name":"Test","adapter":"typst","formats":["typst"]}"#,
-            ))
-            .expect("request");
-
-        let headers = request.headers().clone();
-        let response =
-            handle_presets_create(&inner, &headers, Some("https://example.test"), request).await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-
-        let presets = super::super::presets::PresetStore::new(&inner.state_home);
-        assert_eq!(presets.list().len(), 0, "no preset created");
-
-        super::super::approval::unscript();
-    }
-
-    #[tokio::test]
-    async fn post_presets_allowed_creates() {
-        super::super::approval::script(true);
-
-        let (inner, _state, _cache) = test_inner().await;
-        let store = inner.pairing.clone();
-        let (token, _) = store
-            .issue("https://example.test", "paper", "test")
-            .expect("grant");
-
-        let request = Request::post("/presets")
-            .header("origin", "https://example.test")
-            .header("authorization", format!("Bearer {token}"))
-            .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"name":"Test","adapter":"typst","formats":["typst"]}"#,
-            ))
-            .expect("request");
-
-        let headers = request.headers().clone();
-        let response =
-            handle_presets_create(&inner, &headers, Some("https://example.test"), request).await;
-        assert_eq!(response.status(), StatusCode::CREATED);
-
-        let presets = super::super::presets::PresetStore::new(&inner.state_home);
-        assert_eq!(presets.list().len(), 1, "preset created");
-
-        super::super::approval::unscript();
-    }
-
-    #[tokio::test]
     async fn post_approve_with_origin_header_is_forbidden() {
         let request = Request::post("/approve")
             .header("origin", "https://example.test")
@@ -2787,5 +2309,123 @@ mod settings_tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
         super::super::approval::unscript();
+    }
+
+    #[tokio::test]
+    // The store is process-wide; holding its test lock across awaits is the point.
+    #[allow(clippy::await_holding_lock)]
+    async fn put_integration_denied_leaves_unchanged() {
+        let (inner, state_home, _cache_home) = test_inner().await;
+        let _lock = super::super::integrations::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        super::super::integrations::init(state_home.path());
+        super::super::approval::script(false);
+
+        let (token, _) = inner
+            .pairing
+            .issue("https://example.test", "p", "test")
+            .unwrap();
+        let request = Request::put("/integrations/quarto")
+            .header("authorization", format!("Bearer {token}"))
+            .header("origin", "https://example.test")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#,
+            ))
+            .expect("request");
+
+        let response = handle_integration_set(
+            &inner,
+            &request.headers().clone(),
+            Some("https://example.test"),
+            "quarto",
+            request,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            super::super::integrations::get(super::super::integrations::Integration::Quarto),
+            super::super::integrations::Custom::default()
+        );
+
+        super::super::approval::unscript();
+    }
+
+    #[tokio::test]
+    // The store is process-wide; holding its test lock across awaits is the point.
+    #[allow(clippy::await_holding_lock)]
+    async fn put_integration_allowed_persists() {
+        let (inner, state_home, _cache_home) = test_inner().await;
+        let _lock = super::super::integrations::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        super::super::integrations::init(state_home.path());
+        super::super::approval::script(true);
+
+        let (token, _) = inner
+            .pairing
+            .issue("https://example.test", "p", "test")
+            .unwrap();
+        let request = Request::put("/integrations/quarto")
+            .header("authorization", format!("Bearer {token}"))
+            .header("origin", "https://example.test")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#,
+            ))
+            .expect("request");
+
+        let response = handle_integration_set(
+            &inner,
+            &request.headers().clone(),
+            Some("https://example.test"),
+            "quarto",
+            request,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let custom =
+            super::super::integrations::get(super::super::integrations::Integration::Quarto);
+        assert_eq!(
+            custom.path,
+            Some(std::path::PathBuf::from("/usr/bin/quarto"))
+        );
+        assert_eq!(custom.args, vec!["--verbose"]);
+
+        super::super::approval::unscript();
+    }
+
+    #[tokio::test]
+    // The store is process-wide; holding its test lock across awaits is the point.
+    #[allow(clippy::await_holding_lock)]
+    async fn put_integration_invalid_returns_400() {
+        let (inner, state_home, _cache_home) = test_inner().await;
+        let _lock = super::super::integrations::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        super::super::integrations::init(state_home.path());
+
+        let (token, _) = inner
+            .pairing
+            .issue("https://example.test", "p", "test")
+            .unwrap();
+        let request = Request::put("/integrations/quarto")
+            .header("authorization", format!("Bearer {token}"))
+            .header("origin", "https://example.test")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"path":"relative/path","args":[]}"#))
+            .expect("request");
+
+        let response = handle_integration_set(
+            &inner,
+            &request.headers().clone(),
+            Some("https://example.test"),
+            "quarto",
+            request,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

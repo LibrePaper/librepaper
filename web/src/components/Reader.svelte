@@ -1438,7 +1438,7 @@
   // pane) is not required -- an editor who has not opened it yet still gets
   // the live pane the moment they are able to edit.
   const quartoLiveActive = $derived(
-    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && !buildPreferences.preset && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit &&
+    sourceFormat === "quarto" && quartoPreviewMode === "quarto" && localExecution && (!buildPreferences.output || ["html", "pdf"].includes(buildPreferences.output)) && (buildPreferences.selection === "automatic" || (buildPreferences.backend === "local" && buildPreferences.tool === "quarto")) && mayEdit &&
       localAppStatus.state === "connected",
   );
 
@@ -1447,7 +1447,7 @@
   // the calepin mode chosen, paired, connected, the calepin command itself
   // found, editable, and not looking at history.
   const calepinActive = $derived(
-    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && !buildPreferences.preset && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit &&
+    sourceFormat === "typst" && !typstHtmlPreview && localExecution && typstPreviewMode === "calepin" && buildPreferences.backend === "local" && buildPreferences.tool === "calepin" && mayEdit &&
       localAppStatus.state === "connected" && localQuarto.calepinAvailable(),
   );
 
@@ -3566,7 +3566,7 @@
 {#snippet previewStatusDetails()}
   <div class="preview-status-details">
     {#if renderState.provenance}
-      <p>Built with {renderState.provenance.builder} · {renderState.provenance.backend}{renderState.provenance.engine ? ` · ${renderState.provenance.engine}` : ""}{renderState.provenance.version ? ` · ${renderState.provenance.version}` : ""}{renderState.provenance.preset ? ` · preset ${renderState.provenance.preset}` : ""}</p>
+      <p>Built with {renderState.provenance.builder} · {renderState.provenance.backend}{renderState.provenance.engine ? ` · ${renderState.provenance.engine}` : ""}{renderState.provenance.version ? ` · ${renderState.provenance.version}` : ""}</p>
     {/if}
     {#if latexHtmlPreview}
       {#if compileBadge}<p>{compileBadge}</p>{/if}

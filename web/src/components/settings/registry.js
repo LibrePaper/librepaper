@@ -44,22 +44,39 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "rendering", says: "Quarto", offered: quarto,
-    note: "How this browser previews the document. Not shared.",
-    entries: [
-      { id: "rendering-profile", says: "Profile", terms: "quarto profile render preview" },
-      { id: "rendering-parameters", says: "Parameters", terms: "quarto params parameters json render preview" },
-    ],
-  },
-  {
     id: "local", says: "Local companion", offered: local,
     note: "LibrePaper on this computer",
     entries: [
       { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows allow site agent claude codex pi opencode zotero quarto companion" },
       { id: "local-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
-      { id: "local-execution", says: "Local code execution", terms: "quarto run code permission execute", offered: quarto },
       { id: "local-binding", says: "Project folder", terms: "quarto typst markdown folder binding hosted", offered: projectBinding },
+      { id: "local-startup", says: "Start at login", terms: "startup login background standalone companion", offered: local },
       { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
+    ],
+  },
+  {
+    id: "quarto", says: "Quarto", offered: local,
+    entries: [
+      { id: "quarto-status", says: "Status", terms: "quarto available version" },
+      { id: "quarto-executable", says: "Executable", terms: "quarto path executable" },
+      { id: "quarto-arguments", says: "Arguments", terms: "quarto arguments options" },
+      { id: "rendering-profile", says: "Profile", terms: "quarto profile render preview", offered: quarto },
+      { id: "rendering-parameters", says: "Parameters", terms: "quarto params parameters json render preview", offered: quarto },
+      { id: "quarto-execution", says: "Local code execution", terms: "quarto run code permission execute", offered: quarto },
+    ],
+  },
+  {
+    id: "calepin", says: "Calepin", offered: local,
+    entries: [
+      { id: "calepin-status", says: "Status", terms: "calepin available version" },
+      { id: "calepin-executable", says: "Executable", terms: "calepin path executable" },
+      { id: "calepin-arguments", says: "Arguments", terms: "calepin arguments options" },
+    ],
+  },
+  {
+    id: "zotero", says: "Zotero", offered: local,
+    entries: [
+      { id: "zotero-status", says: "Status", terms: "zotero available version citations bibliography library references" },
     ],
   },
   {

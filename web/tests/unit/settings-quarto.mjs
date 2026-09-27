@@ -52,7 +52,7 @@ assert.doesNotMatch(await readFile(new URL("../../src/components/Nav.svelte", im
 // The Quarto page offers only what the live preview actually reads: a
 // profile and parameters. There is no format picker (the preview is always
 // the page Quarto renders) and no preview link (the app serves no URL).
-assert.match(registry, /id: "rendering", says: "Quarto", offered: quarto,/);
+assert.match(registry, /id: "quarto", says: "Quarto", offered: local,/);
 assert.match(rendering, /id="rendering-profile"/);
 assert.match(rendering, /id="rendering-parameters"/);
 assert.doesNotMatch(rendering, /Render format|FORMATS/);

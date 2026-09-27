@@ -9,10 +9,11 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 use super::{ArtifactKind, Plan, Session, Watch};
+use crate::local::integrations::Integration;
 use crate::local::protocol::{
     PreviewRequest, QuartoExecutionMode, QuartoRenderPolicy, QuartoRenderScope,
 };
-use crate::local::quarto::{find_quarto, verify_bound_manifest, BindingStore};
+use crate::local::quarto::{verify_bound_manifest, BindingStore};
 
 pub(crate) struct QuartoWatch {
     entrypoint: String,
@@ -123,7 +124,10 @@ pub(crate) fn plan(
         }
     }
     super::refuse_escaping_entrypoint(&binding.root, &entrypoint)?;
-    let mut command = Command::new(find_quarto().ok_or("Quarto is not installed")?);
+    let mut command = Command::new(
+        crate::local::integrations::executable(Integration::Quarto)
+            .ok_or("Quarto is not installed")?,
+    );
     command
         .current_dir(&binding.root)
         .arg("preview")
@@ -141,6 +145,7 @@ pub(crate) fn plan(
     // HTML must be one self-contained file because the preview endpoint
     // serves one artifact. PDF already has that property.
     require_embedded_html(&mut command, kind);
+    command.args(crate::local::integrations::extra_args(Integration::Quarto));
     // Pairing is the trust boundary for local execution. Keep the inherited
     // environment so Quarto sees the same runtimes and packages as it does
     // when the user invokes it from a terminal.
