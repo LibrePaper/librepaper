@@ -4143,18 +4143,19 @@
     .compact-workspace-menu { display: block; }
   }
   /* The bar over a selection: one row of icons, with the swatches unfolding
-     beneath Highlight when the strip of ink under it is pressed. */
+     beneath Highlight when its marked colour strip is pressed. */
   #selectionbar { align-items:flex-start; }
   .verbs { display:flex; align-items:stretch; gap:2px; padding:2px; border:1px solid var(--color-border); border-radius:var(--radius-base); background:var(--color-raised); box-shadow:var(--shadow-lg); }
   .verb { position:relative; display:flex; }
   .verb-face { display:flex; align-items:center; justify-content:center; width:2rem; height:2rem; border-radius:calc(var(--radius-base) - 2px); color:var(--color-text-secondary); }
   .verb-face:hover { background:var(--color-row-hover); color:var(--color-link); }
-  /* Highlight's icon sits above a strip of the ink it is about to lay down:
-     the strip says which colour the click will use, and pressing the strip
-     is what offers the others. */
+  /* Highlight's icon sits above a strip of the ink it is about to lay down.
+     The small corner marker makes the strip's palette action visible. */
   .highlighter .verb-face { padding-bottom:6px; }
-  .ink { position:absolute; right:4px; bottom:3px; left:4px; height:6px; border-radius:2px; background:var(--ink); box-shadow:inset 0 0 0 1px var(--color-text-muted); }
-  .ink:hover, .ink[aria-expanded="true"] { box-shadow:inset 0 0 0 1px var(--color-brand); }
+  .ink { position:absolute; right:4px; bottom:0; left:4px; height:14px; border-radius:2px; background:linear-gradient(transparent 0 8px, var(--ink) 8px); }
+  .ink::before { content:""; position:absolute; right:0; bottom:0; left:0; height:6px; border-radius:2px; box-shadow:inset 0 0 0 1px var(--color-text-muted); pointer-events:none; }
+  .ink::after { content:""; position:absolute; right:0; bottom:0; width:0; height:0; border-right:7px solid var(--color-text-secondary); border-top:7px solid transparent; pointer-events:none; }
+  .ink:hover::before, .ink[aria-expanded="true"]::before { box-shadow:inset 0 0 0 1px var(--color-brand); }
   .highlight-colors { position:absolute; z-index:1; top:calc(100% + 6px); left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:3px; padding:2px; border:1px solid var(--color-border); border-radius:var(--radius-base); background:var(--color-raised); box-shadow:var(--shadow-lg); }
   .color-swatch { width:1.5rem; height:1.5rem; border:2px solid transparent; border-radius:50%; }
   .color-swatch.selected { border-color:var(--color-text); box-shadow:0 0 0 1px var(--color-brand); }
