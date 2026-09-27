@@ -3726,7 +3726,8 @@
       path={session?.paths?.get(openFile) || ""} selection={pending}
       revision={pending?.revision || ""} request={assistantRequest}
       {comments} {diagnostics} oncommenttask={askCommentAssistant}
-      ondiagnostictask={askDiagnostic} onreview={reviewAssistantResults} onpreview={previewAssistant} />
+      ondiagnostictask={askDiagnostic} onreview={reviewAssistantResults} onpreview={previewAssistant}
+      onsettings={() => openSettings("local")} />
   {/snippet}
 
   {#snippet collaborationPanel()}

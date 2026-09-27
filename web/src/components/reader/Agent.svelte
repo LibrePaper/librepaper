@@ -18,7 +18,7 @@
   let {
     slug, link, canShare = false, path = "", selection = null, revision = "", request = null,
     diagnostics = [], oncommenttask, ondiagnostictask,
-    comments = [], suggestion: initialSuggestion = null, onreview, onpreview,
+    comments = [], suggestion: initialSuggestion = null, onreview, onpreview, onsettings,
   } = $props();
   let client = $state.raw(null);
   const EMPTY_CONNECTION = { id: "", token: "", messages: [], tasks: {}, connected: false,
@@ -52,7 +52,10 @@
   let chosenAgent = $state("");
   let assistant = $state({ running: false, agent: "", access: "" });
   let pairProblem = $state("");
-  let appAddressDraft = $state(local.address());
+  // Once an assistant is running here, the agent/access controls fold away
+  // so the chat has room; "Change agent" in the header brings them back
+  // without waiting for the assistant to stop first.
+  let showSetup = $state(false);
   // The local app's state drives the whole connection panel, so this view
   // holds its own subscription and asks once itself. Subscribing alone only
   // schedules the periodic reconnect, so a panel that waited for someone
@@ -66,7 +69,6 @@
   // opening a document does on its own.
   onMount(() => { void local.probe().catch(() => {}); });
   const paired = $derived(companion.status?.state === "connected");
-  const reachable = $derived(["reachable", "unauthorized", "connected", "incompatible"].includes(companion.status?.state));
   const chosenInstalled = $derived(installed.find((entry) => entry.id === chosenAgent) || null);
   // The four access levels, as a choice rather than four commands: each row
   // carries its own explanation, so the panel never defines them twice.
@@ -77,10 +79,8 @@
   // it: Comment is the narrowest that works, and it still writes nothing the
   // reader has not accepted.
   const roles = [
-    { id: "commenter", label: "Comment", help: "Read and comment",
-      detail: "The agent can read the document and leave comments for you to review." },
-    { id: "editor", label: "Edit", help: "Apply source changes when asked", warn: true,
-      detail: "Can apply source changes when you ask; otherwise suggests changes." },
+    { id: "commenter", label: "Comment", help: "Read and comment" },
+    { id: "editor", label: "Edit", help: "Apply source changes when asked", warn: true },
   ];
   const currentRole = $derived(!caps.verified ? "" : caps.can_edit ? "editor" : caps.can_comment ? "commenter" : caps.can_read ? "reader" : "");
   // Without sharing rights the panel can only hand out the access the reader
@@ -94,9 +94,8 @@
   // to restart rather than claim the selection is already in force.
   const runningHere = $derived(assistant.running && assistant.agent === chosenAgent && assistant.access === access);
   const runningLabel = $derived(installed.find((entry) => entry.id === assistant.agent)?.label || "assistant");
-  let tab = $state("connection");
+  let tab = $state("chat");
   const TABS = [
-    { id: "connection", label: "Connection" },
     { id: "chat", label: "Chat" },
     { id: "tasks", label: "Tasks" },
   ];
@@ -198,22 +197,6 @@
     }
   }
 
-  /// Point this browser at a local app that is not on the default port, and
-  /// look again immediately so the panel answers rather than waiting for the
-  /// next scheduled probe.
-  async function useAppAddress() {
-    pairProblem = "";
-    await act(async () => {
-      local.setAddress(appAddressDraft.trim());
-      appAddressDraft = local.address();
-      const status = await local.probe({ force: true });
-      if (status?.state === "unreachable" || status?.state === "denied") {
-        throw new Error(`No local app answers at ${local.address()}`);
-      }
-      if (status?.state === "connected") await refreshAgents();
-    });
-  }
-
   /// Start the assistant: mint the access link and have the local app drive
   /// the chosen agent directly against it. This is the only way an agent is
   /// connected, so it is the only button.
@@ -234,8 +217,9 @@
       if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
       assistant = { running: true, agent: chosenAgent, access: mode };
       client.rememberAssistant({ agent: chosenAgent, access: mode });
-      // The work happens in the chat, so go there rather than leaving the
-      // reader on a settings pane that has nothing more to say.
+      // The work happens in the chat, so go there and fold the setup block
+      // away rather than leaving the reader on it with nothing more to say.
+      showSetup = false;
       tab = "chat";
     });
   }
@@ -413,7 +397,7 @@
       draft = ""; task = null; attachment = null; suggestion = null; commentContext = null;
       pendingRequest = null; diagnostic = null; diagnosticRevision = "";
       suppressedSelection = selectionKey(selection || lastSelection);
-      tab = "connection";
+      tab = "chat";
     });
   }
 
@@ -485,148 +469,114 @@
        the collaboration panel. What is left here is what the tabs contain. -->
   <PanelTabs id="agent" label="Agent" listClass="agent-tabs" tabs={TABS}
              value={tab} onchange={(value) => tab = value}>
-  <Tabs.Content value="connection">
-  <div class="agent-setup">
-    <div class="setup-intro">
-      <h3 class="setup-title">Connect a coding agent</h3>
-      <p class="panel-muted">Work on this document with a coding agent already installed on your computer. It uses its own model and its own sign-in.</p>
+
+  <!-- The one manual step, done once per computer rather than once per
+       document. It is the same pairing the local compiler uses, so a
+       reader who already paired for Quarto or native TeX skips it. Until it
+       is done there is nothing else to offer: no port, no install command,
+       just the one button that starts it. -->
+  {#snippet connectPrompt()}
+    <div class="connect-required">
+      <p class="panel-muted">Connect the LibrePaper app on this computer to use an agent.</p>
+      <div class="setup-actions">
+        <button class="btn btn-sm lp-control-brand" disabled={busy}
+                onclick={() => void connectToApp()}>Connect</button>
+        <button class="btn btn-sm lp-control-outline" onclick={() => onsettings?.()}>Companion settings</button>
+      </div>
+      <!-- A refused connection must say so here, beside the button that was
+           pressed, rather than in the panel's shared error line below. -->
+      {#if pairProblem}<span class="panel-meta" role="alert">{pairProblem}</span>{/if}
     </div>
+  {/snippet}
 
-    <!-- Where the app is listening. The default port can be taken, and the
-         app is then started on another one with `local start --port`; without
-         this the panel would insist the app is missing while it is running a
-         port away, and the setting that fixes it lives in another screen. -->
-    {#snippet appAddress()}
-      <details class="setup-address">
-        <summary class="panel-meta">Started the app on another port?</summary>
-        <label class="label"><span class="sr-only">Local app address</span>
-          <input class="input" type="text" aria-label="Local app address" value={appAddressDraft}
-                 oninput={(event) => appAddressDraft = event.currentTarget.value} /></label>
-        <button class="btn btn-sm lp-control-outline" disabled={busy}
-                onclick={() => void useAppAddress()}>Look there instead</button>
-      </details>
-    {/snippet}
+  <!-- Agent, access and Start: what actually launches an assistant. Folded
+       away once one is running here so the chat has the room; "Change
+       agent" in the header brings it back. -->
+  {#snippet agentSetup()}
+    <div class="agent-setup">
+      {#if installed.length}
+        <!-- Two settings, each a list of mutually exclusive values with one
+             in force: a select says which is chosen by showing it, where a
+             row of buttons has to signal it and can fail to. -->
+        <label class="label setup-field">
+          <span class="setup-label">Agent</span>
+          <select class="select" aria-label="Agent" disabled={busy} value={chosenAgent}
+                  onchange={(event) => chosenAgent = event.currentTarget.value}>
+            {#each installed as entry (entry.id)}
+              <option value={entry.id}>{entry.label}</option>
+            {/each}
+          </select>
+        </label>
+      {:else}
+        <span class="panel-meta">No supported coding agent was found on this computer.</span>
+      {/if}
 
-    <!-- Everything below hangs off the local app being paired. That is the
-         one manual step, it is done once per computer rather than once per
-         document, and it is the same pairing the local compiler uses, so a
-         reader who already paired for Quarto or native TeX skips it. -->
-    {#if !paired}
-      <div class="setup-requirement">
-        {#if reachable}
-          <strong>Connect the LibrePaper app on this computer</strong>
-          <span class="panel-meta">Click Connect and allow this site in the window that opens; this browser stays paired afterwards.</span>
+      <label class="label setup-field">
+        <span class="setup-label">Access</span>
+        <select class="select" aria-label="Access" value={access}
+                disabled={busy || starting || !connection.id}
+                onchange={(event) => access = event.currentTarget.value}>
+          <option value="" disabled>Choose what the agent may do</option>
+          {#each roles as entry}
+            <option value={entry.id} disabled={!roleOffered(entry)}>{entry.label}: {entry.help}</option>
+          {/each}
+        </select>
+      </label>
+
+      {#if chosenAccess}
+        <div class="access-detail" data-access={chosenAccess.id}>
+          <!-- One destination. An agent is used here, in the document, where
+               the chat and the task launcher are; there is no second place to
+               send it to and so no second button to explain. -->
           <div class="setup-actions">
-            <button class="btn btn-sm lp-control-brand" disabled={busy}
-                    onclick={() => void connectToApp()}>Connect</button>
-          </div>
-          <!-- A refused connection must say so here, beside the button that
-               was pressed. The panel's shared error line sits below three
-               tabs of content, which in a narrow column is off screen: an
-               invisible error reads as a dead button. -->
-          {#if pairProblem}<span class="panel-meta" role="alert">{pairProblem}</span>{/if}
-          {@render appAddress()}
-        {:else}
-          <strong>Install the LibrePaper app on this computer</strong>
-          <code class="setup-command">curl -fsSL https://librepaper.org/install.sh | sh</code>
-          <span class="panel-meta">Run that once, in a terminal. This panel then lists the coding agents you already have installed.</span>
-          <a href="https://github.com/LibrePaper/librepaper#install" target="_blank" rel="noreferrer">Other ways to install →</a>
-          {@render appAddress()}
-        {/if}
-      </div>
-    {:else}
-      <div class="setup-requirement" data-state="ready">
-        <strong>Connected to this computer</strong>
-        {#if installed.length}
-          <!-- Two settings, each a list of mutually exclusive values with one
-               in force: a select says which is chosen by showing it, where a
-               row of buttons has to signal it and can fail to. -->
-          <label class="label setup-field">
-            <span class="setup-label">Agent</span>
-            <select class="select" aria-label="Agent" disabled={busy} value={chosenAgent}
-                    onchange={(event) => chosenAgent = event.currentTarget.value}>
-              {#each installed as entry (entry.id)}
-                <option value={entry.id}>{entry.label}</option>
-              {/each}
-            </select>
-          </label>
-          {#if chosenInstalled}
-            <span class="panel-meta" data-agent-note={chosenInstalled.id}>
-              {chosenInstalled.assistant ? "Brings its own model and sign-in; can also run in the sidebar." : "Brings its own model and sign-in; cannot run in the sidebar."}
-              {chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}
-            </span>
-          {/if}
-        {:else}
-          <span class="panel-meta">No supported coding agent was found on this computer. Install one to use it here.</span>
-        {/if}
-      </div>
-    {/if}
-
-    <label class="label setup-field">
-      <span class="setup-label">Access</span>
-      <select class="select" aria-label="Access" value={access}
-              disabled={busy || starting || !connection.id}
-              onchange={(event) => access = event.currentTarget.value}>
-        <option value="" disabled>Choose what the agent may do</option>
-        {#each roles as entry}
-          <option value={entry.id} disabled={!roleOffered(entry)}>{entry.label}: {entry.help}</option>
-        {/each}
-      </select>
-    </label>
-
-    {#if chosenAccess}
-      <div class="access-detail" data-access={chosenAccess.id}>
-        <p class="panel-muted">{chosenAccess.detail}</p>
-        <!-- One destination. An agent is used here, in the document, where
-             the chat and the task launcher are; there is no second place to
-             send it to and so no second button to explain. -->
-        <div class="setup-actions">
-          <button class="btn btn-sm lp-control-brand"
-                  disabled={busy || starting || !connection.id || !paired || !chosenInstalled?.assistant || runningHere}
-                  onclick={() => void startAssistant(chosenAccess.id)}>
-            {runningHere ? "Running"
-              : assistant.running ? "Restart with this choice"
-              : "Start assistant"}
-          </button>
-          {#if assistant.running}
-            <!-- Named, because the assistant may be running on an agent other
-                 than the one currently selected, and "Stop" with no subject
-                 would be a guess about which. -->
-            <button class="btn btn-sm" disabled={busy} onclick={() => void stopAssistant()}>
-              Stop {runningLabel}
+            <button class="btn btn-sm lp-control-brand"
+                    disabled={busy || starting || !connection.id || !paired || !chosenInstalled?.assistant || runningHere}
+                    onclick={() => void startAssistant(chosenAccess.id)}>
+              {runningHere ? "Running"
+                : assistant.running ? "Restart with this choice"
+                : "Start assistant"}
             </button>
-          {/if}
+            <button class="btn btn-sm lp-control-outline" onclick={() => onsettings?.()}>Companion settings</button>
+          </div>
+          <!-- At most one line: the fetch warning survives the label
+               changing to "Restart with this choice", and the stale-runner
+               note only ever applies when nothing here is about to start
+               one. The two cannot both be true, so the line stays short. -->
+          <span class="panel-meta">
+            {#if !runningHere && chosenInstalled?.assistant_fetches}Starting it downloads its adapter the first time.{/if}
+            <!-- A runner outlives the page that started it, so after a
+                 reload one can be attached that this panel never started.
+                 Saying so beats offering Start as though nothing were
+                 running. -->
+            {#if !assistant.running && connection.runnerConnected}An assistant is already attached to this conversation; starting one replaces it.{/if}
+          </span>
         </div>
-        <!-- What pressing it does, and what it costs. The fetch warning lives
-             here rather than in the label so it survives the label changing
-             to "Restart with this choice", which is exactly when a reader is
-             switching to an agent whose adapter is not yet on the machine. -->
-        <span class="panel-meta">
-          {runningHere
-            ? "Ask for changes in the Chat tab, or pick one from Tasks."
-            : `LibrePaper runs ${chosenInstalled?.label || "the agent"} against this document. You work with it in the Chat and Tasks tabs.`}
-          {#if !runningHere && chosenInstalled?.assistant_fetches}Starting it downloads its adapter the first time.{/if}
-          <!-- A runner outlives the page that started it, so after a reload
-               one can be attached that this panel never started. Saying so
-               beats offering Start as though nothing were running. -->
-          {#if !assistant.running && connection.runnerConnected}An assistant is already attached to this conversation; starting one replaces it.{/if}
-        </span>
-      </div>
-    {/if}
-  </div>
-  {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Retry connection"}</button>{/if}
-  {#if connection.id && !connection.connected}
-    <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm lp-control-outline" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
-  {/if}
-
-  </Tabs.Content>
+      {/if}
+    </div>
+  {/snippet}
 
   <Tabs.Content value="chat" class="agent-tab-content">
+  {#if !paired}
+    {@render connectPrompt()}
+  {:else}
     <div class="chat-history">
+    {#if !connection.id}<button class="btn lp-control-brand" disabled={busy || starting} onclick={() => void act(() => client.create())}>{starting ? "Connecting…" : "Retry connection"}</button>{/if}
+    {#if connection.id && !connection.connected}
+      <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm lp-control-outline" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
+    {/if}
     <div class="agent-actions">
       <span class="panel-meta" role="status">{status}{#if status === "Working"}<span class="working-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>{/if}</span>
       {#if connection.id}<button class="btn btn-sm" disabled={busy} onclick={() => void newConversation()}>New conversation</button>{/if}
+      {#if assistant.running}
+        <!-- Named, because the assistant may be running on an agent other
+             than the one currently selected, and "Stop" with no subject
+             would be a guess about which. -->
+        <button class="btn btn-sm" disabled={busy} onclick={() => void stopAssistant()}>Stop {runningLabel}</button>
+        <button class="btn btn-sm lp-control-outline" onclick={() => showSetup = true}>Change agent</button>
+      {/if}
     </div>
+
+    {#if !runningHere || showSetup}{@render agentSetup()}{/if}
 
   {#if pendingRequest}
     <div class="request-warning" role="alert">
@@ -646,7 +596,7 @@
       {:else}<button class="btn btn-sm" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(item.id))}>{item.status === "queued" ? "Cancel queued request" : "Stop task"}</button>{/if}
     </div>
   {/each}
-  <ChatTranscript messages={connection.messages} empty={connection.runnerConnected ? "No messages yet." : "Connect your agent in the Connection tab to begin."} roleLabel={(message) => message.role === "user" ? "You" : "Agent"} onresult={chooseResult} />
+  <ChatTranscript messages={connection.messages} empty={connection.runnerConnected ? "No messages yet." : "Start an agent above to begin."} roleLabel={(message) => message.role === "user" ? "You" : "Agent"} onresult={chooseResult} />
 
   {#if inputTask}
     <div class="input-request" role="group" aria-label="Assistant input request">
@@ -680,14 +630,18 @@
   <!-- The draft carries its own context, so the chat pane states it in one
        line and sends the user back to the task view to change it. -->
   {#if task || attachment}<p class="panel-meta context-summary">{scopeLabel(scope, { path: contextPath, attached: attachment })} <button class="btn btn-sm" onclick={() => { tab = "tasks"; taskView = chosen ? "prepare" : "launcher"; }}>Change context</button>{#if attachment}<button class="btn btn-sm" onclick={removeSelection}>Remove passage</button>{/if}</p>{/if}
-  {#if !sendable}<p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : !connection.runnerConnected ? "You can draft now. Connect your agent to send." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>{/if}
+  {#if !sendable}<p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : !connection.runnerConnected ? "You can draft now. Start an agent to send." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>{/if}
     </div>
   {#if Object.values(connection.tasks || {}).some((item) => ["working", "needs_input"].includes(item.status))}
     <p class="panel-meta">Queue next request. It will run after the active task; it will not change that task.</p>
   {/if}
   <ChatComposer placeholder="Ask your agent…" canSend={!busy && sendable} draft={draft} ondraft={(value) => draft = value} onsend={send} />
+  {/if}
   </Tabs.Content>
   <Tabs.Content value="tasks" class="agent-tab-content">
+  {#if !paired}
+    {@render connectPrompt()}
+  {:else}
   {#if taskView === "prepare" && chosen}
     <div class="agent-context task-prepare">
       <button class="task-back" onclick={() => taskView = "launcher"}>← All tasks</button>
@@ -714,7 +668,7 @@
         <textarea class="input" rows="3" value={extra} oninput={(event) => extra = event.currentTarget.value} placeholder="Optional"></textarea>
       </label>
       {#if !preparable}<p class="panel-meta" role="status">This task needs the appropriate access and context. Choose another scope, or attach a passage in the document.</p>
-      {:else if !runnerReady}<p class="panel-meta" role="status">Start the assistant in the Connection tab before sending a task.</p>{/if}
+      {:else if !runnerReady}<p class="panel-meta" role="status">Start an agent in the Chat tab before sending a task.</p>{/if}
       <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || !preparable || !runnerReady} onclick={() => void sendTask()}>Send to agent</button></div>
     </div>
   {:else}
@@ -768,6 +722,7 @@
       {/if}
     </div>
   {/if}
+  {/if}
   </Tabs.Content>
   </PanelTabs>
   {#if problem || connection.error}<p class="panel-muted" role="alert">{problem || connection.error}</p>{/if}
@@ -790,24 +745,12 @@
   .agent-setup, .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
   .agent-setup p { margin:0; }
   .agent-setup h3 { margin:0; }
-  .setup-intro { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
-  .setup-title { font-weight:600; }
-  .setup-requirement { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);
+  /* The whole not-paired warning: one line, the Connect button, and the
+     refusal message if there is one. */
+  .connect-required { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);
                        padding:calc(var(--spacing) * 2); background:var(--color-subtle);
                        border-left:3px solid var(--color-brand); }
-  .setup-requirement a { font-size:var(--panel-meta-size); }
-  /* The install line is long and unbreakable at word boundaries, and the
-     panel is a narrow column, so it must be told it may wrap mid-token and
-     may not grow past the column. `align-self:flex-start` alone lets it size
-     to its content and overflow. */
-  .setup-command { align-self:stretch; max-width:100%; padding:calc(var(--spacing) * .5) var(--spacing);
-                   background:var(--color-divider); border-radius:var(--radius-base);
-                   user-select:all; overflow-wrap:anywhere; word-break:break-word; }
-  /* Folded away by default: the port is right for almost everyone, and an
-     address field offered up front reads as a decision to make. */
-  .setup-address { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); }
-  .setup-address summary { cursor:pointer; }
-  .setup-address button { align-self:flex-start; }
+  .connect-required p { margin:0; }
   /* Agent and access are two settings, each with one value in force, so each
      is a select. A row of buttons had to signal the chosen one and the signal
      was easy to miss; a select shows its value as its content. */
@@ -816,7 +759,6 @@
   .setup-label { font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
                  color:var(--color-text-secondary); }
   .access-detail { display:flex; flex-direction:column; align-items:flex-start; gap:var(--spacing); }
-  .access-detail p { margin:0; }
   .setup-actions, .agent-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
   .agent-actions { justify-content:space-between; }
   .agent-task { display:flex; flex-direction:column; align-items:flex-start; gap:var(--spacing); overflow-wrap:anywhere; }

@@ -63,8 +63,16 @@ globalThis.WebSocket = class {
   }
   close() { this.onclose?.(); }
 };
+// The agent panel shows its chat only once the local app is paired, so the
+// harness seeds a pairing and answers the app's two probe routes.
+localStorage.setItem('librepaper-local-pairings', JSON.stringify({[location.origin + '|paper']:{token:'pair-token',expires:Date.now()/1000+3600}}));
 globalThis.fetch = async (url, init = {}) => {
   const path = String(url);
+  if (path.startsWith('http://127.0.0.1:8763/')) {
+    if (path.endsWith('/health')) return Response.json({service:'librepaper-local',protocol:[2],version:'test',instance:'one'});
+    if (path.endsWith('/capabilities')) return Response.json({builders:[]});
+    return Response.json({});
+  }
   if (path.endsWith('/me')) return Response.json({name:'Tester',providers:[]});
   if (path.endsWith('/config')) return Response.json({ extensions: ['.html', '.md'], text_extensions: ['.html', '.md'], asset_extensions: ['.png'], derived_extensions: [] });
   if (path === '/api/documents/paper') return Response.json({title:'Responsive',created_at:'test',role:'editor',source_format:'html',docs_origin:location.origin,can_moderate:true,can_see_sharing:true});

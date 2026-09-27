@@ -21,7 +21,7 @@ let values=$state({slug:'paper',canShare:true,link:location.origin+'/docs/paper#
 export function updateProps(next){ values={...values,...next}; }
 async function preview(request){ window.previewCalls.push(request); return {ok:true,diagnostics:[],output:'html'}; }
 </script>
-<Agent {...values} onpreview={preview} oncommenttask={item=>window.commentTask=item} ondiagnostictask={item=>window.diagnosticTask=item} />
+<Agent {...values} onpreview={preview} oncommenttask={item=>window.commentTask=item} ondiagnostictask={item=>window.diagnosticTask=item} onsettings={()=>window.settingsCalls=(window.settingsCalls||0)+1} />
 `);
 writeFileSync(entry, `
 import ${JSON.stringify(join(root, "src/styles/app.css"))};
@@ -183,7 +183,9 @@ try {
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("live agent panel",()=>page.evaluate("Boolean(document.querySelector('.agent-panel textarea[aria-label=Message]'))"),10000);
   await until("runner connected",()=>page.evaluate('document.querySelector("[role=status]")?.textContent.includes("Waiting")'),10000);
-  assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), true);
+  // The Chat tab is the default: the agent/access/start controls live there
+  // now, so there is no separate Connection tab to land on first.
+  assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), false);
   assert.deepEqual(await page.evaluate(`Array.from(document.querySelectorAll("select[aria-label=Access] option")).slice(1).map(o=>o.textContent.split(":")[0])`), ["Comment", "Edit"]);
   // The copy action appears only once an access level is chosen.
   assert.equal(await page.evaluate("Boolean(document.querySelector('.access-detail'))"), false);
@@ -297,7 +299,7 @@ try {
 
   // The connection flow is a choice of access and a click, with no prompt to
   // paste anywhere. The panel offers the agents the local app actually found.
-  await until("local app paired", () => page.evaluate(`document.querySelector('.setup-requirement')?.dataset.state==='ready'`), 3000);
+  await until("local app paired", () => page.evaluate(`!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-setup'))`), 3000);
   await until("agents listed", () => page.evaluate(`Boolean(document.querySelector('select[aria-label=Agent] option[value=claude]'))`), 2000);
 
   const panel = await page.evaluate("document.body.textContent");
@@ -309,6 +311,10 @@ try {
   const startWith = async (role) => {
     await choose("Access", role);
     await until(role + " chosen", () => page.evaluate(`Boolean(document.querySelector('.access-detail[data-access=${role}] button'))`), 1000);
+    assert.ok(
+      (await page.evaluate(`Array.from(document.querySelectorAll('.access-detail[data-access=${role}] button')).map(b=>b.textContent.trim())`)).includes("Companion settings"),
+      "the setup block offers a way to the companion settings page too",
+    );
     await page.evaluate(`document.querySelector('.access-detail[data-access=${role}] button').click()`);
   };
   // The session below exercises editing tasks (tighten, fix), which only an
@@ -326,18 +332,15 @@ try {
   // calls one.
   assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='connections')"), false);
   // The work happens in the chat, so starting goes there rather than leaving
-  // the reader on a settings pane with nothing more to say.
+  // the reader on a settings pane with nothing more to say. The setup block
+  // folds away once an assistant is running here; "Change agent" brings it
+  // back without stopping the assistant first.
   assert.equal(await page.evaluate(`document.querySelector("#agent-pane-chat").hidden`), false);
-  await page.evaluate('document.querySelector("#agent-tab-connection").click()');
+  assert.equal(await page.evaluate(`Boolean(document.querySelector(".agent-setup"))`), false,
+    "the setup block folds away once an assistant is running here");
+  await page.evaluate(`Array.from(document.querySelectorAll(".agent-actions button")).find(b=>b.textContent.trim()==="Change agent").click()`);
 
   await choose("Agent", "pi");
-  // A known limitation of an agent's ACP route is stated next to the agent,
-  // not left to be inferred from a task that silently does nothing.
-  await until("pi chosen", () => page.evaluate(`Boolean(document.querySelector('[data-agent-note=pi]'))`), 1000);
-  assert.match(
-    await page.evaluate(`document.querySelector('[data-agent-note=pi]').textContent`),
-    /incomplete MCP support/,
-  );
   // Starting it would fetch its adapter, so the panel says so beforehand,
   // and says it beside the button rather than inside a label that changes.
   assert.match(
@@ -423,11 +426,13 @@ try {
   // the `assistant` call body is what actually bounds the agent.
   const linkFor = (role) => page.evaluate(`window.localCalls.filter(call=>call.route==='assistant').at(-1).body.link.includes('#k=${role}')`);
   const connectAs = async (role) => {
-    await page.evaluate('document.querySelector("#agent-tab-connection").click()');
+    await page.evaluate('document.querySelector("#agent-tab-chat").click()');
     // Starting the combination already running is correctly refused, so stop
     // first. Re-selecting a value already in force also fires no change event,
-    // exactly as it would not for a person, so move away from it.
-    await page.evaluate(`Array.from(document.querySelectorAll(".access-detail button")).find(b=>b.textContent.trim().startsWith("Stop"))?.click()`);
+    // exactly as it would not for a person, so move away from it. Stopping
+    // also brings the setup block back on its own, since it is only folded
+    // away while something is running here.
+    await page.evaluate(`Array.from(document.querySelectorAll(".agent-actions button")).find(b=>b.textContent.trim().startsWith("Stop"))?.click()`);
     if (await page.evaluate(`document.querySelector("select[aria-label=Access]").value`) === role) {
       await choose("Access", role === "editor" ? "commenter" : "editor");
     }
@@ -468,7 +473,6 @@ try {
   await until("preset opens chat", () => page.evaluate('!document.querySelector("#agent-pane-chat").hidden'), 1000);
 
   await page.evaluate("window.setProps({comments:[{id:'task-comment',body:'Clarify this',replies:[]}],diagnostics:[{message:'Compile error',file:'error.typ',revision:'old-sha',source:'old source'}]})");
-  await page.evaluate('document.querySelector("#agent-tab-connection").click()');
   await connectAs("commenter");
   assert.equal(await linkFor("commenter"), true);
   await page.evaluate('document.querySelector("#agent-tab-tasks").click()');
@@ -491,20 +495,22 @@ try {
   // The pane carries the padding, not the panel: the tab strip is flush to
   // the top of the panel, as the collaboration panel's is.
   assert.equal(await page.evaluate("(()=>{const pane=document.querySelector('#agent-pane-chat');const form=document.querySelector('.chat-form').getBoundingClientRect();const bottom=pane.getBoundingClientRect().bottom-parseFloat(getComputedStyle(pane).paddingBottom);return Math.abs(form.bottom-bottom)<2;})()"), true, "composer stays at the bottom of the pane");
-  for (const tab of ["connection", "chat", "tasks"]) {
+  for (const tab of ["chat", "tasks"]) {
     await page.evaluate(`document.querySelector('#agent-tab-${tab}').click()`);
     assert.equal(await page.evaluate("document.querySelector('.agent-panel').scrollWidth <= document.querySelector('.agent-panel').clientWidth"), true, tab + " fits the narrow sidebar");
   }
   await page.evaluate('document.querySelector("#agent-tab-tasks").focus(); document.querySelector("#agent-tab-tasks").dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true}))');
-  // Keyboard navigation follows the selected tab (Tasks wraps to Connection).
-  await until("keyboard tab navigation", () => page.evaluate('document.activeElement.id === "agent-tab-connection"'), 1000);
+  // Keyboard navigation follows the selected tab (Tasks wraps to Chat, the
+  // only other tab now that Connection is gone).
+  await until("keyboard tab navigation", () => page.evaluate('document.activeElement.id === "agent-tab-chat"'), 1000);
 
   const beforeNewConversation = await page.evaluate("({sockets:window.sockets.length,creates:window.calls.filter(call=>call.suffix==='').length})");
   // New conversation is a fresh runner boundary: it stops the local assistant,
-  // clears the transcript/context, and returns to connection setup. A socket
-  // reconnect keeps the existing conversation and transcript instead.
+  // clears the transcript/context, and returns to the setup block in the
+  // Chat tab. A socket reconnect keeps the existing conversation and
+  // transcript instead.
   await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(".agent-actions button").click()');
-  await until("new conversation setup", () => page.evaluate('document.querySelector("#agent-tab-connection").getAttribute("aria-selected")==="true" || !document.querySelector("#agent-pane-connection").hidden'), 2000);
+  await until("new conversation setup", () => page.evaluate('document.querySelector("#agent-tab-chat").getAttribute("aria-selected")==="true" && Boolean(document.querySelector(".agent-setup"))'), 2000);
   assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'), false);
   assert.equal(await page.evaluate('window.localCalls.some(call => call.route === "assistant/stop")'), true);
   await until("new channel created",()=>page.evaluate(`window.sockets.length === ${beforeNewConversation.sockets + 1}`),10000);
@@ -516,22 +522,19 @@ try {
   // is triggered by the Connect button, not a manual code entry.
   await page.evaluate("window.unpaired=true; localStorage.removeItem('librepaper-local-pairings'); window.pairingAccepted=false");
   await page.evaluate("window.remount()");
-  await page.evaluate('document.querySelector("#agent-tab-connection").click()');
-  await until("pairing prompt shown", () => page.evaluate(`Boolean(document.querySelector('.setup-requirement button'))`), 3000);
-  // The Connect button initiates the pairing flow.
-  const requirementButtons = await page.evaluate(`Array.from(document.querySelectorAll('.setup-requirement button')).map(b=>b.textContent.trim())`);
+  await page.evaluate('document.querySelector("#agent-tab-chat").click()');
+  await until("pairing prompt shown", () => page.evaluate(`Boolean(document.querySelector('.connect-required button'))`), 3000);
+  // The Connect button initiates the pairing flow. A Companion settings
+  // button sits beside it, since there is no port or address field here.
+  const requirementButtons = await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).map(b=>b.textContent.trim())`);
   assert.ok(requirementButtons.includes("Connect"), `no Connect button: ${requirementButtons}`);
+  assert.ok(requirementButtons.includes("Companion settings"), `no Companion settings button: ${requirementButtons}`);
+  await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Companion settings').click()`);
+  assert.equal(await page.evaluate("window.settingsCalls"), 1, "the not-paired warning offers a way to the companion settings page");
   // Try Connect when pairing is not yet accepted to trigger a refused response.
-  await page.evaluate(`Array.from(document.querySelectorAll('.setup-requirement button')).find(b=>b.textContent.trim()==='Connect').click()`);
+  await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Connect').click()`);
   await until("refused pairing is reported in place", () => page.evaluate(
-    `document.querySelector('.setup-requirement [role=alert]')?.textContent.includes('connection request refused')`), 3000);
-
-  // A local app on a non-default port is recoverable from this panel, not
-  // only from another settings screen.
-  assert.match(
-    await page.evaluate(`document.querySelector('.setup-address summary').textContent`),
-    /another port/,
-  );
+    `document.querySelector('.connect-required [role=alert]')?.textContent.includes('connection request refused')`), 3000);
 
   // The pairing must name this document, whatever its format. The Reader only
   // scopes the local client for locally renderable formats, so a panel that
@@ -542,9 +545,9 @@ try {
   );
 
   await page.evaluate("window.pairingAccepted=true");
-  await page.evaluate(`Array.from(document.querySelectorAll('.setup-requirement button')).find(b=>b.textContent.trim()==='Connect').click()`);
+  await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Connect').click()`);
   await until("pairing succeeds", () => page.evaluate(
-    `document.querySelector('.setup-requirement')?.dataset.state==='ready'`), 3000);
+    `!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-setup'))`), 3000);
 
   // The agents listed right after pairing must be selectable. A background
   // refresh that shares the panel's busy flag leaves every row disabled, and
@@ -570,6 +573,9 @@ try {
   await page.evaluate(`document.querySelector('.access-detail[data-access=commenter] button').click()`);
   await until("restoration test assistant started", () => page.evaluate("window.activeRunner !== null"), 2000);
   await page.evaluate("window.remount()");
+  // Running here folds the setup away; Change agent opens it to show what is in force.
+  await until("restored assistant shown in the header", () => page.evaluate(`[...document.querySelectorAll('.agent-actions button')].some(b=>b.textContent.trim()==='Change agent')`), 3000);
+  await page.evaluate(`[...document.querySelectorAll('.agent-actions button')].find(b=>b.textContent.trim()==='Change agent').click()`);
   await until("running configuration restored", () => page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value==='claude' && document.querySelector('select[aria-label=Access]')?.value==='commenter' && document.querySelector('.access-detail')?.querySelector('button')?.textContent.trim()==='Running'`), 3000);
 
   // A delayed status response from the old conversation must not overwrite a
