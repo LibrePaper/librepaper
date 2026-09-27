@@ -2286,6 +2286,10 @@ mod idempotency_tests {
 mod settings_tests {
     use super::*;
 
+    /// The integrations store is process-wide, so tests that touch it must
+    /// serialize to avoid interference.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     async fn test_inner() -> (Arc<Inner>, tempfile::TempDir, tempfile::TempDir) {
         let state_home = tempfile::tempdir().unwrap();
         let cache_home = tempfile::tempdir().unwrap();
@@ -2327,7 +2331,7 @@ mod settings_tests {
     #[tokio::test]
     async fn put_integration_denied_leaves_unchanged() {
         let (inner, state_home, _cache_home) = test_inner().await;
-        let _lock = super::super::integrations::tests::SERIAL.lock().expect("lock");
+        let _lock = SERIAL.lock().expect("lock");
         super::super::integrations::init(state_home.path());
         super::super::approval::script(false);
 
@@ -2349,7 +2353,7 @@ mod settings_tests {
     #[tokio::test]
     async fn put_integration_allowed_persists() {
         let (inner, state_home, _cache_home) = test_inner().await;
-        let _lock = super::super::integrations::tests::SERIAL.lock().expect("lock");
+        let _lock = SERIAL.lock().expect("lock");
         super::super::integrations::init(state_home.path());
         super::super::approval::script(true);
 
@@ -2374,7 +2378,7 @@ mod settings_tests {
     #[tokio::test]
     async fn put_integration_invalid_returns_400() {
         let (inner, state_home, _cache_home) = test_inner().await;
-        let _lock = super::super::integrations::tests::SERIAL.lock().expect("lock");
+        let _lock = SERIAL.lock().expect("lock");
         super::super::integrations::init(state_home.path());
 
         let pairing = inner.pairing.new_pairing("https://example.test", None, None).unwrap();
