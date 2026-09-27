@@ -81,8 +81,7 @@ Install PostgreSQL client tools on the machine that runs backups. For local
 objects, create a complete recovery point with:
 
 ```sh
-librepaper admin backup create \
-  --database-url "$LIBREPAPER_DATABASE_URL" \
+librepaper admin backup \
   --data-directory /var/lib/librepaper \
   /srv/backups/librepaper-$(date +%F)
 ```
@@ -93,7 +92,7 @@ an empty database and a path that does not exist:
 ```sh
 createdb librepaper_restore
 LIBREPAPER_DATABASE_URL=postgresql:///librepaper_restore \
-  librepaper admin backup restore \
+  librepaper admin restore \
   /srv/backups/librepaper-2026-09-13 \
   /var/lib/librepaper-restored
 ```
