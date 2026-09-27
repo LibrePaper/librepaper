@@ -97,7 +97,7 @@ pub async fn run(
         };
         options.insert(key.clone(), value);
     }
-    // `engine` is never taken from options in non-preset requests.
+    // The engine comes from the request, never from free-form options.
     let engine = options.remove("engine");
     let project = workspace.project();
     if project.join("out").exists() {
