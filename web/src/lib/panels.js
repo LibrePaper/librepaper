@@ -20,8 +20,10 @@ export const TABS = [
   // History is readable by link-holders too: reviewers need the “since”
   // view even when they cannot edit or restore the live source.
   { id: "history", says: "History", icon: "history" },
-  { id: "diagnostics", says: "Diagnostics", icon: "triangle-alert", when: (who) => who.editing },
   { id: "share", says: "Share", icon: "users", when: (who) => who.canSeeSharing || who.canPublish },
+  // Last, because it comes and goes with the source pane: at the end of the
+  // rail its arrival moves nothing else.
+  { id: "diagnostics", says: "Diagnostics", icon: "triangle-alert", when: (who) => who.editing },
 ];
 
 // What a role is offered, where that is less than what the conditions above

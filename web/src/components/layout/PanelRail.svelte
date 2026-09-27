@@ -30,7 +30,7 @@
       controls={slotId(tab.id)} expanded={panel === tab.id && open}
       onclick={() => onselect?.(tab.id)} />
     {#if badge.dot}<span class="rail-dot" aria-hidden="true"></span>{/if}
-    {#if badge.counts?.length}
+    {#if Array.isArray(badge.counts)}
       <span class="rail-counts" aria-hidden="true">
         {#each badge.counts as count (count.tone)}
           <span class="rail-count {count.tone}">{count.of}</span>
@@ -45,7 +45,10 @@
      count does not move the ones beside it. */
   .rail-item { position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px; }
   .rail-dot { position: absolute; right: 1px; top: 1px; width: 7px; height: 7px; border-radius: 50%; background: var(--color-brand); pointer-events: none; }
-  .rail-counts { display: flex; gap: 4px; font-size: .625rem; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
+  /* A panel that can carry counts keeps their line even when it has none, so
+     its icon does not jump when the first diagnostic lands or the last one
+     is fixed. */
+  .rail-counts { display: flex; min-height: .625rem; gap: 4px; font-size: .625rem; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
   .rail-count.errors { color: var(--color-error-text); }
   .rail-count.warnings { color: var(--color-warning-text); }
 </style>
