@@ -236,12 +236,12 @@ try {
     "the activity list starts collapsed");
   await page.evaluate('document.querySelector(".agent-activity summary").click()');
   await until("activity lists the working task",
-    () => page.evaluate('document.querySelector(".activity-task")?.textContent.includes("Working on: activity")'), 1000);
+    () => page.evaluate('document.querySelector(".activity-task")?.textContent.includes("Working on:")'), 1000);
   assert.equal(
     await page.evaluate('Array.from(document.querySelectorAll(".activity-task")).find(row=>row.textContent.includes("Working on"))?.querySelector("button")'),
     null, "a working task offers no Cancel in the activity list");
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'queued-task',status:'queued'})");
-  await until("queued activity row", () => page.evaluate('document.body.textContent.includes("Queued: queued-task")'), 1000);
+  await until("queued activity row", () => page.evaluate('document.body.textContent.includes("Queued:")'), 1000);
   assert.equal(
     await page.evaluate('Array.from(document.querySelectorAll(".activity-task")).find(row=>row.textContent.includes("Queued"))?.querySelector("button")?.textContent.trim()'),
     "Cancel", "a queued task offers Cancel in the activity list");

@@ -409,14 +409,13 @@
       if (!await client.retry(id)) throw new Error("The original request is no longer available to retry.");
     });
   }
-  /// Answer a permission request with one of the options the agent offered,
-  /// or `null` to cancel it. The runner rejects anything else, so the two
-  /// sides cannot drift into answering a different question.
+  /// Answer a permission request with one of the options the agent offered.
+  /// The runner rejects anything else, so the two sides cannot drift into
+  /// answering a different question.
   async function answerInput(option) {
     const item = inputTask;
     if (!item?.input?.request_id) return;
-    const response = option ? { option } : { cancelled: true };
-    await act(() => client.respond(item.id, item.input.request_id, response));
+    await act(() => client.respond(item.id, item.input.request_id, { option }));
   }
 
   function chooseResult(results) {
