@@ -49,8 +49,7 @@ To pin a version, replace `releases/latest/download/` in either URL with
 `releases/download/<tag>/`. Older saved commands using `deploy/install.sh` still forward to the
 generated installer.
 
-The installer puts the executable on your PATH. In a new terminal, run
-`librepaper local settings` to configure and start the companion. It does not
+The installer puts the executable on your PATH. It does not
 add a desktop shortcut or register the `librepaper://` link handler.
 
 ## The sandbox
