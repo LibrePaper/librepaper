@@ -155,6 +155,10 @@ window.remount();
 // does: set it and let the change handler run.
 const choose = (label, value) => page.evaluate(
   `(()=>{const s=document.querySelector('select[aria-label=${label}]');s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+// "Stop <agent>" lives inside the collapsed Activity disclosure now; open it
+// before a test can find or click what it lists.
+const openActivity = () => page.evaluate(
+  '(()=>{const details=document.querySelector(".agent-activity");if(details)details.open=true;})()');
 
 let server, page;
 try {
@@ -182,7 +186,10 @@ try {
   await page.resize(800, 800);
   await page.navigate(`http://127.0.0.1:${server.address().port}/`);
   await until("live agent panel",()=>page.evaluate("Boolean(document.querySelector('.agent-panel textarea[aria-label=Message]'))"),10000);
-  await until("runner connected",()=>page.evaluate('document.querySelector("[role=status]")?.textContent.includes("Waiting")'),10000);
+  // There is no longer a status line that reads "Waiting" once the runner is
+  // ready with nothing in flight; the composer's own sendability is the
+  // observable stand-in for "the runner is here and this can be sent".
+  await until("runner connected",()=>page.evaluate('document.querySelector(".chat-form")?.dataset.cansend === "true"'),10000);
   // The Chat tab is the default: the agent/access/start controls live there
   // now, so there is no separate Connection tab to land on first.
   assert.equal(await page.evaluate('document.querySelector("#agent-pane-chat").hidden'), false);
@@ -195,17 +202,19 @@ try {
     writeFileSync(process.env.AGENT_SCREENSHOT, Buffer.from(shot.data, "base64"));
   }
   await page.evaluate('document.querySelector("#agent-tab-chat").click()');
-  const beforeResize = await page.evaluate("document.querySelector('.chat-form textarea').getBoundingClientRect().toJSON()");
-  const handle = await page.evaluate("document.querySelector('.resize-handle').getBoundingClientRect().toJSON()");
-  await page.command("Input.dispatchMouseEvent", { type: "mousePressed", x: handle.x + 12, y: handle.y + 12, button: "left", clickCount: 1 });
-  await page.command("Input.dispatchMouseEvent", { type: "mouseMoved", x: handle.x + 12, y: handle.y - 68, button: "left", buttons: 1 });
-  await page.command("Input.dispatchMouseEvent", { type: "mouseReleased", x: handle.x + 12, y: handle.y - 68, button: "left", clickCount: 1 });
-  const afterResize = await page.evaluate("document.querySelector('.chat-form textarea').getBoundingClientRect().toJSON()");
-  assert.ok(afterResize.height > beforeResize.height + 60, `dragging the top-right handle upward expands the input: ${JSON.stringify({beforeResize, afterResize, handle})}`);
-  assert.ok(Math.abs(afterResize.bottom - beforeResize.bottom) < 2, "resizing keeps the input bottom anchored");
+  // The resize handle is gone; the textarea auto-grows with its content
+  // instead, up to a viewport-relative cap, and shrinks back when the text
+  // is removed.
+  assert.equal(await page.evaluate("Boolean(document.querySelector('.resize-handle'))"), false,
+    "the manual resize handle is gone");
+  const oneLineHeight = await page.evaluate("document.querySelector('.chat-form textarea').getBoundingClientRect().height");
+  await page.evaluate(`(()=>{const field=document.querySelector('.chat-form textarea');field.value=Array.from({length:10},(_,i)=>'line '+i).join('\\n');field.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await until("textarea grows with multiple lines",
+    () => page.evaluate(`document.querySelector('.chat-form textarea').getBoundingClientRect().height > ${oneLineHeight} + 40`), 1000);
+  await page.evaluate(`(()=>{const field=document.querySelector('.chat-form textarea');field.value='';field.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await until("textarea shrinks back once the draft is cleared",
+    () => page.evaluate(`document.querySelector('.chat-form textarea').getBoundingClientRect().height <= ${oneLineHeight} + 4`), 1000);
   assert.equal(await page.evaluate("Boolean(document.querySelector('.chat-form label'))"), false, "the input needs no visible Message label");
-  await page.evaluate("document.querySelector('.resize-handle').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}))");
-  assert.ok(await page.evaluate("document.querySelector('.chat-form textarea').getBoundingClientRect().height") < afterResize.height, "keyboard resizing shrinks the input");
   // The pane carries the padding, not the panel: the tab strip is flush to
   // the top of the panel, as the collaboration panel's is.
   assert.equal(await page.evaluate("(()=>{const pane=document.querySelector('#agent-pane-chat');const form=document.querySelector('.chat-form').getBoundingClientRect();const bottom=pane.getBoundingClientRect().bottom-parseFloat(getComputedStyle(pane).paddingBottom);return Math.abs(form.bottom-bottom)<2;})()"), true, "composer stays at the bottom of the pane");
@@ -214,25 +223,50 @@ try {
   assert.deepEqual(await page.evaluate('window.sockets[0].sent[0]'),{type:"join",token:"secret-token",role:"user"});
 
   // Activity comes from task events, independently of connection presence.
+  // The status now shows only inside the composer, as its own role=status
+  // span; there is no more "Working"/"Disconnected"/"Waiting"/"Interrupted"
+  // line, and no working-dots animation to count.
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'})");
-  await until("working indicator", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent.includes("Working")'), 1000);
-  assert.equal(await page.evaluate('document.querySelectorAll(".working-dots > span").length'), 3);
-  assert.equal(await page.evaluate('Array.from(document.querySelectorAll(".agent-task button")).some(b => b.textContent.trim().startsWith("Stop"))'), true);
+  await until("working indicator", () => page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent === "Agent working…"'), 1000);
+  // The Activity disclosure is collapsed by default; opening it lists the
+  // task ("Working on: ..."). A working task offers no Cancel there --
+  // stopping it is the composer's Stop button, gated on an assistant that is
+  // actually running here, which is not the case in this socket-only slice.
+  assert.equal(await page.evaluate('document.querySelector(".agent-activity")?.open'), false,
+    "the activity list starts collapsed");
+  await page.evaluate('document.querySelector(".agent-activity summary").click()');
+  await until("activity lists the working task",
+    () => page.evaluate('document.querySelector(".activity-task")?.textContent.includes("Working on: activity")'), 1000);
+  assert.equal(
+    await page.evaluate('Array.from(document.querySelectorAll(".activity-task")).find(row=>row.textContent.includes("Working on"))?.querySelector("button")'),
+    null, "a working task offers no Cancel in the activity list");
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'queued-task',status:'queued'})");
-  await until("queued request label", () => page.evaluate('document.body.textContent.includes("Queued next request")'), 1000);
+  await until("queued activity row", () => page.evaluate('document.body.textContent.includes("Queued: queued-task")'), 1000);
+  assert.equal(
+    await page.evaluate('Array.from(document.querySelectorAll(".activity-task")).find(row=>row.textContent.includes("Queued"))?.querySelector("button")?.textContent.trim()'),
+    "Cancel", "a queued task offers Cancel in the activity list");
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:true})");
-  assert.match(await page.evaluate('document.querySelector(".agent-actions [role=status]").textContent'), /Working/);
+  assert.match(await page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent'), /Agent working/);
+  // There is no "Disconnected" text anymore; the observable replacement is
+  // the composer refusing to send while the runner is away.
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:false})");
-  await until("disconnected indicator", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent === "Disconnected"'), 1000);
+  await until("composer disabled while the runner is away", () => page.evaluate('document.querySelector(".chat-form")?.dataset.cansend === "false"'), 1000);
+  assert.ok(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Start an agent to begin.")'),
+    "the empty transcript names the missing runner, not the old badge text");
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:true}); window.sockets[0].emit({type:'task',task_id:'activity',status:'needs_input'})");
-  await until("waiting for input", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent.includes("Waiting")'), 1000);
-  assert.equal(await page.evaluate('Array.from(document.querySelectorAll(".agent-task button")).some(b => b.textContent.trim().startsWith("Stop"))'), true);
+  await until("waiting for input", () => page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent === "Waiting for permission"'), 1000);
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'}); window.sockets[0].emit({type:'task',task_id:'activity',status:'completed'})");
-  await until("waiting after completion", () => page.evaluate('document.querySelector(".agent-actions [role=status]").textContent === "Waiting" && !document.querySelector(".working-dots")'), 1000);
+  await until("no status once idle", () => page.evaluate('!document.querySelector(".chat-form [role=status]")'), 1000);
   await page.evaluate("window.setProps({diagnostics:[{severity:'warning',file:'librepaper.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]})");
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='Explain this';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
   await until("agent reply",()=>page.evaluate('document.querySelector("[role=log]")?.textContent.includes("<img")'),10000);
   assert.equal(await page.evaluate("Boolean(window.injected||document.querySelector('[role=log] img'))"),false);
+  // The quiet transcript drops the visible "You"/"Agent" labels; they are
+  // sr-only now, not gone from the accessibility tree.
+  assert.equal(await page.evaluate('Boolean(document.querySelector(".chat-author"))'), false,
+    "author names are visually hidden in the quiet transcript");
+  assert.ok(await page.evaluate('Boolean(document.querySelector("[role=log] .sr-only"))'),
+    "author names stay in the accessibility tree as sr-only text");
   const posted=await page.evaluate('window.sockets[0].sent.find(frame=>frame.type==="message")');
   assert.equal(posted.context.file,"paper.md");
   assert.deepEqual(posted.context.diagnostics, [{severity:'warning',file:'librepaper.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]);
@@ -260,30 +294,44 @@ try {
   assert.equal(await page.evaluate("window.previewCalls.length"), 1, "a retried preview reuses its cached browser verification");
 
   // A permission request stays visible until the runner reports that it
-  // resumed. The sidebar offers exactly the options the agent named, and
-  // never treats a missing response as consent.
-  await page.evaluate(`window.sockets[0].emit({type:'task',task_id:'input-task',status:'needs_input',context:{input:{request_id:'approval-1',kind:'permission',message:'Run the command?',options:[{id:'allow-once',label:'Allow this run',kind:'allow_once'},{id:'reject',label:'Reject',kind:'reject_once'}],details:{command:'git status',files:['paper.md'],diff:'-old\\n+new'}}}})`);
-  await until("permission request", () => page.evaluate('document.querySelector(".input-request")?.textContent.includes("Run the command?")'), 1000);
+  // resumed. The card offers exactly the options the agent named, labelled
+  // by kind, and never treats a missing response as consent.
+  await page.evaluate(`window.sockets[0].emit({type:'task',task_id:'input-task',status:'needs_input',context:{input:{request_id:'approval-1',kind:'permission',message:'mcp__librepaper__document_read',options:[{id:'allow-once',label:'Allow this run',kind:'allow_once'},{id:'reject',label:'Reject this',kind:'reject_once'}],details:{command:'git status',files:['paper.md'],diff:'-old\\n+new'}}}})`);
+  await until("permission request", () => page.evaluate('document.querySelector(".permission-card")?.textContent.includes("Permission required")'), 1000);
+  assert.match(await page.evaluate('document.querySelector(".permission-card p")?.textContent'), /Read the current document/,
+    "the card humanizes the agent's own mcp tool name rather than showing the wire name");
   assert.equal(
-    await page.evaluate(`Array.from(document.querySelectorAll('.input-request button')).map(b=>b.textContent.trim()).join('|')`),
-    "Allow once Allow this run|Reject once Reject|Cancel",
-    "the sidebar shows the agent's own options and nothing it invented",
+    await page.evaluate(`Array.from(document.querySelectorAll('.permission-card .setup-actions button')).map(b=>b.textContent.trim()).join('|')`),
+    "Allow|Reject",
+    "the card labels the agent's own options by kind, in kind order, and invents nothing extra",
   );
+  // Command/files/diff sit behind a collapsed "Details" disclosure now,
+  // rather than spread across the card by default.
+  assert.equal(await page.evaluate('document.querySelector(".permission-info")?.open'), false,
+    "the permission details start collapsed");
+  await page.evaluate('document.querySelector(".permission-info summary").click()');
   assert.match(await page.evaluate('document.querySelector(".permission-details")?.textContent'), /git status.*paper\.md/s);
   assert.match(await page.evaluate('document.querySelector(".permission-details pre")?.textContent'), /-old.*\+new/s);
-  await page.evaluate('document.querySelector(".input-request button[data-option-kind=reject_once]").click()');
+  await page.evaluate('Array.from(document.querySelectorAll(".permission-card .setup-actions button")).find(b=>b.textContent.trim()==="Reject").click()');
   await until("permission response", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.type==='input'&&frame.response?.option==='reject')"), 1000);
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'input-task',status:'working',text:'Continuing'})");
-  await until("permission cleared", () => page.evaluate('!document.querySelector(".input-request")'), 1000);
+  await until("permission cleared", () => page.evaluate('!document.querySelector(".permission-card")'), 1000);
 
-  // Cancelling is distinct from choosing an option: the agent must be able to
-  // tell "the user declined to answer" from "the user rejected this".
-  await page.evaluate(`window.sockets[0].emit({type:'task',task_id:'cancel-task',status:'needs_input',context:{input:{request_id:'approval-2',kind:'permission',message:'Write the file?',options:[{id:'allow-once',label:'Allow once'}]}}})`);
-  await until("second permission request", () => page.evaluate('document.querySelector(".input-request")?.textContent.includes("Write the file?")'), 1000);
-  await page.evaluate('Array.from(document.querySelectorAll(".input-request button")).find(b=>b.textContent.trim()==="Cancel").click()');
-  await until("cancel response", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.type==='input'&&frame.response?.cancelled===true)"), 1000);
-  await page.evaluate("window.sockets[0].emit({type:'task',task_id:'cancel-task',status:'completed'})");
-  await until("second permission cleared", () => page.evaluate('!document.querySelector(".input-request")'), 1000);
+  // An option kind the card does not recognise keeps the agent's own label
+  // instead of guessing one for it, and there is no invented Cancel button
+  // beside the agent's own choices (the old .input-request card had one;
+  // the .permission-card renders only the options the agent actually sent).
+  await page.evaluate(`window.sockets[0].emit({type:'task',task_id:'other-kind-task',status:'needs_input',context:{input:{request_id:'approval-2',kind:'permission',message:'Write the file?',options:[{id:'allow-once',label:'Sure, go ahead',kind:'weird'}]}}})`);
+  await until("unknown-kind permission request", () => page.evaluate('document.querySelector(".permission-card")?.textContent.includes("Write the file?")'), 1000);
+  assert.equal(
+    await page.evaluate(`Array.from(document.querySelectorAll('.permission-card .setup-actions button')).map(b=>b.textContent.trim()).join('|')`),
+    "Sure, go ahead",
+    "an unrecognised option kind keeps the agent's own label, and no extra Cancel option is invented",
+  );
+  await page.evaluate('document.querySelector(".permission-card .setup-actions button").click()');
+  await until("unknown-kind response", () => page.evaluate("window.sockets[0].sent.some(frame=>frame.type==='input'&&frame.response?.option==='allow-once')"), 1000);
+  await page.evaluate("window.sockets[0].emit({type:'task',task_id:'other-kind-task',status:'completed'})");
+  await until("unknown-kind permission cleared", () => page.evaluate('!document.querySelector(".permission-card")'), 1000);
 
   // Opening a read-only comment prepares a response in the composer. It
   // never submits until the user explicitly sends it, and the whole thread
@@ -302,6 +350,18 @@ try {
   await until("local app paired", () => page.evaluate(`!document.querySelector('.connect-required') && Boolean(document.querySelector('.agent-setup'))`), 3000);
   await until("agents listed", () => page.evaluate(`Boolean(document.querySelector('select[aria-label=Agent] option[value=claude]'))`), 2000);
 
+  // The "Companion settings" text button is gone from the setup block; each
+  // pane now carries its own icon button to the same page in its header, and
+  // only the Chat pane also carries New conversation.
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Local companion settings"]'))`),
+    "the Chat pane header offers a way to the companion settings page");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="New conversation"]'))`),
+    "the Chat pane header offers New conversation");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Local companion settings"]'))`),
+    "the Tasks pane header also offers a way to the companion settings page");
+  assert.equal(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="New conversation"]'))`), false,
+    "New conversation is only in the Chat pane");
+
   const panel = await page.evaluate("document.body.textContent");
   for (const gone of ["librepaper agent connect", "Copy connection instructions", "LIBREPAPER_CHAT_TOKEN", "--background", "npx skills add"]) {
     assert.doesNotMatch(panel, new RegExp(gone.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
@@ -311,10 +371,6 @@ try {
   const startWith = async (role) => {
     await choose("Access", role);
     await until(role + " chosen", () => page.evaluate(`Boolean(document.querySelector('.access-detail[data-access=${role}] button'))`), 1000);
-    assert.ok(
-      (await page.evaluate(`Array.from(document.querySelectorAll('.access-detail[data-access=${role}] button')).map(b=>b.textContent.trim())`)).includes("Companion settings"),
-      "the setup block offers a way to the companion settings page too",
-    );
     await page.evaluate(`document.querySelector('.access-detail[data-access=${role}] button').click()`);
   };
   // The session below exercises editing tasks (tighten, fix), which only an
@@ -333,12 +389,17 @@ try {
   assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='connections')"), false);
   // The work happens in the chat, so starting goes there rather than leaving
   // the reader on a settings pane with nothing more to say. The setup block
-  // folds away once an assistant is running here; "Change agent" brings it
-  // back without stopping the assistant first.
+  // folds away once an assistant is running here; there is no more "Change
+  // agent" -- stopping the running assistant, from the Activity disclosure,
+  // is now the only way to bring the setup block back.
   assert.equal(await page.evaluate(`document.querySelector("#agent-pane-chat").hidden`), false);
   assert.equal(await page.evaluate(`Boolean(document.querySelector(".agent-setup"))`), false,
     "the setup block folds away once an assistant is running here");
-  await page.evaluate(`Array.from(document.querySelectorAll(".agent-actions button")).find(b=>b.textContent.trim()==="Change agent").click()`);
+  await openActivity();
+  assert.match(await page.evaluate('document.querySelector(".activity-body > button")?.textContent'), /^Stop /,
+    "the activity disclosure is where Stop <agent> lives now");
+  await page.evaluate('document.querySelector(".activity-body > button").click()');
+  await until("setup reappears once the assistant is stopped", () => page.evaluate(`Boolean(document.querySelector(".agent-setup"))`), 2000);
 
   await choose("Agent", "pi");
   // A known limitation of an agent's ACP route is stated next to the agent,
@@ -435,11 +496,13 @@ try {
   const connectAs = async (role) => {
     await page.evaluate('document.querySelector("#agent-tab-chat").click()');
     // Starting the combination already running is correctly refused, so stop
-    // first. Re-selecting a value already in force also fires no change event,
+    // first, from the Activity disclosure where Stop <agent> lives now.
+    // Re-selecting a value already in force also fires no change event,
     // exactly as it would not for a person, so move away from it. Stopping
     // also brings the setup block back on its own, since it is only folded
     // away while something is running here.
-    await page.evaluate(`Array.from(document.querySelectorAll(".agent-actions button")).find(b=>b.textContent.trim().startsWith("Stop"))?.click()`);
+    await openActivity();
+    await page.evaluate(`document.querySelector(".activity-body > button")?.click()`);
     if (await page.evaluate(`document.querySelector("select[aria-label=Access]").value`) === role) {
       await choose("Access", role === "editor" ? "commenter" : "editor");
     }
@@ -516,7 +579,7 @@ try {
   // clears the transcript/context, and returns to the setup block in the
   // Chat tab. A socket reconnect keeps the existing conversation and
   // transcript instead.
-  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(".agent-actions button").click()');
+  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="New conversation"]\').click()');
   await until("new conversation setup", () => page.evaluate('document.querySelector("#agent-tab-chat").getAttribute("aria-selected")==="true" && Boolean(document.querySelector(".agent-setup"))'), 2000);
   assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'), false);
   assert.equal(await page.evaluate('window.localCalls.some(call => call.route === "assistant/stop")'), true);
@@ -531,12 +594,14 @@ try {
   await page.evaluate("window.remount()");
   await page.evaluate('document.querySelector("#agent-tab-chat").click()');
   await until("pairing prompt shown", () => page.evaluate(`Boolean(document.querySelector('.connect-required button'))`), 3000);
-  // The Connect button initiates the pairing flow. A Companion settings
-  // button sits beside it, since there is no port or address field here.
+  // The Connect button initiates the pairing flow. The way to the companion
+  // settings page is no longer a text button inside .connect-required; it is
+  // the pane header's icon button, present whether or not the app is paired.
   const requirementButtons = await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).map(b=>b.textContent.trim())`);
   assert.ok(requirementButtons.includes("Connect"), `no Connect button: ${requirementButtons}`);
-  assert.ok(requirementButtons.includes("Companion settings"), `no Companion settings button: ${requirementButtons}`);
-  await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Companion settings').click()`);
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Local companion settings"]'))`),
+    "the pane header still offers a way to the companion settings page while unpaired");
+  await page.evaluate(`document.querySelector('#agent-pane-chat button[aria-label="Local companion settings"]').click()`);
   assert.equal(await page.evaluate("window.settingsCalls"), 1, "the not-paired warning offers a way to the companion settings page");
   // Try Connect when pairing is not yet accepted to trigger a refused response.
   await page.evaluate(`Array.from(document.querySelectorAll('.connect-required button')).find(b=>b.textContent.trim()==='Connect').click()`);
@@ -580,17 +645,22 @@ try {
   await page.evaluate(`document.querySelector('.access-detail[data-access=commenter] button').click()`);
   await until("restoration test assistant started", () => page.evaluate("window.activeRunner !== null"), 2000);
   await page.evaluate("window.remount()");
-  // Running here folds the setup away; Change agent opens it to show what is in force.
-  await until("restored assistant shown in the header", () => page.evaluate(`[...document.querySelectorAll('.agent-actions button')].some(b=>b.textContent.trim()==='Change agent')`), 3000);
-  await page.evaluate(`[...document.querySelectorAll('.agent-actions button')].find(b=>b.textContent.trim()==='Change agent').click()`);
-  await until("running configuration restored", () => page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value==='claude' && document.querySelector('select[aria-label=Access]')?.value==='commenter' && document.querySelector('.access-detail')?.querySelector('button')?.textContent.trim()==='Running'`), 3000);
+  // Running here folds the setup away entirely now; there is no "Change
+  // agent" to peek at it with. The Activity disclosure's "Stop <agent>"
+  // names the restored agent instead, and stopping it is the only way left
+  // to read the restored access back out of the (now visible again) selects.
+  await until("restored assistant folds the setup away", () => page.evaluate('document.querySelector(".agent-setup") === null'), 3000);
+  await openActivity();
+  await until("activity names the restored agent", () => page.evaluate('document.querySelector(".activity-body > button")?.textContent.trim() === "Stop Claude Code"'), 3000);
+  await page.evaluate('document.querySelector(".activity-body > button").click()');
+  await until("running configuration restored", () => page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value==='claude' && document.querySelector('select[aria-label=Access]')?.value==='commenter'`), 3000);
 
   // A delayed status response from the old conversation must not overwrite a
   // newer conversation after its component has remounted again.
   await page.evaluate("window.delayAssistantStatus=true; window.remount()");
   await until("delayed assistant status is pending", () => page.evaluate("window.delayedAssistantStatuses.length===1"), 2000);
   await page.evaluate("window.conversationCreatesBeforePending=window.calls.filter(call=>call.suffix==='').length");
-  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(".agent-actions button").click()');
+  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="New conversation"]\').click()');
   await until("conversation changed while status was pending", () => page.evaluate("window.calls.filter(call=>call.suffix==='').length === window.conversationCreatesBeforePending+1"), 3000);
   await page.evaluate("window.delayedAssistantStatuses[0].resolve(Response.json({running:true,state:'ready'}))");
   await new Promise(resolve=>setTimeout(resolve,50));
