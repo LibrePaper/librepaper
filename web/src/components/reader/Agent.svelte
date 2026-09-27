@@ -507,6 +507,11 @@
             {/each}
           </select>
         </label>
+        <!-- Why Start is disabled, or what this agent's route cannot do: said
+             beside the agent, not left to be inferred from a dead button. -->
+        {#if chosenInstalled?.assistant_blocked || chosenInstalled?.assistant_note}
+          <span class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}</span>
+        {/if}
       {:else}
         <span class="panel-meta">No supported coding agent was found on this computer.</span>
       {/if}

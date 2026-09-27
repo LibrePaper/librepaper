@@ -341,6 +341,13 @@ try {
   await page.evaluate(`Array.from(document.querySelectorAll(".agent-actions button")).find(b=>b.textContent.trim()==="Change agent").click()`);
 
   await choose("Agent", "pi");
+  // A known limitation of an agent's ACP route is stated next to the agent,
+  // not left to be inferred from a task that silently does nothing.
+  await until("pi note shown", () => page.evaluate(`Boolean(document.querySelector('[data-agent-note=pi]'))`), 1000);
+  assert.match(
+    await page.evaluate(`document.querySelector('[data-agent-note=pi]').textContent`),
+    /incomplete MCP support/,
+  );
   // Starting it would fetch its adapter, so the panel says so beforehand,
   // and says it beside the button rather than inside a label that changes.
   assert.match(
