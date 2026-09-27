@@ -19,7 +19,7 @@
       <span>LibrePaper</span>
     </a>
     <div class="flex items-center gap-4">
-      <a class="lp-text-secondary lp-hover-brand" href="/start.html">Docs</a>
+      <a class="lp-text-secondary lp-hover-brand" href="/start.html">Documentation</a>
       <a
         class="lp-text-secondary lp-hover-brand flex items-center"
         href="https://github.com/LibrePaper/librepaper"
