@@ -65,7 +65,7 @@
       .hero {
         display: grid;
         gap: 0;
-        min-height: 440px;
+        min-height: 360px;
         padding: 0;
       }
 
@@ -118,7 +118,15 @@
         z-index: 1;
       }
 
+      /* On a wide window the photograph fills whatever height the text
+         needs rather than setting it: in flow, its own ratio made the hero
+         as tall as a 1920x1198 picture at half the page width. */
       @media (min-width: 960px) {
+        .hero-photo img {
+          position: absolute;
+          inset: 0;
+        }
+
         .hero {
           grid-template-columns: 52fr 48fr;
         }
@@ -143,7 +151,7 @@
         }
 
         .hero-photo {
-          aspect-ratio: 16 / 10;
+          aspect-ratio: 16 / 8;
           min-height: 0;
         }
 
