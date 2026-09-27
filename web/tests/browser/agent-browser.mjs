@@ -267,6 +267,10 @@ try {
     "author names are visually hidden in the quiet transcript");
   assert.ok(await page.evaluate('Boolean(document.querySelector("[role=log] .sr-only"))'),
     "author names stay in the accessibility tree as sr-only text");
+  // The quiet gutter is narrower, so the avatar must shrink with it rather
+  // than spill over the message beside it.
+  assert.ok(await page.evaluate(`Array.from(document.querySelectorAll("[role=log] .chat-message.starts")).every((row) => row.querySelector(".avatar").getBoundingClientRect().right <= row.querySelector(".chat-bubble").getBoundingClientRect().left)`),
+    "avatars stay clear of their messages");
   const posted=await page.evaluate('window.sockets[0].sent.find(frame=>frame.type==="message")');
   assert.equal(posted.context.file,"paper.md");
   assert.deepEqual(posted.context.diagnostics, [{severity:'warning',file:'librepaper.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]);

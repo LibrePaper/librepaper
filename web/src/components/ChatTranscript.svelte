@@ -67,7 +67,7 @@
       <article class="chat-message" class:starts class:from-user={message.role === "user"} class:from-agent={message.role === "agent"} data-id={message.id}
         aria-label={starts && !authors ? name : undefined}>
         <span class="chat-gutter">
-          {#if starts}<Avatar {name} {key} icon={message.role === "agent" ? "bot" : ""} />{/if}
+          {#if starts}<Avatar {name} {key} size={quiet ? 5 : 7} icon={message.role === "agent" ? "bot" : ""} />{/if}
         </span>
         <div class="chat-bubble">
           {#if starts}
