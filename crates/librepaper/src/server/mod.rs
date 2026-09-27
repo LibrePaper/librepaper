@@ -62,6 +62,8 @@ pub mod origins;
 mod quarto_checkpoint;
 mod quota;
 mod reply;
+#[cfg(test)]
+mod restore_http_tests;
 mod routes;
 pub mod serve;
 mod sharing;

@@ -111,6 +111,10 @@ struct Restore {
     main: String,
     author_account_id: Option<uuid::Uuid>,
     author_label: String,
+    /// The head's version vector when the restore was evaluated: the state
+    /// the restore replaces, kept as a `superseded` version so that the
+    /// work after the restored moment stays reachable from history.
+    replaced_vector: Vec<u8>,
 }
 
 impl crate::log::Command for Restore {
@@ -150,6 +154,7 @@ impl crate::log::Command for Restore {
                 "the document changed since that moment; refresh before restoring".into(),
             ));
         }
+        self.replaced_vector = head.vector.encode();
         let texts = &self.texts;
         let assets = &self.assets;
         let main = self.main.as_str();
@@ -245,6 +250,44 @@ impl crate::log::Command for Restore {
         std::result::Result<Self::Output, crate::log::CommandError>,
     > {
         Box::pin(async move {
+            // What the restore replaces goes into history first, so that
+            // everything written after the restored moment can be read and
+            // restored in turn. Skipped when the newest version already
+            // holds exactly this tree: a second row would say nothing new.
+            let replaced_digest = hex::decode(&evidence.before_digest)
+                .ok()
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
+            let newest: Option<Option<Vec<u8>>> = sqlx::query_scalar(
+                "SELECT tree_digest FROM document_labels WHERE document_id=$1 \
+                 ORDER BY sequence DESC LIMIT 1",
+            )
+            .bind(self.document_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|error| crate::log::CommandError::Storage(error.into()))?;
+            let already_kept = replaced_digest.is_some()
+                && newest.flatten().as_deref() == replaced_digest.as_ref().map(|d| d.as_slice());
+            if !already_kept {
+                self.catalog
+                    .insert_label(
+                        tx,
+                        &crate::storage::postgres::NewLabel {
+                            id: uuid::Uuid::new_v4(),
+                            document_id: self.document_id,
+                            source_sequence: evidence.source_sequence,
+                            vector: self.replaced_vector.clone(),
+                            frontier: evidence.before_frontier.clone(),
+                            tree_digest: replaced_digest,
+                            label: None,
+                            reason: "superseded".to_string(),
+                            request_id: None,
+                            author_account_id: self.author_account_id,
+                            author_label: self.author_label.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(crate::log::CommandError::Storage)?;
+            }
             let frontier = evidence
                 .after_frontier
                 .clone()
@@ -774,6 +817,7 @@ impl Server {
             main: target.projection.main.clone(),
             author_account_id,
             author_label: current_who.attribution().display().to_string(),
+            replaced_vector: Vec::new(),
         };
         if let Err(error) = room.command(&authority, &mut command).await {
             return command_reply("restore a version", error);
