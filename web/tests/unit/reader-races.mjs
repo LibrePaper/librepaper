@@ -130,6 +130,39 @@ const deferred = () => {
   assert.deepEqual(errors, []);
 }
 
+// HTTP errors carry a status property; network errors do not.
+// This allows the reader to distinguish a missing document (404) from
+// a server error (5xx) or network failure.
+{
+  const errors = [];
+  const collectError = (error) => errors.push({ message: error.message, status: error.status });
+
+  // A 503 Service Unavailable error carries the status code.
+  const boot503 = createReaderBoot({
+    slug: "unavailable",
+    fetcher: async () => ({ ok: false, status: 503 }),
+    whoami: async () => ({}),
+    findLocal: async () => { throw new Error("not in cache"); },
+    onError: collectError,
+  });
+  await boot503.start();
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].status, 503);
+
+  // A network error (thrown fetch) has no status property.
+  errors.length = 0;
+  const bootNetwork = createReaderBoot({
+    slug: "unreachable",
+    fetcher: async () => { throw new Error("network timeout"); },
+    whoami: async () => ({}),
+    findLocal: async () => { throw new Error("not in cache"); },
+    onError: collectError,
+  });
+  await bootNetwork.start();
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].status, undefined);
+}
+
 const context = (values) => {
   const ctx = vm.createContext({
     clearTimeout,

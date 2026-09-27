@@ -3219,15 +3219,33 @@
       // A document answers a stranger exactly as a missing one does, which
       // tells a stranger nothing -- and tells an owner who has not signed in
       // nothing either. That is what this line is for: the page was opened
-      // at a real URL, so the honest thing to say is both.
-      onError: () => {
-        doc = { title: "Document not found" };
-        say(
-          me.providers?.length && !identity
-            ? "No document at this address. If it was shared with you, sign in: a document shared with an account opens only for that account."
-          : "No document at this address. The link may be wrong, or the document may have been deleted.",
-          { kind: "problem", id: "reader:not-found" },
-        );
+      // at a real URL, so the honest thing to say is both. Distinguish a
+      // missing document (404) from an unreachable server or other errors.
+      onError: (error) => {
+        if (error?.status === 404) {
+          // Document not found on the server.
+          doc = { title: "Document not found" };
+          say(
+            me.providers?.length && !identity
+              ? "No document at this address. If it was shared with you, sign in: a document shared with an account opens only for that account."
+            : "No document at this address. The link may be wrong, or the document may have been deleted.",
+            { kind: "problem", id: "reader:not-found" },
+          );
+        } else if (error?.status) {
+          // Other HTTP error status: server is reachable but something went wrong.
+          doc = { title: "Document unavailable" };
+          say(
+            `The server could not open this document (error ${error.status}). Reload the page to try again.`,
+            { kind: "problem", id: "reader:not-found" },
+          );
+        } else {
+          // Network error: no status means the request never reached the server.
+          doc = { title: "Document unavailable" };
+          say(
+            "Could not reach the server. Check your connection, then reload the page.",
+            { kind: "problem", id: "reader:not-found" },
+          );
+        }
       },
     });
     boot.start();
