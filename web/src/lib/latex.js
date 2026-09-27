@@ -192,7 +192,7 @@ function normalizeSettings(next = {}) {
   const backend = ["auto", "browser", "local"].includes(next.backend) ? next.backend : "auto";
   const tool = typeof next.tool === "string" && next.tool ? next.tool : "tex";
   const engine = ["auto", "pdflatex", "xelatex", "lualatex"].includes(next.engine) ? next.engine : "auto";
-  return { engine, backend, tool, output: next.output || "html", preset: typeof next.preset === "string" ? next.preset : "", options: next.options && typeof next.options === "object" ? { ...next.options } : {} };
+  return { engine, backend, tool, output: next.output || "html", options: next.options && typeof next.options === "object" ? { ...next.options } : {} };
 }
 
 /// An engine change clears the bibliography cache and starts a fresh routing

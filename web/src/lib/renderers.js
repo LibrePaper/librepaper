@@ -194,10 +194,10 @@ export async function render(tree, title, { manual = false, format: requestedFor
     let result;
     if (buildPreferences.tool === "quarto") {
       const options = { ...(buildPreferences.options || {}), ...(buildPreferences.profile ? { profile: buildPreferences.profile } : {}), ...(buildPreferences.parameters ? { parameters: buildPreferences.parameters } : {}), ...(buildPreferences.policy ? { policy: buildPreferences.policy } : {}) };
-      result = await localBridge.runBuild({ job, tree, builder: "quarto", output, options, preset: buildPreferences.preset, bindingId: job.binding }, { signal: abort.signal });
+      result = await localBridge.runBuild({ job, tree, builder: "quarto", output, options, bindingId: job.binding }, { signal: abort.signal });
       return { artifact: result.artifact, artifactKind: result.kind, html: result.kind === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null, pdf: result.kind === "pdf" ? result.artifact : null, diagnostics: result.diagnostics || [], log: result.log || result.logs || "", provenance: result.provenance, ok: result.ok, failure: result.ok ? null : { kind: "local", message: result.error || "Local Quarto build failed" } };
     }
-    result = await localBridge.runBuild({ job, tree, builder: buildPreferences.tool, output, options: buildPreferences.options || {}, preset: buildPreferences.preset, bindingId: job.binding }, { signal: abort.signal });
+    result = await localBridge.runBuild({ job, tree, builder: buildPreferences.tool, output, options: buildPreferences.options || {}, bindingId: job.binding }, { signal: abort.signal });
     return { artifact: result.artifact, artifactKind: output, html: output === "html" && result.artifact ? new TextDecoder().decode(result.artifact) : null, pdf: output === "pdf" ? result.artifact : null, diagnostics: result.diagnostics || [], log: result.log || "", provenance: result.provenance, ok: result.ok, failure: result.ok ? null : { kind: "local", message: result.error || `Local ${buildPreferences.tool} build failed` } };
   }
   // A historical render receives a configuration snapshot resolved before

@@ -51,7 +51,7 @@ export function read(scope, format = "") {
     // rather than as a choice the menu can no longer offer.
     if (format === "latex") {
       result.backend = result.backend === "local" ? "browser" : result.backend;
-      if (result.tool !== "tex") { result.tool = "tex"; delete result.preset; }
+      if (result.tool !== "tex") { result.tool = "tex"; }
     }
     return result;
   } catch { return fallback; }
@@ -71,12 +71,11 @@ export function write(scope, next) {
 
 export function update(scope, format, patch) {
   const current = read(scope, format);
-  const changingTool = patch.selection === "tool" && patch.tool && (patch.tool !== current.tool || patch.backend !== current.backend || patch.preset !== current.preset);
+  const changingTool = patch.selection === "tool" && patch.tool && (patch.tool !== current.tool || patch.backend !== current.backend);
   const next = { ...(changingTool || patch.selection === "automatic" ? defaults(format) : current), ...patch, format };
   if (next.selection === "automatic") {
     delete next.tool;
     delete next.engine;
-    delete next.preset;
     next.backend = "auto";
   }
   return write(scope, next);

@@ -83,7 +83,6 @@ export function createBuildSettings({
     backend: preference.backend || "auto",
     tool: preference.tool || "tex",
     output: preference.output || "html",
-    preset: preference.preset || "",
   });
 
   /// The format or the reader changed, so the preference for that pair is
