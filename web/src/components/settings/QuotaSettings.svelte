@@ -159,7 +159,7 @@
         {#each visibleDocs as doc (doc.id)}
           <div role="row" class="doc-row">
             <div role="cell" class="doc-title">
-              <div class="title-text" title={nameOf(doc)}>{nameOf(doc)}</div>
+              <a class="title-text" href="/docs/{doc.slug}" title={nameOf(doc)}>{nameOf(doc)}</a>
               {#if trimErrors[doc.slug]}<div class="trim-error">{trimErrors[doc.slug]}</div>{/if}
             </div>
             <div role="cell" class="doc-storage">
@@ -208,7 +208,8 @@
 
   .doc-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: calc(var(--spacing) * 3); align-items: center; min-height: 44px; padding: calc(var(--spacing) * 1) 0; border-bottom: 1px solid var(--color-divider); }
   .doc-row:last-child { border-bottom: 0; }
-  .title-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .title-text { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: inherit; text-decoration: none; }
+  .title-text:hover, .title-text:focus-visible { text-decoration: underline; }
   .doc-storage { display: flex; align-items: center; gap: calc(var(--spacing) * 2); }
   .doc-total { min-width: 4.5rem; text-align: right; white-space: nowrap; font-size: 0.875rem; font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
   .trim-error { color: var(--color-error-text); font-size: 0.75rem; }
