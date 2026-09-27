@@ -27,7 +27,7 @@ each check asserts.
 `latex-biber`, `latex-bibliography`, `latex-driver`, `latex-engine`,
 `latex-log`, `latex-reader`, `loro-codemirror`, `math`, `offline-projects`,
 `orphan`, `outline`, `panels`, `passage-trace`, `passages`, `pdf-fit`,
-`playground`, `preferences`, `presence-colour`, `presence-distinct`,
+`preferences`, `presence-colour`, `presence-distinct`,
 `preview-cache`, `project-session`, `project-upload`, `projection`,
 `projection-digest`, `proposal-contention`, `proposal-draft-marks`,
 `proposal-marks`, `proposals`, `quarto`, `quarto-options`,
