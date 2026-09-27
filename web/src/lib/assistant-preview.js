@@ -87,7 +87,7 @@ export async function previewCandidate({ request, tree: sourceTree, render, titl
     // Preserve only bytes whose path and digest still match the immutable
     // candidate manifest; rebuilding from metadata must not discard them.
     for (const [path, sha] of Object.entries(tree.digests || {})) {
-      const sourceSha = sourceTree.digests?.[path] || sourceTree.files?.[path]?.sha;
+      const sourceSha = sourceTree.digests?.[path] || sourceTree.files?.[path]?.digest || sourceTree.files?.[path]?.sha;
       if (sourceSha !== sha || !owns(sourceTree.assets || {}, path)) continue;
       tree.assets[path] = new Uint8Array(sourceTree.assets[path]).slice();
       if (sourceTree.urls?.[path]) tree.urls[path] = sourceTree.urls[path];

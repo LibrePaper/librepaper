@@ -1703,7 +1703,7 @@
       if (!currentProject) return { main: "", texts: {}, digests: {} };
       const digests = {};
       for (const [path, file] of Object.entries(currentProject.tree?.files || {})) {
-        if (file?.kind === "asset" && file.sha) digests[path] = file.sha;
+        if (file?.kind === "asset" && file.digest) digests[path] = file.digest;
       }
       return {
         main: currentProject.main || currentProject.tree?.main || "",
