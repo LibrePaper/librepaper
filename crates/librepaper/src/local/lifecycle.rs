@@ -319,7 +319,7 @@ pub fn open_browser(target: &str) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("Could not open companion settings: {error}"))
+        .map_err(|error| format!("Could not open the link: {error}"))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

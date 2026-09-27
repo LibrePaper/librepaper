@@ -51,9 +51,9 @@ companion from the document's **Enable local rendering** settings, then use
 the named site and document; subsequent connections reuse that permission,
 including after restarting the companion.
 
-The companion's local settings page shows discovered tools and connected
-documents, lets you revoke access, and offers **Start at login** and **Quit
-companion**. Startup at login is optional. A browser may separately ask for
+*Settings*, *Local app* shows discovered tools, lets you disconnect the
+document, and offers **Start at login** and **Quit companion**, each confirmed
+in a dialog on this computer. Startup at login is optional. A browser may separately ask for
 permission to connect to a local service; allow that for the LibrePaper site
 you use. Compilation permissions do not grant the website access to these
 local management controls.

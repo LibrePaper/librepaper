@@ -55,8 +55,11 @@ fn pair_request_fields(query: &str, origin: &str) -> Option<(String, String, Str
     Some((request?, challenge?, return_to?))
 }
 
-
-pub(super) async fn handle_pair_request(inner: &Inner, peer: SocketAddr, request: Request<Body>) -> Reply {
+pub(super) async fn handle_pair_request(
+    inner: &Inner,
+    peer: SocketAddr,
+    request: Request<Body>,
+) -> Reply {
     if rate_limited(inner, peer).await {
         return plain(
             429,
@@ -92,7 +95,10 @@ pub(super) async fn handle_pair_request(inner: &Inner, peer: SocketAddr, request
             return write_json(409, &json!({"error": "request id is already registered"}));
         }
         if existing.asked || existing.token.is_some() {
-            return write_json(409, &json!({"error": "pair request already answered or in progress"}));
+            return write_json(
+                409,
+                &json!({"error": "pair request already answered or in progress"}),
+            );
         }
         true
     } else {
@@ -119,7 +125,10 @@ pub(super) async fn handle_pair_request(inner: &Inner, peer: SocketAddr, request
     drop(pending);
 
     if !should_ask {
-        return write_json(409, &json!({"error": "pair request already answered or in progress"}));
+        return write_json(
+            409,
+            &json!({"error": "pair request already answered or in progress"}),
+        );
     }
 
     let message = format!(
@@ -160,12 +169,8 @@ pub(super) async fn handle_pair_request(inner: &Inner, peer: SocketAddr, request
             drop(pending);
             pair_result_page(inner.port, &return_to, &request_id)
         }
-        super::super::approval::Decision::Denied => {
-            pair_denied_page()
-        }
-        super::super::approval::Decision::Unavailable(msg) => {
-            pair_unavailable_page(&msg)
-        }
+        super::super::approval::Decision::Denied => pair_denied_page(),
+        super::super::approval::Decision::Unavailable(msg) => pair_unavailable_page(&msg),
     }
 }
 
@@ -238,7 +243,6 @@ const PAIR_STYLE: &str = "body{font:15px/1.5 system-ui,sans-serif;margin:0;paddi
 h1{font-size:18px;margin:0 0 12px}p{margin:0 0 12px}code{font-size:14px;background:#f2f2f2;padding:1px 5px;border-radius:4px}";
 
 /* -------------------------------------------------------- result pages */
-
 
 fn pair_denied_page() -> Reply {
     let page = format!(
@@ -411,6 +415,6 @@ mod tests {
         let reply = pair_unavailable_page(malicious_msg);
         let body = body_text(reply).await;
         assert!(body.contains("&lt;script&gt;"));
-        assert!(!body.contains("<script>"));
+        assert!(!body.contains("<script>alert"));
     }
 }

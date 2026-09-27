@@ -35,7 +35,7 @@ To pin a version, replace `releases/latest/download/` in either URL with
 generated installer.
 
 The installer puts the executable on your PATH. In a new terminal, run
-`librepaper local settings` to configure and start the companion. The installer
+`librepaper local start` to start the companion, then connect it from *Settings*, *Local app* in LibrePaper. The installer
 does not add a desktop shortcut or register the `librepaper://` link handler.
 
 ## Documentation

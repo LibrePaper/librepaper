@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 
 #[cfg(test)]
 thread_local! {
-    static SCRIPTED: std::cell::RefCell<Option<bool>> = std::cell::RefCell::new(None);
+    static SCRIPTED: std::cell::RefCell<Option<bool>> = const { std::cell::RefCell::new(None) };
 }
 
 pub(crate) struct Approval {
@@ -71,11 +71,8 @@ async fn ask_macos(approval: &Approval) -> Decision {
 
     let script = "on run argv\ndisplay dialog (item 2 of argv) with title (item 1 of argv) buttons {\"Deny\", (item 3 of argv)} default button \"Deny\"\nif button returned of result = (item 3 of argv) then\nreturn \"allowed\"\nelse\nreturn \"denied\"\nend if\nend run";
 
-    let result = output(
-        Command::new("osascript")
-            .args(["-e", script, title, message, allow_label]),
-    )
-    .await;
+    let result =
+        output(Command::new("osascript").args(["-e", script, title, message, allow_label])).await;
 
     match result {
         Ok(output) => {
@@ -130,36 +127,56 @@ async fn ask_linux(approval: &Approval) -> Decision {
 
     if has_display {
         let mut zenity = Command::new("zenity");
-        zenity.args(["--question", "--no-markup", "--title", title, "--text", message, "--ok-label", allow_label, "--cancel-label", "Deny"]);
+        zenity.args([
+            "--question",
+            "--no-markup",
+            "--title",
+            title,
+            "--text",
+            message,
+            "--ok-label",
+            allow_label,
+            "--cancel-label",
+            "Deny",
+        ]);
         zenity.kill_on_drop(true);
 
         match tokio::time::timeout(Duration::from_secs(300), zenity.output()).await {
             Ok(Ok(result)) => {
                 if result.status.success() {
-                    return Decision::Allowed;
+                    Decision::Allowed
                 } else {
-                    return Decision::Denied;
+                    Decision::Denied
                 }
             }
             Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 let mut kdialog = Command::new("kdialog");
-                kdialog.args(["--title", title, "--yesno", message, "--yes-label", allow_label, "--no-label", "Deny"]);
+                kdialog.args([
+                    "--title",
+                    title,
+                    "--yesno",
+                    message,
+                    "--yes-label",
+                    allow_label,
+                    "--no-label",
+                    "Deny",
+                ]);
                 kdialog.kill_on_drop(true);
 
                 match tokio::time::timeout(Duration::from_secs(300), kdialog.output()).await {
                     Ok(Ok(result)) => {
                         if result.status.success() {
-                            return Decision::Allowed;
+                            Decision::Allowed
                         } else {
-                            return Decision::Denied;
+                            Decision::Denied
                         }
                     }
-                    Ok(Err(_)) => return ask_headless(approval).await,
-                    Err(_) => return Decision::Denied,
+                    Ok(Err(_)) => ask_headless(approval).await,
+                    Err(_) => Decision::Denied,
                 }
             }
-            Ok(Err(_)) => return ask_headless(approval).await,
-            Err(_) => return Decision::Denied,
+            Ok(Err(_)) => ask_headless(approval).await,
+            Err(_) => Decision::Denied,
         }
     } else {
         ask_headless(approval).await
@@ -214,6 +231,19 @@ pub(crate) fn approve_code(code: &str) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn script(allowed: bool) {
+    SCRIPTED.with(|s| {
+        *s.borrow_mut() = Some(allowed);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn unscript() {
+    SCRIPTED.with(|s| {
+        *s.borrow_mut() = None;
+    });
+}
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -245,18 +275,4 @@ mod tests {
             assert!(rx.await.is_ok());
         });
     }
-}
-
-#[cfg(test)]
-pub(crate) fn script(allowed: bool) {
-    SCRIPTED.with(|s| {
-        *s.borrow_mut() = Some(allowed);
-    });
-}
-
-#[cfg(test)]
-pub(crate) fn unscript() {
-    SCRIPTED.with(|s| {
-        *s.borrow_mut() = None;
-    });
 }
