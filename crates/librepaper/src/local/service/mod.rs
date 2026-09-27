@@ -511,6 +511,7 @@ impl LocalService {
         // assistant route, mirroring `recover_state`'s own semantics rather
         // than replaying it. See `SessionRegistry::recover_at_startup`.
         crate::assistant::registry::SessionRegistry::recover_at_startup(state_home);
+        super::integrations::init(state_home);
         let mut quarto_bindings = BindingStore::new(state_home);
         if let Some(base) = hosted {
             quarto_bindings = quarto_bindings.with_hosted_workspaces(base);
@@ -1023,6 +1024,9 @@ async fn dispatch(
             handle_startup(inner, headers, origin, request).await
         }
         ["quit"] if *method == Method::POST => handle_quit(inner, headers, origin).await,
+        ["integrations", name] if *method == Method::PUT => {
+            handle_integration_set(inner, headers, origin, name, request).await
+        }
         ["approve"] if *method == Method::POST => handle_approve(peer, request).await,
         ["zotero", "search"] if *method == Method::GET => {
             handle_zotero_search(inner, headers, origin, request).await
@@ -1272,6 +1276,7 @@ async fn handle_settings(inner: &Inner, headers: &HeaderMap, origin: Option<&str
             "version": crate::VERSION,
             "standalone": is_standalone,
             "startup": if is_standalone { Some(super::lifecycle::startup_enabled()) } else { None },
+            "integrations": super::integrations::all(),
         }),
     )
 }
@@ -1352,6 +1357,100 @@ async fn handle_quit(inner: &Inner, headers: &HeaderMap, origin: Option<&str>) -
             Ok(()) => write_json(200, &json!({})),
             Err(error) => write_json(500, &json!({"error": error})),
         },
+        Err(response) => response,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct IntegrationRequest {
+    path: Option<String>,
+    args: Vec<String>,
+}
+
+async fn handle_integration_set(
+    inner: &Inner,
+    headers: &HeaderMap,
+    origin: Option<&str>,
+    name: &str,
+    request: Request<Body>,
+) -> Reply {
+    let _project = match authenticate(inner, headers, origin) {
+        Ok(p) => p,
+        Err(response) => return response,
+    };
+
+    let which = match super::integrations::Integration::parse(name) {
+        Ok(w) => w,
+        Err(error) => return write_json(400, &json!({"error": error})),
+    };
+
+    let body = match read_json_body::<IntegrationRequest>(request).await {
+        Ok(b) => b,
+        Err(response) => return response,
+    };
+
+    let path = if body.path.as_deref() == Some("") {
+        None
+    } else {
+        body.path.map(std::path::PathBuf::from)
+    };
+
+    let custom = super::integrations::Custom {
+        path,
+        args: body.args,
+    };
+
+    if let Err(error) = custom.validate() {
+        return write_json(400, &json!({"error": error}));
+    }
+
+    if super::integrations::get(which) == custom {
+        return write_json(200, &json!(custom));
+    }
+
+    let origin_name = origin.unwrap_or("unknown");
+    let message = match &custom.path {
+        None if custom.args.is_empty() => {
+            format!("{} wants LibrePaper to restore the default {} command.", origin_name, which.as_str())
+        }
+        Some(path) => {
+            let path_str = path.display().to_string();
+            let args_str = if custom.args.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", custom.args.join(" "))
+            };
+            format!(
+                "{} wants LibrePaper to run {} as:\n\n{}{}\n\nOnly allow this if you asked for it.",
+                origin_name, which.as_str(), path_str, args_str
+            )
+        }
+        None => {
+            let args_str = if custom.args.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", custom.args.join(" "))
+            };
+            format!(
+                "{} wants LibrePaper to run {} (found on PATH) as:\n\n{}{}\n\nOnly allow this if you asked for it.",
+                origin_name, which.as_str(), which.as_str(), args_str
+            )
+        }
+    };
+
+    let approval = super::approval::Approval {
+        title: format!("Change {} command", which.as_str()),
+        message,
+        allow_label: "Use it".to_string(),
+    };
+
+    match decision_to_result(super::approval::ask(&approval).await) {
+        Ok(()) => {
+            match super::integrations::set(which, custom.clone()) {
+                Ok(()) => write_json(200, &json!(custom)),
+                Err(error) => write_json(500, &json!({"error": error})),
+            }
+        }
         Err(response) => response,
     }
 }
@@ -2223,5 +2322,70 @@ mod settings_tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
         super::super::approval::unscript();
+    }
+
+    #[tokio::test]
+    async fn put_integration_denied_leaves_unchanged() {
+        let (inner, state_home, _cache_home) = test_inner().await;
+        let _lock = super::super::integrations::tests::SERIAL.lock().expect("lock");
+        super::super::integrations::init(state_home.path());
+        super::super::approval::script(false);
+
+        let pairing = inner.pairing.new_pairing("https://example.test", None, None).unwrap();
+        let request = Request::put("/integrations/quarto")
+            .header("authorization", format!("Bearer {}", pairing.token))
+            .header("origin", "https://example.test")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#))
+            .expect("request");
+
+        let response = handle_integration_set(&inner, request.headers(), Some("https://example.test"), "quarto", request).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(super::super::integrations::get(super::super::integrations::Integration::Quarto), super::super::integrations::Custom::default());
+
+        super::super::approval::unscript();
+    }
+
+    #[tokio::test]
+    async fn put_integration_allowed_persists() {
+        let (inner, state_home, _cache_home) = test_inner().await;
+        let _lock = super::super::integrations::tests::SERIAL.lock().expect("lock");
+        super::super::integrations::init(state_home.path());
+        super::super::approval::script(true);
+
+        let pairing = inner.pairing.new_pairing("https://example.test", None, None).unwrap();
+        let request = Request::put("/integrations/quarto")
+            .header("authorization", format!("Bearer {}", pairing.token))
+            .header("origin", "https://example.test")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"path":"/usr/bin/quarto","args":["--verbose"]}"#))
+            .expect("request");
+
+        let response = handle_integration_set(&inner, request.headers(), Some("https://example.test"), "quarto", request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let custom = super::super::integrations::get(super::super::integrations::Integration::Quarto);
+        assert_eq!(custom.path, Some(std::path::PathBuf::from("/usr/bin/quarto")));
+        assert_eq!(custom.args, vec!["--verbose"]);
+
+        super::super::approval::unscript();
+    }
+
+    #[tokio::test]
+    async fn put_integration_invalid_returns_400() {
+        let (inner, state_home, _cache_home) = test_inner().await;
+        let _lock = super::super::integrations::tests::SERIAL.lock().expect("lock");
+        super::super::integrations::init(state_home.path());
+
+        let pairing = inner.pairing.new_pairing("https://example.test", None, None).unwrap();
+        let request = Request::put("/integrations/quarto")
+            .header("authorization", format!("Bearer {}", pairing.token))
+            .header("origin", "https://example.test")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"path":"relative/path","args":[]}"#))
+            .expect("request");
+
+        let response = handle_integration_set(&inner, request.headers(), Some("https://example.test"), "quarto", request).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

@@ -102,6 +102,14 @@ checks or execution gates merely because another local-build abstraction is
 being removed. Choose the contract before building collaborator identity
 tracking or a second grant system.
 
+**Custom Quarto and Calepin executables.** The local companion lets authors
+point to custom-built or vendored versions of Quarto and Calepin, and configure
+extra command-line arguments. These settings are stored privately in the
+companion and changed only through `PUT /integrations/{name}` after a native
+confirmation dialog that displays the full command to be executed. The settings
+are never sent anywhere but back to the paired page; changing them requires
+an authorization token that ties to a pairing and origin.
+
 ## 3. Backups: plaintext recovery points remain an exposure
 
 **Current.** `storage/backup.rs` takes a snapshot-consistent PostgreSQL dump,

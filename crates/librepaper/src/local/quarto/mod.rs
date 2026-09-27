@@ -436,7 +436,7 @@ fn executable(name: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn find_quarto() -> Option<PathBuf> {
-    crate::local::tools::find("LIBREPAPER_QUARTO_PATH", "quarto")
+    super::integrations::executable(super::integrations::Integration::Quarto)
 }
 
 async fn version_of(path: &Path) -> Option<String> {
@@ -725,6 +725,7 @@ pub async fn run_job_with_bindings(
     // handling treats an absolute source as a single-file render and rejects
     // project-only flags. The canonical path was rechecked above.
     invocation_plan.apply(&mut command, &output, &filter);
+    command.args(super::integrations::extra_args(super::integrations::Integration::Quarto));
     command
         .env("LIBREPAPER_QUARTO_CELL_MANIFEST", &cell_manifest)
         .env("LIBREPAPER_QUARTO_INLINE_RECORDS", &inline_records)
