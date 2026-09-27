@@ -284,6 +284,20 @@ export function decodeProposal(raw) {
 /// author is accumulating are numbered by the same code.
 export function createProposals({ session, send, mayEdit }) {
   let proposal = null;
+  // A branch switched off before the server named it, still holding work
+  // that has not gone up. Letting it go at `stop` would lose what was typed
+  // while `proposal-open` was in flight, so it waits here for its name.
+  let closing = null;
+
+  // Everything since the fork, addressed by name: see `flush`.
+  const sendUpdate = (draft, update = draft.branch.export({ mode: "update", from: draft.baseVersion })) => {
+    send({
+      type: "proposal-update",
+      proposal_id: draft.id,
+      tip: encodeBase64(encodeFrontiers(draft.tip)),
+      update: encodeBase64(update),
+    });
+  };
 
   return {
     // Fork the session document at its current frontier and remember the base.
@@ -404,18 +418,15 @@ export function createProposals({ session, send, mayEdit }) {
         return;
       }
 
-      send({
-        type: "proposal-update",
-        proposal_id: proposal.id,
-        tip: encodeBase64(encodeFrontiers(proposal.tip)),
-        update: encodeBase64(update),
-      });
+      sendUpdate(proposal, update);
     },
 
     // Close the local branch. The server owns the decision from here on.
     stop() {
       if (!proposal) return;
-      proposal.branch.destroy?.();
+      // Work with no name to send it under is kept until the name arrives.
+      if (!proposal.id && proposal.unsent) closing = proposal;
+      else proposal.branch.destroy?.();
       proposal = null;
     },
 
@@ -431,6 +442,13 @@ export function createProposals({ session, send, mayEdit }) {
             proposal.unsent = false;
             this.flush();
           }
+        }
+        // Or for the branch switched off while the reply was in flight.
+        if (closing && !closing.id && message.proposal_id) {
+          closing.id = String(message.proposal_id);
+          sendUpdate(closing);
+          closing.branch.destroy?.();
+          closing = null;
         }
         return;
       }
