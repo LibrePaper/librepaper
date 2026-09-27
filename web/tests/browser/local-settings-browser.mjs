@@ -56,7 +56,6 @@ export function probe() { return Promise.resolve(); }
 export function retry() { window.retryCalls = (window.retryCalls || 0) + 1; return Promise.resolve(); }
 export function disconnect() { return Promise.resolve(); }
 export function connectApp() { window.pairCalls = (window.pairCalls || 0) + 1; return Promise.reject(new Error("The permission window was blocked.")); }
-export function connectApp() { window.pairCalls = (window.pairCalls || 0) + 1; return Promise.reject(new Error("The permission window was blocked.")); }
 export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
 export async function capabilities(options) {
   window.capabilityCalls = (window.capabilityCalls || 0) + 1;
@@ -166,20 +165,17 @@ try {
 
   // The address editor is behind an explicit details action. Diagnostics use
   // the local client and render their result as status text.
-  await b.evaluate(clickText("Connection details"));
-  await until("custom address action shown", () => b.evaluate("document.body.innerText.includes('Custom companion address')"), 5000);
-  await b.evaluate(clickText("Custom companion address"));
-  await until("address dialog shown", () => b.evaluate("document.body.innerText.includes('Save address')"), 5000);
-  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Custom companion address"]')?.value`), "http://127.0.0.1:8763/", "address dialog displays the current companion address");
-  await b.evaluate(`(() => { const input = document.querySelector('[aria-label="Custom companion address"]'); if (!input) throw new Error('Missing custom address input'); input.value = 'http://127.0.0.1:9876/'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-  await b.evaluate(clickText("Save address"));
+  // The address, its editor and the setup check sit on the page itself.
+  assert.equal(await b.evaluate(`document.querySelector('[aria-label="Companion address"]')?.value`), "http://127.0.0.1:8763/", "the address field shows the current companion address");
+  await b.evaluate(`(() => { const input = document.querySelector('[aria-label="Companion address"]'); input.value = 'http://127.0.0.1:9876/'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await b.evaluate(clickText("Save"));
   await until("address saved", () => b.evaluate("window.savedAddress === 'http://127.0.0.1:9876/'"), 5000);
-  await b.evaluate(clickText("Check local setup"));
+  await b.evaluate(clickSelector("#local-doctor"));
   await until("diagnostic report shown", () => b.evaluate("Boolean(document.querySelector('pre[role=status]'))"), 5000);
   assert.match(await b.evaluate("document.querySelector('pre[role=status]').textContent"), /quarto/);
   assert.equal(await b.evaluate("window.capabilityCalls"), 1, "diagnostics request a fresh local capability report");
 
-  console.log("local-settings-browser: install commands, failed-popup fallback, connected permission confirmation, address dialog, and diagnostics passed");
+  console.log("local-settings-browser: install commands, failed-popup fallback, inline address editor, and inline diagnostics passed");
 } finally {
   if (b) await b.close();
   server.close();

@@ -21,11 +21,11 @@ for (const format of ["latex", "typst", "markdown", "quarto", "html", ""]) {
 }
 assert.match(registry, /id: "local", says: "Local", offered: local,/);
 assert.match(registry, /id: "remote", says: "Remote", offered: remote,/);
-for (const query of ["windows setup", "macos", "claude", "zotero", "server address", "connection details"]) {
+for (const query of ["windows setup", "macos", "claude", "zotero", "server address", "companion address"]) {
   const matches = search(query, { format: "html", mayEdit: false, signedIn: false }) || [];
   assert.ok(matches.length, `settings search finds ${query}`);
 }
-assert.match(registry, /id: "local-details", says: "Connection details"/);
+assert.match(registry, /id: "local-address", says: "Companion address"/);
 assert.match(registry, /id: "remote-status"/);
 assert.match(local, /import \* as localBridge from "\.\.\/\.\.\/lib\/companion\/client\.js"/);
 // The panel shows the status rather than keeping its own copy of it: the

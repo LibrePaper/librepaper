@@ -78,7 +78,7 @@ const cacheHome = join(temporary, "cache");
 const appEnv = { ...process.env, XDG_STATE_HOME: stateHome, XDG_CACHE_HOME: cacheHome, HOME: temporary };
 delete appEnv.DISPLAY;
 delete appEnv.WAYLAND_DISPLAY;
-const app = spawn(binary, ["local", "start", "--port", String(appPort)], { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
+const app = spawn(binary, ["local", "start", "--foreground", "--port", String(appPort)], { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
 let appLog = "";
 app.stdout.on("data", (chunk) => (appLog += chunk));
 app.stderr.on("data", (chunk) => (appLog += chunk));
@@ -106,7 +106,7 @@ try {
   await until("approval asked on the terminal", () => {
     approveCode = appLog.match(/librepaper local approve (\d{6})/)?.[1] || null;
     return Boolean(approveCode);
-  }, 10000);
+  }, 10000).catch(async (error) => { throw new Error(`${error.message}\nstatus: ${await b.evaluate("JSON.stringify(window.local.status())")}\nerrors: ${await b.evaluate("JSON.stringify(window.errors)")}\napp log: ${appLog}`); });
   assert.equal(await b.evaluate("window.local.status().state"), "unauthorized", "nothing is paired before approval");
   const approved = spawnSync(binary, ["local", "approve", approveCode], { env: appEnv, encoding: "utf8" });
   assert.equal(approved.status, 0, `approve: ${approved.stderr}`);

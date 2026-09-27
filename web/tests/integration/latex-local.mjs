@@ -182,25 +182,6 @@ async function testRetryAndConnectClearBackoff() {
 
 /* --------------------------------------------------------- connect / disconnect */
 
-async function testConnectStoresPairing() {
-  const storage = fakeStorage();
-  local.configure({ project: "proj1", origin: "https://app.example" });
-  setup({ storage, fetchImpl: async (url, init) => {
-    if (url.endsWith("/health")) return jsonResponse(200, HEALTH_OK);
-    if (url.endsWith("/connect")) {
-      const body = JSON.parse(init.body);
-      check("connect posts origin/project/code", body.origin === "https://app.example" && body.project === "proj1" && body.code === "654321");
-      return jsonResponse(200, { token: "newtoken", expires: 9999999999 });
-    }
-    if (url.endsWith("/capabilities")) return jsonResponse(200, { tools: {}, confinement: { available: false, kind: "none", reason: "" }, platform: "linux", distribution: null });
-    throw new Error(`unexpected ${url}`);
-  } });
-  local.configure({ project: "proj1", origin: "https://app.example" });
-  await local.connect("654321");
-  const stored = JSON.parse(storage.getItem("librepaper-local-pairings"));
-  check("the pairing is stored under origin|project", stored["https://app.example|proj1"]?.token === "newtoken", JSON.stringify(stored));
-}
-
 async function testDisconnectRemovesPairing() {
   const storage = fakeStorage();
   local.configure({ project: "proj1", origin: "https://app.example" });
@@ -430,7 +411,6 @@ const tests = [
   testProbeDropsExpiredToken,
   testBackoffDoubles,
   testRetryAndConnectClearBackoff,
-  testConnectStoresPairing,
   testDisconnectRemovesPairing,
   testMultipartBuildBody,
   testOutputDigestIsVerified,

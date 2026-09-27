@@ -5,7 +5,7 @@ import * as local from "../../src/lib/companion/client.js";
 const response = (status, body) => ({ status, ok: status >= 200 && status < 300,
   json: async () => body, clone() { return response(status, body); } });
 
-let now, link, popup, storage, claimBody, attempts;
+let now, link, storage, claimBody, pairBody, attempts;
 function inject(claim) {
   local._testing.inject({
     storage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: (k) => storage.delete(k) },
@@ -13,8 +13,8 @@ function inject(claim) {
     wait: async () => { now += 700; },
     location: () => ({ href: "https://papers.example/docs/paper" }),
     launchLink: (url) => { link = url; },
-    openPopup: () => { popup = null; return popup; },
     fetch: async (url, init) => {
+      if (url.includes("pair/request")) { pairBody = JSON.parse(init.body); return response(202, { request: pairBody.request }); }
       if (url.includes("connect/claim")) { claimBody = JSON.parse(init.body); return claim(++attempts); }
       if (url.includes("health")) return response(200, { service: "librepaper-local", protocol: [2], instance: "restart" });
       if (url.includes("capabilities")) return response(200, { tools: {} });
@@ -25,10 +25,10 @@ function inject(claim) {
 
 // A fresh attempt: no pairing yet, and the status this tab last probed is
 // not "unauthorized" or "reachable", so `connectApp` goes straight to the
-// `librepaper://connect` link rather than trying a popup first.
+// `librepaper://connect` link rather than asking the companion directly.
 function setup(claim) {
   local._testing.reset();
-  now = 0; link = ""; popup = null; storage = new Map(); attempts = 0;
+  now = 0; link = ""; pairBody = null; storage = new Map(); attempts = 0;
   inject(claim);
   local.configure({ origin: "https://papers.example", project: "paper" });
 }
@@ -75,6 +75,19 @@ link = "";
 await local.connectApp({ timeoutMs: 10000 });
 assert.equal(link, "", "an already-connected browser fires no link");
 
+// A companion already answering: the page asks it directly, the dialog
+// appears with no window and no link, and the claim picks up the token.
+setup((n) => (n === 1 ? response(202, {}) : response(200, { token: "direct-token", expires: 1000000, instance: "restart" })));
+assert.equal((await local.retry()).state, "unauthorized");
+await local.connectApp({ timeoutMs: 10000 });
+assert.equal(link, "", "a reachable companion is asked without a link");
+assert.equal(pairBody.origin, "https://papers.example");
+assert.equal(pairBody.project, "paper");
+assert.equal(pairBody.request, claimBody.request);
+assert.equal(pairBody.challenge, createHash("sha256").update(claimBody.verifier).digest("hex"));
+assert.ok(!JSON.stringify(pairBody).includes(claimBody.verifier));
+assert.equal(local.status().state, "connected");
+
 setup(() => response(403, {}));
 await assert.rejects(local.connectApp(), /expired or was refused/);
 assert.equal(attempts, 1);
@@ -88,7 +101,7 @@ setup(() => response(202, {}));
 await assert.rejects(local.connectApp({ timeoutMs: 1500 }), /did not connect/);
 assert.ok(!storage.has("librepaper-local-pairings"));
 local._testing.reset();
-console.log("local-companion: cold launch, verifier isolation, restart, already-connected, rejection, scope change and timeout passed");
+console.log("local-companion: cold launch, direct ask, verifier isolation, restart, already-connected, rejection, scope change and timeout passed");
 
 // Fragment intake: the OS link handler's only channel back to this page is a
 // top-level navigation carrying the real port in the hash, matched against
