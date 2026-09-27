@@ -190,6 +190,9 @@
   /// Whether anything is hidden behind the status filter -- what the empty
   /// state offers to show when the pending queue is done.
   const resolvedCount = $derived(allRows.length - allPending);
+  /// The ••• appears only when it holds something: an empty menu is a button
+  /// that opens nothing.
+  const hasMenu = $derived(canPick || (canReview && answerable.length > 0) || (activeFilters.status === "pending" && resolvedCount > 0));
 
   $effect(() => {
     const valid = new Set(allRows.filter(pending).map(rowId));
@@ -352,7 +355,7 @@
           <Switch.Control class="switch"><Switch.Thumb class="switch-thumb" /></Switch.Control>
           <Switch.HiddenInput />
         </Switch>
-        <Menu onSelect={(chosen) => chooseMenuItem(chosen.value)}>
+        {#if hasMenu}<Menu onSelect={(chosen) => chooseMenuItem(chosen.value)}>
           <!-- The button is authored here rather than handed a `class`: a class
                arriving as a prop carries no scope hash, so the rules below would
                have to be global to paint at all. -->
@@ -371,7 +374,7 @@
               <Menu.Item value="resolved" class="menuitem">Show resolved changes</Menu.Item>
             {/if}
           </ExplorerMenu>
-        </Menu>
+        </Menu>{/if}
       </div>
     </div>
     <div class="changes-meta" aria-live="polite">{allPending} pending{pendingRows.length !== allPending ? ` · ${pendingRows.length} shown` : ""}{contestedCount ? ` · ${contestedCount} contested` : ""}</div>

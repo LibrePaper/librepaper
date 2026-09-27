@@ -320,6 +320,9 @@ export function createProposals({ session, send, mayEdit }) {
       // Tell the server we've opened a proposal at this frontier.
       send({
         type: "proposal-open",
+        // The server keys the proposal row on this, so a retried open finds
+        // the row it already made rather than opening a second one.
+        request_id: crypto.randomUUID(),
         base: encodeBase64(encodeFrontiers(base)),
       });
 
