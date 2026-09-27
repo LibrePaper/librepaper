@@ -180,18 +180,6 @@
   </SettingRow>
 {/if}
 
-{#if snapshot}
-  <SettingRow id="storage-retention" stacked title="Versions"
-              description="Nothing is deleted on a schedule.">
-    <p>A version is written when you name one or restore an earlier
-      version, or leave a comment, never on a timer.</p>
-    <p>Every version is kept until you delete the document.</p>
-    <p>Editing between versions is not lost: the full editing history is kept
-      separately, and the history panel can show the document as it stood at
-      any moment in it, whether or not anybody named that moment.</p>
-  </SettingRow>
-{/if}
-
 <Modal bind:open={trimOpen} title="Trim editing history?"
        confirm={{ label: trimPending ? "Trimming…" : "Trim history", tone: "error", disabled: trimPending, onclick: confirmTrim }}>
   {#if trimTarget}
