@@ -223,6 +223,7 @@ impl Agent {
         log: &Path,
         executable: &Path,
         connection: &str,
+        state_home: &Path,
     ) -> Result<Self, String> {
         let (program, arguments) = command
             .split_first()
@@ -269,6 +270,16 @@ impl Agent {
                         .map(|(name, value)| {
                             agent_client_protocol::schema::v1::EnvVariable::new(name, value)
                         })
+                        // The MCP child alone, never the agent: it must read the
+                        // companion's own connections.json, which an embedded
+                        // companion keeps outside XDG_STATE_HOME, while the agent
+                        // keeps its own state where it always does.
+                        .chain(std::iter::once(
+                            agent_client_protocol::schema::v1::EnvVariable::new(
+                                "XDG_STATE_HOME",
+                                state_home.to_string_lossy(),
+                            ),
+                        ))
                         .collect(),
                 ),
         );

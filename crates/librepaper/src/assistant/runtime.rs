@@ -52,16 +52,8 @@ fn event_id() -> String {
 /// reaches the agent's process arguments or the session payload it can read.
 /// `session_path` is the one file that carries the runner's current
 /// execution epoch and active task id, in place of the two files (and two
-/// environment variables) this used to take. `XDG_STATE_HOME` is set to the
-/// companion's own state directory so the spawned `librepaper mcp
-/// --connection` child (`cli::agent::run_mcp`) resolves the very
-/// `connections.json` the companion wrote the runner's record into, rather
-/// than whatever this process's own environment or home directory names.
-fn adapter_environment(
-    journal_path: &Path,
-    session_path: &Path,
-    state_home: &Path,
-) -> Vec<(String, String)> {
+/// environment variables) this used to take.
+fn adapter_environment(journal_path: &Path, session_path: &Path) -> Vec<(String, String)> {
     vec![
         (
             "LIBREPAPER_RUNNER_JOURNAL".into(),
@@ -70,10 +62,6 @@ fn adapter_environment(
         (
             "LIBREPAPER_RUNNER_SESSION".into(),
             session_path.to_string_lossy().into_owned(),
-        ),
-        (
-            "XDG_STATE_HOME".into(),
-            state_home.to_string_lossy().into_owned(),
         ),
     ]
 }
@@ -238,6 +226,7 @@ async fn start_agent_with_bridge(
         &lease.location.directory.join("agent.log"),
         executable,
         connection,
+        &config.state_home,
     )
     .await?;
     lease.write_status(
@@ -520,7 +509,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // prove execution or safely replay a mutation.
     state.save(&lease.location.state)?;
     let executable = crate::local::paths::current_executable()?;
-    let environment = adapter_environment(&journal_path, &session_path, &config.state_home);
+    let environment = adapter_environment(&journal_path, &session_path);
     let connection = runner_connection(peer, config)?;
     // Prove the document is reachable at this access level before starting an
     // agent against it. The tools are handed to the agent as an MCP server it
@@ -672,8 +661,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         ).await?;
                     }
                     if stopping.is_some() { return Ok(()); }
-                    let environment =
-                        adapter_environment(&journal_path, &session_path, &config.state_home);
+                    let environment = adapter_environment(&journal_path, &session_path);
                     agent = start_agent_with_bridge(
                         config, lease, &environment, &executable, &connection,
                     ).await?;
@@ -1090,19 +1078,13 @@ mod tests {
         let environment = adapter_environment(
             Path::new("/tmp/runner.journal.json"),
             Path::new("/tmp/runner.journal.session"),
-            Path::new("/tmp/companion-state"),
         );
         let names: Vec<&str> = environment.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
             names,
-            vec![
-                "LIBREPAPER_RUNNER_JOURNAL",
-                "LIBREPAPER_RUNNER_SESSION",
-                "XDG_STATE_HOME"
-            ]
+            vec!["LIBREPAPER_RUNNER_JOURNAL", "LIBREPAPER_RUNNER_SESSION"]
         );
         assert_eq!(environment[1].1, "/tmp/runner.journal.session");
-        assert_eq!(environment[2].1, "/tmp/companion-state");
         // The document link and the channel token reach the adapter through
         // the private connection record, never through this environment.
         assert!(!names.contains(&"LIBREPAPER_DOCUMENT"));
