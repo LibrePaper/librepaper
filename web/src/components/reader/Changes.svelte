@@ -1,6 +1,7 @@
 <script>
   import { Menu, Switch } from "@skeletonlabs/skeleton-svelte";
   import ExplorerMenu from "../ExplorerMenu.svelte";
+  import Icon from "../Icon.svelte";
 
   let {
     // One row per hunk. A decision names a proposal and an index within it
@@ -369,8 +370,6 @@
             {#if activeFilters.status === "pending" && resolvedCount}
               <Menu.Item value="resolved" class="menuitem">Show resolved changes</Menu.Item>
             {/if}
-            <hr class="hr my-1" />
-            <div class="changes-menu-hint">J/K or ↑/↓ to move<br />A to accept · R to reject</div>
           </ExplorerMenu>
         </Menu>
       </div>
@@ -385,7 +384,7 @@
     <Menu onSelect={(chosen) => chooseFilter(chosen.value)}>
       <Menu.Trigger>
         {#snippet element(attributes)}
-          <button {...attributes} type="button" class="filter-trigger" aria-label="Which changes to show">{filterLabel}<span class="caret" aria-hidden="true">▾</span></button>
+          <button {...attributes} type="button" class="filter-trigger" aria-label="Which changes to show"><Icon name="list-filter" size="14px" /><span class="filter-label">{filterLabel}</span><Icon name="chevron-down" size="12px" /></button>
         {/snippet}
       </Menu.Trigger>
       <ExplorerMenu>
@@ -484,19 +483,19 @@
   /* The quiet tier. Only -400 is grey in the surface ramp -- -500 and -600
      are the theme's ink -- so these read as body text rather than as meta.
      `--panel-muted` is what every other panel means by quiet. */
-  .changes-meta, .row-meta, .changes-hint, .changes-menu-hint { color: var(--panel-muted); font-size: var(--panel-meta-size); }
+  .changes-meta, .row-meta, .changes-hint { color: var(--panel-muted); font-size: var(--panel-meta-size); }
   .changes-meta { margin-top: .1rem; }
   /* The track and thumb are `.switch` in librepaper.css, worn here and in the
      settings dialog alike; this is only where the words sit beside them. */
   .changes-panel :global(.tracking-toggle) { display: flex; align-items: center; gap: .35rem; flex: 0 0 auto; font-size: var(--panel-meta-size); white-space: nowrap; }
   .filter-bar { flex: 0 0 auto; padding: 0 var(--spacing) .3rem; background: var(--color-sidebar); border-bottom: 1px solid var(--color-divider); }
-  .filter-trigger { display: flex; align-items: center; gap: .3rem; max-width: 100%; padding: .2rem .35rem; margin-left: -.35rem; border: 0; border-radius: .25rem; background: none; color: inherit; font-size: var(--panel-font-size); line-height: var(--panel-line-height); text-align: left; cursor: pointer; }
+  .filter-trigger { display: flex; align-items: center; gap: .3rem; max-width: 100%; padding: .15rem .45rem; border: 1px solid var(--color-divider); border-radius: .25rem; background: none; color: inherit; font-size: var(--panel-font-size); line-height: var(--panel-line-height); text-align: left; cursor: pointer; }
   .filter-trigger:hover, .filter-trigger[data-state="open"] { background: var(--color-divider); }
-  .caret { color: var(--panel-muted); font-size: var(--panel-font-size); line-height: 1; }
+  .filter-trigger :global(svg) { color: var(--panel-muted); flex: 0 0 auto; }
+  .filter-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .changes-menu { flex: 0 0 auto; padding: .1rem .35rem; border: 0; border-radius: .25rem; background: none; line-height: 1; cursor: pointer; }
   .changes-menu:hover, .changes-menu[data-state="open"] { background: var(--color-divider); }
   .changes-menu-label { padding: .35rem .65rem .2rem; color: var(--panel-muted); font-size: var(--panel-meta-size); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
-  .changes-menu-hint { padding: .2rem .65rem .35rem; line-height: var(--panel-line-height); }
   /* The contextual bar: only while a selection or a confirmation is open, and
      gone the moment it is answered or dismissed. */
   .select-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; padding: .35rem var(--spacing); border-bottom: 1px solid var(--color-divider); background: color-mix(in srgb, var(--color-brand) 6%, var(--color-sidebar)); font-size: var(--panel-meta-size); }

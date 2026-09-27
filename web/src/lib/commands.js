@@ -169,7 +169,8 @@ export const typeable = (descriptor) => {
 // A definition is: what it is called, where it belongs, who executes it, what
 // it is bound to, and when it can be asked for.
 //
-// `owner` is "editor" for the commands CodeMirror runs. Those are listed here
+// `owner` is "editor" for the commands CodeMirror runs, or "changes" for keys
+// the Changes panel answers itself inside its own focus. Those are listed here
 // so the menus can print their keys and the help table can name them, and the
 // window dispatcher never registers them: undo inside a text editor belongs to
 // the text editor, and a second implementation on the window would be a second
@@ -204,6 +205,13 @@ export const COMMANDS = [
   { id: "focus-outline", label: "Focus Outline", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+O"], available: panel("outline"), note: "Outline panel" },
   { id: "focus-comments", label: "Focus Comments", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+M"], available: panel("collaboration"), note: "Comments panel" },
   { id: "focus-preview", label: "Focus Preview", category: "Navigation", scope: "workspace", keys: ["Mod+Alt+V"], available: (c) => Boolean(c.preview), note: "Preview visible" },
+
+  // Changes panel navigation and review. These keys are answered by the
+  // panel itself when it has focus, listed here for the help table.
+  { id: "changes-next", label: "Next change", category: "Changes", scope: "panel", owner: "changes", palette: false, keys: ["J", "ArrowDown"], available: panel("changes"), note: "Changes panel" },
+  { id: "changes-previous", label: "Previous change", category: "Changes", scope: "panel", owner: "changes", palette: false, keys: ["K", "ArrowUp"], available: panel("changes"), note: "Changes panel" },
+  { id: "changes-accept", label: "Accept change", category: "Changes", scope: "panel", owner: "changes", palette: false, keys: ["A"], available: panel("changes"), note: "Changes panel" },
+  { id: "changes-reject", label: "Reject change", category: "Changes", scope: "panel", owner: "changes", palette: false, keys: ["R"], available: panel("changes"), note: "Changes panel" },
 
   // The workspace itself: which panes are up, and whether they scroll
   // together. The two that had shortcuts before this file existed keep them.
@@ -266,7 +274,7 @@ export function categories(commands = COMMANDS) {
 export function match(canonical, { commands = COMMANDS, apple = APPLE } = {}) {
   if (!canonical) return null;
   for (const command of commands) {
-    if (command.owner === "editor") continue;
+    if (command.owner) continue;
     if (bindings(command, apple).includes(canonical)) return command;
   }
   return null;
@@ -305,6 +313,7 @@ export function menuKeys({ modalEditor = false, apple = APPLE, commands = COMMAN
   const printed = {};
   for (const command of commands) {
     if (modalEditor && command.scope === "editor") continue;
+    if (command.owner === "changes") continue;
     const [first] = bindings(command, apple);
     if (first) printed[command.id] = label(first, apple);
   }

@@ -144,6 +144,10 @@ assert.equal(asked({ ...press("?", { shiftKey: true }), target: dialog }), null)
 assert.equal(asked({ ...press("z", { ctrlKey: true }), target: page }), null, "undo is the editor's");
 assert.equal(asked({ ...press("f", { ctrlKey: true }), target: page }), null, "and so is find");
 
+// Panel-owned commands like changes keys are answered by their panel and not
+// dispatched by the window.
+assert.equal(asked({ ...press("a"), target: page }), null, "changes-accept is the panel's");
+
 // Unbound chords are left alone, so the browser keeps what it was given.
 assert.equal(asked({ ...press("t", { ctrlKey: true }), target: page }), null);
 assert.equal(asked({ ...press("q"), target: page }), null);
