@@ -71,7 +71,6 @@ function defaultDeps() {
       url.hash = hash;
       history.replaceState(null, "", url.href);
     },
-    openPopup: (url, name, features) => (typeof window !== "undefined" ? window.open(url, name, features) : null),
     launchLink(url) {
       if (typeof window === "undefined" || !window.document?.body) {
         throw named("Unreachable", "Open LibrePaper in a browser to launch the companion.");
@@ -356,7 +355,7 @@ function instructionsFor(state) {
     case "denied":
       return "Your browser blocked access to the local app. Allow local network access for this site and retry.";
     case "unauthorized":
-      return "Local LibrePaper is running but has not allowed this site yet. Click Connect and allow it in the window that opens, or enter the pairing code it printed.";
+      return "Local LibrePaper is running but has not allowed this site yet. Click Connect and approve the dialog the companion shows.";
     case "connected":
       return "Local LibrePaper is connected.";
     case "reachable":
@@ -656,37 +655,12 @@ export async function retry() {
 
 // -------------------------------------------------------------- connect/disconnect
 
-export async function connect(code) {
-  // A pairing is granted per (origin, project), so pairing before `configure`
-  // named the document would ask for a pairing belonging to nothing. The
-  // local app rejects it as a malformed body, which reads as a mystery three
-  // layers away from the cause; say it here instead.
-  if (typeof current.project !== "string" || !current.project) {
-    throw named("InvalidRequest", "The page has not said which document this pairing is for.");
-  }
-  const addr = address();
-  const healthResponse = await healthFetch(addr);
-  if (healthResponse.ok) {
-    try {
-      const body = await healthResponse.json();
-      lastInstance = body?.instance || null;
-    } catch { /* connect still proceeds; probe() will report the real state */ }
-  }
-  const response = await send("POST", "connect", {
-    jsonBody: { origin: current.origin, project: current.project, code },
-  });
-  const data = await response.json();
-  setPairing({ token: data.token, expires: data.expires, instance: lastInstance });
-  resetNegativeCache();
-  return probe({ force: true });
-}
 
 // The one connection entrypoint: paired already, this fires a launch link and
-// waits for the probe to see it; unpaired, it opens the consent page (a popup
-// when this address is one the browser can already reach, the
-// `librepaper://connect` link otherwise, with the link as the popup's own
-// fallback when the browser blocks it) and claims the token once the person
-// allows it. Single-flight: a second call while one is in flight joins it.
+// waits for the probe to see it; unpaired, it sends a pair/request and waits
+// for the companion to show a native dialog; once allowed, claims the token
+// through the connect/claim endpoint. Single-flight: a second call while one is
+// in flight joins it.
 let connectionAttempt = null;
 
 export function connectApp(options = {}) {
@@ -732,24 +706,31 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
     throw named("Unreachable", "The companion did not connect. Install or open it, approve the local permission window, then retry.");
   }
 
-  let popup = null;
   if (["unauthorized", "reachable"].includes(currentStatus.state)) {
-    const url = `${address()}${LOCAL_BASE}pair/request?${new URLSearchParams({ origin, project, request, challenge, return: returnUrl })}`;
-    popup = deps.openPopup(url, "librepaper-local-pair", "popup,width=480,height=400");
-  }
-  if (!popup) {
+    try {
+      const pairResponse = await deps.fetch(`${address()}${LOCAL_BASE}pair/request`, {
+        method: "POST", mode: "cors", credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2000)]) : AbortSignal.timeout(2000),
+        body: JSON.stringify({ origin, project, request, challenge, return: returnUrl }),
+      });
+      if (pairResponse.status !== 202) {
+        // Not 202; try the fallback link.
+        deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, project, request, challenge, return: returnUrl })}`);
+      }
+    } catch (error) {
+      checkScope();
+      // Fetch failed; fall back to the link.
+      deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, project, request, challenge, return: returnUrl })}`);
+    }
+  } else {
     deps.launchLink(`librepaper://connect?${new URLSearchParams({ origin, project, request, challenge, return: returnUrl })}`);
   }
 
   const started = deps.now();
-  let popupClosedAt = null;
   while (deps.now() - started < timeoutMs) {
     await deps.wait(pollMs, signal);
     checkScope();
-    if (popup?.closed) {
-      popupClosedAt ??= deps.now();
-      if (deps.now() - popupClosedAt > 1000) { clearPending(); return currentStatus; }
-    }
     let response;
     try {
       response = await deps.fetch(`${address()}${LOCAL_BASE}connect/claim`, {
@@ -767,7 +748,14 @@ async function runConnectApp({ timeoutMs = 5 * 60 * 1000, pollMs = 700, signal }
     }
     checkScope();
     if (response.status === 202 || response.status === 404) continue;
-    if (response.status === 403) throw named("Unauthorized", "This connection request expired or was refused. Enable local rendering again.");
+    if (response.status === 403) {
+      let errorMessage = "This connection request expired or was refused. Enable local rendering again.";
+      try {
+        const data = await response.clone().json();
+        if (data && typeof data.error === "string") errorMessage = data.error;
+      } catch { /* not a JSON body; keep the generic message */ }
+      throw named("Unauthorized", errorMessage);
+    }
     if (!response.ok) throw named("Refused", `The companion could not connect (${response.status}). Retry or open companion settings.`);
     const data = await response.json();
     checkScope();

@@ -56,15 +56,20 @@ window.fetch = async (url, init) => {
     if (route === 'capabilities') return Response.json({builders:[]});
     if (route === 'settings') return Response.json({version:'test',standalone:false,startup:null,presets:[],grants:[]});
     if (route === 'agents') return Response.json({agents:window.localAgents});
-    if (route === 'connect') {
-      // The real app rejects a null project as a malformed body, which is
-      // what an unconfigured client sends. Fail loudly here rather than
-      // letting the panel look like it paired.
-      window.connectBodies = [...(window.connectBodies || []), body];
+    if (route === 'pair/request') {
+      // Pairing request: return 202 to indicate it's pending approval.
+      // In headless mode, the companion would print an approval code to stderr.
+      window.pairRequestBodies = [...(window.pairRequestBodies || []), body];
+      return Response.json({}, {status:202});
+    }
+    if (route === 'connect/claim') {
+      // Claim phase: check if pairing was accepted and return token.
+      // The real app would have approved or rejected based on the approve command.
+      window.connectClaimBodies = [...(window.connectClaimBodies || []), body];
       if (typeof body.project !== 'string' || !body.project) return Response.json({error:'bad JSON body'}, {status:400});
       return window.pairingAccepted
         ? Response.json({token:'pair-token',expires:Date.now()/1000+3600,instance:'one'})
-        : Response.json({error:'invalid pairing code'}, {status:403});
+        : Response.json({error:'connection request refused'}, {status:403});
     }
     if (route === 'assistant') {
       // Runners are located by server, document and conversation, not by a
@@ -507,22 +512,19 @@ try {
   await until("new live channel",()=>page.evaluate(`window.sockets.length === ${beforeNewConversation.sockets + 2}`),10000);
   assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'),false);
   assert.equal(await page.evaluate("window.calls.filter(call=>call.suffix==='').length"),beforeNewConversation.creates + 1);
-  // Pairing, from an unpaired browser. A refused code must say so beside the
-  // button that was pressed: the panel's shared error line is below three
-  // tabs of content, so an error reported only there reads as a dead button.
+  // Pairing, from an unpaired browser. The new flow uses pair/request which
+  // is triggered by the Connect button, not a manual code entry.
   await page.evaluate("window.unpaired=true; localStorage.removeItem('librepaper-local-pairings'); window.pairingAccepted=false");
   await page.evaluate("window.remount()");
   await page.evaluate('document.querySelector("#agent-tab-connection").click()');
-  await until("pairing prompt", () => page.evaluate(`Boolean(document.querySelector('.setup-code'))`), 3000);
-  // Connect is the primary action; the typed code stays below it as the
-  // fallback for a computer without the link handler installed.
+  await until("pairing prompt shown", () => page.evaluate(`Boolean(document.querySelector('.setup-requirement button'))`), 3000);
+  // The Connect button initiates the pairing flow.
   const requirementButtons = await page.evaluate(`Array.from(document.querySelectorAll('.setup-requirement button')).map(b=>b.textContent.trim())`);
   assert.ok(requirementButtons.includes("Connect"), `no Connect button: ${requirementButtons}`);
-  assert.ok(requirementButtons.indexOf("Connect") < requirementButtons.indexOf("Pair"), "Connect comes before the code fallback");
-  await page.evaluate(`(()=>{const field=document.querySelector('.setup-code');field.value='424242';field.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  await page.evaluate(`Array.from(document.querySelectorAll('.setup-requirement button')).find(b=>b.textContent.trim()==='Pair').click()`);
-  await until("refused code is reported in place", () => page.evaluate(
-    `document.querySelector('.setup-requirement [role=alert]')?.textContent.includes('different one')`), 3000);
+  // Try Connect when pairing is not yet accepted to trigger a refused response.
+  await page.evaluate(`Array.from(document.querySelectorAll('.setup-requirement button')).find(b=>b.textContent.trim()==='Connect').click()`);
+  await until("refused pairing is reported in place", () => page.evaluate(
+    `document.querySelector('.setup-requirement [role=alert]')?.textContent.includes('connection request refused')`), 3000);
 
   // A local app on a non-default port is recoverable from this panel, not
   // only from another settings screen.
@@ -535,12 +537,12 @@ try {
   // scopes the local client for locally renderable formats, so a panel that
   // relied on that would send a null project and be refused outright.
   assert.equal(
-    await page.evaluate("window.connectBodies.at(-1).project"), "paper",
+    await page.evaluate("window.pairRequestBodies?.at(-1)?.project"), "paper",
     "pairing is scoped to this document, not to whatever configured the client last",
   );
 
   await page.evaluate("window.pairingAccepted=true");
-  await page.evaluate(`Array.from(document.querySelectorAll('.setup-requirement button')).find(b=>b.textContent.trim()==='Pair').click()`);
+  await page.evaluate(`Array.from(document.querySelectorAll('.setup-requirement button')).find(b=>b.textContent.trim()==='Connect').click()`);
   await until("pairing succeeds", () => page.evaluate(
     `document.querySelector('.setup-requirement')?.dataset.state==='ready'`), 3000);
 

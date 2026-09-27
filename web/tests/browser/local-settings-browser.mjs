@@ -56,7 +56,7 @@ export function probe() { return Promise.resolve(); }
 export function retry() { window.retryCalls = (window.retryCalls || 0) + 1; return Promise.resolve(); }
 export function disconnect() { return Promise.resolve(); }
 export function connectApp() { window.pairCalls = (window.pairCalls || 0) + 1; return Promise.reject(new Error("The permission window was blocked.")); }
-export function connect() { return Promise.reject(new Error("The pairing code was not accepted.")); }
+export function connectApp() { window.pairCalls = (window.pairCalls || 0) + 1; return Promise.reject(new Error("The permission window was blocked.")); }
 export function chooseFolderBinding() { return Promise.resolve({ id: "folder", entrypoint: "main.qmd" }); }
 export async function capabilities(options) {
   window.capabilityCalls = (window.capabilityCalls || 0) + 1;
@@ -123,29 +123,24 @@ try {
   await b.navigate(`http://127.0.0.1:${port}/`);
   await until("local settings mounted", () => b.evaluate("Boolean(document.querySelector('#local-status'))"), 10000);
 
-  // An unreachable companion exposes the two install paths. Pairing details
-  // and the hand-entered code stay out of the first view.
+  // An unreachable companion exposes the two install paths. Connection details
+  // are expanded when needed.
   const initial = await b.evaluate(`JSON.stringify({
     text: document.body.innerText,
     details: document.querySelectorAll('details').length,
     summaries: document.querySelectorAll('summary').length,
-    pairingCode: Boolean(document.querySelector('[aria-label="Pairing code"]')),
   })`);
   const disconnected = JSON.parse(initial);
   assert.match(disconnected.text, /macOS & Linux/);
   assert.match(disconnected.text, /Windows/);
   assert.equal(disconnected.details, 0, "initial view has no collapsed details");
   assert.equal(disconnected.summaries, 0, "initial view has no disclosure summary");
-  assert.equal(disconnected.pairingCode, false, "manual code entry is initially hidden");
 
-  // A failed one-click permission window makes the manual pairing fallback
-  // available, and explains why it appeared.
+  // A failed one-click permission window is shown, explaining why it happened.
   await b.evaluate("window.setLocalStatus({ state: 'unauthorized', address: 'http://127.0.0.1:8763/', capabilities: null })");
   await settle();
-  assert.equal(await b.evaluate("Boolean(document.querySelector('[aria-label=\"Pairing code\"]'))"), false, "manual pairing stays hidden until the one-click attempt fails");
   await b.evaluate(clickText("Connect companion"));
   await until("popup failure shown", () => b.evaluate("document.body.innerText.includes('permission window was blocked')"), 5000);
-  assert.equal(await b.evaluate("Boolean(document.querySelector('[aria-label=\"Pairing code\"]'))"), true, "manual pairing appears after popup failure");
 
   // Once connected, the install commands give way to machine controls and a
   // Quarto permission switch. The switch asks Reader to confirm; its checked

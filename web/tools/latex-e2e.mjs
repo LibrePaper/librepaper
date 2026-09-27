@@ -7,8 +7,8 @@
 // reader opens the published read link, so its only document authority is the
 // fragment key. Publishing itself uses a locally minted, signed GitHub test
 // session; no OAuth service is contacted.
-import { createHmac } from "node:crypto";
-import { spawn } from "node:child_process";
+import { createHmac, createHash } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -35,6 +35,20 @@ let postgres = null;
 
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 const shellHeaders = { "x-librepaper-client": "shell" };
+
+function randomUrlToken(length) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  let result = "";
+  const randomBytes = new Uint8Array(length);
+  for (let i = 0; i < length; i++) {
+    result += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return result;
+}
+
+function sha256Hex(input) {
+  return createHash("sha256").update(input).digest("hex");
+}
 
 // This is the same session envelope as the OAuth callback writes. The account
 // row is seeded below so the configured provider and session generation are
@@ -114,26 +128,68 @@ async function main() {
   const targetUrl = published.url;
   let localPairing = null;
   if (MODE === "local") {
+    let stderrData = "";
     local = spawn(BINARY, ["local", "start", "--port", "8763"], {
-      stdio: "ignore", env: { ...process.env, XDG_CONFIG_HOME: config, XDG_CACHE_HOME: join(config, "cache") },
+      stdio: ["ignore", "ignore", "pipe"],
+      env: { ...process.env, XDG_CONFIG_HOME: config, XDG_CACHE_HOME: join(config, "cache") },
     });
-    let code = null;
-    await until("local pairing code", async () => {
-      try { code = JSON.parse(readFileSync(join(config, "librepaper", "local", "service.json"), "utf8")).code; } catch {}
-      return Boolean(code);
+    local.stderr.on("data", (data) => {
+      stderrData += String(data);
+    });
+    await until("local app ready", async () => {
+      try { return (await fetch("http://127.0.0.1:8763/librepaper/local/health")).ok; } catch {}
+      return false;
     }, 30000);
-    const health = await (await fetch("http://127.0.0.1:8763/librepaper/local/health")).json();
-    const connected = await fetch("http://127.0.0.1:8763/librepaper/local/connect", {
-      method: "POST", headers: { "content-type": "application/json", origin: BASE },
-      body: JSON.stringify({ origin: BASE, project: published.slug, code }),
-    });
-    const pairing = await connected.json();
-    if (!connected.ok || !pairing.token) throw new Error(`local pairing failed (${connected.status}): ${JSON.stringify(pairing)}`);
-    localPairing = { token: pairing.token, expires: pairing.expires, instance: health.instance };
-    // The local mode keeps the companion fallback reachable for the Biber
-    // fixture. Browser Biber remains preferred by the renderer; the local
-    // pairing is selected only after browser resource failure.
 
+    // Request pairing: generate request, verifier, challenge
+    const request = randomUrlToken(24);
+    const verifier = randomUrlToken(32);
+    const challenge = sha256Hex(verifier);
+    const returnUrl = BASE;
+
+    // POST pair/request to initiate pairing (will print approve code to stderr)
+    const pairResponse = await fetch("http://127.0.0.1:8763/librepaper/local/pair/request", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: BASE },
+      body: JSON.stringify({ origin: BASE, project: published.slug, request, challenge, return: returnUrl }),
+    });
+    if (pairResponse.status !== 202) throw new Error(`pair/request failed (${pairResponse.status})`);
+
+    // Extract approve code from stderr
+    let approveCode = null;
+    await until("approve code printed", async () => {
+      const match = stderrData.match(/librepaper local approve (\d{6})/);
+      if (match) { approveCode = match[1]; return true; }
+      return false;
+    }, 30000);
+
+    // Run the approve command
+    const approveResult = spawnSync(BINARY, ["local", "approve", approveCode], {
+      env: { ...process.env, XDG_CONFIG_HOME: config, XDG_CACHE_HOME: join(config, "cache") },
+    });
+    if (approveResult.status !== 0) throw new Error(`approve command failed: ${approveResult.stderr}`);
+
+    // Poll connect/claim until pairing is complete
+    let claimResponse = null;
+    let token = null;
+    await until("pairing claim accepted", async () => {
+      try {
+        claimResponse = await fetch("http://127.0.0.1:8763/librepaper/local/connect/claim", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ request, origin: BASE, project: published.slug, verifier }),
+        });
+        if (claimResponse.status === 200) {
+          const data = await claimResponse.json();
+          token = data.token;
+          return true;
+        }
+      } catch {}
+      return false;
+    }, 30000);
+    if (!token) throw new Error("pairing claim did not return a token");
+
+    localPairing = { token, expires: 0, instance: "latex-e2e" };
   }
 
   process.env.LIBREPAPER_BROWSER_IGNORE_CERT_ERRORS = "1";

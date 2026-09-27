@@ -200,11 +200,6 @@ PORT       ?= 8081
 # files with no application behind it, and the application is what the Sign in
 # button on it points at.
 SITE_PORT  ?= 8082
-# The pairing code `deploy` starts its companion with. Fixed, so connecting an
-# agent in development does not mean reading a fresh code off a terminal on
-# every restart. A real install rotates it per run; this is a convenience for
-# a machine that is already serving its own documents over plain loopback.
-LOCAL_CODE ?= 123456
 DATA       ?= librepaper-data
 # Browsers fetch LaTeX directly from an HTTPS static mirror. With no override,
 # the binary uses the project mirror. `LATEX_MIRROR=` selects an operator-hosted
@@ -318,7 +313,7 @@ wipe:  ## Delete the local deployment -- database and data directory -- and star
 # and takes it down: a preview server left holding SITE_PORT would make the
 # next `make deploy` fail on --strictPort.
 deploy: SIMULATE_ACTIVITY ?= 21
-deploy: latex-check $(BIN)  ## Serve the site, the application and a local companion (LOCAL_CODE= pairing code) and open the site in Firefox
+deploy: latex-check $(BIN)  ## Serve the site, the application and a local companion and open the site in Firefox
 	@LIBREPAPER_APP_ORIGIN=http://localhost:$(PORT) $(MAKE) --no-print-directory site
 	@test -n "$(LIBREPAPER_DATABASE_URL)" || $(MAKE) --no-print-directory postgres-dev
 	@set -e; \
@@ -327,14 +322,13 @@ deploy: latex-check $(BIN)  ## Serve the site, the application and a local compa
 	if $(BIN) local status >/dev/null 2>&1; then \
 		echo "local $$($(BIN) local status | sed -n 2p)  (already running; left alone)"; \
 	else \
-		$(BIN) local start --foreground --code $(LOCAL_CODE) >/dev/null 2>&1 & \
+		$(BIN) local start --foreground >/dev/null 2>&1 & \
 		companion_pid=$$!; \
 	fi; \
 	trap "kill $$site_pid $$companion_pid 2>/dev/null || true" EXIT INT TERM; \
 	command -v firefox >/dev/null && (sleep 2; firefox http://localhost:$(SITE_PORT) >/dev/null 2>&1 &) || true; \
 	echo "site  http://localhost:$(SITE_PORT)"; \
 	echo "app   http://localhost:$(PORT)"; \
-	test -z "$$companion_pid" || echo "local pairing code: $(LOCAL_CODE)  (agent panel, Connection tab)"; \
 	LIBREPAPER_DATABASE_URL="$${LIBREPAPER_DATABASE_URL:-$(DEV_POSTGRES_URL)}" \
 	LIBREPAPER_SITE_ORIGIN=http://localhost:$(SITE_PORT) \
 		$(MAKE) serve OPEN=0 LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY)
