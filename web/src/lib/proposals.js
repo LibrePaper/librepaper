@@ -284,19 +284,18 @@ export function decodeProposal(raw) {
 /// author is accumulating are numbered by the same code.
 export function createProposals({ session, send, mayEdit }) {
   let proposal = null;
-  // A proposal that has been stopped locally but still has unsent work
-  // waiting for its server name. If the user turns track changes off before
-  // proposal-opened arrives, we move the unsent proposal here to send its
-  // edits once the server names it.
+  // A branch switched off before the server named it, still holding work
+  // that has not gone up. Letting it go at `stop` would lose what was typed
+  // while `proposal-open` was in flight, so it waits here for its name.
   let closing = null;
 
-  // Helper to send a proposal update message.
-  const sendUpdate = (prop) => {
+  // Everything since the fork, addressed by name: see `flush`.
+  const sendUpdate = (draft, update = draft.branch.export({ mode: "update", from: draft.baseVersion })) => {
     send({
       type: "proposal-update",
-      proposal_id: prop.id,
-      tip: encodeBase64(encodeFrontiers(prop.tip)),
-      update: encodeBase64(prop.branch.export({ mode: "update", from: prop.baseVersion })),
+      proposal_id: draft.id,
+      tip: encodeBase64(encodeFrontiers(draft.tip)),
+      update: encodeBase64(update),
     });
   };
 
@@ -419,21 +418,16 @@ export function createProposals({ session, send, mayEdit }) {
         return;
       }
 
-      sendUpdate(proposal);
+      sendUpdate(proposal, update);
     },
 
     // Close the local branch. The server owns the decision from here on.
     stop() {
       if (!proposal) return;
-      // If the proposal has unsent work and no id yet, move it to closing
-      // so we can send it once proposal-opened arrives.
-      if (!proposal.id && proposal.unsent) {
-        closing = proposal;
-        proposal = null;
-      } else {
-        proposal.branch.destroy?.();
-        proposal = null;
-      }
+      // Work with no name to send it under is kept until the name arrives.
+      if (!proposal.id && proposal.unsent) closing = proposal;
+      else proposal.branch.destroy?.();
+      proposal = null;
     },
 
     // Handle incoming messages from the server.
@@ -449,8 +443,7 @@ export function createProposals({ session, send, mayEdit }) {
             this.flush();
           }
         }
-        // If we stopped before the opened message arrived, send the unsent
-        // work now that we have the server's proposal id.
+        // Or for the branch switched off while the reply was in flight.
         if (closing && !closing.id && message.proposal_id) {
           closing.id = String(message.proposal_id);
           sendUpdate(closing);
