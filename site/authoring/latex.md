@@ -6,8 +6,7 @@ title: "LaTeX"
 
 Publishing a `.tex` file stores it as `latex`, and publishing a directory takes
 the whole project: the chapters, the `.bib`, the figures. Nothing is compiled
-on the way: LibrePaper carries no TeX, and no build embeds one. See
-[the CLI](../cli.html#publish).
+on the way: LibrePaper carries no TeX, and no build embeds one.
 
 LaTeX is compiled in the browser, by LibrePaper's own pinned release of the
 browser engines: pdfTeX, XeTeX and BibTeX built for WebAssembly, with

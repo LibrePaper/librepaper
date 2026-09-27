@@ -15,17 +15,14 @@ including the ones beneath it:
 A document is shared with links, not people, and a link is the only way in.
 The owner mints and manages read, comment, and edit links in the browser's
 **Share** pane. Links can be labelled, given a comments-per-hour budget, set to
-expire, rotated, or revoked. `publish` prints the initial read link; use the
-browser when a document needs a different link or role.
+expire, rotated, or revoked.
 
 Each link contains a key in its fragment. A fragment is never sent to a server,
 so the key lands in no access log and on no `Referer` header. Minting a role's
 link again rotates it: the old key dies and the new one takes over, which is
 how a leaked link is killed without losing the role it stood for. Links expire
 after six months by default; the browser's Share pane can set a different
-expiry, including no expiry. `publish` mints the read link when it creates a
-document and prints that, so what it prints is the thing to send; revoke it and
-the document is yours alone until you mint another.
+expiry, including no expiry.
 
 A link may have a label, which is only the owner's memo about what the one
 role link is for, and a comments-per-hour budget. Every person or machine
