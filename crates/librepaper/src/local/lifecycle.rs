@@ -191,12 +191,6 @@ pub fn connection_target(raw: &str, port: u16) -> Result<Target, String> {
     let base = format!("http://127.0.0.1:{port}{BASE_PATH}");
     match link.host_str() {
         Some("launch") => launch_target(&link, port),
-        Some("manage") => {
-            if link.query().is_some() {
-                return Err("Unknown companion action.".into());
-            }
-            Ok(Target::Open(format!("{base}/manage")))
-        }
         Some("connect") => connect_target(&link, &base),
         _ => Err("Unknown companion action.".into()),
     }
@@ -325,7 +319,7 @@ pub fn open_browser(target: &str) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("Could not open companion settings: {error}"))
+        .map_err(|error| format!("Could not open the link: {error}"))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -356,6 +350,47 @@ fn desktop_quote(path: &Path) -> String {
         }
     }
     format!("\"{value}\"")
+}
+
+pub fn startup_enabled() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let config = match std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        {
+            Some(c) => c,
+            None => return false,
+        };
+        config.join("autostart/librepaper-local.desktop").exists()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match std::env::var_os("HOME") {
+            Some(h) => PathBuf::from(h)
+                .join("Library/LaunchAgents/com.librepaper.local.plist")
+                .exists(),
+            None => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        let output = Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "LibrePaperLocal",
+            ])
+            .output();
+        output.map(|o| o.status.success()).unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        false
+    }
 }
 
 pub fn set_startup(enabled: bool) -> Result<(), String> {
@@ -475,10 +510,6 @@ mod tests {
                 "accepted {invalid}"
             );
         }
-        assert_eq!(
-            connection_target("librepaper://manage", 8763).expect("manage"),
-            Target::Open(format!("http://127.0.0.1:8763{BASE_PATH}/manage"))
-        );
     }
 
     #[test]

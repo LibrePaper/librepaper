@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::json;
 use tokio::net::TcpListener;
 
 use crate::cli::{state_home, LocalArgs, LocalCommand};
@@ -34,10 +35,11 @@ pub async fn run(args: LocalArgs) {
                 start_background(port, code, &tool_path).await
             }
         }
-        LocalCommand::Settings => open("librepaper://manage").await,
         LocalCommand::Stop => stop().await,
         LocalCommand::Open { url } => open(&url).await,
         LocalCommand::Status { tool_path } => status(tool_path).await,
+        LocalCommand::Approve { code } => approve(&code).await,
+        LocalCommand::Disconnect { origin, project } => disconnect(origin, project).await,
         LocalCommand::Agent { command } => local_agent(command),
     }
 }
@@ -324,6 +326,75 @@ fn print_tool(name: &str, tool: &protocol::Tool) {
             tool.note.clone()
         };
         println!("  {name}: {note}");
+    }
+}
+
+async fn approve(code: &str) {
+    let home = state_home();
+    let pairing = PairingStore::new(&home, None);
+
+    match pairing.read_service() {
+        Some(state) => {
+            let url = format!(
+                "http://127.0.0.1:{}{}/approve",
+                state.port,
+                protocol::BASE_PATH
+            );
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build();
+
+            let result = match client {
+                Ok(client) => {
+                    client
+                        .post(&url)
+                        .header("content-type", "application/json")
+                        .body(json!({"code": code}).to_string())
+                        .send()
+                        .await
+                }
+                Err(err) => Err(err),
+            };
+
+            match result {
+                Ok(response) if response.status().is_success() => {
+                    println!("Approval code accepted");
+                }
+                Ok(response) if response.status().as_u16() == 404 => {
+                    die("Code not recognized");
+                }
+                _ => {
+                    die("Could not reach the companion");
+                }
+            }
+        }
+        None => {
+            die("librepaper local is not running");
+        }
+    }
+}
+
+async fn disconnect(origin: String, project: Option<String>) {
+    let home = state_home();
+    let pairing = PairingStore::new(&home, None);
+
+    if let Some(project) = project {
+        pairing.revoke_one(&origin, &project);
+        println!("Document disconnected: {} {}", origin, project);
+    } else {
+        let active = pairing.active_pairings();
+        let mut count = 0;
+        for (active_origin, active_project) in active {
+            if active_origin == origin {
+                pairing.revoke_one(&active_origin, &active_project);
+                count += 1;
+            }
+        }
+        if count > 0 {
+            println!("Disconnected {} documents from {}", count, origin);
+        } else {
+            println!("No documents from {} were connected", origin);
+        }
     }
 }
 

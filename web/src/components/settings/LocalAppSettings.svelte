@@ -1,6 +1,7 @@
 <script>
   import Modal from "../Modal.svelte";
   import SettingRow from "./SettingRow.svelte";
+  import CompanionPresets from "./CompanionPresets.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
@@ -43,7 +44,6 @@
   const status = $derived(({ unknown: "Companion not connected", unreachable: "Companion not connected", denied: "Local network access blocked", reachable: "Companion found", unauthorized: "Companion needs permission", connected: "Companion connected", incompatible: "Companion needs an update" })[local?.state] || "Companion not connected");
   const installer = "https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.sh";
   const windowsInstaller = "https://github.com/LibrePaper/librepaper/releases/latest/download/librepaper-installer.ps1";
-  const settingsUrl = $derived(`${local?.address || localBridge.address()}librepaper/local/manage`);
 
   async function connect() {
     if (!pairingCode || connecting) return;
@@ -141,9 +141,7 @@
     </div>
   </div>
   <div class="setting-control">
-    {#if connected}
-      <a class="btn btn-sm lp-control-outline" href={settingsUrl} target="_blank" rel="noreferrer">Open companion settings</a>
-    {:else if canPair}
+    {#if canPair}
       <button type="button" class="btn btn-sm lp-control-brand" disabled={connecting} onclick={pair}>{connecting ? "Waiting…" : "Connect companion"}</button>
     {/if}
     {#if !connected}<button type="button" class="btn btn-sm lp-control-outline" disabled={connecting} onclick={() => void localBridge.retry()}>Retry</button>{/if}
@@ -194,6 +192,10 @@
     <button type="button" class="btn btn-sm lp-control-outline" disabled={!mayEdit || choosingFolder || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>
   </SettingRow>
   {#if folderError}<p class="setting-description local-error" role="alert">{folderError}</p>{/if}
+{/if}
+
+{#if connected}
+  <CompanionPresets {main} />
 {/if}
 
 <nav class="local-footer" aria-label="Local connection help">

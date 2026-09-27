@@ -54,6 +54,7 @@ window.fetch = async (url, init) => {
     window.localCalls.push({route, body});
     if (route === 'health') return Response.json({service:'librepaper-local',protocol:[2],version:'test',instance:'one'});
     if (route === 'capabilities') return Response.json({builders:[]});
+    if (route === 'settings') return Response.json({version:'test',standalone:false,startup:null,presets:[],grants:[]});
     if (route === 'agents') return Response.json({agents:window.localAgents});
     if (route === 'connect') {
       // The real app rejects a null project as a malformed body, which is

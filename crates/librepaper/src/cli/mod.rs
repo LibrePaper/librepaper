@@ -425,8 +425,6 @@ pub enum LocalCommand {
         #[arg(long)]
         at_login: bool,
     },
-    /// Open the local companion settings, starting it if needed.
-    Settings,
     /// Ask a running companion to stop cleanly.
     Stop,
     /// Launch the companion and open a validated local connection link.
@@ -444,6 +442,19 @@ pub enum LocalCommand {
             value_delimiter = ':'
         )]
         tool_path: Vec<PathBuf>,
+    },
+    /// Approve a dialog request from the companion
+    Approve {
+        /// Approval code from the dialog
+        code: String,
+    },
+    /// Revoke a document pairing
+    Disconnect {
+        /// Origin (e.g. https://papers.example)
+        origin: String,
+        /// Specific document to disconnect (all if omitted)
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Teach this computer an ACP agent the sidebar can drive
     Agent {

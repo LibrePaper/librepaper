@@ -116,7 +116,8 @@ HTML. It also holds the agents the document sidebar can drive.
 librepaper local start       # start it in the background, or reuse the one running
 librepaper local stop        # stop it
 librepaper local status      # address, pairing code, pairings, tools found, agent connections
-librepaper local settings    # open its settings page in a browser
+librepaper local approve <code>  # approve a request on a machine with no display
+librepaper local disconnect <origin> [--project <p>]  # revoke a website's pairing
 librepaper local agent list  # the agents it offers; `agent add <id> -- <command>` teaches it another
 ```
 
@@ -134,9 +135,13 @@ instead, because it keeps data the document does not share, choose the folder
 under *Settings*, *Local app*, *Project folder* in the browser. The companion
 never receives a path from a website; the choice is made on this machine.
 
-Everything else is on the settings page that `librepaper local settings`
-opens: build presets and their permissions, paired websites, and whether
-the companion starts when you log in.
+Build presets, their permissions, starting at login and quitting are under
+*Settings*, *Local app* in the browser. Anything that adds a permission, such
+as pairing, creating a preset or granting one to a document, is confirmed in a
+dialog the companion opens on this computer, which no website can click. On a
+machine with no display the request is written to the companion's log
+(`companion.log`, or the terminal with `--foreground`) with a six digit code;
+run `librepaper local approve <code>` within five minutes to allow it.
 
 ## Agents
 
