@@ -114,7 +114,7 @@
         {:else if shown.id === "zotero"}
           <IntegrationSettings name="zotero" />
         {:else if shown.id === "local"}
-          <LocalAppSettings {main} {sourceFormat} {mayEdit} {onbindingid} {localExecution} {onlocalexecution} />
+          <LocalAppSettings {main} {sourceFormat} {mayEdit} {onbindingid} />
         {:else if shown.id === "remote"}
           <RemoteSettings {remoteConnected} {remoteNote} />
         {:else if shown.id === "account"}
@@ -124,8 +124,3 @@
     </div>
   </div>
 </Modal>
-
-<style>
-  .local-execution-switch { appearance: none; border: 0; padding: 0; cursor: pointer; }
-  .local-execution-switch:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
-</style>

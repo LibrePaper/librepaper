@@ -5,7 +5,6 @@
 
   let {
     sourceFormat = "", main = "", mayEdit = false, onbindingid,
-    localExecution = false, onlocalexecution,
   } = $props();
   const quarto = $derived(sourceFormat === "quarto");
   const projectBinding = $derived(["quarto", "typst", "markdown"].includes(sourceFormat));
@@ -23,6 +22,9 @@
   let copyError = $state(false);
   let choosingFolder = $state(false);
   let entrypoint = $state("");
+  let companionSettings = $state(null);
+  let settingsError = $state("");
+  let pendingDialogAction = $state("");
 
   $effect(() => { entrypoint = main; });
   $effect(() => {
@@ -82,6 +84,48 @@
     address = addressDraft;
     void localBridge.retry();
   }
+
+  async function loadSettings() {
+    try {
+      if (connected) {
+        companionSettings = await localBridge.settings();
+      }
+    } catch (error) {
+      settingsError = error?.message || "Could not load companion settings.";
+    }
+  }
+
+  async function callDialogAction(action) {
+    try {
+      await action();
+      await loadSettings();
+    } finally {
+      pendingDialogAction = "";
+    }
+  }
+
+  async function toggleStartup(enabled) {
+    pendingDialogAction = "startup";
+    try {
+      await callDialogAction(() => localBridge.setStartup(enabled));
+    } catch (error) {
+      settingsError = error?.message || "Could not change startup setting.";
+    }
+  }
+
+  async function quitCompanion() {
+    pendingDialogAction = "quit";
+    try {
+      await callDialogAction(() => localBridge.quit());
+      await localBridge.retry();
+    } catch (error) {
+      settingsError = error?.message || "Could not quit companion.";
+    }
+  }
+
+  $effect(() => {
+    void loadSettings();
+  });
 </script>
 
 <p class="setting-description local-intro">Connect LibrePaper to apps and tools installed on this computer, including coding agents, Zotero, Quarto, and local project folders.</p>
@@ -131,15 +175,6 @@
   </section>
 {/if}
 
-{#if connected && quarto && mayEdit}
-  <SettingRow id="local-execution" title="Local code execution" description="Code runs on this computer with your user account’s permissions.">
-    <span class="setting-description">Allow paired Quarto documents to run local code</span>
-    <button type="button" role="switch" class="switch local-execution-switch" aria-label="Allow paired Quarto documents to run local code" aria-checked={localExecution} data-state={localExecution ? "checked" : "unchecked"} onclick={() => onlocalexecution?.(!localExecution)}>
-      <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
-    </button>
-  </SettingRow>
-{/if}
-
 {#if connected && projectBinding}
   <SettingRow id="local-binding" title="Project folder" description="Use a folder on this computer for local builds and previews.">
     <input class="input input-sm setting-input" type="text" aria-label="Project entrypoint" placeholder={quarto ? "main.qmd" : sourceFormat === "typst" ? "main.typ" : "main.md"} bind:value={entrypoint} disabled={!mayEdit} />
@@ -154,12 +189,28 @@
   {#if connected}<button type="button" class="btn btn-sm lp-control-outline" onclick={() => void localBridge.disconnect()}>Disconnect</button>{/if}
 </SettingRow>
 
-{#if local?.capabilities?.tools}
-  <SettingRow title="Available tools" stacked>
-    <table class="setting-table"><thead><tr><th>Tool</th><th>Version</th></tr></thead><tbody>
-      {#each Object.entries(local.capabilities.tools) as [tool, info] (tool)}<tr><td>{tool}</td><td>{info.available ? info.version || "available" : info.note || "not found"}</td></tr>{/each}
-    </tbody></table>
+{#if settingsError}<p class="setting-description local-error" role="alert">{settingsError}</p>{/if}
+
+{#if connected && companionSettings?.startup !== null}
+  <SettingRow id="local-startup" title="Start at login" description="Open LibrePaper Companion when you log in.">
+    <button type="button" role="switch" class="switch companion-startup-switch" aria-label="Start at login" aria-checked={companionSettings.startup} data-state={companionSettings.startup ? "checked" : "unchecked"} disabled={pendingDialogAction === "startup"} onclick={() => void toggleStartup(!companionSettings.startup)}>
+      <span class="switch-thumb" data-state={companionSettings.startup ? "checked" : "unchecked"}></span>
+    </button>
+    {#if pendingDialogAction === "startup"}
+      <p class="setting-description">Approve the request in the dialog LibrePaper Companion opened on this computer.</p>
+    {/if}
   </SettingRow>
+{/if}
+
+{#if connected && companionSettings}
+  <div class="quit-button">
+    <button type="button" class="btn btn-sm lp-control-outline" disabled={pendingDialogAction === "quit"} onclick={() => void quitCompanion()}>
+      {pendingDialogAction === "quit" ? "Confirm on this computer…" : "Quit companion"}
+    </button>
+    {#if pendingDialogAction === "quit"}
+      <p class="setting-description">Approve the request in the dialog LibrePaper Companion opened on this computer.</p>
+    {/if}
+  </div>
 {/if}
 
 <SettingRow title="Check local setup" description="Rescans the tools the companion can find and shows the full report.">
@@ -176,8 +227,9 @@
   .command-line { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-width: 0; }
   .command-line code { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; padding: calc(var(--spacing) * 2); border-radius: var(--radius-container); background: var(--color-subtle); }
   .local-error { margin-block: calc(var(--spacing) * 2); color: var(--color-error-text); }
-  .local-execution-switch { appearance: none; border: 0; padding: 0; cursor: pointer; }
-  .local-execution-switch:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+  .companion-startup-switch { appearance: none; border: 0; padding: 0; cursor: pointer; }
+  .companion-startup-switch:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+  .quit-button { display: grid; gap: calc(var(--spacing) * 2); }
   .local-help { margin-top: calc(var(--spacing) * 3); }
   .setting-log { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
   @media (max-width: 700px) { .command-line { align-items: stretch; flex-direction: column; } }

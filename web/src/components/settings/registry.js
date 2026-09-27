@@ -15,9 +15,6 @@ const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
 const local = (_context) => true;
 const remote = (_context) => true;
 const projectBinding = ({ format }) => ["typst", "markdown", "quarto"].includes(format);
-const quartoIntegration = (_context) => true;
-const calepinIntegration = (_context) => true;
-const zoteroIntegration = (_context) => true;
 // The account is the deployment's, not the document's: whoever is signed in
 // is offered it whatever they happen to have open.
 const account = ({ signedIn }) => Boolean(signedIn);
@@ -47,7 +44,18 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "quarto", says: "Quarto", offered: quartoIntegration,
+    id: "local", says: "Local companion", offered: local,
+    note: "LibrePaper on this computer",
+    entries: [
+      { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows allow site agent claude codex pi opencode zotero quarto companion" },
+      { id: "local-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
+      { id: "local-binding", says: "Project folder", terms: "quarto typst markdown folder binding hosted", offered: projectBinding },
+      { id: "local-startup", says: "Start at login", terms: "startup login background standalone companion", offered: local },
+      { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
+    ],
+  },
+  {
+    id: "quarto", says: "Quarto", offered: local,
     entries: [
       { id: "quarto-status", says: "Status", terms: "quarto available version" },
       { id: "quarto-executable", says: "Executable", terms: "quarto path executable" },
@@ -58,7 +66,7 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "calepin", says: "Calepin", offered: calepinIntegration,
+    id: "calepin", says: "Calepin", offered: local,
     entries: [
       { id: "calepin-status", says: "Status", terms: "calepin available version" },
       { id: "calepin-executable", says: "Executable", terms: "calepin path executable" },
@@ -66,20 +74,9 @@ export const CATEGORIES = [
     ],
   },
   {
-    id: "zotero", says: "Zotero", offered: zoteroIntegration,
+    id: "zotero", says: "Zotero", offered: local,
     entries: [
       { id: "zotero-status", says: "Status", terms: "zotero available version citations bibliography library references" },
-    ],
-  },
-  {
-    id: "local", says: "Local companion", offered: local,
-    note: "LibrePaper on this computer",
-    entries: [
-      { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows allow site agent claude codex pi opencode zotero quarto companion" },
-      { id: "local-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
-      { id: "local-binding", says: "Project folder", terms: "quarto typst markdown folder binding hosted", offered: projectBinding },
-      { id: "local-startup", says: "Start at login", terms: "startup login background standalone companion", offered: (context) => true },
-      { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },
     ],
   },
   {
