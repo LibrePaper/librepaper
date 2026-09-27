@@ -27,7 +27,11 @@ export function createReaderBoot({
         headers: keyHeaders(key),
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error("not found");
+      if (!response.ok) {
+        const failure = new Error("not found");
+        failure.status = response.status;
+        throw failure;
+      }
       const document_ = await response.json();
       if (!disposed && !stale()) onDocument(document_);
     } catch (error) {
