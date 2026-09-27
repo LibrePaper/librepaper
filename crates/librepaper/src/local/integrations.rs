@@ -12,7 +12,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
@@ -123,99 +122,76 @@ impl Custom {
     }
 }
 
-static STORE: OnceLock<RwLock<BTreeMap<&'static str, Custom>>> = OnceLock::new();
-static STORE_PATH: OnceLock<PathBuf> = OnceLock::new();
+/// The store file and what it holds. `None` until the service calls [`init`].
+struct State {
+    path: PathBuf,
+    entries: BTreeMap<&'static str, Custom>,
+}
 
-/// Load the integrations store from disk, initializing the process-wide cache.
-/// Missing or unreadable files result in defaults; validation errors are
-/// ignored (the tool can still be overridden via env var or PATH at runtime).
-/// Called once when the service starts; calling again replaces the in-memory
-/// state (useful for tests).
+static STATE: RwLock<Option<State>> = RwLock::new(None);
+
+/// Loads `<state_home>/librepaper/local/integrations.json`. A missing or
+/// unreadable file, or an entry that no longer validates, reads as the
+/// default. Called when the service starts; a later call replaces the state.
 pub fn init(state_home: &Path) {
     let path = state_home.join("librepaper").join("local").join("integrations.json");
-    let _ = STORE_PATH.set(path.clone());
-    let all = load_or_default(&path);
-    let _ = STORE.set(RwLock::new(all));
+    let entries = load_or_default(&path);
+    *STATE.write().unwrap_or_else(|poison| poison.into_inner()) = Some(State { path, entries });
 }
 
-/// Retrieve the custom configuration for an integration. Returns the default
-/// (no override) if not initialized.
+/// The configuration for one integration; the default before [`init`].
 pub fn get(which: Integration) -> Custom {
-    if let Ok(store) = STORE.get_or_init(|| RwLock::new(BTreeMap::new())).read() {
-        store.get(which.key()).cloned().unwrap_or_default()
-    } else {
-        Custom::default()
-    }
+    STATE
+        .read()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .as_ref()
+        .and_then(|state| state.entries.get(which.key()).cloned())
+        .unwrap_or_default()
 }
 
-/// Retrieve all integrations as a map from name to custom configuration.
+/// Every integration's configuration, defaults included.
 pub fn all() -> BTreeMap<&'static str, Custom> {
-    if let Ok(store) = STORE.get_or_init(|| RwLock::new(BTreeMap::new())).read() {
-        Integration::ALL
-            .iter()
-            .map(|i| (i.key(), store.get(i.key()).cloned().unwrap_or_default()))
-            .collect()
-    } else {
-        Integration::ALL
-            .iter()
-            .map(|i| (i.key(), Custom::default()))
-            .collect()
-    }
+    Integration::ALL.iter().map(|&which| (which.key(), get(which))).collect()
 }
 
-/// Update the configuration for an integration, validate it, write it
-/// atomically to disk, and update the in-memory cache. The write is done
-/// to a temporary file in the same directory as the target, then renamed,
-/// so a crash does not corrupt the store.
+/// Validates `custom`, writes the store, then updates memory. An empty
+/// configuration removes the entry.
 pub fn set(which: Integration, custom: Custom) -> Result<(), String> {
     custom.validate()?;
-    let path = STORE_PATH
-        .get()
-        .cloned()
-        .unwrap_or_else(|| {
-            std::env::var_os("XDG_STATE_HOME")
-                .or_else(|| std::env::var_os("HOME").map(|h| format!("{h}/.local/state").into()))
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("librepaper")
-                .join("local")
-                .join("integrations.json")
-        });
-    std::fs::create_dir_all(path.parent().unwrap_or(Path::new("."))).map_err(|e| e.to_string())?;
-    let mut all = load_or_default(&path);
-    all.insert(which.key(), custom);
-    write_private_json(&path, &all).map_err(|e| e.to_string())?;
-    if let Ok(mut store) = STORE.get_or_init(|| RwLock::new(BTreeMap::new())).write() {
-        *store = all;
+    let mut guard = STATE.write().unwrap_or_else(|poison| poison.into_inner());
+    let state = guard.as_mut().ok_or("integrations store is not initialised")?;
+    let mut entries = state.entries.clone();
+    if custom == Custom::default() {
+        entries.remove(which.key());
+    } else {
+        entries.insert(which.key(), custom);
     }
+    if let Some(parent) = state.path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    write_private_json(&state.path, &entries).map_err(|e| e.to_string())?;
+    state.entries = entries;
     Ok(())
 }
 
-/// The executable to run. The override environment variable (if set to a
-/// file) wins; then the custom path (a directory is joined with the tool's
-/// program name); then a PATH search using the standard tools::find lookup.
-/// Returns None if none of these sources yields an executable file.
+/// The executable to run. The override environment variable wins (tests
+/// and packaging use it); then the custom path, a directory being joined
+/// with the program name; then a PATH search. A custom path that names no
+/// file is `None` rather than a silent fall back to some other program.
 pub fn executable(which: Integration) -> Option<PathBuf> {
-    let override_var = which.override_var();
-    let configured = std::env::var_os(override_var).map(PathBuf::from);
-    if let Some(path) = configured.filter(|path| path.is_file()) {
-        return Some(path);
-    }
-    let custom = get(which);
-    if let Some(path) = custom.path {
-        let exe = if path.is_dir() {
-            path.join(which.program())
-        } else {
-            path
-        };
-        if exe.is_file() {
-            return Some(exe);
+    if let Some(path) = std::env::var_os(which.override_var()).map(PathBuf::from) {
+        if path.is_file() {
+            return Some(path);
         }
     }
-    crate::local::tools::find(override_var, which.as_str())
+    if let Some(path) = get(which).path {
+        let exe = if path.is_dir() { path.join(which.program()) } else { path };
+        return exe.is_file().then_some(exe);
+    }
+    crate::local::tools::find(which.override_var(), which.as_str())
 }
 
-/// Extra command-line arguments to append to every invocation.
+/// Extra command-line arguments appended to every invocation.
 pub fn extra_args(which: Integration) -> Vec<String> {
     get(which).args
 }
@@ -236,7 +212,11 @@ fn load_or_default(path: &Path) -> BTreeMap<&'static str, Custom> {
 mod tests {
     use super::*;
 
+    /// The store is process-wide, so tests that touch it take turns.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn with_tempdir<F: Fn(&Path)>(f: F) {
+        let _turn = SERIAL.lock().unwrap_or_else(|poison| poison.into_inner());
         let dir = tempfile::tempdir().expect("tempdir");
         f(dir.path());
     }
