@@ -481,67 +481,6 @@ pub async fn run_job_with_bindings(
             "quarto binding is missing, revoked, or outside its authorized root",
         );
     };
-    let preset = if let Some(preset_id) = request.preset.as_deref() {
-        let store = binding_store.preset_store();
-        let (_, preset) = match store.resolve_scoped(
-            &request.origin,
-            &request.project,
-            preset_id,
-            super::presets::WorkspaceMode::Snapshot,
-            super::presets::Operation::Build,
-            &options.main,
-        ) {
-            Ok(value) => value,
-            Err(error) => return failed(&request, &job_id, &error),
-        };
-        if request.preset_revision != Some(preset.semantic_revision) {
-            return failed(
-                &request,
-                &job_id,
-                "preset changed or was not pinned at admission",
-            );
-        }
-        if preset.base_adapter != "quarto" {
-            return failed(&request, &job_id, "preset is not a Quarto preset");
-        }
-        let mut overrides = BTreeMap::new();
-        for (key, value) in request.inputs.options() {
-            let value = match value {
-                serde_json::Value::String(value) => value.clone(),
-                _ => value.to_string(),
-            };
-            overrides.insert(key.clone(), value);
-        }
-        let effective = match super::presets::PresetStore::effective_options(&preset, &overrides) {
-            Ok(options) => options,
-            Err(error) => return failed(&request, &job_id, &error),
-        };
-        for (key, value) in effective {
-            match key.as_str() {
-                "profile" => options.profile = Some(value),
-                "policy" => {
-                    options.policy = match serde_json::from_value(serde_json::json!(value)) {
-                        Ok(value) => value,
-                        Err(_) => return failed(&request, &job_id, "invalid preset Quarto policy"),
-                    }
-                }
-                "parameters" => {
-                    options.parameters = match serde_json::from_str(&value) {
-                        Ok(value) => value,
-                        Err(_) => return failed(&request, &job_id, "invalid preset parameters"),
-                    }
-                }
-                _ => return failed(&request, &job_id, "unsupported Quarto preset option"),
-            }
-        }
-        invocation_plan = match QuartoInvocationPlan::from_options(&options) {
-            Ok(plan) => plan,
-            Err(error) => return failed(&request, &job_id, &error),
-        };
-        Some(preset)
-    } else {
-        None
-    };
     let policy = policy_name(options.policy);
     if !supported_policies(quarto_version.as_deref())
         .iter()
@@ -780,17 +719,7 @@ pub async fn run_job_with_bindings(
             )
         }
     };
-    let mut command =
-        if let Some(wrapper) = preset.as_ref().and_then(|preset| preset.wrapper.as_ref()) {
-            if !Path::new(wrapper).is_absolute() || !Path::new(wrapper).is_file() {
-                return failed(&request, &job_id, "preset wrapper is unavailable");
-            }
-            let mut command = Command::new(wrapper);
-            command.arg(&quarto);
-            command
-        } else {
-            Command::new(&quarto)
-        };
+    let mut command = Command::new(&quarto);
     command.current_dir(&invocation_project);
     // Keep the entrypoint project-relative: Quarto's freezer/output-dir
     // handling treats an absolute source as a single-file render and rejects
@@ -804,11 +733,6 @@ pub async fn run_job_with_bindings(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    if let Some(preset) = &preset {
-        for (key, value) in &preset.environment {
-            command.env(key, value);
-        }
-    }
     #[cfg(unix)]
     command.process_group(0);
     // Captured here, where execution actually begins, and carried into the
@@ -837,28 +761,6 @@ pub async fn run_job_with_bindings(
             &job_id,
             "bound project changed immediately before Quarto invocation",
         );
-    }
-    if let Some(preset) = preset.as_ref() {
-        if binding_store
-            .preset_store()
-            .resolve_scoped(
-                &request.origin,
-                &request.project,
-                &preset.id,
-                super::presets::WorkspaceMode::Snapshot,
-                super::presets::Operation::Build,
-                &options.main,
-            )
-            .map_or(true, |(_, current)| {
-                request.preset_revision != Some(current.semantic_revision)
-            })
-        {
-            return failed(
-                &request,
-                &job_id,
-                "preset changed or was revoked before execution",
-            );
-        }
     }
     if binding_store
         .get_scoped(&options.binding_id, &request.origin, &request.project)
@@ -1173,7 +1075,6 @@ pub async fn run_job_with_bindings(
                     ..Default::default()
                 },
                 confinement: "none".into(),
-                preset: request.preset.clone(),
                 snapshot: request.snapshot.clone(),
                 main_path: request
                     .source

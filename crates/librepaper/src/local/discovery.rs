@@ -315,7 +315,6 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
                 workspace_modes: snapshot(),
             }],
             preview: false,
-            presets: true,
             note: String::new(),
         },
         BuilderCapability {
@@ -330,7 +329,6 @@ fn capabilities_from(cache: &Cache) -> Capabilities {
                 workspace_modes: snapshot(),
             }],
             preview: false,
-            presets: true,
             note: String::new(),
         },
     ];
@@ -401,7 +399,6 @@ pub async fn discover(refresh: bool, tool_path: &[PathBuf]) -> Capabilities {
                 },
             ],
             preview: true,
-            presets: true,
             note: String::new(),
         });
     }
@@ -424,7 +421,6 @@ pub async fn discover(refresh: bool, tool_path: &[PathBuf]) -> Capabilities {
                 },
             ],
             preview: true,
-            presets: true,
             note: String::new(),
         });
     }

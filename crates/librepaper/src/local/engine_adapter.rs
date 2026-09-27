@@ -62,7 +62,6 @@ pub async fn run(
         tools,
         cancel,
         progress,
-        &bindings.preset_store(),
     )
     .await
 }

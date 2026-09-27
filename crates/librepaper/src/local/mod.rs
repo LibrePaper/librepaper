@@ -23,7 +23,6 @@ pub mod lifecycle;
 pub mod native;
 pub mod pairing;
 pub(crate) mod paths;
-pub mod presets;
 pub mod protocol;
 pub mod quarto;
 pub mod quarto_capture;

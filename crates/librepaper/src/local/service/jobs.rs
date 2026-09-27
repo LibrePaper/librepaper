@@ -11,48 +11,6 @@
 //! rest of the module uses, and nothing about the routing changed.
 
 use super::*;
-use crate::local::presets;
-
-fn pin_preset_revision(
-    job: &mut JobRequest,
-    store: &presets::PresetStore,
-) -> Result<(), (u16, String)> {
-    let Some(preset_id) = job.preset.as_deref() else {
-        return Ok(());
-    };
-    let (_, preset) = store
-        .resolve_scoped(
-            &job.origin,
-            &job.project,
-            preset_id,
-            presets::WorkspaceMode::Snapshot,
-            presets::Operation::Build,
-            &job.entrypoint,
-        )
-        .map_err(|error| (403, error))?;
-    if preset.base_adapter != job.builder {
-        return Err((400, "preset adapter does not match request".into()));
-    }
-    let mut overrides = BTreeMap::new();
-    for (key, value) in job.inputs.options() {
-        let value = if job.kind == "quarto" {
-            match value {
-                Value::String(value) => value.clone(),
-                _ => value.to_string(),
-            }
-        } else {
-            match value {
-                Value::String(value) => value.clone(),
-                Value::Bool(value) => value.to_string(),
-                _ => return Err((400, "unsupported typed builder option".into())),
-            }
-        };
-        overrides.insert(key.clone(), value);
-    }
-    presets::PresetStore::effective_options(&preset, &overrides).map_err(|error| (400, error))?;
-    job.preset_revision = Some(preset.semantic_revision);
-    Ok(())
-}
 
 /* ------------------------------------------------------------ workspace */
 
@@ -275,8 +233,6 @@ pub(super) async fn handle_jobs_post(
             workspace: request.workspace,
             entrypoint: request.entrypoint,
             output: request.output,
-            preset: request.preset,
-            preset_revision: None,
         }
     };
     // Bound local reads must follow authentication and inventory limits.
@@ -287,11 +243,6 @@ pub(super) async fn handle_jobs_post(
             403,
             &json!({"error": "job scope does not match the connected token"}),
         );
-    }
-    if let Err((status, error)) =
-        pin_preset_revision(&mut job, &inner.quarto_bindings.preset_store())
-    {
-        return write_json(status, &json!({"error": error}));
     }
     if let Err(response) = validate_manifest_shape(&job.manifest) {
         return response;
@@ -759,96 +710,4 @@ pub(super) async fn handle_job_delete(
     inner.queue.lock().await.retain(|qid| qid != id);
     let _ = std::fs::remove_dir_all(&root);
     write_json(200, &json!({"ok": true}))
-}
-
-#[cfg(test)]
-mod preset_admission_tests {
-    use super::*;
-
-    fn job() -> JobRequest {
-        serde_json::from_value(json!({
-            "protocol": 2,
-            "kind": "build",
-            "project": "paper",
-            "origin": "https://example.test",
-            "snapshot": "tree",
-            "generation": 7,
-            "builder": "typst",
-            "workspace": {"mode": "snapshot"},
-            "entrypoint": "paper.typ",
-            "output": "pdf",
-            "inputs": {"engine": "native", "options": {}},
-            "manifest": [],
-            "preset": "paper-preset"
-        }))
-        .unwrap()
-    }
-
-    fn store(path: &std::path::Path) -> presets::PresetStore {
-        let store = presets::PresetStore::new(path);
-        store
-            .create(
-                serde_json::from_value(json!({
-                    "id": "paper-preset",
-                    "display_name": "Paper",
-                    "semantic_revision": 1,
-                    "base_adapter": "typst",
-                    "source_formats": ["typst"]
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-        store
-    }
-
-    #[test]
-    fn admission_pins_revision_and_refuses_mismatched_or_revoked_presets() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = store(directory.path());
-        let grant = store
-            .grant(
-                "https://example.test",
-                "paper",
-                "paper-preset",
-                presets::WorkspaceMode::Snapshot,
-                presets::Operation::Build,
-                "paper.typ",
-                1,
-            )
-            .unwrap();
-        let mut admitted = job();
-        pin_preset_revision(&mut admitted, &store).unwrap();
-        assert_eq!(admitted.preset_revision, Some(1));
-
-        let mut wrong_adapter = job();
-        wrong_adapter.builder = "quarto".into();
-        assert_eq!(
-            pin_preset_revision(&mut wrong_adapter, &store)
-                .unwrap_err()
-                .0,
-            400
-        );
-
-        store.revoke(&grant.id).unwrap();
-        let mut revoked = job();
-        assert_eq!(
-            pin_preset_revision(&mut revoked, &store).unwrap_err().0,
-            403
-        );
-
-        store
-            .grant(
-                "https://example.test",
-                "paper",
-                "paper-preset",
-                presets::WorkspaceMode::Snapshot,
-                presets::Operation::Build,
-                "paper.typ",
-                2,
-            )
-            .unwrap();
-        let mut regranted = job();
-        pin_preset_revision(&mut regranted, &store).unwrap();
-        assert_eq!(regranted.preset_revision, Some(1));
-    }
 }

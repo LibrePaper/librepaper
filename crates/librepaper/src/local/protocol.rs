@@ -191,8 +191,6 @@ pub struct BuilderCapability {
     #[serde(default)]
     pub preview: bool,
     #[serde(default)]
-    pub presets: bool,
-    #[serde(default)]
     pub note: String,
 }
 
@@ -263,11 +261,7 @@ impl Default for JobOptions {
 pub enum BuildInputs {
     Quarto {
         options: QuartoJobOptions,
-        /// The request's own typed options, kept verbatim. A preset-backed
-        /// build computes its effective options against what the caller
-        /// asked for, not against the Quarto options those were folded into,
-        /// so the two are not the same value and neither can stand in for
-        /// the other.
+        /// The request's own typed options, kept verbatim.
         #[serde(default)]
         overrides: BTreeMap<String, serde_json::Value>,
     },
@@ -293,7 +287,6 @@ impl BuildInputs {
     }
 
     /// The typed options the request carried, whichever builder it named.
-    /// This is what a preset's effective options are computed against.
     pub fn options(&self) -> &BTreeMap<String, serde_json::Value> {
         match self {
             Self::Native { options } => options,
@@ -330,12 +323,6 @@ pub struct JobRequest {
     pub source: Option<SourceSnapshot>,
     #[serde(default)]
     pub options: JobOptions,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset: Option<String>,
-    /// Semantic revision authorized when this job was admitted. Persisted
-    /// legacy jobs may omit it, but runners must refuse to execute them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset_revision: Option<u64>,
 }
 
 /// The only workspace forms protocol v2 accepts. A path is never represented
@@ -401,8 +388,6 @@ pub struct BuildRequestV2 {
     #[serde(default)]
     pub options: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
-    pub preset: Option<String>,
-    #[serde(default)]
     pub deadline_seconds: Option<u64>,
     #[serde(default)]
     pub manifest: Vec<ManifestEntry>,
@@ -464,13 +449,6 @@ impl BuildRequestV2 {
             );
         }
         if self
-            .preset
-            .as_deref()
-            .is_some_and(|id| id.is_empty() || id.len() > 256)
-        {
-            return Err("preset must be at most 256 bytes".into());
-        }
-        if self
             .deadline_seconds
             .is_some_and(|seconds| seconds == 0 || seconds > 3600)
         {
@@ -494,28 +472,26 @@ impl BuildRequestV2 {
         if !outputs.contains(&self.output.as_str()) {
             return Err("unsupported builder output".into());
         }
-        if self.preset.is_none() {
-            for (name, value) in &self.options {
-                if !allowed.contains(&name.as_str()) {
-                    return Err(format!("unknown {} option: {name}", self.builder));
-                }
-                let valid = match name.as_str() {
-                    "profile" => value.is_string(),
-                    "parameters" => value.is_object(),
-                    "policy" => matches!(
-                        value.as_str(),
-                        Some("project-defaults" | "refresh-computations" | "frozen")
-                    ),
-                    "data_inputs" => value.as_array().is_some_and(|items| {
-                        items
-                            .iter()
-                            .all(|item| item.as_str().is_some_and(safe_relative_path))
-                    }),
-                    _ => false,
-                };
-                if !valid {
-                    return Err(format!("invalid typed option: {name}"));
-                }
+        for (name, value) in &self.options {
+            if !allowed.contains(&name.as_str()) {
+                return Err(format!("unknown {} option: {name}", self.builder));
+            }
+            let valid = match name.as_str() {
+                "profile" => value.is_string(),
+                "parameters" => value.is_object(),
+                "policy" => matches!(
+                    value.as_str(),
+                    Some("project-defaults" | "refresh-computations" | "frozen")
+                ),
+                "data_inputs" => value.as_array().is_some_and(|items| {
+                    items
+                        .iter()
+                        .all(|item| item.as_str().is_some_and(safe_relative_path))
+                }),
+                _ => false,
+            };
+            if !valid {
+                return Err(format!("invalid typed option: {name}"));
             }
         }
         Ok(())
@@ -589,9 +565,6 @@ pub fn decode_preview(mut raw: serde_json::Value) -> Result<PreviewRequest, Stri
     raw["kind"] = serde_json::json!("build");
     let request: BuildRequestV2 = serde_json::from_value(raw).map_err(|error| error.to_string())?;
     request.validate_shape()?;
-    if request.preset.is_some() {
-        return Err("presets support snapshot builds only".into());
-    }
     let WorkspaceRequest::Bound { binding_id } = &request.workspace else {
         return Err("managed previews require bound workspace".into());
     };
@@ -940,8 +913,6 @@ pub struct BuildProvenance {
     pub version: String,
     #[serde(default)]
     pub engine: String,
-    #[serde(default)]
-    pub preset: Option<String>,
     #[serde(default)]
     pub snapshot: String,
     #[serde(default)]
