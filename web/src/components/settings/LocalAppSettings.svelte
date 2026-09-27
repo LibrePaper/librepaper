@@ -1,6 +1,5 @@
 <script>
   import SettingRow from "./SettingRow.svelte";
-  import CompanionPresets from "./CompanionPresets.svelte";
   import * as localBridge from "../../lib/companion/client.js";
   import { companion } from "../../lib/companion/status.svelte.js";
 
@@ -147,10 +146,6 @@
     <button type="button" class="btn btn-sm lp-control-outline" disabled={!mayEdit || choosingFolder || !entrypoint.trim()} onclick={() => void chooseFolder()}>{choosingFolder ? "Choosing…" : "Choose folder…"}</button>
   </SettingRow>
   {#if folderError}<p class="setting-description local-error" role="alert">{folderError}</p>{/if}
-{/if}
-
-{#if connected}
-  <CompanionPresets {main} />
 {/if}
 
 <SettingRow id="local-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change it only if you started the companion on another port.` : "Change it only if you started the companion on another port."}>

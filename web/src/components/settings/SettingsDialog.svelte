@@ -7,10 +7,12 @@
   import { tick } from "svelte";
   import Modal from "../Modal.svelte";
   import { offered, search } from "./registry.js";
+  import SettingRow from "./SettingRow.svelte";
   import EditorSettings from "./EditorSettings.svelte";
   import StorageSettings from "./StorageSettings.svelte";
   import QuotaSettings from "./QuotaSettings.svelte";
   import BuildSettings from "./BuildSettings.svelte";
+  import IntegrationSettings from "./IntegrationSettings.svelte";
   import RenderingSettings from "./RenderingSettings.svelte";
   import LocalAppSettings from "./LocalAppSettings.svelte";
   import AccountSettings from "./AccountSettings.svelte";
@@ -96,8 +98,21 @@
           {#if context.format === "latex" && mayEdit}<StorageSettings />{/if}
         {:else if shown.id === "build"}
           <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
-        {:else if shown.id === "rendering"}
-          <RenderingSettings {options} {onapplyoptions} />
+        {:else if shown.id === "quarto"}
+          <IntegrationSettings name="quarto" />
+          {#if context.format === "quarto"}<RenderingSettings {options} {onapplyoptions} />{/if}
+          {#if context.format === "quarto" && context.mayEdit}
+            <SettingRow id="quarto-execution" title="Local code execution" description="Code runs on this computer with your user account's permissions.">
+              <span class="setting-description">Allow paired Quarto documents to run local code</span>
+              <button type="button" role="switch" class="switch local-execution-switch" aria-label="Allow paired Quarto documents to run local code" aria-checked={localExecution} data-state={localExecution ? "checked" : "unchecked"} onclick={() => onlocalexecution?.(!localExecution)}>
+                <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
+              </button>
+            </SettingRow>
+          {/if}
+        {:else if shown.id === "calepin"}
+          <IntegrationSettings name="calepin" />
+        {:else if shown.id === "zotero"}
+          <IntegrationSettings name="zotero" />
         {:else if shown.id === "local"}
           <LocalAppSettings {main} {sourceFormat} {mayEdit} {onbindingid} {localExecution} {onlocalexecution} />
         {:else if shown.id === "remote"}
@@ -109,3 +124,8 @@
     </div>
   </div>
 </Modal>
+
+<style>
+  .local-execution-switch { appearance: none; border: 0; padding: 0; cursor: pointer; }
+  .local-execution-switch:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+</style>
