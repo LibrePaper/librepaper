@@ -1,5 +1,4 @@
 <script>
-  import Modal from "../Modal.svelte";
   import SettingRow from "./SettingRow.svelte";
   import CompanionPresets from "./CompanionPresets.svelte";
   import * as localBridge from "../../lib/companion/client.js";
@@ -25,7 +24,6 @@
   let copyError = $state(false);
   let choosingFolder = $state(false);
   let entrypoint = $state("");
-  let addressOpen = $state(false);
 
   $effect(() => { entrypoint = main; });
   $effect(() => {
@@ -83,13 +81,7 @@
   function saveAddress() {
     localBridge.setAddress(addressDraft);
     address = addressDraft;
-    addressOpen = false;
     void localBridge.retry();
-  }
-
-  function openAddress() {
-    addressDraft = localBridge.address();
-    addressOpen = true;
   }
 </script>
 
@@ -159,43 +151,28 @@
 
 {#if connected}
   <CompanionPresets {main} />
-
-  <SettingRow title="Companion address" description="Where LibrePaper Companion is running">
-    <span class="setting-description">{local?.address || address}</span>
-  </SettingRow>
-  {#if local?.version}
-    <SettingRow title="Companion version">
-      <span class="setting-description">{local.version}</span>
-    </SettingRow>
-  {/if}
-  {#if connected}
-    <div class="disconnect-actions">
-      <button type="button" class="btn btn-sm lp-control-outline" onclick={() => void localBridge.disconnect()}>Disconnect</button>
-    </div>
-  {/if}
-  {#if local?.capabilities?.tools}
-    <div class="tools-section">
-      <div class="setting-title">Available tools</div>
-      <table class="setting-table"><thead><tr><th>Tool</th><th>Version</th></tr></thead><tbody>
-        {#each Object.entries(local.capabilities.tools) as [tool, info] (tool)}<tr><td>{tool}</td><td>{info.available ? info.version || "available" : info.note || "not found"}</td></tr>{/each}
-      </tbody></table>
-    </div>
-  {/if}
-
-  <div class="setup-actions-row">
-    <button type="button" class="btn btn-sm lp-control-outline" onclick={openAddress}>Change companion address</button>
-    <button type="button" class="btn btn-sm lp-control-outline" id="local-doctor" onclick={() => void doctorReport()}>Check local setup</button>
-  </div>
-  {#if doctor}<pre class="setting-log" role="status">{doctor}</pre>{/if}
-
-  <p class="setting-description setup-help"><a href="https://github.com/LibrePaper/librepaper/issues" target="_blank" rel="noreferrer">Troubleshooting</a></p>
 {/if}
 
-<Modal bind:open={addressOpen} title="Custom companion address" confirm={{ label: "Save address", onclick: saveAddress }}>
-  <p class="setting-description">Use the default unless you started the companion at another address or port.</p>
-  <label class="setting-title" for="local-address">Custom companion address</label>
-  <input id="local-address" aria-label="Custom companion address" class="input input-sm setting-input" type="url" bind:value={addressDraft} />
-</Modal>
+<SettingRow id="local-address" title="Companion address" description={local?.version ? `Version ${local.version}. Change it only if you started the companion on another port.` : "Change it only if you started the companion on another port."}>
+  <input aria-label="Companion address" class="input input-sm setting-input" type="url" bind:value={addressDraft} />
+  <button type="button" class="btn btn-sm lp-control-outline" disabled={addressDraft === address} onclick={saveAddress}>Save</button>
+  {#if connected}<button type="button" class="btn btn-sm lp-control-outline" onclick={() => void localBridge.disconnect()}>Disconnect</button>{/if}
+</SettingRow>
+
+{#if local?.capabilities?.tools}
+  <SettingRow title="Available tools" stacked>
+    <table class="setting-table"><thead><tr><th>Tool</th><th>Version</th></tr></thead><tbody>
+      {#each Object.entries(local.capabilities.tools) as [tool, info] (tool)}<tr><td>{tool}</td><td>{info.available ? info.version || "available" : info.note || "not found"}</td></tr>{/each}
+    </tbody></table>
+  </SettingRow>
+{/if}
+
+<SettingRow title="Check local setup" description="Rescans the tools the companion can find and shows the full report.">
+  <button type="button" class="btn btn-sm lp-control-outline" id="local-doctor" onclick={() => void doctorReport()}>Check</button>
+</SettingRow>
+{#if doctor}<pre class="setting-log" role="status">{doctor}</pre>{/if}
+
+<p class="setting-description local-help">Still stuck? <a href="https://github.com/LibrePaper/librepaper/issues" target="_blank" rel="noreferrer">Report a problem</a> with the setup report attached.</p>
 
 <style>
   .local-intro { max-width: 42rem; margin-block: 0 calc(var(--spacing) * 3); }
@@ -206,10 +183,7 @@
   .local-error { margin-block: calc(var(--spacing) * 2); color: var(--color-error-text); }
   .local-execution-switch { appearance: none; border: 0; padding: 0; cursor: pointer; }
   .local-execution-switch:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
-  .tools-section { display: grid; gap: calc(var(--spacing) * 2); margin-block: calc(var(--spacing) * 3); }
-  .disconnect-actions { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 2); margin-block: calc(var(--spacing) * 2); }
-  .setup-actions-row { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 2); margin-block: calc(var(--spacing) * 3); }
-  .setup-help { margin-top: calc(var(--spacing) * 3); }
+  .local-help { margin-top: calc(var(--spacing) * 3); }
   .setting-log { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
   @media (max-width: 700px) { .command-line { align-items: stretch; flex-direction: column; } }
 </style>

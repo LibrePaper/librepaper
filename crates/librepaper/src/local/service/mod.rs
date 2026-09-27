@@ -935,7 +935,7 @@ async fn handle(
         .map(|rest| rest.trim_matches('/').to_string());
     let is_open_route = matches!(
         route.as_deref(),
-        Some("health") | Some("connect") | Some("connect/claim")
+        Some("health") | Some("pair/request") | Some("connect/claim")
     );
     let is_preflight = method == Method::OPTIONS;
 
@@ -960,11 +960,9 @@ async fn handle(
         }
     };
 
-    let local_page = matches!(route.as_deref(), Some("pair/request"));
-    let allow_origin = !local_page
-        && origin
-            .as_deref()
-            .is_some_and(|o| is_open_route || inner.pairing.has_live_pairing(o));
+    let allow_origin = origin
+        .as_deref()
+        .is_some_and(|o| is_open_route || inner.pairing.has_live_pairing(o));
     apply_common_headers(response, origin.as_deref(), allow_origin, is_preflight)
 }
 
@@ -985,7 +983,8 @@ async fn dispatch(
         ["pair", "request"] if *method == Method::POST => {
             consent::handle_pair_request(inner, peer, request).await
         }
-        ["pair", "status"] if *method == Method::GET => {
+        // Asked only by this computer's own link handler, never by a page.
+        ["pair", "status"] if *method == Method::GET && origin.is_none() => {
             consent::handle_pair_status(inner, request).await
         }
         ["disconnect"] if *method == Method::POST => {

@@ -55,7 +55,8 @@ export const CATEGORIES = [
     id: "local", says: "Local", offered: local,
     note: "LibrePaper on this computer",
     entries: [
-      { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows allow site agent claude codex pi opencode zotero quarto address port url localhost host version tools companion" },
+      { id: "local-status", says: "Connection", terms: "connect disconnect retry status install installer setup linux macos windows allow site agent claude codex pi opencode zotero quarto companion" },
+      { id: "local-address", says: "Companion address", terms: "address port url localhost host version disconnect" },
       { id: "local-execution", says: "Local code execution", terms: "quarto run code permission execute", offered: quarto },
       { id: "local-binding", says: "Project folder", terms: "quarto typst markdown folder binding hosted", offered: projectBinding },
       { id: "local-doctor", says: "Check local setup", terms: "doctor troubleshoot diagnostics report" },

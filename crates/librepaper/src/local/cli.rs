@@ -105,7 +105,6 @@ async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     let state = ServiceState {
         port,
         instance: instance.clone(),
-        code: String::new(),
         pid: std::process::id(),
         started: crate::auth::now_unix(),
     };
@@ -204,10 +203,17 @@ async fn open(url: &str) {
         .unwrap_or_else(|error| die(error));
     let target = crate::local::lifecycle::connection_target(url, state.port)
         .unwrap_or_else(|error| die(error));
-    if let crate::local::lifecycle::Target::Open(target) = target {
-        if let Err(error) = crate::local::lifecycle::open_browser(&target) {
-            die(error);
+    let result = match target {
+        crate::local::lifecycle::Target::Nothing => Ok(()),
+        crate::local::lifecycle::Target::Open(target) => {
+            crate::local::lifecycle::open_browser(&target)
         }
+        crate::local::lifecycle::Target::Pair(link) => {
+            crate::local::lifecycle::pair(&link, state.port).await
+        }
+    };
+    if let Err(error) = result {
+        die(error);
     }
 }
 

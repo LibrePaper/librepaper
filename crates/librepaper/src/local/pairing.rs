@@ -198,7 +198,6 @@ pub fn random_token() -> String {
     URL_SAFE_NO_PAD.encode(random_bytes(32))
 }
 
-
 /// A fresh six-digit approval code, as `approval::ask_headless` generates
 /// for the terminal fallback when no dialog tool exists.
 pub fn generate_code() -> String {

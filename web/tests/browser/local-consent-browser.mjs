@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { build } from "vite";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { createHash } from "node:crypto";
+
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -24,19 +24,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = dirname(dirname(dirname(here)));
 const binary = process.env.LIBREPAPER_TEST_BINARY || join(root, "dist", "librepaper");
 assert.ok(existsSync(binary), "run `make build` first");
-
-function randomUrlToken(length) {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-  let result = "";
-  for (let i = 0; i < length; i++) {
-    result += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return result;
-}
-
-function sha256Hex(input) {
-  return createHash("sha256").update(input).digest("hex");
-}
 
 const temporary = mkdtempSync(join(tmpdir(), "librepaper-consent-check-"));
 const output = join(temporary, "build");
@@ -84,21 +71,17 @@ const server = createServer((request, response) => {
 await new Promise((resolve) => server.listen(pagePort, "127.0.0.1", resolve));
 pagePort = server.address().port;
 
-// The local app, with its state and cache kept out of the real home.
+// The local app, with its state and cache kept out of the real home, and no
+// display, so approval falls to the terminal code a test can read.
 const stateHome = join(temporary, "state");
 const cacheHome = join(temporary, "cache");
-let appStderr = "";
-let approveCode = null;
-const app = spawn(binary, ["local", "start", "--port", String(appPort)], {
-  env: { ...process.env, XDG_STATE_HOME: stateHome, XDG_CACHE_HOME: cacheHome, HOME: temporary },
-  stdio: ["ignore", "pipe", "pipe"],
-});
+const appEnv = { ...process.env, XDG_STATE_HOME: stateHome, XDG_CACHE_HOME: cacheHome, HOME: temporary };
+delete appEnv.DISPLAY;
+delete appEnv.WAYLAND_DISPLAY;
+const app = spawn(binary, ["local", "start", "--port", String(appPort)], { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
 let appLog = "";
 app.stdout.on("data", (chunk) => (appLog += chunk));
-app.stderr.on("data", (chunk) => {
-  appStderr += chunk;
-  appLog += chunk;
-});
+app.stderr.on("data", (chunk) => (appLog += chunk));
 await until("local app health", async () => {
   const response = await fetch(`${appAddress}librepaper/local/health`);
   return response.ok;
@@ -115,41 +98,26 @@ try {
   const before = await b.evaluate("window.local.retry().then((s) => s.state)");
   assert.equal(before, "unauthorized", `before consent: ${before}`);
 
-  // The reader opens the consent page as a popup from a click; the gesture
-  // is what lets the popup through, as it does for a person. The same call
-  // also starts this tab's own `connect/claim` poll underneath the popup,
-  // which is what actually picks up the token once a system dialog or command
-  // approves the pairing.
-  await b.evaluateWithGesture("window.startPairing()");
-  const PAIR = "/librepaper/local/pair/request";
-  await until("consent page shown", () => b.popupEvaluate(PAIR, "Boolean(document.querySelector('button.allow'))"), 10000);
-  const shown = await b.popupEvaluate(PAIR, "document.body.innerText");
-  assert.match(shown, /localhost:\d+/, "the page names the site asking");
-  assert.match(shown, /paper-check/, "the page names the document");
-  assert.match(shown, /execute arbitrary code/, "the page warns about native Quarto execution");
-  assert.match(shown, /Pairing alone does not run/, "the page distinguishes pairing from execution");
-
-  // Extract the approval code from companion stderr
-  await until("approve code in stderr", async () => {
-    const match = appStderr.match(/librepaper local approve (\d{6})/);
-    if (match) { approveCode = match[1]; return true; }
-    return false;
+  // Connect asks the companion directly; no window opens. With no display
+  // the companion asks on its terminal instead of in a dialog, and the
+  // approve command answers it exactly as the person at this computer would.
+  await b.evaluate("window.startPairing()");
+  let approveCode = null;
+  await until("approval asked on the terminal", () => {
+    approveCode = appLog.match(/librepaper local approve (\d{6})/)?.[1] || null;
+    return Boolean(approveCode);
   }, 10000);
-
-  // Run the approve command to approve the pairing request
-  const approveResult = spawnSync(binary, ["local", "approve", approveCode], {
-    env: { ...process.env, XDG_STATE_HOME: stateHome, XDG_CACHE_HOME: cacheHome, HOME: temporary },
-  });
-  if (approveResult.status !== 0) throw new Error(`approve command failed: ${approveResult.stderr}`);
+  assert.equal(await b.evaluate("window.local.status().state"), "unauthorized", "nothing is paired before approval");
+  const approved = spawnSync(binary, ["local", "approve", approveCode], { env: appEnv, encoding: "utf8" });
+  assert.equal(approved.status, 0, `approve: ${approved.stderr}`);
 
   // Wait on the client's status rather than the pairing promise, so a
   // failure reports what the page saw instead of hanging on a promise.
   try {
     await until("pairing arrives", () => b.evaluate("window.local.status().state === 'connected'"), 15000);
   } catch (error) {
-    const frame = await b.popupEvaluate(PAIR, "document.body.innerText + ' | ' + location.href").catch((e) => `popup: ${e.message}`);
     const status = await b.evaluate("JSON.stringify(window.local.status())");
-    throw new Error(`${error.message}\nframe: ${frame}\nstatus: ${status}\napp log: ${appLog}`);
+    throw new Error(`${error.message}\nstatus: ${status}\napp log: ${appLog}`);
   }
   const outcome = "window.pairing.then((r) => JSON.stringify(r))";
   const after = JSON.parse(await b.evaluate(outcome));
@@ -165,7 +133,7 @@ try {
   assert.equal(keys.length, 1, `one pairing: ${keys}`);
   assert.match(keys[0], new RegExp(`^http://localhost:${pagePort}\\|paper-check$`));
 
-  console.log("local-consent-browser: hosted binding by default, consent page names site and document, Allow pairs and connects, one pairing for the reader's origin passed");
+  console.log("local-consent-browser: hosted binding by default, Connect asks the companion with no window, terminal approval pairs and connects, one pairing for the reader's origin passed");
 } finally {
   if (b) await b.close();
   app.kill();

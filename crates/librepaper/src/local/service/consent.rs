@@ -14,39 +14,8 @@
 
 use super::*;
 
-fn pair_query(query: &str) -> Option<(String, String)> {
-    let mut origin = None;
-    let mut project = None;
-    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
-        match &*key {
-            "origin" => origin = super::super::pairing::valid_origin(&value),
-            "project" => project = super::super::pairing::valid_project(&value),
-            _ => {}
-        }
-    }
-    Some((origin?, project?))
-}
-
-/// `request`, `challenge` and `return` off the `pair/request` query string.
-/// `origin` must already be validated: `return`'s own validation depends on
-/// it.
-fn pair_request_fields(query: &str, origin: &str) -> Option<(String, String, String)> {
-    let mut request = None;
-    let mut challenge = None;
-    let mut return_to = None;
-    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
-        match &*key {
-            "request" => request = super::super::pairing::valid_request_id(&value),
-            "challenge" => challenge = super::super::pairing::valid_challenge(&value),
-            "return" => return_to = super::super::pairing::valid_return(&value, origin),
-            _ => {}
-        }
-    }
-    Some((request?, challenge?, return_to?))
-}
-
 pub(super) async fn handle_pair_request(
-    inner: &Inner,
+    inner: &std::sync::Arc<Inner>,
     peer: SocketAddr,
     request: Request<Body>,
 ) -> Reply {
@@ -65,7 +34,8 @@ pub(super) async fn handle_pair_request(
         project: String,
         request: String,
         challenge: String,
-        return: String,
+        #[serde(rename = "return")]
+        return_to: String,
     }
 
     let body = match read_json_body::<PairRequestBody>(request).await {
@@ -83,20 +53,14 @@ pub(super) async fn handle_pair_request(
     let origin = match super::super::pairing::valid_origin(&body.origin) {
         Some(o) => o,
         None => {
-            return write_json(
-                400,
-                &json!({"error": "pair request needs a valid origin"}),
-            );
+            return write_json(400, &json!({"error": "pair request needs a valid origin"}));
         }
     };
 
     let project = match super::super::pairing::valid_project(&body.project) {
         Some(p) => p,
         None => {
-            return write_json(
-                400,
-                &json!({"error": "pair request needs a valid project"}),
-            );
+            return write_json(400, &json!({"error": "pair request needs a valid project"}));
         }
     };
 
@@ -120,7 +84,7 @@ pub(super) async fn handle_pair_request(
         }
     };
 
-    let return_to = match super::super::pairing::valid_return(&body.return, &origin) {
+    let return_to = match super::super::pairing::valid_return(&body.return_to, &origin) {
         Some(r) => r,
         None => {
             return write_json(
@@ -162,6 +126,7 @@ pub(super) async fn handle_pair_request(
                 token: None,
                 asked: false,
                 refused: false,
+                refused_message: None,
             },
         );
     }
@@ -197,7 +162,11 @@ pub(super) async fn handle_pair_request(
                 let mut pending = inner_clone.pending_pairs.lock().await;
                 if let Some(item) = pending.get_mut(&request_id_clone) {
                     if item.expires > Instant::now() {
-                        let (token, expires) = match inner_clone.pairing.issue(&origin_clone, &project_clone, "native dialog") {
+                        let (token, expires) = match inner_clone.pairing.issue(
+                            &origin_clone,
+                            &project_clone,
+                            "native dialog",
+                        ) {
                             Ok(issued) => issued,
                             Err(_) => {
                                 item.refused = true;
@@ -246,18 +215,15 @@ pub(super) async fn handle_pair_status(inner: &Inner, request: Request<Body>) ->
             write_json(404, &json!({"error": "request expired"}))
         }
         Some(item) if item.refused => {
-            let error_msg = item.refused_message.clone().unwrap_or_else(|| "approval was denied".to_string());
+            let error_msg = item
+                .refused_message
+                .clone()
+                .unwrap_or_else(|| "approval was denied".to_string());
             write_json(403, &json!({"error": error_msg}))
         }
-        Some(item) if item.token.is_some() => {
-            write_json(200, &json!({"status": "allowed"}))
-        }
-        Some(_) => {
-            write_json(202, &json!({"status": "pending"}))
-        }
-        None => {
-            write_json(404, &json!({"error": "request not found"}))
-        }
+        Some(item) if item.token.is_some() => write_json(200, &json!({"status": "allowed"})),
+        Some(_) => write_json(202, &json!({"status": "pending"})),
+        None => write_json(404, &json!({"error": "request not found"})),
     }
 }
 
@@ -291,7 +257,10 @@ pub(super) async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> 
         return write_json(403, &json!({"error": "pair request does not match"}));
     }
     if item.refused {
-        let error_msg = item.refused_message.clone().unwrap_or_else(|| "approval was denied".to_string());
+        let error_msg = item
+            .refused_message
+            .clone()
+            .unwrap_or_else(|| "approval was denied".to_string());
         pending.remove(&body.request);
         return write_json(403, &json!({"error": error_msg}));
     }
@@ -308,7 +277,6 @@ pub(super) async fn handle_pair_claim(inner: &Inner, request: Request<Body>) -> 
         }),
     )
 }
-
 
 pub(super) async fn rate_limited(inner: &Inner, peer: SocketAddr) -> bool {
     let key = peer.ip().to_string();
@@ -327,7 +295,6 @@ pub(super) async fn rate_limited(inner: &Inner, peer: SocketAddr) -> bool {
     window.push_back(now);
     false
 }
-
 
 /* ---------------------------------------------------------- disconnect */
 
@@ -360,4 +327,3 @@ pub(super) async fn handle_disconnect(
 }
 
 /* -------------------------------------------------------- capabilities */
-

@@ -8,7 +8,7 @@ Connecting an agent is a click in the sidebar, not a prompt you paste. The brows
 
 ## Setup, once per computer
 
-Install the app and pair this browser with it. Click Connect in the sidebar, approve the system dialog that appears, and continue. On machines without a display, the companion prints a line containing `librepaper local approve <six digits>` to stderr instead; run that command to approve. This is the same pairing the local compiler uses, so if you already paired for Quarto or native TeX there is nothing to do.
+Install the app and pair this browser with it. Click Connect in the sidebar and allow it in the dialog the app shows. On a computer with no display, the app prints a `librepaper local approve` command instead; run it in a terminal. This is the same pairing the local compiler uses, so if you already paired for Quarto or native TeX there is nothing to do.
 
 ```sh
 curl -fsSL https://librepaper.org/install.sh | sh

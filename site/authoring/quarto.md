@@ -24,8 +24,8 @@ there. Enable local rendering from the preview banner, or start the companion fr
 terminal; see [the companion](../cli.html#the-companion).
 
 The first time you pick Quarto preview, the browser asks the local app
-to connect. Approve the system dialog that appears (or run the `librepaper local approve`
-command on machines without a display). Once paired, your edits sync into the app's own workspace, Quarto
+to connect. Allow it in the dialog the app shows (on a computer with no display, run the
+`librepaper local approve` command the app prints). Once paired, your edits sync into the app's own workspace, Quarto
 re-renders there, and the pane polls the result and paints it in, so comments
 and highlights work on the live page too. The previous render stays on screen
 while a new one is under way, so figures never flash blank. If the browser

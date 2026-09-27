@@ -50,15 +50,7 @@ pub struct Health {
     pub instance: String,
 }
 
-/// `POST connect` request: a deliberate pairing, code in hand.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ConnectRequest {
-    pub origin: String,
-    pub project: String,
-    pub code: String,
-}
-
-/// `POST connect` answer: a bearer token scoped to (origin, project).
+/// `POST connect/claim` answer: a bearer token scoped to (origin, project).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ConnectResponse {
     pub token: String,

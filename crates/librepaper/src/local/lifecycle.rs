@@ -60,10 +60,7 @@ pub async fn running(state_home: &Path) -> Option<ServiceState> {
 
 /// Idempotent launch, with bounded readiness checks. The CLI reports success
 /// only after identifying the running instance rather than merely spawning.
-pub async fn spawn_background(
-    port: u16,
-    tool_path: &[PathBuf],
-) -> Result<ServiceState, String> {
+pub async fn spawn_background(port: u16, tool_path: &[PathBuf]) -> Result<ServiceState, String> {
     let state_home = crate::cli::state_home();
     if let Some(state) = running(&state_home).await {
         if port != 0 && port != state.port {
@@ -170,6 +167,17 @@ pub async fn stop(state_home: &Path) -> Result<(), String> {
 pub enum Target {
     Nothing,
     Open(String),
+    Pair(PairLink),
+}
+
+/// The fields of a validated `librepaper://connect` link.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PairLink {
+    pub origin: String,
+    pub project: String,
+    pub request: String,
+    pub challenge: String,
+    pub return_to: String,
 }
 
 /// Pure validation, also used before launching a stopped companion.
@@ -186,17 +194,15 @@ pub fn connection_target(raw: &str, port: u16) -> Result<Target, String> {
     }
     match link.host_str() {
         Some("launch") => launch_target(&link, port),
-        Some("connect") => connect_target(&link, port),
+        Some("connect") => connect_target(&link),
         _ => Err("Unknown companion action.".into()),
     }
 }
 
-/// `librepaper://connect?origin&project&request&challenge&return`: POSTs to
-/// pair/request with JSON body, then polls pair/status in a background task.
-/// Only opens the browser if allowed AND port != default port, with the
-/// return fragment. Otherwise opens nothing. Validation is the shared rule
+/// `librepaper://connect?origin&project&request&challenge&return`: the
+/// fields `pair` hands the companion. Validation is the shared rule
 /// `crate::local::pairing` and the consent route both call.
-fn connect_target(link: &url::Url, port: u16) -> Result<Target, String> {
+fn connect_target(link: &url::Url) -> Result<Target, String> {
     let mut fields = std::collections::HashMap::new();
     for (key, value) in link.query_pairs() {
         if !matches!(
@@ -236,67 +242,73 @@ fn connect_target(link: &url::Url, port: u16) -> Result<Target, String> {
         return Err("Invalid connection return address.".into());
     }
 
-    let origin_str = origin.to_string();
-    let project_str = project.to_string();
-    let request_id_str = request.to_string();
-    let challenge_str = challenge.to_string();
-    let return_to_str = return_to.to_string();
+    Ok(Target::Pair(PairLink {
+        origin: origin.clone(),
+        project: project.clone(),
+        request: request.clone(),
+        challenge: challenge.clone(),
+        return_to: return_to.clone(),
+    }))
+}
 
-    tokio::spawn(async move {
-        let pair_request_url = format!("http://127.0.0.1:{}{}/pair/request", port, BASE_PATH);
-        let status_url_base = format!("http://127.0.0.1:{}{}/pair/status", port, BASE_PATH);
-
-        let request_body = serde_json::json!({
-            "origin": origin_str,
-            "project": project_str,
-            "request": request_id_str.clone(),
-            "challenge": challenge_str,
-            "return": return_to_str.clone(),
-        });
-
-        let client = match reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(5))
-            .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-
-        if client
-            .post(&pair_request_url)
-            .header("origin", &origin_str)
-            .header("content-type", "application/json")
-            .body(request_body.to_string())
+/// Hands a `librepaper://connect` link to the running companion as the page
+/// itself would, so the native dialog appears with no browser window, and
+/// waits for the answer. Only an allowed pairing on a port the page cannot
+/// guess sends the browser anywhere: back to `return` with the address in
+/// the fragment.
+pub async fn pair(link: &PairLink, port: u16) -> Result<(), String> {
+    let base = format!("http://127.0.0.1:{port}{BASE_PATH}");
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .post(format!("{base}/pair/request"))
+        .header("origin", &link.origin)
+        .json(&serde_json::json!({
+            "origin": link.origin,
+            "project": link.project,
+            "request": link.request,
+            "challenge": link.challenge,
+            "return": link.return_to,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("The companion did not answer: {error}"))?;
+    if response.status() != reqwest::StatusCode::ACCEPTED {
+        return Err(format!(
+            "The companion refused the connection ({}).",
+            response.status()
+        ));
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let Ok(response) = client
+            .get(format!("{base}/pair/status"))
+            .query(&[("request", &link.request)])
             .send()
             .await
-            .is_err()
-        {
-            return;
-        }
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
-        loop {
-            if tokio::time::Instant::now() >= deadline {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-
-            let status_url_with_query = format!("{}?request={}", status_url_base, &request_id_str);
-            if let Ok(response) = client.get(&status_url_with_query).send().await {
-                if response.status() == 200 {
-                    if port != DEFAULT_PORT {
-                        let _ = open_browser(&pairing::return_fragment(&return_to_str, port, &request_id_str));
-                    }
-                    return;
-                } else if response.status().is_client_error() {
-                    return;
+        else {
+            continue;
+        };
+        match response.status() {
+            reqwest::StatusCode::ACCEPTED => continue,
+            reqwest::StatusCode::OK => {
+                if port != DEFAULT_PORT {
+                    open_browser(&pairing::return_fragment(
+                        &link.return_to,
+                        port,
+                        &link.request,
+                    ))?;
                 }
+                return Ok(());
             }
+            _ => return Ok(()), // Refused or expired: the page's own claim poll says so.
         }
-    });
-
-    Ok(Target::Nothing)
+    }
+    Ok(())
 }
 
 /// `librepaper://launch`, with or without `?origin&request&return`. Either
@@ -519,7 +531,7 @@ fn write_startup_file(path: &std::path::Path, contents: String) -> Result<(), St
 mod tests {
     use super::*;
     #[test]
-    fn deep_links_only_open_scoped_local_consent() {
+    fn connect_links_carry_only_validated_pair_fields() {
         let query = format!(
             "origin=https%3A%2F%2Fpapers.example&project=paper&request={}&challenge={}&return=https%3A%2F%2Fpapers.example%2Fdoc",
             "r".repeat(32),
@@ -527,11 +539,11 @@ mod tests {
         );
         let target =
             connection_target(&format!("librepaper://connect?{query}"), 18763).expect("valid link");
-        let Target::Open(target) = target else {
-            panic!("a connect link always opens the consent page");
+        let Target::Pair(link) = target else {
+            panic!("a connect link always asks the companion to pair");
         };
-        assert!(target.starts_with(&format!("http://127.0.0.1:18763{BASE_PATH}/pair/request?")));
-        assert!(target.contains("return=https"));
+        assert_eq!(link.origin, "https://papers.example");
+        assert_eq!(link.return_to, "https://papers.example/doc");
         for invalid in [
             "https://evil.example".into(),
             "librepaper://connect".into(),
