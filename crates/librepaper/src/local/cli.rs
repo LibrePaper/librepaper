@@ -10,7 +10,7 @@ use serde_json::json;
 use tokio::net::TcpListener;
 
 use crate::cli::{state_home, LocalArgs, LocalCommand};
-use crate::local::pairing::{generate_code, PairingStore, ServiceState};
+use crate::local::pairing::{PairingStore, ServiceState};
 use crate::local::protocol::{self, DEFAULT_PORT};
 use crate::local::service::{LocalService, NativeRunner, Runner};
 use crate::util::die;
@@ -20,7 +20,6 @@ pub async fn run(args: LocalArgs) {
         LocalCommand::Start {
             foreground,
             port,
-            code,
             tool_path,
             at_login,
         } => {
@@ -30,9 +29,9 @@ pub async fn run(args: LocalArgs) {
                 }
             }
             if foreground {
-                start_foreground(port, code, tool_path).await
+                start_foreground(port, tool_path).await
             } else {
-                start_background(port, code, &tool_path).await
+                start_background(port, &tool_path).await
             }
         }
         LocalCommand::Stop => stop().await,
@@ -63,16 +62,16 @@ fn cache_home() -> PathBuf {
     }
 }
 
-async fn start_background(port: u16, code: Option<String>, tool_path: &[PathBuf]) {
-    match crate::local::lifecycle::spawn_background(port, code.as_deref(), tool_path).await {
+async fn start_background(port: u16, tool_path: &[PathBuf]) {
+    match crate::local::lifecycle::spawn_background(port, tool_path).await {
         Ok(state) => println!("librepaper local companion ready on port {}", state.port),
         Err(error) => die(error),
     }
 }
 
-async fn start_foreground(port: u16, code: Option<String>, tool_path: Vec<PathBuf>) {
+async fn start_foreground(port: u16, tool_path: Vec<PathBuf>) {
     let state_home = state_home();
-    let pairing = PairingStore::new(&state_home, code.clone());
+    let pairing = PairingStore::new(&state_home, None);
     let port = if port == 0 { DEFAULT_PORT } else { port };
 
     let local_dir = state_home.join("librepaper/local");
@@ -103,13 +102,10 @@ async fn start_foreground(port: u16, code: Option<String>, tool_path: Vec<PathBu
     let listener_v6 = TcpListener::bind(("::1", port)).await.ok();
 
     let instance = hex::encode(crate::auth::random_bytes(8));
-    let code = code
-        .filter(|c| !c.trim().is_empty())
-        .unwrap_or_else(generate_code);
     let state = ServiceState {
         port,
         instance: instance.clone(),
-        code: code.clone(),
+        code: String::new(),
         pid: std::process::id(),
         started: crate::auth::now_unix(),
     };
@@ -137,7 +133,7 @@ async fn start_foreground(port: u16, code: Option<String>, tool_path: Vec<PathBu
         &state_home,
         &cache_home(),
         runner,
-        Some(code.clone()),
+        None,
         workspaces,
     );
     let router = service.router();
@@ -146,7 +142,6 @@ async fn start_foreground(port: u16, code: Option<String>, tool_path: Vec<PathBu
         "librepaper local listening on http://127.0.0.1:{port}{}",
         protocol::BASE_PATH
     );
-    println!("pairing code: {code}");
     print_pairings(&pairing);
     println!("Ctrl-C to stop.");
 
@@ -204,7 +199,7 @@ async fn open(url: &str) {
     if let Err(error) = crate::local::lifecycle::connection_target(url, DEFAULT_PORT) {
         die(error);
     }
-    let state = crate::local::lifecycle::spawn_background(0, None, &[])
+    let state = crate::local::lifecycle::spawn_background(0, &[])
         .await
         .unwrap_or_else(|error| die(error));
     let target = crate::local::lifecycle::connection_target(url, state.port)
@@ -258,7 +253,6 @@ async fn status(tool_path: Vec<PathBuf>) {
                     answering = false;
                 }
             }
-            println!("pairing code: {}", state.code);
             print_pairings(&pairing);
         }
         None => {

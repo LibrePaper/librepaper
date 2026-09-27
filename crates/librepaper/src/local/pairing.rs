@@ -41,8 +41,6 @@ pub struct ServiceState {
     /// `status` can tell a stale `service.json` (the pid is gone, or belongs
     /// to something else now) from the service it describes.
     pub instance: String,
-    /// The six-digit pairing code for this run. Rotates every `start`.
-    pub code: String,
     pub pid: u32,
     pub started: i64,
 }
@@ -64,23 +62,15 @@ pub struct Pairing {
 #[derive(Clone)]
 pub struct PairingStore {
     dir: PathBuf,
-    /// The fixed code `librepaper local start --code` was given, if any.
-    /// Takes priority over whatever `service.json` holds, so `expected_code`
-    /// answers correctly even when a caller never went through
-    /// `write_service` at all, as tests that fix the code do not.
-    fixed_code: Option<String>,
 }
 
 impl PairingStore {
     /// `state_home` is an XDG state base, e.g. `crate::cli::state_home()`
     /// in production or a temporary directory standing in for
-    /// `$XDG_STATE_HOME` in a test. `fixed_code` is the resolved `--code`
-    /// value, flag or its matching environment variable, when `librepaper
-    /// local start` was given one; pass `None` everywhere else.
-    pub fn new(state_home: &Path, fixed_code: Option<String>) -> Self {
+    /// `$XDG_STATE_HOME` in a test.
+    pub fn new(state_home: &Path, _fixed_code: Option<String>) -> Self {
         PairingStore {
             dir: state_home.join("librepaper").join("local"),
-            fixed_code: fixed_code.filter(|c| !c.trim().is_empty()),
         }
     }
 
@@ -102,17 +92,6 @@ impl PairingStore {
 
     pub fn remove_service(&self) {
         let _ = std::fs::remove_file(self.service_path());
-    }
-
-    /// The code a `connect` must present: the fixed code this store was
-    /// constructed with, when there is one, else the code in
-    /// `service.json`, else empty (nothing can connect to a service that
-    /// has not called `write_service` yet).
-    pub fn expected_code(&self) -> String {
-        if let Some(code) = &self.fixed_code {
-            return code.clone();
-        }
-        self.read_service().map(|s| s.code).unwrap_or_default()
     }
 
     fn load(&self) -> HashMap<String, Pairing> {
@@ -219,8 +198,9 @@ pub fn random_token() -> String {
     URL_SAFE_NO_PAD.encode(random_bytes(32))
 }
 
-/// A fresh six-digit pairing code, as `librepaper local start` prints and
-/// rotates on every run.
+
+/// A fresh six-digit approval code, as `approval::ask_headless` generates
+/// for the terminal fallback when no dialog tool exists.
 pub fn generate_code() -> String {
     use rand::Rng;
     let value: u32 = rand::rng().random_range(0..1_000_000);
@@ -390,22 +370,6 @@ mod tests {
         assert!(store.revoke_one("https://a", "p1"));
         assert_eq!(store.authenticate("https://a", &t1), None);
         assert_eq!(store.authenticate("https://a", &t2), Some("p2".to_string()));
-    }
-
-    #[test]
-    fn a_fixed_code_wins_over_service_json() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = PairingStore::new(dir.path(), Some("123456".to_string()));
-        store
-            .write_service(&ServiceState {
-                port: 0,
-                instance: "test".to_string(),
-                code: "000000".to_string(),
-                pid: 1,
-                started: 0,
-            })
-            .expect("write service.json");
-        assert_eq!(store.expected_code(), "123456");
     }
 
     #[test]

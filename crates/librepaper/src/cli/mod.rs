@@ -405,14 +405,6 @@ pub enum LocalCommand {
             env = "LIBREPAPER_LOCAL_PORT"
         )]
         port: u16,
-        /// Fixed pairing code to use instead of a random one each run
-        #[arg(
-            long,
-            value_name = "CODE",
-            env = "LIBREPAPER_LOCAL_CODE",
-            hide_env_values = true
-        )]
-        code: Option<String>,
         /// Extra directories searched before PATH for typst, pandoc and calepin, colon-separated
         #[arg(
             long,

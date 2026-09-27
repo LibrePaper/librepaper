@@ -115,16 +115,13 @@ HTML. It also holds the agents the document sidebar can drive.
 ```sh
 librepaper local start       # start it in the background, or reuse the one running
 librepaper local stop        # stop it
-librepaper local status      # address, pairing code, pairings, tools found, agent connections
+librepaper local status      # address, active pairings, tools found, agent connections
 librepaper local approve <code>  # approve a request on a machine with no display
 librepaper local disconnect <origin> [--project <p>]  # revoke a website's pairing
 librepaper local agent list  # the agents it offers; `agent add <id> -- <command>` teaches it another
 ```
 
-`start --code` fixes the pairing code instead of rotating it per run, which is
-what `make deploy` uses so that connecting an agent in development does not
-mean reading a fresh code off a terminal after every restart. `--foreground`
-runs the companion in this process instead of the background, and
+`--foreground` runs the companion in this process instead of the background, and
 `--at-login` also starts it every time you log in. `--tool-path`
 (colon-separated directories) points `start` and `status` at typst, pandoc or
 calepin installed where they would not otherwise find them.

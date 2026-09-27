@@ -193,8 +193,8 @@ async fn ask_headless(approval: &Approval) -> Decision {
     }
 
     eprintln!(
-        "LibrePaper approval requested: {}. {} Approve with: librepaper local approve {}",
-        approval.title, approval.message, code
+        "LibrePaper wants approval: {}. Install zenity for a dialog, or run: librepaper local approve {}",
+        approval.title, code
     );
 
     let code_clone = code.clone();

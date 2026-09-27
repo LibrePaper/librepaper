@@ -430,6 +430,8 @@ struct PendingPair {
     expires: Instant,
     token: Option<(String, i64)>,
     asked: bool,
+    refused: bool,
+    refused_message: Option<String>,
 }
 
 pub(super) struct Inner {
@@ -977,12 +979,14 @@ async fn dispatch(
 ) -> Reply {
     match segs {
         ["health"] if *method == Method::GET => handle_health(inner),
-        ["connect"] if *method == Method::POST => handle_connect(inner, peer, request).await,
         ["connect", "claim"] if *method == Method::POST => {
             consent::handle_pair_claim(inner, request).await
         }
-        ["pair", "request"] if *method == Method::GET => {
+        ["pair", "request"] if *method == Method::POST => {
             consent::handle_pair_request(inner, peer, request).await
+        }
+        ["pair", "status"] if *method == Method::GET => {
+            consent::handle_pair_status(inner, request).await
         }
         ["disconnect"] if *method == Method::POST => {
             consent::handle_disconnect(inner, headers, origin).await
@@ -1151,54 +1155,6 @@ fn handle_health(inner: &Inner) -> Reply {
         instance: inner.instance.clone(),
     };
     write_json(200, &serde_json::to_value(body).unwrap_or(Value::Null))
-}
-
-/* ------------------------------------------------------------- connect */
-
-async fn handle_connect(inner: &Arc<Inner>, peer: SocketAddr, request: Request<Body>) -> Reply {
-    if consent::rate_limited(inner, peer).await {
-        return write_json(
-            429,
-            &json!({"error": "too many connection attempts; wait a minute and try again"}),
-        );
-    }
-    let sent_origin = header_str(request.headers(), "origin").map(str::to_string);
-    let body = match read_json_body::<protocol::ConnectRequest>(request).await {
-        Ok(body) => body,
-        Err(response) => return response,
-    };
-    if let Some(sent) = &sent_origin {
-        // The origin a token is issued for is the one the browser actually
-        // sent the request from, never merely the one the body names: a page
-        // that could pair another site's origin by naming it would hold a
-        // token that site's requests would then carry.
-        if pairing::normalize_origin(sent) != pairing::normalize_origin(&body.origin) {
-            return write_json(403, &json!({"error": "origin does not match the request"}));
-        }
-    }
-    let expected = inner.pairing.expected_code();
-    // A constant delay whether the code is missing, wrong, or right but for
-    // a service that never started -- a timing difference here would let a
-    // script narrow the six digits one at a time.
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    if expected.is_empty() || !consent::codes_match(&expected, &body.code) {
-        return write_json(403, &json!({"error": "wrong pairing code"}));
-    }
-    match inner.pairing.issue(&body.origin, &body.project, "browser") {
-        Ok((token, expires)) => write_json(
-            200,
-            &serde_json::to_value(protocol::ConnectResponse {
-                token,
-                expires,
-                instance: inner.instance.clone(),
-            })
-            .unwrap_or(Value::Null),
-        ),
-        Err(err) => write_json(
-            500,
-            &json!({"error": format!("could not store the pairing: {err}")}),
-        ),
-    }
 }
 
 /* ------------------------------------------------------- folder bindings */
