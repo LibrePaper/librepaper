@@ -47,6 +47,38 @@ assert.deepEqual(
   "the preview follows the explicitly previewed file",
 );
 
+// Read-only viewers (no session) must populate digests from asset entries
+// in the currentProject.tree.files, which uses .digest property (not .sha).
+{
+  const roContext = vm.createContext({
+    session: null,
+    currentProject: {
+      main: "readme.md",
+      texts: { "readme.md": "content" },
+      tree: {
+        main: "readme.md",
+        files: {
+          "image.png": { kind: "asset", digest: "abc123def456" },
+          "data.json": { kind: "text" },
+        },
+        settings: null,
+      },
+    },
+  });
+  vm.runInContext(liveTreeNow, roContext);
+  const result = vm.runInContext("liveTreeNow()", roContext);
+  assert.deepEqual(
+    result,
+    {
+      main: "readme.md",
+      texts: { "readme.md": "content" },
+      digests: { "image.png": "abc123def456" },
+      settings: null,
+    },
+    "read-only viewer populates digests from asset entries in project response",
+  );
+}
+
 // The archive is cut from the tree and directory the caller passed, so a
 // folder added while the assets are in flight cannot reach it. That ordering
 // used to need a VM harness to observe; it is now a property of the
