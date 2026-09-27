@@ -5,13 +5,12 @@
 
   let { name = "quarto" } = $props();
 
-  let integrationSettings = $state(null);
   let settingsError = $state("");
-  let pendingDialogAction = $state("");
+  let pendingDialogAction = $state(false);
   let editingPath = $state("");
   let editingArgs = $state("");
-  let defaultPath = $state("");
-  let defaultArgs = $state([]);
+  let savedPath = $state("");
+  let savedArgs = $state([]);
 
   const local = $derived(companion.status);
   $effect(() => companion.watch());
@@ -67,78 +66,46 @@
 
   async function loadSettings() {
     try {
-      integrationSettings = await localBridge.settings();
-      const integration = integrationSettings?.integrations?.[name];
-      if (integration) {
-        defaultPath = integration.path || "";
-        defaultArgs = integration.args || [];
-        editingPath = integration.path || "";
-        editingArgs = quoteAwareJoin(integration.args || []);
-      }
+      const integration = (await localBridge.settings())?.integrations?.[name];
+      if (integration) show(integration);
     } catch (error) {
       settingsError = error?.message || "Could not load companion settings.";
     }
   }
 
-  async function saveIntegration() {
-    const args = editingArgs.trim() ? quoteAwareSplit(editingArgs) : [];
-    pendingDialogAction = `save-${name}`;
-    try {
-      const result = await localBridge.setIntegration(name, { path: editingPath || null, args });
-      defaultPath = result.path || "";
-      defaultArgs = result.args || [];
-      editingPath = defaultPath;
-      editingArgs = quoteAwareJoin(defaultArgs);
-      settingsError = "";
-    } catch (error) {
-      const message = error?.message || `Could not update ${name} settings.`;
-      if (error?.status === 403) {
-        settingsError = `You declined the change in the dialog on your computer.`;
-      } else if (error?.status === 503) {
-        settingsError = `The companion could not save the changes.`;
-      } else {
-        settingsError = message;
-      }
-    } finally {
-      pendingDialogAction = "";
-    }
+  // What the companion holds, and the inputs reset to it.
+  function show(integration) {
+    savedPath = integration.path || "";
+    savedArgs = integration.args || [];
+    editingPath = savedPath;
+    editingArgs = quoteAwareJoin(savedArgs);
   }
 
-  async function resetToDefault() {
-    const args = [];
-    pendingDialogAction = `reset-${name}`;
+  // Every change goes through the companion's confirmation dialog.
+  async function apply(path, args) {
+    pendingDialogAction = true;
     try {
-      const result = await localBridge.setIntegration(name, { path: null, args });
-      defaultPath = result.path || "";
-      defaultArgs = result.args || [];
-      editingPath = defaultPath;
-      editingArgs = quoteAwareJoin(defaultArgs);
+      show(await localBridge.setIntegration(name, { path, args }));
       settingsError = "";
     } catch (error) {
-      const message = error?.message || `Could not reset ${name} settings.`;
-      if (error?.status === 403) {
-        settingsError = `You declined the change in the dialog on your computer.`;
-      } else if (error?.status === 503) {
-        settingsError = `The companion could not save the changes.`;
-      } else {
-        settingsError = message;
-      }
+      settingsError = error?.status === 403
+        ? "You declined the change in the dialog on your computer."
+        : error?.message || "Could not change the command.";
     } finally {
-      pendingDialogAction = "";
+      pendingDialogAction = false;
     }
   }
 
   const capability = $derived.by(() => {
-    if (!local?.capabilities) return null;
-    if (name === "quarto") return local.capabilities?.tools?.quarto;
-    if (name === "calepin") return local.capabilities?.calepin;
-    if (name === "zotero") return local.capabilities?.zotero;
-    return null;
+    const capabilities = local?.capabilities;
+    if (name === "quarto") return capabilities?.tools?.quarto;
+    return capabilities?.[name] ?? null;
   });
 
   const isConnected = $derived(local?.state === "connected");
   const showFields = $derived(name !== "zotero" && isConnected);
-  const isDefault = $derived(editingPath === defaultPath && quoteAwareJoin(quoteAwareSplit(editingArgs)) === quoteAwareJoin(defaultArgs));
+  const unchanged = $derived(editingPath === savedPath && quoteAwareJoin(quoteAwareSplit(editingArgs)) === quoteAwareJoin(savedArgs));
+  const isDefault = $derived(!savedPath && savedArgs.length === 0);
 </script>
 
 {#if settingsError}<p class="setting-description integration-error" role="alert">{settingsError}</p>{/if}
@@ -166,12 +133,10 @@
     </SettingRow>
 
     <div class="integration-actions">
-      <button type="button" class="btn btn-sm lp-control-brand" disabled={pendingDialogAction || isDefault} onclick={() => void saveIntegration()}>
-        {pendingDialogAction === `save-${name}` ? "Confirm on this computer…" : "Save"}
-      </button>
-      <button type="button" class="btn btn-sm lp-control-outline" disabled={pendingDialogAction || isDefault} onclick={() => void resetToDefault()}>Reset to default</button>
+      <button type="button" class="btn btn-sm lp-control-brand" disabled={pendingDialogAction || unchanged} onclick={() => void apply(editingPath.trim() || null, quoteAwareSplit(editingArgs))}>Save</button>
+      <button type="button" class="btn btn-sm lp-control-outline" disabled={pendingDialogAction || isDefault} onclick={() => void apply(null, [])}>Reset to default</button>
     </div>
-    {#if pendingDialogAction === `save-${name}` || pendingDialogAction === `reset-${name}`}
+    {#if pendingDialogAction}
       <p class="setting-description">Approve the change in the dialog LibrePaper Companion opened on this computer.</p>
     {/if}
   {/if}
