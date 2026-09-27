@@ -12,6 +12,9 @@
     roleLabel = (message) => message.creator || message.role,
     authorKey = (message) => `${message.role || ""}:${message.creator || ""}`,
     onresult,
+    authors = true,
+    quiet = false,
+    after,
   } = $props();
   let transcript = $state();
   let following = true;
@@ -53,7 +56,7 @@
   });
 </script>
 
-<div class="chat-transcript-wrap">
+<div class="chat-transcript-wrap" class:quiet>
   <div class="chat-transcript" bind:this={transcript} onscroll={scrolled} role="log" aria-label={label} aria-live="polite" aria-relevant="additions text">
     {#each rows as { message, key, starts, name } (`${message.role || "chat"}:${message.id}`)}
       {@const results = message.context?.results}
@@ -61,12 +64,15 @@
       {@const unresolvedCount = results?.unresolved || 0}
       {@const confirmed = results?.confirmed || []}
       {@const confirmedOmitted = results?.confirmed_omitted || 0}
-      <article class="chat-message" class:starts class:from-user={message.role === "user"} class:from-agent={message.role === "agent"} data-id={message.id}>
+      <article class="chat-message" class:starts class:from-user={message.role === "user"} class:from-agent={message.role === "agent"} data-id={message.id}
+        aria-label={starts && !authors ? name : undefined}>
         <span class="chat-gutter">
           {#if starts}<Avatar {name} {key} icon={message.role === "agent" ? "bot" : ""} />{/if}
         </span>
         <div class="chat-bubble">
-          {#if starts}<strong class="chat-author">{name}</strong>{/if}
+          {#if starts}
+            {#if authors}<strong class="chat-author">{name}</strong>{:else}<span class="sr-only">{name}</span>{/if}
+          {/if}
           <p>{message.text}</p>
           {#each confirmed.filter(effect => effect.kind === "application" || effect.kind === "comment") as effect}
             <p>{effect.kind === "application" ? "Source changes applied." : `Comment action confirmed: ${effect.action}.`}</p>
@@ -87,6 +93,7 @@
       </article>
     {/each}
     {#if !messages.length}<p class="panel-muted">{empty}</p>{/if}
+    {@render after?.()}
   </div>
   {#if unread}<button class="btn btn-sm lp-control-outline new-messages" onclick={() => { following = true; void follow(); }}>New messages ↓</button>{/if}
 </div>
@@ -106,4 +113,14 @@
   .chat-bubble .effect-warning { margin-top: var(--spacing); color: var(--color-warning-text); font-weight: 600; }
   .chat-bubble .btn { margin-top: var(--spacing); }
   .new-messages { position: absolute; right: var(--spacing); bottom: var(--spacing); }
+
+  /* Quiet variant: a tighter gutter, less padding, and no card behind agent
+     text so the conversation reads as plain text flowing in the column. */
+  .chat-transcript-wrap.quiet .chat-transcript { gap: calc(var(--spacing) * 0.5); }
+  .chat-transcript-wrap.quiet .chat-message { grid-template-columns: calc(var(--spacing) * 5) minmax(0, 1fr); column-gap: var(--spacing); }
+  .chat-transcript-wrap.quiet .chat-message.starts:not(:first-child) { margin-top: var(--spacing); }
+  .chat-transcript-wrap.quiet .chat-gutter { width: calc(var(--spacing) * 5); height: calc(var(--spacing) * 5); }
+  .chat-transcript-wrap.quiet .chat-bubble { padding: calc(var(--spacing) * 0.5) calc(var(--spacing) * 0.75); border: none; border-radius: var(--radius-base); background: none; }
+  .chat-transcript-wrap.quiet .chat-message.starts .chat-bubble { border-top-left-radius: var(--radius-base); }
+  .chat-transcript-wrap.quiet .chat-message.from-user .chat-bubble { background: color-mix(in srgb, var(--color-brand) 10%, var(--color-subtle)); }
 </style>
