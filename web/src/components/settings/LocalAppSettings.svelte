@@ -239,7 +239,7 @@
   .local-install { display: grid; gap: calc(var(--spacing) * 3); margin-block: calc(var(--spacing) * 4); }
   .install-option { display: grid; gap: calc(var(--spacing) * 1.5); }
   .command-line { display: flex; align-items: center; gap: calc(var(--spacing) * 2); min-width: 0; }
-  .command-line code { flex: 1; min-width: 0; overflow-wrap: anywhere; padding: calc(var(--spacing) * 2); border-radius: var(--radius-container); background: var(--color-subtle); }
+  .command-line code { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; padding: calc(var(--spacing) * 2); border-radius: var(--radius-container); background: var(--color-subtle); }
   .pairing { display: grid; gap: calc(var(--spacing) * 2); margin-block: calc(var(--spacing) * 4); }
   .pair-controls { display: flex; gap: calc(var(--spacing) * 2); }
   .pair-controls .setting-input { flex: 1; }
