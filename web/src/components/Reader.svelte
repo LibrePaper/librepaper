@@ -1550,7 +1550,13 @@
   const timeline = createTimeline({
     slug: SLUG,
     key: KEY,
-    onrestored: () => historySource.select(""),
+    // Open on what the restore replaced: the version just before the
+    // restore's own row. Compared against now, that is the change the
+    // restore made, and its Restore button is the undo.
+    onrestored: () => {
+      const newest = [...timeline.state.labels].sort((a, b) => b.seq - a.seq);
+      return historySource.select(newest[0]?.why === "restore" ? newest[1]?.sha || "" : "");
+    },
     disposed: () => readerDisposed,
   });
   const labels = $derived(timeline.state.labels);
