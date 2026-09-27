@@ -98,23 +98,29 @@
           {#if context.format === "latex" && mayEdit}<StorageSettings />{/if}
         {:else if shown.id === "build"}
           <BuildSettings format={sourceFormat} {documentId} {userId} preferences={buildPreferences} onpreferences={onbuildpreferences} />
-        {:else if shown.id === "quarto"}
-          <IntegrationSettings name="quarto" />
-          {#if context.format === "quarto"}<RenderingSettings {options} {onapplyoptions} />{/if}
-          {#if context.format === "quarto" && context.mayEdit}
-            <SettingRow id="quarto-execution" title="Local code execution" description="Code runs on this computer with your user account's permissions.">
-              <span class="setting-description">Allow paired Quarto documents to run local code</span>
-              <button type="button" role="switch" class="switch local-execution-switch" aria-label="Allow paired Quarto documents to run local code" aria-checked={localExecution} data-state={localExecution ? "checked" : "unchecked"} onclick={() => onlocalexecution?.(!localExecution)}>
-                <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
-              </button>
-            </SettingRow>
-          {/if}
-        {:else if shown.id === "calepin"}
-          <IntegrationSettings name="calepin" />
-        {:else if shown.id === "zotero"}
-          <IntegrationSettings name="zotero" />
         {:else if shown.id === "local"}
           <LocalAppSettings {main} {sourceFormat} {mayEdit} {onbindingid} />
+          <section class="settings-subsection">
+            <h4 class="settings-subhead">Quarto</h4>
+            <IntegrationSettings name="quarto" />
+            {#if context.format === "quarto"}<RenderingSettings {options} {onapplyoptions} />{/if}
+            {#if context.format === "quarto" && context.mayEdit}
+              <SettingRow id="quarto-execution" title="Local code execution" description="Code runs on this computer with your user account's permissions.">
+                <span class="setting-description">Allow paired Quarto documents to run local code</span>
+                <button type="button" role="switch" class="switch local-execution-switch" aria-label="Allow paired Quarto documents to run local code" aria-checked={localExecution} data-state={localExecution ? "checked" : "unchecked"} onclick={() => onlocalexecution?.(!localExecution)}>
+                  <span class="switch-thumb" data-state={localExecution ? "checked" : "unchecked"}></span>
+                </button>
+              </SettingRow>
+            {/if}
+          </section>
+          <section class="settings-subsection">
+            <h4 class="settings-subhead">Calepin</h4>
+            <IntegrationSettings name="calepin" />
+          </section>
+          <section class="settings-subsection">
+            <h4 class="settings-subhead">Zotero</h4>
+            <IntegrationSettings name="zotero" />
+          </section>
         {:else if shown.id === "remote"}
           <RemoteSettings {remoteConnected} {remoteNote} />
         {:else if shown.id === "account"}
