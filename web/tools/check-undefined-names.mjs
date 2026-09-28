@@ -1,67 +1,42 @@
-import { spawnSync } from "child_process";
-import { fileURLToPath } from "url";
-import { dirname, resolve } from "path";
+// Fails on any name the web code uses but never defines. Vite builds such
+// code without complaint and the browser throws only when the line runs, so
+// this is the one slice of svelte-check that is a gate while the full type
+// check still has a baseline.
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const webDir = resolve(__dirname, "..");
+const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// Build-time constants defined by Vite `define` plugin
-// and Node's Buffer used in code paths that run under Node
-const allowlist = new Map([
-  ["src/agent/frame.js", new Set(["__KATEX__"])],
-  ["src/site/SiteBar.svelte", new Set(["__APP_ORIGIN__"])],
-]);
+// Names that are defined, just not where svelte-check looks.
+const ALLOWED = [
+  // Replaced at build time by Vite `define`.
+  { file: "src/agent/frame.js", name: "__KATEX__" },
+  { file: "src/site/SiteBar.svelte", name: "__APP_ORIGIN__" },
+  // Node's Buffer, in code paths that also run under Node.
+  { file: null, name: "Buffer" },
+];
 
-// Any file with Buffer is allowed (used in Node code paths)
-const allowBufferInAllFiles = true;
-
-const result = spawnSync(
-  "svelte-check",
-  ["--tsconfig", "./jsconfig.json", "--output", "machine"],
-  {
-    cwd: webDir,
-    encoding: "utf-8",
-  }
-);
-
-const lines = result.stdout.split("\n").filter((line) => line.trim());
-const errors = lines.filter(
-  (line) =>
-    line.includes("ERROR") && line.includes("Cannot find name")
-);
-
-if (errors.length === 0) {
-  console.log("undefined names: none");
-  process.exit(0);
+const run = spawnSync(join(web, "node_modules/.bin/svelte-check"),
+  ["--tsconfig", "./jsconfig.json", "--output", "machine"], { cwd: web, encoding: "utf8" });
+if (run.error || run.stdout == null) {
+  console.error(`check-undefined-names: could not run svelte-check: ${run.error?.message || run.stderr}`);
+  process.exit(2);
 }
 
-const offending = [];
+// Machine output: <timestamp> ERROR "<file>" <line>:<column> "<message>"
+const LINE = /^\d+ ERROR "([^"]+)" (\d+:\d+) "Cannot find name '([^']+)'/;
+const offending = run.stdout.split("\n").flatMap((line) => {
+  const found = line.match(LINE);
+  if (!found) return [];
+  const [, file, at, name] = found;
+  const allowed = ALLOWED.some((entry) => entry.name === name && (entry.file === null || entry.file === file));
+  return allowed ? [] : [`${file}:${at} ${name}`];
+});
 
-for (const line of errors) {
-  // Parse the machine format: file:line:col - ERROR Cannot find name 'xyz'
-  // Example: src/agent/frame.js:123:45 - ERROR Cannot find name '__KATEX__'
-  const match = line.match(
-    /^([^\s]+)[:\s]+ERROR\s+Cannot find name '([^']+)'/
-  );
-
-  if (!match) continue;
-
-  const [, filePath, name] = match;
-  const isAllowlisted =
-    (allowlist.has(filePath) && allowlist.get(filePath).has(name)) ||
-    (allowBufferInAllFiles && name === "Buffer");
-
-  if (!isAllowlisted) {
-    offending.push(line);
-  }
-}
-
-if (offending.length > 0) {
-  console.error("undefined names found:");
-  for (const line of offending) {
-    console.error(line);
-  }
+if (offending.length) {
+  console.error("undefined names:");
+  for (const line of offending) console.error(`  ${line}`);
   process.exit(1);
 }
-
 console.log("undefined names: none");
