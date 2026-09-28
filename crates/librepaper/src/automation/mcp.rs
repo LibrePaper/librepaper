@@ -187,7 +187,13 @@ impl ServerHandler for Bridge {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         publish_bridge_readiness()?;
-        Ok(ListToolsResult::with_all_items(self.served_tools.clone()))
+        // Protocol 2026-07-28 requires both cache fields, and rmcp leaves them
+        // out unless set: Claude Code then rejects the whole list and the agent
+        // runs with no document tools. The list belongs to this connection.
+        let mut tools = ListToolsResult::with_all_items(self.served_tools.clone());
+        tools.ttl_ms = Some(0);
+        tools.cache_scope = Some(rmcp::model::CacheScope::Private);
+        Ok(tools)
     }
 
     async fn call_tool(
