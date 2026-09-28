@@ -611,7 +611,8 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     Ok(prepared) => {
                         let task = state.task_mut(&id).ok_or("queued task disappeared")?;
                         task.start(prepared);
-                        let mut segments: VecDeque<Segment> = split_commands(&task.text, &commands).into();
+                        let mut segments: VecDeque<Segment> =
+                            split_commands(&task.text, &commands).into();
                         let first = segments.pop_front().ok_or("empty request")?;
                         let prompt = segment_prompt(task, first, &mut instructions);
                         runner_journal::set_session_task(&session_path, Some(&id))?;
