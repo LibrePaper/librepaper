@@ -1,5 +1,4 @@
 <script>
-  import { newRequestKey } from "../lib/request-key.js";
   import { decodeProposal, hunksOfProposal, markContention, previewTexts } from "../lib/proposals.js";
   // One document: the source beside it, the page itself, and everything said
   // about it.
@@ -176,7 +175,7 @@
   }
 
   function requestDecision(message, { commentId = "", rollback = null } = {}) {
-    const request_id = newRequestKey();
+    const request_id = crypto.randomUUID();
     const promise = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => rejectDecision(request_id, new Error("The review decision was not acknowledged.")), DECISION_TIMEOUT_MS);
       suggestionDecisions.set(request_id, { commentId, resolve, reject, rollback, timeout });
