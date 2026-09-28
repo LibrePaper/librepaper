@@ -284,7 +284,7 @@
     const next = format === "html" ? "html" : "pdf";
     if (latexOutput === next) return;
     buildSettings.state.latexOutput = next;
-    setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { ...(next === "html" ? { selection: "tool", backend: "browser", tool: "tex", preset: "" } : {}), output: next }));
+    setBuildPreferences(updateBuildPreferences(buildScope(), "latex", { ...(next === "html" ? { selection: "tool", backend: "browser", tool: "tex" } : {}), output: next }));
     navigationGeneration += 1;
     renderers.cancelPreview({ keepWarm: true });
     latex.cancel();

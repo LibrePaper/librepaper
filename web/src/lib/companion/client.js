@@ -1399,9 +1399,9 @@ export async function syncWorkspace({ tree } = {}) {
   return response.json();
 }
 
-/* -------------------------------------------- Build presets and permissions */
+/* -------------------------------------------- Companion settings and permissions */
 
-/** Load companion settings: installed presets, grants for this document,
+/** Load companion settings: integrations, grants for this document,
  * startup configuration, and whether the companion is standalone. Dialog
  * routes (setIntegration, setStartup, quit) may take up to 5 minutes
  * waiting for OS confirmation and surface 403 or 503 errors. */
