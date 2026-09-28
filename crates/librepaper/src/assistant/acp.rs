@@ -26,6 +26,8 @@ use tokio::sync::{mpsc, oneshot};
 pub(super) enum Update {
     Answer(String),
     Activity(&'static str),
+    /// The names of the slash commands the agent currently advertises.
+    Commands(Vec<String>),
     Ignored,
 }
 
@@ -472,6 +474,13 @@ fn translate_update(update: SessionUpdate) -> Update {
         SessionUpdate::ToolCall(call) => tool_call_activity(Some(call.title.as_str())),
         SessionUpdate::ToolCallUpdate(call) => tool_call_activity(call.fields.title.as_deref()),
         SessionUpdate::Plan(_) => Update::Activity("Planning the change"),
+        SessionUpdate::AvailableCommandsUpdate(update) => Update::Commands(
+            update
+                .available_commands
+                .into_iter()
+                .map(|command| command.name)
+                .collect(),
+        ),
         _ => Update::Ignored,
     }
 }

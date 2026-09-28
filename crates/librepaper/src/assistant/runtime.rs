@@ -1,5 +1,6 @@
 //! Local task execution. The transport stays alive independently of model turns.
 use super::acp;
+use super::commands::{split_commands, Segment};
 use super::context;
 use super::journal::{self as runner_journal, Journal};
 use super::lifecycle::{Lease, RunnerState, StatusHandle, StopSignal};
@@ -96,6 +97,9 @@ struct Active {
     answer_break: bool,
     last_answer_emit: tokio::time::Instant,
     pending: VecDeque<PendingInput>,
+    /// Pieces of the request still to send, one turn each, once the current
+    /// turn ends successfully.
+    segments: VecDeque<Segment>,
     cancelling: bool,
     cancel_deadline: Option<tokio::time::Instant>,
     deadline: tokio::time::Instant,
@@ -354,6 +358,22 @@ fn bounded_answer(value: &str, truncated: bool) -> String {
     output
 }
 
+/// The ACP prompt for one piece of a request. Ordinary text is wrapped like any
+/// task and carries the session's instructions if they are still unsent; a
+/// command goes verbatim, since ACP only recognises one at the start of the text.
+fn segment_prompt(task: &Task, segment: Segment, instructions: &mut Option<String>) -> String {
+    match segment {
+        Segment::Text(text) => {
+            let prompt = task.prompt(&text);
+            match instructions.take() {
+                Some(preamble) => format!("{preamble}\n\nTask:\n{prompt}"),
+                None => prompt,
+            }
+        }
+        Segment::Command(command) => command,
+    }
+}
+
 fn retain_partial_answer(state: &mut State, id: &str, active: &Active) {
     if let Some(task) = state.task_mut(id) {
         if !active.answer.is_empty() {
@@ -551,6 +571,9 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // lead the first prompt of this process. Once per runner start, not once
     // per task: the agent keeps the session's context between turns.
     let mut instructions = Some(context::instructions(&lease.location.directory)?);
+    // Slash commands the current agent session advertises; replaced on each
+    // update and cleared when the session is replaced.
+    let mut commands: Vec<String> = Vec::new();
     let binding_nonce = lease.binding_nonce()?;
     let mut transport = Transport::start(
         peer.chat_socket_request(&config.conversation)?,
@@ -588,13 +611,11 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     Ok(prepared) => {
                         let task = state.task_mut(&id).ok_or("queued task disappeared")?;
                         task.start(prepared);
-                        let prompt = task.prompt();
+                        let mut segments: VecDeque<Segment> = split_commands(&task.text, &commands).into();
+                        let first = segments.pop_front().ok_or("empty request")?;
+                        let prompt = segment_prompt(task, first, &mut instructions);
                         runner_journal::set_session_task(&session_path, Some(&id))?;
                         state.save(&lease.location.state)?;
-                        let prompt = match instructions.take() {
-                            Some(preamble) => format!("{preamble}\n\nTask:\n{prompt}"),
-                            None => prompt,
-                        };
                         match agent.prompt(prompt).await {
                             Ok(()) => {
                                 active = Some(Active {
@@ -605,6 +626,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                     answer_break: false,
                                     last_answer_emit: tokio::time::Instant::now(),
                                     pending: VecDeque::new(),
+                                    segments,
                                     cancelling: false,
                                     cancel_deadline: None,
                                     deadline: tokio::time::Instant::now() + TURN_TIMEOUT,
@@ -672,6 +694,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     if connected && stopping.is_none() { runner_journal::set_session_epoch(&session_path, current_epoch.as_deref())?; }
                     session_id = agent.session_id().to_string();
                     instructions = Some(context::instructions(&lease.location.directory)?);
+                    commands.clear();
                     if connected { reconcile(&transport, &mut state, &session_id).await?; }
                 }
                 if let Some(current)=active.as_mut() {
@@ -838,6 +861,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         }
                         return Err(format!("the agent exited: {error}"));
                     }
+                    acp::Event::Update(acp::Update::Commands(names)) => commands = names,
                     acp::Event::Update(update) => {
                         let Some(current)=active.as_mut() else { continue; };
                         match update {
@@ -858,7 +882,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                 let changed=state.task_mut(&id).is_some_and(|task| task.set_activity(detail));
                                 if changed { report_task(&transport,&mut state,&id,&lease.location.state).await?; }
                             }
-                            acp::Update::Ignored => {}
+                            acp::Update::Commands(_) | acp::Update::Ignored => {}
                         }
                     }
                     acp::Event::Permission { handle, message, options, details, option_ids } => {
@@ -896,6 +920,26 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         let id=current.id.clone();
                         retain_partial_answer(&mut state, &id, current);
                         while let Some(pending)=current.pending.pop_front() { pending.handle.respond(None)?; }
+                        // A successful turn hands over to the next piece of the
+                        // request; anything else ends the task and drops the rest.
+                        let outcome = match outcome {
+                            Ok(agent_client_protocol::schema::v1::StopReason::EndTurn) if !current.cancelling => {
+                                match current.segments.pop_front() {
+                                    Some(next) => {
+                                        let prompt = match state.task(&id) {
+                                            Some(task) => segment_prompt(task, next, &mut instructions),
+                                            None => return Err("active task disappeared".into()),
+                                        };
+                                        match agent.prompt(prompt).await {
+                                            Ok(()) => { current.answer_break = true; continue; }
+                                            Err(error) => Err(error),
+                                        }
+                                    }
+                                    None => outcome,
+                                }
+                            }
+                            outcome => outcome,
+                        };
                         runner_journal::set_session_task(&session_path, None)?;
                         journal.refresh()?;
                         let terminal_results = journal.task_results(&id);

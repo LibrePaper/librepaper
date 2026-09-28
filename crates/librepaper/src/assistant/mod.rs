@@ -8,6 +8,7 @@
 //! that call into the registry.
 
 pub(crate) mod acp;
+mod commands;
 pub(crate) mod context;
 pub(crate) mod guidance;
 pub(crate) mod journal;
