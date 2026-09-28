@@ -386,28 +386,6 @@ pub(crate) enum AdminCommand {
         )]
         batch: u32,
     },
-    /// Delete every proposal that is not pending, and every pending one made
-    /// before a cutoff.
-    ///
-    /// A proposal used to be kept after every hunk was decided; now it is
-    /// deleted, with its hunks and its suggestion comment. This clears what
-    /// the old behaviour left behind. It runs once and prints how many
-    /// proposals it deleted.
-    // A one-off cleanup after a behaviour change, so nobody types it twice
-    #[command(hide = true)]
-    WipeProposals {
-        #[command(flatten)]
-        storage: StorageFlags,
-        /// Also delete pending proposals created before this moment (RFC 3339,
-        /// e.g. 2026-09-28T00:00:00Z)
-        #[arg(long, value_name = "TIME", value_parser = parse_cutoff)]
-        before: time::OffsetDateTime,
-    },
-}
-
-fn parse_cutoff(value: &str) -> Result<time::OffsetDateTime, String> {
-    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
-        .map_err(|error| format!("expected an RFC 3339 time: {error}"))
 }
 
 /// `librepaper local <command>`. See `crate::local::cli`.
@@ -584,23 +562,6 @@ async fn run_admin(command: AdminCommand) {
             directory,
         } => crate::storage::backup::restore_cli(storage.options(), backup, directory).await,
         AdminCommand::Sweep { storage, batch } => sweep(storage, batch as usize).await,
-        AdminCommand::WipeProposals { storage, before } => wipe_proposals(storage, before).await,
-    }
-}
-
-async fn wipe_proposals(storage: StorageFlags, before: time::OffsetDateTime) {
-    let options = storage.options();
-    let catalog = match crate::storage::postgres::PostgresCatalog::connect(
-        crate::storage::postgres::PostgresOptions::new(&options.database_url),
-    )
-    .await
-    {
-        Ok(catalog) => catalog,
-        Err(error) => die(error.to_string()),
-    };
-    match catalog.wipe_proposals(before).await {
-        Ok(deleted) => println!("deleted {deleted} proposal(s)"),
-        Err(error) => die(error.to_string()),
     }
 }
 

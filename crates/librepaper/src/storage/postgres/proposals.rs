@@ -45,7 +45,6 @@ pub struct StoredProposal {
     pub base_frontiers: Vec<u8>,
     pub tip_frontiers: Vec<u8>,
     pub branch_bytes: Vec<u8>,
-    pub status: String,
     /// Bumped by every transition. A decision made against a version
     /// somebody else has already moved is refused rather than applied.
     pub version: i64,
@@ -61,7 +60,7 @@ pub struct StoredDecision {
 }
 
 const SELECT: &str = "SELECT id,author,author_peer,base_frontiers,tip_frontiers,branch_bytes,\
-     status,version FROM document_proposals";
+     version FROM document_proposals";
 
 impl PostgresCatalog {
     /// Opens a proposal. The id is the client's, so a retry after a lost
@@ -83,8 +82,8 @@ impl PostgresCatalog {
         } = new;
         sqlx::query(
             "INSERT INTO document_proposals(id,document_id,author,author_peer,base_frontiers,
-                                            tip_frontiers,branch_bytes,status)
-             VALUES($1,$2,$3,$4,$5,$6,$7,'pending')
+                                            tip_frontiers,branch_bytes)
+             VALUES($1,$2,$3,$4,$5,$6,$7)
              ON CONFLICT(id) DO NOTHING",
         )
         .bind(id)
@@ -118,7 +117,7 @@ impl PostgresCatalog {
         sqlx::query(
             "UPDATE document_proposals
              SET tip_frontiers=$3,branch_bytes=$4,version=version+1,updated_at=now()
-             WHERE id=$1 AND document_id=$2 AND status='pending' AND version=$5",
+             WHERE id=$1 AND document_id=$2 AND version=$5",
         )
         .bind(id)
         .bind(document_id)
@@ -162,7 +161,7 @@ impl PostgresCatalog {
             ));
         }
         let proposal = sqlx::query(
-            "SELECT document_id,tip_frontiers,status FROM document_proposals WHERE id=$1 FOR UPDATE",
+            "SELECT document_id,tip_frontiers FROM document_proposals WHERE id=$1 FOR UPDATE",
         )
         .bind(proposal_id)
         .fetch_optional(&mut **tx)
@@ -170,15 +169,7 @@ impl PostgresCatalog {
         .ok_or(Error::NotFound)?;
         let proposal_document: Uuid = proposal.get(0);
         let tip: Vec<u8> = proposal.get(1);
-        let status: String = proposal.get(2);
         if proposal_document != document_id {
-            return Err(Error::Conflict("proposal is no longer open".into()));
-        }
-        if status != "pending" {
-            // A resolved proposal is deleted, so one that is here and not
-            // pending was superseded. A lost-response retry of the deciding
-            // request is answered before this runs, by the label that
-            // decision wrote (`DecideProposalHunk::replay`).
             return Err(Error::Conflict("proposal is no longer open".into()));
         }
         if tip != decided_against {
@@ -234,28 +225,11 @@ impl PostgresCatalog {
         Ok(comments)
     }
 
-    /// Deletes every proposal that is not pending, and every pending one
-    /// created before `cutoff`, in one transaction. Returns how many
-    /// proposals went. This is the one-off cleanup for proposals that were
-    /// kept after they resolved, before resolving one deleted it.
-    pub async fn wipe_proposals(&self, cutoff: time::OffsetDateTime) -> Result<u64> {
-        let mut tx = self.begin_writer_transaction().await?;
-        let deleted = sqlx::query(
-            "DELETE FROM document_proposals WHERE status <> 'pending' OR created_at < $1",
-        )
-        .bind(cutoff)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        tx.commit().await?;
-        Ok(deleted)
-    }
-
     /// The open proposals for a document, which is what a joining client asks
     /// for and what the sequencer broadcasts after every decision.
     pub async fn open_proposals(&self, document_id: Uuid) -> Result<Vec<StoredProposal>> {
         sqlx::query_as::<_, StoredProposal>(&format!(
-            "{SELECT} WHERE document_id=$1 AND status='pending' ORDER BY created_at"
+            "{SELECT} WHERE document_id=$1 ORDER BY created_at"
         ))
         .bind(document_id)
         .fetch_all(&self.pool)
