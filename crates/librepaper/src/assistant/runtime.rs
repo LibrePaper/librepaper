@@ -27,12 +27,17 @@ pub struct Config {
     /// companion actually keeps them, rather than falling back to this
     /// process's own XDG_STATE_HOME or HOME.
     pub state_home: PathBuf,
+    /// Environment variables to pass to the agent process, such as the path
+    /// to the agent's own executable when the adapter needs to know where
+    /// to find it.
+    pub agent_environment: Vec<(String, String)>,
 }
 pub fn config(
     conversation: String,
     token: Option<String>,
     agent: Vec<String>,
     state_home: PathBuf,
+    agent_environment: Vec<(String, String)>,
 ) -> Result<Config, String> {
     if agent.is_empty() || agent[0].trim().is_empty() {
         return Err("no agent command configured for the sidebar assistant".into());
@@ -42,6 +47,7 @@ pub fn config(
         token: chat_token(token)?,
         agent,
         state_home,
+        agent_environment,
     })
 }
 fn event_id() -> String {
@@ -542,7 +548,8 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // prove execution or safely replay a mutation.
     state.save(&lease.location.state)?;
     let executable = crate::local::paths::current_executable()?;
-    let environment = adapter_environment(&journal_path, &session_path);
+    let mut environment = adapter_environment(&journal_path, &session_path);
+    environment.extend(config.agent_environment.clone());
     let connection = runner_connection(peer, config)?;
     // Prove the document is reachable at this access level before starting an
     // agent against it. The tools are handed to the agent as an MCP server it

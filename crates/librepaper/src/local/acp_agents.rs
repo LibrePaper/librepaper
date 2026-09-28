@@ -53,6 +53,10 @@ struct Kind {
     /// working but does change what to expect. Shown next to the agent rather
     /// than discovered when a task mysteriously does nothing.
     acp_note: Option<&'static str>,
+    /// The environment variable through which the adapter is told where the
+    /// agent's own executable is, so it runs the installed agent rather than
+    /// a copy of its own.
+    executable_env: Option<&'static str>,
 }
 
 const KINDS: &[Kind] = &[
@@ -63,6 +67,7 @@ const KINDS: &[Kind] = &[
         acp: &["claude-agent-acp"],
         acp_fetch: Some(&["npx", "-y", "@agentclientprotocol/claude-agent-acp"]),
         acp_note: None,
+        executable_env: Some("CLAUDE_CODE_EXECUTABLE"),
     },
     Kind {
         id: "codex",
@@ -75,6 +80,7 @@ const KINDS: &[Kind] = &[
         // package and failing at the moment the user presses start.
         acp_fetch: None,
         acp_note: None,
+        executable_env: None,
     },
     Kind {
         id: "gemini",
@@ -83,6 +89,7 @@ const KINDS: &[Kind] = &[
         acp: &["gemini", "--experimental-acp"],
         acp_fetch: None,
         acp_note: None,
+        executable_env: None,
     },
     Kind {
         id: "opencode",
@@ -94,6 +101,7 @@ const KINDS: &[Kind] = &[
         acp: &["opencode", "acp"],
         acp_fetch: None,
         acp_note: None,
+        executable_env: None,
     },
     Kind {
         id: "pi",
@@ -109,6 +117,7 @@ const KINDS: &[Kind] = &[
         acp_note: Some(
             "Pi's ACP adapter has incomplete MCP support, so the document tools may not reach it",
         ),
+        executable_env: None,
     },
 ];
 
@@ -335,6 +344,38 @@ pub fn acp_command(state_home: &Path, id: &str) -> Option<Vec<String>> {
     Some(command.iter().map(|part| part.to_string()).collect())
 }
 
+/// Environment variables to pass to an agent process, when the adapter needs
+/// to know where the agent's own executable is. Empty for a custom agent or
+/// unknown id; otherwise, if the kind has `executable_env` and the executable
+/// is found on PATH, returns the environment variable and absolute path.
+pub fn acp_environment(state_home: &Path, id: &str) -> Vec<(String, String)> {
+    environment_for(state_home, id)
+}
+
+fn environment_for(state_home: &Path, id: &str) -> Vec<(String, String)> {
+    // Custom agents and unknown ids return empty environment.
+    if CustomStore::new(state_home).get(id).is_some() {
+        return Vec::new();
+    }
+    let kind = match kind(id) {
+        Some(k) => k,
+        None => return Vec::new(),
+    };
+    // If the kind has no executable_env field, return empty.
+    let env_var = match kind.executable_env {
+        Some(var) => var,
+        None => return Vec::new(),
+    };
+    // If the executable is found on PATH, return the environment variable
+    // and its absolute path.
+    match on_path(kind.executable) {
+        Some(path) => {
+            vec![(env_var.to_string(), path.to_string_lossy().into_owned())]
+        }
+        None => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +390,7 @@ mod tests {
             acp,
             acp_fetch: fetch,
             acp_note: None,
+            executable_env: None,
         }
     }
 
@@ -508,5 +550,44 @@ mod tests {
                 assert!(found.assistant_blocked.contains(&found.label));
             }
         }
+    }
+
+    #[test]
+    fn claude_kind_declares_executable_env() {
+        let claude = KINDS.iter().find(|kind| kind.id == "claude").expect("claude");
+        assert_eq!(claude.executable_env, Some("CLAUDE_CODE_EXECUTABLE"));
+    }
+
+    #[test]
+    fn a_kind_with_executable_on_path_and_executable_env_set_yields_env_variable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut kind_on_path = kind_with(&["sh"], None);
+        kind_on_path.executable_env = Some("TEST_EXECUTABLE");
+        let leaked = Box::leak(Box::new(kind_on_path));
+        let env = environment_for(dir.path(), &leaked.id);
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, "TEST_EXECUTABLE");
+        assert!(env[0].1.ends_with("/sh"));
+    }
+
+    #[test]
+    fn a_missing_executable_yields_empty_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut kind_missing = kind_with(&["sh"], None);
+        kind_missing.executable = "definitely-not-installed-executable";
+        kind_missing.executable_env = Some("TEST_EXECUTABLE");
+        let leaked = Box::leak(Box::new(kind_missing));
+        let env = environment_for(dir.path(), &leaked.id);
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn a_kind_without_executable_env_yields_empty_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let kind_no_env = kind_with(&["sh"], None);
+        // executable_env is None by default in kind_with
+        let leaked = Box::leak(Box::new(kind_no_env));
+        let env = environment_for(dir.path(), &leaked.id);
+        assert!(env.is_empty());
     }
 }

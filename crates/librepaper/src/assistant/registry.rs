@@ -124,6 +124,7 @@ impl SessionRegistry {
         conversation: &str,
         chat_token: &str,
         agent: &[String],
+        agent_environment: &[(String, String)],
     ) -> Result<(), String> {
         let key = lifecycle::session_key(link, conversation)?;
         let gate = self.start_gate.lock().await;
@@ -148,6 +149,7 @@ impl SessionRegistry {
                 Some(chat_token.to_string()),
                 agent.to_vec(),
                 self.state_home.clone(),
+                agent_environment.to_vec(),
             )?;
             self.spawn_running(&key, &wanted, move |status, stop| async move {
                 runtime::run(&peer, config, status, stop).await

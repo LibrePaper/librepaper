@@ -75,6 +75,7 @@ pub(super) async fn handle_assistant_start(
             &json!({"error": "that agent cannot be driven from the sidebar on this computer"}),
         );
     };
+    let environment = super::acp_agents::acp_environment(&inner.state_home, &body.agent);
     let store = super::connections::ConnectionStore::new(&inner.state_home);
     if let Err(error) = store.put_runner(
         &parsed_link.credential_url(),
@@ -86,7 +87,7 @@ pub(super) async fn handle_assistant_start(
     }
     match inner
         .assistant_sessions
-        .start(&parsed_link, &body.conversation, &body.chat_token, &command)
+        .start(&parsed_link, &body.conversation, &body.chat_token, &command, &environment)
         .await
     {
         Ok(()) => write_json(200, &json!({"running": true})),
