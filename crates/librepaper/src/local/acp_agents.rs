@@ -60,8 +60,8 @@ const KINDS: &[Kind] = &[
         id: "claude",
         label: "Claude Code",
         executable: "claude",
-        acp: &["claude-code-acp"],
-        acp_fetch: Some(&["npx", "-y", "@zed-industries/claude-code-acp"]),
+        acp: &["claude-agent-acp"],
+        acp_fetch: Some(&["npx", "-y", "@agentclientprotocol/claude-agent-acp"]),
         acp_note: None,
     },
     Kind {

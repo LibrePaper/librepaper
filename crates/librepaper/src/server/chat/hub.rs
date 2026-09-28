@@ -438,6 +438,23 @@ impl Hub {
                 }
                 self.deliver(slug, id, token, socket, role, value).await
             }
+            "options" => {
+                if role != "agent"
+                    || !value["options"].is_array()
+                    || !valid_context(&value["options"])
+                {
+                    return Err((400, "invalid options"));
+                }
+                self.deliver(slug, id, token, socket, role, value).await
+            }
+            "set_option" => {
+                if role != "user" {
+                    return Err((403, "only the user can set an agent option"));
+                }
+                bounded_string(&value, "option")?;
+                bounded_string(&value, "value")?;
+                self.deliver(slug, id, token, socket, role, value).await
+            }
             "preview_request" => {
                 bounded_string(&value, "task_id")?;
                 bounded_string(&value, "base_revision")?;

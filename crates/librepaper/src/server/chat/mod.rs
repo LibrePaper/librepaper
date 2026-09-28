@@ -703,6 +703,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn option_frames_are_bounded_and_role_checked() {
+        let (hub, id, token) = channel().await;
+        let (user_tx, mut user_rx) = mpsc::channel(8);
+        let (agent_tx, mut agent_rx) = mpsc::channel(8);
+        hub.attach("paper", &id, &token, "user", 1, user_tx)
+            .await
+            .unwrap();
+        hub.attach("paper", &id, &token, "agent", 2, agent_tx)
+            .await
+            .unwrap();
+        while user_rx.try_recv().is_ok() {}
+        while agent_rx.try_recv().is_ok() {}
+        let options = json!({"type":"options","id":"o1","options":[{"id":"model","name":"Model","category":"model","current":"a","choices":[{"value":"a","name":"A"}]}]});
+        assert_eq!(
+            hub.relay("paper", &id, &token, 1, "user", options.clone())
+                .await
+                .unwrap_err()
+                .0,
+            403
+        );
+        for invalid in [json!({"not":"an array"}), json!(["x".repeat(MAX_CONTEXT)])] {
+            let mut frame = options.clone();
+            frame["options"] = invalid;
+            assert_eq!(
+                hub.relay("paper", &id, &token, 2, "agent", frame)
+                    .await
+                    .unwrap_err()
+                    .0,
+                400
+            );
+        }
+        hub.relay("paper", &id, &token, 2, "agent", options.clone())
+            .await
+            .unwrap();
+        let Outgoing::Text(delivered) = user_rx.recv().await.unwrap() else {
+            panic!("expected options")
+        };
+        assert_eq!(serde_json::from_str::<Value>(&delivered).unwrap(), options);
+
+        let set = json!({"type":"set_option","id":"s1","option":"model","value":"b"});
+        assert_eq!(
+            hub.relay("paper", &id, &token, 2, "agent", set.clone())
+                .await
+                .unwrap_err()
+                .0,
+            403
+        );
+        for (field, invalid) in [
+            ("option", json!("")),
+            ("option", json!("x".repeat(MAX_CONTEXT))),
+            ("value", json!("")),
+            ("value", json!("x".repeat(MAX_CONTEXT))),
+            ("value", json!(3)),
+        ] {
+            let mut frame = set.clone();
+            frame[field] = invalid;
+            assert_eq!(
+                hub.relay("paper", &id, &token, 1, "user", frame)
+                    .await
+                    .unwrap_err()
+                    .0,
+                400,
+                "{field}"
+            );
+        }
+        hub.relay("paper", &id, &token, 1, "user", set.clone())
+            .await
+            .unwrap();
+        let Outgoing::Text(delivered) = agent_rx.recv().await.unwrap() else {
+            panic!("expected set_option")
+        };
+        assert_eq!(serde_json::from_str::<Value>(&delivered).unwrap(), set);
+    }
+
+    #[tokio::test]
     async fn task_and_preview_events_are_bounded_and_role_checked() {
         let (hub, id, token) = channel().await;
         let (user_tx, mut user_rx) = mpsc::channel(8);

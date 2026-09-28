@@ -15,7 +15,9 @@ use agent_client_protocol::schema::{
         CancelNotification, ContentBlock, InitializeRequest, McpServer, McpServerStdio,
         NewSessionRequest, PermissionOption, PermissionOptionId, RequestPermissionOutcome,
         RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-        SessionNotification, SessionUpdate, StopReason,
+        SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+        SessionConfigSelectOptions, SessionConfigValueId, SessionNotification, SessionUpdate,
+        SetSessionConfigOptionRequest, StopReason,
     },
     ProtocolVersion,
 };
@@ -29,6 +31,40 @@ pub(super) enum Update {
     /// The names of the slash commands the agent currently advertises.
     Commands(Vec<String>),
     Ignored,
+}
+
+/// The model selects among the agent's session config options, in the shape
+/// the browser reads: grouped choices flattened, every other category and
+/// every non-select kind dropped.
+fn model_options(options: &[SessionConfigOption]) -> serde_json::Value {
+    serde_json::Value::Array(
+        options
+            .iter()
+            .filter(|option| option.category == Some(SessionConfigOptionCategory::Model))
+            .filter_map(|option| {
+                let SessionConfigKind::Select(select) = &option.kind else {
+                    return None;
+                };
+                let choices = match &select.options {
+                    SessionConfigSelectOptions::Ungrouped(choices) => choices.iter().collect(),
+                    SessionConfigSelectOptions::Grouped(groups) => {
+                        groups.iter().flat_map(|group| &group.options).collect::<Vec<_>>()
+                    }
+                    _ => return None,
+                };
+                Some(serde_json::json!({
+                    "id": option.id.to_string(),
+                    "name": option.name,
+                    "category": "model",
+                    "current": select.current_value.to_string(),
+                    "choices": choices
+                        .iter()
+                        .map(|choice| serde_json::json!({"value": choice.value.to_string(), "name": choice.name}))
+                        .collect::<Vec<_>>(),
+                }))
+            })
+            .collect(),
+    )
 }
 
 fn browser_permission_options(options: &[PermissionOption]) -> serde_json::Value {
@@ -194,6 +230,7 @@ pub(super) enum Event {
         details: serde_json::Value,
         option_ids: Vec<String>,
     },
+    Options(serde_json::Value),
     TurnEnded(Result<StopReason, String>),
     Exited(String),
 }
@@ -201,12 +238,18 @@ pub(super) enum Event {
 enum Command {
     Prompt(String),
     Cancel,
+    SetOption {
+        id: String,
+        value: String,
+        reply: oneshot::Sender<Result<serde_json::Value, String>>,
+    },
 }
 
 pub(super) struct Agent {
     commands: mpsc::Sender<Command>,
     events: mpsc::Receiver<Event>,
     session_id: String,
+    options: serde_json::Value,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -288,7 +331,7 @@ impl Agent {
         let request = NewSessionRequest::new(directory).mcp_servers(vec![server]);
         let (commands_tx, mut commands_rx) = mpsc::channel(16);
         let (events_tx, events_rx) = mpsc::channel(32);
-        let (ready_tx, ready_rx) = oneshot::channel::<Result<String, String>>();
+        let (ready_tx, ready_rx) = oneshot::channel::<Result<(String, serde_json::Value), String>>();
         let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
         let session_ready = Arc::clone(&ready_tx);
         let permission_events = events_tx.clone();
@@ -339,9 +382,10 @@ impl Agent {
                         .block_task()
                         .run_until(async move |mut session| {
                             let session_id = session.session_id().to_string();
+                            let options = model_options(session.config_options().unwrap_or_default());
                             if let Ok(mut ready) = session_ready.lock() {
                                 if let Some(ready) = ready.take() {
-                                    let _ = ready.send(Ok(session_id));
+                                    let _ = ready.send(Ok((session_id, options)));
                                 }
                             }
                             loop {
@@ -357,6 +401,17 @@ impl Agent {
                                                 CancelNotification::new(session.session_id().clone())
                                             )?;
                                         }
+                                        Some(Command::SetOption { id, value, reply }) => {
+                                            let request = SetSessionConfigOptionRequest::new(
+                                                session.session_id().clone(),
+                                                id,
+                                                SessionConfigValueId::new(value),
+                                            );
+                                            let result = session.connection().send_request(request).block_task().await
+                                                .map(|response| model_options(&response.config_options))
+                                                .map_err(|error| error.to_string());
+                                            let _ = reply.send(result);
+                                        }
                                         None => return Ok(()),
                                     },
                                     update = session.read_update() => match update? {
@@ -369,9 +424,17 @@ impl Agent {
                                             let tx = events_tx.clone();
                                             MatchDispatch::new(dispatch)
                                                 .if_notification(async move |notification: SessionNotification| {
-                                                    let update = translate_update(notification.update);
-                                                    if !matches!(update, Update::Ignored) {
-                                                        tx.send(Event::Update(update)).await
+                                                    let event = match notification.update {
+                                                        SessionUpdate::ConfigOptionUpdate(update) => {
+                                                            Some(Event::Options(model_options(&update.config_options)))
+                                                        }
+                                                        update => match translate_update(update) {
+                                                            Update::Ignored => None,
+                                                            update => Some(Event::Update(update)),
+                                                        },
+                                                    };
+                                                    if let Some(event) = event {
+                                                        tx.send(event).await
                                                             .map_err(|error| agent_client_protocol::Error::internal_error().data(error.to_string()))?;
                                                     }
                                                     Ok(())
@@ -398,9 +461,9 @@ impl Agent {
             }
         });
 
-        let session_id =
+        let (session_id, options) =
             match tokio::time::timeout(std::time::Duration::from_secs(40), ready_rx).await {
-                Ok(Ok(Ok(session_id))) => session_id,
+                Ok(Ok(Ok(ready))) => ready,
                 Ok(Ok(Err(error))) => {
                     task.abort();
                     return Err(error);
@@ -418,12 +481,32 @@ impl Agent {
             commands: commands_tx,
             events: events_rx,
             session_id,
+            options,
             task,
         })
     }
 
     pub(super) fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// The model options the session was created with.
+    pub(super) fn options(&self) -> &serde_json::Value {
+        &self.options
+    }
+
+    /// Set one session config option and return the model options the agent
+    /// reports afterwards.
+    pub(super) async fn set_option(&self, id: &str, value: &str) -> Result<serde_json::Value, String> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::SetOption { id: id.into(), value: value.into(), reply })
+            .await
+            .map_err(|_| "agent connection stopped".to_string())?;
+        tokio::time::timeout(std::time::Duration::from_secs(15), response)
+            .await
+            .map_err(|_| "the agent did not answer in time".to_string())?
+            .map_err(|_| "agent connection stopped".to_string())?
     }
 
     pub(super) async fn prompt(&self, text: String) -> Result<(), String> {
@@ -512,10 +595,59 @@ mod tests {
             commands,
             events,
             session_id: "old".into(),
+            options: serde_json::Value::Null,
             task,
         };
         agent.shutdown().await;
         assert_eq!(released.try_recv(), Ok(()));
+    }
+
+    #[test]
+    fn model_options_keep_model_selects_and_flatten_groups() {
+        use agent_client_protocol::schema::v1::{SessionConfigSelectGroup, SessionConfigSelectOption};
+        let model = SessionConfigOption::select(
+            "model",
+            "Model",
+            "opus",
+            vec![
+                SessionConfigSelectOption::new("opus", "Opus"),
+                SessionConfigSelectOption::new("sonnet", "Sonnet"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::Model);
+        let grouped = SessionConfigOption::select(
+            "grouped",
+            "Grouped",
+            "b",
+            vec![
+                SessionConfigSelectGroup::new("g1", "One", vec![SessionConfigSelectOption::new("a", "A")]),
+                SessionConfigSelectGroup::new("g2", "Two", vec![SessionConfigSelectOption::new("b", "B")]),
+            ],
+        )
+        .category(SessionConfigOptionCategory::Model);
+        let mode = SessionConfigOption::select(
+            "mode",
+            "Mode",
+            "x",
+            vec![SessionConfigSelectOption::new("x", "X")],
+        )
+        .category(SessionConfigOptionCategory::Mode);
+        let uncategorised = SessionConfigOption::select(
+            "plain",
+            "Plain",
+            "x",
+            vec![SessionConfigSelectOption::new("x", "X")],
+        );
+        assert_eq!(
+            model_options(&[model, grouped, mode, uncategorised]),
+            serde_json::json!([
+                {"id":"model","name":"Model","category":"model","current":"opus",
+                 "choices":[{"value":"opus","name":"Opus"},{"value":"sonnet","name":"Sonnet"}]},
+                {"id":"grouped","name":"Grouped","category":"model","current":"b",
+                 "choices":[{"value":"a","name":"A"},{"value":"b","name":"B"}]},
+            ])
+        );
+        assert_eq!(model_options(&[]), serde_json::json!([]));
     }
 
     #[test]

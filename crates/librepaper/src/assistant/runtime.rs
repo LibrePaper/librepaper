@@ -420,12 +420,18 @@ async fn publish_answer(
     Ok(())
 }
 
+async fn emit_options(transport: &Transport, options: &Value) -> Result<(), String> {
+    emit(transport,json!({"type":"options","id":event_id(),"options":options})).await
+}
+
 async fn reconcile(
     transport: &Transport,
     state: &mut State,
     session_id: &str,
+    options: &Value,
 ) -> Result<(), String> {
     emit(transport,json!({"type":"capabilities","id":event_id(),"session_id":session_id,"capabilities":{"steer":false,"cancel":true,"preview":true,"input":true}})).await?;
+    emit_options(transport, options).await?;
     let ids = state
         .tasks
         .iter()
@@ -567,6 +573,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // so what is lost is the model's own memory of the conversation, not the
     // user's.
     let mut session_id = agent.session_id().to_string();
+    let mut options = agent.options().clone();
     // ACP has no place to put developer instructions on a session, so they
     // lead the first prompt of this process. Once per runner start, not once
     // per task: the agent keeps the session's context between turns.
@@ -694,9 +701,10 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     ).await?;
                     if connected && stopping.is_none() { runner_journal::set_session_epoch(&session_path, current_epoch.as_deref())?; }
                     session_id = agent.session_id().to_string();
+                    options = agent.options().clone();
                     instructions = Some(context::instructions(&lease.location.directory)?);
                     commands.clear();
-                    if connected { reconcile(&transport, &mut state, &session_id).await?; }
+                    if connected { reconcile(&transport, &mut state, &session_id, &options).await?; }
                 }
                 if let Some(current)=active.as_mut() {
                     if current.pending.front().is_some_and(|pending|pending.deadline<=now) {
@@ -757,7 +765,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         current_epoch=execution_epoch;
                         if browser && stopping.is_none() {
                             runner_journal::set_session_epoch(&session_path, current_epoch.as_deref())?;
-                            reconcile(&transport,&mut state, &session_id).await?;
+                            reconcile(&transport,&mut state, &session_id, &options).await?;
                         } else {
                             runner_journal::set_session_epoch(&session_path, None)?;
                         }
@@ -804,6 +812,15 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                     if let Some(task)=state.task_mut(id){task.request_cancel();}
                                 } else if state.task(id).is_some_and(|task|task.status==TaskStatus::Queued) { finish(&mut state,id,TaskStatus::Cancelled,"Queued task cancelled"); }
                                 if state.task(id).is_some(){report_task(&transport,&mut state,id,&lease.location.state).await?;}
+                            }
+                            "set_option"=> {
+                                if let (Some(id), Some(chosen)) = (value["option"].as_str(), value["value"].as_str()) {
+                                    match agent.set_option(id, chosen).await {
+                                        Ok(updated) => options = updated,
+                                        Err(error) => eprintln!("could not set agent option {id}: {error}"),
+                                    }
+                                    emit_options(&transport, &options).await?;
+                                }
                             }
                             "input"=> {
                                 if let Some(current)=active.as_mut().filter(|task|value["task_id"]==task.id) {
@@ -863,6 +880,10 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         return Err(format!("the agent exited: {error}"));
                     }
                     acp::Event::Update(acp::Update::Commands(names)) => commands = names,
+                    acp::Event::Options(updated) => {
+                        options = updated;
+                        if connected { emit_options(&transport, &options).await?; }
+                    }
                     acp::Event::Update(update) => {
                         let Some(current)=active.as_mut() else { continue; };
                         match update {
@@ -1160,11 +1181,11 @@ mod tests {
         let config = config(
             "c".into(),
             Some("t".into()),
-            vec!["claude-code-acp".into()],
+            vec!["claude-agent-acp".into()],
             state_home,
         )
         .expect("an installed agent");
-        assert_eq!(config.agent, vec!["claude-code-acp".to_string()]);
+        assert_eq!(config.agent, vec!["claude-agent-acp".to_string()]);
     }
 
     #[test]
