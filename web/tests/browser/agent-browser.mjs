@@ -409,7 +409,7 @@ try {
   assert.equal(await page.evaluate("document.querySelector('select[aria-label=Model]').value"), 'sonnet');
   await page.evaluate("window.localCalls=[]");
   await choose("Model", "opus");
-  await until("set_option sent", () => page.evaluate(`window.sockets.at(-1).sent.some(frame=>frame.type==='set_option'&&frame.id==='model'&&frame.value==='opus')`), 1000);
+  await until("set_option sent", () => page.evaluate(`window.sockets.at(-1).sent.some(frame=>frame.type==='set_option'&&frame.option==='model'&&frame.value==='opus'&&Boolean(frame.id))`), 1000);
   assert.equal(await page.evaluate("window.localCalls.length"), 0, "changing the model does not restart the agent");
   assert.equal(await page.evaluate("localStorage.getItem('librepaper.agent.model.claude')"), 'opus');
   // The runner answers with a fresh options frame; the picker follows it.

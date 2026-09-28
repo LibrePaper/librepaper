@@ -643,7 +643,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   /// `options` frame, which is what updates the view.
   async function setOption(optionId, value) {
     if (!optionId || !socket || socket.readyState !== WebSocketImpl.OPEN) return false;
-    socket.send(JSON.stringify({ type: "set_option", id: optionId, value }));
+    socket.send(JSON.stringify({ type: "set_option", id: randomId(), option: optionId, value }));
     return true;
   }
   async function respond(taskId, requestId, response) {
