@@ -225,8 +225,8 @@
       ["path", "M7 22h1a4 4 0 0 0 4-4"],
       ["path", "M7 2h1a4 4 0 0 1 4 4"],
     ],
-    // A simple filled square for stop/pause actions
-    square: [["rect", { width: 14, height: 14, x: 5, y: 5, rx: 1 }]],
+    // Stops a running agent.
+    square: [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }]],
   };
 
   // Skeleton's button sizes the icon inside it, so the default here is only

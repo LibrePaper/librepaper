@@ -104,9 +104,7 @@
   let suppressedSelection = $state("");
   let capabilityGeneration = 0;
   let verifiedCapabilities = $state(null);
-  let activeTaskStartTime = $state(0);
   let elapsedTime = $state(0);
-  let elapsedInterval = null;
   const selectedText = $derived(attachment?.selection?.exact || "");
   const caps = $derived(normalizeCapabilities(verifiedCapabilities));
   const contextPath = $derived(diagnostic?.file || diagnostic?.path || path);
@@ -128,33 +126,23 @@
   const canPrepare = (entry) => taskScopes(entry).some((id) => scopeAvailable(id) && allows(entry.kind, id));
   const preparable = $derived(Boolean(chosen) && scopeAvailable(scope) && allows(chosen.kind, scope));
   const inputTask = $derived(Object.values(connection.tasks || {}).find((item) => item?.status === "needs_input" && item.input) || null);
-  // Everything that is currently in flight: what the Activity disclosure
-  // lists, and the composer's Stop button acts on. "Active" (as opposed to
+  // Everything that is currently in flight: what the queued list and status
+  // line show, and the composer's Stop button acts on. "Active" (as opposed to
   // queued) is what a Stop button can actually interrupt.
   const activeTasks = $derived(Object.values(connection.tasks || {}).filter((item) =>
     ["queued", "working", "needs_input"].includes(item.status)));
   const activeTask = $derived(activeTasks.find((item) => ["working", "needs_input"].includes(item.status)) || null);
   const queuedTasks = $derived(Object.values(connection.tasks || {}).filter((item) => item?.status === "queued"));
 
-  // Track elapsed time for the active task
+  // The task carries no start time, so the clock starts when this client
+  // first sees it working, and restarts for each new working task.
+  const workingId = $derived(activeTask?.status === "working" ? activeTask.id : null);
   $effect(() => {
-    if (activeTask?.status === "working" && !activeTaskStartTime) {
-      activeTaskStartTime = Date.now();
-    } else if (activeTask?.status !== "working") {
-      activeTaskStartTime = 0;
-      elapsedTime = 0;
-      if (elapsedInterval) { clearInterval(elapsedInterval); elapsedInterval = null; }
-    }
-  });
-
-  // Update elapsed time every second while a task is working
-  $effect(() => {
-    if (activeTask?.status === "working" && activeTaskStartTime && !elapsedInterval) {
-      elapsedInterval = setInterval(() => {
-        elapsedTime = Math.floor((Date.now() - activeTaskStartTime) / 1000);
-      }, 1000);
-      return () => { if (elapsedInterval) clearInterval(elapsedInterval); };
-    }
+    if (!workingId) return;
+    const started = Date.now();
+    elapsedTime = 0;
+    const timer = setInterval(() => { elapsedTime = Math.floor((Date.now() - started) / 1000); }, 1000);
+    return () => clearInterval(timer);
   });
 
   function formatElapsed(seconds) {
