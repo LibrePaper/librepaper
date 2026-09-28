@@ -1,7 +1,4 @@
-    const before = `${chosenAgent} ${access}`;
-    change();
-    if (`${chosenAgent} ${access}` === before) return;
-    if (assistant.running || runnerReady) await act|| runnerReady)) await act<script>
+<script>
   import { onMount } from "svelte";
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import { getPrivate, post } from "../../lib/api.js";

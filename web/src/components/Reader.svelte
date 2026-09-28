@@ -845,15 +845,11 @@
       } });
   }
 
-  async function rejectConfirmed(comment) {
-    const response = await fetch(`/api/documents/${SLUG}/comments`, {
-      method: "POST", headers: authHeaders(KEY, "application/json"),
-      body: JSON.stringify({ type: "reject", comment_id: comment.id, request_id: newRequestKey() }),
-      signal: AbortSignal.timeout(15000),
-    });
-    const result = await response.json();
-    if (!response.ok || result.type === "error") throw new Error(result.message || result.error || "Could not reject this suggestion.");
-    receive(result);
+  /// "Reject all" declines each suggestion the same way a single Reject does:
+  /// as a decision on its proposal, so the proposal is resolved rather than
+  /// left pending.
+  function rejectConfirmed(comment) {
+    return decideSuggestion(comment, "reject");
   }
 
   // A suggestion the server refused to apply because the passage it named no
