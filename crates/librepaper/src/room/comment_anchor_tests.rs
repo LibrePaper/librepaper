@@ -769,6 +769,7 @@ async fn refinement_round_trip(edit_source: bool, check_text: bool) {
         proposal.tip_frontiers,
         proposal.branch_bytes,
         "Owner".into(),
+        deployment.mutation_authorization(),
         Uuid::new_v4(),
     );
     room.command(&deployment.authority(), &mut accept)
@@ -918,11 +919,19 @@ async fn mcp_validates_a_suggestion_as_it_is_actually_served() {
         .await
         .expect("an editor rejects it");
     assert!(
-        room.comment_by_id(&created.id, true).await.unwrap().is_none(),
+        room.comment_by_id(&created.id, true)
+            .await
+            .unwrap()
+            .is_none(),
         "a decided suggestion is deleted with its proposal",
     );
     assert!(
-        deployment.catalog.proposal(open.id).await.unwrap().is_none(),
+        deployment
+            .catalog
+            .proposal(open.id)
+            .await
+            .unwrap()
+            .is_none(),
         "the decided proposal is deleted, not kept",
     );
     deployment.catalog.close().await;

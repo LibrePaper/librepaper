@@ -1960,6 +1960,7 @@ pub struct AcceptSuggestion {
     tip_frontiers: Vec<u8>,
     branch_bytes: Vec<u8>,
     decided_by: String,
+    actor: MutationAuthorization,
     request_id: Uuid,
 }
 
@@ -1974,6 +1975,7 @@ impl AcceptSuggestion {
         tip_frontiers: Vec<u8>,
         branch_bytes: Vec<u8>,
         decided_by: String,
+        actor: MutationAuthorization,
         request_id: Uuid,
     ) -> Self {
         Self {
@@ -1985,6 +1987,7 @@ impl AcceptSuggestion {
             tip_frontiers,
             branch_bytes,
             decided_by,
+            actor,
             request_id,
         }
     }

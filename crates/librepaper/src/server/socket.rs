@@ -1179,9 +1179,28 @@ impl Server {
                                 // (`room/proposals.rs`'s `DecideProposalHunk`
                                 // doc comment).
                                 let Ok(Some(stored)) = room.catalog().proposal(proposal_id).await else {
-                                    let _ = send_outgoing(&tx, Outgoing::Text(
-                                        json!({"type":"error","message":"that proposal is not open","proposal_id":incoming.proposal_id(),"request_id":incoming.request_id()}).to_string(),
-                                    )).await;
+                                    // A decided proposal is deleted, so a
+                                    // lost-response retry of the decision that
+                                    // completed it finds no row. The label that
+                                    // decision wrote is its answer.
+                                    let replayed = matches!(
+                                        room.catalog().label_by_request(room.document_id, request_id).await,
+                                        Ok(Some(_))
+                                    );
+                                    let answer = if replayed {
+                                        json!({
+                                            "type": "proposal-decided",
+                                            "proposal_id": incoming.proposal_id(),
+                                            "hunk": incoming.hunk(),
+                                            "accepted": incoming.accepted(),
+                                            "resolved": true,
+                                            "request_id": incoming.request_id(),
+                                            "version": 1, "protocol": PROTOCOL,
+                                        })
+                                    } else {
+                                        json!({"type":"error","message":"that proposal is not open","proposal_id":incoming.proposal_id(),"request_id":incoming.request_id()})
+                                    };
+                                    let _ = send_outgoing(&tx, Outgoing::Text(answer.to_string())).await;
                                     continue 'reader;
                                 };
                                 let decided = room

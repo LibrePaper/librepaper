@@ -327,7 +327,11 @@ impl KnownMessage {
             | Delete
             | Refine
     );
-    string_field!(temp_id, temp_id, Chat | Comment | Reply | Resolve | Delete | Refine);
+    string_field!(
+        temp_id,
+        temp_id,
+        Chat | Comment | Reply | Resolve | Delete | Refine
+    );
     string_field!(comment_id, comment_id, Reply | Resolve | Delete | Refine);
     string_field!(body, body, Chat | Comment | Reply | Refine);
     string_field!(motivation, motivation, Comment);

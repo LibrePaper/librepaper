@@ -463,25 +463,38 @@ async fn a_proposal_goes_open_update_decide_resolve() {
         "a resolved proposal is no longer open"
     );
     assert!(
-        deployment.catalog.proposal(stored.id).await.unwrap().is_none(),
+        deployment
+            .catalog
+            .proposal(stored.id)
+            .await
+            .unwrap()
+            .is_none(),
         "a resolved proposal is deleted, not kept"
     );
 
-    // A retry with the same request id, after the merge already landed, is
-    // handled without re-resolving: the hunk row is idempotent and `resolve`
-    // finds head already reflecting the decision, so `Head::prepare` exports
-    // an empty batch and no second merge happens.
-    let replay = decide(&room, &deployment.authority, stored.id, 0, true, &tip, 7)
-        .await
-        .unwrap();
+    // A second decision is refused and changes nothing: the proposal is
+    // gone. A retry of the same request id is answered from its label by the
+    // socket handler, which `web/tests/integration/proposal-decisions.mjs`
+    // covers against a real server.
+    let again = decide_with(
+        &room,
+        &deployment.authority,
+        stored.clone(),
+        Vec::new(),
+        0,
+        true,
+        &tip,
+        7,
+    )
+    .await;
     assert!(
-        replay.resolved,
-        "a replayed completing decision still reports complete"
+        again.is_err(),
+        "a decided proposal takes no second decision"
     );
-    let body_after_replay = text(&room, path).await;
     assert_eq!(
-        body_after_replay, body,
-        "a replay of the same decision must not change the text a second time"
+        text(&room, path).await,
+        body,
+        "a refused second decision must not change the text"
     );
 }
 
@@ -581,7 +594,12 @@ async fn two_reviewers_deciding_at_once_still_apply_what_they_accepted() {
         "and the proposal is closed"
     );
     assert!(
-        deployment.catalog.proposal(stored.id).await.unwrap().is_none(),
+        deployment
+            .catalog
+            .proposal(stored.id)
+            .await
+            .unwrap()
+            .is_none(),
         "and deleted, with its hunk decisions"
     );
 }

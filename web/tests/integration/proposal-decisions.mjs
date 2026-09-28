@@ -223,6 +223,27 @@ try {
     assertGone(comment);
     console.log("proposal-decisions: a decision without a UUID request_id is refused");
   }
+
+  // Case 5: a lost-response retry resends the same request id after the
+  // proposal is already gone. It is answered from the label the first
+  // decision wrote, not refused, and changes nothing.
+  {
+    const comment = await suggest(socket, slug, "Delta", "Dover");
+    const request_id = randomUUID();
+    const tip = await tipOf(socket, comment.proposal);
+    const decision = { type: "proposal-decide", proposal_id: comment.proposal, hunk: 0, accepted: true, tip, request_id };
+    for (const attempt of ["first", "retry"]) {
+      socket.send(decision);
+      const answer = await socket.next(`the ${attempt} answer`, (frame) =>
+        (frame.type === "proposal-decided" || frame.type === "error") && frame.request_id === request_id);
+      assert.equal(answer.type, "proposal-decided", `the ${attempt}: ${answer.message}`);
+      assert.equal(answer.resolved, true);
+    }
+    assertGone(comment);
+    const source = await sourceOf(slug);
+    assert.equal(source.split("Dover is fourth.").length, 2, "the retry did not apply the change twice");
+    console.log("proposal-decisions: a retried decision is answered, not refused");
+  }
 } catch (error) {
   console.error(deployment.log);
   throw error;

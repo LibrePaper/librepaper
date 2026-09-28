@@ -1461,7 +1461,6 @@ impl Server {
         let catalog = self.store.catalog.clone();
         let config = &self.config;
         let document_id = room.document_id;
-        let fail = |message: String| Err(json!({"type": "error", "message": message}));
 
         match command {
             RoomCommand::Comment {
