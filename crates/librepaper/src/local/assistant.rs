@@ -87,7 +87,13 @@ pub(super) async fn handle_assistant_start(
     }
     match inner
         .assistant_sessions
-        .start(&parsed_link, &body.conversation, &body.chat_token, &command, &environment)
+        .start(
+            &parsed_link,
+            &body.conversation,
+            &body.chat_token,
+            &command,
+            &environment,
+        )
         .await
     {
         Ok(()) => write_json(200, &json!({"running": true})),

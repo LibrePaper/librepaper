@@ -1181,12 +1181,20 @@ mod tests {
     #[test]
     fn an_agent_command_is_required_before_a_runner_can_start() {
         let state_home = PathBuf::from("/tmp/companion-state");
-        assert!(config("c".into(), Some("t".into()), Vec::new(), state_home.clone()).is_err());
+        assert!(config(
+            "c".into(),
+            Some("t".into()),
+            Vec::new(),
+            state_home.clone(),
+            Vec::new()
+        )
+        .is_err());
         assert!(config(
             "c".into(),
             Some("t".into()),
             vec!["  ".into()],
-            state_home.clone()
+            state_home.clone(),
+            Vec::new()
         )
         .is_err());
         let config = config(
@@ -1194,6 +1202,7 @@ mod tests {
             Some("t".into()),
             vec!["claude-agent-acp".into()],
             state_home,
+            Vec::new(),
         )
         .expect("an installed agent");
         assert_eq!(config.agent, vec!["claude-agent-acp".to_string()]);
