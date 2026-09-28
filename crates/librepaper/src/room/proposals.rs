@@ -438,6 +438,11 @@ pub struct ProposalDecided {
     /// hunk has an answer the document does not move (§5.1a): a partial
     /// answer only records the row.
     pub resolved: bool,
+    /// The suggestion comments that went with the proposal when it was
+    /// deleted, so the room can tell its clients they are gone. Empty for a
+    /// proposal typed directly, for a decision that did not complete the
+    /// review, and for a retry whose first answer already said so.
+    pub removed_comments: Vec<Uuid>,
 }
 
 /// Records one reviewer's answer about one hunk, and resolves the proposal
@@ -511,7 +516,10 @@ impl Command for DecideProposalHunk {
                 .label_by_request(self.document_id, self.request_id)
                 .await
                 .map_err(CommandError::from)?;
-            Ok(found.map(|_| ProposalDecided { resolved: true }))
+            Ok(found.map(|_| ProposalDecided {
+                resolved: true,
+                removed_comments: Vec::new(),
+            }))
         })
     }
 
@@ -628,24 +636,19 @@ impl Command for DecideProposalHunk {
                 )
                 .await?;
             if !complete {
-                return Ok(ProposalDecided { resolved: false });
+                return Ok(ProposalDecided {
+                    resolved: false,
+                    removed_comments: Vec::new(),
+                });
             }
 
-            self.catalog
-                .resolve_proposal(&mut *tx, self.proposal_id, &self.decided_by)
+            // A decided proposal is deleted, not kept: its hunks and the
+            // suggestion comment it answers go with it. A proposal typed
+            // directly rather than suggested has no comment to remove.
+            let removed_comments = self
+                .catalog
+                .delete_proposal(&mut *tx, self.proposal_id)
                 .await?;
-
-            // The suggestion this proposal answers, if it is one, stops
-            // being open discussion the moment its branch is decided. A
-            // proposal typed directly rather than suggested has no matching
-            // row, so this touches nothing for it.
-            sqlx::query(
-                "UPDATE annotations SET resolved_at=COALESCE(resolved_at,now()),updated_at=now() \
-                 WHERE proposal_id=$1",
-            )
-            .bind(self.proposal_id)
-            .execute(&mut **tx)
-            .await?;
 
             // The idempotency record for the merge this decision produced,
             // if it produced one: a retry with the same request id finds
@@ -678,7 +681,10 @@ impl Command for DecideProposalHunk {
                 )
                 .await?;
 
-            Ok(ProposalDecided { resolved: true })
+            Ok(ProposalDecided {
+                resolved: true,
+                removed_comments,
+            })
         })
     }
 }

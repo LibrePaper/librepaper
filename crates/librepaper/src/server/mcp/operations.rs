@@ -737,7 +737,6 @@ impl Server {
         } else {
             pseudonym_for(&self.mcp_author(headers, arrival, who, actor), slug)
         };
-        let authorization = who.mutation_authorization(self.ceiling_for(&who.id).edit);
         let request_id = super::comments::parse_uuid(
             &super::comments::comment_uuid(&key.scoped_request_id(actor)),
             "operation id",
@@ -751,7 +750,6 @@ impl Server {
             stored.tip_frontiers,
             stored.branch_bytes,
             decided_by,
-            authorization,
             request_id,
         );
         let operation_receipt =
@@ -766,7 +764,7 @@ impl Server {
                     "operation":key_for_receipt,
                     "status":"committed",
                     "action":"accept",
-                    "comment_id":accepted.comment.id,
+                    "comment_id":accepted.comment_id,
                     "resolved_in":accepted.resolved_in,
                     "replay":false
                 })
@@ -781,8 +779,7 @@ impl Server {
             "operation": key,
             "status": "committed",
             "action": "accept",
-            "comment_id": accepted.comment.id,
-            "comment": accepted.comment,
+            "comment_id": accepted.comment_id,
             "resolved_in": accepted.resolved_in,
             "replay": replay,
         }))

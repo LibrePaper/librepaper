@@ -1605,78 +1605,6 @@ impl Server {
                     .map_err(command_error_value)?;
                 Ok(json!({"type": "refine", "comment": comment}))
             }
-            RoomCommand::Accept { comment_id, .. } => {
-                let parsed_id = comment_id;
-                let (proposal_id, request_id, decided_by) = match self
-                    .accept_reject_context(&catalog, document_id, parsed_id, &author.key)
-                    .await
-                {
-                    Ok(found) => found,
-                    Err(error) => return Err(read_error_value(error)),
-                };
-                let proposal = match catalog.proposal(proposal_id).await {
-                    Ok(Some(proposal)) => proposal,
-                    Ok(None) => return fail("unknown suggestion".into()),
-                    Err(error) => {
-                        return Err(read_error_value(crate::room::WriteError::Storage(
-                            error.to_string(),
-                        )))
-                    }
-                };
-                let mut accept = crate::room::AcceptSuggestion::new(
-                    catalog.clone(),
-                    document_id,
-                    parsed_id,
-                    proposal_id,
-                    proposal.base_frontiers,
-                    proposal.tip_frontiers,
-                    proposal.branch_bytes,
-                    decided_by,
-                    author.authorization.clone(),
-                    request_id,
-                );
-                let accepted = room
-                    .command(authority, &mut accept)
-                    .await
-                    .map_err(command_error_value)?;
-                Ok(json!({
-                    "type": "accept",
-                    "comment": accepted.comment,
-                    "resolved_in": accepted.resolved_in,
-                }))
-            }
-            RoomCommand::Reject { comment_id, .. } => {
-                let parsed_id = comment_id;
-                let (proposal_id, _request_id, _decided_by) = match self
-                    .accept_reject_context(&catalog, document_id, parsed_id, &author.key)
-                    .await
-                {
-                    Ok(found) => found,
-                    Err(error) => return Err(read_error_value(error)),
-                };
-                let proposal = match catalog.proposal(proposal_id).await {
-                    Ok(Some(proposal)) => proposal,
-                    Ok(None) => return fail("unknown suggestion".into()),
-                    Err(error) => {
-                        return Err(read_error_value(crate::room::WriteError::Storage(
-                            error.to_string(),
-                        )))
-                    }
-                };
-                let mut reject = crate::room::RejectSuggestion::new(
-                    catalog.clone(),
-                    document_id,
-                    parsed_id,
-                    proposal_id,
-                    proposal.tip_frontiers,
-                    author,
-                );
-                let comment = room
-                    .command(authority, &mut reject)
-                    .await
-                    .map_err(command_error_value)?;
-                Ok(json!({"type": "reject", "comment": comment}))
-            }
         }
     }
 
@@ -1718,30 +1646,6 @@ impl Server {
             }
         };
         Ok((proposal_id, proposal.version, exact, prefix, suffix))
-    }
-
-    /// What `accept` and `reject` both need before they can build their
-    /// command: the proposal id and a display name for who decided.
-    async fn accept_reject_context(
-        &self,
-        catalog: &crate::storage::postgres::PostgresCatalog,
-        document_id: uuid::Uuid,
-        comment_id: uuid::Uuid,
-        author_key: &str,
-    ) -> Result<(uuid::Uuid, uuid::Uuid, String), crate::room::WriteError> {
-        let comment = self
-            .comment_row(catalog, document_id, comment_id)
-            .await?
-            .ok_or_else(|| crate::room::WriteError::Conflict("unknown comment".into()))?;
-        let proposal_id = uuid::Uuid::parse_str(&comment.proposal).map_err(|_| {
-            crate::room::WriteError::Conflict("that comment has no suggestion".into())
-        })?;
-        let decided_by = if author_key.is_empty() {
-            "Anonymous".to_string()
-        } else {
-            author_key.to_string()
-        };
-        Ok((proposal_id, uuid::Uuid::new_v4(), decided_by))
     }
 
     /// A comment by id, read straight from the catalogue rather than through

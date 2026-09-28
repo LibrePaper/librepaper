@@ -308,12 +308,6 @@ impl Server {
                     );
                 }
                 let address = client_address(peer, &headers, &self.config.cost.trusted_proxies);
-                if incoming.kind() == "accept" || incoming.kind() == "reject" {
-                    return write_json(
-                        410,
-                        &json!({"error": "suggestion decisions are not supported"}),
-                    );
-                }
                 let (result, ok) = self
                     .apply_from(&room, incoming, &address, &current_who, &author)
                     .await;

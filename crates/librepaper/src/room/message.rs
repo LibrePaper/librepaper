@@ -246,24 +246,6 @@ pub enum KnownMessage {
         #[serde(default)]
         request_id: String,
     },
-    #[serde(rename = "accept")]
-    Accept {
-        #[serde(default)]
-        comment_id: String,
-        #[serde(default)]
-        temp_id: String,
-        #[serde(default)]
-        request_id: String,
-    },
-    #[serde(rename = "reject")]
-    Reject {
-        #[serde(default)]
-        comment_id: String,
-        #[serde(default)]
-        temp_id: String,
-        #[serde(default)]
-        request_id: String,
-    },
 }
 
 macro_rules! string_field {
@@ -299,8 +281,6 @@ impl KnownMessage {
                 | "resolve"
                 | "delete"
                 | "refine"
-                | "accept"
-                | "reject"
         )
     }
 
@@ -325,8 +305,6 @@ impl KnownMessage {
             Self::Resolve { .. } => "resolve",
             Self::Delete { .. } => "delete",
             Self::Refine { .. } => "refine",
-            Self::Accept { .. } => "accept",
-            Self::Reject { .. } => "reject",
         }
     }
     string_field!(
@@ -348,19 +326,9 @@ impl KnownMessage {
             | Resolve
             | Delete
             | Refine
-            | Accept
-            | Reject
     );
-    string_field!(
-        temp_id,
-        temp_id,
-        Chat | Comment | Reply | Resolve | Delete | Refine | Accept | Reject
-    );
-    string_field!(
-        comment_id,
-        comment_id,
-        Reply | Resolve | Delete | Refine | Accept | Reject
-    );
+    string_field!(temp_id, temp_id, Chat | Comment | Reply | Resolve | Delete | Refine);
+    string_field!(comment_id, comment_id, Reply | Resolve | Delete | Refine);
     string_field!(body, body, Chat | Comment | Reply | Refine);
     string_field!(motivation, motivation, Comment);
     string_field!(render_digest, render_digest, Comment);

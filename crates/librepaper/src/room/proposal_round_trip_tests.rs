@@ -462,6 +462,10 @@ async fn a_proposal_goes_open_update_decide_resolve() {
             .is_empty(),
         "a resolved proposal is no longer open"
     );
+    assert!(
+        deployment.catalog.proposal(stored.id).await.unwrap().is_none(),
+        "a resolved proposal is deleted, not kept"
+    );
 
     // A retry with the same request id, after the merge already landed, is
     // handled without re-resolving: the hunk row is idempotent and `resolve`
@@ -575,5 +579,9 @@ async fn two_reviewers_deciding_at_once_still_apply_what_they_accepted() {
             .unwrap()
             .is_empty(),
         "and the proposal is closed"
+    );
+    assert!(
+        deployment.catalog.proposal(stored.id).await.unwrap().is_none(),
+        "and deleted, with its hunk decisions"
     );
 }

@@ -1211,15 +1211,31 @@ impl Server {
                                     // command produced (§5 step 5, `relay` in
                                     // `Sequencer::command`); broadcasting it a
                                     // second time here would double it.
-                                    Ok(ProposalDecided { resolved }) => json!({
-                                        "type": "proposal-decided",
-                                        "proposal_id": incoming.proposal_id(),
-                                        "hunk": incoming.hunk(),
-                                        "accepted": incoming.accepted(),
-                                        "resolved": resolved,
-                                        "request_id": incoming.request_id(),
-                                        "version": 1, "protocol": PROTOCOL,
-                                    }),
+                                    Ok(ProposalDecided { resolved, removed_comments }) => {
+                                        // The proposal is gone, and so is the
+                                        // suggestion comment that came with it.
+                                        // Everyone, the decider included, is told
+                                        // with the same `delete` event a deleted
+                                        // comment sends.
+                                        for comment_id in removed_comments {
+                                            let event = room
+                                                .prepare_comment_event(&json!({
+                                                    "type": "delete",
+                                                    "comment_id": comment_id.to_string(),
+                                                }))
+                                                .await;
+                                            room.broadcast_prepared(None, &event).await;
+                                        }
+                                        json!({
+                                            "type": "proposal-decided",
+                                            "proposal_id": incoming.proposal_id(),
+                                            "hunk": incoming.hunk(),
+                                            "accepted": incoming.accepted(),
+                                            "resolved": resolved,
+                                            "request_id": incoming.request_id(),
+                                            "version": 1, "protocol": PROTOCOL,
+                                        })
+                                    }
                                     Err(error) => refuse(error),
                                 }
                             }

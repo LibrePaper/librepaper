@@ -471,18 +471,18 @@ impl Server {
                 let mut cmd = crate::log::recorded::RecordedCommand::new(
                     &mut cmd,
                     operation_receipt.clone(),
-                    move |comment: &room::Comment| {
+                    move |comment_id: &uuid::Uuid| {
                         json!({
                             "tool":"document_comment", "operation":operation,
-                            "status":"committed", "action":"reject", "comment_id":comment.id
+                            "status":"committed", "action":"reject", "comment_id":comment_id
                         })
                     },
                 );
-                let comment = room
+                let comment_id = room
                     .command(&authority, &mut cmd)
                     .await
                     .map_err(command_failure)?;
-                json!({"comment_id": comment.id, "comment": comment})
+                json!({"comment_id": comment_id})
             }
             "delete" => {
                 let existing = existing.expect("validated above");

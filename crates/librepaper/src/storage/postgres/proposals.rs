@@ -175,38 +175,10 @@ impl PostgresCatalog {
             return Err(Error::Conflict("proposal is no longer open".into()));
         }
         if status != "pending" {
-            // §7.2: a transition is conditional on the row's state and
-            // "returns the current row on mismatch", not an error, so the
-            // caller can compare what it asked for against what happened.
-            // The decision that resolved a proposal is exactly the request
-            // a lost-response retry resends, so if this hunk was already
-            // decided exactly this way and that decision is what resolved
-            // the proposal, this is that retry: answer with the same
-            // "complete" it already reported instead of refusing a decision
-            // on a proposal that resolved because of this very decision.
-            // Anything else that no longer finds "pending" here -- a
-            // different verdict, an undecided hunk, or a proposal superseded
-            // by a restore -- is a real conflict.
-            let matches = status == "resolved"
-                && sqlx::query(
-                    "SELECT accepted,decided_against,decided_by FROM document_proposal_hunks \
-                     WHERE proposal_id=$1 AND hunk_index=$2",
-                )
-                .bind(proposal_id)
-                .bind(hunk_index)
-                .fetch_optional(&mut **tx)
-                .await?
-                .is_some_and(|row| {
-                    let row_accepted: bool = row.get(0);
-                    let row_against: Vec<u8> = row.get(1);
-                    let row_decided_by: String = row.get(2);
-                    row_accepted == accepted
-                        && row_against == decided_against
-                        && row_decided_by == decided_by
-                });
-            if matches {
-                return Ok(true);
-            }
+            // A resolved proposal is deleted, so one that is here and not
+            // pending was superseded. A lost-response retry of the deciding
+            // request is answered before this runs, by the label that
+            // decision wrote (`DecideProposalHunk::replay`).
             return Err(Error::Conflict("proposal is no longer open".into()));
         }
         if tip != decided_against {
@@ -241,24 +213,42 @@ impl PostgresCatalog {
         Ok(decided == total_hunks)
     }
 
-    /// Closes a proposal, in the same transaction as the source its accepted
-    /// hunks produced.
-    pub async fn resolve_proposal(
+    /// Deletes a resolved proposal, in the same transaction as the source its
+    /// accepted hunks produced. The hunks and the suggestion comment that
+    /// carries the discussion go with it (`ON DELETE CASCADE`); the ids of
+    /// those comments come back so the room can tell its clients they are gone.
+    pub async fn delete_proposal(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         proposal_id: Uuid,
-        resolved_by: &str,
-    ) -> Result<()> {
-        sqlx::query(
-            "UPDATE document_proposals SET status='resolved',resolved_by=$2,resolved_at=now(),
-                    version=version+1,updated_at=now()
-             WHERE id=$1 AND status='pending'",
+    ) -> Result<Vec<Uuid>> {
+        let comments: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM annotations WHERE proposal_id=$1")
+                .bind(proposal_id)
+                .fetch_all(&mut **tx)
+                .await?;
+        sqlx::query("DELETE FROM document_proposals WHERE id=$1")
+            .bind(proposal_id)
+            .execute(&mut **tx)
+            .await?;
+        Ok(comments)
+    }
+
+    /// Deletes every proposal that is not pending, and every pending one
+    /// created before `cutoff`, in one transaction. Returns how many
+    /// proposals went. This is the one-off cleanup for proposals that were
+    /// kept after they resolved, before resolving one deleted it.
+    pub async fn wipe_proposals(&self, cutoff: time::OffsetDateTime) -> Result<u64> {
+        let mut tx = self.begin_writer_transaction().await?;
+        let deleted = sqlx::query(
+            "DELETE FROM document_proposals WHERE status <> 'pending' OR created_at < $1",
         )
-        .bind(proposal_id)
-        .bind(resolved_by)
-        .execute(&mut **tx)
-        .await?;
-        Ok(())
+        .bind(cutoff)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(deleted)
     }
 
     /// The open proposals for a document, which is what a joining client asks

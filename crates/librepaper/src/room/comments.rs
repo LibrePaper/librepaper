@@ -1949,10 +1949,8 @@ impl SequencerCommand for RefineSuggestion {
 /// row this writes and returns without merging twice (§7.2).
 ///
 /// An editor decision about someone else's suggestion, never reachable by a
-/// commenter in the product this replaces -- `authority()` is `Editor`, and
-/// `replace_annotation_authorized` enforces the same rung a second time
-/// itself, because `resolved=true` on a `kind="suggestion"` row is exactly
-/// the case it raises its own check for.
+/// commenter: `authority()` is `Editor`. Deciding it deletes the proposal,
+/// and the suggestion comment goes with it.
 pub struct AcceptSuggestion {
     catalog: Arc<PostgresCatalog>,
     document_id: Uuid,
@@ -1962,7 +1960,6 @@ pub struct AcceptSuggestion {
     tip_frontiers: Vec<u8>,
     branch_bytes: Vec<u8>,
     decided_by: String,
-    actor: MutationAuthorization,
     request_id: Uuid,
 }
 
@@ -1977,7 +1974,6 @@ impl AcceptSuggestion {
         tip_frontiers: Vec<u8>,
         branch_bytes: Vec<u8>,
         decided_by: String,
-        actor: MutationAuthorization,
         request_id: Uuid,
     ) -> Self {
         Self {
@@ -1989,20 +1985,18 @@ impl AcceptSuggestion {
             tip_frontiers,
             branch_bytes,
             decided_by,
-            actor,
             request_id,
         }
     }
 }
 
-/// What accepting a suggestion answers with. `resolved_in` is
+/// What accepting a suggestion answers with. The suggestion comment is
+/// deleted along with its proposal, so only its id survives. `resolved_in` is
 /// `docs/protocol/room-v2.md`'s "the `source_sequence` of that row, which is
 /// the only durable name the state has now that there are no version ids" --
-/// the row §7 step 4 wrote alongside the merge, not a field on `Comment`
-/// itself, because nothing about a comment's own row carries the log
-/// position its own *acceptance* landed in.
+/// the row §7 step 4 wrote alongside the merge.
 pub struct Accepted {
-    pub comment: Comment,
+    pub comment_id: Uuid,
     pub resolved_in: i64,
 }
 
@@ -2028,13 +2022,8 @@ impl SequencerCommand for AcceptSuggestion {
             else {
                 return Ok(None);
             };
-            let row =
-                find_annotation_committed(&self.catalog, self.document_id, self.comment_id).await?;
-            let comment = annotation_row_to_comment(&row, Vec::new()).map_err(|error| {
-                CommandError::Storage(postgres::Error::Invalid(error.to_string()))
-            })?;
             Ok(Some(Accepted {
-                comment,
+                comment_id: self.comment_id,
                 resolved_in: label.source_sequence,
             }))
         })
@@ -2090,15 +2079,9 @@ impl SequencerCommand for AcceptSuggestion {
                 .await
                 .map_err(CommandError::from)?;
             self.catalog
-                .resolve_proposal(tx, self.proposal_id, &self.decided_by)
+                .delete_proposal(tx, self.proposal_id)
                 .await
                 .map_err(CommandError::from)?;
-            let existing =
-                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
-            let input = replay_of(&existing)?;
-            self.catalog
-                .replace_annotation_authorized(tx, self.comment_id, input, true, &self.actor)
-                .await?;
             let tree_digest = evidence
                 .after_digest
                 .as_deref()
@@ -2123,12 +2106,8 @@ impl SequencerCommand for AcceptSuggestion {
                 )
                 .await
                 .map_err(CommandError::from)?;
-            let row = find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
-            let comment = annotation_row_to_comment(&row, Vec::new()).map_err(|error| {
-                CommandError::Storage(postgres::Error::Invalid(error.to_string()))
-            })?;
             Ok(Accepted {
-                comment,
+                comment_id: self.comment_id,
                 resolved_in: evidence.source_sequence,
             })
         })
@@ -2136,8 +2115,9 @@ impl SequencerCommand for AcceptSuggestion {
 }
 
 /// Declines a suggestion. Unlike accept, this produces no source: the branch
-/// is simply never merged, so there is nothing to prepare in `evaluate`. An
-/// editor decision, for the same reason `AcceptSuggestion` is.
+/// is simply never merged, so there is nothing to prepare in `evaluate`. The
+/// proposal is deleted, and the suggestion comment with it. An editor
+/// decision, for the same reason `AcceptSuggestion` is.
 pub struct RejectSuggestion {
     catalog: Arc<PostgresCatalog>,
     document_id: Uuid,
@@ -2145,7 +2125,6 @@ pub struct RejectSuggestion {
     proposal_id: Uuid,
     tip_frontiers: Vec<u8>,
     decided_by: String,
-    actor: MutationAuthorization,
 }
 
 impl RejectSuggestion {
@@ -2164,13 +2143,13 @@ impl RejectSuggestion {
             proposal_id,
             tip_frontiers,
             decided_by: author.creator.clone(),
-            actor: author.authorization.clone(),
         }
     }
 }
 
 impl SequencerCommand for RejectSuggestion {
-    type Output = Comment;
+    /// The id of the suggestion comment, which is gone with its proposal.
+    type Output = Uuid;
 
     fn name(&self) -> &'static str {
         "reject"
@@ -2205,18 +2184,10 @@ impl SequencerCommand for RejectSuggestion {
                 .await
                 .map_err(CommandError::from)?;
             self.catalog
-                .resolve_proposal(tx, self.proposal_id, &self.decided_by)
+                .delete_proposal(tx, self.proposal_id)
                 .await
                 .map_err(CommandError::from)?;
-            let existing =
-                find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
-            let input = replay_of(&existing)?;
-            self.catalog
-                .replace_annotation_authorized(tx, self.comment_id, input, true, &self.actor)
-                .await?;
-            let row = find_annotation(&self.catalog, tx, self.document_id, self.comment_id).await?;
-            annotation_row_to_comment(&row, Vec::new())
-                .map_err(|error| CommandError::Storage(postgres::Error::Invalid(error.to_string())))
+            Ok(self.comment_id)
         })
     }
 }
@@ -2440,7 +2411,7 @@ impl Room {
         let kind = payload.get("type").and_then(Value::as_str);
         if !matches!(
             kind,
-            Some("comment" | "refine" | "reply" | "delete" | "resolve" | "accept" | "reject")
+            Some("comment" | "refine" | "reply" | "delete" | "resolve")
         ) {
             return CommentEvent::bare(payload.clone());
         }

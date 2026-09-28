@@ -52,14 +52,6 @@ pub enum Command {
         body: String,
         temp_id: String,
     },
-    Accept {
-        comment_id: Uuid,
-        temp_id: String,
-    },
-    Reject {
-        comment_id: Uuid,
-        temp_id: String,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,9 +122,7 @@ impl Command {
             Self::Reply { comment_id, .. }
             | Self::Resolve { comment_id, .. }
             | Self::Delete { comment_id, .. }
-            | Self::Refine { comment_id, .. }
-            | Self::Accept { comment_id, .. }
-            | Self::Reject { comment_id, .. } => comment_id.to_string(),
+            | Self::Refine { comment_id, .. } => comment_id.to_string(),
             Self::Comment { .. } => String::new(),
         }
     }
@@ -143,9 +133,7 @@ impl Command {
             | Self::Reply { temp_id, .. }
             | Self::Resolve { temp_id, .. }
             | Self::Delete { temp_id, .. }
-            | Self::Refine { temp_id, .. }
-            | Self::Accept { temp_id, .. }
-            | Self::Reject { temp_id, .. } => temp_id,
+            | Self::Refine { temp_id, .. } => temp_id,
         }
     }
 
@@ -246,20 +234,6 @@ impl Message {
                     proposed,
                     expected_proposed,
                     body: self.body().to_owned(),
-                    temp_id,
-                })
-            }
-            "accept" => {
-                let comment_id = named("accept")?;
-                Ok(Command::Accept {
-                    comment_id,
-                    temp_id,
-                })
-            }
-            "reject" => {
-                let comment_id = named("reject")?;
-                Ok(Command::Reject {
-                    comment_id,
                     temp_id,
                 })
             }
