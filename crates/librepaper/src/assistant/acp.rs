@@ -331,7 +331,8 @@ impl Agent {
         let request = NewSessionRequest::new(directory).mcp_servers(vec![server]);
         let (commands_tx, mut commands_rx) = mpsc::channel(16);
         let (events_tx, events_rx) = mpsc::channel(32);
-        let (ready_tx, ready_rx) = oneshot::channel::<Result<(String, serde_json::Value), String>>();
+        let (ready_tx, ready_rx) =
+            oneshot::channel::<Result<(String, serde_json::Value), String>>();
         let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
         let session_ready = Arc::clone(&ready_tx);
         let permission_events = events_tx.clone();
@@ -497,10 +498,18 @@ impl Agent {
 
     /// Set one session config option and return the model options the agent
     /// reports afterwards.
-    pub(super) async fn set_option(&self, id: &str, value: &str) -> Result<serde_json::Value, String> {
+    pub(super) async fn set_option(
+        &self,
+        id: &str,
+        value: &str,
+    ) -> Result<serde_json::Value, String> {
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(Command::SetOption { id: id.into(), value: value.into(), reply })
+            .send(Command::SetOption {
+                id: id.into(),
+                value: value.into(),
+                reply,
+            })
             .await
             .map_err(|_| "agent connection stopped".to_string())?;
         tokio::time::timeout(std::time::Duration::from_secs(15), response)
@@ -604,7 +613,9 @@ mod tests {
 
     #[test]
     fn model_options_keep_model_selects_and_flatten_groups() {
-        use agent_client_protocol::schema::v1::{SessionConfigSelectGroup, SessionConfigSelectOption};
+        use agent_client_protocol::schema::v1::{
+            SessionConfigSelectGroup, SessionConfigSelectOption,
+        };
         let model = SessionConfigOption::select(
             "model",
             "Model",
@@ -620,8 +631,16 @@ mod tests {
             "Grouped",
             "b",
             vec![
-                SessionConfigSelectGroup::new("g1", "One", vec![SessionConfigSelectOption::new("a", "A")]),
-                SessionConfigSelectGroup::new("g2", "Two", vec![SessionConfigSelectOption::new("b", "B")]),
+                SessionConfigSelectGroup::new(
+                    "g1",
+                    "One",
+                    vec![SessionConfigSelectOption::new("a", "A")],
+                ),
+                SessionConfigSelectGroup::new(
+                    "g2",
+                    "Two",
+                    vec![SessionConfigSelectOption::new("b", "B")],
+                ),
             ],
         )
         .category(SessionConfigOptionCategory::Model);

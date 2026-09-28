@@ -421,7 +421,11 @@ async fn publish_answer(
 }
 
 async fn emit_options(transport: &Transport, options: &Value) -> Result<(), String> {
-    emit(transport,json!({"type":"options","id":event_id(),"options":options})).await
+    emit(
+        transport,
+        json!({"type":"options","id":event_id(),"options":options}),
+    )
+    .await
 }
 
 async fn reconcile(

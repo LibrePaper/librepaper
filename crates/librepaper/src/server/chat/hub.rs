@@ -439,10 +439,10 @@ impl Hub {
                 self.deliver(slug, id, token, socket, role, value).await
             }
             "options" => {
-                if role != "agent"
-                    || !value["options"].is_array()
-                    || !valid_context(&value["options"])
-                {
+                if role != "agent" {
+                    return Err((403, "only the agent can report its options"));
+                }
+                if !value["options"].is_array() || !valid_context(&value["options"]) {
                     return Err((400, "invalid options"));
                 }
                 self.deliver(slug, id, token, socket, role, value).await

@@ -741,6 +741,8 @@ mod tests {
             panic!("expected options")
         };
         assert_eq!(serde_json::from_str::<Value>(&delivered).unwrap(), options);
+        // The hub echoes a delivered frame to its sender as well.
+        while agent_rx.try_recv().is_ok() {}
 
         let set = json!({"type":"set_option","id":"s1","option":"model","value":"b"});
         assert_eq!(
