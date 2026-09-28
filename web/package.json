@@ -8,6 +8,7 @@
     "serve:site": "vite preview --config vite.site.config.js",
     "dev": "vite build --watch",
     "check:types": "svelte-check --tsconfig ./jsconfig.json --output human",
+    "check:names": "node tools/check-undefined-names.mjs",
     "check:review": "node tests/unit/proposal-marks.mjs && node tests/browser/changes-browser.mjs",
     "check:frame-overlays": "node tests/unit/frame-overlays.mjs",
     "check:render-diagnostics": "node tests/unit/render-diagnostics.mjs",
