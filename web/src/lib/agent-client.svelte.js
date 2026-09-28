@@ -128,6 +128,8 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   id = persisted?.id || "";
   token = persisted?.token || "";
   let saveQueued = false;
+  // Callers waiting for a runner to attach, settled as soon as one does.
+  let runnerWaiters = [];
 
   function save() {
     if (!id || !token) return;
@@ -145,6 +147,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   function publish(patch) {
     if (disposed) return;
     view = { ...view, ...patch };
+    if (view.runnerConnected && runnerWaiters.length) { for (const waiter of runnerWaiters) waiter(); runnerWaiters = []; }
     // Socket presence/status is transient. Only transcript/task/session/
     // assistant changes rewrite the bounded durable record, coalesced per
     // microtask.
@@ -669,6 +672,19 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     async resume() { if (id && token) { publish({ status: "reconnecting", error: "" }); connect(); } return view; },
     create, send, retry, cancel, respond, previewResult, end,
     rememberAssistant({ agent = "", access = "" } = {}) { publish({ assistantAgent: agent, assistantAccess: access }); },
+    /// Resolves once a runner is attached to this conversation, or rejects
+    /// after `ms`: a freshly started agent takes a few seconds to join.
+    untilRunner(ms) {
+      if (view.runnerConnected) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          runnerWaiters = runnerWaiters.filter((waiter) => waiter !== done);
+          reject(new Error("The agent started but did not join the conversation."));
+        }, ms);
+        const done = () => { clearTimeout(timer); resolve(); };
+        runnerWaiters.push(done);
+      });
+    },
     capabilities: async (nextLink = link) => request("GET", "/assistant/capabilities", undefined, false, nextLink),
     fetchCandidate,
     reconnect() { manuallyClosed = false; reconnectAttempt = 0; connect(); return Promise.resolve(view); },

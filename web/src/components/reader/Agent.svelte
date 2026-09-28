@@ -1,4 +1,7 @@
-<script>
+    const before = `${chosenAgent} ${access}`;
+    change();
+    if (`${chosenAgent} ${access}` === before) return;
+    if (assistant.running || runnerReady) await act|| runnerReady)) await act<script>
   import { onMount } from "svelte";
   import { Tabs } from "@skeletonlabs/skeleton-svelte";
   import { getPrivate, post } from "../../lib/api.js";
@@ -84,13 +87,16 @@
   // Without sharing rights the panel can only hand out the access the reader
   // already holds, so the other rows are visible but not selectable.
   const roleOffered = (entry) => canShare || currentRole === entry.id;
-  let access = $state("");
-  const chosenAccess = $derived(roles.find((entry) => entry.id === access) || null);
-  // Running "here" means running as what is currently selected. A different
-  // agent, or a different access level, is a different assistant: the one
-  // running still holds the link it was started with, so the panel must offer
-  // to restart rather than claim the selection is already in force.
-  const runningHere = $derived(assistant.running && assistant.agent === chosenAgent && assistant.access === access);
+  // The last agent and access used in this browser, whatever the document:
+  // both nearly always stay put, so neither should be asked for again.
+  // Comment is the default because it writes nothing unreviewed.
+  const LAST_AGENT = "librepaper.agent.agent";
+  const LAST_ACCESS = "librepaper.agent.access";
+  // How long a just-started agent may take to join before the send gives up.
+  const RUNNER_JOIN_MS = 60_000;
+  function lastUsed(key) { try { return localStorage.getItem(key) || ""; } catch { return ""; } }
+  function rememberLastUsed(key, value) { try { localStorage.setItem(key, value); } catch { /* private window */ } }
+  let access = $state(roles.some((entry) => entry.id === lastUsed(LAST_ACCESS)) ? lastUsed(LAST_ACCESS) : "commenter");
   const runningLabel = $derived(installed.find((entry) => entry.id === assistant.agent)?.label || "assistant");
   let tab = $state("chat");
   const TABS = [
@@ -115,6 +121,9 @@
     item?.delivery === "uncertain" && item.request === draft.trim()));
   const runnerReady = $derived(connection.connected && connection.runnerConnected);
   const sendable = $derived(runnerReady && preparedTaskValid && !uncertainDelivery);
+  // No agent attached yet, but sending can start the chosen one first.
+  const canStart = $derived(!runnerReady && !assistant.running && Boolean(connection.id) && Boolean(chosenInstalled?.assistant));
+  const startable = $derived(canStart && preparedTaskValid && !uncertainDelivery);
   const taskGroups = $derived(groupTasks(searchTasks(taskQuery)));
   const chosen = $derived(findTask(chosenTaskId));
   const scopeAvailable = (id) => id === "selection" ? Boolean(attachment) : id === "file" ? Boolean(contextPath) : true;
@@ -196,7 +205,8 @@
     if (!paired) { installed = []; return; }
     const answer = await local.agents();
     installed = Array.isArray(answer?.agents) ? answer.agents : [];
-    if (!chosenAgent) chosenAgent = installed.find((entry) => entry.assistant)?.id || installed[0]?.id || "";
+    if (!chosenAgent) chosenAgent = installed.find((entry) => entry.assistant && entry.id === lastUsed(LAST_AGENT))?.id
+      || installed.find((entry) => entry.assistant)?.id || installed[0]?.id || "";
   }
   $effect(() => { if (paired) void act(refreshAgents); });
   $effect(() => { if (paired && connection.id) void restoreAssistant(); });
@@ -218,30 +228,43 @@
   }
 
   /// Start the assistant: mint the access link and have the local app drive
-  /// the chosen agent directly against it. This is the only way an agent is
-  /// connected, so it is the only button.
+  /// the chosen agent directly against it. Sending the first message is what
+  /// calls this, so it throws for the caller to report.
   async function startAssistant(mode) {
-    await act(async () => {
-      // One assistant per conversation. Starting a second against the same
-      // one would leave the first holding the link it was started with, so a
-      // change of agent or access replaces it rather than racing it.
-      if (assistant.running) {
-        await local.stopAssistant({ link: agentLink || link, conversation: connection.id });
-        assistant = { running: false, agent: "", access: "" };
-      }
-      await prepareAccessLink(mode);
-      const answer = await local.startAssistant({
-        link: agentLink || link, conversation: connection.id,
-        chatToken: connection.token, agent: chosenAgent,
-      });
-      if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
-      assistant = { running: true, agent: chosenAgent, access: mode };
-      client.rememberAssistant({ agent: chosenAgent, access: mode });
-      // The work happens in the chat, so go there rather than leaving the
-      // reader on the setup block with nothing more to say. It folds away on
-      // its own now that the assistant is running.
-      tab = "chat";
+    // One assistant per conversation. Starting a second against the same
+    // one would leave the first holding the link it was started with, so a
+    // change of agent or access replaces it rather than racing it.
+    if (assistant.running) {
+      await local.stopAssistant({ link: agentLink || link, conversation: connection.id });
+      assistant = { running: false, agent: "", access: "" };
+    }
+    await prepareAccessLink(mode);
+    const answer = await local.startAssistant({
+      link: agentLink || link, conversation: connection.id,
+      chatToken: connection.token, agent: chosenAgent,
     });
+    if (!answer?.running) throw new Error(answer?.error || "The assistant did not start.");
+    assistant = { running: true, agent: chosenAgent, access: mode };
+    client.rememberAssistant({ agent: chosenAgent, access: mode });
+    rememberLastUsed(LAST_AGENT, chosenAgent);
+    rememberLastUsed(LAST_ACCESS, mode);
+  }
+
+  /// A reader who cannot share can only hand the agent the access they hold,
+  /// whatever was last used elsewhere.
+  function offeredAccess() {
+    return roleOffered({ id: access }) || !currentRole ? access : currentRole;
+  }
+
+  /// Change the agent or the access level. A running assistant holds the link
+  /// it was started with, so a change restarts it rather than leaving the
+  /// selection claiming something that is not in force. That includes a runner
+  /// attached before a reload, whose access this panel cannot know.
+  async function choose(change) {
+    const before = `${chosenAgent} ${access}`;
+    change();
+    if (`${chosenAgent} ${access}` === before) return;
+    if (assistant.running || runnerReady) await act(() => startAssistant(offeredAccess()));
   }
 
   /// The local app's status call reports only whether an assistant is
@@ -370,8 +393,9 @@
     // Deliberately not gated on `sendable`: that judges the task currently in
     // context, which is the previous one. What matters is whether the task
     // being sent is allowed, which is `preparable`, and whether the assistant
-    // is there. `send` makes the final check once this task is in context.
-    if (!chosen || !preparable || !runnerReady) return;
+    // is there or can be started. `send` makes the final check once this task
+    // is in context.
+    if (!chosen || !preparable || !(runnerReady || canStart)) return;
     const entry = chosen;
     task = { kind: entry.kind, scope };
     const note = extra.trim();
@@ -393,9 +417,13 @@
   }
 
   async function send(text) {
-    if (busy || !sendable) return false;
+    if (busy || !(sendable || startable)) return false;
     let sent = false;
     await act(async () => {
+      if (!runnerReady) {
+        await startAssistant(offeredAccess());
+        await client.untilRunner(RUNNER_JOIN_MS);
+      }
       await client.send(text, {
         task: task || undefined, attachment,
         suggestion: suggestionContext(suggestion),
@@ -556,76 +584,6 @@
     {/if}
   {/snippet}
 
-  <!-- Agent, access and Start: what actually launches an assistant. Shown
-       only while nothing is running here; stopping the assistant is what
-       brings it back, so that is how the agent or access level is changed. -->
-  {#snippet agentSetup()}
-    <div class="agent-setup">
-      {#if installed.length}
-        <!-- Two settings, each a list of mutually exclusive values with one
-             in force: a select says which is chosen by showing it, where a
-             row of buttons has to signal it and can fail to. -->
-        <label class="label setup-field">
-          <span class="setup-label">Agent</span>
-          <select class="select" aria-label="Agent" disabled={busy} value={chosenAgent}
-                  onchange={(event) => chosenAgent = event.currentTarget.value}>
-            {#each installed as entry (entry.id)}
-              <option value={entry.id}>{entry.label}</option>
-            {/each}
-          </select>
-        </label>
-        <!-- Why Start is disabled, or what this agent's route cannot do: said
-             beside the agent, not left to be inferred from a dead button. -->
-        {#if chosenInstalled?.assistant_blocked || chosenInstalled?.assistant_note}
-          <span class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}</span>
-        {/if}
-      {:else}
-        <span class="panel-meta">No supported coding agent was found on this computer.</span>
-      {/if}
-
-      <label class="label setup-field">
-        <span class="setup-label">Access</span>
-        <select class="select" aria-label="Access" value={access}
-                disabled={busy || starting || !connection.id}
-                onchange={(event) => access = event.currentTarget.value}>
-          <option value="" disabled>Choose what the agent may do</option>
-          {#each roles as entry}
-            <option value={entry.id} disabled={!roleOffered(entry)}>{entry.label}: {entry.help}</option>
-          {/each}
-        </select>
-      </label>
-
-      {#if chosenAccess}
-        <div class="access-detail" data-access={chosenAccess.id}>
-          <!-- One destination. An agent is used here, in the document, where
-               the chat and the task launcher are; there is no second place to
-               send it to and so no second button to explain. -->
-          <div class="setup-actions">
-            <button class="btn btn-sm lp-control-brand"
-                    disabled={busy || starting || !connection.id || !paired || !chosenInstalled?.assistant || runningHere}
-                    onclick={() => void startAssistant(chosenAccess.id)}>
-              {runningHere ? "Running"
-                : assistant.running ? "Restart with this choice"
-                : "Start assistant"}
-            </button>
-          </div>
-          <!-- At most one line: the fetch warning survives the label
-               changing to "Restart with this choice", and the stale-runner
-               note only ever applies when nothing here is about to start
-               one. The two cannot both be true, so the line stays short. -->
-          <span class="panel-meta">
-            {#if !runningHere && chosenInstalled?.assistant_fetches}Starting it downloads its adapter the first time.{/if}
-            <!-- A runner outlives the page that started it, so after a
-                 reload one can be attached that this panel never started.
-                 Saying so beats offering Start as though nothing were
-                 running. -->
-            {#if !assistant.running && connection.runnerConnected}An assistant is already attached to this conversation; starting one replaces it.{/if}
-          </span>
-        </div>
-      {/if}
-    </div>
-  {/snippet}
-
   <Tabs.Content value="chat" class="agent-tab-content">
   {@render paneHeader(true)}
   {#if !paired}
@@ -636,8 +594,6 @@
     {#if connection.id && !connection.connected}
       <div role="status"><span class="panel-muted">Reconnecting…</span> <button class="btn btn-sm lp-control-outline" disabled={busy} onclick={() => void reconnect()}>Reconnect now</button></div>
     {/if}
-
-    {#if !runningHere}{@render agentSetup()}{/if}
 
   {#if pendingRequest}
     <div class="request-warning" role="alert">
@@ -650,19 +606,21 @@
     <p class="panel-meta" role="alert">Message delivery was not confirmed. <button class="btn btn-sm lp-control-outline" disabled={busy} onclick={() => void retryTask(item.id)}>Retry delivery</button></p>
   {/each}
   <ChatTranscript messages={connection.messages}
-                  empty={connection.runnerConnected ? "No messages yet." : "Start an agent to begin."}
+                  empty={connection.runnerConnected ? "No messages yet." : "Send a message to start the agent."}
                   authors={false} quiet onresult={chooseResult} after={permissionCard} />
 
   <!-- The draft carries its own context, so the chat pane states it in one
        line and sends the user back to the task view to change it. -->
   {#if task || attachment}<p class="panel-meta context-summary">{scopeLabel(scope, { path: contextPath, attached: attachment })} <button class="btn btn-sm" onclick={() => { tab = "tasks"; taskView = chosen ? "prepare" : "launcher"; }}>Change context</button>{#if attachment}<button class="btn btn-sm" onclick={removeSelection}>Remove passage</button>{/if}</p>{/if}
   <!-- Missing access or context is worth explaining; a runner that simply
-       is not there yet is already said by the setup block above, so that
-       case gets no second line here. -->
+       is not there yet starts when the message is sent, so that case gets no
+       line here. -->
   {#if !sendable && (uncertainDelivery || connection.runnerConnected)}
     <p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>
   {/if}
     </div>
+  {#if queuedTasks.length}
+  <div class="queued-requests">
   {#each queuedTasks as item (item.id)}
     <div class="queued-request" data-task-id={item.id}>
       <span class="queued-label">Queued: {item.request || "Request"}</span>
@@ -673,7 +631,34 @@
       {/if}
     </div>
   {/each}
-  <ChatComposer placeholder="Ask your agent…" canSend={!busy && sendable} draft={draft} ondraft={(value) => draft = value} onsend={send}
+  </div>
+  {/if}
+  <!-- Which agent, with what access: one quiet line, since both nearly always
+       stay as they were last time. Sending starts the agent; changing either
+       while it runs restarts it. -->
+  <div class="agent-settings">
+    {#if installed.length}
+      <select class="agent-setting" aria-label="Agent" disabled={busy} value={chosenAgent}
+              onchange={(event) => void choose(() => chosenAgent = event.currentTarget.value)}>
+        {#each installed as entry (entry.id)}<option value={entry.id}>{entry.label}</option>{/each}
+      </select>
+      <span aria-hidden="true">·</span>
+      <select class="agent-setting" aria-label="Access" disabled={busy || !connection.id} value={access}
+              onchange={(event) => void choose(() => access = event.currentTarget.value)}>
+        {#each roles as entry}<option value={entry.id} disabled={!roleOffered(entry)} title={entry.help}>{entry.label}</option>{/each}
+      </select>
+    {:else}
+      <span>No supported coding agent was found on this computer.</span>
+    {/if}
+  </div>
+  <!-- Why sending cannot start this agent, or what its route cannot do. -->
+  {#if chosenInstalled?.assistant_blocked || chosenInstalled?.assistant_note}
+    <p class="panel-meta" data-agent-note={chosenInstalled.id}>{chosenInstalled.assistant_blocked}{chosenInstalled.assistant_note}</p>
+  {/if}
+  {#if assistant.agent !== chosenAgent && chosenInstalled?.assistant_fetches}
+    <p class="panel-meta" data-adapter-fetch>Starting it downloads its adapter the first time.</p>
+  {/if}
+  <ChatComposer placeholder="Ask your agent…" canSend={!busy && (sendable || startable)} draft={draft} ondraft={(value) => draft = value} onsend={send}
                 onstop={assistant.running && activeTask ? () => void act(() => client.cancel(activeTask.id)) : null}
                 stopLabel="Stop" status={composerStatus} />
   {/if}
@@ -710,7 +695,7 @@
       </label>
       {#if !preparable}<p class="panel-meta" role="status">This task needs the appropriate access and context. Choose another scope, or attach a passage in the document.</p>
       {:else if !runnerReady}<p class="panel-meta" role="status">Start an agent in the Chat tab before sending a task.</p>{/if}
-      <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || !preparable || !runnerReady} onclick={() => void sendTask()}>Send to agent</button></div>
+      <div class="prepare-actions"><button class="btn btn-sm lp-control-brand" disabled={busy || !preparable || !(runnerReady || canStart)} onclick={() => void sendTask()}>Send to agent</button></div>
     </div>
   {:else}
     <div class="agent-context task-launcher">
@@ -786,7 +771,9 @@
   .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }
   .chat-history > :global(*) { flex-shrink:0; }
   .agent-panel :global(.agent-tab-content .chat-form) { flex-shrink:0; }
-  .agent-setup, .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
+  .agent-context { display:flex; flex-direction:column; gap:calc(var(--spacing) * 2); }
+  .agent-settings { display:flex; align-items:center; gap:calc(var(--spacing) * .5); font-size:.8em; color:var(--color-text-secondary); }
+  .agent-setting { border:0; background:transparent; color:inherit; font:inherit; padding:0; cursor:pointer; max-width:12rem; }
   /* The whole not-paired warning: one line, the Connect button, and the
      refusal message if there is one. */
   .connect-required { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5);
@@ -796,17 +783,15 @@
   /* Agent and access are two settings, each with one value in force, so each
      is a select. A row of buttons had to signal the chosen one and the signal
      was easy to miss; a select shows its value as its content. */
-  .setup-field { display:flex; flex-direction:column; gap:calc(var(--spacing) * .5); min-width:0; }
-  .setup-field .select { width:100%; min-width:0; }
-  .setup-label { font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
-                 color:var(--color-text-secondary); }
-  .access-detail { display:flex; flex-direction:column; align-items:flex-start; gap:var(--spacing); }
   .setup-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
   /* Queued requests: a compact list above the composer showing what is queued,
      with a cancel button for each. Secondary text colour keeps it quiet. */
   .queued-request { display:flex; align-items:center; justify-content:space-between; gap:var(--spacing);
                     padding:calc(var(--spacing) * .75) calc(var(--spacing) * 1.5); font-size:.85em; }
-  .queued-label { color:var(--color-text-secondary); overflow-wrap:anywhere; }
+  /* One line each and a bounded list, so a backlog never pushes the composer
+     out of a short pane. */
+  .queued-requests { flex:none; max-height:2.25rem; overflow-y:auto; }
+  .queued-label { color:var(--color-text-secondary); min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .queued-status { color:var(--color-text-secondary); font-size:.8em; }
   /* The task catalog is a list, not a set of controls: typography, spacing
      and a hover background carry it, so it stays legible as it grows. */
