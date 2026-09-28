@@ -350,15 +350,15 @@ try {
 
   // The "Companion settings" text button is gone from the setup block; each
   // pane now carries its own icon button to the same page in its header, and
-  // only the Chat pane also carries New conversation.
+  // only the Chat pane also carries Clear conversation.
   assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Local companion settings"]'))`),
     "the Chat pane header offers a way to the companion settings page");
-  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="New conversation"]'))`),
-    "the Chat pane header offers New conversation");
+  assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-chat button[aria-label="Clear conversation"]'))`),
+    "the Chat pane header offers Clear conversation");
   assert.ok(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Local companion settings"]'))`),
     "the Tasks pane header also offers a way to the companion settings page");
-  assert.equal(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="New conversation"]'))`), false,
-    "New conversation is only in the Chat pane");
+  assert.equal(await page.evaluate(`Boolean(document.querySelector('#agent-pane-tasks button[aria-label="Clear conversation"]'))`), false,
+    "Clear conversation is only in the Chat pane");
 
   const panel = await page.evaluate("document.body.textContent");
   for (const gone of ["librepaper agent connect", "Copy connection instructions", "LIBREPAPER_CHAT_TOKEN", "--background", "npx skills add"]) {
@@ -571,11 +571,11 @@ try {
   await until("keyboard tab navigation", () => page.evaluate('document.activeElement.id === "agent-tab-chat"'), 1000);
 
   const beforeNewConversation = await page.evaluate("({sockets:window.sockets.length,creates:window.calls.filter(call=>call.suffix==='').length})");
-  // New conversation is a fresh runner boundary: it stops the local assistant,
+  // Clear conversation is a fresh runner boundary: it stops the local assistant,
   // clears the transcript/context, and returns to the setup block in the
   // Chat tab. A socket reconnect keeps the existing conversation and
   // transcript instead.
-  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="New conversation"]\').click()');
+  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="Clear conversation"]\').click()');
   await until("new conversation setup", () => page.evaluate('document.querySelector("#agent-tab-chat").getAttribute("aria-selected")==="true" && Boolean(document.querySelector(".agent-setup"))'), 2000);
   assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'), false);
   assert.equal(await page.evaluate('window.localCalls.some(call => call.route === "assistant/stop")'), true);
@@ -655,7 +655,7 @@ try {
   await page.evaluate("window.delayAssistantStatus=true; window.remount()");
   await until("delayed assistant status is pending", () => page.evaluate("window.delayedAssistantStatuses.length===1"), 2000);
   await page.evaluate("window.conversationCreatesBeforePending=window.calls.filter(call=>call.suffix==='').length");
-  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="New conversation"]\').click()');
+  await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="Clear conversation"]\').click()');
   await until("conversation changed while status was pending", () => page.evaluate("window.calls.filter(call=>call.suffix==='').length === window.conversationCreatesBeforePending+1"), 3000);
   await page.evaluate("window.delayedAssistantStatuses[0].resolve(Response.json({running:true,state:'ready'}))");
   await new Promise(resolve=>setTimeout(resolve,50));

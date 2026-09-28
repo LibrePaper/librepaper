@@ -508,11 +508,11 @@
   {/snippet}
 
   <!-- The gear at the top of each pane is the one way to Local companion
-       settings now; the Chat pane also gets New conversation beside it. -->
+       settings now; the Chat pane also gets Clear conversation beside it. -->
   {#snippet paneHeader(withNewConversation)}
     <div class="pane-header">
       {#if withNewConversation && connection.id}
-        <IconButton icon="file-plus" label="New conversation" tone="plain" size="btn-icon-sm"
+        <IconButton icon="eraser" label="Clear conversation" tone="plain" size="btn-icon-sm"
                     disabled={busy} onclick={() => void newConversation()} />
       {/if}
       {#if assistant.running}
@@ -780,7 +780,7 @@
   .agent-panel :global([role="tabpanel"]) { overflow-y:auto; gap:calc(var(--spacing) * 2); }
   .agent-panel :global(#agent-pane-chat) { overflow:hidden; }
   .agent-panel > :global(p[role="alert"]) { padding-inline:var(--panel-padding); }
-  /* The gear (and, in Chat, New conversation) sits above everything else in
+  /* The gear (and, in Chat, Clear conversation) sits above everything else in
      its pane, aligned right: it is upkeep, not the point of the pane. */
   .pane-header { display:flex; justify-content:flex-end; gap:calc(var(--spacing) * .5); }
   .chat-history { display:flex; flex:1 1 0; min-height:0; flex-direction:column; gap:calc(var(--spacing) * 2); overflow-y:auto; }
