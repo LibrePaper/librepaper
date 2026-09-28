@@ -225,6 +225,8 @@
       ["path", "M7 22h1a4 4 0 0 0 4-4"],
       ["path", "M7 2h1a4 4 0 0 1 4 4"],
     ],
+    // Stops a running agent.
+    square: [["rect", { width: 18, height: 18, x: 3, y: 3, rx: 2 }]],
   };
 
   // Skeleton's button sizes the icon inside it, so the default here is only

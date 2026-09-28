@@ -104,6 +104,7 @@
   let suppressedSelection = $state("");
   let capabilityGeneration = 0;
   let verifiedCapabilities = $state(null);
+  let elapsedTime = $state(0);
   const selectedText = $derived(attachment?.selection?.exact || "");
   const caps = $derived(normalizeCapabilities(verifiedCapabilities));
   const contextPath = $derived(diagnostic?.file || diagnostic?.path || path);
@@ -125,16 +126,35 @@
   const canPrepare = (entry) => taskScopes(entry).some((id) => scopeAvailable(id) && allows(entry.kind, id));
   const preparable = $derived(Boolean(chosen) && scopeAvailable(scope) && allows(chosen.kind, scope));
   const inputTask = $derived(Object.values(connection.tasks || {}).find((item) => item?.status === "needs_input" && item.input) || null);
-  // Everything that is currently in flight: what the Activity disclosure
-  // lists, and the composer's Stop button acts on. "Active" (as opposed to
+  // Everything that is currently in flight: what the queued list and status
+  // line show, and the composer's Stop button acts on. "Active" (as opposed to
   // queued) is what a Stop button can actually interrupt.
   const activeTasks = $derived(Object.values(connection.tasks || {}).filter((item) =>
     ["queued", "working", "needs_input"].includes(item.status)));
   const activeTask = $derived(activeTasks.find((item) => ["working", "needs_input"].includes(item.status)) || null);
-  const showActivity = $derived(assistant.running || activeTasks.length > 0);
+  const queuedTasks = $derived(Object.values(connection.tasks || {}).filter((item) => item?.status === "queued"));
+
+  // The task carries no start time, so the clock starts when this client
+  // first sees it working, and restarts for each new working task.
+  const workingId = $derived(activeTask?.status === "working" ? activeTask.id : null);
+  $effect(() => {
+    if (!workingId) return;
+    const started = Date.now();
+    elapsedTime = 0;
+    const timer = setInterval(() => { elapsedTime = Math.floor((Date.now() - started) / 1000); }, 1000);
+    return () => clearInterval(timer);
+  });
+
+  function formatElapsed(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
   const composerStatus = $derived(
-    activeTasks.some((item) => item.status === "working") ? "Agent working…"
-      : activeTasks.some((item) => item.status === "needs_input") ? "Waiting for permission" : "");
+    activeTask?.status === "working"
+      ? `${runningLabel} · ${humanizeTool(activeTask.message) || 'Working'}… · ${formatElapsed(elapsedTime)}`
+      : activeTask?.status === "needs_input" ? "Waiting for permission" : "");
 
   function validDocumentLink() {
     try {
@@ -495,6 +515,10 @@
         <IconButton icon="file-plus" label="New conversation" tone="plain" size="btn-icon-sm"
                     disabled={busy} onclick={() => void newConversation()} />
       {/if}
+      {#if assistant.running}
+        <IconButton icon="square" label={`Stop ${runningLabel}`} tone="plain" size="btn-icon-sm"
+                    disabled={busy} onclick={() => void stopAssistant()} />
+      {/if}
       <IconButton icon="sliders" label="Local companion settings" tone="plain" size="btn-icon-sm"
                   onclick={() => onsettings?.()} />
     </div>
@@ -639,30 +663,16 @@
     <p class="panel-meta">{uncertainDelivery ? "This request was not confirmed. Retry delivery above before sending it again." : "This task needs the appropriate access and context. Choose another task or attach a passage."}</p>
   {/if}
     </div>
-  {#if showActivity}
-    <!-- Collapsed by default: the transcript is the point, this is what a
-         reader checks when they want to know what is queued or stop the
-         assistant, not something that sits open in front of the chat. -->
-    <details class="agent-activity">
-      <summary>Activity</summary>
-      <div class="activity-body">
-        {#each activeTasks as item (item.id)}
-          <div class="activity-task">
-            <span>{item.status === "queued" ? "Queued" : item.status === "working" ? "Working on" : "Waiting for your input"}: {item.request || "Request"}</span>
-            {#if item.message}<span class="activity-message">{humanizeTool(item.message)}</span>{/if}
-            {#if item.cancelRequested}<span>Cancellation requested</span>
-            {:else if item.status === "queued"}<button class="btn btn-sm" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(item.id))}>Cancel</button>{/if}
-          </div>
-        {/each}
-        {#if assistant.running}
-          <!-- Named, because the assistant may be running on an agent other
-               than the one currently selected, and "Stop" with no subject
-               would be a guess about which. -->
-          <button class="btn btn-sm" disabled={busy} onclick={() => void stopAssistant()}>Stop {runningLabel}</button>
-        {/if}
-      </div>
-    </details>
-  {/if}
+  {#each queuedTasks as item (item.id)}
+    <div class="queued-request">
+      <span class="queued-label">Queued: {item.request || "Request"}</span>
+      {#if item.cancelRequested}
+        <span class="queued-status">Cancellation requested</span>
+      {:else}
+        <button class="btn btn-sm" disabled={busy || !runnerReady} onclick={() => void act(() => client.cancel(item.id))}>Cancel</button>
+      {/if}
+    </div>
+  {/each}
   <ChatComposer placeholder="Ask your agent…" canSend={!busy && sendable} draft={draft} ondraft={(value) => draft = value} onsend={send}
                 onstop={assistant.running && activeTask ? () => void act(() => client.cancel(activeTask.id)) : null}
                 stopLabel="Stop" status={composerStatus} />
@@ -792,13 +802,12 @@
                  color:var(--color-text-secondary); }
   .access-detail { display:flex; flex-direction:column; align-items:flex-start; gap:var(--spacing); }
   .setup-actions, .attachment-actions { display:flex; align-items:center; flex-wrap:wrap; gap:var(--spacing); }
-  /* Collapsed by default, and plain: this is upkeep information, not the
-     conversation, so it reads as a quiet list rather than a status panel. */
-  .agent-activity summary { cursor:pointer; font-size:.7rem; font-weight:600; letter-spacing:.08em;
-                             text-transform:uppercase; color:var(--color-text-secondary); }
-  .activity-body { display:flex; flex-direction:column; align-items:flex-start; gap:calc(var(--spacing) * 1.5); margin-top:var(--spacing); }
-  .activity-task { display:flex; flex-direction:column; align-items:flex-start; gap:calc(var(--spacing) * .5); overflow-wrap:anywhere; font-size:.85em; }
-  .activity-message { color:var(--color-text-secondary); }
+  /* Queued requests: a compact list above the composer showing what is queued,
+     with a cancel button for each. Secondary text colour keeps it quiet. */
+  .queued-request { display:flex; align-items:center; justify-content:space-between; gap:var(--spacing);
+                    padding:calc(var(--spacing) * .75) calc(var(--spacing) * 1.5); font-size:.85em; }
+  .queued-label { color:var(--color-text-secondary); overflow-wrap:anywhere; }
+  .queued-status { color:var(--color-text-secondary); font-size:.8em; }
   /* The task catalog is a list, not a set of controls: typography, spacing
      and a hover background carry it, so it stays legible as it grows. */
   .task-list { display:flex; flex-direction:column; }
