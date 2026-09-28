@@ -4,11 +4,11 @@
   // the application who is signed in and shows their account; this site has
   // no application behind it to ask, so the button always reads "Sign in" and
   // sends you to the application to find out. The landing page drops the mark
-  // because its hero already shows it.
+  // because its hero already shows it, and the docs link as well.
   import Logo from "../components/Logo.svelte";
   import Icon from "../components/Icon.svelte";
 
-  let { mark = true } = $props();
+  let { mark = true, docs = true } = $props();
 
   // Replaced at build time by vite.site.config.js: the published site points
   // at the deployment, a local build at whatever `make deploy` started.
@@ -24,7 +24,7 @@
       </a>
     {/if}
     <div class="flex items-center gap-4 ml-auto">
-      <a class="lp-text-secondary lp-hover-brand" href="/start.html">Documentation</a>
+      {#if docs}<a class="lp-text-secondary lp-hover-brand" href="/start.html">Documentation</a>{/if}
       <a
         class="lp-text-secondary lp-hover-brand flex items-center"
         href="https://github.com/LibrePaper/librepaper"

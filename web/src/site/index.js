@@ -12,4 +12,4 @@ import "./site.css";
 import "@fontsource-variable/source-serif-4/opsz.css";
 import SiteBar from "./SiteBar.svelte";
 
-mount(SiteBar, { target: document.getElementById("siteBar"), props: { mark: false } });
+mount(SiteBar, { target: document.getElementById("siteBar"), props: { mark: false, docs: false } });
