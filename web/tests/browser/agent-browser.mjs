@@ -155,10 +155,9 @@ window.remount();
 // does: set it and let the change handler run.
 const choose = (label, value) => page.evaluate(
   `(()=>{const s=document.querySelector('select[aria-label=${label}]');s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-// "Stop <agent>" lives inside the collapsed Activity disclosure now; open it
-// before a test can find or click what it lists.
-const openActivity = () => page.evaluate(
-  '(()=>{const details=document.querySelector(".agent-activity");if(details)details.open=true;})()');
+// Stop button lives in the pane header as an IconButton.
+const clickStop = () => page.evaluate(
+  '(()=>{const button=document.querySelector(".pane-header [aria-label^=\\"Stop\\"]");if(button)button.click();})()');
 
 let server, page;
 try {
@@ -227,26 +226,21 @@ try {
   // span; there is no more "Working"/"Disconnected"/"Waiting"/"Interrupted"
   // line, and no working-dots animation to count.
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'})");
-  await until("working indicator", () => page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent === "Agent working…"'), 1000);
-  // The Activity disclosure is collapsed by default; opening it lists the
-  // task ("Working on: ..."). A working task offers no Cancel there --
-  // stopping it is the composer's Stop button, gated on an assistant that is
-  // actually running here, which is not the case in this socket-only slice.
-  assert.equal(await page.evaluate('document.querySelector(".agent-activity")?.open'), false,
-    "the activity list starts collapsed");
-  await page.evaluate('document.querySelector(".agent-activity summary").click()');
-  await until("activity lists the working task",
-    () => page.evaluate('document.querySelector(".activity-task")?.textContent.includes("Working on:")'), 1000);
-  assert.equal(
-    await page.evaluate('Array.from(document.querySelectorAll(".activity-task")).find(row=>row.textContent.includes("Working on"))?.querySelector("button")'),
-    null, "a working task offers no Cancel in the activity list");
+  await until("working indicator", () => page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent.includes("Working")'), 1000);
+  // Working tasks are not listed anywhere. Queued tasks render as .queued-request
+  // rows. Stop is on the pane header, not in the activity disclosure.
+  assert.equal(await page.evaluate('!document.querySelector(".queued-request[data-task-id=\\"activity\\"]")'),
+    true, "a working task has no queued-request row");
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'queued-task',status:'queued'})");
-  await until("queued activity row", () => page.evaluate('document.body.textContent.includes("Queued:")'), 1000);
-  assert.equal(
-    await page.evaluate('Array.from(document.querySelectorAll(".activity-task")).find(row=>row.textContent.includes("Queued"))?.querySelector("button")?.textContent.trim()'),
-    "Cancel", "a queued task offers Cancel in the activity list");
+  await until("queued task row", () => page.evaluate('document.querySelector(".queued-request[data-task-id=\\"queued-task\\"]")'), 1000);
+  assert.ok(
+    await page.evaluate('document.querySelector(".queued-request[data-task-id=\\"queued-task\\"] .queued-label")?.textContent.includes("Queued")'),
+    "a queued task row shows Queued label");
+  assert.ok(
+    await page.evaluate('Array.from(document.querySelectorAll(".queued-request[data-task-id=\\"queued-task\\"] button")).some(b=>b.textContent.trim()==="Cancel")'),
+    "a queued task offers Cancel button");
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:true})");
-  assert.match(await page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent'), /Agent working/);
+  assert.match(await page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent'), /Working/);
   // There is no "Disconnected" text anymore; the observable replacement is
   // the composer refusing to send while the runner is away.
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:false})");
@@ -399,10 +393,9 @@ try {
   assert.equal(await page.evaluate(`document.querySelector("#agent-pane-chat").hidden`), false);
   assert.equal(await page.evaluate(`Boolean(document.querySelector(".agent-setup"))`), false,
     "the setup block folds away once an assistant is running here");
-  await openActivity();
-  assert.match(await page.evaluate('document.querySelector(".activity-body > button")?.textContent'), /^Stop /,
-    "the activity disclosure is where Stop <agent> lives now");
-  await page.evaluate('document.querySelector(".activity-body > button").click()');
+  assert.ok(await page.evaluate('document.querySelector(".pane-header [aria-label^=\\"Stop\\"]")'),
+    "the pane header shows Stop button when assistant is running");
+  await clickStop();
   await until("setup reappears once the assistant is stopped", () => page.evaluate(`Boolean(document.querySelector(".agent-setup"))`), 2000);
 
   await choose("Agent", "pi");
@@ -500,13 +493,12 @@ try {
   const connectAs = async (role) => {
     await page.evaluate('document.querySelector("#agent-tab-chat").click()');
     // Starting the combination already running is correctly refused, so stop
-    // first, from the Activity disclosure where Stop <agent> lives now.
-    // Re-selecting a value already in force also fires no change event,
-    // exactly as it would not for a person, so move away from it. Stopping
-    // also brings the setup block back on its own, since it is only folded
-    // away while something is running here.
-    await openActivity();
-    await page.evaluate(`document.querySelector(".activity-body > button")?.click()`);
+    // first, using the Stop button in the pane header. Re-selecting a value
+    // already in force also fires no change event, exactly as it would not
+    // for a person, so move away from it. Stopping also brings the setup
+    // block back on its own, since it is only folded away while something
+    // is running here.
+    await clickStop();
     if (await page.evaluate(`document.querySelector("select[aria-label=Access]").value`) === role) {
       await choose("Access", role === "editor" ? "commenter" : "editor");
     }
@@ -650,13 +642,12 @@ try {
   await until("restoration test assistant started", () => page.evaluate("window.activeRunner !== null"), 2000);
   await page.evaluate("window.remount()");
   // Running here folds the setup away entirely now; there is no "Change
-  // agent" to peek at it with. The Activity disclosure's "Stop <agent>"
+  // agent" option to peek at it with. The Stop button in the pane header
   // names the restored agent instead, and stopping it is the only way left
   // to read the restored access back out of the (now visible again) selects.
   await until("restored assistant folds the setup away", () => page.evaluate('document.querySelector(".agent-setup") === null'), 3000);
-  await openActivity();
-  await until("activity names the restored agent", () => page.evaluate('document.querySelector(".activity-body > button")?.textContent.trim() === "Stop Claude Code"'), 3000);
-  await page.evaluate('document.querySelector(".activity-body > button").click()');
+  await until("stop button names the restored agent", () => page.evaluate('document.querySelector(".pane-header [aria-label^=\\"Stop\\"]")?.getAttribute("aria-label") === "Stop Claude Code"'), 3000);
+  await clickStop();
   await until("running configuration restored", () => page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value==='claude' && document.querySelector('select[aria-label=Access]')?.value==='commenter'`), 3000);
 
   // A delayed status response from the old conversation must not overwrite a

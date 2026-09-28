@@ -664,7 +664,7 @@
   {/if}
     </div>
   {#each queuedTasks as item (item.id)}
-    <div class="queued-request">
+    <div class="queued-request" data-task-id={item.id}>
       <span class="queued-label">Queued: {item.request || "Request"}</span>
       {#if item.cancelRequested}
         <span class="queued-status">Cancellation requested</span>
