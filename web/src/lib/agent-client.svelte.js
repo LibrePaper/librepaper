@@ -54,7 +54,10 @@ function removeSession(storage, key) {
 // defined once rather than written out twice.
 function emptyView() {
   return { id: "", token: "", messages: [], tasks: {}, connected: false, runnerConnected: false,
-    status: "idle", error: "", capabilities: null, assistantAgent: "", assistantAccess: "" };
+    status: "idle", error: "", capabilities: null, assistantAgent: "", assistantAccess: "",
+    // The runner's choices for the running agent (today the model), as it last
+    // announced them. Not persisted: a runner announces them on every join.
+    agentOptions: [] };
 }
 
 function compactDiagnostic(item) {
@@ -443,7 +446,8 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     }
     if (frame.type === "ready" || frame.type === "presence") {
       const runnerConnected = Boolean(frame.agent);
-      publish({ connected: true, runnerConnected, status: runnerConnected ? "ready" : "waiting", capabilities: frame.capabilities || view.capabilities, error: "" });
+      publish({ connected: true, runnerConnected, status: runnerConnected ? "ready" : "waiting", capabilities: frame.capabilities || view.capabilities, error: "",
+        ...(runnerConnected ? {} : { agentOptions: [] }) });
       if (runnerConnected) retryDeliveries();
       else markDeliveriesUncertain("The runner is disconnected; the request will be reconciled when it returns.");
       return;
@@ -465,6 +469,10 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
         context: { task_id: taskId, truncated: frame.truncated, streamed_answer: true,
           ...(previous?.result ? { results: previous.result } : {}) },
       });
+      return;
+    }
+    if (frame.type === "options") {
+      publish({ agentOptions: Array.isArray(frame.options) ? frame.options : [] });
       return;
     }
     if (frame.type === "capabilities" && frame.capabilities) {
@@ -571,7 +579,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
       rejectSends("The assistant connection closed before the message was accepted.");
       if (manuallyClosed) return;
       markDeliveriesUncertain("The connection closed before the runner confirmed the task.");
-      publish({ connected: false, runnerConnected: false, status: "reconnecting" }); scheduleReconnect();
+      publish({ connected: false, runnerConnected: false, agentOptions: [], status: "reconnecting" }); scheduleReconnect();
     };
     current.onerror = () => {
       if (disposed || generation !== owner || socket !== current) return;
@@ -631,6 +639,13 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
     updateTask(taskId, { cancelRequested: true });
     return true;
   }
+  /// Ask the runner to change one of its options; it answers with a fresh
+  /// `options` frame, which is what updates the view.
+  async function setOption(optionId, value) {
+    if (!optionId || !socket || socket.readyState !== WebSocketImpl.OPEN) return false;
+    socket.send(JSON.stringify({ type: "set_option", id: optionId, value }));
+    return true;
+  }
   async function respond(taskId, requestId, response) {
     if (!taskId || !requestId || !socket || socket.readyState !== WebSocketImpl.OPEN) return false;
     const ackId = randomId();
@@ -670,7 +685,7 @@ export function createAgentClient({ origin = globalThis.location?.origin || "", 
   return {
     get current() { return view; }, setLink(next) { link = next || ""; },
     async resume() { if (id && token) { publish({ status: "reconnecting", error: "" }); connect(); } return view; },
-    create, send, retry, cancel, respond, previewResult, end,
+    create, send, retry, cancel, setOption, respond, previewResult, end,
     rememberAssistant({ agent = "", access = "" } = {}) { publish({ assistantAgent: agent, assistantAccess: access }); },
     /// Resolves once a runner is attached to this conversation, or rejects
     /// after `ms`: a freshly started agent takes a few seconds to join.

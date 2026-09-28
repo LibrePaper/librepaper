@@ -74,6 +74,9 @@ window.fetch = async (url, init) => {
     if (route === 'assistant') {
       // Runners are located by server, document and conversation, not by a
       // separate connection name, so the mock keys the same way.
+      // Pi's adapter download is refused, so choosing Pi restarts the running
+      // agent into a stopped one and its pre-start notes stay on screen.
+      if (body.agent==='pi') return Response.json({running:false,error:'adapter download refused'});
       window.activeRunner={link:body.link,conversation:body.conversation,agent:body.agent};
       return Response.json({running:true});
     }
@@ -155,9 +158,6 @@ window.remount();
 // does: set it and let the change handler run.
 const choose = (label, value) => page.evaluate(
   `(()=>{const s=document.querySelector('select[aria-label=${label}]');s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-// Stop button lives in the pane header as an IconButton.
-const clickStop = () => page.evaluate(
-  '(()=>{const button=document.querySelector(".pane-header [aria-label^=\\"Stop\\"]");if(button)button.click();})()');
 
 let server, page;
 try {
@@ -228,7 +228,7 @@ try {
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'})");
   await until("working indicator", () => page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent.includes("Working")'), 1000);
   // Working tasks are not listed anywhere. Queued tasks render as .queued-request
-  // rows. Stop is on the pane header, not in the activity disclosure.
+  // rows. Stopping is the composer's job, not the activity disclosure's.
   assert.equal(await page.evaluate('!document.querySelector(".queued-request[data-task-id=\\"activity\\"]")'),
     true, "a working task has no queued-request row");
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'queued-task',status:'queued'})");
@@ -387,16 +387,42 @@ try {
   // There is no separate route to register a connection; the sidebar never
   // calls one.
   assert.equal(await page.evaluate("window.localCalls.some(call=>call.route==='connections')"), false);
-  // The agent settings stay visible at all times when paired. The Stop button
-  // appears in the pane header while running, and disappears after stopping.
+  // The agent settings stay visible at all times when paired, and nothing in
+  // the pane header stops the agent: sending, changing a select or clearing the
+  // conversation is how its state changes.
   assert.equal(await page.evaluate(`document.querySelector("#agent-pane-chat").hidden`), false);
   assert.ok(await page.evaluate(`Boolean(document.querySelector(".agent-settings"))`),
     "the agent settings stay visible when an assistant is running");
-  assert.ok(await page.evaluate('document.querySelector(".pane-header [aria-label^=\\"Stop\\"]")'),
-    "the pane header shows Stop button when assistant is running");
-  await clickStop();
-  await until("Stop button disappears once the assistant is stopped", () => page.evaluate(`!document.querySelector(".pane-header [aria-label^=\\"Stop\\"]")`), 2000);
-  // A stopped agent leaves the conversation.
+  assert.equal(await page.evaluate('Boolean(document.querySelector(".pane-header [aria-label^=\\"Stop\\"]"))'), false,
+    "the pane header has no Stop button");
+  // The model picker appears only while the runner announces a model option,
+  // and choosing in it asks the runner to change in place, with no restart.
+  assert.equal(await page.evaluate("Boolean(document.querySelector('select[aria-label=Model]'))"), false,
+    "no model picker before the runner announces a model");
+  const modelOptions = [{id:'model',name:'Model',category:'model',current:'sonnet',
+    choices:[{value:'sonnet',name:'Sonnet'},{value:'opus',name:'Opus'}]}];
+  await page.evaluate(`window.sockets.at(-1).emit({type:'options',options:${JSON.stringify(modelOptions)}})`);
+  await until("model picker shown", () => page.evaluate("Boolean(document.querySelector('select[aria-label=Model]'))"), 1000);
+  assert.deepEqual(
+    await page.evaluate(`Array.from(document.querySelector('select[aria-label=Model]').options).map(o=>[o.value,o.textContent])`),
+    [['sonnet','Sonnet'],['opus','Opus']]);
+  assert.equal(await page.evaluate("document.querySelector('select[aria-label=Model]').value"), 'sonnet');
+  await page.evaluate("window.localCalls=[]");
+  await choose("Model", "opus");
+  await until("set_option sent", () => page.evaluate(`window.sockets.at(-1).sent.some(frame=>frame.type==='set_option'&&frame.id==='model'&&frame.value==='opus')`), 1000);
+  assert.equal(await page.evaluate("window.localCalls.length"), 0, "changing the model does not restart the agent");
+  assert.equal(await page.evaluate("localStorage.getItem('librepaper.agent.model.claude')"), 'opus');
+  // The runner answers with a fresh options frame; the picker follows it.
+  await page.evaluate(`window.sockets.at(-1).emit({type:'options',options:[{...${JSON.stringify(modelOptions[0])},current:'opus'}]})`);
+  await until("model picker follows the runner", () => page.evaluate("document.querySelector('select[aria-label=Model]').value==='opus'"), 1000);
+  // The model name joins the composer status while a task works.
+  await page.evaluate("window.sockets.at(-1).emit({type:'task',task_id:'model-status',status:'working'})");
+  await until("model in composer status", () => page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent.includes("Opus")'), 1000);
+  await page.evaluate("window.sockets.at(-1).emit({type:'task',task_id:'model-status',status:'completed'})");
+  // An empty list means no model choice.
+  await page.evaluate("window.sockets.at(-1).emit({type:'options',options:[]})");
+  await until("model picker hidden", () => page.evaluate("!document.querySelector('select[aria-label=Model]')"), 1000);
+  // The agent leaving the conversation.
   await page.evaluate("window.sockets.at(-1).emit({type:'presence',browser:true,agent:false})");
 
   await choose("Agent", "pi");
@@ -500,7 +526,7 @@ try {
       await choose("Access", role === "editor" ? "commenter" : "editor");
     }
     await choose("Agent", "claude");
-    const running = await page.evaluate(`Boolean(document.querySelector(".pane-header [aria-label^=\\"Stop\\"]"))`);
+    const running = await page.evaluate(`window.activeRunner !== null`);
     await page.evaluate("window.localCalls=[]");
     await choose("Access", role);
     if (!running) {
@@ -580,7 +606,7 @@ try {
   // and clears the transcript/context. The agent settings remain visible.
   // A socket reconnect keeps the existing conversation and transcript instead.
   await page.evaluate('document.querySelector("#agent-tab-chat").click(); document.querySelector(\'button[aria-label="Clear conversation"]\').click()');
-  await until("new conversation cleared", () => page.evaluate('document.querySelector("#agent-tab-chat").getAttribute("aria-selected")==="true" && !document.querySelector(".pane-header [aria-label^=\\"Stop\\"]")'), 2000);
+  await until("new conversation cleared", () => page.evaluate('document.querySelector("#agent-tab-chat").getAttribute("aria-selected")==="true"'), 2000);
   assert.equal(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Explain this")'), false);
   assert.equal(await page.evaluate('window.localCalls.some(call => call.route === "assistant/stop")'), true);
   await until("new channel created",()=>page.evaluate(`window.sockets.length === ${beforeNewConversation.sockets + 1}`),10000);
@@ -647,13 +673,11 @@ try {
   await page.evaluate(`document.querySelector('.chat-form button[type=submit]').click()`);
   await until("restoration test assistant started", () => page.evaluate("window.activeRunner !== null"), 2000);
   await page.evaluate("window.remount()");
-  // The agent settings stay visible at all times. The Stop button in the pane
-  // header names the restored agent. After stopping, the selects show the
+  // The agent settings stay visible at all times. A remounted panel asks the
+  // local app whether its assistant is running, and the selects show the
   // configuration that was running.
-  await until("restored assistant shows in Stop button", () => page.evaluate('document.querySelector(".pane-header [aria-label^=\\"Stop\\"]")?.getAttribute("aria-label") === "Stop Claude Code"'), 3000);
   assert.ok(await page.evaluate(`Boolean(document.querySelector(".agent-settings"))`),
     "the agent settings stay visible when an assistant is restored");
-  await clickStop();
   await until("running configuration restored", () => page.evaluate(`document.querySelector('select[aria-label=Agent]')?.value==='claude' && document.querySelector('select[aria-label=Access]')?.value==='commenter'`), 3000);
 
   // A delayed status response from the old conversation must not overwrite a

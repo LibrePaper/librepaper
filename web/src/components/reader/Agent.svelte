@@ -157,9 +157,29 @@
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 
+  // The model the running agent offers to choose, when it offers one. Its pick
+  // is remembered per agent and re-applied to each new session of that agent.
+  const modelOption = $derived((connection.agentOptions || []).find((option) => option.category === "model") || null);
+  const modelName = $derived(modelOption?.choices?.find((choice) => choice.value === modelOption.current)?.name || "");
+  const modelKey = () => `librepaper.agent.model.${assistant.agent || chosenAgent}`;
+  let modelApplied = "";
+  $effect(() => {
+    if (!modelOption) { modelApplied = ""; return; }
+    const wanted = lastUsed(modelKey());
+    const attempt = `${modelOption.id}=${wanted}`;
+    if (!wanted || wanted === modelOption.current || modelApplied === attempt
+        || !modelOption.choices.some((choice) => choice.value === wanted)) return;
+    modelApplied = attempt;
+    void client.setOption(modelOption.id, wanted);
+  });
+  function chooseModel(value) {
+    rememberLastUsed(modelKey(), value);
+    void client.setOption(modelOption.id, value);
+  }
+
   const composerStatus = $derived(
     activeTask?.status === "working"
-      ? `${runningLabel} · ${humanizeTool(activeTask.message) || 'Working'}… · ${formatElapsed(elapsedTime)}`
+      ? `${runningLabel}${modelName ? ` · ${modelName}` : ""} ·${humanizeTool(activeTask.message) || 'Working'}… · ${formatElapsed(elapsedTime)}`
       : activeTask?.status === "needs_input" ? "Waiting for permission" : "");
 
   function validDocumentLink() {
@@ -281,13 +301,6 @@
       if (savedAccess) access = savedAccess;
       if (agent) chosenAgent = agent;
     } catch { /* the saved assistant may have been revoked or removed */ }
-  }
-
-  async function stopAssistant() {
-    await act(async () => {
-      await local.stopAssistant({ link: agentLink || link, conversation: connection.id });
-      assistant = { running: false, agent: "", access: "" };
-    });
   }
 
   async function act(operation) {
@@ -540,10 +553,6 @@
         <IconButton icon="eraser" label="Clear conversation" tone="plain" size="btn-icon-sm"
                     disabled={busy} onclick={() => void newConversation()} />
       {/if}
-      {#if assistant.running}
-        <IconButton icon="square" label={`Stop ${runningLabel}`} tone="plain" size="btn-icon-sm"
-                    disabled={busy} onclick={() => void stopAssistant()} />
-      {/if}
       <IconButton icon="sliders" label="Local companion settings" tone="plain" size="btn-icon-sm"
                   onclick={() => onsettings?.()} />
     </div>
@@ -632,7 +641,8 @@
   {/if}
   <!-- Which agent, with what access: one quiet line, since both nearly always
        stay as they were last time. Sending starts the agent; changing either
-       while it runs restarts it. -->
+       while it runs restarts it; the model, when the agent offers one,
+       changes in place. -->
   <div class="agent-settings">
     {#if installed.length}
       <select class="agent-setting" aria-label="Agent" disabled={busy} value={chosenAgent}
@@ -644,6 +654,13 @@
               onchange={(event) => void choose(() => access = event.currentTarget.value)}>
         {#each roles as entry}<option value={entry.id} disabled={!roleOffered(entry)} title={entry.help}>{entry.label}</option>{/each}
       </select>
+      {#if modelOption}
+        <span aria-hidden="true">·</span>
+        <select class="agent-setting" aria-label="Model" disabled={busy} value={modelOption.current}
+                onchange={(event) => chooseModel(event.currentTarget.value)}>
+          {#each modelOption.choices as choice (choice.value)}<option value={choice.value}>{choice.name}</option>{/each}
+        </select>
+      {/if}
     {:else}
       <span>No supported coding agent was found on this computer.</span>
     {/if}
