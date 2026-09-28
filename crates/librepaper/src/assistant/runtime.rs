@@ -91,6 +91,9 @@ struct Active {
     answer: String,
     answer_truncated: bool,
     answer_dirty: bool,
+    /// The agent did something other than answer since the last chunk, so the
+    /// next chunk starts a new message and needs a paragraph break.
+    answer_break: bool,
     last_answer_emit: tokio::time::Instant,
     pending: VecDeque<PendingInput>,
     cancelling: bool,
@@ -599,6 +602,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                     answer: String::new(),
                                     answer_truncated: false,
                                     answer_dirty: false,
+                                    answer_break: false,
                                     last_answer_emit: tokio::time::Instant::now(),
                                     pending: VecDeque::new(),
                                     cancelling: false,
@@ -838,12 +842,18 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                         let Some(current)=active.as_mut() else { continue; };
                         match update {
                             acp::Update::Answer(chunk) => {
+                                let chunk = if std::mem::take(&mut current.answer_break) && !current.answer.is_empty() {
+                                    format!("\n\n{chunk}")
+                                } else {
+                                    chunk
+                                };
                                 let before = current.answer.len();
                                 push_bounded_utf8(&mut current.answer, &chunk, super::protocol::MAX_ANSWER_BYTES);
                                 current.answer_truncated |= current.answer.len() - before < chunk.len();
                                 current.answer_dirty = true;
                             }
                             acp::Update::Activity(detail) => {
+                                current.answer_break = true;
                                 let id=current.id.clone();
                                 let changed=state.task_mut(&id).is_some_and(|task| task.set_activity(detail));
                                 if changed { report_task(&transport,&mut state,&id,&lease.location.state).await?; }
