@@ -75,18 +75,12 @@ pub(crate) async fn pending_proposal(
     comment: &Comment,
 ) -> Result<crate::storage::postgres::StoredProposal, Failure> {
     let proposal_id = parse_uuid(&comment.proposal, "proposal")?;
-    let stored = catalog
+    // A decided proposal is deleted, so a row that exists is still open.
+    catalog
         .proposal(proposal_id)
         .await
         .map_err(|error| Failure::new("unavailable", error.to_string()))?
-        .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))?;
-    if stored.status != "pending" {
-        return Err(Failure::new(
-            "conflict",
-            "suggestion has already been decided",
-        ));
-    }
-    Ok(stored)
+        .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))
 }
 
 /// The id a newly created annotation gets, for a comment and for a suggestion
