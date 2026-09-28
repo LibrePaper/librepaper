@@ -162,7 +162,7 @@
 
 {#if !connected}
   <section id="local-install-help" class="local-install" aria-label="Install LibrePaper Companion">
-    <h4 class="setting-title">Install LibrePaper Companion</h4>
+    <h4 class="settings-subhead">Install LibrePaper Companion</h4>
     <div class="install-option">
       <div class="setting-title">macOS &amp; Linux</div>
       <div class="command-line"><code>curl --proto '=https' --tlsv1.2 -LsSf {installer} | sh</code><button type="button" class="btn btn-sm lp-control-outline" onclick={() => void copy(`curl --proto '=https' --tlsv1.2 -LsSf ${installer} | sh`, "macOS & Linux")}>{copying === "macOS & Linux" ? "Copied" : "Copy"}</button></div>
