@@ -62,7 +62,7 @@ async fn send_outgoing(tx: &Sender, outgoing: Outgoing) -> Result<(), ()> {
 /// Best effort: the write has already happened, and a proposal that cannot be
 /// read back is no reason to fail the flush. The next announcement, or the
 /// list a client is handed when it joins, carries the same branch.
-async fn announce_proposal(room: &Room, id: &str) {
+pub(super) async fn announce_proposal(room: &Room, id: &str) {
     let Ok(id) = uuid::Uuid::parse_str(id) else {
         return;
     };

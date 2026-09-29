@@ -122,6 +122,16 @@ try {
   // The open page is told, so it refreshes its comments rather than waiting
   // for a reload.
   await seen("comments-changed", (frame) => frame.type === "comments-changed" && frame.state?.total === 1);
+
+  // A suggestion's before and after come from its proposal, so an open page
+  // must be sent the proposal itself, not only told the comments moved.
+  const proposed = await call("document_propose", {
+    view_id: read.structuredContent.view_id, publish: "suggestions", validation: "source",
+    patches: [{ range_id: rangeId, replacement: "The revised paragraph" }],
+  });
+  assert.notEqual(proposed.isError, true, JSON.stringify(proposed));
+  const announced = await seen("proposal-changed", (frame) => frame.type === "proposal-changed");
+  assert.ok(announced.proposal?.id && announced.proposal.branch, `the page gets the whole proposal: ${JSON.stringify(announced).slice(0, 300)}`);
   page.close();
   const stored = await fetch(`${deployment.base}/api/documents/${slug}/comments`, {
     headers: { "x-librepaper-client": "1", cookie: deployment.cookie },

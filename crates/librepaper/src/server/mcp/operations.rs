@@ -1232,6 +1232,13 @@ impl Server {
             }
             // Rows are read live; existing immutable anchors stay cached
             // so their subscribers continue receiving source movements.
+            // Each new suggestion's proposal too: a page shows a suggestion's
+            // before and after from its proposal, and without it sees "∅ → ∅".
+            for outcome in &outcomes {
+                if let room::BatchItemResult::Created(comment) = outcome {
+                    crate::server::socket::announce_proposal(&room, &comment.proposal).await;
+                }
+            }
             room.broadcast_comments_changed().await;
             result["effects"] = json!(outcomes
                 .iter()

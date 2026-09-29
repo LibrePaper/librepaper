@@ -448,6 +448,9 @@ impl Server {
                     .command(&authority, &mut cmd)
                     .await
                     .map_err(command_failure)?;
+                // Open pages rebuild the suggestion's before and after from the
+                // proposal itself, so the refined branch has to reach them.
+                crate::server::socket::announce_proposal(&room, &stored.id.to_string()).await;
                 json!({"comment_id": comment.id, "comment": comment})
             }
             "reject" => {
