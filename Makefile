@@ -226,7 +226,7 @@ kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
 	@pkill -f '[d]ist/librepaper admin serve' && echo "stopped" || echo "nothing to stop"
 
-.PHONY: deploy latex-check latex-smoke
+.PHONY: deploy latex-check latex-smoke mirrors-push
 
 # The mirror itself -- the compiler engines and the TeX Live bundles -- is built
 # and pushed from the wasm-latex repository (`make mirror`, `make push`
@@ -241,6 +241,9 @@ latex-smoke: $(BIN)  ## Compile and display the LaTeX tutorial in Chromium again
 	@node tools/latex/tools/check-mirror.test.mjs
 	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
 	@node web/tools/latex-e2e.mjs $(BIN) browser docs/examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
+
+mirrors-push:  ## Publish prepared Typst and LaTeX mirrors (MIRRORS_DRY_RUN=1 validates both without credentials)
+	@node tools/push-mirrors.mjs
 
 # The local deployment keeps PostgreSQL on the same machine in a persistent
 # Docker volume. An explicitly configured database URL always wins, so hosted
@@ -334,12 +337,10 @@ deploy: latex-check $(BIN)  ## Serve the site, the application and a local compa
 	LIBREPAPER_SITE_ORIGIN=http://localhost:$(SITE_PORT) \
 		$(MAKE) serve OPEN=0 LIBREPAPER_PUBLISHERS=any SIMULATE_ACTIVITY=$(SIMULATE_ACTIVITY)
 
-# The deployment keys -- the Cloudflare token, the endpoints, the GitHub app
+# The deployment keys -- OVH credentials, endpoints, the GitHub app
 # -- live sops-encrypted in deploy/keys.yaml. A target cannot export into the
 # shell that ran make, so `secrets` opens a subshell with them decrypted in
-# its environment; exit it to drop them. For one command instead of a shell:
-#
-#     sops exec-env deploy/keys.yaml 'wrangler deploy'
+# its environment; exit it to drop them. `mirrors-push` loads its own keys.
 KEYS ?= deploy/keys.yaml
 .PHONY: secrets
 
@@ -349,8 +350,8 @@ secrets:  ## Open an interactive shell with the sops-encrypted deployment keys i
 	@echo "$(KEYS) is loaded in this shell; exit to drop it"
 	@sops exec-env $(KEYS) "$${SHELL:-/bin/sh}"
 
-# Pushing the LaTeX mirror to its hosting is wasm-latex's `make push` now
-# (see the MIRROR= comment above latex-smoke); nothing here uploads it.
+# Build the Typst and LaTeX mirrors in their sibling repositories, then publish
+# both prepared trees together with `make mirrors-push`. Nothing builds them here.
 
 # --- the web app -----------------------------------------------------------
 #

@@ -1,52 +1,39 @@
 # Browser asset mirrors
 
-The project is moving its Typst and LaTeX static mirrors to a dedicated OVH
-Object Storage bucket. The bucket serves public browser downloads; the app
-does not proxy these files. Keep the existing mirror URLs live while the new
-objects, CORS response, integrity pins, and browser smoke checks are verified.
+The Typst and LaTeX mirror publishers upload prepared directories to a
+dedicated OVH S3 bucket. Build both mirrors first in the sibling
+`wasm-typst` and `wasm-latex` repositories. Install Node.js, SOPS and AWS CLI v2, and
+keep the encrypted publisher keys in `deploy/keys.yaml`.
 
-## Publish
-
-Install AWS CLI v2 (`nix shell nixpkgs#awscli2` is convenient), then set the
-OVH endpoint, region, bucket, and credentials in the environment. The endpoint
-and credentials are pending; do not substitute the live Cloudflare endpoints.
-Use a bucket dedicated to public immutable assets and allow anonymous
-`s3:GetObject` only for the `typst/*` and `latex/*` keys. Keep bucket listing
-private. For example, the public bucket policy should scope its resource to
-`arn:aws:s3:::BUCKET/{typst,latex}/*` (use two resource entries in the actual
-policy).
+The key file supplies `OVH_S3_ENDPOINT`, `OVH_S3_REGION` (currently `bhs`),
+`OVH_S3_USER`, `OVH_S3_SECRET`, and `OVH_S3_ARN`. `OVH_S3_USER` is the S3
+access key ID. The exact bucket ARN may supply the bucket name; otherwise set
+`S3_BUCKET` in the environment or `OVH_S3_BUCKET` in the key file. Only an ARN
+of the form `arn:aws:s3:::BUCKET` is accepted. `OVH_S3_HOST` is unused. Canonical environment variables
+`S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, and
+`AWS_SECRET_ACCESS_KEY` override the corresponding mapped values.
 
 ```sh
-export S3_ENDPOINT='<OVH S3 endpoint URL>'
-export S3_REGION='<OVH region>'
-export S3_BUCKET='<dedicated public mirror bucket>'
-export AWS_ACCESS_KEY_ID='<publisher key>'
-export AWS_SECRET_ACCESS_KEY='<publisher secret>'
-# export AWS_SESSION_TOKEN='<when using temporary credentials>'
+# Check both prepared mirrors and their hashes; no credentials or network used.
+make mirrors-push MIRRORS_DRY_RUN=1
 
-node tools/publish-mirror.mjs --dir ../wasm-typst/mirror --prefix typst --dry-run
-node tools/publish-mirror.mjs --dir ../wasm-latex/mirror --prefix latex --dry-run
-node tools/publish-mirror.mjs --dir ../wasm-typst/mirror --prefix typst
-node tools/publish-mirror.mjs --dir ../wasm-latex/mirror --prefix latex
+# Publish both mirrors. KEYS, TYPST_MIRROR, and MIRROR can be overridden.
+make mirrors-push
 ```
 
-Dry runs list the upload plan without reading or verifying payloads. Real
-uploads check local hashes first, then read each uploaded object back and verify
-its decoded bytes and response metadata before publishing release indexes.
-Publisher credentials need both object write and read access.
+SOPS decrypts the key file into memory for the publishing process. Both local
+mirrors are integrity-checked before either upload begins. The publisher reads
+each uploaded object back and verifies its bytes and response metadata before
+publishing release indexes. CORS remains an explicit separate operation via
+`tools/publish-mirror.mjs --configure-cors`; `mirrors-push` does not change
+bucket policy, public access, or application URL pins.
 
-The publisher uses AWS CLI signing, compresses supported text and WASM files
-with gzip, and sets `Content-Encoding`, MIME type, and browser cache policy on
-each object. Hash-addressed assets get immutable caching; `manifest.json` is
-`no-store`, `bundles.json` is `no-cache`, and license files get a one-day
-cache. Object keys stay unchanged, so hashed URLs remain canonical. Cloudflare
-metadata and legacy `.br` sidecars are skipped. Publishing does not delete old
-bucket objects. CORS is left untouched unless explicitly
-requested with `--configure-cors`; that option permits public `GET`/`HEAD`
-browser reads from any origin.
+Publisher credentials need object read/write access. Allow anonymous reads only
+for `typst/*` and `latex/*`; keep listing private. Uploads use gzip where suitable,
+immutable caching for hashed assets, `no-store` for manifests, and `no-cache`
+for bundle indexes. Existing objects are retained.
 
-Once both mirrors are reachable over HTTPS and browser checks pass, update the
-Typst asset URL and SHA-256 pin in `typst-assets.lock`, and switch the LaTeX
-default mirror URL in its existing configuration. Retain the old mirrors until
-those builds and checks succeed. OVH endpoint details, publishing credentials,
-new URLs, and hashes remain pending live access and verification.
+Keep the existing mirror URLs live until the OVH objects are reachable over
+HTTPS and browser checks pass. Only then update the Typst asset URL and
+SHA-256 pin in `typst-assets.lock` and the LaTeX default mirror URL. The
+current publishing setup does not perform that cutover.

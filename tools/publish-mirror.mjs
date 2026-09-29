@@ -78,7 +78,7 @@ async function listFiles(root, directory = root, found = []) {
   return found;
 }
 
-function configuration(env) {
+export function publisherConfiguration(env) {
   for (const key of ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]) {
     if (!env[key]) throw new Error(`missing required environment variable ${key}`);
   }
@@ -278,7 +278,7 @@ export async function publish({ dir, prefix, dryRun = false, configureCors = fal
     return rank(a) - rank(b) || a.relative.localeCompare(b.relative);
   });
   if (!files.length) throw new Error("mirror directory has no publishable files");
-  const target = dryRun ? null : configuration(env);
+  const target = dryRun ? null : publisherConfiguration(env);
   const preflight = dryRun ? null : await validateMirrorFiles(root, prefix, files);
   if (configureCors && dryRun) output("CORS: would allow GET and HEAD from any origin (explicit --configure-cors)");
   if (dryRun) output("Integrity preflight skipped in dry run.");
