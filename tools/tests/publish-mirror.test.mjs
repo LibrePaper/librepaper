@@ -134,6 +134,10 @@ test("LaTeX preflight verifies release files, index, and relative bundle records
   try {
     const result = await preflightMirror({ dir: root, prefix: "latex" });
     assert.equal(result.count, 4);
+    const orphan = join(root, "engines", "old-release", "bundles", "b", "0".repeat(64));
+    await mkdir(orphan, { recursive: true });
+    await writeFile(join(orphan, "orphan.tar"), "corrupt retained bundle");
+    await assert.rejects(preflightMirror({ dir: root, prefix: "latex" }), /bundle hash directory does not match/);
     assert.equal(result.bytes, bundleBytes.length + indexBytes.length + assetBytes.length + (await stat(join(root, "manifest.json"))).size);
   } finally {
     await rm(root, { recursive: true, force: true });

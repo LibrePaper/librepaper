@@ -133,6 +133,10 @@ async function validateMirrorFiles(root, prefix, files) {
   let totalBytes = 0;
   for (const file of files) {
     const record = await digestFile(file.absolute);
+    const bundleHash = file.relative.match(/(?:^|\/)bundles\/b\/([a-f0-9]{64})\/[^/]+\.tar$/)?.[1];
+    if (prefix === "latex" && bundleHash && record.sha256 !== bundleHash) {
+      throw new Error(`LaTeX bundle hash directory does not match raw bytes: ${file.relative}`);
+    }
     expected.set(file.relative, record);
     totalBytes += record.size;
   }
