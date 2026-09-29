@@ -27,6 +27,38 @@ const MIME = new Map([
 ]);
 const MANIFESTS = new Set(["manifest.json", "bundles.json", "index.html", "index.json"]);
 const SHA256 = /^[a-f0-9]{64}$/;
+const AWS_OPERATIONS = new Set(["put-object", "get-object", "put-bucket-cors"]);
+const AWS_HINTS = new Map([
+  ["AccessDenied", "Check that the mirror credentials have permission for this bucket and prefix."],
+  ["InvalidAccessKeyId", "Check that the configured AWS access key is valid for this mirror."],
+  ["SignatureDoesNotMatch", "Check that the S3 access key ID and secret match, and verify the endpoint and region."],
+  ["NoSuchBucket", "Check that the configured mirror bucket exists at this endpoint."],
+  ["InvalidRequest", "Check the mirror bucket and endpoint configuration."],
+  ["NotImplemented", "Check that the mirror endpoint supports this S3 operation."],
+]);
+
+export function awsFailureMessage(error, args) {
+  const operation = AWS_OPERATIONS.has(args?.[1]) ? args[1] : null;
+  const exitCode = Number.isInteger(error?.status) && error.status >= 0
+    ? String(error.status)
+    : (Number.isInteger(error?.code) && error.code >= 0 ? String(error.code)
+      : typeof error?.code === "string" && /^\d+$/.test(error.code) ? error.code : null);
+  const context = [operation && ` ${operation}`, exitCode && ` (exit code ${exitCode})`].filter(Boolean).join("");
+  const stderr = Buffer.isBuffer(error?.stderr) ? error.stderr.toString("utf8") : String(error?.stderr || "");
+  const serviceError = stderr.match(/An error occurred \(([A-Za-z0-9]{1,80})\) when calling the [A-Za-z0-9]+ operation:/);
+  if (serviceError) {
+    const code = serviceError[1];
+    const hint = AWS_HINTS.get(code);
+    return `AWS CLI operation failed${context}: ${code}${hint ? `. ${hint}` : ""}`;
+  }
+  if (/Could not connect to the endpoint URL/i.test(stderr)) {
+    return `AWS CLI operation failed${context}: could not connect to the configured endpoint. Check endpoint and network access.`;
+  }
+  if (/SSL validation failed/i.test(stderr)) {
+    return `AWS CLI operation failed${context}: SSL validation failed. Check the endpoint certificate and local trust configuration.`;
+  }
+  return `AWS CLI operation failed${context}`;
+}
 
 export function parseArgs(args) {
   const options = { cors: false, dryRun: false };
@@ -219,9 +251,9 @@ async function aws(args, env) {
     return stdout;
   } catch (error) {
     if (error.code === "ENOENT") throw new Error("AWS CLI v2 was not found; install awscli2 (or use `nix shell nixpkgs#awscli2`)" );
-    // AWS diagnostic text can include endpoint or request details. Keep the
-    // report useful without ever echoing environment values or credentials.
-    throw new Error(`AWS CLI operation failed${error.code ? ` (${error.code})` : ""}`);
+    // Keep diagnostics useful without echoing raw AWS stderr, endpoint details,
+    // request details, or credentials.
+    throw new Error(awsFailureMessage(error, args));
   }
 }
 

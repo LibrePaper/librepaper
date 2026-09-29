@@ -5,11 +5,37 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { metadataFor, parseArgs, preflightMirror, publish } from "../publish-mirror.mjs";
+import { awsFailureMessage, metadataFor, parseArgs, preflightMirror, publish } from "../publish-mirror.mjs";
 
 const script = new URL("../publish-mirror.mjs", import.meta.url).pathname;
 const secret = "do-not-print-this-secret";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+test("AWS failure diagnostics expose safe service codes and actionable hints only", () => {
+  const serviceMessage = awsFailureMessage({
+    status: 254,
+    stderr: "An error occurred (AccessDenied) when calling the PutObject operation: secret=do-not-print-this-secret https://private.example/request",
+  }, ["s3api", "put-object"]);
+  assert.match(serviceMessage, /put-object/);
+  assert.match(serviceMessage, /exit code 254/);
+  assert.match(serviceMessage, /AccessDenied/);
+  assert.match(serviceMessage, /permission/);
+  assert.doesNotMatch(serviceMessage, /do-not-print-this-secret|private\.example|request/);
+
+  const unknownMessage = awsFailureMessage({
+    code: "private-code-do-not-print",
+    stderr: "arbitrary secret=do-not-print-this-secret endpoint https://private.example",
+  }, ["s3api", "get-object"]);
+  assert.equal(unknownMessage, "AWS CLI operation failed get-object");
+  assert.doesNotMatch(unknownMessage, /private-code|secret|private\.example/);
+  const signatureMessage = awsFailureMessage({ code: 254,
+    stderr: "An error occurred (SignatureDoesNotMatch) when calling the GetObject operation: private detail",
+  }, ["s3api", "get-object"]);
+  assert.match(signatureMessage, /exit code 254/);
+  assert.match(signatureMessage, /SignatureDoesNotMatch/);
+  assert.match(signatureMessage, /S3 access key ID and secret match/);
+  assert.doesNotMatch(signatureMessage, /private detail/);
+});
 const fakeAwsProgram = `#!${process.execPath}
 const fs = require('node:fs');
 const { gunzipSync, gzipSync } = require('node:zlib');
