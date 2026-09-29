@@ -63,6 +63,10 @@ fn event_id() -> String {
 fn adapter_environment(journal_path: &Path, session_path: &Path) -> Vec<(String, String)> {
     vec![
         (
+            "LIBREPAPER_AGENT_LABEL_FILE".into(),
+            agent_label_path(session_path).to_string_lossy().into_owned(),
+        ),
+        (
             "LIBREPAPER_RUNNER_JOURNAL".into(),
             journal_path.to_string_lossy().into_owned(),
         ),
@@ -71,6 +75,44 @@ fn adapter_environment(journal_path: &Path, session_path: &Path) -> Vec<(String,
             session_path.to_string_lossy().into_owned(),
         ),
     ]
+}
+
+/// The file the bridge reads the agent's display label from, beside the
+/// session file. The runner is its only writer.
+fn agent_label_path(session_path: &Path) -> PathBuf {
+    session_path.with_file_name("agent-label")
+}
+
+/// The name of the model the agent currently runs, from its model options:
+/// the choice whose value is the option's current one. Empty when unknown.
+fn agent_label(options: &Value) -> String {
+    options
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|option| option["category"] == "model")
+        .find_map(|option| {
+            let current = option["current"].as_str()?;
+            option["choices"]
+                .as_array()?
+                .iter()
+                .find(|choice| choice["value"].as_str() == Some(current))?["name"]
+                .as_str()
+        })
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Publish the label for the bridge, which reads it on every tool call, so a
+/// model change mid-session is attributed correctly. Written only when it
+/// differs, atomically, and empty when the model is unknown.
+fn publish_agent_label(session_path: &Path, options: &Value) -> Result<(), String> {
+    let path = agent_label_path(session_path);
+    let label = agent_label(options);
+    if std::fs::read_to_string(&path).is_ok_and(|current| current == label) {
+        return Ok(());
+    }
+    crate::private_files::publish(&path, label.as_bytes(), "agent label")
 }
 
 /// Resolve this runner's document link and channel credential from the
@@ -585,6 +627,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
     // user's.
     let mut session_id = agent.session_id().to_string();
     let mut options = agent.options().clone();
+    publish_agent_label(&session_path, &options)?;
     // ACP has no place to put developer instructions on a session, so they
     // lead the first prompt of this process. Once per runner start, not once
     // per task: the agent keeps the session's context between turns.
@@ -713,6 +756,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     if connected && stopping.is_none() { runner_journal::set_session_epoch(&session_path, current_epoch.as_deref())?; }
                     session_id = agent.session_id().to_string();
                     options = agent.options().clone();
+                    publish_agent_label(&session_path, &options)?;
                     instructions = Some(context::instructions(&lease.location.directory)?);
                     commands.clear();
                     if connected { reconcile(&transport, &mut state, &session_id, &options).await?; }
@@ -830,6 +874,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                                         Ok(updated) => options = updated,
                                         Err(error) => eprintln!("could not set agent option {id}: {error}"),
                                     }
+                                    publish_agent_label(&session_path, &options)?;
                                     emit_options(&transport, &options).await?;
                                 }
                             }
@@ -893,6 +938,7 @@ async fn execute(peer: &AutomationPeer, config: &Config, lease: &Lease) -> Resul
                     acp::Event::Update(acp::Update::Commands(names)) => commands = names,
                     acp::Event::Options(updated) => {
                         options = updated;
+                        publish_agent_label(&session_path, &options)?;
                         if connected { emit_options(&transport, &options).await?; }
                     }
                     acp::Event::Update(update) => {
@@ -1169,13 +1215,32 @@ mod tests {
         let names: Vec<&str> = environment.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["LIBREPAPER_RUNNER_JOURNAL", "LIBREPAPER_RUNNER_SESSION"]
+            vec![
+                "LIBREPAPER_AGENT_LABEL_FILE",
+                "LIBREPAPER_RUNNER_JOURNAL",
+                "LIBREPAPER_RUNNER_SESSION"
+            ]
         );
-        assert_eq!(environment[1].1, "/tmp/runner.journal.session");
+        assert_eq!(environment[0].1, "/tmp/agent-label");
+        assert_eq!(environment[2].1, "/tmp/runner.journal.session");
         // The document link and the channel token reach the adapter through
         // the private connection record, never through this environment.
         assert!(!names.contains(&"LIBREPAPER_DOCUMENT"));
         assert!(!names.contains(&"LIBREPAPER_CHAT_TOKEN"));
+    }
+
+    #[test]
+    fn the_agent_label_is_the_current_models_name() {
+        let options = json!([
+            {"id":"mode","name":"Mode","category":"mode","current":"a","choices":[{"value":"a","name":"Wrong"}]},
+            {"id":"model","name":"Model","category":"model","current":"opus","choices":[
+                {"value":"sonnet","name":"Sonnet 5.5"},{"value":"opus","name":"Opus 5.5"}]}
+        ]);
+        assert_eq!(agent_label(&options), "Opus 5.5");
+        assert_eq!(agent_label(&json!([])), "");
+        assert_eq!(agent_label(&Value::Null), "");
+        let unknown = json!([{"category":"model","current":"x","choices":[{"value":"y","name":"Y"}]}]);
+        assert_eq!(agent_label(&unknown), "");
     }
 
     #[test]

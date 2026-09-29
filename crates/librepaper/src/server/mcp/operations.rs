@@ -732,11 +732,7 @@ impl Server {
             .await
             .map_err(|error| Failure::new("unavailable", error.to_string()))?
             .ok_or_else(|| Failure::new("not_found", "proposal does not exist"))?;
-        let decided_by = if who.id.is_signed_in() {
-            who.id.name.clone()
-        } else {
-            pseudonym_for(&self.mcp_author(headers, arrival, who, actor), slug)
-        };
+        let decided_by = self.mcp_display_name(headers, arrival, who, actor, slug);
         let authorization = who.mutation_authorization(self.ceiling_for(&who.id).edit);
         let request_id = super::comments::parse_uuid(
             &super::comments::comment_uuid(&key.scoped_request_id(actor)),
@@ -1103,13 +1099,7 @@ impl Server {
                 ));
             }
             let author = self.mcp_author(headers, arrival, who, actor);
-            let creator = if who.id.is_signed_in() {
-                who.id.name.clone()
-            } else if author.is_empty() {
-                "Anonymous".into()
-            } else {
-                pseudonym_for(&author, slug)
-            };
+            let creator = self.mcp_display_name(headers, arrival, who, actor, slug);
             let room = self
                 .rooms
                 .get(slug)

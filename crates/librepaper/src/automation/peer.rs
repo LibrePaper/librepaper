@@ -347,6 +347,15 @@ impl AutomationPeer {
         if let Some(epoch) = &epoch {
             request = request.header("x-librepaper-execution-epoch", epoch);
         }
+        // Read per call: the runner rewrites it when the model changes.
+        let label = std::env::var_os("LIBREPAPER_AGENT_LABEL_FILE")
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| text.chars().filter(|c| !c.is_control()).collect::<String>())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+        if let Some(label) = label {
+            request = request.header("x-librepaper-agent-label", label);
+        }
         if let Some(body) = body {
             request = request.json(body);
         }

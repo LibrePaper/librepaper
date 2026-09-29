@@ -43,9 +43,13 @@ try {
   await writeFile(join(state, "librepaper", "local", "connections.json"),
     JSON.stringify({ [name]: { link, origin: "http://127.0.0.1", created: now, used: now } }), { mode: 0o600 });
 
+  // The runner writes the model name here; the bridge sends it with each call.
+  const labelFile = join(state, "agent-label");
+  await writeFile(labelFile, "Opus 5.5\n");
+
   bridge = spawn(deploymentBinary(), ["mcp", "--connection", name], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, XDG_STATE_HOME: state },
+    env: { ...process.env, XDG_STATE_HOME: state, LIBREPAPER_AGENT_LABEL_FILE: labelFile },
   });
   let stderr = "";
   bridge.stderr.on("data", (bytes) => { stderr += bytes; });
@@ -138,6 +142,8 @@ try {
   }).then((response) => response.json());
   const bodies = (stored.comments || stored.items || stored).map?.((item) => item.body) || [];
   assert.ok(bodies.includes("Checked end to end."), `the comment is stored: ${JSON.stringify(stored).slice(0, 400)}`);
+  const items = stored.comments || stored.items || stored;
+  assert.ok(items.length >= 2 && items.every((item) => item.creator === "Opus 5.5"), `the agent's comment and suggestion carry the model name: ${JSON.stringify(items.map((item) => item.creator))}`);
   console.log("agent-bridge: tools listed, read, and a comment stored through the real bridge");
 } finally {
   bridge?.kill();

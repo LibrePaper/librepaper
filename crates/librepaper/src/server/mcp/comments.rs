@@ -188,13 +188,7 @@ impl Server {
             return Err(Failure::new("unavailable", why));
         }
         let author = self.mcp_author(headers, arrival, who, actor);
-        let creator = if who.id.is_signed_in() {
-            who.id.name.clone()
-        } else if author.is_empty() {
-            "Anonymous".to_string()
-        } else {
-            pseudonym_for(&author, slug)
-        };
+        let creator = self.mcp_display_name(headers, arrival, who, actor, slug);
         let comment_id = args["comment_id"].as_str().unwrap_or_default();
         // One indexed read, not the document's comments. `comment_by_id`
         // scopes the lookup to this room's document, so an id out of a

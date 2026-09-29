@@ -29,6 +29,42 @@ pub(super) fn runner_execution_epoch(headers: &HeaderMap) -> String {
 mod capacity;
 pub(super) use capacity::Capacity;
 
+/// The agent's own display label from the bridge's header: trimmed, control
+/// characters dropped, at most 64 characters, `None` when nothing is left.
+/// Display only. Permissions and ownership keep using the author key.
+fn agent_label(headers: &HeaderMap) -> Option<String> {
+    let raw = String::from_utf8_lossy(headers.get("x-librepaper-agent-label")?.as_bytes())
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>();
+    let label = raw.trim().chars().take(64).collect::<String>();
+    (!label.is_empty()).then_some(label)
+}
+
+#[cfg(test)]
+mod agent_label_tests {
+    use super::*;
+
+    fn labelled(value: &[u8]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-librepaper-agent-label",
+            HeaderValue::from_bytes(value).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn the_agent_label_is_trimmed_bounded_and_never_empty() {
+        assert_eq!(agent_label(&HeaderMap::new()), None);
+        assert_eq!(agent_label(&labelled(b"   ")), None);
+        assert_eq!(agent_label(&labelled(b"  Opus 5.5 ")).as_deref(), Some("Opus 5.5"));
+        assert_eq!(agent_label(&labelled(b"Op\tus")).as_deref(), Some("Opus"));
+        let long = "x".repeat(200);
+        assert_eq!(agent_label(&labelled(long.as_bytes())).unwrap().chars().count(), 64);
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct View {
     snapshot: QuerySnapshot,
@@ -143,6 +179,25 @@ fn actor_scope(slug: &str, who: &Viewer, author: &str) -> String {
 }
 
 impl Server {
+    /// The name shown for what an MCP call creates or decides: the agent's
+    /// model label when the bridge sent one, else the signed-in name, else
+    /// the document's pseudonym for the author key.
+    fn mcp_display_name(
+        &self,
+        headers: &HeaderMap,
+        arrival: &Arrival,
+        who: &Viewer,
+        actor: &str,
+        slug: &str,
+    ) -> String {
+        agent_label(headers).unwrap_or_else(|| {
+            if who.id.is_signed_in() {
+                who.id.name.clone()
+            } else {
+                pseudonym_for(&self.mcp_author(headers, arrival, who, actor), slug)
+            }
+        })
+    }
     fn mcp_author(
         &self,
         headers: &HeaderMap,
