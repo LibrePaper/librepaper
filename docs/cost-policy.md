@@ -31,7 +31,7 @@ Estimate monthly spend from these items:
 
 - VPS hosting for the application and PostgreSQL.
 - Off-host backup storage and any transfer charges for copies stored elsewhere.
-- Optional object storage, including stored-file and read/write charges. Files on the VPS's local disk are included in VPS hosting, so do not count them again here.
+- Planned primary object storage, including stored-file and read/write charges. Files on the VPS's local disk are included in VPS hosting, so do not count them again here.
 - Annual domain renewal divided by 12.
 - Other metered services, such as email or billable traffic, only when used and not already counted above.
 
@@ -46,5 +46,18 @@ Measured asset sizes: the current LaTeX mirror has 17,669 files / 10,845,586,184
 LaTeXML automatic Brotli measured 5,802,815 bytes, 31.7% larger than its former quality-11 sidecar. Keep automatic compression and separate Typst fonts; consider WASM chunking only if the compiler exceeds 25 MiB.
 
 R2 offers free egress and monthly allowances of 10 GB-month, one million Class A and ten million Class B operations; storage and operations above these cost extra ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
+
+## Planned document storage architecture
+
+For about 1,000 users, the proposed setup is:
+
+- **VPS:** application and PostgreSQL.
+- **OVH Standard Multi-Zone:** private uploads and document snapshots; restricted credentials, with LibrePaper enforcing access permissions.
+- **Backblaze B2:** independent encrypted Restic backups of consistent `admin backup` output. Deduplication shares unchanged data across recovery points ([Restic](https://restic.readthedocs.io/en/stable/040_backup.html)).
+- **Cloudflare Static Assets:** existing browser mirrors.
+
+Prices checked 2026-09-28: OVH Multi-Zone costs about **CA$2.13 per 100 GiB/month**, versus CA$0.96 for One Zone, before tax. The extra CA$1.16 buys redundancy across three independent zones; requests, retrieval, and egress are free under Canadian terms ([pricing](https://www.ovhcloud.com/en-ca/public-cloud/prices/), [redundancy](https://docs.ovhcloud.com/en/guides/storage-and-backup/object-storage/s3-regions-comparison)). B2 costs **US$6.95/TB-month**, first 10 GB free, with free API calls and egress up to 3× average stored data; further egress normally costs US$0.01/GB ([pricing](https://www.backblaze.com/cloud-storage/pricing)).
+
+This storage plan is not configured or migrated. Verify region availability, S3 integration, and restores first. Fully accommodating 1,000 owners at 100 MiB requires about 98 GiB logical capacity plus physical overhead, so raise the current 5 GiB deployment quota accordingly; benchmark server capacity separately.
 
 OVH Canada's VPS is a comparison candidate; LibrePaper has not migrated. On 2026-09-28 listed starting prices were CA$6.20/month (VPS-1: 2 vCPU, 4 GB RAM, 40 GB), CA$11.64 (VPS-2: 4 vCPU, 8 GB, 75 GB), and CA$16.83 (VPS-3: 6 vCPU, 12 GB, 100 GB). These promotional or commitment-based prices are not guaranteed renewal quotes. Canadian VPS plans include unlimited traffic to worldwide users; caps apply to certain APAC server locations. Check the final quote, taxes, add-ons, and measured capacity ([OVH Canada VPS pricing](https://www.ovhcloud.com/en-ca/vps/)).
