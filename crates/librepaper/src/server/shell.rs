@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::config::Configuration;
 
 static SHELL: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../web/dist");
+const TYPST_ASSETS_PIN: &str = include_str!("../../../../typst-assets.lock");
 
 /// The renderers, which are build outputs of the engine crate rather than of
 /// the web build, and are addressed by a digest of their own bytes: a module
@@ -75,6 +76,42 @@ fn module_route(name: &str, body: &[u8]) -> String {
     format!("/wasm/{name}.{}.wasm", &digest[..16])
 }
 
+/// A browser-only Typst mirror pin. The embedded module remains available at
+/// its local content-addressed route for native builds and compatibility.
+fn typst_static_url() -> Result<Option<String>, String> {
+    let pin: serde_json::Value = serde_json::from_str(TYPST_ASSETS_PIN)
+        .map_err(|error| format!("invalid typst-assets.lock: {error}"))?;
+    let url = pin
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let sha = pin
+        .get("sha256")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let fonts_sha = pin
+        .get("fontsSha256")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if url.is_empty() && sha.is_empty() && fonts_sha.is_empty() {
+        return Ok(None);
+    }
+    let valid_sha = |value: &str| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    };
+    if !url.starts_with("https://typst.librepaper.workers.dev/")
+        || !url.ends_with(&format!("/{sha}/typst.wasm"))
+        || !valid_sha(sha)
+        || !valid_sha(fonts_sha)
+    {
+        return Err("typst-assets.lock must contain a complete static Typst URL, WASM SHA-256 and fontsSha256".into());
+    }
+    Ok(Some(format!("{url}#fontsSha256={fonts_sha}")))
+}
+
 /// The Typst module embedded by the build.
 pub fn typst_module() -> Option<&'static [u8]> {
     file("wasm/typst.wasm")
@@ -101,13 +138,22 @@ pub fn load_shell(_config: &Configuration) -> Result<HashMap<String, ShellFile>,
     // are before it is served.
     let mut shell = HashMap::new();
     let mut modules = serde_json::Map::new();
+    let typst_static = typst_static_url()?;
     for (name, path) in MODULES {
         let Some(body) = file(path) else { continue };
         let brotli_path = format!("{path}.br");
         let brotli = file(&brotli_path)
             .ok_or_else(|| format!("missing {brotli_path} in the shell: run make wasm"))?;
         let route = module_route(name, body);
-        modules.insert(name.to_string(), serde_json::Value::String(route.clone()));
+        let module_url = if *name == "typst" {
+            typst_static.as_deref().unwrap_or(&route)
+        } else {
+            &route
+        };
+        modules.insert(
+            name.to_string(),
+            serde_json::Value::String(module_url.to_string()),
+        );
         shell.insert(
             route,
             ShellFile {

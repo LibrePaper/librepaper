@@ -43,7 +43,7 @@ LCM     := $(LCM_DIR)/index.ts $(LCM_DIR)/sync.ts $(LCM_DIR)/undo.ts \
 # site target at the bottom of this file.
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js)
 # The renderers are generated, so they are not also inputs to themselves.
-SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml typst-assets.lock
 
 .DEFAULT_GOAL := help
 .PHONY: help build install test check-all browser test-external test-release-workloads smoke serve kill clean snapshot wasm wasm-check wasm-update loro-codemirror loro-update fmt web fuzz

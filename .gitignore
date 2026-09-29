@@ -9,6 +9,7 @@ docs/examples/*_files/
 # copied in beside it: everything under web/dist is a build output that the
 # binary embeds.
 web/dist/
+web/.cache/typst-assets/
 .claude
 
 # The docs site: site/.build is the markdown rendered by

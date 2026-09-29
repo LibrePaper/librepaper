@@ -20,6 +20,59 @@ export function validateExports(wasm, url = "renderer") {
   return wasm;
 }
 
+async function loadDefaultFonts(wasm, moduleUrl) {
+  if (typeof wasm.default_fonts_required !== "function") return;
+  const required = wasm.default_fonts_required();
+  if (required === 0) return;
+  if (required !== 1) throw new Error(`incompatible renderer module ${moduleUrl}: invalid default_fonts_required value ${required}`);
+  if (typeof wasm.add_default_font !== "function") {
+    throw new Error(`incompatible renderer module ${moduleUrl}: external fonts required but add_default_font is missing`);
+  }
+  const module = new URL(moduleUrl, globalThis.location?.href || "http://localhost/");
+  const expected = module.hash.match(/^#fontsSha256=([a-f0-9]{64})$/)?.[1];
+  if (!expected) throw new Error(`Typst external-font module URL is missing its pinned font manifest checksum: ${moduleUrl}`);
+  module.hash = "";
+  const manifestUrl = new URL("fonts.json", module).href;
+  const manifestResponse = await fetch(manifestUrl);
+  if (!manifestResponse.ok) throw new Error(`Typst font manifest ${manifestUrl}: ${manifestResponse.status} ${manifestResponse.statusText}`);
+  const manifestBytes = new Uint8Array(await manifestResponse.arrayBuffer());
+  const manifestDigest = await sha256(manifestBytes);
+  if (manifestDigest !== expected) throw new Error(`Typst font manifest checksum mismatch at ${manifestUrl}`);
+  let manifest;
+  try {
+    manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+  } catch {
+    throw new Error(`invalid Typst font manifest at ${manifestUrl}`);
+  }
+  if (!manifest || !Array.isArray(manifest.fonts) || manifest.fonts.length === 0) throw new Error(`invalid Typst font manifest at ${manifestUrl}: expected nonempty fonts array`);
+  const fonts = await Promise.all(manifest.fonts.map(async (font) => {
+    if (!font || typeof font.url !== "string" || !/^[a-f0-9]{64}$/.test(font.sha256 || "") || !Number.isSafeInteger(font.size) || font.size < 0) {
+      throw new Error(`invalid font entry in Typst font manifest at ${manifestUrl}`);
+    }
+    if (font.size === 0) throw new Error(`invalid font entry in Typst font manifest at ${manifestUrl}: size must be positive`);
+    const url = new URL(font.url, manifestUrl).href;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Typst font ${url}: ${response.status} ${response.statusText}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length !== font.size || await sha256(bytes) !== font.sha256) throw new Error(`Typst font checksum or size mismatch at ${url}`);
+    return { url, bytes };
+  }));
+  for (const { url, bytes } of fonts) {
+    const pointer = wasm.alloc(bytes.length);
+    try {
+      new Uint8Array(wasm.memory.buffer, pointer, bytes.length).set(bytes);
+      if (wasm.add_default_font(pointer, bytes.length) !== 0) throw new Error(`Typst rejected default font ${url}`);
+    } finally {
+      wasm.dealloc(pointer, bytes.length);
+    }
+  }
+}
+
+async function sha256(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function instantiate(url) {
   try {
     return (await WebAssembly.instantiateStreaming(fetch(url), {})).instance;
@@ -37,8 +90,9 @@ export function load(url) {
   if (!url) return Promise.reject(new Error("no renderer URL"));
   if (loads[url]) return loads[url];
   loads[url] = instantiate(url)
-    .then(({ exports: wasm }) => {
+    .then(async ({ exports: wasm }) => {
       validateExports(wasm, url);
+      await loadDefaultFonts(wasm, url);
       // The compiler has no clock of its own, so typst's datetime.today() is
       // whatever this tab says it is.
       const now = new Date();

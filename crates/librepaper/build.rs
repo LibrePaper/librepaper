@@ -11,6 +11,12 @@ use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LIBREPAPER_VERSION");
+    println!(
+        "cargo:rerun-if-changed={}",
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../typst-assets.lock")
+            .display()
+    );
     let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
     println!("cargo:rerun-if-changed={}", skills.display());
     watch(&skills);
