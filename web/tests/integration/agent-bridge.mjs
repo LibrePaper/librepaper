@@ -91,11 +91,38 @@ try {
   const rangeId = hit.matches?.[0]?.range_id;
   assert.ok(rangeId, `the search names a range: ${JSON.stringify(hit)}`);
 
+  // A page open on the document, the way the browser holds its socket, so the
+  // agent's comment can be seen arriving without a reload.
+  const page = new WebSocket(`${deployment.base.replace("http", "ws")}/ws/${slug}`, { headers: { cookie: deployment.cookie } });
+  const frames = [];
+  page.addEventListener("message", (event) => frames.push(JSON.parse(String(event.data))));
+  await new Promise((done, fail) => {
+    page.addEventListener("open", done, { once: true });
+    page.addEventListener("error", () => fail(new Error("the page socket could not be opened")), { once: true });
+  });
+  const seen = async (what, match) => {
+    for (let waited = 0; waited < 15000; waited += 50) {
+      const found = frames.find(match);
+      if (found) return found;
+      await new Promise((done) => setTimeout(done, 50));
+    }
+    throw new Error(`the page never received ${what}; got ${JSON.stringify(frames.map((frame) => frame.type === "comments-changed" ? frame : frame.type))}`);
+  };
+  await seen("hello", (frame) => frame.type === "hello");
+  // An editor's page joins the room when it opens the source, as the
+  // browser's editor does right after hello.
+  page.send(JSON.stringify({ type: "doc-open", protocol: "librepaper.room.v3", vector: "", request_id: "open" }));
+  await seen("the doc-open reply", (frame) => frame.type === "doc-rows");
+
   // The comment carries no operation from the model and still lands.
   const comment = await call("document_comment", {
     action: "create", body: "Checked end to end.", view_id: read.structuredContent.view_id, range_id: rangeId,
   });
   assert.notEqual(comment.isError, true, JSON.stringify(comment));
+  // The open page is told, so it refreshes its comments rather than waiting
+  // for a reload.
+  await seen("comments-changed", (frame) => frame.type === "comments-changed" && frame.state?.total === 1);
+  page.close();
   const stored = await fetch(`${deployment.base}/api/documents/${slug}/comments`, {
     headers: { "x-librepaper-client": "1", cookie: deployment.cookie },
   }).then((response) => response.json());

@@ -777,6 +777,7 @@ impl Server {
             .command_reporting_replay(&authority, &mut cmd)
             .await
             .map_err(super::comments::command_failure)?;
+        room.broadcast_comments_changed().await;
         Ok(json!({
             "operation": key,
             "status": "committed",

@@ -507,6 +507,9 @@ impl Server {
             }
             _ => unreachable!("actions validated above"),
         };
+        // Open pages learn about it the way they do for the agent's batch
+        // suggestions; without this they only see the change on reload.
+        room.broadcast_comments_changed().await;
 
         // `handle_mcp` rechecks access around every tool call already (mcp.rs
         // `tools/call`), so this only shapes the reply this action produced.
