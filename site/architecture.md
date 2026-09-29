@@ -782,15 +782,14 @@ dependencies without network access. To update one renderer, name both values
 explicitly, for example `make wasm-update REPO=wasm-markdown TAG=v0.2.0`, then
 review the resulting Cargo and lockfile diff.
 
-The browser Typst build can use the external-font mirror published by the
-`wasm-typst` repository. After publishing that mirror, set `url`, `sha256`, and
-`fontsSha256` in `typst-assets.lock` to the full static `typst.wasm` URL, its
-SHA-256, and the adjacent `fonts.json` SHA-256. The manifest pins each font by
-relative URL, byte size, and SHA-256; `make wasm` downloads and verifies the
-module, manifest, and font bytes into the ignored `web/.cache/typst-assets`
-cache. An empty lock disables the mirror and keeps the embedded-font browser
-module URL. This pin changes only the browser URL: `wasm-modules.lock` and the
-native Typst dependency remain on their existing release pins.
+The browser Typst build can use a mirror of the embedded-font WASM published
+by the `wasm-typst` repository. `typst-assets.lock` can pin the mirror's `typst.wasm`
+URL and SHA-256; `make wasm` verifies the download in the ignored
+`web/.cache/typst-assets` cache. An empty lock keeps the embedded-font browser
+module. This optional browser pin leaves `wasm-modules.lock` and the native
+Typst dependency on their existing release pins. See
+[`docs/asset-mirrors.md`](../docs/asset-mirrors.md) for the pending OVH mirror
+cutover steps.
 
 ### Running it locally
 

@@ -130,6 +130,17 @@ a reader ends up seeing. Without it, a document naming a family the compiler
 does not embed is set in Typst's default faces and warned about. Which fonts
 a deployment offers, and under what licence, is the operator's decision.
 
+## Browser compiler assets
+
+The Typst browser renderer and its default fonts are served from the
+application by default. Moving that download to a static mirror is an optional
+release pin; it must point to an HTTPS content-addressed URL for an
+embedded-font module whose SHA-256 the build verifies. The OVH Typst and LaTeX
+mirror migration is pending live endpoint and browser checks. The existing
+LaTeX Cloudflare mirror remains in use; Typst uses the application origin
+until its mirror is verified. See the
+[mirror cutover notes](../docs/asset-mirrors.md).
+
 ## Rights
 
 Two flags say who may do what.

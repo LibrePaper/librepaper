@@ -82,49 +82,38 @@ for (const { module, repo, tag, sha256, brotliSha256 } of entries) {
   console.log(`${module.padEnd(20)} ${(fetchedRepresentations[0].bytes.length / 1024).toFixed(0)} KiB raw, ${(fetchedRepresentations[1].bytes.length / 1024).toFixed(0)} KiB br  ${tag}`);
 }
 
-// The external-font Typst build is a separate browser mirror. Keep its
-// verified bytes out of web/dist: the native renderer above remains embedded
-// in the server binary for the CLI and local compilation paths.
+// An optional browser mirror pin is checked at build time. With an empty lock,
+// the embedded-font module fetched from wasm-modules.lock is served locally.
 const assetsPin = JSON.parse(await readFile(assetsLock, "utf8"));
-if (assetsPin.url || assetsPin.sha256 || assetsPin.fontsSha256) {
-  if (!/^https:\/\/typst\.librepaper\.workers\.dev\/[a-f0-9]{64}\/typst\.wasm$/.test(assetsPin.url || "") ||
-      !/^[a-f0-9]{64}$/.test(assetsPin.sha256 || "") || !/^[a-f0-9]{64}$/.test(assetsPin.fontsSha256 || "")) {
-    throw new Error("typst-assets.lock must contain a complete static Typst URL, WASM SHA-256 and fontsSha256");
+if (Object.hasOwn(assetsPin, "fontsSha256")) {
+  throw new Error("typst-assets.lock no longer supports external-font manifests; publish the embedded-font Typst module");
+}
+if (assetsPin.url || assetsPin.sha256) {
+  let url;
+  try { url = new URL(assetsPin.url); } catch { /* reported below */ }
+  if (!url || url.protocol !== "https:" || url.username || url.password || url.search || url.hash ||
+      !/^[a-f0-9]{64}$/.test(assetsPin.sha256 || "") || !url.pathname.endsWith(`/${assetsPin.sha256}/typst.wasm`)) {
+    throw new Error("typst-assets.lock must contain a public HTTPS content-addressed Typst WASM URL and its SHA-256");
   }
-  const wasmName = `${assetsPin.sha256}/typst.wasm`;
-  const manifestName = `${assetsPin.sha256}/fonts.json`;
-  const saveVerified = async (name, url, expected, responseBytes = null) => {
-    const target = join(assetsCache, name);
-    if (existsSync(target)) {
-      const bytes = await readFile(target);
-      if (digest(bytes) === expected) return bytes;
-    }
-    const response = responseBytes ? null : await fetch(url);
-    if (response && !response.ok) throw new Error(`${url} -> ${response.status} ${response.statusText}`);
-    const bytes = responseBytes || Buffer.from(await response.arrayBuffer());
+  const target = join(assetsCache, assetsPin.sha256, "typst.wasm");
+  let bytes;
+  if (existsSync(target)) {
+    bytes = await readFile(target);
+    if (digest(bytes) !== assetsPin.sha256) bytes = null;
+  }
+  if (!bytes) {
+    const response = await fetch(assetsPin.url);
+    if (!response.ok) throw new Error(`${assetsPin.url} -> ${response.status} ${response.statusText}`);
+    bytes = Buffer.from(await response.arrayBuffer());
     const got = digest(bytes);
-    if (got !== expected) throw new Error(`Typst asset checksum mismatch at ${url}: expected ${expected}, received ${got}`);
-    const targetPath = join(assetsCache, name);
-    await mkdir(dirname(targetPath), { recursive: true });
-    await writeFile(targetPath, bytes);
-    return bytes;
-  };
-  await saveVerified(wasmName, assetsPin.url, assetsPin.sha256);
-  const manifestUrl = new URL("fonts.json", assetsPin.url).href;
-  const manifestBytes = await saveVerified(manifestName, manifestUrl, assetsPin.fontsSha256);
-  let manifest;
-  try { manifest = JSON.parse(manifestBytes.toString("utf8")); }
-  catch { throw new Error(`invalid Typst fonts manifest at ${manifestUrl}`); }
-  if (!manifest || !Array.isArray(manifest.fonts) || manifest.fonts.length === 0) throw new Error("Typst fonts manifest must contain a nonempty fonts array");
-  for (const font of manifest.fonts) {
-    if (!font || typeof font.url !== "string" || !/^[a-f0-9]{64}$/.test(font.sha256 || "") || !Number.isSafeInteger(font.size) || font.size <= 0) {
-      throw new Error("Typst fonts manifest contains an invalid font entry");
-    }
-    const url = new URL(font.url, manifestUrl);
-    if (url.origin !== new URL(assetsPin.url).origin) throw new Error(`Typst font URL leaves the pinned mirror: ${url.href}`);
-    const name = url.pathname.replace(/^\//, "");
-    const bytes = await saveVerified(name, url.href, font.sha256);
-    if (bytes.byteLength !== font.size) throw new Error(`Typst font size mismatch at ${url.href}: expected ${font.size}, received ${bytes.byteLength}`);
+    if (got !== assetsPin.sha256) throw new Error(`Typst WASM checksum mismatch at ${assetsPin.url}: expected ${assetsPin.sha256}, received ${got}`);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, bytes);
+  }
+  const instantiated = await WebAssembly.instantiate(bytes, {});
+  const requiresFonts = instantiated.instance.exports.default_fonts_required;
+  if (typeof requiresFonts === "function" && requiresFonts() !== 0) {
+    throw new Error(`Typst WASM at ${assetsPin.url} requires external fonts; pin an embedded-font build`);
   }
 }
 

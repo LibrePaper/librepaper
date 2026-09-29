@@ -76,11 +76,14 @@ fn module_route(name: &str, body: &[u8]) -> String {
     format!("/wasm/{name}.{}.wasm", &digest[..16])
 }
 
-/// A browser-only Typst mirror pin. The embedded module remains available at
-/// its local content-addressed route for native builds and compatibility.
-fn typst_static_url() -> Result<Option<String>, String> {
-    let pin: serde_json::Value = serde_json::from_str(TYPST_ASSETS_PIN)
+/// An optional browser-only Typst mirror pin. An empty lock uses the
+/// embedded-font module at its local content-addressed route.
+fn typst_static_url_from(source: &str) -> Result<Option<String>, String> {
+    let pin: serde_json::Value = serde_json::from_str(source)
         .map_err(|error| format!("invalid typst-assets.lock: {error}"))?;
+    if pin.get("fontsSha256").is_some() {
+        return Err("typst-assets.lock no longer supports external-font manifests; publish the embedded-font Typst module".into());
+    }
     let url = pin
         .get("url")
         .and_then(serde_json::Value::as_str)
@@ -89,11 +92,7 @@ fn typst_static_url() -> Result<Option<String>, String> {
         .get("sha256")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    let fonts_sha = pin
-        .get("fontsSha256")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    if url.is_empty() && sha.is_empty() && fonts_sha.is_empty() {
+    if url.is_empty() && sha.is_empty() {
         return Ok(None);
     }
     let valid_sha = |value: &str| {
@@ -102,14 +101,25 @@ fn typst_static_url() -> Result<Option<String>, String> {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     };
-    if !url.starts_with("https://typst.librepaper.workers.dev/")
-        || !url.ends_with(&format!("/{sha}/typst.wasm"))
-        || !valid_sha(sha)
-        || !valid_sha(fonts_sha)
-    {
-        return Err("typst-assets.lock must contain a complete static Typst URL, WASM SHA-256 and fontsSha256".into());
+    let valid_url = url.strip_prefix("https://").is_some_and(|rest| {
+        let Some((authority, path)) = rest.split_once('/') else {
+            return false;
+        };
+        !authority.is_empty()
+            && !authority
+                .chars()
+                .any(|character| matches!(character, '@' | '?' | '#'))
+            && !url.chars().any(|character| matches!(character, '?' | '#'))
+            && format!("/{path}").ends_with(&format!("/{sha}/typst.wasm"))
+    });
+    if !valid_url || !valid_sha(sha) {
+        return Err("typst-assets.lock must contain a public HTTPS content-addressed Typst WASM URL and its SHA-256".into());
     }
-    Ok(Some(format!("{url}#fontsSha256={fonts_sha}")))
+    Ok(Some(url.to_string()))
+}
+
+fn typst_static_url() -> Result<Option<String>, String> {
+    typst_static_url_from(TYPST_ASSETS_PIN)
 }
 
 /// The Typst module embedded by the build.
@@ -231,6 +241,31 @@ mod shell_tests {
 
     fn shell() -> HashMap<String, ShellFile> {
         load_shell(&Configuration::default()).expect("the shell is embedded in the binary")
+    }
+
+    #[test]
+    fn an_empty_typst_pin_uses_the_embedded_module_and_rejects_old_font_pins() {
+        assert_eq!(typst_static_url_from("{}"), Ok(None));
+        let sha = "a".repeat(64);
+        let pin = format!(
+            r#"{{"url":"https://assets.example/typst/{sha}/typst.wasm","sha256":"{sha}"}}"#
+        );
+        assert_eq!(
+            typst_static_url_from(&pin),
+            Ok(Some(format!(
+                "https://assets.example/typst/{sha}/typst.wasm"
+            )))
+        );
+        let wrong_sha = "b".repeat(64);
+        let mismatched = pin.replace(
+            &format!("\"sha256\":\"{sha}\""),
+            &format!("\"sha256\":\"{wrong_sha}\""),
+        );
+        assert!(typst_static_url_from(&mismatched).is_err());
+        assert!(typst_static_url_from(
+            r#"{"url":"https://assets.example/typst.wasm","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fontsSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#
+        )
+        .is_err());
     }
 
     /// The bundle a reader waits for is the one worth compressing, and the

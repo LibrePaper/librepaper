@@ -39,11 +39,11 @@ Browser rendering and local or bring-your-own AI integrations do not require hos
 
 ## Static delivery and host comparison (2026-09-28)
 
-LaTeX and Typst browser assets use Cloudflare Workers Static Assets. Requests are free of Worker invocation charges when no Worker script or `run_worker_first` is configured; R2 is not used. Cloudflare documents unlimited static requests and no static asset storage fee on Free, with limits of 20,000 files on Free, 100,000 on Paid, and 25 MiB per file on both plans ([billing and limits](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/), [platform limits](https://developers.cloudflare.com/workers/platform/limits/)).
-
-Measured asset sizes: the current LaTeX mirror has 17,669 files / 10,845,586,184 bytes; its largest file is 21,694,350 bytes. Typst compiler WASM is 24,113,298 bytes (23.00 MiB), plus 17 external fonts totaling 9,683,068 bytes. Automatic Brotli compiler size is 7,676,256 bytes and excludes fonts. The former embedded-font WASM was 33,796,012 bytes, over the file limit. Keep a 25 MiB release gate and watch LaTeX file count. Typst native rendering keeps embedded fonts; smaller Markdown, bibliography, and citations WASM remain on the main origin. Mirrors have been deployed; the main application redeploy is still pending as of this finding. Compression varies by MIME type ([compression behavior](https://developers.cloudflare.com/speed/optimization/content/compression/)).
-
-LaTeXML automatic Brotli measured 5,802,815 bytes, 31.7% larger than its former quality-11 sidecar. Keep automatic compression and separate Typst fonts; consider WASM chunking only if the compiler exceeds 25 MiB.
+The existing LaTeX browser mirror remains on Cloudflare. The prepared app
+build serves its embedded-font Typst module from the application origin while
+`typst-assets.lock` is empty; the deployed app changes only after redeployment.
+Cloudflare Static Assets has a 25 MiB per-file limit and free static
+requests under the documented configuration ([billing and limits](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/), [platform limits](https://developers.cloudflare.com/workers/platform/limits/)). The embedded-font Typst WASM is 33.8 MB raw / 14.4 MB gzip, so the prepared OVH publisher targets a dedicated public S3 bucket with gzip transfer encoding and explicit MIME and cache headers. The local LaTeX mirror totals about 10.85 GB raw, including legacy `.br` sidecars; publishing skips those sidecars and stores gzip-compressed eligible files, so measure the uploaded bucket for billable size. The OVH endpoint and pin remain pending live checks; keep the existing mirror live through cutover. See [asset mirror publishing and cutover](asset-mirrors.md).
 
 R2 offers free egress and monthly allowances of 10 GB-month, one million Class A and ten million Class B operations; storage and operations above these cost extra ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
 
@@ -54,7 +54,8 @@ For about 1,000 users, the proposed setup is:
 - **VPS:** application and PostgreSQL.
 - **OVH Standard Multi-Zone:** private uploads and document snapshots; restricted credentials, with LibrePaper enforcing access permissions.
 - **Backblaze B2:** independent encrypted Restic backups of consistent `admin backup` output. Deduplication shares unchanged data across recovery points ([Restic](https://restic.readthedocs.io/en/stable/040_backup.html)).
-- **Cloudflare Static Assets:** existing browser mirrors.
+- **OVH S3-compatible Object Storage:** planned dedicated public bucket for the Typst and LaTeX browser mirrors; endpoint and credentials are pending.
+- **Cloudflare Static Assets:** current LaTeX mirror until the OVH cutover passes checks.
 
 Prices checked 2026-09-28: OVH Multi-Zone costs about **CA$2.13 per 100 GiB/month**, versus CA$0.96 for One Zone, before tax. The extra CA$1.16 buys redundancy across three independent zones; requests, retrieval, and egress are free under Canadian terms ([pricing](https://www.ovhcloud.com/en-ca/public-cloud/prices/), [redundancy](https://docs.ovhcloud.com/en/guides/storage-and-backup/object-storage/s3-regions-comparison)). B2 costs **US$6.95/TB-month**, first 10 GB free, with free API calls and egress up to 3× average stored data; further egress normally costs US$0.01/GB ([pricing](https://www.backblaze.com/cloud-storage/pricing)).
 
