@@ -64,7 +64,9 @@ fn adapter_environment(journal_path: &Path, session_path: &Path) -> Vec<(String,
     vec![
         (
             "LIBREPAPER_AGENT_LABEL_FILE".into(),
-            agent_label_path(session_path).to_string_lossy().into_owned(),
+            agent_label_path(session_path)
+                .to_string_lossy()
+                .into_owned(),
         ),
         (
             "LIBREPAPER_RUNNER_JOURNAL".into(),
@@ -1239,7 +1241,8 @@ mod tests {
         assert_eq!(agent_label(&options), "Opus 5.5");
         assert_eq!(agent_label(&json!([])), "");
         assert_eq!(agent_label(&Value::Null), "");
-        let unknown = json!([{"category":"model","current":"x","choices":[{"value":"y","name":"Y"}]}]);
+        let unknown =
+            json!([{"category":"model","current":"x","choices":[{"value":"y","name":"Y"}]}]);
         assert_eq!(agent_label(&unknown), "");
     }
 

@@ -58,10 +58,19 @@ mod agent_label_tests {
     fn the_agent_label_is_trimmed_bounded_and_never_empty() {
         assert_eq!(agent_label(&HeaderMap::new()), None);
         assert_eq!(agent_label(&labelled(b"   ")), None);
-        assert_eq!(agent_label(&labelled(b"  Opus 5.5 ")).as_deref(), Some("Opus 5.5"));
+        assert_eq!(
+            agent_label(&labelled(b"  Opus 5.5 ")).as_deref(),
+            Some("Opus 5.5")
+        );
         assert_eq!(agent_label(&labelled(b"Op\tus")).as_deref(), Some("Opus"));
         let long = "x".repeat(200);
-        assert_eq!(agent_label(&labelled(long.as_bytes())).unwrap().chars().count(), 64);
+        assert_eq!(
+            agent_label(&labelled(long.as_bytes()))
+                .unwrap()
+                .chars()
+                .count(),
+            64
+        );
     }
 }
 
