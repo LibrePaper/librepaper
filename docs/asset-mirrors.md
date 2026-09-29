@@ -3,7 +3,8 @@
 The Typst and LaTeX mirror publishers upload prepared directories to a
 dedicated OVH S3 bucket. Build both mirrors first in the sibling
 `wasm-typst` and `wasm-latex` repositories. Install Node.js, SOPS and AWS CLI v2, and
-keep the encrypted publisher keys in `deploy/keys.yaml`.
+keep the encrypted publisher keys in `deploy/keys.yaml`. `make mirrors-push`
+uses `nix shell nixpkgs#awscli2` when AWS CLI v2 is missing and Nix is available.
 
 The key file supplies `OVH_S3_ENDPOINT`, `OVH_S3_REGION` (currently `bhs`),
 `OVH_S3_USER`, `OVH_S3_SECRET`, and `OVH_S3_ARN`. `OVH_S3_USER` is the S3

@@ -16,11 +16,9 @@ const mirrors = [
 ];
 
 export function mappedEnvironment(env) {
-  for (const key of ["OVH_S3_ENDPOINT", "OVH_S3_USER", "OVH_S3_SECRET", "OVH_S3_ARN", "OVH_S3_REGION", "OVH_S3_BUCKET"]) {
-    if (env[key] !== undefined && typeof env[key] !== "string") throw new Error(`${key} must be a string`);
-  }
-  const bucket = env.S3_BUCKET || env.OVH_S3_BUCKET || bucketFromArn(env.OVH_S3_ARN);
-  return {
+  const bucketSource = env.S3_BUCKET || env.OVH_S3_BUCKET;
+  const bucket = bucketSource || bucketFromArn(env.OVH_S3_ARN);
+  const mapped = {
     ...env,
     S3_ENDPOINT: env.S3_ENDPOINT || env.OVH_S3_ENDPOINT,
     S3_REGION: env.S3_REGION || env.OVH_S3_REGION,
@@ -28,6 +26,24 @@ export function mappedEnvironment(env) {
     AWS_ACCESS_KEY_ID: env.AWS_ACCESS_KEY_ID || env.OVH_S3_USER,
     AWS_SECRET_ACCESS_KEY: env.AWS_SECRET_ACCESS_KEY || env.OVH_S3_SECRET,
   };
+  for (const [key, value] of Object.entries({
+    S3_ENDPOINT: mapped.S3_ENDPOINT,
+    S3_REGION: mapped.S3_REGION,
+    S3_BUCKET: mapped.S3_BUCKET,
+    AWS_ACCESS_KEY_ID: mapped.AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: mapped.AWS_SECRET_ACCESS_KEY,
+  })) {
+    if (value !== undefined && value !== null && typeof value !== "string") throw new Error(`${key} must be a string`);
+  }
+  return mapped;
+}
+
+export function selectedOvhFields(secrets) {
+  const selected = {};
+  for (const key of ["OVH_S3_ENDPOINT", "OVH_S3_USER", "OVH_S3_SECRET", "OVH_S3_ARN", "OVH_S3_REGION", "OVH_S3_BUCKET"]) {
+    if (secrets[key] !== undefined && secrets[key] !== null) selected[key] = secrets[key];
+  }
+  return selected;
 }
 
 export function bucketFromArn(arn) {
@@ -57,11 +73,7 @@ async function run() {
   } catch {
     throw new Error("SOPS could not load deploy keys; check SOPS availability and deploy key configuration");
   }
-  const selected = {};
-  for (const key of ["OVH_S3_ENDPOINT", "OVH_S3_USER", "OVH_S3_SECRET", "OVH_S3_ARN", "OVH_S3_REGION", "OVH_S3_BUCKET"]) {
-    if (secrets[key] !== undefined && typeof secrets[key] !== "string") throw new Error(`${key} must be a string`);
-    if (typeof secrets[key] === "string") selected[key] = secrets[key];
-  }
+  const selected = selectedOvhFields(secrets);
   await publishPrepared({ ...process.env, ...selected });
 }
 

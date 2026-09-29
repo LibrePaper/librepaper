@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { bucketFromArn, mappedEnvironment } from "../push-mirrors.mjs";
+import { bucketFromArn, mappedEnvironment, selectedOvhFields } from "../push-mirrors.mjs";
 
 const script = new URL("../push-mirrors.mjs", import.meta.url).pathname;
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -46,6 +46,19 @@ test("OVH variables map safely, canonical overrides win, and only an exact bucke
     AWS_ACCESS_KEY_ID: "id", AWS_SECRET_ACCESS_KEY: "secret", OVH_S3_ENDPOINT: "https://ignored.invalid",
     OVH_S3_ARN: "not-an-arn" }).S3_BUCKET, "chosen");
   assert.throws(() => bucketFromArn("arn:aws:s3:::bucket/object"), /exact bucket ARN/);
+});
+
+test("null SOPS placeholders are absent and canonical overrides precede effective-value validation", () => {
+  const selected = selectedOvhFields({ OVH_S3_ENDPOINT: null, OVH_S3_BUCKET: null, OVH_S3_SECRET: 17 });
+  assert.deepEqual(selected, { OVH_S3_SECRET: 17 });
+  assert.equal(mappedEnvironment({ ...selected, S3_ENDPOINT: "https://canonical.invalid", S3_BUCKET: "canonical-bucket",
+    S3_REGION: "region", AWS_ACCESS_KEY_ID: "id", AWS_SECRET_ACCESS_KEY: "secret" }).S3_BUCKET, "canonical-bucket");
+  assert.throws(() => mappedEnvironment({ ...selected, OVH_S3_ENDPOINT: 17 }), /S3_ENDPOINT must be a string/);
+});
+
+test("a null OVH bucket allows the exact bucket ARN fallback", () => {
+  const selected = selectedOvhFields({ OVH_S3_BUCKET: null, OVH_S3_ARN: "arn:aws:s3:::asset-bucket" });
+  assert.equal(mappedEnvironment(selected).S3_BUCKET, "asset-bucket");
 });
 
 test("dry run hashes both overridden mirrors and skips SOPS, even without credentials", async () => {

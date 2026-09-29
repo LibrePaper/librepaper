@@ -243,7 +243,14 @@ latex-smoke: $(BIN)  ## Compile and display the LaTeX tutorial in Chromium again
 	@node web/tools/latex-e2e.mjs $(BIN) browser docs/examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
 
 mirrors-push:  ## Publish prepared Typst and LaTeX mirrors (MIRRORS_DRY_RUN=1 validates both without credentials)
-	@node tools/push-mirrors.mjs
+	@if [ "$${MIRRORS_DRY_RUN:-}" = 1 ] || command -v aws >/dev/null 2>&1; then \
+		node tools/push-mirrors.mjs; \
+	elif command -v nix >/dev/null 2>&1; then \
+		nix shell nixpkgs#awscli2 -c node tools/push-mirrors.mjs; \
+	else \
+		printf '%s\n' 'mirrors-push: AWS CLI v2 is required; install aws or install Nix to use the temporary nixpkgs fallback.' >&2; \
+		exit 1; \
+	fi
 
 # The local deployment keeps PostgreSQL on the same machine in a persistent
 # Docker volume. An explicitly configured database URL always wins, so hosted
