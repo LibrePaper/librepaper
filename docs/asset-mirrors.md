@@ -30,6 +30,11 @@ node tools/publish-mirror.mjs --dir ../wasm-typst/mirror --prefix typst
 node tools/publish-mirror.mjs --dir ../wasm-latex/mirror --prefix latex
 ```
 
+Dry runs list the upload plan without reading or verifying payloads. Real
+uploads check local hashes first, then read each uploaded object back and verify
+its decoded bytes and response metadata before publishing release indexes.
+Publisher credentials need both object write and read access.
+
 The publisher uses AWS CLI signing, compresses supported text and WASM files
 with gzip, and sets `Content-Encoding`, MIME type, and browser cache policy on
 each object. Hash-addressed assets get immutable caching; `manifest.json` is
