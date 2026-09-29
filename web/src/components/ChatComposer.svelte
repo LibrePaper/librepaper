@@ -10,7 +10,6 @@
     ondraft,
     onstop = null,
     stopLabel = "Stop",
-    status = "",
   } = $props();
   let draft = $state("");
   let initialized = false;
@@ -98,7 +97,6 @@
   <div class="composer-actions">
     <span class="panel-meta">Enter to send · Shift+Enter for a new line</span>
     <div class="composer-buttons">
-      {#if status}<span class="panel-meta" role="status">{status}</span>{/if}
       {#if onstop}<button class="btn btn-sm lp-control-outline" type="button" onclick={() => onstop()}>{stopLabel}</button>{/if}
       <button class="btn btn-sm lp-control-brand" type="submit"
               disabled={disabled || !canSend || sending || !draft.trim()}>

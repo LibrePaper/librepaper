@@ -177,7 +177,7 @@
     void client.setOption(modelOption.id, value);
   }
 
-  const composerStatus = $derived(
+  const progress = $derived(
     activeTask?.status === "working"
       ? `${runningLabel}${modelName ? ` · ${modelName}` : ""} ·${humanizeTool(activeTask.message) || 'Working'}… · ${formatElapsed(elapsedTime)}`
       : activeTask?.status === "needs_input" ? "Waiting for permission" : "");
@@ -590,6 +590,14 @@
     {/if}
   {/snippet}
 
+  <!-- What the agent is doing, as the last line of the conversation rather than
+       beside the buttons: it changes length as the work goes on, and the
+       composer must not move when it does. -->
+  {#snippet transcriptEnd()}
+    {@render permissionCard()}
+    {#if progress}<p class="agent-progress panel-meta" role="status">{progress}</p>{/if}
+  {/snippet}
+
   <Tabs.Content value="chat" class="agent-tab-content">
   {@render paneHeader(true)}
   {#if !paired}
@@ -613,7 +621,7 @@
   {/each}
   <ChatTranscript messages={connection.messages}
                   empty={connection.runnerConnected ? "No messages yet." : "Send a message to start the agent."}
-                  authors={false} quiet onresult={chooseResult} after={permissionCard} />
+                  authors={false} quiet onresult={chooseResult} after={transcriptEnd} />
 
   <!-- The draft carries its own context, so the chat pane states it in one
        line and sends the user back to the task view to change it. -->
@@ -674,7 +682,7 @@
   {/if}
   <ChatComposer placeholder="Ask your agent…" canSend={!busy && (sendable || startable)} draft={draft} ondraft={(value) => draft = value} onsend={send}
                 onstop={assistant.running && activeTask ? () => void act(() => client.cancel(activeTask.id)) : null}
-                stopLabel="Stop" status={composerStatus} />
+                stopLabel="Stop" />
   {/if}
   </Tabs.Content>
   <Tabs.Content value="tasks" class="agent-tab-content">
@@ -804,6 +812,7 @@
                     padding:calc(var(--spacing) * .75) calc(var(--spacing) * 1.5); font-size:.85em; }
   /* One line each and a bounded list, so a backlog never pushes the composer
      out of a short pane. */
+  .agent-progress { margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .queued-requests { flex:none; max-height:2.25rem; overflow-y:auto; }
   .queued-label { color:var(--color-text-secondary); min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .queued-status { color:var(--color-text-secondary); font-size:.8em; }

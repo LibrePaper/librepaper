@@ -222,11 +222,12 @@ try {
   assert.deepEqual(await page.evaluate('window.sockets[0].sent[0]'),{type:"join",token:"secret-token",role:"user"});
 
   // Activity comes from task events, independently of connection presence.
-  // The status now shows only inside the composer, as its own role=status
-  // span; there is no more "Working"/"Disconnected"/"Waiting"/"Interrupted"
+  // The status is the last line of the transcript, never beside the composer's
+  // buttons, so they do not move as it changes; there is no more "Working"/"Disconnected"/"Waiting"/"Interrupted"
   // line, and no working-dots animation to count.
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'})");
-  await until("working indicator", () => page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent.includes("Working")'), 1000);
+  await until("working indicator", () => page.evaluate('document.querySelector(".agent-progress")?.textContent.includes("Working")'), 1000);
+  assert.equal(await page.evaluate('Boolean(document.querySelector(".chat-form [role=status]"))'), false, "no status sits among the composer's buttons");
   // Working tasks are not listed anywhere. Queued tasks render as .queued-request
   // rows. Stopping is the composer's job, not the activity disclosure's.
   assert.equal(await page.evaluate('!document.querySelector(".queued-request[data-task-id=\\"activity\\"]")'),
@@ -240,7 +241,7 @@ try {
     await page.evaluate('Array.from(document.querySelectorAll(".queued-request[data-task-id=\\"queued-task\\"] button")).some(b=>b.textContent.trim()==="Cancel")'),
     "a queued task offers Cancel button");
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:true})");
-  assert.match(await page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent'), /Working/);
+  assert.match(await page.evaluate('document.querySelector(".agent-progress")?.textContent'), /Working/);
   // With the runner away the composer still sends: sending is what starts
   // the chosen agent.
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:false})");
@@ -248,9 +249,9 @@ try {
   assert.ok(await page.evaluate('document.querySelector("[role=log]")?.textContent.includes("Send a message to start the agent.")'),
     "the empty transcript names the missing runner, not the old badge text");
   await page.evaluate("window.sockets[0].emit({type:'presence',browser:true,agent:true}); window.sockets[0].emit({type:'task',task_id:'activity',status:'needs_input'})");
-  await until("waiting for input", () => page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent === "Waiting for permission"'), 1000);
+  await until("waiting for input", () => page.evaluate('document.querySelector(".agent-progress")?.textContent === "Waiting for permission"'), 1000);
   await page.evaluate("window.sockets[0].emit({type:'task',task_id:'activity',status:'working'}); window.sockets[0].emit({type:'task',task_id:'activity',status:'completed'})");
-  await until("no status once idle", () => page.evaluate('!document.querySelector(".chat-form [role=status]")'), 1000);
+  await until("no status once idle", () => page.evaluate('!document.querySelector(".agent-progress")'), 1000);
   await page.evaluate("window.setProps({diagnostics:[{severity:'warning',file:'librepaper.tex',line:12,message:'Reference undefined',revision:'render-sha',source:'source line'}]})");
   await page.evaluate(`(()=>{const input=document.querySelector('textarea[placeholder]');input.value='Explain this';input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
   await until("agent reply",()=>page.evaluate('document.querySelector("[role=log]")?.textContent.includes("<img")'),10000);
@@ -417,7 +418,7 @@ try {
   await until("model picker follows the runner", () => page.evaluate("document.querySelector('select[aria-label=Model]').value==='opus'"), 1000);
   // The model name joins the composer status while a task works.
   await page.evaluate("window.sockets.at(-1).emit({type:'task',task_id:'model-status',status:'working'})");
-  await until("model in composer status", () => page.evaluate('document.querySelector(".chat-form [role=status]")?.textContent.includes("Opus")'), 1000);
+  await until("model in composer status", () => page.evaluate('document.querySelector(".agent-progress")?.textContent.includes("Opus")'), 1000);
   await page.evaluate("window.sockets.at(-1).emit({type:'task',task_id:'model-status',status:'completed'})");
   // An empty list means no model choice.
   await page.evaluate("window.sockets.at(-1).emit({type:'options',options:[]})");
