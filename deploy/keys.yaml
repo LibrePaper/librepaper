@@ -9,14 +9,15 @@ LIBREPAPER_GITHUB_CLIENT_ID_SANDBOX: ENC[AES256_GCM,data:KyND2W44qGZlfRG4/wRWZU/
 LIBREPAPER_GITHUB_CLIENT_SECRET_SANDBOX: ENC[AES256_GCM,data:u3MBRi74ZK36k9cbdyHIMoRtBThtqngNvFixiS5zY0nCGWuWdsL7jA==,iv:K7/3duHpLhiTu7NiS5PBtAZtxmvS7Fm6ckRxO3F6Tnc=,tag:zok83toJTn62HSIgO8qEWw==,type:str]
 LIBREPAPER_PUBLISHERS: ENC[AES256_GCM,data:wnUC,iv:nteosjkkSkk9nj3PhlUP+bFu9a+Hpe83JPptlEcCa68=,tag:SYORTT0T6GQglZAdfR7mMg==,type:str]
 LIBREPAPER_COMMENTERS: ENC[AES256_GCM,data:WYKc13Td,iv:PVBpRy7RGRXYQVB8eLoqZqMwWwGgxShmBTKkp20juAo=,tag:VMKRjn4Q0ClP01q2P5zX1w==,type:str]
-OVH_S3_BUCKET: null
-OVH_S3_REGION: null
-OVH_S3_ENDPOINT: null
-OVH_S3_USER: null
-OVH_S3_SECRET: null
+OVH_S3_ENDPOINT: ENC[AES256_GCM,data:OnNzRfGDzkr4Y0B57LmdcACi1szVS+OjQBvaOE3nhYg=,iv:3SSif8WPxhr4koU0R/NUb7utjr8fiU5sRwxJbDi+GEM=,tag:jhXELHDEzf75nGq7SPIi0Q==,type:str]
+OVH_S3_HOST: ENC[AES256_GCM,data:ogAbaR1XaVJXUKIaAh72wIspVHIQEpDCQ0mxOc6oZk0we04l2uWE747LztE1lGRZvSlyCNo/gMMVgg==,iv:YBM/det3tUZAxfsX2B+PptlygfFC5h6Ivd8Crg7cBRg=,tag:HxxYhFTKGzLXQgZOwtK6mw==,type:str]
+OVH_S3_USER: ENC[AES256_GCM,data:n7jTg47RF+dT2tJkoOdfumFzYU20x2PtShnlqlj7Mjw=,iv:5lIxzr/y1dGRG7U39Faatb4IKXqc1hvDgtOqLz2ODbE=,tag:Pkq7G+sSz6mpW981z3Gtlg==,type:str]
+OVH_S3_SECRET: ENC[AES256_GCM,data:hxLI97OzwkfLs21T82OAwU783ISBoRrPoI/ybm6jbL0=,iv:Tg9X029AXRPpnDP8fYM3E92JHxs2JiNQ+Xqm66XbqyA=,tag:lBwGi3UX3pXiYxQY6Ll6kA==,type:str]
+OVH_S3_ARN: ENC[AES256_GCM,data:JZKlanybgThHkMJzR6JCoSUAbEy3WfX0opzkEvYzv7gBkg6zLBI=,iv:zC+LIF5OkAVznk6ilNZTbXL3gV2hL1OwxjWTG/ZaSsw=,tag:YtWzkbpTFyzf4e/hC9cN0A==,type:str]
+OVH_S3_REGION: ENC[AES256_GCM,data:Lhlp,iv:lzPBcQ2AbgBJKyrpAVzsyNOxzE+QK+PMViGM2Qbwrug=,tag:qUQ/TuLsiWRls93bkbszyQ==,type:str]
 sops:
-    lastmodified: "2026-09-29T03:43:48Z"
-    mac: ENC[AES256_GCM,data:6sGTVNk4DmaGkTI2T1Av0pbBXaOlH3Og2prZST7b862AnnCdwODfdmBJdmYGCQGHAPwudaXs5Zr0yvS7zjSNKSdF/qQMHv6g0DRZ95vYub6N4XKj927zvVyvgl6d0zlDZEtp68ohclgp+X8yqNZtX2FpOCxfokLVjoDL+pXlzxo=,iv:JF9aN5npfNcLKcWjGVEQE3evz9xV6uQYQe0iZg8NQs0=,tag:2/+KNwii1ZS3ZIyJyfqPAQ==,type:str]
+    lastmodified: "2026-09-29T13:47:14Z"
+    mac: ENC[AES256_GCM,data:o//r/+Y+sNosvJZGzxV0VIfONh2fmlxC3zJbFaQp542Iotptm4PzCxIjUqu8vPc1H+94aePGjP2Mpc9GH49j5tKWbklpBX9lmfiZOLMUxj+NbRzX5GHZsotBYYbGPeMnuEua6BH/0CxqIrU2X2nHJPvT+ybpAe5lA6Bm1e66O50=,iv:pG2kZ6ruodZm/t7nH2SbJjC2vtfK1BN1MsTTs4/Zsyw=,tag:RdIUY2GTMwIb7ueSmfajFw==,type:str]
     pgp:
         - created_at: "2026-09-03T12:08:40Z"
           enc: |-
