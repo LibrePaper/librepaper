@@ -52,7 +52,7 @@ The storage flags bound what a deployment will store:
 | --- | --- | --- |
 | `--publisher-storage-limit` | everything one publisher holds | 100 MB |
 | `--deployment-storage-limit` | the whole deployment | 5120 MB |
-| `--publisher-upload-limit` | uploads one publisher may make in an hour | 30 |
+| `--publisher-upload-limit` | uploads one publisher may make in an hour | 500 |
 | `log_quota_mb` (advanced config) | per-document log size, in megabytes | 32 MB |
 
 ```sh

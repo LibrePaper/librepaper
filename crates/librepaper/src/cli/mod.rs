@@ -91,7 +91,7 @@ pub(crate) struct ServiceFlags {
         value_name = "MB"
     )]
     storage: Option<usize>,
-    /// Most uploads one publisher may make in an hour (default 30)
+    /// Most uploads one publisher may make in an hour (default 500)
     #[arg(
         long = "publisher-upload-limit",
         env = "LIBREPAPER_UPLOADS_PER_HOUR",

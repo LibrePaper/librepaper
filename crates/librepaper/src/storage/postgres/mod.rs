@@ -58,7 +58,7 @@ impl Default for StoragePolicy {
         Self {
             owner_bytes: 100 * 1024 * 1024,
             deployment_bytes: 5 * 1024 * 1024 * 1024,
-            asset_uploads_per_hour: 30,
+            asset_uploads_per_hour: 500,
         }
     }
 }

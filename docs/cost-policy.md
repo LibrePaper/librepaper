@@ -8,7 +8,7 @@ LibrePaper limits logical admission; it does not keep a billing-grade count of p
 |---|---|---|
 | Document log | 32 MiB | `log_quota_mb` |
 | Owner storage | 100 MiB | `--publisher-storage-limit` |
-| Owner uploads | 30/hour | `--publisher-upload-limit` |
+| Owner uploads | 500/hour | `--publisher-upload-limit` |
 | Deployment storage | 5 GiB | `--deployment-storage-limit` |
 | Memory | 512 MiB | `memory_budget_mb` |
 | Pending source | 64 MiB | `pending_mb` |

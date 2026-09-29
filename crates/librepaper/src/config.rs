@@ -418,7 +418,7 @@ impl Default for Configuration {
             storage: StorageLimit {
                 total: 5 * 1024 * 1024 * 1024,
                 per_owner: 100 * 1024 * 1024,
-                uploads_per_hour: 30,
+                uploads_per_hour: 500,
             },
             cost: CostPolicy::default(),
             sockets: crate::server::socket_budget::SocketPolicy::default(),
