@@ -226,12 +226,13 @@ kill:  ## Stop a server started with make serve
 	@# The bracket stops the pattern from matching this command line itself.
 	@pkill -f '[d]ist/librepaper admin serve' && echo "stopped" || echo "nothing to stop"
 
-.PHONY: deploy latex-check latex-smoke mirrors-push
+.PHONY: deploy latex-check latex-smoke mirrors mirrors-push
 
-# The mirror itself -- the compiler engines and the TeX Live bundles -- is built
-# and pushed from the wasm-latex repository (`make mirror`, `make push`
-# there; layout and manifest in wasm-latex/docs/mirror.md). MIRROR= below
-# points at that build's output.
+# The mirrors -- the compiler engines and the TeX Live bundles for LaTeX,
+# and the Typst compiler -- are built in their sibling repositories. Run
+# `make mirrors` to build both from wasm-latex/ and wasm-typst/; `mirrors-push`
+# then publishes them together. TYPST_MIRROR= and MIRROR= point at their outputs.
+TYPST_MIRROR ?= ../wasm-typst/mirror
 MIRROR ?= ../wasm-latex/mirror
 
 latex-check:
@@ -242,11 +243,15 @@ latex-smoke: $(BIN)  ## Compile and display the LaTeX tutorial in Chromium again
 	@node tools/latex/tools/check-mirror.mjs $(MIRROR)
 	@node web/tools/latex-e2e.mjs $(BIN) browser docs/examples/tutorial-latex/librepaper.tex 120 $(MIRROR)
 
+mirrors:  ## Build the Typst and LaTeX mirrors that mirrors-push publishes (LaTeX needs a staged release; see wasm-latex)
+	$(MAKE) -C $(dir $(TYPST_MIRROR)) mirror
+	$(MAKE) -C $(dir $(MIRROR)) mirror
+
 mirrors-push:  ## Publish prepared Typst and LaTeX mirrors (MIRRORS_DRY_RUN=1 validates both without credentials)
 	@if [ "$${MIRRORS_DRY_RUN:-}" = 1 ] || command -v aws >/dev/null 2>&1; then \
-		node tools/push-mirrors.mjs; \
+		TYPST_MIRROR='$(TYPST_MIRROR)' MIRROR='$(MIRROR)' node tools/push-mirrors.mjs; \
 	elif command -v nix >/dev/null 2>&1; then \
-		nix shell nixpkgs#awscli2 -c node tools/push-mirrors.mjs; \
+		TYPST_MIRROR='$(TYPST_MIRROR)' MIRROR='$(MIRROR)' nix shell nixpkgs#awscli2 -c node tools/push-mirrors.mjs; \
 	else \
 		printf '%s\n' 'mirrors-push: AWS CLI v2 is required; install aws or install Nix to use the temporary nixpkgs fallback.' >&2; \
 		exit 1; \

@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { statSync } from "node:fs";
 import { preflightMirror, publish, publisherConfiguration } from "./publish-mirror.mjs";
 
 const runFile = promisify(execFile);
@@ -82,6 +83,11 @@ async function publishPrepared(rawEnv, { dryRun = false } = {}) {
   if (!dryRun) publisherConfiguration(env);
   // Validate both trees before either publisher can make a remote call.
   for (const mirror of mirrors) {
+    try {
+      statSync(mirror.dir);
+    } catch {
+      throw new Error(`${mirror.prefix} mirror not found at ${mirror.dir}; run make mirrors first`);
+    }
     console.log(`Checking ${mirror.prefix} mirror...`);
     const result = await preflightMirror(mirror);
     console.log(`Validated ${mirror.prefix}: ${result.count} files, ${result.bytes} bytes.`);
