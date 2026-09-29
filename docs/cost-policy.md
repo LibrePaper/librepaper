@@ -27,7 +27,15 @@ Physical use can exceed logical quotas because of PostgreSQL indexes/WAL, retire
 
 `admin backup` dumps PostgreSQL and copies objects referenced by that database snapshot, including retired bases. It verifies lengths and available SHA-256 metadata; legacy objects may lack digests. Each backup directory is another physical copy. Backup policy configuration records intended frequency, retention, and destination; it does not schedule backups, prune directories, or encrypt them. Set retention, copy recovery points off-host, and test restores. See [hosting](hosting.md).
 
-Estimate monthly spend as `VPS + off-host backup storage/transfer + optional object storage and requests + domain/12 + metered services`. Browser rendering and local or bring-your-own AI integrations do not require hosted inference. CPU and memory needs depend on concurrent server work, so size from measured use and current provider prices.
+Estimate monthly spend from these items:
+
+- VPS hosting for the application and PostgreSQL.
+- Off-host backup storage and any transfer charges for copies stored elsewhere.
+- Optional object storage, including stored-file and read/write charges. Files on the VPS's local disk are included in VPS hosting, so do not count them again here.
+- Annual domain renewal divided by 12.
+- Other metered services, such as email or billable traffic, only when used and not already counted above.
+
+Browser rendering and local or bring-your-own AI integrations do not require hosted inference. CPU and memory needs depend on concurrent server work, so size from measured use and current provider prices.
 
 ## Static delivery and host comparison (2026-09-28)
 
