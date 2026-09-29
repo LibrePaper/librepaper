@@ -9,9 +9,14 @@ LIBREPAPER_GITHUB_CLIENT_ID_SANDBOX: ENC[AES256_GCM,data:KyND2W44qGZlfRG4/wRWZU/
 LIBREPAPER_GITHUB_CLIENT_SECRET_SANDBOX: ENC[AES256_GCM,data:u3MBRi74ZK36k9cbdyHIMoRtBThtqngNvFixiS5zY0nCGWuWdsL7jA==,iv:K7/3duHpLhiTu7NiS5PBtAZtxmvS7Fm6ckRxO3F6Tnc=,tag:zok83toJTn62HSIgO8qEWw==,type:str]
 LIBREPAPER_PUBLISHERS: ENC[AES256_GCM,data:wnUC,iv:nteosjkkSkk9nj3PhlUP+bFu9a+Hpe83JPptlEcCa68=,tag:SYORTT0T6GQglZAdfR7mMg==,type:str]
 LIBREPAPER_COMMENTERS: ENC[AES256_GCM,data:WYKc13Td,iv:PVBpRy7RGRXYQVB8eLoqZqMwWwGgxShmBTKkp20juAo=,tag:VMKRjn4Q0ClP01q2P5zX1w==,type:str]
+OVH_S3_BUCKET: null
+OVH_S3_REGION: null
+OVH_S3_ENDPOINT: null
+OVH_S3_USER: null
+OVH_S3_SECRET: null
 sops:
-    lastmodified: "2026-09-11T23:50:46Z"
-    mac: ENC[AES256_GCM,data:3LU98vgmasLvyqO6huURqw40xu28BI9wT0H2ldR6fgCcObTB/YQFDbqhR863zE12T1qWbhsjJMBtuFQ5BvdYOD1T9GroH7lVu3LhkXrbHurCec4WilpUPwoZuqUM1ky6h+jqAmSgKfxyEuuWjWZXuglUzcPO6gajLY5U+94zItA=,iv:VRDU2tHtZl7K+Oz6FA/UfJCsnlodcBvgwTlOksZyfo0=,tag:paHsx2aMevS2ie7R7Iv+eQ==,type:str]
+    lastmodified: "2026-09-29T03:43:48Z"
+    mac: ENC[AES256_GCM,data:6sGTVNk4DmaGkTI2T1Av0pbBXaOlH3Og2prZST7b862AnnCdwODfdmBJdmYGCQGHAPwudaXs5Zr0yvS7zjSNKSdF/qQMHv6g0DRZ95vYub6N4XKj927zvVyvgl6d0zlDZEtp68ohclgp+X8yqNZtX2FpOCxfokLVjoDL+pXlzxo=,iv:JF9aN5npfNcLKcWjGVEQE3evz9xV6uQYQe0iZg8NQs0=,tag:2/+KNwii1ZS3ZIyJyfqPAQ==,type:str]
     pgp:
         - created_at: "2026-09-03T12:08:40Z"
           enc: |-
