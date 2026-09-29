@@ -77,8 +77,8 @@ Set `LIBREPAPER_S3_ENDPOINT` for a non-AWS provider and
 versioning, lifecycle expiry for temporary prefixes, billing alerts, and a hard
 provider spending cap are recommended.
 
-Install PostgreSQL client tools on the machine that runs backups. For local
-objects, create a complete recovery point with:
+Install PostgreSQL client tools on the machine that runs backups. With either
+filesystem or S3-compatible primary objects, create a local recovery point with:
 
 ```sh
 librepaper admin backup \
@@ -86,8 +86,13 @@ librepaper admin backup \
   /srv/backups/librepaper-$(date +%F)
 ```
 
-Copy the resulting directory off the primary machine. Test restoration against
-an empty database and a path that does not exist:
+The backup copies objects referenced by its database snapshot, including retired
+bases awaiting cleanup. Schedule backups and prune older directories explicitly;
+the command and backup policy configuration do not automate retention. Copy the
+resulting directory off the primary machine. See the
+[cost and storage policy](cost-policy.md) for physical storage overhead and
+hosting costs. Test restoration against an empty database and a path that does
+not exist:
 
 ```sh
 createdb librepaper_restore
@@ -118,16 +123,15 @@ more of that than it should get, and from every document asking at once.
 every row since it, 32 MiB by default. An update that would push a document
 past its quota is refused with a retryable reason; the document's existing
 log is untouched and semantic commands (restore, comment, label) still work
-against it. This is the real bound on how long a cache rebuild for that
-document can occupy a thread, which is why it is a per-document ceiling and
-not a deployment-wide one. The base and rows count toward the owner's retained
-storage.
+against it. This bounds a rebuild's encoded input, not its execution time or
+actual memory use. The base and rows count toward the owner's retained storage.
 
 **The memory budget** is one process-wide figure, 512 MiB by default, shared
 by every resident cache entry, in-flight build, temporary fork and
 projection output buffer across every document the process is holding. It is
-also what request bodies and outgoing state transfers reserve from. A mutation
-must declare its content length. A request without one is refused with 411.
+also what request bodies and outgoing state transfers reserve from. POST, PUT
+and PATCH requests must declare their content length; without one they are
+refused with 411.
 Four times the content length is reserved from the budget before the body is
 read; a request that cannot reserve is refused with a retryable 429. A request
 that cannot reserve its decoded share waits briefly and then fails with
@@ -150,9 +154,10 @@ start with a memory budget below that at the log quota; raise the two together.
 **The pending-source budget** bounds what the deployment is holding *unsaved*
 while PostgreSQL is slow or unavailable: 64 MiB across every document's buffer
 by default. A separate write scratch budget reserves for what writing a row costs
-while the write is in flight, five times the largest row, which is the log quota,
-so about 160 MiB at the default quota. It is deliberately separate from the memory
-budget above, because a decoded document is a cache that can be dropped to make
+while the write is in flight: five times the largest framed row plus 32 KiB of
+encoding slack, or about 160 MiB at the default quota. Row framing adds to the
+update payload, so this is not exactly five times the log quota. It is separate
+from the memory budget above, because a decoded document is a cache that can be dropped to make
 room and somebody's unsent typing is not. It is also deliberately two pools rather
 than one, so that a deployment whose buffers are full can still write them out,
 with a single pool there would be no room left to encode the row that would free
@@ -169,16 +174,16 @@ configuration file. The server refuses to start with a scratch ceiling too
 small to write one maximum-size row, since that would admit work it could never
 persist.
 
-**Unreadable.** A build that breaches its wall-clock bound (10 seconds) or
-its memory reservation marks that document unreadable: its projection and
-semantic commands answer 503 until it recovers. Ingest and flush keep
-running underneath, so an editor can keep typing and the log keeps growing,
-but nobody, including the document's own editors, can read a rendered
-projection of it until someone shrinks it. Recovery happens automatically
-the next time a build for that document succeeds, which an editor can
-trigger by trimming the document's history from the settings page, or by
-exporting, shrinking and re-importing the document, or an operator can trigger
-after raising `log_quota_mb` or `memory_budget_mb` in the configuration file.
+**Unreadable.** A decode failure or a build taking more than 10 seconds marks
+that document unreadable: its projection and semantic commands answer 503.
+The elapsed-time check happens after synchronous work completes; it does not
+interrupt a build. Failure to reserve memory instead returns retryable `busy`.
+Ingest and flush remain available subject to their admission limits. Recovery
+requires addressing the cause and resetting the marker or re-admitting the
+document, for example after restarting the process with corrected limits.
+Trimming history or exporting and re-importing a smaller document can reduce
+future work, but both need resources and may themselves fail. A marked document
+does not automatically recover merely because memory becomes available.
 
 These limits exist because encoded bytes bound ingress and storage, but they
 do not bound the CPU and memory a decode of those bytes costs, and Loro's
