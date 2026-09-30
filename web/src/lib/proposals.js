@@ -292,7 +292,7 @@ export function createProposals({ session, send, mayEdit }) {
 
   // Everything since the fork, addressed by name: see `flush`.
   const sendUpdate = (draft, update = draft.branch.export({ mode: "update", from: draft.baseVersion })) => {
-    draft.sentOwn = ownOps(draft);
+    const own = ownOps(draft);
     const msg = {
       type: "proposal-update",
       proposal_id: draft.id,
@@ -304,9 +304,11 @@ export function createProposals({ session, send, mayEdit }) {
     if (draft.baseMoved) {
       msg.base = encodeBase64(encodeFrontiers(draft.base));
     }
-    // The moved base is owed to the server until a send goes out; a socket
-    // that is down reports it, and the base rides along with the next one.
-    if (send(msg)?.ok !== false && draft.baseMoved) draft.baseMoved = false;
+    // The edits and a moved base are owed to the server until a send goes
+    // out; a socket that is down reports it, and the next flush resends both.
+    if (send(msg)?.ok === false) return;
+    draft.sentOwn = own;
+    draft.baseMoved = false;
   };
 
   // How many operations the author has written into the branch: the fork
