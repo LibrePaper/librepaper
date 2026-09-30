@@ -303,9 +303,10 @@ export function createProposals({ session, send, mayEdit }) {
     // what imports have been merged in.
     if (draft.baseMoved) {
       msg.base = encodeBase64(encodeFrontiers(draft.base));
-      draft.baseMoved = false;
     }
-    send(msg);
+    // The moved base is owed to the server until a send goes out; a socket
+    // that is down reports it, and the base rides along with the next one.
+    if (send(msg)?.ok !== false && draft.baseMoved) draft.baseMoved = false;
   };
 
   // How many operations the author has written into the branch: the fork
@@ -453,6 +454,11 @@ export function createProposals({ session, send, mayEdit }) {
       // author can see.
       proposal.branch.commit();
 
+      // Absorbing a remote edit changes the branch without the author typing,
+      // and the editor reports that change here. Only the author's own new
+      // words justify a send; a first send still waits for its name.
+      if (proposal.id && ownOps(proposal) === proposal.sentOwn && !proposal.unsent) return;
+
       // Everything since the fork, not everything since the last flush.
       //
       // `update_proposal` replaces the stored branch rather than appending to
@@ -473,6 +479,13 @@ export function createProposals({ session, send, mayEdit }) {
       }
 
       sendUpdate(proposal, update);
+    },
+
+    // Stop listening to the room without closing the branch: the editor going
+    // away must not leave a subscription absorbing into a draft nobody types in.
+    detach() {
+      proposal?.unsubscribe?.();
+      if (proposal) proposal.unsubscribe = null;
     },
 
     // Close the local branch. The server owns the decision from here on.

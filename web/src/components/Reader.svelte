@@ -3499,13 +3499,11 @@
        that opens a column the rail does not have is the second list of who
        may see what that lib/panels.js exists to prevent. -->
   {#if tabs.some((tab) => tab.id === "history")}<Menu.Item value="history" class="menuitem">History</Menu.Item>{/if}
-  {#if mayEdit}
-    <hr class="hr my-1" />
-    {#if sourceFormat === "latex" && compilesHere}
-      <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">Compile now</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
-    {/if}
-    <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">Settings…</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
+  <hr class="hr my-1" />
+  {#if mayEdit && sourceFormat === "latex" && compilesHere}
+    <Menu.Item value="compile" class="menuitem"><span class="menuitem-label">Compile now</span>{#if MENU_KEYS.compile}<span class="menuitem-keys">{MENU_KEYS.compile}</span>{/if}</Menu.Item>
   {/if}
+  <Menu.Item value="settings" class="menuitem"><span class="menuitem-label">Settings…</span>{#if MENU_KEYS.settings}<span class="menuitem-keys">{MENU_KEYS.settings}</span>{/if}</Menu.Item>
 {/snippet}
 
 {#snippet layoutItems()}

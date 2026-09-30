@@ -377,10 +377,9 @@ try {
   await until("the queue is empty", async () => (await page.evaluate("window.empty()")).text.length > 0, 4000);
   const empty = await page.evaluate("window.empty()");
   assert.match(empty.text, /No pending changes/);
-  assert.equal(empty.link, "View resolved changes", "and the way to see them is offered");
+  assert.equal(empty.link, "", "decided changes are deleted, so there is nothing to view");
   assert.equal(empty.actions, 0, "with no verb standing over nothing");
-  await page.evaluate("document.querySelector('.changes-empty .empty-link').click()");
-  await until("resolved shown", async () => (await page.evaluate("window.rows()")).length === 3, 4000);
+  assert.equal((await page.evaluate("window.rows()")).length, 0, "and no rows remain");
 
   console.log("changes-browser: one card per hunk, verbs on the change being read, rival changes stand together, ticking is a mode, the whole queue asks first, stale hunks inert");
 } finally {

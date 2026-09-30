@@ -9,7 +9,7 @@
 // edit it. `terms` are the words somebody might type when looking for a row
 // and not finding its title.
 const editor = ({ mayEdit }) => mayEdit;
-const build = ({ format, mayEdit }) => ["latex", "typst", "markdown", "quarto"].includes(format) && mayEdit;
+const build = ({ format }) => ["latex", "typst", "markdown", "quarto"].includes(format);
 const latex = ({ format, mayEdit }) => format === "latex" && mayEdit;
 const quarto = ({ format, mayEdit }) => format === "quarto" && mayEdit;
 const local = (_context) => true;

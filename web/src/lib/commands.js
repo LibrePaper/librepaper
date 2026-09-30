@@ -238,7 +238,7 @@ export const COMMANDS = [
   { id: "download", label: "Download project", category: "Project", scope: "workspace", menu: "file", keys: [], available: (c) => Boolean(c.mayEdit) },
   { id: "share", label: "Share", category: "Project", scope: "workspace", menu: "file", keys: [], available: panel("share") },
   { id: "history", label: "History", category: "Project", scope: "workspace", menu: "file", keys: [], available: panel("history") },
-  { id: "settings", label: "Open Settings", category: "Project", scope: "workspace", menu: "file", keys: ["Mod+,"], available: (c) => Boolean(c.mayEdit) },
+  { id: "settings", label: "Open Settings", category: "Project", scope: "workspace", menu: "file", keys: ["Mod+,"], available: ALWAYS },
 
   // Help, which is this list about itself.
   { id: "shortcuts", label: "Show keyboard shortcuts", category: "Help", scope: "workspace", keys: ["?", "Mod+Alt+/"], available: ALWAYS, note: "Not while typing" },

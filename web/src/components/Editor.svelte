@@ -274,6 +274,7 @@
     }
     // Track whether this browser has a draft before applying the message.
     const was = Boolean(proposals.drafting?.());
+    const resolved = proposals.doc?.();
     proposals.apply?.(message);
     // If the proposal that just resolved was our own draft, restart tracking
     // with the merged document. The update from the server arrives on the socket
@@ -281,6 +282,7 @@
     if (was && !proposals.drafting?.()) {
       clearTimeout(proposalFlushTimer);
       proposalFlushTimer = null;
+      if (resolved) undoManagers.delete(resolved);
       startTracking();
     }
   }
@@ -1069,6 +1071,7 @@
           proposalFlushTimer = null;
           proposals?.flush?.();
         }
+        proposals?.detach?.();
         if (typeof unsubscribeBibliography === "function") unsubscribeBibliography();
         if (view) viewCallbacks.delete(view);
         view?.destroy();
