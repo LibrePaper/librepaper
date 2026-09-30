@@ -225,15 +225,22 @@ export function locateProposalHunk(doc, proposalData, hunk) {
     const from = original.convertPos(hunk.start, "utf16", "unicode");
     const to = original.convertPos(hunk.start + hunk.deleted, "utf16", "unicode");
     if (from === undefined || to === undefined) return { file_id: fileId, position: 0, stale: true };
-    // SideRight sticks past boundary inserts at the start; SideLeft stays
-    // before inserts at the end. SideMiddle (0) would make the end unstable.
+    // Anchor the start to the first original character so a prefix insertion
+    // moves the hunk with that text. Loro cursor sides do not express boundary
+    // affinity, so anchor a nonempty end to its last original character and
+    // advance one Unicode position after resolving it.
     const fromCursor = original.getCursor(from, 1);
-    const toCursor = original.getCursor(to, -1);
     const fromResult = doc.getCursorPos(fromCursor);
-    const toResult = doc.getCursorPos(toCursor);
-    if (!fromResult || !toResult) return { file_id: fileId, position: 0, stale: true };
+    if (!fromResult) return { file_id: fileId, position: 0, stale: true };
     const position = current.convertPos(fromResult.offset, "unicode", "utf16");
-    const end = current.convertPos(toResult.offset, "unicode", "utf16");
+    let endUnicode = fromResult.offset;
+    if (to > from) {
+      const lastCharacter = original.getCursor(to - 1, 0);
+      const endResult = doc.getCursorPos(lastCharacter);
+      if (!endResult) return { file_id: fileId, position: 0, stale: true };
+      endUnicode = endResult.offset + 1;
+    }
+    const end = current.convertPos(endUnicode, "unicode", "utf16");
     if (position === undefined || end === undefined) return { file_id: fileId, position: 0, stale: true };
 
     let identityConflict = false;
