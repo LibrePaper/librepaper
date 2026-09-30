@@ -184,7 +184,7 @@ assert.equal(able.cut, true);
 assert.equal(availability({ ...workspace, edit: { ...workspace.edit, cut: false } }).cut, false);
 assert.equal(able["download-html"], false, "the format that is not being produced has nothing to download");
 assert.equal(availability(reader)["download-pdf"], true, "and a reader may still take the PDF");
-assert.equal(availability(reader).settings, false);
+assert.equal(availability(reader).settings, true, "a reader picks their own render engine");
 
 /* ---------------------------------------------------------- the help table */
 
