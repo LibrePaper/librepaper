@@ -26,11 +26,15 @@ tools/pins update wasm wasm-markdown vX.Y.Z  # move a module pin
 In `../wasm-latex`:
 
 ```sh
+make vendor                                # once: verified TeX Live tree (5 GB)
 make rebuild                               # build engines and data (~2 h)
 git add receipts/ && git commit -m "Record receipts"
-make release TAG=engines-YYYY.MM.DD        # new tag every time
+make release                               # tags engines-YYYY.MM.DD (-2, -3 if taken); TAG= overrides
 make mirror                                # prints the release hash
 ```
+
+- `make release` refuses a dirty tree, an existing tag, or no `gh` login
+- Tags never move; the release hash (sha256 of `staged/MANIFEST.json`) is its identity
 
 Then here:
 
