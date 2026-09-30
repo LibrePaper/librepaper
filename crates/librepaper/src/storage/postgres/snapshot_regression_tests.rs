@@ -84,9 +84,13 @@ async fn snapshot_migration_preserves_current_evidence_and_legacy_deadlines() {
     .execute(&mut *tx)
     .await
     .unwrap();
+    // 0011's constraints and dead-column cleanup do not depend on the archive
+    // normalization migration, so exercise them against the complete 0001-0009
+    // catalogue before archive migration 0010 is merged.
     for migration in [
         include_str!("../../../migrations/postgres/0006_operation_outcomes.sql"),
         include_str!("../../../migrations/postgres/0007_drop_example_ownership.sql"),
+        include_str!("../../../migrations/postgres/0008_proposals_are_pending.sql"),
         include_str!("../../../migrations/postgres/0009_grant_provenance.sql"),
         include_str!("../../../migrations/postgres/0011_schema_constraints_cleanup.sql"),
     ] {
