@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use include_dir::{include_dir, Dir, File};
 
 static SHELL: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../web/dist");
-const WASM_LOCK: &str = include_str!("../../../../wasm-modules.lock");
+const WASM_LOCK: &str = include_str!("../../../../assets.lock");
 
 /// The renderers, which are not in the binary. Each is a release of its own
 /// engine repository, published to the asset mirror under a directory named
@@ -60,9 +60,26 @@ fn file(name: &str) -> Option<&'static [u8]> {
     SHELL.get_file(name).map(File::contents)
 }
 
-/// The pinned digest of each renderer, read from `wasm-modules.lock`: comment
-/// lines start with `#`, and each other line is `module repository tag sha256`.
-/// Exactly the four known modules, each once, each with a lowercase SHA-256.
+/// The name of the LaTeX release's row in the lock: no `.wasm` suffix, because
+/// what it pins is a directory of files, not a module.
+const LATEX: &str = "latex";
+
+/// The pinned LaTeX release: the SHA-256 of its MANIFEST.json, which is also
+/// its directory name on the asset mirror (`latex/{sha256}/`).
+pub fn latex_release() -> &'static str {
+    static RELEASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    RELEASE.get_or_init(|| {
+        parse_lock(WASM_LOCK)
+            .expect("assets.lock is valid")
+            .remove(LATEX)
+            .expect("assets.lock pins a latex release")
+    })
+}
+
+/// The pinned digest of each asset, read from `assets.lock`: comment lines
+/// start with `#`, and each other line is `module repository tag sha256`.
+/// Exactly the four known `.wasm` modules and one `latex` row (no `.wasm`
+/// suffix), each once, each with a lowercase SHA-256.
 fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
     let mut pins = HashMap::new();
     for line in source.lines() {
@@ -73,12 +90,13 @@ fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
         let columns: Vec<&str> = line.split_whitespace().collect();
         let [module, _repository, _tag, sha] = columns[..] else {
             return Err(format!(
-                "wasm-modules.lock: expected `module repository tag sha256`, got {line:?}"
+                "assets.lock: expected `module repository tag sha256`, got {line:?}"
             ));
         };
         let name = module.strip_suffix(".wasm").unwrap_or(module);
-        if !MODULES.contains(&name) || module == name {
-            return Err(format!("wasm-modules.lock: unknown module {module:?}"));
+        let known = module == LATEX || (MODULES.contains(&name) && module != name);
+        if !known {
+            return Err(format!("assets.lock: unknown module {module:?}"));
         }
         let valid_sha = sha.len() == 64
             && sha
@@ -86,17 +104,20 @@ fn parse_lock(source: &str) -> Result<HashMap<String, String>, String> {
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
         if !valid_sha {
             return Err(format!(
-                "wasm-modules.lock: {module} needs a lowercase 64-digit SHA-256, got {sha:?}"
+                "assets.lock: {module} needs a lowercase 64-digit SHA-256, got {sha:?}"
             ));
         }
         if pins.insert(name.to_string(), sha.to_string()).is_some() {
-            return Err(format!("wasm-modules.lock: {module} appears twice"));
+            return Err(format!("assets.lock: {module} appears twice"));
         }
     }
     for name in MODULES {
         if !pins.contains_key(*name) {
-            return Err(format!("wasm-modules.lock: missing {name}.wasm"));
+            return Err(format!("assets.lock: missing {name}.wasm"));
         }
+    }
+    if !pins.contains_key(LATEX) {
+        return Err(format!("assets.lock: missing {LATEX}"));
     }
     Ok(pins)
 }
@@ -204,13 +225,21 @@ mod shell_tests {
              markdown.wasm wasm-markdown v0.1.1 {sha}\n\
              bibliography.wasm wasm-bibliography v0.1.0 {sha}\n\
              citations.wasm wasm-citations v0.1.0 {sha}\n\
-             typst.wasm wasm-typst v0.1.0 {sha}\n"
+             typst.wasm wasm-typst v0.1.0 {sha}\n\
+             latex wasm-latex engines-test {sha}\n"
         )
     }
 
     #[test]
+    fn the_latex_release_is_the_pinned_manifest_digest() {
+        let release = latex_release();
+        assert_eq!(release.len(), 64);
+        assert_eq!(parse_lock(WASM_LOCK).unwrap()[LATEX], release);
+    }
+
+    #[test]
     fn the_checked_in_lock_parses() {
-        parse_lock(WASM_LOCK).expect("wasm-modules.lock is valid");
+        parse_lock(WASM_LOCK).expect("assets.lock is valid");
     }
 
     #[test]
@@ -242,6 +271,14 @@ mod shell_tests {
             .join("\n");
         assert!(parse_lock(&without_typst).is_err());
         assert!(parse_lock(&format!("{good}typst.wasm wasm-typst v0.1.0 {sha}\n")).is_err());
+        let without_latex: String = good
+            .lines()
+            .filter(|line| !line.starts_with("latex"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(parse_lock(&without_latex).is_err());
+        assert!(parse_lock(&format!("{good}latex wasm-latex engines-test {sha}\n")).is_err());
+        assert!(parse_lock(&good.replace("latex ", "latex.wasm ")).is_err());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 // trigger a rebuild even though no Rust source changed.
 //
 // The wasm renderers are not in it: their pinned digests are compiled in from
-// wasm-modules.lock, so a change to that file is a change to the binary.
+// assets.lock, so a change to that file is a change to the binary.
 
 use std::path::Path;
 
@@ -11,7 +11,7 @@ fn main() {
     println!(
         "cargo:rerun-if-changed={}",
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../wasm-modules.lock")
+            .join("../../assets.lock")
             .display()
     );
     let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");

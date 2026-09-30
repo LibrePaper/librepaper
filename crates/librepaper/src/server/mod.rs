@@ -168,7 +168,8 @@ pub struct Server {
     /// Private agent channels are live coordination and never durable data.
     pub chat: chat::Hub,
     mcp_capacity: mcp::Capacity,
-    /// Where the LaTeX distributions come from, or nothing. A deployment
+    /// The pinned LaTeX release directory on the asset mirror
+    /// (`{mirror}latex/{sha256}/`), or nothing. A deployment
     /// without one still stores and shows `.tex` documents; what it does not
     /// do is offer a browser anywhere to fetch a compiler from, which is why
     /// `/api/config` reports whether it is set and `renderers` counts it.

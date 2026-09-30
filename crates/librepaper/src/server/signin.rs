@@ -619,6 +619,7 @@ fn config_body(
         // warned about. The index itself is at `/api/fonts/index.json`.
         fields.insert("fonts".to_string(), json!(fonts));
         fields.insert("latex".to_string(), json!(latex.is_some()));
+        // The pinned release directory URL, not the mirror root.
         fields.insert("latexMirror".to_string(), json!(latex));
         // Where this deployment's own local app listens, when it runs one.
         // Only a browser on this machine can reach it, which is why the

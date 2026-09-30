@@ -1,10 +1,12 @@
-# The browser renderers this build serves, pinned.
+# Every browser asset this build serves, pinned.
 #
 # Each is built and released by its own repository; `make wasm` fetches them
 # and refuses anything whose bytes do not hash to what is written here. The
-# digest is the contract: it also pins what the asset mirror serves, at
-# wasm/<sha256>/<module>, so browsers load exactly the module that repository
-# released.
+# digest is the contract: it also pins what the asset mirror serves, so
+# browsers load exactly what that repository released. Modules are at
+# wasm/<sha256>/<module>; LaTeX is at latex/<sha256>/, a release directory
+# whose MANIFEST.json hashes to that value (the latex row's sha256 is the
+# sha256 of the release's MANIFEST.json).
 #
 # To move a pin: run `make wasm-update REPO=wasm-markdown TAG=vX.Y.Z` with an
 # explicit repository and tag, then review the native and browser pin diff.
@@ -14,3 +16,4 @@ markdown.wasm        wasm-markdown       v0.1.1    c701483e38f9da1691e752be48c82
 bibliography.wasm    wasm-bibliography   v0.1.1    80b419d22478d829ae64eddebfca49766b7e8c87cfd5fd620fe7a11f089f7d59
 citations.wasm       wasm-bibliography   v0.1.1    a5123aecdac6d3c4bdb80750347287f03969aaf201a8c86d89f8d9b7ba79691b
 typst.wasm           wasm-typst          v0.3.1    ba8567264f8c785de3d3525ef9230369641fc912632e944102fee40eeadeab4d
+latex                wasm-latex          engines-2026.09.11-latexml  888247844e2143ddf328f06d2a8352976da9743320c4e10be3a4874c67f2ace5

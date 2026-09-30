@@ -151,7 +151,7 @@ pub(crate) struct ServiceFlags {
     )]
     site_origin: Option<String>,
     /// HTTPS static mirror from which browsers fetch the wasm renderers
-    /// (`wasm/`) and LaTeX distributions (`latex/`).
+    /// (`wasm/<sha256>/`) and the pinned LaTeX release (`latex/<sha256>/`).
     #[arg(
         long,
         env = "LIBREPAPER_ASSET_MIRROR",
