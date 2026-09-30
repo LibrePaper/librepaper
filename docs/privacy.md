@@ -2,220 +2,135 @@
 title: "Privacy"
 ---
 
-LibrePaper is software, not a service. Whoever runs the deployment you sign
-into decides what is kept and for how long, answers requests about it, and is
-the one a data-protection authority would ask. The project's authors run no
-service on an operator's behalf and hold none of their data.
+LibrePaper is software, not a service. The operator decides what is kept, for
+how long, and is answerable to regulators. The project authors run no service.
 
-This page describes what the software does, so that a person using a
-deployment knows what it holds and an operator can write their own notice
-without reading the source. An operator may keep more than this -- a reverse
-proxy, a backup system and a hosting provider each have logs of their own --
-and only they can tell you about those.
+An operator's reverse proxy, backups and hosting provider keep their own logs.
 
-## Security and privacy limitations
+## Security and encryption
 
-There is no end-to-end encryption. Whoever runs the server and its database can read every draft, every comment, every identity and every presence event in the clear. Backups are written unencrypted, and a backup archive is the whole deployment in plain form.
+No end-to-end encryption. The server and database can read drafts, comments,
+identities and presence in the clear. Backups are unencrypted.
 
 ## What a deployment stores
 
-| What | Where | Written when |
-| --- | --- | --- |
-| Provider, the provider's identifier for you, handle, display name, and -- for a Google account -- the verified email address | `accounts` | You sign in for the first time; refreshed on later sign-ins |
-| Preferences, the time the account was created, and the time it was last seen | `accounts` | Continuously |
-| Projects: title, format, owner, timestamps, and every file in them | `documents`, object storage | You upload or create a project |
-| Comments, highlights and suggestions, with their author and the passage they point at | `annotations`, `replies` | Somebody annotates |
-| Checkpoints and the collaborative editing state | `document_labels`, `document_updates` | Continuously while a document is open |
-| Who a document has been shared with, and the hashed form of each share link | `grants`, `share_links` | The owner shares |
+- **Accounts:** provider, identifier, handle, display name, email (Google only),
+  preferences, created and last-seen times
+- **Documents:** title, format, owner, timestamps, and every file
+- **Annotations:** comments, highlights and suggestions with author and passage
+- **Checkpoints:** collaborative editing state
+- **Shares:** who documents are shared with and hashed share links
 
-The handle is the account's own to see. A GitHub handle is a login; a Google
-handle is the verified email address the account signed in with, and it is
-shown to nobody -- other readers see the display name.
+No access logs, analytics, telemetry, or stored IP addresses.
 
-What a deployment does **not** keep: there is no application access log, no
-analytics, no telemetry, and no record of IP addresses. Addresses are used in
-memory to rate-limit requests and are not written down.
+Handles are visible only to their owner. GitHub handles are logins; Google
+handles are verified emails, shown to no one else.
 
 ## Cookies and browser storage
 
-Three cookies, all set by the deployment itself and none for advertising or
-measurement:
+Three cookies:
+- `librepaper_session` - signed, 30 days, HttpOnly, SameSite, Secure, __Host- prefix
+- `librepaper_state` - ties sign-in to the browser that started it
+- `librepaper_visitor` - names anonymous browsers
 
-- `librepaper_session` -- proves who you are. Signed, thirty days, `HttpOnly`,
-  `SameSite`, and `Secure` with the `__Host-` prefix over HTTPS.
-- `librepaper_state` -- ties an in-flight sign-in to the browser that started
-  it. Lasts the length of the redirect.
-- `librepaper_visitor` -- names the browser, so a document uploaded without
-  signing in still belongs to whoever uploaded it.
+Browser storage (never sent to server):
+- `librepaper-viewed`, `librepaper-favorites` - documents
+- `librepaper-layout`, `librepaper-source-side`, `librepaper-panel` - layout
+- `librepaper-keymap`, `librepaper-keys` - editor settings and share secrets
 
-The browser also keeps, in its own local storage and never on the server:
-which documents you have opened (`librepaper-viewed`) and starred
-(`librepaper-favorites`), the layout of the window (`librepaper-layout`,
-`librepaper-source-side`, `librepaper-panel`), the editor keymap
-(`librepaper-keymap`), and the share-link keys this browser has been handed
-(`librepaper-keys`). A link key is a secret; keeping it here is why opening
-the same link on a phone means pasting it again, and why clearing site data
-clears it.
+None profiles anybody or is shared. No consent banner needed.
 
-All of this is either strictly necessary to provide the service or set
-because you asked for it by using the feature. None of it profiles anybody or
-is shared with a third party, so under the ePrivacy rules none of it requires
-a consent banner. An operator who adds analytics of their own changes that
-answer and takes on the consent question with it.
+## Reading and visibility
 
-Reading is not invisible. An anonymous reader gets a persistent signed visitor credential
-so their comments hold together across visits. While a document is open, the collaboration
-layer broadcasts presence and cursor position, so an author watching the document sees
-a reader arrive, sees roughly where they are in the text, and sees when they leave.
-There is currently no way to read without being visible this way.
+Anonymous readers get signed visitor credentials so comments stay linked across
+visits. While open, the collaboration layer broadcasts presence and cursor position.
 
-A comment from a reader who is not signed in carries a pseudonym instead of an account name.
-It hides who you are from other readers. It does not hide you from the operator: a digest of
-your visitor credential travels with the write and is stored beside the comment. Treat a
-pseudonymous comment as pseudonymous to the room and attributable to whoever runs the server.
+Pseudonymous comments hide identity from other readers, not the operator.
 
 ## What leaves the deployment
 
-- **Sign-in.** GitHub or Google, whichever the operator enabled, receives the
-  sign-in request and returns the identity above. Nothing about your documents
-  is sent to them.
-- **The LaTeX mirror.** Browsers download the compiler and its packages from
-  the project mirror, which sees the browser's address and which files it
-  asks for. Document source never goes there. See
-  [Privacy and the LaTeX mirror](./host.html#privacy-and-the-latex-mirror).
-- **The local companion.** The writing assistant runs on your own computer.
-  The server relays messages between the browser and the companion while both
-  are connected and keeps no transcript.
-- **Embedded resources in documents.** A published document is a web page that
-  runs its own code. It can fetch images, web fonts, and data from any host it
-  names, and that host learns the reader's address, browser, and the exact moment
-  they opened it. This needs no JavaScript; an image tag is enough. For anonymous
-  or blind review, distribute a PDF or require documents published with every
-  resource embedded (use `embed-resources: true` in Quarto).
+- **Sign-in:** GitHub or Google sees the request, returns identity. No documents sent.
+- **LaTeX mirror:** Compilers and packages come from the project mirror, which sees
+  browser address and files requested (not source). Package choices are fingerprintable.
+  Operators can host their own mirror to avoid this. See [Privacy and the LaTeX
+  mirror](./host.html#privacy-and-the-latex-mirror).
+- **Local companion:** The writing assistant runs on your computer; the server relays
+  messages. The browser contacts it only when you initiate: turning on local execution,
+  choosing a local build tool, Zotero lookup, or opening Local app settings.
+- **Embedded resources:** Published documents fetch images and data from any host
+  named, which learns your address, browser and open time. For anonymous review,
+  use PDFs or `embed-resources: true` in Quarto.
 
-An operator's hosting, database and object-storage providers necessarily see
-what they store. Which ones those are, and where, is theirs to name.
+Hosting, database and object-storage providers see what they store.
 
-## Additional privacy details
+## Retention
 
-LaTeX mirror. Browsers compiling LaTeX in the page fetch TeX packages from
-a public mirror, which by default is the LibrePaper project's service. The mirror
-sees each reader's address and the exact set of packages a document pulls, which is
-a usable fingerprint of the document. Operators who do not want this dependency can
-host their own mirror.
+- **Documents:** kept until deleted or `--document-expire-after` period passes
+  (measured from last update or creation). See [Retention](./host.html#retention).
+- **Checkpoints:** kept until document is deleted
+- **Edit history:** kept whole for the life of the document
+- **Sessions:** 30 days; invalidated by sign-out or account erasure
+- **Backups:** as long as the operator keeps them
 
-Local companion. The page can reach the LibrePaper app on your own computer,
-over loopback, to build a document with locally installed tools. The page never
-looks on its own. Opening a document reaches nothing. The first loopback request
-is made by a gesture that needs it: turning on local execution, choosing a local
-build tool, a Zotero lookup, or opening the Local app settings. This is why a browser
-puts up its local-network permission prompt only when you ask for it, not when you
-open the document.
-
-## How long things are kept
-
-- **Projects** are kept until somebody deletes them, unless the operator set a
-  lifetime with `--document-expire-after`. Expiry is measured from the most
-  recent update by default, or from creation with
-  `--document-expire-from created`, and an hourly pass removes what has lapsed.
-  See [Retention](./host.html#retention).
-- **Checkpoints** are kept until the project is deleted. Nothing prunes them:
-  one exists only because somebody named a moment, restored an earlier
-  version, accepted a proposal, or committed from the CLI.
-- **Edit history** -- the operation log behind the checkpoints -- is kept whole
-  for the life of the project. It is what the History panel reads to show the
-  document at a moment nobody checkpointed.
-- **Sessions** last thirty days, and are invalidated at once by signing out,
-  by the operator, or by erasing the account.
-- **Backups** last as long as the operator keeps them, and a restored backup
-  brings back whatever it contains.
-
-## Deleting a project
-
-Deleting a project deletes its files, its comments and replies, its
-checkpoints and collaborative state, and its share links. Live sessions on it
-are closed as part of the deletion rather than left running.
+Deleting a document deletes files, comments, replies, checkpoints and share links.
 
 ## Erasing an account
 
-**Settings → Account → Erase this account**, in any document, after typing
-your handle to confirm. What then happens:
+**Settings > Account > Erase this account** (confirm with your handle):
 
-1. The session is invalidated immediately and the account can no longer sign
-   in -- including to change its mind. There is no way back from the browser.
-2. Every project the account owns is marked for deletion and removed after a
-   recovery window, seven days on a default deployment.
-3. Comments, replies and checkpoints the account left on *other people's*
-   documents stay where they are, relabelled "Deleted user" and no longer
-   linked to any account. Those documents belong to somebody else, and a
-   conversation cannot be silently rewritten under them.
-4. The account record itself -- provider, identifier, handle, name, email -- is
-   deleted once its documents are gone.
+1. Session invalidated immediately; no sign-in possible; irreversible from browser
+2. Owned documents marked for deletion and removed after 7 days (configurable)
+3. Comments and checkpoints on others' documents stay, relabelled "Deleted user"
+4. Account record deleted once documents are gone
 
-Erasure does not reach into an operator's backups. A backup restored later
-carries the account as it was at the time, which is why the operator
-procedure below exists.
+Erasure does not reach backups; a restored backup restores the account as it was.
 
 ## For operators
 
-You are the controller for your deployment. What is yours rather than the
-software's:
+**Publish a notice** naming yourself, contact address, expiry setting, providers
+and proxy log retention. Point to this page.
 
-**Publish a notice** naming yourself and a contact address, and say which of
-the choices above you made: your expiry setting, your providers, your hosting
-and its location, and how long your proxy keeps its logs. Point at this page
-for the mechanics if it saves you writing them out.
+**IP addresses** are in your proxy logs (nginx, Caddy, CDNs), not the application.
 
-**Your proxy is where the addresses are.** The application writes none; nginx,
-Caddy or a CDN in front of it writes all of them. Decide a retention period
-there and say what it is.
-
-**Re-run erasure after restoring a backup.** Restore does not know which
-accounts were erased since the backup was taken. Keep a note of erasure
-requests -- the date and the account handle is enough -- and replay them after
-any restore.
-
-**Answering a request about a person.** `librepaper export` covers one
-document at a time, which is not a complete answer: someone's comments on
-other people's documents are not in any export. Until there is a command for
-it, query the catalogue directly. Find the account:
+**Data requests:** `librepaper export` covers one document at a time. Query the
+database for complete answers:
 
 ```sql
+-- Find the account
 SELECT id, provider, handle, display_name, email, created_at, last_seen_at
 FROM accounts WHERE handle = 'the-handle';
-```
 
-Then everything attached to it:
-
-```sql
+-- Documents owned by account $1
 SELECT d.slug, d.title, d.created_at, d.updated_at
 FROM documents d WHERE d.owner_id = $1;
 
+-- Annotations (comments, highlights, suggestions) by account $1
 SELECT d.slug, a.kind, a.body, a.proposed_text, a.created_at
 FROM annotations a JOIN documents d ON d.id = a.document_id
 WHERE a.author_account_id = $1 ORDER BY a.created_at;
 
+-- Replies to annotations by account $1
 SELECT d.slug, r.body, r.created_at
-FROM replies r
-JOIN annotations a ON a.id = r.annotation_id
+FROM replies r JOIN annotations a ON a.id = r.annotation_id
 JOIN documents d ON d.id = a.document_id
 WHERE r.author_account_id = $1 ORDER BY r.created_at;
 
+-- Checkpoints by account $1
 SELECT d.slug, v.created_at FROM document_labels v
 JOIN documents d ON d.id = v.document_id WHERE v.author_account_id = $1;
 
+-- Document access grants for account $1
 SELECT document_id, role, created_at FROM grants WHERE account_id = $1;
 ```
 
-The files of an owned project come out of `librepaper export DOCUMENT DIR`.
+Export owned documents with `librepaper export DOCUMENT DIR`.
 
-**Erasure on request** is the same operation the settings page performs, so
-the simplest route is to ask the person to run it themselves. A request made
-by other means is answered by an operator with database access, which is also
-what a request to stop an erasure in its recovery window takes.
+**Backup restore:** Re-run erasure requests. Keep notes (date and handle) and
+replay them.
 
-**Timelines.** A request under the GDPR is normally answered within one month,
-and a personal-data breach is notified to the supervisory authority within 72
-hours of becoming aware of it where it is likely to be a risk to people.
-Verify who is asking before answering: a signed-in request from the account
-itself is the easiest proof there is.
+**GDPR:** answer data requests within one month; notify authorities of breaches
+within 72 hours where people are likely to be at risk.
+
+**Verify who is asking:** A signed-in request from the account itself is easiest
+proof. For other requests, require sufficient identity verification before
+answering.
