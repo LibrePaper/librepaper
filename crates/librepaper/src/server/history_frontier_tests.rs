@@ -133,7 +133,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
         vec![0u8; 32],
         config.clone(),
         Policy::parse_publishers("owner").unwrap(),
-        Policy::parse(""),
+        Policy::parse("any"),
     );
     Some(Deployment {
         server,
@@ -149,7 +149,7 @@ async fn deployment(slug: &str) -> Option<Deployment> {
 fn viewer(account_id: Uuid, handle: &str, session_generation: &str, role: Role) -> Viewer {
     Viewer {
         id: Identity {
-            provider: String::new(),
+            provider: PROVIDER_GITHUB.into(),
             id: account_id.to_string(),
             handle: handle.into(),
             name: handle.into(),
