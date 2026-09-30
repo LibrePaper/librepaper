@@ -78,6 +78,15 @@ every key is content-addressed. It never passes `--delete`. Each release's
 `release.json` goes last, so a release is never visible half uploaded. A
 `head-object` spot check of a few keys confirms size and headers.
 
+## Updating the LaTeX engines
+
+The engines are built and released in `../wasm-latex`; its README opens
+with the whole procedure (`make rebuild`, `make release TAG=...`,
+`make mirror`). Then, here: `deploy/deploy-mirror.sh --test`,
+`deploy/deploy-mirror.sh`, and point the `latex` row of `assets.lock` at
+the new tag and the hash `make mirror` printed. Upload before merging the
+pin: a binary whose pin is not on the mirror cannot compile LaTeX.
+
 ## Properties
 
 Every object is named by a digest or lives under one, so nothing is ever
