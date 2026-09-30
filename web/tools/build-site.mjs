@@ -90,7 +90,7 @@ function tableOfContents(body) {
 
 /* ------------------------------------------------------------------ pages */
 
-// Flatten site/nav.js into the order pages are walked and linked in. A group
+// Flatten docs/nav.js into the order pages are walked and linked in. A group
 // with a path of its own is a page as well as a heading, and comes before the
 // pages under it.
 const pages = nav.flatMap((entry) => [
