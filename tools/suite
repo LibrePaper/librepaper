@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# The rarer test suites, kept out of the everyday `make test` and `make check`.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+BIN=dist/librepaper
+SHELL_OUT=web/dist/index.html
+
+usage() {
+	cat <<'USAGE'
+usage: tools/suite <suite>
+
+  browser     component tests in headless chromium (needs chromium)
+  smoke       drive the reader in headless chromium (needs chromium)
+  external    Quarto/R/Python and real local-service integration tests
+  workloads   supported-limit and diagnostic workloads
+  fuzz        every fuzz target for FUZZ_SECONDS (default 60) each
+              (FUZZ_TARGETS overrides the target list; needs nightly and cargo-fuzz)
+  help        this text
+USAGE
+}
+
+have_chromium() {
+	command -v chromium >/dev/null || command -v google-chrome >/dev/null
+}
+
+# The component tests. Each builds its own bundle from web/src and drives a
+# headless chromium. The per-test bound is generous: the LaTeX one drives a
+# real TeX Live and takes minutes by itself.
+suite_browser() {
+	tools/pins fetch
+	if ! have_chromium; then
+		echo "no chromium to drive; skipping the browser tests"
+		return 0
+	fi
+	local failed="" test log
+	log=/tmp/browser-test.log
+	for test in web/tests/browser/*.mjs; do
+		printf '%s: ' "$(basename "$test")"
+		if (cd web && timeout 900 node "../$test" >"$log" 2>&1); then
+			echo ok
+		else
+			echo FAILED
+			failed="$failed $(basename "$test")"
+			sed 's/^/    /' "$log" | tail -8
+		fi
+	done
+	[ -z "$failed" ] || { echo "failed:$failed"; return 1; }
+}
+
+# The rendered reader. Needs the built binary and a chromium, and starts a
+# server of its own on a temporary directory.
+suite_smoke() {
+	make --no-print-directory "$BIN"
+	if ! have_chromium; then
+		echo "no chromium to drive; skipping the browser smoke test"
+		return 0
+	fi
+	bun web/tools/browser-smoke.mjs "$BIN"
+}
+
+suite_external() {
+	cargo test -p librepaper quarto -- --ignored --nocapture --test-threads=1 \
+		--skip quarto_project_scope_collects_pages_and_nested_web_resources \
+		--skip quarto_book_scope_keeps_chapter_navigation
+}
+
+suite_workloads() {
+	local t
+	for t in \
+		the_supported_maximum_source_survives_a_restart \
+		measure_source_history_profiles \
+		profile_unchanged_resident_metadata \
+		persistence_capacity_workload \
+		persistence_default_limits_refuse_without_discarding_dirty_rooms \
+		mcp_protocol_transfer_benchmark; do
+		cargo test -p librepaper "$t" -- --ignored --nocapture
+	done
+}
+
+# libFuzzer over the functions that read what somebody else wrote. A finding is
+# left in tools/fuzz/artifacts/. No sanitizer: the code under test is safe Rust.
+suite_fuzz() {
+	tools/pins fetch
+	make --no-print-directory "$SHELL_OUT"
+	command -v cargo-fuzz >/dev/null || { echo "cargo-fuzz is not installed: cargo install cargo-fuzz"; return 1; }
+	local seconds="${FUZZ_SECONDS:-60}" targets target
+	targets="${FUZZ_TARGETS:-$(cargo fuzz list --fuzz-dir tools/fuzz)}"
+	for target in $targets; do
+		echo "fuzzing $target for ${seconds}s"
+		cargo fuzz run --fuzz-dir tools/fuzz -s none "$target" -- -max_total_time="$seconds" || return 1
+	done
+}
+
+case "${1:-help}" in
+	browser) suite_browser ;;
+	smoke) suite_smoke ;;
+	external) suite_external ;;
+	workloads) suite_workloads ;;
+	fuzz) suite_fuzz ;;
+	help | -h | --help) usage ;;
+	*) usage >&2; exit 2 ;;
+esac
