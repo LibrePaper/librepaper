@@ -401,6 +401,62 @@ window.trackingStopBeforeOpenedCheck = async () => {
     shown,
   };
 };
+// An active tracked draft resolving is still the same user intent. The next
+// edit must stay on a fresh lazy branch instead of silently reaching the room.
+window.trackingResolutionRestartsCheck = async () => {
+  const sent = [];
+  const value = joinSession({ send: () => {}, mayEdit: true });
+  const id = value.addText("tracked-resolution.md", "alpha");
+  value.setMain(id);
+  const host = document.createElement("section");
+  document.body.append(host);
+  const tracked = createClassComponent({
+    component: Editor,
+    target: host,
+    props: {
+      session: value, format: "markdown", file: id, editable: true,
+      send: (message) => { sent.push(message); return true; },
+    },
+  });
+  await tick();
+  tracked.startTracking();
+  await tick();
+  let view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  view.dispatch({ changes: { from: 0, insert: "FIRST " } });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const firstOpen = sent.find((message) => message.type === "proposal-open");
+  if (firstOpen) tracked.receiveProposal({ type: "proposal-opened", proposal_id: firstOpen.request_id, request_id: firstOpen.request_id, tip: "", applied_version: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const firstUpdate = sent.find((message) => message.type === "proposal-update");
+  if (firstUpdate) tracked.receiveProposal({ type: "proposal-updated", proposal_id: firstUpdate.proposal_id, request_id: firstUpdate.request_id, tip: firstUpdate.tip, applied_version: 2 });
+  if (firstUpdate) {
+    value.textOf(id).insert(0, "FIRST ");
+    value.doc.commit();
+  }
+  if (firstOpen) tracked.receiveProposal({
+    type: "proposal-decided", proposal_id: firstOpen.request_id, resolved: true,
+    decisions: [{ hunk: 0, accepted: true }], resolved_base: firstOpen.base || "", resolved_tip: firstUpdate?.tip || "",
+  });
+  await tick();
+  const stillTracking = tracked.trackingOn();
+  const restartedId = tracked.proposalStatus()?.id || "";
+  const openCountBeforeTyping = sent.filter((message) => message.type === "proposal-open").length;
+  view = EditorView.findFromDOM(host.querySelector(".cm-editor"));
+  view.dispatch({ changes: { from: 0, insert: "NEXT " } });
+  const liveImmediately = value.textOf(id).toString();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const opens = sent.filter((message) => message.type === "proposal-open");
+  const finalText = value.textOf(id).toString();
+  const secondId = opens.at(-1)?.request_id || "";
+  tracked.stopTracking();
+  tracked.$destroy();
+  host.remove();
+  value.leave();
+  return {
+    stillTracking, restartedId, openCountBeforeTyping, firstId: firstOpen?.request_id || "",
+    secondId, opensAfterTyping: opens.length, liveImmediately, finalText,
+  };
+};
 window.diagnosticsCheck = async () => {
   const host = document.createElement("aside");
   document.body.append(host);
@@ -720,6 +776,18 @@ try {
   assert.equal(trackingStopBefore.delayedUpdateId, trackingStopBefore.openId, "the delayed update was sent to the wrong proposal id");
   assert.equal(trackingStopBefore.shown, "alpha", "stopping tracking changed the paper text");
   console.log("editor-browser: stopping before proposal-opened sends unsent edits once named");
+  const trackingResolved = await evaluate("trackingResolutionRestartsCheck()");
+  assert.equal(trackingResolved.stillTracking, true, "resolving an active proposal turned track changes off");
+  assert.notEqual(trackingResolved.restartedId, "", "resolution did not establish a fresh local draft");
+  assert.notEqual(trackingResolved.restartedId, trackingResolved.firstId, "resolution did not replace the decided draft identity");
+  assert.equal(trackingResolved.openCountBeforeTyping, 1, "restarting tracking created an empty server proposal");
+  assert.notEqual(trackingResolved.secondId, "", "typing after resolution did not open a new tracked proposal");
+  assert.notEqual(trackingResolved.secondId, trackingResolved.firstId, "typing after resolution reused the decided proposal id");
+  assert.equal(trackingResolved.secondId, trackingResolved.restartedId, "typing opened a different proposal than the fresh local draft");
+  assert.equal(trackingResolved.opensAfterTyping, 2);
+  assert.equal(trackingResolved.liveImmediately, "FIRST alpha", "the first keystroke after resolution reached the room");
+  assert.equal(trackingResolved.finalText, "FIRST alpha", "the next tracked edit leaked into live text");
+  console.log("editor-browser: tracking restarts lazily after its own proposal resolves");
 } finally {
   socket?.close();
   browser?.kill();

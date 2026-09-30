@@ -92,6 +92,7 @@ window.linkedDedupCheck = async () => {
   const visible = window.rows();
   await window.menu('Select multiple');
   window.pick('suggestion:linked');
+  await settle();
   const previewEnabled = !window.barButton('Read')?.disabled;
   await window.show({ proposals: rows.filter((row) => row.proposal === 'run'), comments: [linkedComment] });
   await window.act('suggestion:linked', 'accept');

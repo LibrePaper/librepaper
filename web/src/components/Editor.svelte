@@ -126,6 +126,7 @@
   // the binding is rebuilt against that branch in the same call, before any
   // prop could have arrived (§3.3).
   let { session, format = "", file = "", keys = "default", editable = true,
+    tracking = false,
     analyze = analyzeBibliography, send = null, onproposal = null,
     // What is being proposed for this document, and which hunk of it the
     // reviewer is looking at. `review` carries each proposal's base and raw
@@ -193,6 +194,9 @@
   let proposals = null;
   let proposalsSession = null;
   let proposalUnsubscribe = null;
+  let trackingIntent = false;
+  let observedDrafting = false;
+  let startingIntentBranch = false;
   $effect(() => {
     if (!send || !session) return;
     // Source swaps can replace the session while a stopped or unresolved
@@ -217,7 +221,28 @@
       mayEdit: editable,
     });
     proposalsSession = session;
+    observedDrafting = Boolean(proposals.drafting?.());
+    trackingIntent = Boolean(tracking || observedDrafting);
+    if (trackingIntent && !observedDrafting) {
+      startingIntentBranch = true;
+      proposals.start();
+      startingIntentBranch = false;
+      observedDrafting = Boolean(proposals.drafting?.());
+    }
     proposalUnsubscribe = proposals.onchange?.(() => {
+      const status = proposals?.status?.() || null;
+      const drafting = Boolean(proposals?.drafting?.());
+      // Reader owns proposal delivery. If this active branch resolves while
+      // tracking remains enabled, keep the switch's intent by opening a new
+      // local branch now; it stays server-invisible until the next edit.
+      if (observedDrafting && !drafting && trackingIntent && !startingIntentBranch && !status?.recoveryRequired) {
+        const previous = proposals?.doc?.() || activeDocument;
+        startingIntentBranch = true;
+        proposals.start();
+        startingIntentBranch = false;
+        if (previous) undoManagers.delete(previous);
+      }
+      observedDrafting = Boolean(proposals?.drafting?.());
       const expected = boundDoc();
       if (view && activeDocument !== expected) {
         queueMicrotask(() => {
@@ -281,16 +306,14 @@
     return proposals?.status?.() || null;
   }
 
-  export function reconnectProposals() {
-    return proposals?.reconnect?.();
-  }
-
   /// Start proposing rather than editing. Forks the document, and from here
   /// what is typed accumulates on the branch and is flushed to the server
   /// instead of reaching the paper.
   export function startTracking() {
     if (!proposals || proposals.drafting()) return;
+    trackingIntent = true;
     proposals.start();
+    observedDrafting = Boolean(proposals.drafting?.());
     onproposalstatus?.(proposals.status?.() || null);
     rebind();
   }
@@ -301,6 +324,7 @@
   /// and it waits for somebody to answer it (§5.1a). Anything not yet sent
   /// goes up before the local branch is let go.
   export function stopTracking() {
+    trackingIntent = false;
     if (!proposals || !proposals.drafting()) return;
     // Whatever the pause timer was about to send goes now, in this call,
     // rather than after the branch has been let go.
@@ -312,35 +336,19 @@
     // dead manager per tracking session from accumulating in the map.
     const branch = proposals.doc();
     proposals.stop();
+    observedDrafting = Boolean(proposals.drafting?.());
     onproposalstatus?.(proposals.status?.() || null);
     if (branch) undoManagers.delete(branch);
     rebind();
   }
 
-  // When proposal messages arrive, apply them. The Reader's receive function
-  // routes them here. On stale error, do not silently retry: the hunks may have
-  // changed and the reviewer needs to recompute.
+  // Standalone editor integrations can deliver proposal replies here. In the
+  // Reader, delivery belongs to its session-shared manager so replies continue
+  // to settle while the editor is hidden.
   export function receiveProposal(message) {
     if (!proposals) return;
-    // Track whether this browser has a draft before applying the message.
-    const was = Boolean(proposals.drafting?.());
-    const previous = proposals.doc?.();
     proposals.apply?.(message);
-    const current = proposals.doc?.();
     onproposalstatus?.(proposals.status?.() || null);
-    // If the proposal that just resolved was our own draft, restart tracking
-    // with the merged document. The update from the server arrives on the socket
-    // before the decision, so the room document already holds the merged result.
-    if (was && !proposals.drafting?.()) {
-      clearTimeout(proposalFlushTimer);
-      proposalFlushTimer = null;
-      if (previous) undoManagers.delete(previous);
-      startTracking();
-    } else if (was && current && current !== previous) {
-      // A resolved proposal can leave the manager tracking on the same local
-      // intent with a fresh branch identity. Bind CodeMirror to that branch.
-      rebind();
-    }
   }
 
   let bibliographyGeneration = 0;

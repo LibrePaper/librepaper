@@ -3968,7 +3968,7 @@
         </div>
       {:else if Editor && sourceBound}
         {#key sourceEpoch}
-          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {rules} editable={mayEdit}
+          <Editor bind:this={editor} {session} format={editorFormat} file={openFile} {keys} {rules} {tracking} editable={mayEdit}
                   send={collaboration?.sendLive} {review} {reviewing}
                   onbibliography={bibliographyAnalyzed} onchange={outlineTextChanged} oncaret={outlineCaretChanged} onsave={reportPersistence} onquit={showDocumentAlone} onproposalstatus={(status) => { trackedProposalStatus = status; }}
                   onfilechange={(id) => { ws.openFile = id; outlineActiveFrom = null; ws.figure = null; }} />
