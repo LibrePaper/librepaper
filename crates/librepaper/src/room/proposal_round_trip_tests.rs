@@ -336,6 +336,190 @@ async fn a_base_the_room_has_never_seen_is_refused() {
     );
 }
 
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn proposal_updates_require_the_owner_and_acknowledged_version_but_allow_exact_retry() {
+    let Some(deployment) = deployment("proposal-update-guards").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let base = frontier(&room).await;
+    let (first_branch, first_tip) = room
+        .log()
+        .with_fork_at(&base, |at| author_forks(at, 4242, "paper.md", "The tabby sat.\n"))
+        .await
+        .unwrap();
+    let opened = open(&room, &deployment.authority, "Ada", &base).await;
+    let acknowledged = update(&room, &deployment.authority, &opened, &first_tip, &first_branch).await;
+    let original_bytes = acknowledged.branch_bytes.clone();
+
+    // A resent whole snapshot is safe even if its acknowledgement was lost.
+    let mut exact_retry = UpdateProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: opened.id,
+        owner_key: deployment.authority.principal_key.clone(),
+        expected_version: opened.version,
+        tip: first_tip.clone(),
+        base: None,
+        branch: first_branch.clone(),
+        stored: None,
+        decided: Vec::new(),
+        carried: Vec::new(),
+    };
+    let replayed = room
+        .command(&deployment.authority, &mut exact_retry)
+        .await
+        .expect("an exact retry is idempotent");
+    assert_eq!(replayed.version, acknowledged.version);
+    assert_eq!(replayed.branch_bytes, original_bytes);
+
+    let (different_branch, different_tip) = room
+        .log()
+        .with_fork_at(&base, |at| author_forks(at, 4343, "paper.md", "The tabby purred.\n"))
+        .await
+        .unwrap();
+    let mut wrong_owner = UpdateProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: opened.id,
+        owner_key: "another-author".into(),
+        expected_version: acknowledged.version,
+        tip: different_tip.clone(),
+        base: None,
+        branch: different_branch.clone(),
+        stored: None,
+        decided: Vec::new(),
+        carried: Vec::new(),
+    };
+    let refused_owner = room
+        .command(&deployment.authority, &mut wrong_owner)
+        .await
+        .expect_err("another author cannot update the branch");
+    assert!(matches!(refused_owner, crate::log::CommandError::Conflict(_)));
+    assert_eq!(deployment.catalog.proposal(opened.id).await.unwrap().unwrap().branch_bytes, original_bytes);
+
+    let mut stale_version = UpdateProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id: opened.id,
+        owner_key: deployment.authority.principal_key.clone(),
+        expected_version: opened.version,
+        tip: different_tip,
+        base: None,
+        branch: different_branch,
+        stored: None,
+        decided: Vec::new(),
+        carried: Vec::new(),
+    };
+    let refused_stale = room
+        .command(&deployment.authority, &mut stale_version)
+        .await
+        .expect_err("an older acknowledged version cannot replace a newer branch");
+    assert!(matches!(
+        refused_stale,
+        crate::log::CommandError::Storage(crate::storage::postgres::Error::Conflict(_))
+    ));
+    let still_original = deployment.catalog.proposal(opened.id).await.unwrap().unwrap();
+    assert_eq!(still_original.version, acknowledged.version);
+    assert_eq!(still_original.branch_bytes, original_bytes);
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn resuming_an_unknown_proposal_id_does_not_create_a_row() {
+    let Some(deployment) = deployment("proposal-resume-unknown").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    let id = Uuid::new_v4();
+    let mut command = OpenProposal {
+        document_id: room.document_id,
+        catalog: room.catalog().clone(),
+        id,
+        author: "Ada".into(),
+        owner_key: deployment.authority.principal_key.clone(),
+        base: frontier(&room).await,
+        resume: true,
+        stored: None,
+    };
+    let unknown = room.command(&deployment.authority, &mut command).await;
+    assert!(
+        matches!(unknown, Err(crate::log::CommandError::Conflict(message)) if message.starts_with("proposal status is unknown")),
+        "got {unknown:?}"
+    );
+    assert!(deployment.catalog.proposal(id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires LIBREPAPER_TEST_POSTGRES_URL"]
+async fn whole_suggestion_resolution_replaces_legacy_mixed_hunk_answers() {
+    let Some(deployment) = deployment("suggestion-whole-resolution").await else {
+        return;
+    };
+    let room = deployment.rooms.get(&deployment.slug).await.unwrap();
+    // Two changes separated by more than the hunk bridge threshold.
+    other_writer_types(&room, "paper.md", "alpha 0123456789abcdefghij omega\n").await;
+    let base = frontier(&room).await;
+    let (branch, tip) = room
+        .log()
+        .with_fork_at(&base, |at| {
+            author_forks(at, 4242, "paper.md", "aleph 0123456789abcdefghij omicron\n")
+        })
+        .await
+        .unwrap();
+    let proposal = open(&room, &deployment.authority, "Ada", &base).await;
+    let proposal = update(&room, &deployment.authority, &proposal, &tip, &branch).await;
+
+    // Rows left by the old per-hunk browser path disagree. MCP acceptance and
+    // the socket's all:true mode both call resolve_suggestion, which must
+    // replace that set with one accepted answer for every actual hunk.
+    let mut tx = deployment.catalog.pool().begin().await.unwrap();
+    deployment.catalog.decide_proposal_hunk(
+        &mut tx,
+        room.document_id,
+        proposal.id,
+        0,
+        false,
+        "legacy-reviewer",
+        &proposal.tip_frontiers,
+        None,
+        2,
+    ).await.unwrap();
+    deployment.catalog.decide_proposal_hunk(
+        &mut tx,
+        room.document_id,
+        proposal.id,
+        1,
+        true,
+        "legacy-reviewer",
+        &proposal.tip_frontiers,
+        None,
+        2,
+    ).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let request_id = Uuid::new_v4();
+    let mut tx = deployment.catalog.pool().begin().await.unwrap();
+    deployment.catalog.resolve_suggestion(
+        &mut tx,
+        room.document_id,
+        proposal.id,
+        &proposal.tip_frontiers,
+        true,
+        Some(2),
+        "Ada",
+        Some(request_id),
+    ).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let receipt = deployment.catalog.proposal_outcome(room.document_id, proposal.id)
+        .await.unwrap().expect("whole decision records its final result");
+    assert_eq!(receipt.decisions.0, vec![(0, true), (1, true)]);
+    assert!(!receipt.discarded);
+    assert!(deployment.catalog.proposal(proposal.id).await.unwrap().is_none());
+}
+
 /// Declining, with somebody else writing at the same time.
 ///
 /// Declining is the path that applies an inverse, so it is where a wrong base
