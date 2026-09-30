@@ -1,6 +1,6 @@
 # Browser asset mirrors
 
-Browsers load their WebAssembly from one S3 bucket on OVH (region `bhs`). It
+Browsers load their renderers and LaTeX files from one S3 bucket on OVH (region `bhs`). It
 serves two things: the four browser wasm modules (markdown, bibliography,
 citations and typst) under `wasm/<sha256>/<name>.wasm`, and the LaTeX engines
 and TeX Live bundles under `latex/<sha256>/`. The binary embeds neither. The
@@ -85,8 +85,8 @@ rewritten. Everything is cached immutable, and there is no mutable file. The
 bucket is append-only: a new pin adds an object or directory beside the old
 ones, and pruning is not implemented. Upload before shipping a binary that
 carries a new pin; older binaries keep working because nothing is deleted.
-Anonymous reads are allowed for `wasm/*` and `latex/*` only; listing stays
-private.
+Each object is uploaded with a public-read ACL, so anonymous reads work per
+object while listing the bucket stays private.
 
 ## Hosting your own copy
 
