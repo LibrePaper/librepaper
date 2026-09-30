@@ -2,9 +2,8 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use sqlx::{Connection, PgConnection};
 use time::Duration;
-use sqlx::pool::PoolConnection;
-use sqlx::{Connection, PgConnection, Postgres};
 
 use super::blob::BlobStore;
 use super::postgres::PostgresCatalog;
@@ -14,32 +13,27 @@ use super::postgres::PostgresCatalog;
 /// scan through the blob deletion and the corresponding catalogue update.
 const BLOB_LIFECYCLE_LOCK: i64 = 0x4c_50_42_4c_4f_42_31; // "LPBLOB1"
 
-/// A session lock must never escape back into the pool. In particular, a
-/// cancelled advisory-lock query may have acquired the server-side lock even
-/// though its result never reached this process. We therefore mark the
-/// connection unsafe before awaiting either acquisition or release and only
-/// return it to the pool after a confirmed unlock (or a confirmed failed
-/// try-lock).
+/// This direct connection never enters the application pool. In particular,
+/// a cancelled advisory-lock query may have acquired the server-side lock
+/// even though its result never reached this process; dropping the guard then
+/// closes the session and releases the lock.
 pub(crate) struct BlobLifecycleLock {
-    connection: Option<PoolConnection<Postgres>>,
-    reusable: bool,
+    connection: Option<PgConnection>,
 }
 
 impl BlobLifecycleLock {
-    /// Acquire the backup's exclusive lock on a checked-out pooled session.
+    /// Acquire the backup's exclusive lock on a dedicated database session.
     /// The session, rather than its transaction, owns this lock so it remains
     /// held after the snapshot transaction commits and while blob bytes copy.
     pub(crate) async fn backup(catalog: &PostgresCatalog) -> Result<Self, String> {
-        let connection = catalog
-            .pool()
-            .acquire()
+        let options = catalog.pool().connect_options();
+        let connection = PgConnection::connect_with(&options)
             .await
-            .map_err(|error| format!("could not acquire backup lock connection: {error}"))?;
+            .map_err(|error| format!("could not connect for backup lock: {error}"))?;
         let mut guard = Self {
             connection: Some(connection),
-            reusable: false,
         };
-        // Do not make `guard` reusable until the query has returned. If this
+        // The guard owns the direct connection before the await. If this
         // future is cancelled after PostgreSQL grants the lock but before the
         // response arrives, Drop closes the session and PostgreSQL releases it.
         sqlx::query("SELECT pg_advisory_lock($1)")
@@ -52,18 +46,15 @@ impl BlobLifecycleLock {
 
     /// Try to enter a destructive object operation. `None` means a backup is
     /// active; callers must defer and retry rather than delete without the
-    /// barrier.
-    pub(crate) async fn try_delete(
-        catalog: &PostgresCatalog,
-    ) -> Result<Option<Self>, String> {
-        let connection = catalog
-            .pool()
-            .acquire()
+    /// barrier. This dedicated connection leaves the configured pool free for
+    /// the catalogue reads and writes cleanup needs to perform.
+    pub(crate) async fn try_delete(catalog: &PostgresCatalog) -> Result<Option<Self>, String> {
+        let options = catalog.pool().connect_options();
+        let connection = PgConnection::connect_with(&options)
             .await
-            .map_err(|error| format!("could not acquire cleanup lock connection: {error}"))?;
+            .map_err(|error| format!("could not connect for cleanup lock: {error}"))?;
         let mut guard = Self {
             connection: Some(connection),
-            reusable: false,
         };
         let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock_shared($1)")
             .bind(BLOB_LIFECYCLE_LOCK)
@@ -74,15 +65,13 @@ impl BlobLifecycleLock {
             Ok(Some(guard))
         } else {
             // PostgreSQL confirmed this session did not get a lock.
-            guard.reusable = true;
             Ok(None)
         }
     }
 
     /// Access the guarded session for backup snapshot SQL.
     pub(crate) fn connection_mut(&mut self) -> &mut PgConnection {
-        &mut **self
-            .connection
+        self.connection
             .as_mut()
             .expect("blob lifecycle lock owns its connection")
     }
@@ -99,7 +88,7 @@ impl BlobLifecycleLock {
         if !released {
             return Err("cleanup lock was not held by its PostgreSQL session".into());
         }
-        self.reusable = true;
+        drop(self.connection.take());
         Ok(())
     }
 
@@ -113,7 +102,7 @@ impl BlobLifecycleLock {
         if !released {
             return Err("backup lock was not held by its PostgreSQL session".into());
         }
-        self.reusable = true;
+        drop(self.connection.take());
         Ok(())
     }
 }
@@ -121,14 +110,10 @@ impl BlobLifecycleLock {
 impl Drop for BlobLifecycleLock {
     fn drop(&mut self) {
         if let Some(connection) = self.connection.take() {
-            if self.reusable {
-                drop(connection);
-            } else {
-                // Dropping a detached connection closes its PostgreSQL
-                // session, which releases any session advisory lock even if
-                // the task was cancelled or explicit unlock failed.
-                drop(connection.detach());
-            }
+            // This connection is never pooled. Dropping it closes its
+            // PostgreSQL session and releases the session lock on errors,
+            // cancellation, failed explicit unlock, or ordinary scope exit.
+            drop(connection);
         }
     }
 }

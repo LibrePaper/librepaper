@@ -197,7 +197,36 @@ struct ScanPage {
     superseded_base_due: Option<OffsetDateTime>,
 }
 
-fn enqueue_overflow_scan(handle: &Handle, local: &mut VecDeque<Task>) {
+fn enqueue_orphan_sweep(
+    local: &mut VecDeque<Task>,
+    deadlines: &mut Deadlines,
+    not_before: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+) {
+    let task = Task::SweepOrphans;
+    if local.contains(&task) || deadlines.waiting(&task, now) {
+        return;
+    }
+    if let Some(due) = not_before.filter(|due| *due > now) {
+        // The orphan task's deadline may itself have been refused because the
+        // bounded map was full. Re-record it after a coalesced rescan rather
+        // than running it early or forgetting it.
+        deadlines.at(task, due);
+    } else {
+        local.push_back(task);
+    }
+}
+
+fn enqueue_overflow_scan(
+    handle: &Handle,
+    local: &mut VecDeque<Task>,
+    deadlines: &mut Deadlines,
+    orphan_not_before: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+) {
+    if handle.rescan.load(Ordering::Acquire) {
+        enqueue_orphan_sweep(local, deadlines, orphan_not_before, now);
+    }
     // A cursor continuation already walks durable state through the end of
     // this pass. Do not consume the bit yet: it may describe a newer row
     // inserted behind an earlier cursor, which needs a fresh full pass.
@@ -209,10 +238,18 @@ fn enqueue_overflow_scan(handle: &Handle, local: &mut VecDeque<Task>) {
     }
 }
 
-fn enqueue_due_rescan(handle: &Handle, local: &mut VecDeque<Task>, rescan: bool) {
+fn enqueue_due_rescan(
+    handle: &Handle,
+    local: &mut VecDeque<Task>,
+    deadlines: &mut Deadlines,
+    orphan_not_before: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+    rescan: bool,
+) {
     if !rescan {
         return;
     }
+    enqueue_orphan_sweep(local, deadlines, orphan_not_before, now);
     if local.iter().any(|task| matches!(task, Task::Scan(_))) {
         // A cursor continuation cannot stand in for a fresh full pass.
         handle.rescan.store(true, Ordering::Release);
@@ -430,6 +467,10 @@ pub struct Worker {
     /// grace period, and a superseded base's grace, all in the one place
     /// the worker's `select!` sleeps on.
     deadlines: Deadlines,
+    /// Kept separately because `Deadlines` coalesces refusals across tasks.
+    /// This preserves the orphan sweep's own interval/backoff when its map
+    /// entry is refused and another task's earlier refusal triggers a scan.
+    orphan_sweep_not_before: Option<tokio::time::Instant>,
     /// Whether the one-time startup verification pass (below) is still
     /// owed. Set to `false` the first time a full scan (every category's
     /// cursor reaching its own end) completes, so it fires at most once per
@@ -459,6 +500,7 @@ impl Worker {
                 rx,
                 handle: handle.clone(),
                 deadlines: Deadlines::new(),
+                orphan_sweep_not_before: None,
                 startup: true,
             },
             handle,
@@ -551,7 +593,13 @@ impl Worker {
             // been the only event naming a task. Restarting a scan is safe:
             // this loop drains all of its pages before receiving more work,
             // so early durable rows cannot starve later cursor pages.
-            enqueue_overflow_scan(&self.handle, &mut local);
+            enqueue_overflow_scan(
+                &self.handle,
+                &mut local,
+                &mut self.deadlines,
+                self.orphan_sweep_not_before,
+                tokio::time::Instant::now(),
+            );
             self.publish();
         }
     }
@@ -581,7 +629,14 @@ impl Worker {
                 local.push_back(task);
             }
         }
-        enqueue_due_rescan(&self.handle, local, due.rescan);
+        enqueue_due_rescan(
+            &self.handle,
+            local,
+            &mut self.deadlines,
+            self.orphan_sweep_not_before,
+            tokio::time::Instant::now(),
+            due.rescan,
+        );
     }
 
     async fn process(&mut self, task: Task) {
@@ -615,10 +670,9 @@ impl Worker {
             Ok(()) => {
                 self.deadlines.clear(&task);
                 if task == Task::SweepOrphans {
-                    self.deadlines.at(
-                        task,
-                        tokio::time::Instant::now() + ORPHAN_SWEEP_INTERVAL,
-                    );
+                    let due = tokio::time::Instant::now() + ORPHAN_SWEEP_INTERVAL;
+                    self.orphan_sweep_not_before = Some(due);
+                    self.deadlines.at(task, due);
                 }
             }
             Err(error) => self.failed(task, error),
@@ -628,14 +682,17 @@ impl Worker {
     fn failed(&mut self, task: Task, error: String) {
         let before = self.deadlines.refused();
         let wait = self.deadlines.failed(task, tokio::time::Instant::now());
+        if task == Task::SweepOrphans {
+            self.orphan_sweep_not_before = Some(tokio::time::Instant::now() + wait);
+        }
         if self.deadlines.refused() > before {
             // The map is full and this failure's retry did not fit. The
-            // deadline is not lost: it is folded into the earliest refusal
-            // time, which is when the worker will rescan durable state and
-            // find this task again on its own.
+            // deadline is folded into the earliest refusal time. That wake-up
+            // rescans durable work and reconstructs periodic orphan work from
+            // its separately retained deadline.
             ::log::warn!(
                 "background task {task:?} failed and the retry map is full \
-                 ({} deadlines); durable state will be rescanned: {error}",
+                 ({} deadlines); work will be reconstructed after a rescan: {error}",
                 self.deadlines.len()
             );
         } else {
@@ -1194,22 +1251,75 @@ mod tests {
             rescan: Arc::new(AtomicBool::new(true)),
             meter: Arc::new(Meter::default()),
         };
+        let mut deadlines = Deadlines::new();
+        let now = tokio::time::Instant::now();
         let mut local = VecDeque::from([Task::Scan(PendingWorkCursor::default())]);
 
         // A continuation means the current full scan still has pages to
         // visit. The overflow bit must survive it, or a newer durable row
         // could be missed after an earlier cursor page keeps returning work.
-        enqueue_overflow_scan(&handle, &mut local);
-        assert_eq!(local.len(), 1);
+        enqueue_overflow_scan(&handle, &mut local, &mut deadlines, None, now);
+        assert_eq!(local.len(), 2);
+        assert!(local.contains(&Task::SweepOrphans));
         assert!(handle.rescan.load(Ordering::Acquire));
 
         local.pop_front();
-        enqueue_overflow_scan(&handle, &mut local);
+        enqueue_overflow_scan(&handle, &mut local, &mut deadlines, None, now);
         assert_eq!(
             local,
-            VecDeque::from([Task::Scan(PendingWorkCursor::default())])
+            VecDeque::from([
+                Task::SweepOrphans,
+                Task::Scan(PendingWorkCursor::default())
+            ])
         );
         assert!(!handle.rescan.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn startup_queue_overflow_reconstructs_the_non_durable_orphan_task() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(false)),
+            meter: Arc::new(Meter::default()),
+        };
+        handle.ask(Task::Scan(PendingWorkCursor::default()));
+        handle.ask(Task::SweepOrphans);
+        assert!(handle.rescan.load(Ordering::Acquire));
+
+        let mut local = VecDeque::new();
+        let mut deadlines = Deadlines::new();
+        enqueue_overflow_scan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            None,
+            tokio::time::Instant::now(),
+        );
+
+        assert!(local.contains(&Task::SweepOrphans));
+        assert!(local.contains(&Task::Scan(PendingWorkCursor::default())));
+    }
+
+    #[test]
+    fn overflow_rescan_respects_an_orphan_sweeps_waiting_deadline() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(true)),
+            meter: Arc::new(Meter::default()),
+        };
+        let now = tokio::time::Instant::now();
+        let due = now + ORPHAN_SWEEP_INTERVAL;
+        let mut deadlines = Deadlines::new();
+        deadlines.at(Task::SweepOrphans, due);
+        let mut local = VecDeque::new();
+
+        enqueue_overflow_scan(&handle, &mut local, &mut deadlines, Some(due), now);
+
+        assert!(!local.contains(&Task::SweepOrphans));
+        assert!(local.contains(&Task::Scan(PendingWorkCursor::default())));
+        assert_eq!(deadlines.next(), Some(due));
     }
 
     #[test]
@@ -1221,10 +1331,15 @@ mod tests {
             meter: Arc::new(Meter::default()),
         };
         let mut local = VecDeque::new();
-        enqueue_due_rescan(&handle, &mut local, true);
+        let mut deadlines = Deadlines::new();
+        let now = tokio::time::Instant::now();
+        enqueue_due_rescan(&handle, &mut local, &mut deadlines, None, now, true);
         assert_eq!(
             local,
-            VecDeque::from([Task::Scan(PendingWorkCursor::default())])
+            VecDeque::from([
+                Task::SweepOrphans,
+                Task::Scan(PendingWorkCursor::default())
+            ])
         );
         assert!(!handle.rescan.load(Ordering::Acquire));
 
@@ -1247,20 +1362,106 @@ mod tests {
             );
         }
         deadlines.failed(Task::Archive(Uuid::new_v4()), now - Duration::from_secs(61));
-        enqueue_due_rescan(&handle, &mut local, deadlines.due(now).rescan);
+        let rescan = deadlines.due(now).rescan;
+        enqueue_due_rescan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(now + Duration::from_secs(3600)),
+            now,
+            rescan,
+        );
         assert_eq!(local.len(), 1);
+        assert!(!local.contains(&Task::SweepOrphans));
         assert!(handle.rescan.load(Ordering::Acquire));
 
-        enqueue_overflow_scan(&handle, &mut local);
+        enqueue_overflow_scan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(now + Duration::from_secs(3600)),
+            now,
+        );
         assert_eq!(local.pop_front(), Some(Task::Scan(cursor)));
-        enqueue_overflow_scan(&handle, &mut local);
+        enqueue_overflow_scan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(now + Duration::from_secs(3600)),
+            now,
+        );
         assert_eq!(
             local.pop_front(),
             Some(Task::Scan(PendingWorkCursor::default()))
         );
         assert!(!handle.rescan.load(Ordering::Acquire));
-        enqueue_due_rescan(&handle, &mut local, deadlines.due(now).rescan);
+        let rescan = deadlines.due(now).rescan;
+        enqueue_due_rescan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(now + Duration::from_secs(3600)),
+            now,
+            rescan,
+        );
         assert!(local.is_empty(), "a spent overflow must not rescan forever");
+    }
+
+    #[test]
+    fn orphan_sweep_is_rebuilt_after_coalesced_deadlines_without_running_early() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = Handle {
+            tx,
+            rescan: Arc::new(AtomicBool::new(false)),
+            meter: Arc::new(Meter::default()),
+        };
+        let now = tokio::time::Instant::now();
+        let orphan_due = now + ORPHAN_SWEEP_INTERVAL;
+        let mut deadlines = Deadlines::new();
+        for _ in 0..super::super::schedule::DEADLINES {
+            deadlines.at(
+                Task::Delete(Uuid::new_v4()),
+                now + Duration::from_secs(86400),
+            );
+        }
+        // The map first refuses an unrelated retry due now, then refuses the
+        // orphan deadline an hour out. Only the earlier refusal is retained.
+        deadlines.failed(Task::Archive(Uuid::new_v4()), now - Duration::from_secs(61));
+        deadlines.at(Task::SweepOrphans, orphan_due);
+        let mut local = VecDeque::new();
+
+        // The earlier refusal triggers a rescan. The orphan task must not run
+        // early, and its original deadline must be re-recorded despite the
+        // bounded map still being full.
+        let due = deadlines.due(now);
+        assert!(due.rescan);
+        enqueue_due_rescan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(orphan_due),
+            now,
+            due.rescan,
+        );
+        assert!(!local.contains(&Task::SweepOrphans));
+        assert!(local.contains(&Task::Scan(PendingWorkCursor::default())));
+        assert_eq!(deadlines.next(), Some(orphan_due));
+
+        // When the refused deadline matures, its rescan reconstructs the
+        // non-durable sweep task as well as the ordinary document scan.
+        local.clear();
+        let due = deadlines.due(orphan_due);
+        assert!(due.rescan);
+        enqueue_due_rescan(
+            &handle,
+            &mut local,
+            &mut deadlines,
+            Some(orphan_due),
+            orphan_due,
+            due.rescan,
+        );
+        assert!(local.contains(&Task::SweepOrphans));
+        assert!(local.contains(&Task::Scan(PendingWorkCursor::default())));
     }
 
     #[tokio::test]
