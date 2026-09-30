@@ -215,7 +215,7 @@ demo:  ## Serve the site, the app, a local companion and simulated activity (SIM
 		echo "demo: GitHub sign-in from $(DEMO_KEYS)"; \
 		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run'; \
 	else \
-		echo "demo: no sign-in (sops cannot decrypt $(DEMO_KEYS)); publishing is off"; \
+		echo "demo: $$([ -n \"$$LIBREPAPER_GITHUB_CLIENT_ID\" ] && echo 'GitHub sign-in from environment' || echo 'no sign-in (sops cannot decrypt $(DEMO_KEYS)); publishing is off')"; \
 		exec $(MAKE) --no-print-directory demo-run; \
 	fi
 

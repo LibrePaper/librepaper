@@ -64,7 +64,7 @@ Rendering happens on editors' and readers' own devices; the server never compile
 | HTML | the identity | nothing |
 | LaTeX | the browser engine, fetched directly from the mirror | ~6 MB and requested packages from the mirror; these are not origin transfer |
 
-All formats are compiled to WebAssembly; no installation is needed. The same compiler runs in both editors and readers, so a document cannot render one way for one and another way for the other.
+All formats are compiled to WebAssembly; no installation is needed. The same compiler runs in both editors and readers, so with the same source, renderer and settings, a document renders the same way for everyone.
 
 ## Preview modes
 
