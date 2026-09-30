@@ -7,18 +7,14 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:https";
 import { mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep, dirname } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 export async function ephemeralMirror(directory, releaseId) {
   const root = resolve(directory);
   if (!statSync(root).isDirectory()) throw new Error(`mirror is not a directory: ${directory}`);
-  if (!releaseId) {
-    const assetsLockPath = join(dirname(dirname(dirname(root))), "assets.lock");
-    const assetsLockContent = readFileSync(assetsLockPath, "utf-8");
-    const latexLine = assetsLockContent.split("\n").find((line) => line.startsWith("latex "));
-    if (!latexLine) throw new Error("latex row not found in assets.lock");
-    releaseId = latexLine.split(/\s+/)[3];
-  }
+  // The mirror may hold several releases; serve the one assets.lock pins.
+  releaseId ??= readFileSync(new URL("../../assets.lock", import.meta.url), "utf8")
+    .split("\n").find((line) => line.startsWith("latex "))?.split(/\s+/)[3];
   if (!/^[a-f0-9]{64}$/.test(releaseId)) throw new Error(`invalid releaseId: ${releaseId}`);
   const tls = mkdtempSync(join(tmpdir(), "librepaper-mirror-tls-"));
   const key = join(tls, "key.pem");

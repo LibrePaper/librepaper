@@ -342,14 +342,15 @@ async function runPool(items, limit, work) {
   let next = 0;
   let failed = false;
   let firstError = null;
-  const results = await Promise.allSettled(Array.from({ length: Math.min(limit, items.length) }, async () => {
+  // Every worker stops at the first failure and is awaited before the caller
+  // cleans up the staging directory it may still be writing into.
+  await Promise.allSettled(Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (next < items.length && !failed) {
       try {
         await work(items[next++]);
       } catch (error) {
+        if (!failed) firstError = error;
         failed = true;
-        firstError = error;
-        throw error;
       }
     }
   }));
