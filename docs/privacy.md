@@ -51,10 +51,12 @@ Pseudonymous comments hide identity from other readers, not the operator.
 
 - **Sign-in:** GitHub or Google sees the request, returns identity. No documents sent.
 - **LaTeX mirror:** Compilers and packages come from the project mirror, which sees
-  browser address and files requested (not source). See [Privacy and the LaTeX
+  browser address and files requested (not source). Package choices are fingerprintable.
+  Operators can host their own mirror to avoid this. See [Privacy and the LaTeX
   mirror](./host.html#privacy-and-the-latex-mirror).
 - **Local companion:** The writing assistant runs on your computer; the server relays
-  messages while connected.
+  messages. The browser contacts it only when you initiate: turning on local execution,
+  choosing a local build tool, Zotero lookup, or opening Local app settings.
 - **Embedded resources:** Published documents fetch images and data from any host
   named, which learns your address, browser and open time. For anonymous review,
   use PDFs or `embed-resources: true` in Quarto.
@@ -94,11 +96,33 @@ and proxy log retention. Point to this page.
 database for complete answers:
 
 ```sql
+-- Find the account
 SELECT id, provider, handle, display_name, email, created_at, last_seen_at
 FROM accounts WHERE handle = 'the-handle';
+
+-- Documents owned by account $1
+SELECT d.slug, d.title, d.created_at, d.updated_at
+FROM documents d WHERE d.owner_id = $1;
+
+-- Annotations (comments, highlights, suggestions) by account $1
+SELECT d.slug, a.kind, a.body, a.proposed_text, a.created_at
+FROM annotations a JOIN documents d ON d.id = a.document_id
+WHERE a.author_account_id = $1 ORDER BY a.created_at;
+
+-- Replies to annotations by account $1
+SELECT d.slug, r.body, r.created_at
+FROM replies r JOIN annotations a ON a.id = r.annotation_id
+JOIN documents d ON d.id = a.document_id
+WHERE r.author_account_id = $1 ORDER BY r.created_at;
+
+-- Checkpoints by account $1
+SELECT d.slug, v.created_at FROM document_labels v
+JOIN documents d ON d.id = v.document_id WHERE v.author_account_id = $1;
+
+-- Document access grants for account $1
+SELECT document_id, role, created_at FROM grants WHERE account_id = $1;
 ```
 
-Join against `documents`, `annotations`, `replies` and `grants` by account ID.
 Export owned documents with `librepaper export DOCUMENT DIR`.
 
 **Backup restore:** Re-run erasure requests. Keep notes (date and handle) and
@@ -106,3 +130,7 @@ replay them.
 
 **GDPR:** answer data requests within one month; notify authorities of breaches
 within 72 hours where people are likely to be at risk.
+
+**Verify who is asking:** A signed-in request from the account itself is easiest
+proof. For other requests, require sufficient identity verification before
+answering.
