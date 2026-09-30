@@ -10,11 +10,11 @@
 @import "./documentation.css";
 
 /* Where to look for the classes actually used: the generated docs pages in
-   site/.build (markdown prose, wrapped by web/tools/build-site.mjs's own
+   docs/.build (markdown prose, wrapped by web/tools/build-site.mjs's own
    template) and this directory's own components. Without this, Tailwind
    tree-shakes away every class the generated pages reference, since neither
    is a file Tailwind scans by default. */
-@source "../../../site/.build/**/*.html";
+@source "../../../docs/.build/**/*.html";
 @source "./**/*.{svelte,js}";
 
 /* The brand button, as librepaper.css defines it for the application. That

@@ -4,21 +4,7 @@ set -euo pipefail
 # Database management dispatcher for LibrePaper.
 # Works from any current working directory.
 
-# Find the repository root by walking up to the .git directory.
-find_repo_root() {
-    local dir="$PWD"
-    while [ "$dir" != "/" ]; do
-        if [ -d "$dir/.git" ]; then
-            echo "$dir"
-            return 0
-        fi
-        dir=$(dirname "$dir")
-    done
-    echo "error: could not find repository root (.git directory)" >&2
-    return 1
-}
-
-REPO_ROOT=$(find_repo_root)
+REPO_ROOT=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
 cd "$REPO_ROOT" || exit 1
 
 # Database configuration (from Makefile)

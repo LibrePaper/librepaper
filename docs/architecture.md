@@ -191,7 +191,6 @@ make build              # dist/librepaper with pages and renderers
 make install            # to ~/.local/bin (override PREFIX= or BINDIR=)
 make test               # rustfmt, clippy and test suite
 tools/suite external    # Quarto/R/Python and local-service integrations
-tools/suite workloads   # supported limits and diagnostics
 ```
 
 Build needs [bun](https://bun.sh) and Node.js. Browser renderers are fetched from exact tags and SHA256 digests in `assets.lock`. To update a renderer: `tools/pins update wasm wasm-markdown v0.2.0`, then review the lockfile diff.

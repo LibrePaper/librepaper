@@ -72,7 +72,7 @@ never installs packages or changes your TeX installation.
 
 A self-hoster can serve the browser distribution from their own mirror rather
 than the project one; see
-[Privacy and the LaTeX mirror](../host.html#privacy-and-the-latex-mirror).
+[Privacy](../host.html#privacy).
 
 `make demo` checks that the local LaTeX mirror build (`MIRROR=`, default `../wasm-latex/mirror`) holds release directories
 (`<sha256>/`, each described by `release.json`) with a complete engine

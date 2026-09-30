@@ -15,7 +15,6 @@ usage: tools/suite <suite>
   browser     component tests in headless chromium (needs chromium)
   smoke       drive the reader in headless chromium (needs chromium)
   external    Quarto/R/Python and real local-service integration tests
-  workloads   supported-limit and diagnostic workloads
   fuzz        every fuzz target for FUZZ_SECONDS (default 60) each
               (FUZZ_TARGETS overrides the target list; needs nightly and cargo-fuzz)
   help        this text
@@ -67,19 +66,6 @@ suite_external() {
 		--skip quarto_book_scope_keeps_chapter_navigation
 }
 
-suite_workloads() {
-	local t
-	for t in \
-		the_supported_maximum_source_survives_a_restart \
-		measure_source_history_profiles \
-		profile_unchanged_resident_metadata \
-		persistence_capacity_workload \
-		persistence_default_limits_refuse_without_discarding_dirty_rooms \
-		mcp_protocol_transfer_benchmark; do
-		cargo test -p librepaper "$t" -- --ignored --nocapture
-	done
-}
-
 # libFuzzer over the functions that read what somebody else wrote. A finding is
 # left in tools/fuzz/artifacts/. No sanitizer: the code under test is safe Rust.
 suite_fuzz() {
@@ -98,7 +84,6 @@ case "${1:-help}" in
 	browser) suite_browser ;;
 	smoke) suite_smoke ;;
 	external) suite_external ;;
-	workloads) suite_workloads ;;
 	fuzz) suite_fuzz ;;
 	help | -h | --help) usage ;;
 	*) usage >&2; exit 2 ;;

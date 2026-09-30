@@ -44,7 +44,7 @@ PINNED  := $(WASM) $(BIB) $(CITES) $(TYPST) $(LCM)
 # landing page recompiled the whole crate. The site builds on its own: see the
 # site target at the bottom of this file.
 WEB     := $(shell find web/src web/public -type f -not -path 'web/src/site/*') $(wildcard web/pages/*.html web/package.json web/vite.config.js web/vite.frame.config.js)
-SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml
+SOURCES := $(shell find crates -type f -not -path '*/target/*') $(shell find skills) $(shell find docs/examples -type f) Cargo.toml assets.lock
 
 .PHONY: help build install test check fmt serve demo demo-run wipe kill clean snapshot web pins site site-serve
 
@@ -214,6 +214,9 @@ demo:  ## Serve the site, the app, a local companion and simulated activity (SIM
 		&& sops --decrypt --extract '["LIBREPAPER_GITHUB_CLIENT_ID"]' $(DEMO_KEYS) >/dev/null 2>&1; then \
 		echo "demo: GitHub sign-in from $(DEMO_KEYS)"; \
 		exec sops exec-env $(DEMO_KEYS) '$(MAKE) --no-print-directory demo-run'; \
+	elif [ -n "$$LIBREPAPER_GITHUB_CLIENT_ID" ]; then \
+		echo "demo: GitHub sign-in from the environment"; \
+		exec $(MAKE) --no-print-directory demo-run; \
 	else \
 		echo "demo: no sign-in (sops cannot decrypt $(DEMO_KEYS)); publishing is off"; \
 		exec $(MAKE) --no-print-directory demo-run; \

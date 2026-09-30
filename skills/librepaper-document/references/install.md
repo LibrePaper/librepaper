@@ -15,11 +15,11 @@ curl -fsSL https://github.com/LibrePaper/librepaper/releases/latest/download/lib
 ```
 
 The installer verifies the release archive's checksum and installs into
-`~/.local/bin` by default. If that is not on `PATH`, use the full binary path
+`~/.cargo/bin` by default. If that is not on `PATH`, use the full binary path
 in every command rather than editing the user's shell configuration.
 
 - `LIBREPAPER_VERSION` selects a release.
-- `LIBREPAPER_BIN_DIR` selects an installation directory.
+- `LIBREPAPER_INSTALL_DIR` selects an installation directory.
 - Windows: use the matching executable from the
   [release page](https://github.com/LibrePaper/librepaper/releases).
 

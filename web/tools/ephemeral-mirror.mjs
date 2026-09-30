@@ -9,13 +9,13 @@ import { mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
-export async function ephemeralMirror(directory) {
+export async function ephemeralMirror(directory, releaseId) {
   const root = resolve(directory);
   if (!statSync(root).isDirectory()) throw new Error(`mirror is not a directory: ${directory}`);
-  const releases = readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
-  if (releases.length !== 1) throw new Error(`expected exactly one <sha256> release directory in ${directory}, found ${releases.length}`);
-  const releaseId = releases[0].name;
+  // The mirror may hold several releases; serve the one assets.lock pins.
+  releaseId ??= readFileSync(new URL("../../assets.lock", import.meta.url), "utf8")
+    .split("\n").find((line) => line.startsWith("latex "))?.split(/\s+/)[3];
+  if (!/^[a-f0-9]{64}$/.test(releaseId)) throw new Error(`invalid releaseId: ${releaseId}`);
   const tls = mkdtempSync(join(tmpdir(), "librepaper-mirror-tls-"));
   const key = join(tls, "key.pem");
   const cert = join(tls, "cert.pem");
