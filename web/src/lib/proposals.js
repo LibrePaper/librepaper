@@ -462,9 +462,22 @@ export function createProposals({ session, send, mayEdit }) {
         if (roomFiles.get(id)) continue;
         const publishedText = publishedFiles.get(id);
         if (publishedText?.kind?.() !== "Text") continue;
+        let changedIdentities = false;
+        try {
+          const delta = draft.branch.diff(resolvedTip, file.frontiers, false)
+            .find(([containerId]) => String(containerId) === String(publishedText.id))?.[1];
+          changedIdentities = delta?.type === "text" &&
+            delta.diff.some((part) => part.insert !== undefined || part.delete !== undefined);
+        } catch {
+          // If identity history cannot be inspected, preserving an extra copy
+          // is safer than dropping text that merely happens to compare equal.
+          changedIdentities = true;
+        }
         let localText = file.text;
         try { localText = file.container?.toString?.() ?? file.text; } catch { /* Keep the captured text. */ }
-        if (localText !== publishedText.toString()) lost.push({ id, path: file.path, text: localText });
+        if (changedIdentities || localText !== publishedText.toString()) {
+          lost.push({ id, path: file.path, text: localText });
+        }
       }
       return lost;
     } finally {
@@ -734,6 +747,7 @@ export function createProposals({ session, send, mayEdit }) {
         const roomFiles = session.doc.getMap("files");
         const branchFiles = draft.branch.getMap("files");
         const branchPaths = draft.branch.getMap("paths");
+        const frontiers = draft.branch.frontiers();
         for (const id of branchFiles.keys()) {
           if (roomFiles.get(id)) continue;
           const text = branchFiles.get(id);
@@ -743,6 +757,7 @@ export function createProposals({ session, send, mayEdit }) {
               path: branchPaths.get(id) ?? null,
               text: text.toString(),
               container: text,
+              frontiers,
             });
           }
         }
