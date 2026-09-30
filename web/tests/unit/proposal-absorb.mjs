@@ -440,7 +440,7 @@ import { createProposals } from "../../src/lib/proposals.js";
   bib.insert(11, "X");
   proposals.apply({ type: "proposal-decided", proposal_id: oldId, resolved: true,
     decisions: [{ hunk: 0, accepted: false }], resolved_tip: update.tip, resolved_base: open.base });
-  assert.ok(proposals.text("f2").toString().includes("X"), "the unacknowledged new-file tail survives rejection");
+  assert.equal(proposals.text("f2").toString(), "X", "only the unacknowledged new-file tail survives rejection");
   assert.equal(proposals.doc().getMap("paths").get("f2"), "references.bib", "the residual file keeps its path");
 }
 // A rejected new file with no surviving local text is removed when the
