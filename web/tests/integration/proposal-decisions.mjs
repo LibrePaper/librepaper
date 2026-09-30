@@ -273,6 +273,19 @@ try {
     const source = await sourceOf(slug);
     assert.ok(source.includes("Bravo is second."), "the accepted text is in the source");
     assert.ok(!source.includes("Beta is second."), "the replaced text is gone from the source");
+    // A discard that arrives after a final decision may find no live row.
+    // It must answer from the durable result instead of claiming a discard
+    // with missing frontiers.
+    const discardRequest = randomUUID();
+    socket.send({ type: "proposal-discard", proposal_id: comment.proposal, request_id: discardRequest });
+    const racedDiscard = await socket.next("the outcome for a late discard", (frame) =>
+      ["proposal-decided", "proposal-discarded", "error"].includes(frame.type)
+      && frame.request_id === discardRequest);
+    assert.equal(racedDiscard.type, "proposal-decided", "the final decision wins over a late discard");
+    assert.equal(racedDiscard.replay, true);
+    assert.equal(racedDiscard.resolved_base, prior.base);
+    assert.equal(racedDiscard.resolved_tip, prior.tip);
+    assert.deepEqual(racedDiscard.decisions, [{ hunk: 0, accepted: true }]);
     await replayOutcome(socket, comment.proposal, prior, [{ hunk: 0, accepted: true }]);
     await assertAbsentOnJoin(slug, comment);
     console.log("proposal-decisions: an accepted suggestion is deleted and applied");
@@ -358,6 +371,18 @@ try {
       { hunk: 1, accepted: true },
     ]);
     console.log("proposal-decisions: a legacy mixed multi-hunk suggestion resolves as one choice");
+  }
+
+  // Case 7: a syntactically valid but unknown id is not reported as a
+  // successful discard with null frontiers.
+  {
+    const request_id = randomUUID();
+    socket.send({ type: "proposal-discard", proposal_id: randomUUID(), request_id });
+    const answer = await socket.next("unknown proposal discard status", (frame) =>
+      frame.request_id === request_id && (frame.type === "error" || frame.type === "proposal-discarded"));
+    assert.equal(answer.type, "error");
+    assert.equal(answer.status_unknown, true);
+    console.log("proposal-decisions: an unknown discard is reported as status unknown");
   }
 } catch (error) {
   console.error(deployment.log);
