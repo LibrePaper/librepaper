@@ -9,7 +9,7 @@
 # sha256 of the release's MANIFEST.json).
 #
 # To move a pin: run `tools/pins update wasm wasm-markdown vX.Y.Z` with an
-# explicit repository and tag, then review the native and browser pin diff.
+# explicit repository and tag, then review the lockfile diff.
 #
 # module             repository          tag       sha256
 markdown.wasm        wasm-markdown       v0.1.1    c701483e38f9da1691e752be48c8283119ec78598a296479a4da4986ecaf1114

@@ -1,6 +1,6 @@
-// Move one renderer pin, explicitly. Both Cargo git dependencies and the
-// browser lock are changed together; no release discovery or "latest" lookup.
-import { readFile, writeFile, readdir } from "node:fs/promises";
+// Move one browser renderer pin in assets.lock, explicitly; no release
+// discovery or "latest" lookup.
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -53,28 +53,7 @@ const changedLock = lock.replace(new RegExp(`^(\\s*)(\\S+)(\\s+${repo}\\s+)\\S+(
   return `${indent}${module}${middle}${tag}${gap}${sha}${rest}`;
 });
 
-const files = [];
-async function walk(dir) {
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory() && entry.name !== "target") await walk(path);
-    else if (entry.isFile() && entry.name === "Cargo.toml") files.push(path);
-  }
-}
-await walk(join(root, "crates"));
-files.push(join(root, "Cargo.toml"));
-const cargoPattern = new RegExp(`(wasm-${repo.slice(5)}\\s*=\\s*\\{[^}]*?\\btag\\s*=\\s*")([^"]+)(")`, "g");
-let nativeCount = 0;
-const updates = [];
-for (const path of files) {
-  const text = await readFile(path, "utf8");
-  const changed = text.replace(cargoPattern, (_, before, _old, after) => { nativeCount++; return `${before}${tag}${after}`; });
-  if (changed !== text) updates.push([path, changed]);
-}
-if (!nativeCount) throw new Error(`${repo}: no native Cargo dependency with an explicit tag`);
-// All checks, including the release manifest, happen before writing anything.
-// This keeps a failed pin move from leaving native and browser pins divergent.
-for (const [path, changed] of updates) await writeFile(path, changed);
+// All checks happen before writing anything.
 await writeFile(lockPath, changedLock);
-console.log(`${repo}: updated ${nativeCount} native dependency tag(s) and browser lock to ${tag}`);
-console.log("Run `cargo update -p <native-renderer>` (or cargo check) and `tools/pins fetch` before committing.");
+console.log(`${repo}: updated assets.lock to ${tag}`);
+console.log("Run `tools/pins fetch` before committing.");

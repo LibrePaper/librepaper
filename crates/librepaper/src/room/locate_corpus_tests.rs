@@ -63,13 +63,43 @@ fn read(path: &str) -> String {
     std::fs::read_to_string(format!("../../{path}")).expect("a tutorial file")
 }
 
+fn render_markdown(source: &str) -> String {
+    use comrak::options::{Extension, Parse, Render};
+    use comrak::Options;
+
+    let extension = Extension {
+        table: true,
+        strikethrough: true,
+        tasklist: true,
+        autolink: true,
+        footnotes: true,
+        header_id_prefix: Some(String::new()),
+        front_matter_delimiter: Some("---".to_string()),
+        ..Extension::default()
+    };
+    let parse = Parse {
+        smart: true,
+        ..Parse::default()
+    };
+    let render = Render {
+        r#unsafe: true,
+        ..Render::default()
+    };
+    let options = Options {
+        extension,
+        parse,
+        render,
+    };
+    comrak::markdown_to_html(source, &options)
+}
+
 fn corpus() -> Vec<Document> {
     let markdown = read("docs/examples/tutorial-markdown/librepaper.md");
     let html = read("docs/examples/tutorial-html/librepaper.html");
     vec![
         Document {
             path: "librepaper.md",
-            rendered: visible_text(&wasm_markdown::markdown::render(&markdown, "")),
+            rendered: visible_text(&render_markdown(&markdown)),
             files: vec![
                 ("librepaper.md", markdown),
                 (

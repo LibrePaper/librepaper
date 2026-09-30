@@ -12,6 +12,8 @@
 //! Which fonts a deployment offers is the operator's decision, and the
 //! licence question is theirs too: the files are served as they are.
 
+mod font_exceptions;
+
 use std::path::PathBuf;
 
 use axum::body::Body;
@@ -75,7 +77,7 @@ impl Library {
                     pending.push(path);
                     continue;
                 }
-                if !wasm_typst::typst::is_font(&leaf) {
+                if !is_font(&leaf) {
                     continue;
                 }
                 if files.len() >= MOST_FILES {
@@ -232,10 +234,175 @@ fn content_type(name: &str) -> &'static str {
     }
 }
 
+/// True when the filename is a font (.ttf, .otf, .ttc, .otc), false otherwise.
+fn is_font(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".ttf")
+        || lower.ends_with(".otf")
+        || lower.ends_with(".ttc")
+        || lower.ends_with(".otc")
+}
+
 /// The families a font file carries, lowercased as typst matches them, with
-/// duplicates removed. Empty for a file that is not a font.
-///
-/// The engine crate answers this, because the compiler that reads the faces
-/// here has to be the one that will set the text: two typst versions in one
-/// binary would name the same file's families twice, and differently.
-pub use wasm_typst::typst::families_in;
+/// duplicates removed. Empty for a file that is not a font. Uses typst 0.15.1's
+/// logic: the exception table overrides the family name extracted from each face,
+/// otherwise read the family name from the FAMILY name ID and trim style suffixes.
+pub fn families_in(bytes: &[u8]) -> Vec<String> {
+    let count = ttf_parser::fonts_in_collection(bytes).unwrap_or(1);
+    let mut families = Vec::new();
+    for index in 0..count {
+        if let Ok(face) = ttf_parser::Face::parse(bytes, index) {
+            let ps_name = find_name(&face, ttf_parser::name_id::POST_SCRIPT_NAME);
+            let exception = ps_name.as_deref().and_then(font_exceptions::find_exception);
+            let family = exception.map(|s| s.to_string()).or_else(|| {
+                let family = find_name(&face, ttf_parser::name_id::FAMILY)?;
+                Some(typographic_family(&family).to_string())
+            });
+            if let Some(family_name) = family {
+                let family_lower = family_name.to_lowercase();
+                if !family_lower.is_empty() && !families.contains(&family_lower) {
+                    families.push(family_lower);
+                }
+            }
+        }
+    }
+    families.sort();
+    families.dedup();
+    families
+}
+
+/// Try to find and decode the name with the given id, following typst's logic
+/// for finding and decoding font names.
+fn find_name(face: &ttf_parser::Face, name_id: u16) -> Option<String> {
+    use ttf_parser::PlatformId;
+
+    for entry in face.names() {
+        if entry.name_id == name_id {
+            if let Some(string) = entry.to_string() {
+                return Some(string);
+            }
+
+            if entry.platform_id == PlatformId::Macintosh && entry.encoding_id == 0 {
+                return Some(decode_mac_roman(entry.name));
+            }
+        }
+    }
+
+    None
+}
+
+/// Decode mac roman encoded bytes into a string, following typst's logic.
+fn decode_mac_roman(coded: &[u8]) -> String {
+    #[rustfmt::skip]
+    const TABLE: [char; 128] = [
+        'Ä', 'Å', 'Ç', 'É', 'Ñ', 'Ö', 'Ü', 'á', 'à', 'â', 'ä', 'ã', 'å', 'ç', 'é', 'è',
+        'ê', 'ë', 'í', 'ì', 'î', 'ï', 'ñ', 'ó', 'ò', 'ô', 'ö', 'õ', 'ú', 'ù', 'û', 'ü',
+        '†', '°', '¢', '£', '§', '•', '¶', 'ß', '®', '©', '™', '´', '¨', '≠', 'Æ', 'Ø',
+        '∞', '±', '≤', '≥', '¥', 'µ', '∂', '∑', '∏', 'π', '∫', 'ª', 'º', 'Ω', 'æ', 'ø',
+        '¿', '¡', '¬', '√', 'ƒ', '≈', '∆', '«', '»', '…', '\u{a0}', 'À', 'Ã', 'Õ', 'Œ', 'œ',
+        '–', '—', '"', '"', ''', ''', '÷', '◊', 'ÿ', 'Ÿ', '⁄', '€', '‹', '›', 'ﬁ', 'ﬂ',
+        '‡', '·', '‚', '„', '‰', 'Â', 'Ê', 'Á', 'Ë', 'È', 'Í', 'Î', 'Ï', 'Ì', 'Ó', 'Ô',
+        '\u{f8ff}', 'Ò', 'Ú', 'Û', 'Ù', 'ı', 'ˆ', '˜', '¯', '˘', '˙', '˚', '¸', '˝', '˛', 'ˇ',
+    ];
+
+    fn char_from_mac_roman(code: u8) -> char {
+        if code < 128 {
+            code as char
+        } else {
+            TABLE[(code - 128) as usize]
+        }
+    }
+
+    coded.iter().copied().map(char_from_mac_roman).collect()
+}
+
+/// Trim style naming from a family name, following typst 0.15.1's logic.
+fn typographic_family(mut family: &str) -> &str {
+    // Separators between names, modifiers and styles.
+    const SEPARATORS: [char; 3] = [' ', '-', '_'];
+
+    // Modifiers that can appear in combination with suffixes.
+    const MODIFIERS: &[&str] =
+        &["extra", "ext", "ex", "x", "semi", "sem", "sm", "demi", "dem", "ultra"];
+
+    // Style suffixes.
+    #[rustfmt::skip]
+    const SUFFIXES: &[&str] = &[
+        "normal", "italic", "oblique", "slanted",
+        "thin", "th", "hairline", "light", "lt", "regular", "medium", "med",
+        "md", "bold", "bd", "demi", "extb", "black", "blk", "bk", "heavy",
+        "narrow", "condensed", "cond", "cn", "cd", "compressed", "expanded", "exp",
+        "vf", "var", "variable",
+    ];
+
+    // Trim spacing and weird leading dots in Apple fonts.
+    family = family.trim().trim_start_matches('.');
+
+    // Lowercase the string so that the suffixes match case-insensitively.
+    let lower = family.to_ascii_lowercase();
+    let mut len = usize::MAX;
+    let mut trimmed = lower.as_str();
+
+    // Trim style suffixes repeatedly.
+    while trimmed.len() < len {
+        len = trimmed.len();
+
+        // Find style suffix.
+        let mut t = trimmed;
+        let mut shortened = false;
+        while let Some(s) = SUFFIXES.iter().find_map(|s| t.strip_suffix(s)) {
+            shortened = true;
+            t = s;
+        }
+
+        if !shortened {
+            break;
+        }
+
+        // Strip optional separator.
+        if let Some(s) = t.strip_suffix(SEPARATORS) {
+            trimmed = s;
+            t = s;
+        }
+
+        // Also allow an extra modifier, but apply it only if it is separated
+        // from the text before it (to prevent false positives).
+        if let Some(t) = MODIFIERS.iter().find_map(|s| t.strip_suffix(s))
+            && let Some(stripped) = t.strip_suffix(SEPARATORS)
+        {
+            trimmed = stripped;
+        }
+    }
+
+    // Apply style suffix trimming.
+    family = &family[..len];
+
+    family
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn families_in_matches_typst_output() {
+        // Test that for every font in typst_assets::fonts(), the families
+        // extracted by families_in() match what typst reports.
+        for font in typst_assets::fonts() {
+            let our_families = families_in(font.data);
+            let typst_families: Vec<String> = typst::text::Font::iter(
+                typst::foundations::Bytes::new(font.data.to_vec()),
+            )
+            .map(|f| f.info().family.to_lowercase())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+            assert_eq!(
+                our_families, typst_families,
+                "Font {} families mismatch",
+                font.info.family
+            );
+        }
+    }
+}

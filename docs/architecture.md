@@ -194,7 +194,7 @@ tools/suite external    # Quarto/R/Python and local-service integrations
 tools/suite workloads   # supported limits and diagnostics
 ```
 
-Build needs [bun](https://bun.sh) and Node.js. Browser renderers are fetched from exact tags and SHA256 digests in `assets.lock`. `tools/pins check` verifies tags match native dependencies without network access. To update a renderer: `tools/pins update wasm wasm-markdown v0.2.0`, then review Cargo and lockfile diff.
+Build needs [bun](https://bun.sh) and Node.js. Browser renderers are fetched from exact tags and SHA256 digests in `assets.lock`. To update a renderer: `tools/pins update wasm wasm-markdown v0.2.0`, then review the lockfile diff.
 
 The four browser modules (markdown, bibliography, citations, typst) are not embedded. `tools/pins fetch` fetches them to `web/wasm/` (ignored). `deploy/assets publish` publishes to the asset mirror at `wasm/<sha256>/<module>` (SHA256 from `assets.lock`). The same lock pins LaTeX at `latex/<sha256>/`. The server passes these URLs to browsers on the mirror named by `--asset-mirror`. See [asset mirrors](https://github.com/LibrePaper/librepaper/blob/main/docs/dev/asset-mirrors.md).
 

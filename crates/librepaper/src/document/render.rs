@@ -1,15 +1,12 @@
-//! Rendering on this side of the network: what `publish` and `seed` do to a
-//! markdown or typst file before it is stored. The browser renders through the
-//! same pinned renderer libraries, so documents published here and edited there are
-//! rendered by the same code.
-
-use wasm_markdown::markdown;
-use wasm_typst::typst;
+//! The server does not render documents. This module recognises formats and
+//! reads titles for publish and seed. The browser renders through pinned
+//! renderer libraries.
 
 use super::html;
 
 pub fn is_markdown(name: &str) -> bool {
-    markdown::is_markdown(name)
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown")
 }
 
 pub fn is_quarto(name: &str) -> bool {
@@ -43,7 +40,7 @@ pub fn title_from_quarto(source: &str) -> String {
 }
 
 pub fn is_typst(name: &str) -> bool {
-    typst::is_typst(name)
+    name.to_ascii_lowercase().ends_with(".typ")
 }
 
 pub fn is_html(name: &str) -> bool {
@@ -68,11 +65,27 @@ pub fn title_from_html(source: &str) -> String {
 }
 
 pub fn title_from_markdown(source: &str) -> String {
-    markdown::title_of(source)
+    first_heading(source, '#')
 }
 
 pub fn title_from_typst(source: &str) -> String {
-    typst::title_of(source)
+    first_heading(source, '=')
+}
+
+/// The first level-one heading, the obvious title when none was given.
+fn first_heading(source: &str, marker: char) -> String {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix(marker) {
+            if rest.starts_with([' ', '\t']) {
+                let title = rest.trim();
+                if !title.is_empty() {
+                    return title.to_string();
+                }
+            }
+        }
+    }
+    String::new()
 }
 
 /// What a LaTeX document calls itself: the argument of the first `\title`.
@@ -260,6 +273,78 @@ pub fn main_path_for(named: &str, format: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_heading_with_space() {
+        assert_eq!(
+            title_from_markdown("# My Title\nSome text"),
+            "My Title"
+        );
+    }
+
+    #[test]
+    fn markdown_heading_with_tab() {
+        assert_eq!(
+            title_from_markdown("#\tMy Title\nSome text"),
+            "My Title"
+        );
+    }
+
+    #[test]
+    fn markdown_double_hash_no_match() {
+        assert_eq!(
+            title_from_markdown("## My Title\nSome text"),
+            ""
+        );
+    }
+
+    #[test]
+    fn markdown_hash_no_space() {
+        assert_eq!(
+            title_from_markdown("#NoSpace\nSome text"),
+            ""
+        );
+    }
+
+    #[test]
+    fn typst_heading_with_space() {
+        assert_eq!(
+            title_from_typst("= My Title\nSome text"),
+            "My Title"
+        );
+    }
+
+    #[test]
+    fn typst_heading_with_tab() {
+        assert_eq!(
+            title_from_typst("=\tMy Title\nSome text"),
+            "My Title"
+        );
+    }
+
+    #[test]
+    fn typst_double_equals_no_match() {
+        assert_eq!(
+            title_from_typst("== My Title\nSome text"),
+            ""
+        );
+    }
+
+    #[test]
+    fn empty_heading_no_title() {
+        assert_eq!(
+            title_from_markdown("# \n\nSome text"),
+            ""
+        );
+    }
+
+    #[test]
+    fn heading_with_multiple_spaces() {
+        assert_eq!(
+            title_from_markdown("#   Spaced\nSome text"),
+            "Spaced"
+        );
+    }
 
     // `\footnote` is a prefix of `\footnotemark`, so a naive search for the
     // shorter name first would match inside the longer one, leave `mark`

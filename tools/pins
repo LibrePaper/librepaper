@@ -9,10 +9,9 @@ usage() {
 	cat <<'USAGE'
 usage: tools/pins <command>
 
-  fetch                        check the renderer pins, then fetch and verify
-                               the browser wasm modules and the loro-codemirror
-                               binding (writes nothing that does not match a lock)
-  check                        check native and browser renderer tags, offline
+  fetch                        fetch and verify the browser wasm modules and the
+                               loro-codemirror binding (writes nothing that does
+                               not match a lock)
   update wasm <repo> <tag>     move one renderer pin, e.g. wasm-markdown vX.Y.Z
   update loro <commit>         move the binding pin to a full 40-char sha
   help, -h, --help             show this message
@@ -21,12 +20,8 @@ USAGE
 
 case "${1:-help}" in
 	fetch)
-		node web/tools/check-renderer-pins.mjs
 		node web/tools/fetch-modules.mjs
 		node web/tools/fetch-loro-codemirror.mjs
-		;;
-	check)
-		node web/tools/check-renderer-pins.mjs
 		;;
 	update)
 		case "${2:-}" in
